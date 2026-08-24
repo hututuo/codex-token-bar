@@ -857,10 +857,23 @@ extension View {
 struct ChartBubblePlacementModifier: ViewModifier {
     let tokenX: CGFloat
     let plot: CGRect
+    @State private var bubbleSize: CGSize = .zero
 
     func body(content: Content) -> some View {
         let plot = self.plot
         let tokenX = self.tokenX
+        let measuredWidth = bubbleSize.width > 0 ? bubbleSize.width : min(max(plot.width * 0.4, 120), plot.width)
+        let measuredHeight = bubbleSize.height > 0 ? bubbleSize.height : min(max(plot.height * 0.55, 80), plot.height)
+        let lower = plot.minX
+        let upper = max(lower, plot.maxX - measuredWidth)
+        let centered = tokenX - measuredWidth / 2
+        let cardX = min(max(centered, lower), upper)
+        // Keep the card's bottom above the plot. For a short card, preserve
+        // the historical 74pt visual gutter; for a tall detail card, tighten
+        // that gutter to a small fixed gap rather than covering the curve.
+        let bottomGap = max(8, recentChartHoverBubbleVerticalOffset - measuredHeight / 2)
+        let cardY = plot.minY - bottomGap - measuredHeight
+
         ZStack(alignment: .topLeading) {
             // Keep the overlay's layout the size of the plot without making
             // the empty area steal mouse events from HoverTrackingArea.
@@ -870,22 +883,34 @@ struct ChartBubblePlacementModifier: ViewModifier {
 
             content
                 .fixedSize(horizontal: true, vertical: false)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .preference(
+                                key: ChartBubbleSizePreferenceKey.self,
+                                value: proxy.size
+                            )
+                    }
+                )
                 .contentShape(Rectangle())
-                .alignmentGuide(.leading) { dimensions in
-                    let lower = plot.minX
-                    let upper = max(lower, plot.maxX - dimensions.width)
-                    let centered = tokenX - dimensions.width / 2
-                    return -min(max(centered, lower), upper)
-                }
-                .alignmentGuide(.top) { dimensions in
-                    // Anchor the card's bottom edge above the plot. Centering
-                    // the card here made taller detail cards drift down over
-                    // the guide line and the selected curve.
-                    -(plot.minY - recentChartHoverBubbleVerticalOffset - dimensions.height)
-                }
+                .offset(x: cardX, y: cardY)
                 .allowsHitTesting(true)
         }
         .frame(width: plot.width, height: plot.height, alignment: .topLeading)
+        .onPreferenceChange(ChartBubbleSizePreferenceKey.self) { size in
+            guard size.width > 0, size.height > 0 else { return }
+            guard abs(size.width - bubbleSize.width) > 0.5
+                    || abs(size.height - bubbleSize.height) > 0.5 else { return }
+            bubbleSize = size
+        }
+    }
+}
+
+private struct ChartBubbleSizePreferenceKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
 
