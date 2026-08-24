@@ -861,24 +861,28 @@ struct ChartBubblePlacementModifier: ViewModifier {
     func body(content: Content) -> some View {
         let plot = self.plot
         let tokenX = self.tokenX
-        content
-            .fixedSize(horizontal: true, vertical: false)
-            // Keep the hit-test region to the actual preview card. The
-            // alignment frame below spans the plot so the card can be placed
-            // above the selected x-position, but it must not swallow clicks
-            // intended for the chart itself.
-            .contentShape(Rectangle())
-            .alignmentGuide(.leading) { dimensions in
-                let lower = plot.minX
-                let upper = max(lower, plot.maxX - dimensions.width)
-                let centered = tokenX - dimensions.width / 2
-                return -min(max(centered, lower), upper)
-            }
-            .alignmentGuide(.top) { dimensions in
-                -(plot.minY - recentChartHoverBubbleVerticalOffset - dimensions.height / 2)
-            }
-            .frame(width: plot.width, height: plot.height, alignment: .topLeading)
-            .allowsHitTesting(true)
+        ZStack(alignment: .topLeading) {
+            // Keep the overlay's layout the size of the plot without making
+            // the empty area steal mouse events from HoverTrackingArea.
+            Color.clear
+                .frame(width: plot.width, height: plot.height)
+                .allowsHitTesting(false)
+
+            content
+                .fixedSize(horizontal: true, vertical: false)
+                .contentShape(Rectangle())
+                .alignmentGuide(.leading) { dimensions in
+                    let lower = plot.minX
+                    let upper = max(lower, plot.maxX - dimensions.width)
+                    let centered = tokenX - dimensions.width / 2
+                    return -min(max(centered, lower), upper)
+                }
+                .alignmentGuide(.top) { dimensions in
+                    -(plot.minY - recentChartHoverBubbleVerticalOffset - dimensions.height / 2)
+                }
+                .allowsHitTesting(true)
+        }
+        .frame(width: plot.width, height: plot.height, alignment: .topLeading)
     }
 }
 

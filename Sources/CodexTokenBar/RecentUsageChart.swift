@@ -209,9 +209,15 @@ struct RecentChartScrollPresentation: Equatable {
 final class RecentChartScrollOffsetObserver: NSObject {
     private var observation: NSObjectProtocol?
     private(set) weak var scrollView: NSScrollView?
+    private var initialContentOffset: CGFloat = 0
+    private var initialPositionApplied = false
     var onOffsetChange: ((CGFloat) -> Void)?
 
-    func attach(to scrollView: NSScrollView, showsPersistentHorizontalScroller: Bool) {
+    func attach(
+        to scrollView: NSScrollView,
+        showsPersistentHorizontalScroller: Bool,
+        initialContentOffset: CGFloat = 0
+    ) {
         configureHorizontalScroller(
             scrollView,
             showsPersistentHorizontalScroller: showsPersistentHorizontalScroller
@@ -222,6 +228,8 @@ final class RecentChartScrollOffsetObserver: NSObject {
         guard self.scrollView !== scrollView else { return }
         detach()
         self.scrollView = scrollView
+        self.initialContentOffset = max(initialContentOffset, 0)
+        self.initialPositionApplied = false
         scrollView.contentView.postsBoundsChangedNotifications = true
         observation = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
@@ -233,9 +241,43 @@ final class RecentChartScrollOffsetObserver: NSObject {
             }
         }
         DispatchQueue.main.async { [weak self, weak scrollView] in
-            guard let self, self.scrollView === scrollView else { return }
-            self.reportCurrentOffset()
+            guard let self, let scrollView, self.scrollView === scrollView else { return }
+            if self.applyInitialContentOffset(to: scrollView) {
+                self.reportCurrentOffset()
+            }
         }
+        // The hosting view may exist before SwiftUI has laid out its document view.
+        // Retry once after that first layout pass so an early zero offset cannot
+        // overwrite the chart's requested latest position.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak scrollView] in
+            guard let self, let scrollView, self.scrollView === scrollView else { return }
+            // The chart already defaults its logical presentation to the latest
+            // window. This retry only needs to move the AppKit clip view; avoiding
+            // a second callback also keeps a SwiftUI root-view re-evaluation quiet.
+            _ = self.applyInitialContentOffset(to: scrollView)
+        }
+    }
+
+    @discardableResult
+    private func applyInitialContentOffset(to scrollView: NSScrollView) -> Bool {
+        guard !initialPositionApplied else { return true }
+
+        let clipView = scrollView.contentView
+        let documentWidth = scrollView.documentView?.frame.width ?? 0
+        let viewportWidth = clipView.bounds.width
+        let maxOffset = max(documentWidth - viewportWidth, 0)
+
+        // A non-zero target is not actionable until the document has a real width.
+        // Returning false keeps the delayed retry alive without publishing a bogus 0.
+        guard maxOffset > 0 || initialContentOffset <= 0.5 else { return false }
+
+        let targetOffset = min(max(initialContentOffset, 0), maxOffset)
+        var bounds = clipView.bounds
+        bounds.origin.x = targetOffset
+        clipView.setBoundsOrigin(bounds.origin)
+        scrollView.reflectScrolledClipView(clipView)
+        initialPositionApplied = true
+        return true
     }
 
     private func configureHorizontalScroller(
@@ -258,6 +300,7 @@ final class RecentChartScrollOffsetObserver: NSObject {
         }
         observation = nil
         scrollView = nil
+        initialPositionApplied = false
     }
 
     func reportCurrentOffset() {
@@ -268,17 +311,20 @@ final class RecentChartScrollOffsetObserver: NSObject {
 
 struct RecentChartScrollOffsetReader: NSViewRepresentable {
     let showsPersistentHorizontalScroller: Bool
+    let initialContentOffset: CGFloat
     let onOffsetChange: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> ObservationView {
         let view = ObservationView()
         view.showsPersistentHorizontalScroller = showsPersistentHorizontalScroller
+        view.initialContentOffset = initialContentOffset
         view.observer.onOffsetChange = onOffsetChange
         return view
     }
 
     func updateNSView(_ nsView: ObservationView, context: Context) {
         nsView.showsPersistentHorizontalScroller = showsPersistentHorizontalScroller
+        nsView.initialContentOffset = initialContentOffset
         nsView.observer.onOffsetChange = onOffsetChange
         nsView.attachToEnclosingScrollView()
     }
@@ -290,6 +336,7 @@ struct RecentChartScrollOffsetReader: NSViewRepresentable {
     final class ObservationView: NSView {
         let observer = RecentChartScrollOffsetObserver()
         var showsPersistentHorizontalScroller = false
+        var initialContentOffset: CGFloat = 0
 
         override func viewDidMoveToSuperview() {
             super.viewDidMoveToSuperview()
@@ -305,7 +352,8 @@ struct RecentChartScrollOffsetReader: NSViewRepresentable {
             guard let enclosingScrollView else { return }
             observer.attach(
                 to: enclosingScrollView,
-                showsPersistentHorizontalScroller: showsPersistentHorizontalScroller
+                showsPersistentHorizontalScroller: showsPersistentHorizontalScroller,
+                initialContentOffset: initialContentOffset
             )
         }
 
@@ -1333,7 +1381,8 @@ struct RecentUsageChart: View, Equatable {
                                         .frame(width: contentWidth, height: canvasHeight)
 
                                     RecentChartScrollOffsetReader(
-                                        showsPersistentHorizontalScroller: contentWidth > viewportWidth + 1
+                                        showsPersistentHorizontalScroller: contentWidth > viewportWidth + 1,
+                                        initialContentOffset: max(contentWidth - viewportWidth, 0)
                                     ) { contentOffset in
                                         updateScrollPresentation(
                                             contentOffset: contentOffset,
