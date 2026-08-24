@@ -790,6 +790,7 @@ test("hover detail keeps a clear gutter above the chart plot", async () => {
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
   const bubbleRule = css.match(/\.chart-hover-bubble\s*\{(?<body>[\s\S]*?)\n\}/);
   assert.ok(bubbleRule?.groups?.body);
+  assert.match(bubbleRule.groups.body, /z-index:\s*31;/);
   assert.match(bubbleRule.groups.body, /top:\s*-2px;/);
   assert.match(bubbleRule.groups.body, /transform:\s*translate\(-50%,\s*-100%\);/);
 });

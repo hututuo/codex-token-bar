@@ -1166,6 +1166,7 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.match(css, /\.recent-chart-persistent-scrollbar__thumb\s*{[^}]*position:\s*absolute/s);
   assert.match(css, /\.recent-chart-scroll--horizontal \.recent-chart-scroll-content\s*{[^}]*width:\s*var\(--recent-chart-content-width, 980px\)/s);
   assert.match(css, /\.recent-chart-overlay-layer\s*{[^}]*overflow:\s*visible/s);
+  assert.match(css, /\.recent-chart-overlay-layer\s*{[^}]*z-index:\s*30/s);
   assert.match(css, /\.usage-chart\s*{[^}]*aspect-ratio:\s*var\(--recent-chart-aspect-ratio,\s*980 \/ 278\)/s);
   assert.match(css, /\.chart-day-separator\s*{[^}]*stroke:/s);
   assert.match(css, /\.recent-chart-visible-window\s*{[^}]*position:\s*absolute/s);

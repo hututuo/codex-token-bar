@@ -7539,6 +7539,7 @@ input[type="range"]::-moz-range-thumb {
   position: absolute;
   inset: 0;
   overflow: visible;
+  z-index: 30;
   pointer-events: none;
 }
 
@@ -7731,7 +7732,7 @@ input[type="range"]::-moz-range-thumb {
 
 .chart-hover-bubble {
   position: absolute;
-  z-index: 4;
+  z-index: 31;
   top: -2px;
   display: flex;
   width: max-content;

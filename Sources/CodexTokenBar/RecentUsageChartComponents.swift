@@ -878,7 +878,10 @@ struct ChartBubblePlacementModifier: ViewModifier {
                     return -min(max(centered, lower), upper)
                 }
                 .alignmentGuide(.top) { dimensions in
-                    -(plot.minY - recentChartHoverBubbleVerticalOffset - dimensions.height / 2)
+                    // Anchor the card's bottom edge above the plot. Centering
+                    // the card here made taller detail cards drift down over
+                    // the guide line and the selected curve.
+                    -(plot.minY - recentChartHoverBubbleVerticalOffset - dimensions.height)
                 }
                 .allowsHitTesting(true)
         }
