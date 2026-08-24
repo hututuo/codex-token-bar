@@ -48,7 +48,7 @@ test("compactQuotaLabel shows today time for 7d reset later today", () => {
   assert.equal(label, "7d 42% 今天 20:15");
 });
 
-test("compactQuotaLabel keeps existing 7d date copy outside the 24 hour window", () => {
+test("compactQuotaLabel keeps date and minute precision outside the 24 hour window", () => {
   const now = new Date(2026, 6, 6, 10, 0, 0);
   const label = compactQuotaLabel(
     quotaLimit({
@@ -58,7 +58,7 @@ test("compactQuotaLabel keeps existing 7d date copy outside the 24 hour window",
     now,
   );
 
-  assert.equal(label, "7d 42% 07/08");
+  assert.equal(label, "7d 42% 07/08 10:01");
 });
 
 test("compactQuotaLabel leaves 5h reset labels unchanged", () => {

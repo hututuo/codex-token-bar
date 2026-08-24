@@ -59,7 +59,13 @@ struct AccountQuotaWindow: Equatable, Sendable {
         if calendar.isDateInTomorrow(resetsAt) {
             return "明 \(resetsAt.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))"
         }
-        return resetsAt.formatted(.dateTime.month(.twoDigits).day(.twoDigits))
+        return resetsAt.formatted(
+            .dateTime
+                .month()
+                .day()
+                .hour(.twoDigits(amPM: .omitted))
+                .minute(.twoDigits)
+        )
     }
 
     var detailedResetText: String {

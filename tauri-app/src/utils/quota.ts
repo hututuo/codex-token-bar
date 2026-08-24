@@ -1,6 +1,5 @@
 import type { AccountQuotaBundle } from "../types/dashboard";
 
-const NEAR_RESET_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const FIVE_HOUR_DURATION_SECONDS = 5 * 60 * 60;
 const SEVEN_DAY_DURATION_SECONDS = 7 * 24 * 60 * 60;
 
@@ -52,13 +51,13 @@ export function compactQuotaResetText(
 
   const reset = new Date(limit.resetsAtUnix * 1_000);
   const remainingMs = reset.getTime() - now.getTime();
-  if (remainingMs < 0 || remainingMs > NEAR_RESET_WINDOW_MS) {
+  if (remainingMs < 0) {
     return limit.resetsAt;
   }
 
   const dayLabel = relativeLocalDayLabel(reset, now);
   if (!dayLabel) {
-    return limit.resetsAt;
+    return `${formatLocalDate(reset)} ${formatLocalTime(reset)}`;
   }
 
   return `${dayLabel} ${formatLocalTime(reset)}`;
@@ -84,6 +83,10 @@ function localDayStart(date: Date): Date {
 
 function formatLocalTime(date: Date): string {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function formatLocalDate(date: Date): string {
+  return `${pad2(date.getMonth() + 1)}/${pad2(date.getDate())}`;
 }
 
 function pad2(value: number): string {

@@ -226,6 +226,14 @@ final class AccountQuotaSegmentTests: XCTestCase {
         XCTAssertLessThanOrEqual(ceil(progressWidth), AccountQuotaSegmentLayout.progressBarWidth)
     }
 
+    func testFloatingFutureSevenDayResetKeepsMinutePrecision() {
+        let resetAt = Date().addingTimeInterval(10 * 24 * 60 * 60 + 13 * 60)
+        let window = AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: resetAt)
+
+        XCTAssertTrue(window.compactResetText.hasSuffix(DateFormatter.hourMinute.string(from: resetAt)))
+        XCTAssertTrue(window.compactResetText.contains("月") || window.compactResetText.contains("/"))
+    }
+
     @MainActor
     func testHostedProductionSegmentKeepsFullWidthProgressBudget() {
         let window = AccountQuotaWindow(
