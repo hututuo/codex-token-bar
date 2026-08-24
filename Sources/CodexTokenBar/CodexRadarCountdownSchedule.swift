@@ -7,6 +7,12 @@ import SwiftUI
 /// second-level entries, so a many-hour announcement does not keep waking the
 /// view every second.
 struct CodexRadarCountdownTimelineSchedule: TimelineSchedule {
+    /// Leave one final local-only wakeup after the announced deadline. SwiftUI
+    /// may coalesce the entry scheduled exactly at the deadline slightly early;
+    /// the post-deadline entry guarantees that the view can settle back to the
+    /// static “速登窗口” label without waiting for a Radar refresh.
+    private static let postDeadlineSettleDelay: TimeInterval = 0.25
+
     let deadline: Date?
 
     func entries(from startDate: Date, mode: TimelineScheduleMode) -> Entries {
@@ -47,7 +53,10 @@ struct CodexRadarCountdownTimelineSchedule: TimelineSchedule {
             let interval: TimeInterval = lowFrequency || remaining > 60
                 ? 60
                 : 1
-            nextDate = Swift.min(current.addingTimeInterval(interval), deadline)
+            let candidate = Swift.min(current.addingTimeInterval(interval), deadline)
+            nextDate = candidate == deadline
+                ? deadline.addingTimeInterval(CodexRadarCountdownTimelineSchedule.postDeadlineSettleDelay)
+                : candidate
             return current
         }
     }

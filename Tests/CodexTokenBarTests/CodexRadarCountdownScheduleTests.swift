@@ -10,7 +10,11 @@ final class CodexRadarCountdownScheduleTests: XCTestCase {
 
         let entries = Array(schedule.entries(from: start, mode: .normal))
 
-        XCTAssertEqual(entries.map(\.timeIntervalSince1970), [0, 60, 120, 121, 122, 123, 124, 125])
+        XCTAssertEqual(
+            entries.dropLast().map(\.timeIntervalSince1970),
+            [0, 60, 120, 121, 122, 123, 124]
+        )
+        XCTAssertEqual(entries.last?.timeIntervalSince1970 ?? 0, 125.25, accuracy: 0.000_001)
     }
 
     func testExpiredOrMissingDeadlineEmitsOnlyInitialEntry() {
