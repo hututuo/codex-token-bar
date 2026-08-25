@@ -857,10 +857,18 @@ extension View {
 struct ChartBubblePlacementModifier: ViewModifier {
     let tokenX: CGFloat
     let plot: CGRect
+    @State private var bubbleSize: CGSize = .zero
 
     func body(content: Content) -> some View {
         let plot = self.plot
         let tokenX = self.tokenX
+        // The zero-data card is about 173pt tall after the fixed rows are
+        // applied. Use a close first-pass estimate so the first frame cannot
+        // fall back into the candidate line while the preference settles.
+        let measuredHeight = bubbleSize.height > 0
+            ? bubbleSize.height
+            : min(max(plot.height * 0.8, 120), plot.height)
+        let cardY = plot.minY - recentChartHoverBubblePlotClearance - measuredHeight
 
         ZStack(alignment: .topLeading) {
             // Keep the overlay's layout the size of the plot without making
@@ -880,18 +888,38 @@ struct ChartBubblePlacementModifier: ViewModifier {
                     let centered = tokenX - dimensions.width / 2
                     return -min(max(centered, lower), upper)
                 }
-                // Resolve the vertical position from this render pass's real
-                // content height. This keeps every row above the plot even
-                // when a detail row makes the bubble taller.
-                .alignmentGuide(.top) { dimensions in
-                    let bottomGap = recentChartHoverBubblePlotClearance
-                    let cardY = plot.minY - bottomGap - dimensions.height
-                    return -cardY
-                }
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .preference(
+                                key: ChartBubbleSizePreferenceKey.self,
+                                value: proxy.size
+                            )
+                    }
+                )
                 .contentShape(Rectangle())
+                // The candidate line begins at plot.minY. Position the card
+                // with an explicit offset so its bottom is exactly the
+                // configured gap above that line; alignment guides alone do
+                // not reliably move this overlay's rendered content.
+                .offset(y: cardY)
                 .allowsHitTesting(true)
         }
         .frame(width: plot.width, height: plot.height, alignment: .topLeading)
+        .onPreferenceChange(ChartBubbleSizePreferenceKey.self) { size in
+            guard size.width > 0, size.height > 0 else { return }
+            guard abs(size.width - bubbleSize.width) > 0.5
+                    || abs(size.height - bubbleSize.height) > 0.5 else { return }
+            bubbleSize = size
+        }
+    }
+}
+
+private struct ChartBubbleSizePreferenceKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
 
