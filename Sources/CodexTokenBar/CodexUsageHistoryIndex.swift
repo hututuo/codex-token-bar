@@ -374,10 +374,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ]
     private static let eventEnrichmentRevisionKey = "event_enrichment_revision"
     private static let eventEnrichmentRevision = "model-v1"
-    // Turn candidates are grouped by the originating user message. Bump the
-    // disposable aggregate version whenever that grouping contract changes so
-    // older event-level rows cannot remain in the ranking projection.
-    private static let dashboardAggregateSchemaVersion = "4"
+    // Turn candidates are grouped by the originating user message, and their
+    // cache denominator uses the latest current-context snapshot. Bump the
+    // disposable aggregate version whenever that ranking contract changes so
+    // older event-level rows cannot remain in the projection.
+    private static let dashboardAggregateSchemaVersion = "5"
     private static let dashboardAggregatePricingRevision = "raw-token-v1"
     private static let knownDashboardAggregatePricingRevisions: Set<String> = [
         "raw-token-v0",
@@ -1859,18 +1860,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 WITH grouped AS (
                     SELECT
                         session_id,
-                        SUM(input_tokens) AS input_tokens,
-                        SUM(cached_input_tokens) AS cached_input_tokens,
                         SUM(output_tokens) AS output_tokens,
                         SUM(reasoning_output_tokens) AS reasoning_output_tokens,
                         SUM(total_tokens) AS total_tokens,
-                        SUM(calls) AS calls,
                         MAX(last_timestamp) AS last_timestamp
                     FROM dashboard_source_totals
                     GROUP BY session_id
                 ), logical_turns AS (
                     SELECT
                         session_id,
+                        SUM(input_tokens) AS input_tokens,
+                        SUM(cached_input_tokens) AS cached_input_tokens,
                         COUNT(*) AS calls
                     FROM dashboard_turn_candidates
                     GROUP BY session_id
@@ -1878,8 +1878,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     SELECT * FROM (
                         SELECT
                             grouped.session_id,
-                            grouped.input_tokens,
-                            grouped.cached_input_tokens,
+                            COALESCE(logical_turns.input_tokens, 0) AS input_tokens,
+                            COALESCE(logical_turns.cached_input_tokens, 0) AS cached_input_tokens,
                             grouped.output_tokens,
                             grouped.reasoning_output_tokens,
                             grouped.total_tokens,
@@ -1895,8 +1895,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     SELECT * FROM (
                         SELECT
                             grouped.session_id,
-                            grouped.input_tokens,
-                            grouped.cached_input_tokens,
+                            COALESCE(logical_turns.input_tokens, 0) AS input_tokens,
+                            COALESCE(logical_turns.cached_input_tokens, 0) AS cached_input_tokens,
                             grouped.output_tokens,
                             grouped.reasoning_output_tokens,
                             grouped.total_tokens,
@@ -2991,26 +2991,37 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             FROM dashboard_source_5m
             GROUP BY bucket_start, model;
 
-            WITH grouped AS (
+            WITH snapshots AS (
                 SELECT
-                    e.source_id,
-                    s.session_id,
-                    e.user_prompt_offset,
-                    COALESCE(
-                        MIN(CASE WHEN e.assistant_start_offset IS NOT NULL
-                            THEN e.source_offset END),
-                        MIN(e.source_offset)
-                    ) AS source_offset,
-                    MAX(e.timestamp) AS timestamp,
-                    SUM(e.tokens) AS total_tokens,
-                    SUM(e.input_tokens) AS input_tokens,
-                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
-                    SUM(e.output_tokens) AS output_tokens,
-                    SUM(e.reasoning_output_tokens) AS reasoning_output_tokens
+                    e.*,
+                    s.session_id AS session_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.source_id, s.session_id, e.user_prompt_offset
+                        ORDER BY e.timestamp DESC, e.source_offset DESC
+                    ) AS snapshot_rank
                 FROM events e
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE e.user_prompt_offset IS NOT NULL
-                GROUP BY e.source_id, s.session_id, e.user_prompt_offset
+            ), grouped AS (
+                SELECT
+                    source_id,
+                    session_id,
+                    user_prompt_offset,
+                    COALESCE(
+                        MIN(CASE WHEN assistant_start_offset IS NOT NULL
+                            THEN source_offset END),
+                        MIN(source_offset)
+                    ) AS source_offset,
+                    MAX(timestamp) AS timestamp,
+                    SUM(tokens) AS total_tokens,
+                    MAX(CASE WHEN snapshot_rank = 1 THEN input_tokens ELSE 0 END) AS input_tokens,
+                    MAX(CASE WHEN snapshot_rank = 1
+                        THEN MIN(cached_input_tokens, input_tokens)
+                        ELSE 0 END) AS cached_input_tokens,
+                    SUM(output_tokens) AS output_tokens,
+                    SUM(reasoning_output_tokens) AS reasoning_output_tokens
+                FROM snapshots
+                GROUP BY source_id, session_id, user_prompt_offset
             ),
             ranked AS (
                 SELECT
@@ -3075,29 +3086,40 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             DELETE FROM dashboard_turn_candidates
             WHERE session_id IN (SELECT session_id FROM dashboard_dirty_sessions);
 
-            WITH grouped AS (
+            WITH snapshots AS (
                 SELECT
-                    e.source_id,
-                    s.session_id,
-                    e.user_prompt_offset,
-                    COALESCE(
-                        MIN(CASE WHEN e.assistant_start_offset IS NOT NULL
-                            THEN e.source_offset END),
-                        MIN(e.source_offset)
-                    ) AS source_offset,
-                    MAX(e.timestamp) AS timestamp,
-                    SUM(e.tokens) AS total_tokens,
-                    SUM(e.input_tokens) AS input_tokens,
-                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
-                    SUM(e.output_tokens) AS output_tokens,
-                    SUM(e.reasoning_output_tokens) AS reasoning_output_tokens
+                    e.*,
+                    s.session_id AS session_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.source_id, s.session_id, e.user_prompt_offset
+                        ORDER BY e.timestamp DESC, e.source_offset DESC
+                    ) AS snapshot_rank
                 FROM events e
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE e.user_prompt_offset IS NOT NULL
                   AND s.session_id IN (
                     SELECT session_id FROM dashboard_dirty_sessions
                 )
-                GROUP BY e.source_id, s.session_id, e.user_prompt_offset
+            ), grouped AS (
+                SELECT
+                    source_id,
+                    session_id,
+                    user_prompt_offset,
+                    COALESCE(
+                        MIN(CASE WHEN assistant_start_offset IS NOT NULL
+                            THEN source_offset END),
+                        MIN(source_offset)
+                    ) AS source_offset,
+                    MAX(timestamp) AS timestamp,
+                    SUM(tokens) AS total_tokens,
+                    MAX(CASE WHEN snapshot_rank = 1 THEN input_tokens ELSE 0 END) AS input_tokens,
+                    MAX(CASE WHEN snapshot_rank = 1
+                        THEN MIN(cached_input_tokens, input_tokens)
+                        ELSE 0 END) AS cached_input_tokens,
+                    SUM(output_tokens) AS output_tokens,
+                    SUM(reasoning_output_tokens) AS reasoning_output_tokens
+                FROM snapshots
+                GROUP BY source_id, session_id, user_prompt_offset
             ),
             ranked AS (
                 SELECT

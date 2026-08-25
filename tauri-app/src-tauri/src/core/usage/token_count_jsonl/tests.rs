@@ -6758,6 +6758,8 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.cache_usage.sessions.len(), 1);
     assert_eq!(snapshot.cache_usage.sessions[0].breakdown.calls, 2);
+    assert_eq!(snapshot.cache_usage.sessions[0].breakdown.input_tokens, 1_600);
+    assert_eq!(snapshot.cache_usage.sessions[0].breakdown.cached_input_tokens, 650);
     assert_eq!(snapshot.cache_usage.turns.len(), 2);
     let second_turn = snapshot
         .cache_usage
@@ -6768,6 +6770,7 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
     assert_eq!(second_turn.user_prompt, "第二轮 问题");
     assert_eq!(second_turn.assistant_response, "第二轮回答 补充");
     assert_eq!(second_turn.breakdown.input_tokens, 1300);
+    assert_eq!(second_turn.breakdown.cached_input_tokens, 600);
     let first_turn = snapshot
         .cache_usage
         .turns
@@ -6776,7 +6779,8 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
         .unwrap();
     assert_eq!(first_turn.user_prompt, "第一轮问题");
     assert_eq!(first_turn.assistant_response, "第一轮回答");
-    assert_eq!(first_turn.breakdown.input_tokens, 1500);
+    assert_eq!(first_turn.breakdown.input_tokens, 300);
+    assert_eq!(first_turn.breakdown.cached_input_tokens, 50);
     assert_eq!(first_turn.breakdown.calls, 1);
 
     fs::remove_dir_all(root).unwrap();
@@ -6947,7 +6951,7 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
         .unwrap();
     connection
         .execute(
-            "UPDATE metadata SET value = '4' WHERE key = 'dashboard_aggregate_schema_version'",
+            "UPDATE metadata SET value = '5' WHERE key = 'dashboard_aggregate_schema_version'",
             [],
         )
         .unwrap();
@@ -6999,7 +7003,7 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "5"
+        "6"
     );
 
     drop(connection);

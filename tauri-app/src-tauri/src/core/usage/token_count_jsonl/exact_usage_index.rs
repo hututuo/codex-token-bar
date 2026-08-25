@@ -99,10 +99,11 @@ const DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY: &str =
     "dashboard_aggregate_published_generation";
 const DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY: &str = "dashboard_aggregate_settled_through";
 const DASHBOARD_AGGREGATE_PRICING_REVISION_KEY: &str = "dashboard_aggregate_pricing_revision";
-// Turn candidates are grouped by the originating user message. Bump this
-// disposable projection version whenever that grouping contract changes so an
+// Turn candidates are grouped by the originating user message, and their
+// cache denominator uses the latest current-context snapshot. Bump this
+// disposable projection version whenever that ranking contract changes so an
 // older event-level ranking cannot survive an upgrade.
-const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 5;
+const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 6;
 const DASHBOARD_AGGREGATE_PRICING_REVISION: &str = "raw-token-v1";
 
 fn is_known_dashboard_pricing_revision(value: &str) -> bool {
@@ -3797,10 +3798,7 @@ impl ExactUsageIndex {
                 WITH session_totals AS (
                     SELECT
                         f.session_id,
-                        SUM(t.calls) AS calls,
                         SUM(t.total_tokens) AS total_tokens,
-                        SUM(t.input_tokens) AS input_tokens,
-                        SUM(t.cached_input_tokens) AS cached_tokens,
                         SUM(t.output_tokens) AS output_tokens,
                         MAX(t.last_timestamp) AS updated_at
                     FROM published_dashboard_file_totals t
@@ -3811,7 +3809,9 @@ impl ExactUsageIndex {
                 ), logical_turns AS (
                     SELECT
                         session_id,
-                        COUNT(*) AS calls
+                        COUNT(*) AS calls,
+                        SUM(input_tokens) AS input_tokens,
+                        SUM(cached_input_tokens) AS cached_tokens
                     FROM dashboard_turn_candidates
                     WHERE aggregate_generation = COALESCE(
                         (
@@ -3827,8 +3827,8 @@ impl ExactUsageIndex {
                     s.session_id,
                     COALESCE(t.calls, 0) AS calls,
                     s.total_tokens,
-                    s.input_tokens,
-                    s.cached_tokens,
+                    COALESCE(t.input_tokens, 0) AS input_tokens,
+                    COALESCE(t.cached_tokens, 0) AS cached_tokens,
                     s.output_tokens,
                     COALESCE(m.updated_at, s.updated_at) AS updated_at,
                     COALESCE(
@@ -7192,7 +7192,20 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
     transaction
         .execute(
             r#"
-            WITH grouped AS (
+            WITH snapshots AS (
+                SELECT
+                    e.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.file_generation, e.file_path, e.session_id,
+                            e.user_prompt_start, e.user_prompt_end
+                        ORDER BY e.timestamp DESC, e.ordinal DESC
+                    ) AS snapshot_rank
+                FROM events e
+                JOIN published_files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+                WHERE e.user_prompt_start IS NOT NULL
+            ), grouped AS (
                 SELECT
                     MIN(e.id) AS event_id,
                     e.file_generation AS source_file_generation,
@@ -7205,18 +7218,16 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                     MAX(e.timestamp) AS timestamp,
                     e.session_id,
                     SUM(e.tokens) AS total_tokens,
-                    SUM(e.input_tokens) AS input_tokens,
-                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
+                    MAX(CASE WHEN e.snapshot_rank = 1 THEN e.input_tokens ELSE 0 END) AS input_tokens,
+                    MAX(CASE WHEN e.snapshot_rank = 1
+                        THEN MIN(e.cached_input_tokens, e.input_tokens)
+                        ELSE 0 END) AS cached_input_tokens,
                     SUM(e.output_tokens) AS output_tokens,
                     MIN(e.user_prompt_start) AS user_prompt_start,
                     MAX(e.user_prompt_end) AS user_prompt_end,
                     MIN(e.assistant_response_start) AS assistant_response_start,
                     MAX(e.assistant_response_end) AS assistant_response_end
-                FROM events e
-                JOIN published_files f
-                  ON f.generation = e.file_generation
-                 AND f.path = e.file_path
-                WHERE e.user_prompt_start IS NOT NULL
+                FROM snapshots e
                 GROUP BY e.file_generation, e.file_path, e.session_id,
                     e.user_prompt_start, e.user_prompt_end
             ),
@@ -7432,7 +7443,21 @@ fn refresh_dashboard_turn_candidates_for_changed_generations(
                  AND f.generation = latest_files.generation
                 WHERE f.deleted = 0
             ),
-            grouped AS (
+            snapshots AS (
+                SELECT
+                    e.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.file_generation, e.file_path, e.session_id,
+                            e.user_prompt_start, e.user_prompt_end
+                        ORDER BY e.timestamp DESC, e.ordinal DESC
+                    ) AS snapshot_rank
+                FROM events e
+                JOIN visible_files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+                WHERE e.user_prompt_start IS NOT NULL
+                  AND e.session_id IN (SELECT session_id FROM dirty_sessions)
+            ), grouped AS (
                 SELECT
                     MIN(e.id) AS event_id,
                     e.file_generation AS source_file_generation,
@@ -7445,19 +7470,16 @@ fn refresh_dashboard_turn_candidates_for_changed_generations(
                     MAX(e.timestamp) AS timestamp,
                     e.session_id,
                     SUM(e.tokens) AS total_tokens,
-                    SUM(e.input_tokens) AS input_tokens,
-                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
+                    MAX(CASE WHEN e.snapshot_rank = 1 THEN e.input_tokens ELSE 0 END) AS input_tokens,
+                    MAX(CASE WHEN e.snapshot_rank = 1
+                        THEN MIN(e.cached_input_tokens, e.input_tokens)
+                        ELSE 0 END) AS cached_input_tokens,
                     SUM(e.output_tokens) AS output_tokens,
                     MIN(e.user_prompt_start) AS user_prompt_start,
                     MAX(e.user_prompt_end) AS user_prompt_end,
                     MIN(e.assistant_response_start) AS assistant_response_start,
                     MAX(e.assistant_response_end) AS assistant_response_end
-                FROM events e
-                JOIN visible_files f
-                  ON f.generation = e.file_generation
-                 AND f.path = e.file_path
-                WHERE e.user_prompt_start IS NOT NULL
-                  AND e.session_id IN (SELECT session_id FROM dirty_sessions)
+                FROM snapshots e
                 GROUP BY e.file_generation, e.file_path, e.session_id,
                     e.user_prompt_start, e.user_prompt_end
             ),

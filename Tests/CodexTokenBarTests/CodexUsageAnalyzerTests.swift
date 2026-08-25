@@ -4777,7 +4777,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'dashboard_aggregate_schema_version';"
             ) { $0.text(0) }.first,
-            "4"
+            "5"
         )
         XCTAssertEqual(try scalarInt("SELECT SUM(total_tokens) FROM dashboard_5m;", in: database), 120)
     }
@@ -6151,19 +6151,24 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(snapshot.cacheUsage.sessions.count, 1)
         XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.calls, 2)
+        XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.inputTokens, 1_800)
+        XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.cachedInputTokens, 300)
         XCTAssertEqual(snapshot.cacheUsage.turns.count, 2)
         let latest = try XCTUnwrap(snapshot.cacheUsage.turns.first)
         XCTAssertEqual(latest.turnIndexInSession, 2)
         XCTAssertEqual(latest.userPrompt, "第二条用户问题")
         XCTAssertEqual(latest.assistantResponse, "第二条回答")
         XCTAssertEqual(latest.breakdown.calls, 1)
+        XCTAssertEqual(latest.breakdown.inputTokens, 1_200)
+        XCTAssertEqual(latest.breakdown.cachedInputTokens, 200)
         XCTAssertEqual(latest.breakdown.totalTokens, 1_300)
 
         let first = try XCTUnwrap(snapshot.cacheUsage.turns.first { $0.turnIndexInSession == 1 })
         XCTAssertEqual(first.userPrompt, "第一条用户问题")
         XCTAssertEqual(first.assistantResponse, "第一条回答")
+        XCTAssertEqual(first.breakdown.inputTokens, 600)
+        XCTAssertEqual(first.breakdown.cachedInputTokens, 100)
         XCTAssertEqual(first.breakdown.totalTokens, 1_960)
-        XCTAssertEqual(first.breakdown.inputTokens, 1_800)
         XCTAssertEqual(first.breakdown.calls, 1)
     }
 
