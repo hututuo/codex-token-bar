@@ -312,7 +312,8 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
             2,
             "selection should appear only at its declaration and the single body-level evaluation"
         )
-        XCTAssertTrue(source.contains("chartPlot(consumptionSelection: consumptionSelection)"))
+        XCTAssertTrue(source.contains("let liveHoverIndex = hoveredIndex"))
+        XCTAssertTrue(source.contains("hoveredIndexSnapshot: liveHoverIndex"))
         XCTAssertTrue(source.contains("activeSelectionAttribution(\n            for: consumptionSelection"))
         XCTAssertFalse(
             source.contains("guard selectedRange == .twentyFourHours"),

@@ -1342,7 +1342,8 @@ struct RecentUsageChart: View, Equatable {
     }
 
     private func chartPlot(
-        consumptionSelection: QuotaConsumptionSelection?
+        consumptionSelection: QuotaConsumptionSelection?,
+        hoveredIndexSnapshot: Int?
     ) -> some View {
         GeometryReader { proxy in
             let buttonWidth: CGFloat = 28
@@ -1376,7 +1377,8 @@ struct RecentUsageChart: View, Equatable {
                                     chartPlotCanvas(
                                         width: contentWidth,
                                         height: canvasHeight,
-                                        consumptionSelection: consumptionSelection
+                                        consumptionSelection: consumptionSelection,
+                                        hoveredIndexSnapshot: hoveredIndexSnapshot
                                     )
                                         .frame(width: contentWidth, height: canvasHeight)
 
@@ -1414,7 +1416,8 @@ struct RecentUsageChart: View, Equatable {
                                 height: canvasHeight,
                                 contentWidth: contentWidth,
                                 contentOffset: presentation.contentOffset,
-                                consumptionSelection: consumptionSelection
+                                consumptionSelection: consumptionSelection,
+                                hoveredIndexSnapshot: hoveredIndexSnapshot
                             )
                         }
                         .accessibilityElement(children: .ignore)
@@ -1453,7 +1456,7 @@ struct RecentUsageChart: View, Equatable {
                             return .handled
                         }
                         .onKeyPress(.escape) {
-                            guard consumptionSelectionState.startIndex != nil || hoveredIndex != nil else {
+                            guard consumptionSelectionState.startIndex != nil || hoveredIndexSnapshot != nil else {
                                 return .ignored
                             }
                             dismissTopPreview()
@@ -1565,7 +1568,8 @@ struct RecentUsageChart: View, Equatable {
     private func chartPlotCanvas(
         width: CGFloat,
         height: CGFloat,
-        consumptionSelection: QuotaConsumptionSelection?
+        consumptionSelection: QuotaConsumptionSelection?,
+        hoveredIndexSnapshot: Int?
     ) -> some View {
         let geometry = selectedRange.chartGeometry
         let plot = CGRect(
@@ -1582,7 +1586,7 @@ struct RecentUsageChart: View, Equatable {
             : nil
         let activeIndex = consumptionSelectionState.fixedEndIndex.flatMap {
             chartBins.indices.contains($0) ? $0 : nil
-        } ?? hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
+        } ?? hoveredIndexSnapshot.flatMap { chartBins.indices.contains($0) ? $0 : nil }
         let renderKey = RecentChartRenderCacheKey(
             generation: renderGeneration,
             width: width,
@@ -1827,15 +1831,18 @@ struct RecentUsageChart: View, Equatable {
         height: CGFloat,
         contentWidth: CGFloat,
         contentOffset: CGFloat,
-        consumptionSelection: QuotaConsumptionSelection?
+        consumptionSelection: QuotaConsumptionSelection?,
+        hoveredIndexSnapshot: Int?
     ) -> some View {
         let chartBins = preparedData.bins
         let geometry = selectedRange.chartGeometry
-        let liveHoverIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
+        let resolvedHoverIndex = hoveredIndexSnapshot.flatMap {
+            chartBins.indices.contains($0) ? $0 : nil
+        }
         let fixedEndIndex = consumptionSelectionState.fixedEndIndex.flatMap {
             chartBins.indices.contains($0) ? $0 : nil
         }
-        let activeIndex = fixedEndIndex ?? liveHoverIndex
+        let activeIndex = fixedEndIndex ?? resolvedHoverIndex
 
         if previewVisibility.showsTopPreview, let activeIndex {
             let contentPlot = CGRect(
@@ -1968,13 +1975,17 @@ struct RecentUsageChart: View, Equatable {
     }
 
     var body: some View {
+        let liveHoverIndex = hoveredIndex
         let consumptionSelection = activeConsumptionSelection
         let selectionAttribution = activeSelectionAttribution(
             for: consumptionSelection
         )
         VStack(alignment: .leading, spacing: 18) {
             chartHeader
-            chartPlot(consumptionSelection: consumptionSelection)
+            chartPlot(
+                consumptionSelection: consumptionSelection,
+                hoveredIndexSnapshot: liveHoverIndex
+            )
             consumptionSelectionSummary(
                 selection: consumptionSelection,
                 attribution: selectionAttribution
