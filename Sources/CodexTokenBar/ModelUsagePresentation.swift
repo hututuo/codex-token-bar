@@ -265,6 +265,7 @@ private extension String {
 struct ModelUsageInlineSummary: View {
     let rows: [ModelTokenBreakdown]
     var limit = 3
+    var emptyPlaceholder: String? = nil
 
     var body: some View {
         let slices = ModelUsagePresentation.slices(from: rows)
@@ -283,6 +284,11 @@ struct ModelUsageInlineSummary: View {
             .font(.system(size: 10, weight: .medium))
             .foregroundStyle(.secondary)
             .lineLimit(1)
+        } else if let emptyPlaceholder {
+            Text(emptyPlaceholder)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 }

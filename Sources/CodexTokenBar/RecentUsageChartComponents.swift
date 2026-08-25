@@ -857,17 +857,10 @@ extension View {
 struct ChartBubblePlacementModifier: ViewModifier {
     let tokenX: CGFloat
     let plot: CGRect
-    @State private var bubbleSize: CGSize = .zero
 
     func body(content: Content) -> some View {
         let plot = self.plot
         let tokenX = self.tokenX
-        let measuredHeight = bubbleSize.height > 0 ? bubbleSize.height : min(max(plot.height * 0.55, 80), plot.height)
-        // Keep the card's bottom above the plot. For a short card, preserve
-        // the historical 74pt visual gutter; for a tall detail card, tighten
-        // that gutter to a small fixed gap rather than covering the curve.
-        let bottomGap = max(8, recentChartHoverBubbleVerticalOffset - measuredHeight / 2)
-        let cardY = plot.minY - bottomGap - measuredHeight
 
         ZStack(alignment: .topLeading) {
             // Keep the overlay's layout the size of the plot without making
@@ -887,34 +880,18 @@ struct ChartBubblePlacementModifier: ViewModifier {
                     let centered = tokenX - dimensions.width / 2
                     return -min(max(centered, lower), upper)
                 }
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .preference(
-                                key: ChartBubbleSizePreferenceKey.self,
-                                value: proxy.size
-                            )
-                    }
-                )
+                // Resolve the vertical position from this render pass's real
+                // content height. This keeps every row above the plot even
+                // when a detail row makes the bubble taller.
+                .alignmentGuide(.top) { dimensions in
+                    let bottomGap = max(8, recentChartHoverBubbleVerticalOffset - dimensions.height / 2)
+                    let cardY = plot.minY - bottomGap - dimensions.height
+                    return -cardY
+                }
                 .contentShape(Rectangle())
-                .offset(y: cardY)
                 .allowsHitTesting(true)
         }
         .frame(width: plot.width, height: plot.height, alignment: .topLeading)
-        .onPreferenceChange(ChartBubbleSizePreferenceKey.self) { size in
-            guard size.width > 0, size.height > 0 else { return }
-            guard abs(size.width - bubbleSize.width) > 0.5
-                    || abs(size.height - bubbleSize.height) > 0.5 else { return }
-            bubbleSize = size
-        }
-    }
-}
-
-private struct ChartBubbleSizePreferenceKey: PreferenceKey {
-    static let defaultValue = CGSize.zero
-
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
     }
 }
 
@@ -952,6 +929,7 @@ struct ChartHoverBubble: View {
     }
 
     var body: some View {
+        let displayCacheBreakdown = cacheBreakdown ?? .empty
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 HStack(spacing: 6) {
@@ -983,17 +961,13 @@ struct ChartHoverBubble: View {
             Text("金额 \(costUSD.quotaEstimatorMoneyText)")
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
-            if let cacheBreakdown, cacheBreakdown.calls > 0 {
-                Text("缓存命中 \(cacheBreakdown.cacheHitRate.percentString) · 命中 \(cacheBreakdown.cachedInputTokens.abbreviatedTokens)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(AppTheme.accentCyan)
-            }
-            ModelUsageInlineSummary(rows: modelBreakdowns)
-            if let quotaSummary {
-                Text("额度 \(quotaSummary)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
+            Text("缓存命中 \(displayCacheBreakdown.cacheHitRate.percentString) · 命中 \(displayCacheBreakdown.cachedInputTokens.abbreviatedTokens)")
+                .font(.system(size: 10))
+                .foregroundStyle(AppTheme.accentCyan)
+            ModelUsageInlineSummary(rows: modelBreakdowns, emptyPlaceholder: "模型 0%")
+            Text("额度 5h \(percentText(fiveHourRemaining)) · 7d \(percentText(sevenDayRemaining))")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
             if isHovering {
                 Text(RecentChartQuotaEstimateAffordancePresentation.hoverInstruction)
                     .font(.system(size: 10, weight: .semibold))
@@ -1017,14 +991,6 @@ struct ChartHoverBubble: View {
         bin.calls > 0 ? bin.tokens / bin.calls : 0
     }
 
-    private var quotaSummary: String? {
-        let parts = [
-            fiveHourRemaining.map { "5h \(percentText($0))" },
-            sevenDayRemaining.map { "7d \(percentText($0))" },
-        ].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
     private var accessibilitySummary: String {
         var parts = [
             timeRange,
@@ -1033,15 +999,12 @@ struct ChartHoverBubble: View {
             "平均 \(average.abbreviatedTokens)",
             "金额 \(costUSD.quotaEstimatorMoneyText)"
         ]
-        if let cacheBreakdown, cacheBreakdown.calls > 0 {
-            parts.append("缓存命中率 \(cacheBreakdown.cacheHitRate.percentString)")
-            parts.append("命中 \(cacheBreakdown.cachedInputTokens.abbreviatedTokens)")
-        }
-        if let models = ModelUsagePresentation.compactText(from: modelBreakdowns) {
-            parts.append("模型占比 \(models)")
-        }
-        if let fiveHourRemaining { parts.append("5 小时额度 \(percentText(fiveHourRemaining))") }
-        if let sevenDayRemaining { parts.append("7 天额度 \(percentText(sevenDayRemaining))") }
+        let displayCacheBreakdown = cacheBreakdown ?? .empty
+        parts.append("缓存命中率 \(displayCacheBreakdown.cacheHitRate.percentString)")
+        parts.append("命中 \(displayCacheBreakdown.cachedInputTokens.abbreviatedTokens)")
+        parts.append("模型占比 \(ModelUsagePresentation.compactText(from: modelBreakdowns) ?? "0%")")
+        parts.append("5 小时额度 \(percentText(fiveHourRemaining))")
+        parts.append("7 天额度 \(percentText(sevenDayRemaining))")
         if isHovering {
             parts.append(RecentChartQuotaEstimateAffordancePresentation.hoverAccessibilityPrompt)
         }
@@ -1058,7 +1021,7 @@ struct ChartHoverBubble: View {
     }
 
     private func percentText(_ value: Double?) -> String {
-        guard let value else { return "--" }
+        guard let value else { return "0%" }
         return "\(Int(value.rounded()))%"
     }
 }
@@ -1107,13 +1070,12 @@ struct ChartSelectionSummaryBubble: View {
             Text("金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)")
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
-            if selection.breakdown.calls > 0 {
-                Text("缓存命中 \(selection.breakdown.cacheHitRate.percentString) · 命中 \(selection.breakdown.cachedInputTokens.abbreviatedTokens)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(AppTheme.accentCyan)
-            }
+            Text("缓存命中 \(selection.breakdown.cacheHitRate.percentString) · 命中 \(selection.breakdown.cachedInputTokens.abbreviatedTokens)")
+                .font(.system(size: 10))
+                .foregroundStyle(AppTheme.accentCyan)
             ModelUsageInlineSummary(
-                rows: ModelUsagePresentation.rows(from: selection.fullAttributionEvents)
+                rows: ModelUsagePresentation.rows(from: selection.fullAttributionEvents),
+                emptyPlaceholder: "模型 0%"
             )
             Text("持续 \(durationText)")
                 .font(.system(size: 10))
