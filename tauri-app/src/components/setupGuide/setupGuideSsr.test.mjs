@@ -59,7 +59,7 @@ test("SetupGuide renders status tray live-text toggle when live text is availabl
       displaySurfaces: displaySurfacesFixture({ statusTrayLiveTextEnabled: false }),
       statusTrayLiveTextEnabled: false,
     }));
-    const toggle = findToggle(html, "状态栏数字");
+    const toggle = findToggle(html, "状态栏（实验）");
 
     assert.match(toggle.attrs, /class="setup-toggle"/);
     assert.doesNotMatch(toggle.attrs, /is-active/);

@@ -508,7 +508,7 @@ struct AppSettingsView: View {
             }
 
             settingsSection(title: "显示方式", subtitle: "关闭实时指标后，同一个入口会切换为固定闪电图标") {
-                settingsToggle("显示实时指标", systemImage: "menubar.rectangle", isOn: $statusBarPanelEnabled)
+                settingsToggle("状态栏（实验）", systemImage: "menubar.rectangle", isOn: $statusBarPanelEnabled)
                 settingsToggle("显示闪电图标", systemImage: "bolt.circle.fill", isOn: $statusBarMetricShowsIcon)
                 settingsPicker(
                     "标签样式",

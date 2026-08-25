@@ -78,7 +78,7 @@ export function LiveRateSettingsPanel({
   const statusTrayLiveTextAvailable =
     platform.statusTray.available && platform.statusTrayLiveText.available;
   const statusTrayButtonLabel = statusTrayLiveTextAvailable
-    ? `状态栏数字：${statusTrayLiveTextEnabled ? "开" : "关"}`
+    ? `状态栏（实验）：${statusTrayLiveTextEnabled ? "开" : "关"}`
     : platform.statusTray.available
       ? "托盘图标已启用"
       : "状态栏待接入";

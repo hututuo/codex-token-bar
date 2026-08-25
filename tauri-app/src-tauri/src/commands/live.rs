@@ -1825,7 +1825,8 @@ mod tests {
     #[test]
     fn initial_tray_write_failure_keeps_interest_off_and_same_settings_retryable() {
         let registry = LiveRateMonitorRegistry::default();
-        let display = DisplaySurfaceSettingsSnapshot::default();
+        let mut display = DisplaySurfaceSettingsSnapshot::default();
+        display.status_tray_live_text_enabled = true;
         assert!(registry
             .apply_status_tray_settings_with_writer(&display, true, |_, _| Ok(false))
             .is_err());
@@ -1875,7 +1876,8 @@ mod tests {
     fn identical_tick_retries_after_error_or_missing_tray_without_false_dedupe() {
         for first_result in [Err("setter failed".to_string()), Ok(false)] {
             let registry = LiveRateMonitorRegistry::default();
-            let display = DisplaySurfaceSettingsSnapshot::default();
+            let mut display = DisplaySurfaceSettingsSnapshot::default();
+            display.status_tray_live_text_enabled = true;
             let generation = registry
                 .apply_status_tray_settings_with_writer(&display, true, |_, _| Ok(true))
                 .unwrap().unwrap();
@@ -1897,7 +1899,8 @@ mod tests {
     fn disabled_settings_failure_schedules_presentation_owner_without_stream() {
         for initial_failure in [Err("setter failed".to_string()), Ok(false)] {
             let registry = LiveRateMonitorRegistry::default();
-            let enabled = DisplaySurfaceSettingsSnapshot::default();
+            let mut enabled = DisplaySurfaceSettingsSnapshot::default();
+            enabled.status_tray_live_text_enabled = true;
             let mut disabled = enabled.clone();
             disabled.status_tray_live_text_enabled = false;
             let source = live_source_for_test("source-a", 1).source_token;
@@ -1947,7 +1950,8 @@ mod tests {
     #[test]
     fn retry_owner_atomically_hands_off_new_failure_before_teardown() {
         let registry = LiveRateMonitorRegistry::default();
-        let enabled = DisplaySurfaceSettingsSnapshot::default();
+        let mut enabled = DisplaySurfaceSettingsSnapshot::default();
+        enabled.status_tray_live_text_enabled = true;
         let mut disabled = enabled.clone();
         disabled.status_tray_live_text_enabled = false;
         assert!(registry
@@ -2031,7 +2035,8 @@ mod tests {
         use std::thread;
 
         let source = live_source_for_test("source-a", 1).source_token;
-        let enabled = DisplaySurfaceSettingsSnapshot::default();
+        let mut enabled = DisplaySurfaceSettingsSnapshot::default();
+        enabled.status_tray_live_text_enabled = true;
         let mut disabled = enabled.clone();
         disabled.status_tray_live_text_enabled = false;
         let registry = LiveRateMonitorRegistry::default();

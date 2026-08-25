@@ -35,7 +35,7 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
   displaySurfaces: {
     floatingWindowEnabled: true,
     liveRateEnabled: true,
-    statusTrayLiveTextEnabled: true,
+    statusTrayLiveTextEnabled: false,
     statusMetricOrder: ["rate", "fiveHour", "sevenDay", "iq"],
     statusMetricLabelStyle: "compact",
     statusSummaryOrder: ["overview", "usage", "quota", "running", "unread", "radar", "crowdRadar"],

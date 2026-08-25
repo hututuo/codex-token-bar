@@ -62,7 +62,7 @@ struct DashboardView: View {
         runtime.sourceTransitionCoordinator
     }
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
-    @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = true
+    @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
     @AppStorage(StatusBarMetricConfiguration.versionKey) private var statusBarMetricConfigurationVersion = StatusBarMetricConfiguration.currentVersion
     @AppStorage(StatusBarMetricConfiguration.orderKey) private var statusBarMetricOrderRaw = StatusBarMetricConfiguration.defaultOrderRaw
     @AppStorage(StatusBarMetricConfiguration.selectionKey) private var statusBarMetricSelectionRaw = StatusBarMetricConfiguration.defaultSelectionRaw

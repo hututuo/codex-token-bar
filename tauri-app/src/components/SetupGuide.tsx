@@ -84,7 +84,7 @@ export function SetupGuide({
               <SetupToggle
                 active={statusTrayLiveTextEnabled}
                 disabled={!statusTrayLiveTextAvailable}
-                label={statusTrayLiveTextAvailable ? "状态栏数字" : "托盘图标"}
+                label={statusTrayLiveTextAvailable ? "状态栏（实验）" : "托盘图标"}
                 note={
                   statusTrayLiveTextAvailable
                     ? platform.statusTrayLiveText.note

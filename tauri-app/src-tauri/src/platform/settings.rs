@@ -3179,7 +3179,7 @@ mod tests {
         );
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.live_rate_enabled);
-        assert!(sanitized.display_surfaces.status_tray_live_text_enabled);
+        assert!(!sanitized.display_surfaces.status_tray_live_text_enabled);
         assert_eq!(
             sanitized.display_surfaces.status_metric_order,
             ["iq", "rate"]
@@ -3318,7 +3318,7 @@ mod tests {
         assert!(settings.setup_guide_completed);
         assert!(!settings.display_surfaces.floating_window_enabled);
         assert!(settings.display_surfaces.live_rate_enabled);
-        assert!(settings.display_surfaces.status_tray_live_text_enabled);
+        assert!(!settings.display_surfaces.status_tray_live_text_enabled);
     }
 
     #[test]
@@ -3331,7 +3331,7 @@ mod tests {
         assert_eq!(settings.quota_refresh_interval_ms, 60_000);
         assert!(settings.display_surfaces.floating_window_enabled);
         assert!(settings.display_surfaces.live_rate_enabled);
-        assert!(settings.display_surfaces.status_tray_live_text_enabled);
+        assert!(!settings.display_surfaces.status_tray_live_text_enabled);
         assert!(!settings.setup_guide_completed);
     }
 

@@ -23,6 +23,12 @@ test("missing status metric order migrates to the compact default", () => {
   assert.deepEqual(settings.statusSummaryOrder, DEFAULT_STATUS_SUMMARY_ORDER);
 });
 
+test("status tray live text is off by default for the experimental surface", () => {
+  const settings = sanitizeDisplaySurfaces({});
+
+  assert.equal(settings.statusTrayLiveTextEnabled, false);
+});
+
 test("status metric order removes unsupported and duplicate raw ids while preserving order", () => {
   assert.deepEqual(
     sanitizeStatusMetricOrder([

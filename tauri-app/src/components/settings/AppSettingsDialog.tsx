@@ -837,11 +837,11 @@ function StatusIndicatorSettings({
   return (
     <>
       <SettingsGroup title="显示方式" description="设置状态栏或系统托盘是否工作，并即时查看紧缩结果。">
-        <SettingRow title="状态栏与托盘指标" description={platformDescription}>
+        <SettingRow title="状态栏（实验）" description={platformDescription}>
           <ToggleButton
             active={displaySurfaces.statusTrayLiveTextEnabled}
             disabled={!statusAvailable}
-            label="状态栏与托盘指标"
+            label="状态栏（实验）"
             onClick={onToggleStatusTray}
           />
         </SettingRow>

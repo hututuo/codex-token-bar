@@ -140,7 +140,7 @@ export function LiveRateCard({
               onClick={onToggleStatusTray}
               title={platform.statusTrayLiveText.note || platform.statusTray.note}
               type="button"
-            >状态栏：{statusTrayLiveTextEnabled ? "开" : "关"}</button>
+            >状态栏（实验）：{statusTrayLiveTextEnabled ? "开" : "关"}</button>
             <button className="quick-settings-button" onClick={onOpenSettings} type="button">总体设置</button>
           </div>
         </div>

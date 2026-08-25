@@ -659,7 +659,7 @@ pub struct DisplaySurfaceSettingsSnapshot {
     pub floating_window_enabled: bool,
     #[serde(default = "default_enabled")]
     pub live_rate_enabled: bool,
-    #[serde(default = "default_enabled")]
+    #[serde(default = "default_disabled")]
     pub status_tray_live_text_enabled: bool,
     #[serde(default = "default_status_metric_order")]
     pub status_metric_order: Vec<String>,
@@ -674,7 +674,7 @@ impl Default for DisplaySurfaceSettingsSnapshot {
         Self {
             floating_window_enabled: default_enabled(),
             live_rate_enabled: default_enabled(),
-            status_tray_live_text_enabled: default_enabled(),
+            status_tray_live_text_enabled: default_disabled(),
             status_metric_order: default_status_metric_order(),
             status_metric_label_style: default_status_metric_label_style(),
             status_summary_order: default_status_summary_order(),
@@ -716,4 +716,8 @@ pub fn default_status_summary_order() -> Vec<String> {
 
 fn default_enabled() -> bool {
     true
+}
+
+fn default_disabled() -> bool {
+    false
 }

@@ -331,7 +331,7 @@ struct LiveRateControls: View {
                 .frame(maxWidth: .infinity, minHeight: 34)
 
                 DisplaySurfaceToggleButton(
-                    title: "状态栏",
+                    title: "状态栏（实验）",
                     systemImage: "menubar.rectangle",
                     isOn: $statusBarPanelEnabled
                 )

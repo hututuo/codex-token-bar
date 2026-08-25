@@ -44,7 +44,7 @@ export const DEFAULT_STATUS_SUMMARY_ORDER: StatusSummarySectionId[] = [
 export const DEFAULT_DISPLAY_SURFACES: DisplaySurfaceSettings = {
   floatingWindowEnabled: true,
   liveRateEnabled: true,
-  statusTrayLiveTextEnabled: true,
+  statusTrayLiveTextEnabled: false,
   statusMetricOrder: [...DEFAULT_STATUS_METRIC_ORDER],
   statusMetricLabelStyle: DEFAULT_STATUS_METRIC_LABEL_STYLE,
   statusSummaryOrder: [...DEFAULT_STATUS_SUMMARY_ORDER],

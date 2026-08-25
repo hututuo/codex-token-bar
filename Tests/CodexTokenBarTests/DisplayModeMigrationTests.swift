@@ -94,6 +94,21 @@ final class DisplayModeMigrationTests: XCTestCase {
 
     }
 
+    func testViewDefaultsKeepsTheExperimentalStatusBarOffByDefault() {
+        let defaults = makeDefaults()
+        var floatingEnabled = true
+        var statusBarEnabled = false
+
+        DisplayModeMigration.applyViewDefaults(
+            floatingPanelEnabled: &floatingEnabled,
+            statusBarPanelEnabled: &statusBarEnabled,
+            defaults: defaults
+        )
+
+        XCTAssertFalse(statusBarEnabled)
+        XCTAssertFalse(defaults.bool(forKey: "statusBarPanelEnabled"))
+    }
+
     func testViewDefaultsPreservesExistingDisabledFlagAndCustomStatusBarConfiguration() {
         let defaults = makeDefaults()
         defaults.set(true, forKey: "displaySurfacePairMigrationV01")
