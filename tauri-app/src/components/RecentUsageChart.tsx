@@ -32,6 +32,7 @@ import {
   quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
   recentChartGeometry,
+  recentChartHoverBubbleCenter,
   recentChartScrollLayout,
   recentChartScrollbarThumb,
   recentChartScrollLeftForThumb,
@@ -69,9 +70,35 @@ interface RecentUsageChartProps {
 
 const CHART_WIDTH = 980;
 const COST_POINT_RADIUS = 1.68;
+const CHART_HOVER_BUBBLE_FALLBACK_WIDTH = 260;
 const RANGE_OPTIONS: RecentChartRange[] = ["24h", "7d", "30d"];
 const VISIBILITY_STORAGE_KEY = "recentChartVisibility";
 const RANGE_STORAGE_KEY = "recentChartRange";
+
+function useChartBubbleWidth(fallbackWidth: number) {
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+  const [bubbleWidth, setBubbleWidth] = useState(fallbackWidth);
+
+  useLayoutEffect(() => {
+    const element = bubbleRef.current;
+    if (!element) return;
+
+    const updateWidth = () => {
+      const measuredWidth = element.getBoundingClientRect().width || element.offsetWidth;
+      if (!Number.isFinite(measuredWidth) || measuredWidth <= 0) return;
+      setBubbleWidth((current) => Math.abs(current - measuredWidth) > 0.5 ? measuredWidth : current);
+    };
+
+    updateWidth();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return [bubbleRef, bubbleWidth] as const;
+}
+
 export function RecentUsageChart({
   recentUsage24h,
   recentUsage7d,
@@ -706,7 +733,8 @@ function HoverBubble({
   viewportWidth: number;
   x: number;
 }) {
-  const left = Math.min(Math.max(x, 150), Math.max(150, viewportWidth - 150));
+  const [bubbleRef, bubbleWidth] = useChartBubbleWidth(CHART_HOVER_BUBBLE_FALLBACK_WIDTH);
+  const left = recentChartHoverBubbleCenter(x, viewportWidth, bubbleWidth);
   const average = point.calls > 0 ? Math.round(point.tokens / point.calls) : 0;
   const quotaParts = [
     fiveHourRemaining !== null ? `5h ${percentText(fiveHourRemaining)}` : null,
@@ -714,7 +742,7 @@ function HoverBubble({
   ].filter(Boolean);
 
   return (
-    <div className="chart-hover-bubble" style={{ left: `${left}px` }}>
+    <div ref={bubbleRef} className="chart-hover-bubble" style={{ left: `${left}px` }}>
       <div className="chart-hover-heading">
         <strong>当前点</strong>
         <span>{timeRange(point.startUnix, bucketSeconds)}</span>
@@ -746,10 +774,11 @@ function SelectionSummaryBubble({
   viewportWidth: number;
   x: number;
 }) {
-  const left = Math.min(Math.max(x, 150), Math.max(150, viewportWidth - 150));
+  const [bubbleRef, bubbleWidth] = useChartBubbleWidth(CHART_HOVER_BUBBLE_FALLBACK_WIDTH);
+  const left = recentChartHoverBubbleCenter(x, viewportWidth, bubbleWidth);
   const average = selection.calls > 0 ? Math.round(selection.totalTokens / selection.calls) : 0;
   return (
-    <div className="chart-hover-bubble chart-selection-summary-bubble" style={{ left: `${left}px` }}>
+    <div ref={bubbleRef} className="chart-hover-bubble chart-selection-summary-bubble" style={{ left: `${left}px` }}>
       <div className="chart-hover-heading">
         <strong>选中区间</strong>
         <span>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</span>

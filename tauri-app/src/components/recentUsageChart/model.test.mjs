@@ -15,6 +15,7 @@ import {
   quotaEstimateWindowVisibility,
   recentChartGeometry,
   recentChartHeightFraction,
+  recentChartHoverBubbleCenter,
   recentChartScaleMap,
   recentChartScrollLayout,
   recentChartScrollbarThumb,
@@ -374,6 +375,13 @@ test("hover index rounds to nearest point and percentText formats 0-1 values", (
   assert.equal(hoverIndexForX(-1, 100, 5), null);
   assert.equal(percentText(0.834), "83%");
   assert.equal(percentText(null), "--");
+});
+
+test("hover bubble center uses measured width at both viewport edges", () => {
+  assert.equal(recentChartHoverBubbleCenter(790, 800, 240), 680);
+  assert.equal(recentChartHoverBubbleCenter(10, 800, 240), 120);
+  assert.equal(recentChartHoverBubbleCenter(400, 800, 240), 400);
+  assert.equal(recentChartHoverBubbleCenter(100, 200, 300), 50);
 });
 
 test("quotaConsumptionSelection uses cumulative quota drop instead of start-end delta", () => {

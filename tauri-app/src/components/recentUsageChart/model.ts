@@ -807,6 +807,33 @@ export function hoverIndexForX(x: number, width: number, pointCount: number): nu
   return clamp(Math.round(x / Math.max(step, 1)), 0, pointCount - 1);
 }
 
+/**
+ * Returns the CSS `left` value for a bubble that uses `translateX(-50%)`.
+ * The center is clamped from the measured bubble width, so either edge can
+ * meet the viewport boundary without relying on a fixed-width guess.
+ */
+export function recentChartHoverBubbleCenter(
+  x: number,
+  viewportWidth: number,
+  bubbleWidth: number,
+  edgePadding = 0,
+): number {
+  const safeViewportWidth = Number.isFinite(viewportWidth) ? Math.max(viewportWidth, 0) : 0;
+  const safeBubbleWidth = Number.isFinite(bubbleWidth) ? Math.max(bubbleWidth, 0) : 0;
+  const safeEdgePadding = Number.isFinite(edgePadding) ? Math.max(edgePadding, 0) : 0;
+  const halfWidth = safeBubbleWidth / 2;
+  const minimumCenter = safeEdgePadding + halfWidth;
+  const maximumCenter = safeViewportWidth - safeEdgePadding - halfWidth;
+  const desiredCenter = Number.isFinite(x) ? x : safeViewportWidth / 2;
+
+  // If the card is wider than the viewport, keep its right edge inside the
+  // viewport; there is no position that can keep both edges visible.
+  if (maximumCenter < minimumCenter) {
+    return maximumCenter;
+  }
+  return clamp(desiredCenter, minimumCenter, maximumCenter);
+}
+
 export function percentText(value: number | null): string {
   if (value === null || !Number.isFinite(value)) {
     return "--";
