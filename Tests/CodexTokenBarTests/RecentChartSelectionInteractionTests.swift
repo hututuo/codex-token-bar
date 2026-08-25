@@ -214,6 +214,8 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
 
     func testHoverBubbleClearsThePlotByAnExtraVerticalGutter() {
         XCTAssertEqual(recentChartHoverBubbleVerticalOffset, 74)
+        XCTAssertEqual(recentChartHoverBubblePlotClearance, 48)
+        XCTAssertEqual(recentChartHoverBubbleTopReveal, 220)
     }
 
     func testAccessibilityCursorMovesSelectsClampsAndResets() {

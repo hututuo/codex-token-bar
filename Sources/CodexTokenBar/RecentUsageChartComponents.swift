@@ -884,7 +884,7 @@ struct ChartBubblePlacementModifier: ViewModifier {
                 // content height. This keeps every row above the plot even
                 // when a detail row makes the bubble taller.
                 .alignmentGuide(.top) { dimensions in
-                    let bottomGap = max(8, recentChartHoverBubbleVerticalOffset - dimensions.height / 2)
+                    let bottomGap = recentChartHoverBubblePlotClearance
                     let cardY = plot.minY - bottomGap - dimensions.height
                     return -cardY
                 }

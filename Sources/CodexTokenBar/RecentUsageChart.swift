@@ -814,6 +814,10 @@ private final class RecentChartRenderFrameCache {
 }
 
 let recentChartHoverBubbleVerticalOffset: CGFloat = 74
+// Keep the full detail card visibly above the plot. 48pt is approximately
+// 1.7cm at macOS logical-point scale, matching the requested extra clearance.
+let recentChartHoverBubblePlotClearance: CGFloat = 48
+let recentChartHoverBubbleTopReveal: CGFloat = 220
 
 struct RecentChartQuotaSeriesVisibility: Equatable {
     let showsFiveHour: Bool
@@ -1527,7 +1531,8 @@ struct RecentUsageChart: View, Equatable {
 
     private var chartViewportMask: some View {
         Rectangle()
-            .padding(.vertical, -90)
+            .padding(.top, -recentChartHoverBubbleTopReveal)
+            .padding(.bottom, -90)
     }
 
     @ViewBuilder
