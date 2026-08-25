@@ -219,6 +219,7 @@ final class RecentChartScrollOffsetObserver: NSObject {
     private(set) weak var scrollView: NSScrollView?
     private var initialContentOffset: CGFloat = 0
     private var initialPositionApplied = false
+    private var initialContentWasScrollable = false
     var onOffsetChange: ((CGFloat) -> Void)?
 
     func attach(
@@ -230,14 +231,30 @@ final class RecentChartScrollOffsetObserver: NSObject {
             scrollView,
             showsPersistentHorizontalScroller: showsPersistentHorizontalScroller
         )
+        let requestedInitialContentOffset = max(initialContentOffset, 0)
         // SwiftUI calls updateNSView while evaluating the view graph. Reporting the same
         // scroll view synchronously from that callback mutates @State during the update and
         // can create an endless redraw loop on a large dashboard snapshot.
-        guard self.scrollView !== scrollView else { return }
+        if self.scrollView === scrollView {
+            let targetChanged = abs(self.initialContentOffset - requestedInitialContentOffset) > 0.5
+            self.initialContentOffset = requestedInitialContentOffset
+            // The chart commonly mounts once with an empty snapshot, when the
+            // scroll view is not yet wider than its viewport. When data arrives,
+            // the NSScrollView instance is reused; re-arm only this never-scrollable
+            // startup case so a user's later manual scroll is never overridden.
+            if targetChanged,
+               !initialContentWasScrollable,
+               scrollView.contentView.bounds.origin.x <= 0.5 {
+                initialPositionApplied = false
+                scheduleInitialContentOffsetApplication(to: scrollView)
+            }
+            return
+        }
         detach()
         self.scrollView = scrollView
-        self.initialContentOffset = max(initialContentOffset, 0)
+        self.initialContentOffset = requestedInitialContentOffset
         self.initialPositionApplied = false
+        self.initialContentWasScrollable = false
         scrollView.contentView.postsBoundsChangedNotifications = true
         observation = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
@@ -256,6 +273,10 @@ final class RecentChartScrollOffsetObserver: NSObject {
                 self.reportCurrentOffset()
             }
         }
+        scheduleInitialContentOffsetApplication(to: scrollView)
+    }
+
+    private func scheduleInitialContentOffsetApplication(to scrollView: NSScrollView) {
         DispatchQueue.main.async { [weak self, weak scrollView] in
             guard let self, let scrollView, self.scrollView === scrollView else { return }
             if self.applyInitialContentOffset(to: scrollView) {
@@ -305,6 +326,7 @@ final class RecentChartScrollOffsetObserver: NSObject {
         clipView.setBoundsOrigin(bounds.origin)
         scrollView.reflectScrolledClipView(clipView)
         initialPositionApplied = true
+        initialContentWasScrollable = maxOffset > 0.5
         return true
     }
 
@@ -329,6 +351,7 @@ final class RecentChartScrollOffsetObserver: NSObject {
         observation = nil
         scrollView = nil
         initialPositionApplied = false
+        initialContentWasScrollable = false
     }
 
     func reportCurrentOffset() {
@@ -1440,6 +1463,7 @@ struct RecentUsageChart: View, Equatable {
                                     .id(RecentChartScrollMetrics.trailingAnchorID)
                             }
                         }
+                        .defaultScrollAnchor(.trailing)
                         .scrollClipDisabled()
                         .mask(chartViewportMask)
                         .overlay(alignment: .topLeading) {

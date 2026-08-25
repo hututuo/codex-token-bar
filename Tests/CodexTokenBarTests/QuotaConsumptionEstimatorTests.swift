@@ -1882,6 +1882,59 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHostedScrollOffsetReaderReappliesLatestAfterInitialEmptyContent() throws {
+        var callbacks: [HostedScrollCallback] = []
+        let hostingView = NSHostingView(
+            rootView: HostedRecentChartScrollReaderHarness(
+                viewportWidth: 100,
+                contentWidth: 100,
+                revision: 1,
+                isReaderEnabled: true,
+                onOffsetChange: { callbacks.append($0) }
+            )
+        )
+        hostingView.frame = NSRect(x: 0, y: 0, width: 100, height: 40)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 40),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        hostingView.layoutSubtreeIfNeeded()
+        runMainLoopBriefly()
+
+        let scrollView = try XCTUnwrap(firstScrollView(in: hostingView))
+        XCTAssertEqual(scrollView.contentView.bounds.origin.x, 0, accuracy: 0.5)
+
+        hostingView.rootView = HostedRecentChartScrollReaderHarness(
+            viewportWidth: 100,
+            contentWidth: 300,
+            revision: 2,
+            isReaderEnabled: true,
+            onOffsetChange: { callbacks.append($0) }
+        )
+        hostingView.layoutSubtreeIfNeeded()
+        runMainLoopBriefly()
+
+        let updatedScrollView = try XCTUnwrap(firstScrollView(in: hostingView))
+        XCTAssertTrue(updatedScrollView === scrollView)
+        let expectedLatestOffset = max(
+            (updatedScrollView.documentView?.frame.width ?? 0)
+                - updatedScrollView.contentView.bounds.width,
+            0
+        )
+        XCTAssertGreaterThan(expectedLatestOffset, 0)
+        XCTAssertEqual(
+            updatedScrollView.contentView.bounds.origin.x,
+            expectedLatestOffset,
+            accuracy: 0.5,
+            "content arriving after an empty startup must still land at the latest edge"
+        )
+        XCTAssertEqual(callbacks.last?.revision, 2)
+    }
+
+    @MainActor
     func testHostedChartInteractionLayerReceivesRealClicksBeforeAndAfterScrolling() throws {
         var clickLocations: [CGPoint] = []
         var selectionState = RecentChartConsumptionSelectionState()
