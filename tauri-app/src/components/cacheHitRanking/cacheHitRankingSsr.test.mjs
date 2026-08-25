@@ -40,7 +40,40 @@ test("cache hit ranking keeps the outer ten-row surface and opens a searchable d
           },
         },
       ],
-      turns: [],
+      turns: [
+        {
+          id: "turn-low",
+          sessionId: "session-low",
+          sessionTitle: "低命中会话",
+          turnIndexInSession: 2,
+          timestamp: "2026-07-07T09:00:00Z",
+          userPrompt: "低命中问题",
+          assistantResponse: "低命中回答",
+          breakdown: {
+            inputTokens: 2_000,
+            cachedInputTokens: 800,
+            outputTokens: 0,
+            totalTokens: 2_000,
+            calls: 1,
+          },
+        },
+        {
+          id: "turn-high",
+          sessionId: "session-high",
+          sessionTitle: "高命中会话",
+          turnIndexInSession: 2,
+          timestamp: "2026-07-07T10:00:00Z",
+          userPrompt: "高命中问题",
+          assistantResponse: "高命中回答",
+          breakdown: {
+            inputTokens: 2_000,
+            cachedInputTokens: 1_960,
+            outputTokens: 0,
+            totalTokens: 2_000,
+            calls: 1,
+          },
+        },
+      ],
     };
     const rankingItems = buildCacheRankingItems(cacheUsage, {
       scope: "sessions",
@@ -119,6 +152,7 @@ test("cache hit ranking keeps the outer ten-row surface and opens a searchable d
     assert.equal(outerHtml.match(/class="ranking-row"/g)?.length, 2);
     assert.match(outerHtml, /ranking-check/);
     assert.match(outerHtml, /低命中/);
+    assert.match(outerHtml, /最新优先 · 已排除每个会话首轮/);
     assert.match(outerHtml, /查看完整排行/);
     assert.match(outerHtml, /cache-hit-tone--orange/);
     assert.match(outerHtml, /cache-hit-tone--strong-blue/);

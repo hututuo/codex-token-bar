@@ -189,8 +189,8 @@ struct CacheHitRankingSection: View {
     let cacheUsage: TokenCacheUsage
     let cacheUsageRevision: Date
     let onOpenDetails: () -> Void
-    @State private var scope: CacheRankingScope = .sessions
-    @State private var sortOrder: CacheRankingSortOrder = .lowHit
+    @State private var scope: CacheRankingScope = .turns
+    @State private var sortOrder: CacheRankingSortOrder = .latest
     @State private var excludesSingleTurnSessions = true
     @State private var excludesFirstTurns = true
 
@@ -288,8 +288,8 @@ private struct CacheRankingTopTenList: View, Equatable {
 struct CacheHitRankingDetailView: View {
     let cacheUsage: TokenCacheUsage
     let onClose: () -> Void
-    @State private var scope: CacheRankingScope = .sessions
-    @State private var sortOrder: CacheRankingSortOrder = .lowHit
+    @State private var scope: CacheRankingScope = .turns
+    @State private var sortOrder: CacheRankingSortOrder = .latest
     @State private var excludesSingleTurnSessions = true
     @State private var excludesFirstTurns = true
     @State private var searchText = ""

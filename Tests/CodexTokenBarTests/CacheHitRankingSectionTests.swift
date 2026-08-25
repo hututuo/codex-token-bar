@@ -45,6 +45,8 @@ final class CacheHitRankingSectionTests: XCTestCase {
         XCTAssertTrue(rankingSource.contains("查看完整排行"))
         XCTAssertTrue(rankingSource.contains("搜索会话、问题、回答或上下文"))
         XCTAssertTrue(rankingSource.contains(".help(rankingHoverText)"))
+        XCTAssertTrue(rankingSource.contains("@State private var scope: CacheRankingScope = .turns"))
+        XCTAssertTrue(rankingSource.contains("@State private var sortOrder: CacheRankingSortOrder = .latest"))
     }
 
     func testSearchMatchesTitleAnswerAndContextCaseInsensitively() {

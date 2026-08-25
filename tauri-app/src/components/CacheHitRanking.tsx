@@ -38,8 +38,8 @@ interface CacheHitRankingDetailProps {
 }
 
 const DEFAULT_RANKING_OPTIONS = {
-  scope: "sessions" as CacheRankingScope,
-  sortOrder: "lowHit" as CacheRankingSortOrder,
+  scope: "turns" as CacheRankingScope,
+  sortOrder: "latest" as CacheRankingSortOrder,
   excludesSingleTurnSessions: true,
   excludesFirstTurns: true,
 };
