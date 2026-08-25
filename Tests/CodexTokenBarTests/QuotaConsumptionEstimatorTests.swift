@@ -1929,9 +1929,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let calendar = Calendar.current
         let date = calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 13, minute: 45))!
 
-        XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .twentyFourHours), "7月6日")
-        XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .sevenDays), "7月6日")
-        XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .thirtyDays), "7月6日")
+        XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .twentyFourHours), "13:45")
+        XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .sevenDays), "7/6 13:45")
+        XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .thirtyDays), "7/6")
     }
 
     func testSelectionStatePreviewsOnHoverThenPinsEndOnSecondClick() {
@@ -2042,10 +2042,13 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let plotSource = source[chartStart..<canvasStart]
         let bodySource = source[bodyStart..<accessibilityStart]
 
-        XCTAssertTrue(
-            bodySource.contains(
-                "chartPlot(consumptionSelection: consumptionSelection)\n            consumptionSelectionSummary("
-            )
+        XCTAssertTrue(bodySource.contains("hoveredIndexSnapshot: liveHoverIndex"))
+        let plotCall = try XCTUnwrap(bodySource.range(of: "chartPlot("))
+        let summaryCall = try XCTUnwrap(bodySource.range(of: "consumptionSelectionSummary("))
+        XCTAssertLessThan(
+            plotCall.lowerBound,
+            summaryCall.lowerBound,
+            "the selection summary must remain below the chart plot"
         )
         XCTAssertFalse(plotSource.contains("RecentChartQuotaEstimateOverlay"))
         XCTAssertFalse(source.contains(".position(x: 205, y: -40)"))

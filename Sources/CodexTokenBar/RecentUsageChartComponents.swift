@@ -1174,11 +1174,16 @@ struct ChartTimeMarkers: View {
     var body: some View {
         ForEach(markerIndices, id: \.self) { index in
             if let bin = bins[safe: index] {
-                Text(ChartTimeMarkerLabel.text(for: bin.start, range: range))
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .position(x: xPosition(for: index), y: plot.maxY + markerOffset)
+                VStack(spacing: 2) {
+                    Rectangle()
+                        .fill(AppTheme.grid.opacity(0.75))
+                        .frame(width: 1, height: 5)
+                    Text(ChartTimeMarkerLabel.text(for: bin.start, range: range))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .position(x: xPosition(for: index), y: plot.maxY + markerOffset)
             }
         }
     }
@@ -1190,7 +1195,17 @@ struct ChartTimeMarkers: View {
 }
 
 enum ChartTimeMarkerLabel {
-    static func text(for date: Date, range _: RecentChartRange) -> String {
-        DateFormatter.monthDay.string(from: date)
+    static func text(for date: Date, range: RecentChartRange) -> String {
+        switch range {
+        case .twentyFourHours:
+            let hour = Calendar.current.component(.hour, from: date)
+            return hour == 0
+                ? DateFormatter.compactMonthDayHourMinute.string(from: date)
+                : DateFormatter.hourMinute.string(from: date)
+        case .sevenDays:
+            return DateFormatter.compactMonthDayHourMinute.string(from: date)
+        case .thirtyDays:
+            return DateFormatter.compactMonthDay.string(from: date)
+        }
     }
 }

@@ -214,8 +214,33 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
 
     func testHoverBubbleClearsThePlotByAnExtraVerticalGutter() {
         XCTAssertEqual(recentChartHoverBubbleVerticalOffset, 74)
-        XCTAssertEqual(recentChartHoverBubblePlotClearance, 48)
+        XCTAssertEqual(recentChartHoverBubblePlotClearance, 10)
         XCTAssertEqual(recentChartHoverBubbleTopReveal, 220)
+    }
+
+    @MainActor
+    func testTimeMarkersUseThreeHourCadenceForTheTwentyFourHourRange() {
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        let recentBins = (0..<72).map { index in
+            BinUsage(
+                start: base.addingTimeInterval(Double(index) * RecentChartRange.twentyFourHours.bucketInterval),
+                tokens: index + 1,
+                calls: 1
+            )
+        }
+
+        let prepared = RecentUsageChart.prepare(
+            range: .twentyFourHours,
+            recentBins: recentBins,
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
+
+        XCTAssertEqual(RecentChartRange.twentyFourHours.timeMarkerInterval, 3 * 60 * 60)
+        XCTAssertEqual(prepared.markerIndices, [0, 36, 71])
     }
 
     func testAccessibilityCursorMovesSelectsClampsAndResets() {

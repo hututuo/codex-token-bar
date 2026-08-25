@@ -13,6 +13,18 @@ extension DateFormatter {
         return formatter
     }()
 
+    static let compactMonthDay: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d"
+        return formatter
+    }()
+
+    static let compactMonthDayHourMinute: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d HH:mm"
+        return formatter
+    }()
+
     static let fullDay: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy年M月d日"

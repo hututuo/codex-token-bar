@@ -263,22 +263,12 @@ extension RecentUsageChart {
         guard bins.count > 1 else { return [] }
 
         let last = bins.count - 1
-        switch range {
-        case .twentyFourHours:
-            let dayStep = max(1, Int((TimeInterval(24 * 60 * 60) / bucketInterval).rounded()))
-            var indices = Array(stride(from: 0, through: last, by: dayStep))
-            if indices.last != last {
-                indices.append(last)
-            }
-            return indices
-        case .sevenDays, .thirtyDays:
-            let weekStep = max(1, Int((TimeInterval(7 * 24 * 60 * 60) / bucketInterval).rounded()))
-            var indices = Array(stride(from: 0, through: last, by: weekStep))
-            if indices.last != last {
-                indices.append(last)
-            }
-            return indices
+        let markerStep = max(1, Int((range.timeMarkerInterval / bucketInterval).rounded()))
+        var indices = Array(stride(from: 0, through: last, by: markerStep))
+        if indices.last != last {
+            indices.append(last)
         }
+        return indices
     }
 
     static func percentText(_ value: Double?) -> String {

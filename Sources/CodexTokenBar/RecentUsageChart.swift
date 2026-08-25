@@ -39,6 +39,14 @@ enum RecentChartRange: String, CaseIterable, Identifiable {
         case .thirtyDays: 6 * 60 * 60
         }
     }
+
+    var timeMarkerInterval: TimeInterval {
+        switch self {
+        case .twentyFourHours: 3 * 60 * 60
+        case .sevenDays: 12 * 60 * 60
+        case .thirtyDays: 2 * 24 * 60 * 60
+        }
+    }
 }
 
 struct RecentChartGeometry: Equatable {
@@ -237,24 +245,44 @@ final class RecentChartScrollOffsetObserver: NSObject {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.reportCurrentOffset()
+                guard let self, let scrollView = self.scrollView else { return }
+                // The first bounds notification can arrive while SwiftUI is still
+                // sizing the document view. Do not publish that transient zero
+                // offset as the chart's position; apply the requested latest edge
+                // once the content width is available, then report it normally.
+                if !self.initialPositionApplied {
+                    guard self.applyInitialContentOffset(to: scrollView) else { return }
+                }
+                self.reportCurrentOffset()
             }
         }
         DispatchQueue.main.async { [weak self, weak scrollView] in
             guard let self, let scrollView, self.scrollView === scrollView else { return }
             if self.applyInitialContentOffset(to: scrollView) {
                 self.reportCurrentOffset()
+            } else {
+                self.retryInitialContentOffset(to: scrollView)
             }
         }
-        // The hosting view may exist before SwiftUI has laid out its document view.
-        // Retry once after that first layout pass so an early zero offset cannot
-        // overwrite the chart's requested latest position.
+    }
+
+    private func retryInitialContentOffset(
+        to scrollView: NSScrollView,
+        attemptsRemaining: Int = 12
+    ) {
+        guard attemptsRemaining > 0,
+              self.scrollView === scrollView,
+              !initialPositionApplied else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak scrollView] in
             guard let self, let scrollView, self.scrollView === scrollView else { return }
-            // The chart already defaults its logical presentation to the latest
-            // window. This retry only needs to move the AppKit clip view; avoiding
-            // a second callback also keeps a SwiftUI root-view re-evaluation quiet.
-            _ = self.applyInitialContentOffset(to: scrollView)
+            if self.applyInitialContentOffset(to: scrollView) {
+                self.reportCurrentOffset()
+            } else {
+                self.retryInitialContentOffset(
+                    to: scrollView,
+                    attemptsRemaining: attemptsRemaining - 1
+                )
+            }
         }
     }
 
@@ -814,9 +842,9 @@ private final class RecentChartRenderFrameCache {
 }
 
 let recentChartHoverBubbleVerticalOffset: CGFloat = 74
-// Keep the full detail card visibly above the plot. 48pt is approximately
-// 1.7cm at macOS logical-point scale, matching the requested extra clearance.
-let recentChartHoverBubblePlotClearance: CGFloat = 48
+// Keep the detail card just above the candidate line. SwiftUI coordinates are
+// logical points, so this is the requested 10pt visual gap.
+let recentChartHoverBubblePlotClearance: CGFloat = 10
 let recentChartHoverBubbleTopReveal: CGFloat = 220
 
 struct RecentChartQuotaSeriesVisibility: Equatable {
