@@ -862,12 +862,7 @@ struct ChartBubblePlacementModifier: ViewModifier {
     func body(content: Content) -> some View {
         let plot = self.plot
         let tokenX = self.tokenX
-        let measuredWidth = bubbleSize.width > 0 ? bubbleSize.width : min(max(plot.width * 0.4, 120), plot.width)
         let measuredHeight = bubbleSize.height > 0 ? bubbleSize.height : min(max(plot.height * 0.55, 80), plot.height)
-        let lower = plot.minX
-        let upper = max(lower, plot.maxX - measuredWidth)
-        let centered = tokenX - measuredWidth / 2
-        let cardX = min(max(centered, lower), upper)
         // Keep the card's bottom above the plot. For a short card, preserve
         // the historical 74pt visual gutter; for a tall detail card, tighten
         // that gutter to a small fixed gap rather than covering the curve.
@@ -883,6 +878,15 @@ struct ChartBubblePlacementModifier: ViewModifier {
 
             content
                 .fixedSize(horizontal: true, vertical: false)
+                // Use the content's measured layout width directly. A state-based
+                // fallback based on plot width makes the first hover card wider than
+                // its actual body and visibly shifts it left of the active point.
+                .alignmentGuide(.leading) { dimensions in
+                    let lower = plot.minX
+                    let upper = max(lower, plot.maxX - dimensions.width)
+                    let centered = tokenX - dimensions.width / 2
+                    return -min(max(centered, lower), upper)
+                }
                 .background(
                     GeometryReader { proxy in
                         Color.clear
@@ -893,7 +897,7 @@ struct ChartBubblePlacementModifier: ViewModifier {
                     }
                 )
                 .contentShape(Rectangle())
-                .offset(x: cardX, y: cardY)
+                .offset(y: cardY)
                 .allowsHitTesting(true)
         }
         .frame(width: plot.width, height: plot.height, alignment: .topLeading)
