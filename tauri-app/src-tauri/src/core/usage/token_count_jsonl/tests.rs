@@ -6659,14 +6659,22 @@ fn ranks_sessions_by_low_cache_hit_rate_with_thread_titles() {
     write_lines(
         &session_dir.join(format!("rollout-{low_id}.jsonl")),
         &[
+            r#"{"timestamp":"2026-06-18T00:59:40Z","type":"event_msg","payload":{"type":"user_message","message":"低命中第一轮问题"}}"#,
+            r#"{"timestamp":"2026-06-18T00:59:50Z","type":"event_msg","payload":{"type":"agent_message","message":"低命中第一轮回答"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":300,"output_tokens":50,"total_tokens":1250}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:04:40Z","type":"event_msg","payload":{"type":"user_message","message":"低命中第二轮问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:04:50Z","type":"event_msg","payload":{"type":"agent_message","message":"低命中第二轮回答"}}"#,
             r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":40,"total_tokens":1040}}}}"#,
         ],
     );
     write_lines(
         &session_dir.join(format!("rollout-{high_id}.jsonl")),
         &[
+            r#"{"timestamp":"2026-06-18T01:59:40Z","type":"event_msg","payload":{"type":"user_message","message":"高命中第一轮问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:59:50Z","type":"event_msg","payload":{"type":"agent_message","message":"高命中第一轮回答"}}"#,
             r#"{"timestamp":"2026-06-18T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":1100,"output_tokens":50,"total_tokens":1250}}}}"#,
+            r#"{"timestamp":"2026-06-18T02:04:40Z","type":"event_msg","payload":{"type":"user_message","message":"高命中第二轮问题"}}"#,
+            r#"{"timestamp":"2026-06-18T02:04:50Z","type":"event_msg","payload":{"type":"agent_message","message":"高命中第二轮回答"}}"#,
             r#"{"timestamp":"2026-06-18T02:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"output_tokens":40,"total_tokens":1040}}}}"#,
         ],
     );
@@ -6696,12 +6704,16 @@ fn dashboard_session_rollup_combines_multiple_published_files_for_one_session() 
     write_lines(
         &sessions_dir.join(format!("rollout-2026-06-18T01-00-00-{session_id}.jsonl")),
         &[
+            r#"{"timestamp":"2026-06-18T00:59:40Z","type":"event_msg","payload":{"type":"user_message","message":"归档前问题"}}"#,
+            r#"{"timestamp":"2026-06-18T00:59:50Z","type":"event_msg","payload":{"type":"agent_message","message":"归档前回答"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":200,"output_tokens":50,"total_tokens":1250}}}}"#,
         ],
     );
     write_lines(
         &archived_dir.join(format!("rollout-2026-06-18T02-00-00-{session_id}.jsonl")),
         &[
+            r#"{"timestamp":"2026-06-18T01:59:40Z","type":"event_msg","payload":{"type":"user_message","message":"归档后问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:59:50Z","type":"event_msg","payload":{"type":"agent_message","message":"归档后回答"}}"#,
             r#"{"timestamp":"2026-06-18T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1400,"cached_input_tokens":300,"output_tokens":70,"total_tokens":1470}}}}"#,
         ],
     );
@@ -6736,6 +6748,7 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"第一轮问题"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:20Z","type":"event_msg","payload":{"type":"agent_message","message":"第一轮回答"}}"#,
             r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":100,"output_tokens":50,"total_tokens":1250}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:01:30Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":50,"output_tokens":20,"total_tokens":320}}}}"#,
             r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"user_message","message":"第二轮\n问题"}}"#,
             r#"{"timestamp":"2026-06-18T01:05:20Z","type":"event_msg","payload":{"type":"agent_message","message":"第二轮回答\t补充"}}"#,
             r#"{"timestamp":"2026-06-18T01:06:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1300,"cached_input_tokens":600,"output_tokens":80,"total_tokens":1380}}}}"#,
@@ -6755,6 +6768,16 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
     assert_eq!(second_turn.user_prompt, "第二轮 问题");
     assert_eq!(second_turn.assistant_response, "第二轮回答 补充");
     assert_eq!(second_turn.breakdown.input_tokens, 1300);
+    let first_turn = snapshot
+        .cache_usage
+        .turns
+        .iter()
+        .find(|turn| turn.turn_index_in_session == 1)
+        .unwrap();
+    assert_eq!(first_turn.user_prompt, "第一轮问题");
+    assert_eq!(first_turn.assistant_response, "第一轮回答");
+    assert_eq!(first_turn.breakdown.input_tokens, 1500);
+    assert_eq!(first_turn.breakdown.calls, 1);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -6799,7 +6822,19 @@ fn cache_usage_keeps_latest_candidates_beyond_low_hit_cutoff() {
         &session_dir.join(format!("rollout-{latest_id}.jsonl")),
         &[
             format!(
+                r#"{{"timestamp":"{first_latest}","type":"event_msg","payload":{{"type":"user_message","message":"最新第一轮问题"}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{first_latest}","type":"event_msg","payload":{{"type":"agent_message","message":"最新第一轮回答"}}}}"#
+            ),
+            format!(
                 r#"{{"timestamp":"{first_latest}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1400,"cached_input_tokens":1390,"output_tokens":50,"total_tokens":1450}}}}}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{second_latest}","type":"event_msg","payload":{{"type":"user_message","message":"最新第二轮问题"}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{second_latest}","type":"event_msg","payload":{{"type":"agent_message","message":"最新第二轮回答"}}}}"#
             ),
             format!(
                 r#"{{"timestamp":"{second_latest}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1400,"cached_input_tokens":1390,"output_tokens":50,"total_tokens":1450}}}}}}}}"#
@@ -6840,7 +6875,19 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
         &session_dir.join(format!("rollout-{session_id}.jsonl")),
         &[
             format!(
+                r#"{{"timestamp":"{first_timestamp}","type":"event_msg","payload":{{"type":"user_message","message":"第一轮问题"}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{first_timestamp}","type":"event_msg","payload":{{"type":"agent_message","message":"第一轮回答"}}}}"#
+            ),
+            format!(
                 r#"{{"timestamp":"{first_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":400,"cached_input_tokens":200,"output_tokens":50,"total_tokens":450}}}}}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{second_timestamp}","type":"event_msg","payload":{{"type":"user_message","message":"第二轮问题"}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{second_timestamp}","type":"event_msg","payload":{{"type":"agent_message","message":"第二轮回答"}}}}"#
             ),
             format!(
                 r#"{{"timestamp":"{second_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":400,"cached_input_tokens":200,"output_tokens":50,"total_tokens":450}}}}}}}}"#
@@ -6900,7 +6947,7 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
         .unwrap();
     connection
         .execute(
-            "UPDATE metadata SET value = '3' WHERE key = 'dashboard_aggregate_schema_version'",
+            "UPDATE metadata SET value = '4' WHERE key = 'dashboard_aggregate_schema_version'",
             [],
         )
         .unwrap();
@@ -6952,7 +6999,7 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "4"
+        "5"
     );
 
     drop(connection);

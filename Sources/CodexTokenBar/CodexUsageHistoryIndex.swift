@@ -374,7 +374,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ]
     private static let eventEnrichmentRevisionKey = "event_enrichment_revision"
     private static let eventEnrichmentRevision = "model-v1"
-    private static let dashboardAggregateSchemaVersion = "3"
+    // Turn candidates are grouped by the originating user message. Bump the
+    // disposable aggregate version whenever that grouping contract changes so
+    // older event-level rows cannot remain in the ranking projection.
+    private static let dashboardAggregateSchemaVersion = "4"
     private static let dashboardAggregatePricingRevision = "raw-token-v1"
     private static let knownDashboardAggregatePricingRevisions: Set<String> = [
         "raw-token-v0",
@@ -1865,16 +1868,44 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         MAX(last_timestamp) AS last_timestamp
                     FROM dashboard_source_totals
                     GROUP BY session_id
+                ), logical_turns AS (
+                    SELECT
+                        session_id,
+                        COUNT(*) AS calls
+                    FROM dashboard_turn_candidates
+                    GROUP BY session_id
                 ), selected AS (
                     SELECT * FROM (
-                        SELECT * FROM grouped
-                        ORDER BY total_tokens DESC, session_id
+                        SELECT
+                            grouped.session_id,
+                            grouped.input_tokens,
+                            grouped.cached_input_tokens,
+                            grouped.output_tokens,
+                            grouped.reasoning_output_tokens,
+                            grouped.total_tokens,
+                            COALESCE(logical_turns.calls, 0) AS calls,
+                            grouped.last_timestamp
+                        FROM grouped
+                        LEFT JOIN logical_turns
+                          ON logical_turns.session_id = grouped.session_id
+                        ORDER BY grouped.total_tokens DESC, grouped.session_id
                         LIMIT ?
                     )
                     UNION
                     SELECT * FROM (
-                        SELECT * FROM grouped
-                        ORDER BY last_timestamp DESC, session_id
+                        SELECT
+                            grouped.session_id,
+                            grouped.input_tokens,
+                            grouped.cached_input_tokens,
+                            grouped.output_tokens,
+                            grouped.reasoning_output_tokens,
+                            grouped.total_tokens,
+                            COALESCE(logical_turns.calls, 0) AS calls,
+                            grouped.last_timestamp
+                        FROM grouped
+                        LEFT JOIN logical_turns
+                          ON logical_turns.session_id = grouped.session_id
+                        ORDER BY grouped.last_timestamp DESC, grouped.session_id
                         LIMIT ?
                     )
                 )
@@ -2960,29 +2991,49 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             FROM dashboard_source_5m
             GROUP BY bucket_start, model;
 
-            WITH ranked AS (
+            WITH grouped AS (
                 SELECT
                     e.source_id,
-                    e.source_offset,
                     s.session_id,
-                    e.timestamp,
-                    e.tokens AS total_tokens,
-                    e.input_tokens,
-                    MIN(e.cached_input_tokens, e.input_tokens) AS cached_input_tokens,
-                    e.output_tokens,
-                    e.reasoning_output_tokens,
-                    CASE WHEN e.input_tokens > 0
-                        THEN MIN(e.cached_input_tokens, e.input_tokens) * 1.0 / e.input_tokens
-                        ELSE 0
-                    END AS hit_rate,
-                    e.input_tokens - MIN(e.cached_input_tokens, e.input_tokens) AS uncached_tokens,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY s.session_id
-                        ORDER BY e.timestamp, e.source_id, e.source_offset
-                    ) AS turn_index,
-                    COUNT(*) OVER (PARTITION BY s.session_id) AS session_calls
+                    e.user_prompt_offset,
+                    COALESCE(
+                        MIN(CASE WHEN e.assistant_start_offset IS NOT NULL
+                            THEN e.source_offset END),
+                        MIN(e.source_offset)
+                    ) AS source_offset,
+                    MAX(e.timestamp) AS timestamp,
+                    SUM(e.tokens) AS total_tokens,
+                    SUM(e.input_tokens) AS input_tokens,
+                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
+                    SUM(e.output_tokens) AS output_tokens,
+                    SUM(e.reasoning_output_tokens) AS reasoning_output_tokens
                 FROM events e
                 JOIN sources s ON s.source_id = e.source_id
+                WHERE e.user_prompt_offset IS NOT NULL
+                GROUP BY e.source_id, s.session_id, e.user_prompt_offset
+            ),
+            ranked AS (
+                SELECT
+                    source_id,
+                    source_offset,
+                    session_id,
+                    timestamp,
+                    total_tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_output_tokens,
+                    CASE WHEN input_tokens > 0
+                        THEN cached_input_tokens * 1.0 / input_tokens
+                        ELSE 0
+                    END AS hit_rate,
+                    input_tokens - cached_input_tokens AS uncached_tokens,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY session_id
+                        ORDER BY timestamp, source_id, source_offset
+                    ) AS turn_index,
+                    COUNT(*) OVER (PARTITION BY session_id) AS session_calls
+                FROM grouped
             )
             INSERT INTO dashboard_turn_candidates(
                 source_id, source_offset, session_id, timestamp,
@@ -3024,32 +3075,52 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             DELETE FROM dashboard_turn_candidates
             WHERE session_id IN (SELECT session_id FROM dashboard_dirty_sessions);
 
-            WITH ranked AS (
+            WITH grouped AS (
                 SELECT
                     e.source_id,
-                    e.source_offset,
                     s.session_id,
-                    e.timestamp,
-                    e.tokens AS total_tokens,
-                    e.input_tokens,
-                    MIN(e.cached_input_tokens, e.input_tokens) AS cached_input_tokens,
-                    e.output_tokens,
-                    e.reasoning_output_tokens,
-                    CASE WHEN e.input_tokens > 0
-                        THEN MIN(e.cached_input_tokens, e.input_tokens) * 1.0 / e.input_tokens
-                        ELSE 0
-                    END AS hit_rate,
-                    e.input_tokens - MIN(e.cached_input_tokens, e.input_tokens) AS uncached_tokens,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY s.session_id
-                        ORDER BY e.timestamp, e.source_id, e.source_offset
-                    ) AS turn_index,
-                    COUNT(*) OVER (PARTITION BY s.session_id) AS session_calls
+                    e.user_prompt_offset,
+                    COALESCE(
+                        MIN(CASE WHEN e.assistant_start_offset IS NOT NULL
+                            THEN e.source_offset END),
+                        MIN(e.source_offset)
+                    ) AS source_offset,
+                    MAX(e.timestamp) AS timestamp,
+                    SUM(e.tokens) AS total_tokens,
+                    SUM(e.input_tokens) AS input_tokens,
+                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
+                    SUM(e.output_tokens) AS output_tokens,
+                    SUM(e.reasoning_output_tokens) AS reasoning_output_tokens
                 FROM events e
                 JOIN sources s ON s.source_id = e.source_id
-                WHERE s.session_id IN (
+                WHERE e.user_prompt_offset IS NOT NULL
+                  AND s.session_id IN (
                     SELECT session_id FROM dashboard_dirty_sessions
                 )
+                GROUP BY e.source_id, s.session_id, e.user_prompt_offset
+            ),
+            ranked AS (
+                SELECT
+                    source_id,
+                    source_offset,
+                    session_id,
+                    timestamp,
+                    total_tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_output_tokens,
+                    CASE WHEN input_tokens > 0
+                        THEN cached_input_tokens * 1.0 / input_tokens
+                        ELSE 0
+                    END AS hit_rate,
+                    input_tokens - cached_input_tokens AS uncached_tokens,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY session_id
+                        ORDER BY timestamp, source_id, source_offset
+                    ) AS turn_index,
+                    COUNT(*) OVER (PARTITION BY session_id) AS session_calls
+                FROM grouped
             )
             INSERT INTO dashboard_turn_candidates(
                 source_id, source_offset, session_id, timestamp,

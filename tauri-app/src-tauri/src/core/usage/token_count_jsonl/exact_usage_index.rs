@@ -99,10 +99,10 @@ const DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY: &str =
     "dashboard_aggregate_published_generation";
 const DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY: &str = "dashboard_aggregate_settled_through";
 const DASHBOARD_AGGREGATE_PRICING_REVISION_KEY: &str = "dashboard_aggregate_pricing_revision";
-// Keep every token turn in the derived candidate table so the latest-first
-// cache ranking can include small requests; low-hit queries apply the 1000
-// input-token cutoff at read time.
-const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 4;
+// Turn candidates are grouped by the originating user message. Bump this
+// disposable projection version whenever that grouping contract changes so an
+// older event-level ranking cannot survive an upgrade.
+const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 5;
 const DASHBOARD_AGGREGATE_PRICING_REVISION: &str = "raw-token-v1";
 
 fn is_known_dashboard_pricing_revision(value: &str) -> bool {
@@ -3794,7 +3794,7 @@ impl ExactUsageIndex {
                 -- SQLite revisit events once per file and spill every event into
                 -- a session GROUP BY temp B-tree on large indexes.
                 CREATE TEMP TABLE dashboard_session_rows AS
-                WITH session_rows AS (
+                WITH session_totals AS (
                     SELECT
                         f.session_id,
                         SUM(t.calls) AS calls,
@@ -3808,10 +3808,24 @@ impl ExactUsageIndex {
                       ON f.generation = t.file_generation
                      AND f.path = t.file_path
                     GROUP BY f.session_id
+                ), logical_turns AS (
+                    SELECT
+                        session_id,
+                        COUNT(*) AS calls
+                    FROM dashboard_turn_candidates
+                    WHERE aggregate_generation = COALESCE(
+                        (
+                            SELECT CAST(value AS INTEGER)
+                            FROM main.metadata
+                            WHERE key = 'published_generation'
+                        ),
+                        0
+                    )
+                    GROUP BY session_id
                 )
                 SELECT
                     s.session_id,
-                    s.calls,
+                    COALESCE(t.calls, 0) AS calls,
                     s.total_tokens,
                     s.input_tokens,
                     s.cached_tokens,
@@ -3821,7 +3835,8 @@ impl ExactUsageIndex {
                         NULLIF(TRIM(m.title), ''),
                         '会话 ' || SUBSTR(s.session_id, 1, 8)
                     ) AS title
-                FROM session_rows s
+                FROM session_totals s
+                LEFT JOIN logical_turns t ON t.session_id = s.session_id
                 LEFT JOIN session_metadata m ON m.session_id = s.session_id;
                 "#,
             )
@@ -7177,31 +7192,56 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
     transaction
         .execute(
             r#"
-            WITH ranked AS (
+            WITH grouped AS (
                 SELECT
-                    e.id AS event_id,
+                    MIN(e.id) AS event_id,
                     e.file_generation AS source_file_generation,
                     e.file_path,
-                    e.ordinal,
-                    e.timestamp,
+                    COALESCE(
+                        MIN(CASE WHEN e.assistant_response_start IS NOT NULL
+                            THEN e.ordinal END),
+                        MIN(e.ordinal)
+                    ) AS ordinal,
+                    MAX(e.timestamp) AS timestamp,
                     e.session_id,
-                    e.tokens AS total_tokens,
-                    e.input_tokens,
-                    MIN(e.cached_input_tokens, e.input_tokens) AS cached_input_tokens,
-                    e.output_tokens,
-                    e.user_prompt_start,
-                    e.user_prompt_end,
-                    e.assistant_response_start,
-                    e.assistant_response_end,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.session_id
-                        ORDER BY e.timestamp, e.file_path, e.ordinal
-                    ) AS turn_index,
-                    COUNT(*) OVER (PARTITION BY e.session_id) AS session_calls
+                    SUM(e.tokens) AS total_tokens,
+                    SUM(e.input_tokens) AS input_tokens,
+                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
+                    SUM(e.output_tokens) AS output_tokens,
+                    MIN(e.user_prompt_start) AS user_prompt_start,
+                    MAX(e.user_prompt_end) AS user_prompt_end,
+                    MIN(e.assistant_response_start) AS assistant_response_start,
+                    MAX(e.assistant_response_end) AS assistant_response_end
                 FROM events e
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
+                WHERE e.user_prompt_start IS NOT NULL
+                GROUP BY e.file_generation, e.file_path, e.session_id,
+                    e.user_prompt_start, e.user_prompt_end
+            ),
+            ranked AS (
+                SELECT
+                    event_id,
+                    source_file_generation,
+                    file_path,
+                    ordinal,
+                    timestamp,
+                    session_id,
+                    total_tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    user_prompt_start,
+                    user_prompt_end,
+                    assistant_response_start,
+                    assistant_response_end,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY session_id
+                        ORDER BY timestamp, file_path, ordinal
+                    ) AS turn_index,
+                    COUNT(*) OVER (PARTITION BY session_id) AS session_calls
+                FROM grouped
             )
             INSERT INTO dashboard_turn_candidates(
                 aggregate_generation, event_id, source_file_generation,
@@ -7392,32 +7432,57 @@ fn refresh_dashboard_turn_candidates_for_changed_generations(
                  AND f.generation = latest_files.generation
                 WHERE f.deleted = 0
             ),
-            ranked AS (
+            grouped AS (
                 SELECT
-                    e.id AS event_id,
+                    MIN(e.id) AS event_id,
                     e.file_generation AS source_file_generation,
                     e.file_path,
-                    e.ordinal,
-                    e.timestamp,
+                    COALESCE(
+                        MIN(CASE WHEN e.assistant_response_start IS NOT NULL
+                            THEN e.ordinal END),
+                        MIN(e.ordinal)
+                    ) AS ordinal,
+                    MAX(e.timestamp) AS timestamp,
                     e.session_id,
-                    e.tokens AS total_tokens,
-                    e.input_tokens,
-                    MIN(e.cached_input_tokens, e.input_tokens) AS cached_input_tokens,
-                    e.output_tokens,
-                    e.user_prompt_start,
-                    e.user_prompt_end,
-                    e.assistant_response_start,
-                    e.assistant_response_end,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.session_id
-                        ORDER BY e.timestamp, e.file_path, e.ordinal
-                    ) AS turn_index,
-                    COUNT(*) OVER (PARTITION BY e.session_id) AS session_calls
+                    SUM(e.tokens) AS total_tokens,
+                    SUM(e.input_tokens) AS input_tokens,
+                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
+                    SUM(e.output_tokens) AS output_tokens,
+                    MIN(e.user_prompt_start) AS user_prompt_start,
+                    MAX(e.user_prompt_end) AS user_prompt_end,
+                    MIN(e.assistant_response_start) AS assistant_response_start,
+                    MAX(e.assistant_response_end) AS assistant_response_end
                 FROM events e
                 JOIN visible_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
-                WHERE e.session_id IN (SELECT session_id FROM dirty_sessions)
+                WHERE e.user_prompt_start IS NOT NULL
+                  AND e.session_id IN (SELECT session_id FROM dirty_sessions)
+                GROUP BY e.file_generation, e.file_path, e.session_id,
+                    e.user_prompt_start, e.user_prompt_end
+            ),
+            ranked AS (
+                SELECT
+                    event_id,
+                    source_file_generation,
+                    file_path,
+                    ordinal,
+                    timestamp,
+                    session_id,
+                    total_tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    user_prompt_start,
+                    user_prompt_end,
+                    assistant_response_start,
+                    assistant_response_end,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY session_id
+                        ORDER BY timestamp, file_path, ordinal
+                    ) AS turn_index,
+                    COUNT(*) OVER (PARTITION BY session_id) AS session_calls
+                FROM grouped
             )
             INSERT INTO dashboard_turn_candidates(
                 aggregate_generation, event_id, source_file_generation,

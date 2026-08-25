@@ -4777,7 +4777,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'dashboard_aggregate_schema_version';"
             ) { $0.text(0) }.first,
-            "3"
+            "4"
         )
         XCTAssertEqual(try scalarInt("SELECT SUM(total_tokens) FROM dashboard_5m;", in: database), 120)
     }
@@ -6099,6 +6099,74 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalCalls, eventCount)
     }
 
+    func testTurnCandidatesGroupToolSnapshotsByUserMessage() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-user-turn-grouping"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let lines = [
+            messageLine(
+                timestamp: now.addingTimeInterval(-60),
+                type: "user_message",
+                message: "第一条用户问题"
+            ),
+            messageLine(
+                timestamp: now.addingTimeInterval(-59),
+                type: "agent_message",
+                message: "第一条回答"
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-58),
+                total: Usage(input: 1_200, cachedInput: 200, output: 100, reasoning: 0, total: 1_300),
+                last: Usage(input: 1_200, cachedInput: 200, output: 100, reasoning: 0, total: 1_300)
+            ),
+            // A tool call / continuation snapshot belongs to the same user turn.
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-57),
+                total: Usage(input: 1_800, cachedInput: 300, output: 160, reasoning: 0, total: 1_960),
+                last: Usage(input: 600, cachedInput: 100, output: 60, reasoning: 0, total: 660)
+            ),
+            messageLine(
+                timestamp: now.addingTimeInterval(-56),
+                type: "user_message",
+                message: "第二条用户问题"
+            ),
+            messageLine(
+                timestamp: now.addingTimeInterval(-55),
+                type: "agent_message",
+                message: "第二条回答"
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-54),
+                total: Usage(input: 3_000, cachedInput: 500, output: 260, reasoning: 0, total: 3_260),
+                last: Usage(input: 1_200, cachedInput: 200, output: 100, reasoning: 0, total: 1_300)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.cacheUsage.sessions.count, 1)
+        XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.calls, 2)
+        XCTAssertEqual(snapshot.cacheUsage.turns.count, 2)
+        let latest = try XCTUnwrap(snapshot.cacheUsage.turns.first)
+        XCTAssertEqual(latest.turnIndexInSession, 2)
+        XCTAssertEqual(latest.userPrompt, "第二条用户问题")
+        XCTAssertEqual(latest.assistantResponse, "第二条回答")
+        XCTAssertEqual(latest.breakdown.calls, 1)
+        XCTAssertEqual(latest.breakdown.totalTokens, 1_300)
+
+        let first = try XCTUnwrap(snapshot.cacheUsage.turns.first { $0.turnIndexInSession == 1 })
+        XCTAssertEqual(first.userPrompt, "第一条用户问题")
+        XCTAssertEqual(first.assistantResponse, "第一条回答")
+        XCTAssertEqual(first.breakdown.totalTokens, 1_960)
+        XCTAssertEqual(first.breakdown.inputTokens, 1_800)
+        XCTAssertEqual(first.breakdown.calls, 1)
+    }
+
     func testPreciseScanParsesJSONLLineBeyondFormerSixteenMiBLimitExactly() throws {
         let codexHome = try makeCodexHome()
         try seedStateDatabase(at: codexHome)
@@ -6142,10 +6210,27 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let eventCount = 200
-        let lines = try (0..<eventCount).map { index in
+        var lines: [String] = []
+        lines.reserveCapacity(eventCount * 3)
+        for index in 0..<eventCount {
             let calls = index + 1
-            return try tokenCountLine(
-                timestamp: now.addingTimeInterval(TimeInterval(index - eventCount)),
+            let tokenTimestamp = now.addingTimeInterval(TimeInterval(index - eventCount))
+            lines.append(
+                messageLine(
+                    timestamp: tokenTimestamp.addingTimeInterval(-0.2),
+                    type: "user_message",
+                    message: "问题 \(index)"
+                )
+            )
+            lines.append(
+                messageLine(
+                    timestamp: tokenTimestamp.addingTimeInterval(-0.1),
+                    type: "agent_message",
+                    message: "回答 \(index)"
+                )
+            )
+            lines.append(try tokenCountLine(
+                timestamp: tokenTimestamp,
                 total: Usage(
                     input: 1_200 * calls,
                     cachedInput: index.isMultiple(of: 2) ? 1_000 * calls : 0,
@@ -6160,7 +6245,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                     reasoning: 0,
                     total: 1_300
                 )
-            )
+            ))
         }
         try lines.joined(separator: "\n").appending("\n")
             .write(to: sessionFile, atomically: true, encoding: .utf8)
