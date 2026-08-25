@@ -381,11 +381,7 @@ function CurrentRankingRow({ item, index }: { item: CacheRankingDisplayItem; ind
   return (
     <article className="ranking-row">
       <strong>{index + 1}</strong>
-      <div>
-        <h3>{item.title}</h3>
-        <span>{item.subtitle}</span>
-        {item.context ? <small>{item.context}</small> : null}
-      </div>
+      <RankingRowCopy title={item.title} subtitle={item.subtitle} context={item.context} />
       <div className={`hit-meter ${tone}`}>
         <span style={{ width: `${cacheHitMeterWidthPercent(hitRate)}%` }} />
       </div>
@@ -401,16 +397,42 @@ function LegacyRankingRow({ item }: { item: CacheHitRankingItem }) {
   return (
     <article className="ranking-row">
       <strong>{item.rank}</strong>
-      <div>
-        <h3>{item.title}</h3>
-        <span>{item.subtitle}</span>
-      </div>
+      <RankingRowCopy title={item.title} subtitle={item.subtitle} />
       <div className={`hit-meter ${tone}`}>
         <span style={{ width: `${cacheHitMeterWidthPercent(item.hitRate)}%` }} />
       </div>
       <em className={tone}>{formatPercent(item.hitRate)}</em>
       <span>{formatTokens(item.cachedTokens)} / {formatTokens(item.inputTokens)}</span>
     </article>
+  );
+}
+
+function RankingRowCopy({
+  context,
+  subtitle,
+  title,
+}: {
+  context?: string | null;
+  subtitle: string;
+  title: string;
+}) {
+  const fullText = [title, subtitle, context].filter(Boolean).join("\n");
+  return (
+    <div
+      aria-label={fullText}
+      className="ranking-row-copy"
+      tabIndex={0}
+      title={fullText}
+    >
+      <h3>{title}</h3>
+      <span className="ranking-row-answer">{subtitle}</span>
+      {context ? <small>{context}</small> : null}
+      <div aria-hidden="true" className="ranking-row-hover-card" role="tooltip">
+        <strong>{title}</strong>
+        <span>{subtitle}</span>
+        {context ? <small>{context}</small> : null}
+      </div>
+    </div>
   );
 }
 

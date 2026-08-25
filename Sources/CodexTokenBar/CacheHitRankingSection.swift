@@ -602,6 +602,7 @@ private struct CacheRankingRow: View {
                         .lineLimit(1)
                 }
             }
+            .help(rankingHoverText)
             .frame(maxWidth: .infinity, alignment: .leading)
 
             CacheHitMeter(breakdown: item.breakdown)
@@ -642,6 +643,12 @@ private struct CacheRankingRow: View {
             parts.insert(context, at: 1)
         }
         return parts.joined(separator: "；")
+    }
+
+    private var rankingHoverText: String {
+        [item.title, item.subtitle, item.context]
+            .compactMap { $0 }
+            .joined(separator: "\n")
     }
 }
 

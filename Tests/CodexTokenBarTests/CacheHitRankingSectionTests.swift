@@ -44,6 +44,7 @@ final class CacheHitRankingSectionTests: XCTestCase {
         XCTAssertTrue(rankingSource.contains("rankingItems.prefix(10)"))
         XCTAssertTrue(rankingSource.contains("查看完整排行"))
         XCTAssertTrue(rankingSource.contains("搜索会话、问题、回答或上下文"))
+        XCTAssertTrue(rankingSource.contains(".help(rankingHoverText)"))
     }
 
     func testSearchMatchesTitleAnswerAndContextCaseInsensitively() {

@@ -8147,6 +8147,70 @@ input[type="range"]::-moz-range-thumb {
   white-space: nowrap;
 }
 
+.ranking-row-copy {
+  position: relative;
+  min-width: 0;
+  outline: none;
+}
+
+.ranking-row-copy > .ranking-row-answer {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-row-copy > small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-row-hover-card {
+  position: absolute;
+  z-index: 120;
+  top: calc(100% + 7px);
+  left: 0;
+  display: none;
+  width: max-content;
+  min-width: min(260px, calc(100vw - 40px));
+  max-width: min(640px, calc(100vw - 40px));
+  max-height: 240px;
+  overflow: auto;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgb(15 23 42 / 20%);
+  color: #20252d;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ranking-row-copy:hover .ranking-row-hover-card,
+.ranking-row-copy:focus-visible .ranking-row-hover-card {
+  display: grid;
+}
+
+.ranking-row-hover-card strong,
+.ranking-row-hover-card span,
+.ranking-row-hover-card small {
+  overflow: visible;
+  color: inherit;
+  font-size: 11px;
+  font-weight: var(--weight-regular);
+  line-height: 1.4;
+  text-overflow: clip;
+  white-space: pre-wrap;
+}
+
+.ranking-row-hover-card strong {
+  font-weight: var(--weight-semibold);
+}
+
 .ranking-row small {
   display: block;
   overflow: hidden;

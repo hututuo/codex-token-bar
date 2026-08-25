@@ -18,3 +18,9 @@ test("cache hit ranking keeps quota gradient separate from hit-meter tone stylin
   );
   assert.doesNotMatch(stylesSource, /\.hit-meter span\s*\{[^}]*var\(--metric-color\)/m);
 });
+
+test("cache ranking question and answer lines truncate and expose a white hover card", () => {
+  assert.match(stylesSource, /\.ranking-row-copy\s*\{[\s\S]*min-width:\s*0;/m);
+  assert.match(stylesSource, /\.ranking-row-copy > \.ranking-row-answer\s*\{[\s\S]*text-overflow:\s*ellipsis;[\s\S]*white-space:\s*nowrap;/m);
+  assert.match(stylesSource, /\.ranking-row-hover-card\s*\{[\s\S]*background:\s*#ffffff;[\s\S]*white-space:\s*pre-wrap;/m);
+});

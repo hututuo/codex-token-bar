@@ -81,6 +81,40 @@ test("cache hit ranking keeps the outer ten-row surface and opens a searchable d
       ],
       rankingItems: [],
     });
+    const turnUsage = {
+      sessions: [],
+      turns: [
+        {
+          id: "turn-1",
+          sessionId: "session-1",
+          sessionTitle: "长问题会话",
+          turnIndexInSession: 2,
+          timestamp: "2026-07-07T11:00:00Z",
+          userPrompt: "问：这是一个很长很长的问题，悬停后应该可以看到完整内容",
+          assistantResponse: "答：这是一个很长很长的回答，悬停后应该可以看到完整内容",
+          breakdown: {
+            inputTokens: 2_000,
+            cachedInputTokens: 800,
+            outputTokens: 0,
+            totalTokens: 2_000,
+            calls: 1,
+          },
+        },
+      ],
+    };
+    const turnItems = buildCacheRankingItems(turnUsage, {
+      scope: "turns",
+      sortOrder: "lowHit",
+      excludesSingleTurnSessions: true,
+      excludesFirstTurns: true,
+      limit: Number.POSITIVE_INFINITY,
+    });
+    const turnHtml = renderComponent(CacheHitRankingDetail, {
+      ...stateProps,
+      cacheUsage: turnUsage,
+      rankingItems: turnItems,
+      scope: "turns",
+    });
 
     assert.equal(outerHtml.match(/class="ranking-row"/g)?.length, 2);
     assert.match(outerHtml, /ranking-check/);
@@ -95,5 +129,8 @@ test("cache hit ranking keeps the outer ten-row surface and opens a searchable d
     assert.match(legacyHtml, /cache-hit-tone--orange/);
     assert.match(legacyHtml, /已显示 1 \/ 共 1/);
     assert.doesNotMatch(legacyHtml, /继续加载/);
+    assert.match(turnHtml, /class="ranking-row-copy"/);
+    assert.match(turnHtml, /class="ranking-row-hover-card"/);
+    assert.match(turnHtml, /悬停后应该可以看到完整内容/);
   });
 });
