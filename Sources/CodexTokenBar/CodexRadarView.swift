@@ -21,7 +21,9 @@ struct CodexRadarStrip: View {
 
     nonisolated static func columnWidths(totalWidth: CGFloat) -> ColumnWidths {
         let clampedWidth = max(0, totalWidth)
-        let weights: (window: CGFloat, officialRadar: CGFloat, crowdRadar: CGFloat, quota: CGFloat) = (0.82, 1.08, 1.08, 1.02)
+        // Keep the official column slightly tighter so the divider between the
+        // two IQ panels shifts left and the right-hand crowd IQ has more room.
+        let weights: (window: CGFloat, officialRadar: CGFloat, crowdRadar: CGFloat, quota: CGFloat) = (0.82, 1.02, 1.14, 1.02)
         let totalWeight = weights.window + weights.officialRadar + weights.crowdRadar + weights.quota
 
         return ColumnWidths(

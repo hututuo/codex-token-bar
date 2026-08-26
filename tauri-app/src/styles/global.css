@@ -2923,7 +2923,8 @@ button.quota-side-card:hover {
 
 .codex-radar-grid {
   display: grid;
-  grid-template-columns: 0.82fr 1.08fr 1.08fr 1.02fr;
+  /* Match Swift: shift the official/crowd IQ divider left for right-side room. */
+  grid-template-columns: 0.82fr 1.02fr 1.14fr 1.02fr;
   gap: 0;
   min-height: 74px;
   border: 1px solid var(--line);
