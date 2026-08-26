@@ -54,13 +54,18 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("radar?.sourceKind ?? \"\""))
     }
 
-    func testRadarStripBalancesOfficialAndCrowdRadarsInMiddleColumns() {
+    func testRadarStripMovesWaitingDividerLeftAndGivesRoomToOfficialIQ() {
         let widths = CodexRadarStrip.columnWidths(totalWidth: 800)
         let evenColumnWidth = 800 / 4.0
+        let baseWindowWidth = 800 * 0.82 / 4.0
+        let baseIQWidth = 800 * 1.08 / 4.0
 
         XCTAssertLessThan(widths.window, widths.officialRadar)
         XCTAssertLessThan(widths.window, evenColumnWidth)
-        XCTAssertLessThan(widths.officialRadar, widths.crowdRadar)
+        XCTAssertEqual(widths.window, baseWindowWidth - 2, accuracy: 0.01)
+        XCTAssertEqual(widths.officialRadar, baseIQWidth + 2, accuracy: 0.01)
+        XCTAssertEqual(widths.crowdRadar, baseIQWidth, accuracy: 0.01)
+        XCTAssertEqual(widths.officialRadar - widths.crowdRadar, 2, accuracy: 0.01)
         XCTAssertGreaterThan(widths.officialRadar, evenColumnWidth)
         XCTAssertGreaterThan(widths.quota, widths.window)
         XCTAssertEqual(widths.window + widths.officialRadar + widths.crowdRadar + widths.quota, 800, accuracy: 0.01)
