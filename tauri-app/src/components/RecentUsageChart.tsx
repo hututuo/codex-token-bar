@@ -240,9 +240,119 @@ export function RecentUsageChart({
       window.cancelAnimationFrame(pendingScrollFrameRef.current);
       pendingScrollFrameRef.current = null;
     }
-    scrollElement.scrollLeft = scrollLayout.latestScrollLeft;
-    setChartScrollLeft(scrollElement.scrollLeft);
-    setChartViewportWidth(scrollElement.clientWidth || CHART_WIDTH);
+
+    // A dashboard snapshot can mount with a zero-valued placeholder before
+    // the real chart content has been laid out.  Setting scrollLeft during
+    // that first layout is silently clamped to 0 by the browser; when the
+    // placeholder and the real series have the same point count, the old
+    // effect dependencies never ran again.  Wait for the actual scrollWidth
+    // to become available, then verify the browser kept the trailing offset.
+    let cancelled = false;
+    let retryFrame: number | null = null;
+    let verificationFrame: number | null = null;
+    let attemptsRemaining = 32;
+    let resizeObserver: ResizeObserver | null = null;
+
+    const cancelFrame = (frame: number | null) => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+
+    const stopObservation = () => {
+      resizeObserver?.disconnect();
+      resizeObserver = null;
+      cancelFrame(retryFrame);
+      cancelFrame(verificationFrame);
+      retryFrame = null;
+      verificationFrame = null;
+    };
+
+    const applyLatestOffset = (): boolean => {
+      if (cancelled) {
+        return true;
+      }
+
+      const viewportWidth = scrollElement.clientWidth || CHART_WIDTH;
+      const maxOffset = Math.max(scrollElement.scrollWidth - viewportWidth, 0);
+      const requestedOffset = Math.max(scrollLayout.latestScrollLeft, 0);
+
+      // A positive requested offset is not actionable until the DOM exposes
+      // a real horizontal overflow range.  Returning false keeps the frame
+      // retry/ResizeObserver path alive without publishing a bogus zero.
+      if (requestedOffset > 0.5 && maxOffset <= 0.5) {
+        return false;
+      }
+
+      const targetOffset = Math.min(requestedOffset, maxOffset);
+      scrollElement.scrollLeft = targetOffset;
+      setChartScrollLeft(scrollElement.scrollLeft);
+      setChartViewportWidth(viewportWidth);
+
+      return Math.abs(scrollElement.scrollLeft - targetOffset) <= 0.5;
+    };
+
+    const scheduleRetry = () => {
+      if (cancelled || retryFrame !== null || attemptsRemaining <= 0) {
+        return;
+      }
+      retryFrame = window.requestAnimationFrame(() => {
+        retryFrame = null;
+        attemptsRemaining -= 1;
+        if (applyLatestOffset()) {
+          verificationFrame = window.requestAnimationFrame(() => {
+            verificationFrame = null;
+            if (applyLatestOffset()) {
+              stopObservation();
+            } else {
+              scheduleRetry();
+            }
+          });
+        } else {
+          scheduleRetry();
+        }
+      });
+    };
+
+    const scheduleVerification = () => {
+      if (cancelled || verificationFrame !== null) {
+        return;
+      }
+      verificationFrame = window.requestAnimationFrame(() => {
+        verificationFrame = null;
+        if (applyLatestOffset()) {
+          stopObservation();
+        } else {
+          scheduleRetry();
+        }
+      });
+    };
+
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        if (applyLatestOffset()) {
+          scheduleVerification();
+        } else {
+          scheduleRetry();
+        }
+      });
+      resizeObserver.observe(scrollElement);
+      const scrollContent = scrollElement.firstElementChild;
+      if (scrollContent instanceof HTMLElement) {
+        resizeObserver.observe(scrollContent);
+      }
+    }
+
+    if (applyLatestOffset()) {
+      scheduleVerification();
+    } else {
+      scheduleRetry();
+    }
+
+    return () => {
+      cancelled = true;
+      stopObservation();
+    };
   }, [scrollLayout.latestScrollLeft, data.range, data.points.length]);
 
   useEffect(() => () => {

@@ -1181,6 +1181,9 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.match(css, /\.recent-chart-page-button\s*{[^}]*pointer-events:\s*auto/s);
   assert.match(css, /\.recent-chart-page-button\s*{[^}]*width:\s*30px/s);
   assert.equal(source.includes("recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth)"), true);
+  assert.equal(source.includes("scrollElement.scrollWidth"), true);
+  assert.equal(source.includes("ResizeObserver"), true);
+  assert.equal(source.includes("scheduleVerification"), true);
   assert.equal(source.includes("recentChartScrollTarget(scrollLayout, scrollElement.scrollLeft, direction)"), true);
   assert.equal(source.includes("className=\"recent-chart-persistent-scrollbar\""), true);
   assert.equal(source.includes("role=\"scrollbar\""), true);
