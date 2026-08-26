@@ -1935,6 +1935,55 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHostedScrollOffsetReaderRecoversFromStartupLayoutReset() throws {
+        var callbacks: [HostedScrollCallback] = []
+        let hostingView = NSHostingView(
+            rootView: HostedRecentChartScrollReaderHarness(
+                viewportWidth: 100,
+                contentWidth: 300,
+                revision: 1,
+                isReaderEnabled: true,
+                onOffsetChange: { callbacks.append($0) }
+            )
+        )
+        hostingView.frame = NSRect(x: 0, y: 0, width: 100, height: 40)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 40),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        hostingView.layoutSubtreeIfNeeded()
+        runMainLoopBriefly()
+
+        let scrollView = try XCTUnwrap(firstScrollView(in: hostingView))
+        let expectedLatestOffset = max(
+            (scrollView.documentView?.frame.width ?? 0)
+                - scrollView.contentView.bounds.width,
+            0
+        )
+        XCTAssertGreaterThan(expectedLatestOffset, 0)
+
+        // SwiftUI can briefly recreate the horizontal content at the origin while
+        // its enclosing layout settles. This is not a user scroll and should be
+        // repaired by the observer's short startup verification window.
+        var resetBounds = scrollView.contentView.bounds
+        resetBounds.origin.x = 0
+        scrollView.contentView.bounds = resetBounds
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        runMainLoop(for: 0.4)
+
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.x,
+            expectedLatestOffset,
+            accuracy: 0.5,
+            "a startup layout reset must not leave the chart at the oldest edge"
+        )
+        XCTAssertEqual(callbacks.last?.offset ?? -1, expectedLatestOffset, accuracy: 0.5)
+    }
+
+    @MainActor
     func testHostedChartInteractionLayerReceivesRealClicksBeforeAndAfterScrolling() throws {
         var clickLocations: [CGPoint] = []
         var selectionState = RecentChartConsumptionSelectionState()
@@ -2613,5 +2662,10 @@ private func clickHostedChartTrackingView(
 
 @MainActor
 private func runMainLoopBriefly() {
-    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    runMainLoop(for: 0.02)
+}
+
+@MainActor
+private func runMainLoop(for duration: TimeInterval) {
+    RunLoop.main.run(until: Date().addingTimeInterval(duration))
 }

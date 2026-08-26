@@ -215,11 +215,14 @@ struct RecentChartScrollPresentation: Equatable {
 
 @MainActor
 final class RecentChartScrollOffsetObserver: NSObject {
-    private var observation: NSObjectProtocol?
+    private var observations: [NSObjectProtocol] = []
     private(set) weak var scrollView: NSScrollView?
+    private weak var observedDocumentView: NSView?
+    private var documentFrameObservation: NSObjectProtocol?
     private var initialContentOffset: CGFloat = 0
     private var initialPositionApplied = false
-    private var initialContentWasScrollable = false
+    private var initialCorrectionPending = false
+    private var hasObservedUserScroll = false
     var onOffsetChange: ((CGFloat) -> Void)?
 
     func attach(
@@ -240,23 +243,27 @@ final class RecentChartScrollOffsetObserver: NSObject {
             self.initialContentOffset = requestedInitialContentOffset
             // The chart commonly mounts once with an empty snapshot, when the
             // scroll view is not yet wider than its viewport. When data arrives,
-            // the NSScrollView instance is reused; re-arm only this never-scrollable
-            // startup case so a user's later manual scroll is never overridden.
+            // the NSScrollView instance is reused. Re-arm only while startup has
+            // not observed a live user scroll, so a user's later manual scroll is
+            // never overridden.
             if targetChanged,
-               !initialContentWasScrollable,
+               !hasObservedUserScroll,
                scrollView.contentView.bounds.origin.x <= 0.5 {
                 initialPositionApplied = false
+                initialCorrectionPending = true
                 scheduleInitialContentOffsetApplication(to: scrollView)
             }
+            installDocumentFrameObservation(for: scrollView)
             return
         }
         detach()
         self.scrollView = scrollView
         self.initialContentOffset = requestedInitialContentOffset
         self.initialPositionApplied = false
-        self.initialContentWasScrollable = false
+        self.initialCorrectionPending = true
+        self.hasObservedUserScroll = false
         scrollView.contentView.postsBoundsChangedNotifications = true
-        observation = NotificationCenter.default.addObserver(
+        let boundsObservation = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
             object: scrollView.contentView,
             queue: .main
@@ -269,10 +276,31 @@ final class RecentChartScrollOffsetObserver: NSObject {
                 // once the content width is available, then report it normally.
                 if !self.initialPositionApplied {
                     guard self.applyInitialContentOffset(to: scrollView) else { return }
+                } else if self.initialCorrectionPending,
+                          self.isExternalOffsetChangeDuringStartup(in: scrollView) {
+                    // A non-edge offset while the startup verification window is
+                    // open is an external scroll (manual scrolling or a caller's
+                    // own programmatic positioning). Do not snap it back to the
+                    // latest edge on the next verification pass.
+                    self.initialCorrectionPending = false
                 }
                 self.reportCurrentOffset()
             }
         }
+        observations.append(boundsObservation)
+        let liveScrollObservation = NotificationCenter.default.addObserver(
+            forName: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.hasObservedUserScroll = true
+                self.initialCorrectionPending = false
+            }
+        }
+        observations.append(liveScrollObservation)
+        installDocumentFrameObservation(for: scrollView)
         scheduleInitialContentOffsetApplication(to: scrollView)
     }
 
@@ -281,6 +309,37 @@ final class RecentChartScrollOffsetObserver: NSObject {
             guard let self, let scrollView, self.scrollView === scrollView else { return }
             if self.applyInitialContentOffset(to: scrollView) {
                 self.reportCurrentOffset()
+                self.scheduleInitialCorrectionVerification(to: scrollView)
+            } else {
+                self.retryInitialContentOffset(to: scrollView)
+            }
+        }
+    }
+
+    private func scheduleInitialCorrectionVerification(
+        to scrollView: NSScrollView,
+        attemptsRemaining: Int = 6
+    ) {
+        guard attemptsRemaining > 0,
+              initialCorrectionPending,
+              !hasObservedUserScroll,
+              self.scrollView === scrollView else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak scrollView] in
+            guard let self, let scrollView, self.scrollView === scrollView else { return }
+            guard self.initialCorrectionPending, !self.hasObservedUserScroll else { return }
+            let previousOffset = scrollView.contentView.bounds.origin.x
+            if self.applyInitialContentOffset(to: scrollView, force: true) {
+                if abs(scrollView.contentView.bounds.origin.x - previousOffset) > 0.5 {
+                    self.reportCurrentOffset()
+                }
+                if attemptsRemaining == 1 {
+                    self.initialCorrectionPending = false
+                } else {
+                    self.scheduleInitialCorrectionVerification(
+                        to: scrollView,
+                        attemptsRemaining: attemptsRemaining - 1
+                    )
+                }
             } else {
                 self.retryInitialContentOffset(to: scrollView)
             }
@@ -298,6 +357,7 @@ final class RecentChartScrollOffsetObserver: NSObject {
             guard let self, let scrollView, self.scrollView === scrollView else { return }
             if self.applyInitialContentOffset(to: scrollView) {
                 self.reportCurrentOffset()
+                self.scheduleInitialCorrectionVerification(to: scrollView)
             } else {
                 self.retryInitialContentOffset(
                     to: scrollView,
@@ -308,9 +368,15 @@ final class RecentChartScrollOffsetObserver: NSObject {
     }
 
     @discardableResult
-    private func applyInitialContentOffset(to scrollView: NSScrollView) -> Bool {
-        guard !initialPositionApplied else { return true }
+    private func applyInitialContentOffset(
+        to scrollView: NSScrollView,
+        force: Bool = false
+    ) -> Bool {
+        guard force || !initialPositionApplied else { return true }
 
+        installDocumentFrameObservation(for: scrollView)
+        scrollView.layoutSubtreeIfNeeded()
+        scrollView.documentView?.layoutSubtreeIfNeeded()
         let clipView = scrollView.contentView
         let documentWidth = scrollView.documentView?.frame.width ?? 0
         let viewportWidth = clipView.bounds.width
@@ -323,11 +389,63 @@ final class RecentChartScrollOffsetObserver: NSObject {
         let targetOffset = min(max(initialContentOffset, 0), maxOffset)
         var bounds = clipView.bounds
         bounds.origin.x = targetOffset
-        clipView.setBoundsOrigin(bounds.origin)
-        scrollView.reflectScrolledClipView(clipView)
         initialPositionApplied = true
-        initialContentWasScrollable = maxOffset > 0.5
+        if abs(clipView.bounds.origin.x - targetOffset) > 0.5 {
+            clipView.setBoundsOrigin(bounds.origin)
+            scrollView.reflectScrolledClipView(clipView)
+        }
         return true
+    }
+
+    private func isExternalOffsetChangeDuringStartup(in scrollView: NSScrollView) -> Bool {
+        let currentOffset = scrollView.contentView.bounds.origin.x
+        guard currentOffset > 0.5 else { return false }
+
+        let documentWidth = scrollView.documentView?.frame.width ?? 0
+        let viewportWidth = scrollView.contentView.bounds.width
+        let maxOffset = max(documentWidth - viewportWidth, 0)
+        let expectedOffset = min(max(initialContentOffset, 0), maxOffset)
+        return abs(currentOffset - expectedOffset) > 0.5
+    }
+
+    private func installDocumentFrameObservation(for scrollView: NSScrollView) {
+        guard let documentView = scrollView.documentView else { return }
+        guard observedDocumentView !== documentView else { return }
+
+        if let documentFrameObservation {
+            NotificationCenter.default.removeObserver(documentFrameObservation)
+            self.documentFrameObservation = nil
+        }
+        observedDocumentView = documentView
+        documentView.postsFrameChangedNotifications = true
+        documentFrameObservation = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: documentView,
+            queue: .main
+        ) { [weak self, weak scrollView] _ in
+            MainActor.assumeIsolated {
+                guard let self, let scrollView, self.scrollView === scrollView else { return }
+                if !self.initialPositionApplied {
+                    guard self.applyInitialContentOffset(to: scrollView) else {
+                        self.retryInitialContentOffset(to: scrollView)
+                        return
+                    }
+                    self.reportCurrentOffset()
+                    self.scheduleInitialCorrectionVerification(to: scrollView)
+                } else if self.initialCorrectionPending,
+                          !self.hasObservedUserScroll,
+                          scrollView.contentView.bounds.origin.x <= 0.5 {
+                    // A document frame change can be the last layout event that
+                    // resets a just-mounted chart to the origin. Correct that
+                    // case immediately instead of waiting for the retry window.
+                    let previousOffset = scrollView.contentView.bounds.origin.x
+                    if self.applyInitialContentOffset(to: scrollView, force: true),
+                       abs(scrollView.contentView.bounds.origin.x - previousOffset) > 0.5 {
+                        self.reportCurrentOffset()
+                    }
+                }
+            }
+        }
     }
 
     private func configureHorizontalScroller(
@@ -345,13 +463,19 @@ final class RecentChartScrollOffsetObserver: NSObject {
     }
 
     func detach() {
-        if let observation {
+        for observation in observations {
             NotificationCenter.default.removeObserver(observation)
         }
-        observation = nil
+        observations.removeAll()
+        if let documentFrameObservation {
+            NotificationCenter.default.removeObserver(documentFrameObservation)
+        }
+        documentFrameObservation = nil
+        observedDocumentView = nil
         scrollView = nil
         initialPositionApplied = false
-        initialContentWasScrollable = false
+        initialCorrectionPending = false
+        hasObservedUserScroll = false
     }
 
     func reportCurrentOffset() {
