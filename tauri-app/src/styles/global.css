@@ -2924,8 +2924,8 @@ button.quota-side-card:hover {
 .codex-radar-grid {
   display: grid;
   /* Match Swift's base proportions while moving the waiting/IQ divider left. */
-  /* The reclaimed 5px belongs to the official IQ column. */
-  grid-template-columns: calc(20.5% - 5px) calc(25.5% + 5px) 25.5% 25.5%;
+  /* The reclaimed 20px belongs to the official IQ column. */
+  grid-template-columns: calc(20.5% - 20px) calc(25.5% + 20px) 25.5% 25.5%;
   gap: 0;
   min-height: 74px;
   border: 1px solid var(--line);

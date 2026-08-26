@@ -62,10 +62,10 @@ final class CodexRadarViewPlacementTests: XCTestCase {
 
         XCTAssertLessThan(widths.window, widths.officialRadar)
         XCTAssertLessThan(widths.window, evenColumnWidth)
-        XCTAssertEqual(widths.window, baseWindowWidth - 2, accuracy: 0.01)
-        XCTAssertEqual(widths.officialRadar, baseIQWidth + 2, accuracy: 0.01)
+        XCTAssertEqual(widths.window, baseWindowWidth - 3, accuracy: 0.01)
+        XCTAssertEqual(widths.officialRadar, baseIQWidth + 3, accuracy: 0.01)
         XCTAssertEqual(widths.crowdRadar, baseIQWidth, accuracy: 0.01)
-        XCTAssertEqual(widths.officialRadar - widths.crowdRadar, 2, accuracy: 0.01)
+        XCTAssertEqual(widths.officialRadar - widths.crowdRadar, 3, accuracy: 0.01)
         XCTAssertGreaterThan(widths.officialRadar, evenColumnWidth)
         XCTAssertGreaterThan(widths.quota, widths.window)
         XCTAssertEqual(widths.window + widths.officialRadar + widths.crowdRadar + widths.quota, 800, accuracy: 0.01)
