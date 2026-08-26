@@ -1924,11 +1924,13 @@ struct RecentUsageChart: View, Equatable {
             let viewportTokenX = contentPlot.minX + CGFloat(activeIndex) * step - contentOffset
 
             Group {
-                if fixedEndIndex != nil, let selection = consumptionSelection {
-                    ChartSelectionSummaryBubble(
-                        selection: selection,
-                        onClose: dismissTopPreview
-                    )
+                if fixedEndIndex != nil {
+                    if let selection = consumptionSelection {
+                        ChartSelectionSummaryBubble(
+                            selection: selection,
+                            onClose: dismissTopPreview
+                        )
+                    }
                 } else {
                     ChartHoverBubble(
                         bin: chartBins[activeIndex],
@@ -2277,20 +2279,27 @@ struct RecentUsageChart: View, Equatable {
             index: clickedIndex,
             validCount: preparedData.bins.count
         )
-        consumptionSelectionState.click(
+        var nextSelectionState = consumptionSelectionState
+        nextSelectionState.click(
             index: clickedIndex,
             validCount: preparedData.bins.count
         )
+        consumptionSelectionState = nextSelectionState
 
-        if consumptionSelectionState.fixedEndIndex != nil {
-            rebuildFixedConsumptionSelectionCache()
-            if let selection = cachedFixedConsumptionSelection {
-                consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
-                    selection: selection,
-                    bucketInterval: preparedData.bucketInterval
-                )
-                return
-            }
+        if let startIndex = nextSelectionState.startIndex,
+           let fixedEndIndex = nextSelectionState.fixedEndIndex,
+           let selection = preparedData.quotaConsumptionSelection(
+               startIndex: startIndex,
+               endIndex: fixedEndIndex,
+               priceCard: .officialAPI(selectedQuotaEstimateModel),
+               attributionEvents: attributionEvents
+           ) {
+            cachedFixedConsumptionSelection = selection
+            consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
+                selection: selection,
+                bucketInterval: preparedData.bucketInterval
+            )
+            return
         }
         cachedFixedConsumptionSelection = nil
         consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
