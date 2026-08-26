@@ -177,6 +177,7 @@ struct TokenDisplayRunningThreadsRow: View {
 private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
     let dividerColor: Color
     let leadingFraction: CGFloat?
+    let dividerShift: CGFloat
     let leading: Leading
     let trailing: Trailing
     @Environment(\.tokenDisplayScale) private var displayScale
@@ -184,20 +185,31 @@ private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
     init(
         dividerColor: Color,
         leadingFraction: CGFloat? = nil,
+        dividerShift: CGFloat = 0,
         @ViewBuilder leading: () -> Leading,
         @ViewBuilder trailing: () -> Trailing
     ) {
         self.dividerColor = dividerColor
         self.leadingFraction = leadingFraction
+        self.dividerShift = dividerShift
         self.leading = leading()
         self.trailing = trailing()
     }
 
     var body: some View {
         GeometryReader { proxy in
-            let spacing = 7.scaled(by: displayScale)
+            let baseSpacing = 7.scaled(by: displayScale)
+            // Normal mode uses an intrinsic leading column, so reclaiming
+            // the inter-column gap moves the divider left. Speed-window mode
+            // uses a fractional leading column, so trim that column directly
+            // and keep the gap readable.
+            let spacing = leadingFraction == nil
+                ? max(0, baseSpacing - dividerShift)
+                : baseSpacing
             let contentWidth = max(0, proxy.size.width - spacing * 2 - 1)
-            let leadingWidth = leadingFraction.map { contentWidth * $0 }
+            let leadingWidth = leadingFraction.map {
+                max(0, contentWidth * $0 - dividerShift)
+            }
             HStack(spacing: spacing) {
                 leading
                     .frame(width: leadingWidth, alignment: .leading)
@@ -215,10 +227,16 @@ private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
 
 struct TokenDisplayRadarStrip: View {
     let presentation: CodexRadarPresentationState
+    let dividerShift: CGFloat
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
     @Environment(\.tokenDisplayRadarActionTextPalette) private var actionTextPalette
     @Environment(\.tokenDisplayRadarModelTextPalette) private var modelTextPalette
+
+    init(presentation: CodexRadarPresentationState, dividerShift: CGFloat = 0) {
+        self.presentation = presentation
+        self.dividerShift = dividerShift
+    }
 
     var body: some View {
         let snapshot = presentation.snapshot
@@ -235,9 +253,11 @@ struct TokenDisplayRadarStrip: View {
         let primaryAccent = primary.map {
             AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
         } ?? AppTheme.accentBlue
+        let radarDividerShift = dividerShift.scaled(by: displayScale)
         TokenDisplayRadarColumns(
             dividerColor: textPalette.dividerColor,
-            leadingFraction: isSpeedWindow ? 0.42 : nil
+            leadingFraction: isSpeedWindow ? 0.42 : nil,
+            dividerShift: radarDividerShift
         ) {
             VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
                 HStack(alignment: .firstTextBaseline, spacing: 3.scaled(by: displayScale)) {

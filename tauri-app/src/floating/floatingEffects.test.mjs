@@ -48,6 +48,14 @@ test("crowd radar compares three compact results without a visual title or lower
   assert.doesNotMatch(crowdRow, /IQ .*model\.graded.*判/);
   assert.doesNotMatch(crowdRow, /snapshot\.taskCount|snapshot\.cellCount|snapshot\.contributorCount|pendingGrades|通过/);
   assert.match(stylesSource, /\.floating-radar\s*{[\s\S]*?grid-template-columns: minmax\(48px, 0\.12fr\) minmax\(0, 1\.88fr\);/);
+  assert.match(
+    stylesSource,
+    /\.floating-panel-surface \.floating-radar\s*{[\s\S]*?grid-template-columns: minmax\(33px, 0\.12fr\) minmax\(0, 1\.88fr\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.floating-panel-surface \.floating-radar--speed-window\s*{[\s\S]*?grid-template-columns: minmax\(89px, 0\.42fr\) minmax\(0, 1\.58fr\);/,
+  );
   assert.match(stylesSource, /\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.7fr\) minmax\(0, 1\.3fr\);/);
   assert.match(stylesSource, /\.floating-crowd-radar-trailing,\s*\.floating-radar-iq\s*{[\s\S]*?padding-left: calc\(6px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-radar \+ \.floating-crowd-radar\s*{[\s\S]*?margin-top: calc\(-2px \* var\(--floating-scale\)\);/);
@@ -271,6 +279,14 @@ test("floating radar shows four ordinary model IQ scores without stale probabili
   assert.match(stylesSource, /\.floating-radar-models\s*{[\s\S]*?display: block;[\s\S]*?text-overflow: clip;/);
   assert.match(stylesSource, /\.floating-radar\s*{[\s\S]*?grid-template-columns: minmax\(48px, 0\.12fr\) minmax\(0, 1\.88fr\);/);
   assert.match(stylesSource, /\.floating-radar--speed-window\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.42fr\) minmax\(0, 1\.58fr\);/);
+  assert.match(
+    stylesSource,
+    /\.floating-panel-surface \.floating-radar\s*{[\s\S]*?grid-template-columns: minmax\(33px, 0\.12fr\) minmax\(0, 1\.88fr\);/,
+  );
+  assert.match(
+    stylesSource,
+    /\.floating-panel-surface \.floating-radar--speed-window\s*{[\s\S]*?grid-template-columns: minmax\(89px, 0\.42fr\) minmax\(0, 1\.58fr\);/,
+  );
   assert.match(stylesSource, /\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.7fr\) minmax\(0, 1\.3fr\);/);
   assert.match(previewSource, /className="floating-radar-dot"/);
   assert.match(stylesSource, /\.floating-radar strong\s*{[\s\S]*?display: grid;[\s\S]*?grid-template-columns: calc\(4px \* var\(--floating-scale\)\) max-content minmax\(0, 1fr\);/);

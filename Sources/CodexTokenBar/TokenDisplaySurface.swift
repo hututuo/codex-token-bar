@@ -550,7 +550,13 @@ struct TokenDisplayCard: View {
         case .quota:
             TokenQuotaMiniStrip(snapshot: snapshot.quota)
         case .radar:
-            TokenDisplayRadarStrip(presentation: radarPresentation)
+            // The floating surface gives the waiting/action column a little
+            // less room so the IQ divider sits farther left. Keep the
+            // status-bar panel on its existing compact geometry.
+            TokenDisplayRadarStrip(
+                presentation: radarPresentation,
+                dividerShift: 3
+            )
         case .crowdRadar:
             TokenDisplayCrowdRadarRow(
                 presentation: radarPresentation,

@@ -9400,6 +9400,19 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   grid-template-columns: minmax(104px, 0.42fr) minmax(0, 1.58fr);
 }
 
+/*
+ * The floating surface has a separate waiting/action ↔ IQ divider from the
+ * main dashboard. Move only that floating divider 15px left; status-panel
+ * cards keep their existing compact geometry.
+ */
+.floating-panel-surface .floating-radar {
+  grid-template-columns: minmax(33px, 0.12fr) minmax(0, 1.88fr);
+}
+
+.floating-panel-surface .floating-radar--speed-window {
+  grid-template-columns: minmax(89px, 0.42fr) minmax(0, 1.58fr);
+}
+
 .floating-crowd-radar {
   grid-template-columns: minmax(104px, 0.7fr) minmax(0, 1.3fr);
   align-items: center;
