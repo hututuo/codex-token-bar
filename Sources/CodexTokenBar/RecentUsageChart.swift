@@ -1193,6 +1193,11 @@ struct RecentUsageChart: View, Equatable {
     @State private var hoveredIndex: Int?
     @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
     @State private var consumptionSelectionTimeAnchor: RecentChartSelectionTimeAnchor?
+    // The fixed selection is calculated once on the second click and reused
+    // by both the time-anchor update and the rendered summary. Recomputing it
+    // from the view body would repeat the full event/pricing pass on the main
+    // thread and make the summary appear a few frames late.
+    @State private var cachedFixedConsumptionSelection: QuotaConsumptionSelection?
     @State private var consumptionSelectionInvalidationMessage: String?
     @State private var previewVisibility = RecentChartPreviewVisibilityState()
     @State private var accessibilityCursorState = RecentChartAccessibilityCursorState()
@@ -1232,6 +1237,7 @@ struct RecentUsageChart: View, Equatable {
         _renderGeneration = State(initialValue: 0)
         _renderFrameCache = State(initialValue: RecentChartRenderFrameCache())
         _preparedData = State(initialValue: .empty)
+        _cachedFixedConsumptionSelection = State(initialValue: nil)
     }
 
     nonisolated static func == (lhs: RecentUsageChart, rhs: RecentUsageChart) -> Bool {
@@ -2132,6 +2138,7 @@ struct RecentUsageChart: View, Equatable {
         guard updatedData != preparedData else {
             var renderInputsChanged = false
             if updatedBucketCostsUSD != cachedBucketCostsUSD {
+                cachedFixedConsumptionSelection = nil
                 cachedBucketCostsUSD = updatedBucketCostsUSD
                 renderInputsChanged = true
             }
@@ -2141,9 +2148,11 @@ struct RecentUsageChart: View, Equatable {
             }
             if renderInputsChanged {
                 renderGeneration &+= 1
+                rebuildFixedConsumptionSelectionCache()
             }
             return
         }
+        cachedFixedConsumptionSelection = nil
         preparedData = updatedData
         cachedBucketCostsUSD = updatedBucketCostsUSD
         cachedFixedScales = updatedFixedScales
@@ -2157,13 +2166,16 @@ struct RecentUsageChart: View, Equatable {
     }
 
     private func refreshBucketCosts() {
+        cachedFixedConsumptionSelection = nil
         let updated = Self.bucketCosts(
             for: preparedData,
             priceModel: selectedQuotaEstimateModel
         )
-        guard updated != cachedBucketCostsUSD else { return }
-        cachedBucketCostsUSD = updated
-        renderGeneration &+= 1
+        if updated != cachedBucketCostsUSD {
+            cachedBucketCostsUSD = updated
+            renderGeneration &+= 1
+        }
+        rebuildFixedConsumptionSelectionCache()
     }
 
     private static func fixedScales(
@@ -2204,6 +2216,20 @@ struct RecentUsageChart: View, Equatable {
         return estimate.costUSD.isFinite ? max(estimate.costUSD, 0) : 0
     }
 
+    private func rebuildFixedConsumptionSelectionCache() {
+        guard let startIndex = consumptionSelectionState.startIndex,
+              let fixedEndIndex = consumptionSelectionState.fixedEndIndex else {
+            cachedFixedConsumptionSelection = nil
+            return
+        }
+        cachedFixedConsumptionSelection = preparedData.quotaConsumptionSelection(
+            startIndex: startIndex,
+            endIndex: fixedEndIndex,
+            priceCard: .officialAPI(selectedQuotaEstimateModel),
+            attributionEvents: attributionEvents
+        )
+    }
+
     private var activeConsumptionSelection: QuotaConsumptionSelection? {
         guard let startIndex = consumptionSelectionState.startIndex,
               !preparedData.bins.isEmpty else { return nil }
@@ -2213,6 +2239,12 @@ struct RecentUsageChart: View, Equatable {
             hoveredIndex: validHover,
             fallbackEndIndex: fallbackEnd
         ) ?? fallbackEnd
+        if consumptionSelectionState.fixedEndIndex != nil,
+           let cachedSelection = cachedFixedConsumptionSelection,
+           cachedSelection.startIndex == startIndex,
+           cachedSelection.endIndex == endIndex {
+            return cachedSelection
+        }
         return preparedData.quotaConsumptionSelection(
             startIndex: startIndex,
             endIndex: endIndex,
@@ -2250,28 +2282,26 @@ struct RecentUsageChart: View, Equatable {
             validCount: preparedData.bins.count
         )
 
-        if let startIndex = consumptionSelectionState.startIndex,
-           let fixedEndIndex = consumptionSelectionState.fixedEndIndex,
-           let selection = preparedData.quotaConsumptionSelection(
-               startIndex: startIndex,
-               endIndex: fixedEndIndex,
-               priceCard: .officialAPI(selectedQuotaEstimateModel),
-               attributionEvents: attributionEvents
-           ) {
-            consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
-                selection: selection,
-                bucketInterval: preparedData.bucketInterval
-            )
-        } else {
-            consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
-                startDate: clickedDate,
-                bucketInterval: preparedData.bucketInterval
-            )
+        if consumptionSelectionState.fixedEndIndex != nil {
+            rebuildFixedConsumptionSelectionCache()
+            if let selection = cachedFixedConsumptionSelection {
+                consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
+                    selection: selection,
+                    bucketInterval: preparedData.bucketInterval
+                )
+                return
+            }
         }
+        cachedFixedConsumptionSelection = nil
+        consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
+            startDate: clickedDate,
+            bucketInterval: preparedData.bucketInterval
+        )
     }
 
     private func restoreConsumptionSelection(in updatedData: RecentChartPreparedData) {
         guard let anchor = consumptionSelectionTimeAnchor else {
+            cachedFixedConsumptionSelection = nil
             consumptionSelectionState.clamp(validCount: updatedData.bins.count)
             return
         }
@@ -2279,6 +2309,7 @@ struct RecentUsageChart: View, Equatable {
             in: updatedData.bins,
             bucketInterval: updatedData.bucketInterval
         ) else {
+            cachedFixedConsumptionSelection = nil
             hoveredIndex = nil
             consumptionSelectionState.reset()
             consumptionSelectionTimeAnchor = nil
@@ -2296,6 +2327,7 @@ struct RecentUsageChart: View, Equatable {
         }
         hoveredIndex = nil
         consumptionSelectionState = relocatedState
+        rebuildFixedConsumptionSelectionCache()
         consumptionSelectionInvalidationMessage = nil
     }
 
@@ -2303,6 +2335,7 @@ struct RecentUsageChart: View, Equatable {
         hoveredIndex = nil
         consumptionSelectionState.reset()
         consumptionSelectionTimeAnchor = nil
+        cachedFixedConsumptionSelection = nil
         consumptionSelectionInvalidationMessage = nil
     }
 

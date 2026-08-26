@@ -342,6 +342,8 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         XCTAssertTrue(source.contains("let liveHoverIndex = hoveredIndex"))
         XCTAssertTrue(source.contains("hoveredIndexSnapshot: liveHoverIndex"))
         XCTAssertTrue(source.contains("activeSelectionAttribution(\n            for: consumptionSelection"))
+        XCTAssertTrue(source.contains("cachedFixedConsumptionSelection"))
+        XCTAssertTrue(source.contains("rebuildFixedConsumptionSelectionCache()"))
         XCTAssertFalse(
             source.contains("guard selectedRange == .twentyFourHours"),
             "shared-account attribution must not be restricted to 24h"
