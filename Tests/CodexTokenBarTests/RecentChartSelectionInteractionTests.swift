@@ -485,7 +485,10 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         let hostingView = NSHostingView(
             rootView: chart.frame(maxHeight: .infinity, alignment: .topLeading)
         )
-        hostingView.frame = NSRect(x: 0, y: 0, width: 980, height: 520)
+        // Leave enough vertical room for the fixed selection summary. A
+        // 520-point host is shorter than the rendered summary state and causes
+        // AppKit to center an otherwise stable chart by a few points.
+        hostingView.frame = NSRect(x: 0, y: 0, width: 980, height: 640)
         let window = NSWindow(
             contentRect: hostingView.frame,
             styleMask: [.borderless],
