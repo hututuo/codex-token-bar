@@ -40,6 +40,40 @@ struct CodexUsageIndexUpgradeRequiredError: LocalizedError, Equatable, Sendable 
     }
 }
 
+struct CodexUsageIndexStorageMaintenancePolicy: Equatable, Sendable {
+    var minimumCheckInterval: TimeInterval = 24 * 60 * 60
+    var minimumFreeBytes: UInt64 = 64 * 1_024 * 1_024
+    var absoluteFreeBytes: UInt64 = 256 * 1_024 * 1_024
+    var minimumFreePercent: UInt64 = 20
+    var diskReserveBytes: UInt64 = 512 * 1_024 * 1_024
+
+    static let standard = CodexUsageIndexStorageMaintenancePolicy()
+}
+
+enum CodexUsageIndexStorageMaintenanceOutcome: Equatable, Sendable {
+    case notDue
+    case belowThreshold(databaseBytes: UInt64, freeBytes: UInt64)
+    case insufficientSpace(
+        databaseBytes: UInt64,
+        freeBytes: UInt64,
+        availableBytes: UInt64,
+        requiredBytes: UInt64
+    )
+    case compacted(beforeBytes: UInt64, afterBytes: UInt64, reclaimedBytes: UInt64)
+}
+
+private extension UInt64 {
+    func multipliedClampingOnOverflow(by value: UInt64) -> UInt64 {
+        let (result, overflow) = multipliedReportingOverflow(by: value)
+        return overflow ? .max : result
+    }
+
+    func addingClampingOnOverflow(_ value: UInt64) -> UInt64 {
+        let (result, overflow) = addingReportingOverflow(value)
+        return overflow ? .max : result
+    }
+}
+
 extension CodexUsageAnalyzer {
     struct IndexedTokenEvent {
         let event: TokenEvent
@@ -420,6 +454,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let indexNamespace = "exact-usage-history-v1"
     private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
     private static let disabledCacheEnvironmentKey = "CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"
+    private static let storageMaintenanceLastCheckedKey =
+        "storage_maintenance_last_checked_unix"
+    private static let storageMaintenanceLastCompactedKey =
+        "storage_maintenance_last_compacted_unix"
+    private static let storageMaintenanceScheduler =
+        CodexUsageIndexStorageMaintenanceScheduler()
     private static let operationLocks = CodexUsageHistoryIndexOperationLockRegistry()
     private static let operationLockTimeoutState = CodexUsageHistoryIndexLockTimeoutState()
     private static let stagingTestState = CodexUsageHistoryStagingTestState()
@@ -699,6 +739,181 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try operationGate.withLock(body)
     }
 
+    static func performStorageMaintenanceIfDue(
+        databaseURL: URL,
+        now: Date = Date(),
+        policy: CodexUsageIndexStorageMaintenancePolicy = .standard,
+        availableCapacityOverride: UInt64? = nil,
+        fileManager: FileManager = .default
+    ) throws -> CodexUsageIndexStorageMaintenanceOutcome {
+        let index = try CodexUsageHistoryIndex(
+            databaseURL: databaseURL,
+            fileManager: fileManager
+        )
+        return try index.withExclusiveAccess {
+            try index.performStorageMaintenanceIfDue(
+                now: now,
+                policy: policy,
+                availableCapacityOverride: availableCapacityOverride
+            )
+        }
+    }
+
+    private static func scheduleStorageMaintenance(databaseURL: URL) {
+        let processInfo = ProcessInfo.processInfo
+        let isRunningTests = processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || Bundle.main.bundlePath.hasSuffix(".xctest")
+            || processInfo.processName.contains("PackageTests")
+        guard processInfo.environment[disabledCacheEnvironmentKey] != "1",
+              !isRunningTests else {
+            return
+        }
+        storageMaintenanceScheduler.schedule(databaseURL: databaseURL)
+    }
+
+    private func performStorageMaintenanceIfDue(
+        now: Date,
+        policy: CodexUsageIndexStorageMaintenancePolicy,
+        availableCapacityOverride: UInt64?
+    ) throws -> CodexUsageIndexStorageMaintenanceOutcome {
+        try driver.withConnection { connection in
+            try configure(connection)
+            let nowUnix = Int64(now.timeIntervalSince1970.rounded(.down))
+            let lastChecked = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = ? LIMIT 1;",
+                bindings: [.text(Self.storageMaintenanceLastCheckedKey)]
+            ) { $0.text(0) }.first.flatMap { $0 }.flatMap(Int64.init)
+            if let lastChecked,
+               now.timeIntervalSince1970 - Double(lastChecked) < policy.minimumCheckInterval {
+                return .notDue
+            }
+
+            func pragmaValue(_ name: String) throws -> UInt64 {
+                let value = try connection.readRows("PRAGMA \(name);") {
+                    $0.int64(0)
+                }.first.flatMap { $0 }
+                guard let value, value >= 0 else {
+                    throw SQLiteDatabaseError(
+                        operation: "Read exact index \(name)",
+                        code: SQLITE_CORRUPT,
+                        message: "Invalid PRAGMA \(name) value",
+                        path: driver.url.path
+                    )
+                }
+                return UInt64(value)
+            }
+
+            let pageSize = try pragmaValue("page_size")
+            let pageCount = try pragmaValue("page_count")
+            let freePages = try pragmaValue("freelist_count")
+            let databaseBytes = pageCount.multipliedClampingOnOverflow(by: pageSize)
+            let freeBytes = freePages.multipliedClampingOnOverflow(by: pageSize)
+            let ratioReached = pageCount > 0
+                && freePages.multipliedClampingOnOverflow(by: 100)
+                    >= pageCount.multipliedClampingOnOverflow(by: policy.minimumFreePercent)
+            let shouldCompact = freeBytes >= policy.minimumFreeBytes
+                && (ratioReached || freeBytes >= policy.absoluteFreeBytes)
+            if !shouldCompact {
+                try recordStorageMaintenanceCheck(
+                    connection: connection,
+                    nowUnix: nowUnix,
+                    compacted: false
+                )
+                return .belowThreshold(
+                    databaseBytes: databaseBytes,
+                    freeBytes: freeBytes
+                )
+            }
+
+            let requiredBytes = databaseBytes
+                .multipliedClampingOnOverflow(by: 2)
+                .addingClampingOnOverflow(policy.diskReserveBytes)
+            let availableBytes: UInt64
+            if let availableCapacityOverride {
+                availableBytes = availableCapacityOverride
+            } else {
+                availableBytes = try availableStorageCapacity(
+                    at: driver.url.deletingLastPathComponent()
+                )
+            }
+            guard availableBytes >= requiredBytes else {
+                try recordStorageMaintenanceCheck(
+                    connection: connection,
+                    nowUnix: nowUnix,
+                    compacted: false
+                )
+                return .insufficientSpace(
+                    databaseBytes: databaseBytes,
+                    freeBytes: freeBytes,
+                    availableBytes: availableBytes,
+                    requiredBytes: requiredBytes
+                )
+            }
+
+            try connection.execute("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+            try recordStorageMaintenanceCheck(
+                connection: connection,
+                nowUnix: nowUnix,
+                compacted: true
+            )
+            let afterPageSize = try pragmaValue("page_size")
+            let afterPageCount = try pragmaValue("page_count")
+            let afterBytes = afterPageCount.multipliedClampingOnOverflow(by: afterPageSize)
+            return .compacted(
+                beforeBytes: databaseBytes,
+                afterBytes: afterBytes,
+                reclaimedBytes: databaseBytes >= afterBytes ? databaseBytes - afterBytes : 0
+            )
+        }
+    }
+
+    private func recordStorageMaintenanceCheck(
+        connection: SQLiteDatabaseConnection,
+        nowUnix: Int64,
+        compacted: Bool
+    ) throws {
+        try connection.execute(
+            """
+            INSERT INTO schema_meta(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            bindings: [
+                .text(Self.storageMaintenanceLastCheckedKey),
+                .text(String(nowUnix)),
+            ]
+        )
+        if compacted {
+            try connection.execute(
+                """
+                INSERT INTO schema_meta(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """,
+                bindings: [
+                    .text(Self.storageMaintenanceLastCompactedKey),
+                    .text(String(nowUnix)),
+                ]
+            )
+        }
+    }
+
+    private func availableStorageCapacity(at directory: URL) throws -> UInt64 {
+        let values = try directory.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey
+        ])
+        guard let available = values.volumeAvailableCapacityForImportantUsage,
+              available >= 0 else {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileReadUnknownError,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "无法确认精确索引维护所需的磁盘余量。",
+                    NSFilePathErrorKey: directory.path,
+                ]
+            )
+        }
+        return UInt64(available)
+    }
+
     static func waitForExclusiveAccessWaiterForTesting(
         codexHome: URL,
         timeout: TimeInterval
@@ -758,7 +973,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
         Self.sourceProbeTestState.recordSynchronization()
-        return try withExclusiveAccess {
+        let result = try withExclusiveAccess {
             try synchronizeExclusively(
                 files: files,
                 sessionID: sessionID,
@@ -766,6 +981,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 onProgress: onProgress
             )
         }
+        Self.scheduleStorageMaintenance(databaseURL: driver.url)
+        return result
     }
 
     func attributionState() throws -> AttributionState {
@@ -6236,6 +6453,68 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             return nil
         }
         return (sourceID, sourceOffset)
+    }
+}
+
+private final class CodexUsageIndexStorageMaintenanceScheduler: @unchecked Sendable {
+    private static let minimumScheduleInterval: TimeInterval = 24 * 60 * 60
+    private static let idleDelay: TimeInterval = 30
+
+    private let lock = NSLock()
+    private var lastScheduledAt: [String: Date] = [:]
+
+    func schedule(databaseURL: URL, now: Date = Date()) {
+        let key = databaseURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let shouldSchedule = lock.withLock {
+            lastScheduledAt = lastScheduledAt.filter {
+                now.timeIntervalSince($0.value) < Self.minimumScheduleInterval
+            }
+            if let lastScheduled = lastScheduledAt[key],
+               now.timeIntervalSince(lastScheduled) < Self.minimumScheduleInterval {
+                return false
+            }
+            lastScheduledAt[key] = now
+            return true
+        }
+        guard shouldSchedule else { return }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + Self.idleDelay
+        ) {
+            let startedAt = Date()
+            do {
+                let outcome = try CodexUsageHistoryIndex.performStorageMaintenanceIfDue(
+                    databaseURL: databaseURL
+                )
+                RefreshPerformanceProbe.event(
+                    "exactIndex.storageMaintenance",
+                    metadata: [
+                        "elapsed_ms": String(
+                            format: "%.2f",
+                            Date().timeIntervalSince(startedAt) * 1_000
+                        ),
+                        "outcome": String(describing: outcome),
+                    ]
+                )
+            } catch {
+                self.lock.withLock {
+                    if self.lastScheduledAt[key] == now {
+                        self.lastScheduledAt.removeValue(forKey: key)
+                    }
+                }
+                RefreshPerformanceProbe.event(
+                    "exactIndex.storageMaintenance",
+                    metadata: [
+                        "elapsed_ms": String(
+                            format: "%.2f",
+                            Date().timeIntervalSince(startedAt) * 1_000
+                        ),
+                        "error": error.localizedDescription,
+                        "outcome": "error",
+                    ]
+                )
+            }
+        }
     }
 }
 

@@ -125,6 +125,55 @@ const STAGING_MAX_READY_BYTES: u64 = 512 * 1024 * 1024;
 const STAGING_MIN_FREE_RESERVE_BYTES: u64 = 64 * 1024 * 1024;
 const STAGING_MANIFEST_INTEGRITY: &str = "sqlite-quick-check-v1";
 const MIGRATION_STAGE_TOTAL: u64 = 6;
+const STORAGE_MAINTENANCE_LAST_CHECKED_KEY: &str = "storage_maintenance_last_checked_unix";
+const STORAGE_MAINTENANCE_LAST_COMPACTED_KEY: &str = "storage_maintenance_last_compacted_unix";
+const STORAGE_MAINTENANCE_INTERVAL_SECONDS: i64 = 24 * 60 * 60;
+const STORAGE_MAINTENANCE_MIN_FREE_BYTES: u64 = 64 * 1024 * 1024;
+const STORAGE_MAINTENANCE_ABSOLUTE_FREE_BYTES: u64 = 256 * 1024 * 1024;
+const STORAGE_MAINTENANCE_MIN_FREE_PERCENT: u64 = 20;
+const STORAGE_MAINTENANCE_DISK_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct ExactStorageMaintenancePolicy {
+    minimum_check_interval_seconds: i64,
+    minimum_free_bytes: u64,
+    absolute_free_bytes: u64,
+    minimum_free_percent: u64,
+    disk_reserve_bytes: u64,
+}
+
+impl Default for ExactStorageMaintenancePolicy {
+    fn default() -> Self {
+        Self {
+            minimum_check_interval_seconds: STORAGE_MAINTENANCE_INTERVAL_SECONDS,
+            minimum_free_bytes: STORAGE_MAINTENANCE_MIN_FREE_BYTES,
+            absolute_free_bytes: STORAGE_MAINTENANCE_ABSOLUTE_FREE_BYTES,
+            minimum_free_percent: STORAGE_MAINTENANCE_MIN_FREE_PERCENT,
+            disk_reserve_bytes: STORAGE_MAINTENANCE_DISK_RESERVE_BYTES,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ExactStorageMaintenanceOutcome {
+    NotDue,
+    Busy,
+    BelowThreshold {
+        database_bytes: u64,
+        free_bytes: u64,
+    },
+    InsufficientSpace {
+        database_bytes: u64,
+        free_bytes: u64,
+        available_bytes: u64,
+        required_bytes: u64,
+    },
+    Compacted {
+        before_bytes: u64,
+        after_bytes: u64,
+        reclaimed_bytes: u64,
+    },
+}
 
 pub(super) struct ExactUsageIndex {
     connection: ManagedIndexConnection,
@@ -1180,6 +1229,45 @@ fn assess_index_migration(
     })
 }
 
+fn pragma_u64(connection: &Connection, name: &str) -> Result<u64, String> {
+    connection
+        .query_row(&format!("PRAGMA {name}"), [], |row| row.get::<_, u64>(0))
+        .map_err(|error| format!("无法读取精确 token 索引 {name}：{error}"))
+}
+
+pub(super) fn maintain_exact_index_storage_if_due(
+    codex_home: &Path,
+    now_unix: i64,
+) -> Result<ExactStorageMaintenanceOutcome, String> {
+    let mut index = ExactUsageIndex::open(codex_home)?;
+    index.maintain_storage_if_due(
+        now_unix,
+        ExactStorageMaintenancePolicy::default(),
+        None,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn maintain_exact_index_storage_for_testing(
+    codex_home: &Path,
+    now_unix: i64,
+    minimum_check_interval_seconds: i64,
+    available_bytes: u64,
+) -> Result<ExactStorageMaintenanceOutcome, String> {
+    let mut index = ExactUsageIndex::open(codex_home)?;
+    index.maintain_storage_if_due(
+        now_unix,
+        ExactStorageMaintenancePolicy {
+            minimum_check_interval_seconds,
+            minimum_free_bytes: 1,
+            absolute_free_bytes: 1,
+            minimum_free_percent: 0,
+            disk_reserve_bytes: 0,
+        },
+        Some(available_bytes),
+    )
+}
+
 impl ExactUsageIndex {
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
         let operation_lock = AppOperationGuard::acquire(codex_home)?;
@@ -1651,6 +1739,118 @@ impl ExactUsageIndex {
             _operation_lock: operation_lock,
             migration_pending: !migration_markers_complete,
         })
+    }
+
+    fn maintain_storage_if_due(
+        &mut self,
+        now_unix: i64,
+        policy: ExactStorageMaintenancePolicy,
+        available_bytes_override: Option<u64>,
+    ) -> Result<ExactStorageMaintenanceOutcome, String> {
+        if self.migration_pending {
+            return Ok(ExactStorageMaintenanceOutcome::NotDue);
+        }
+        let last_checked = metadata_i64(&self.connection, STORAGE_MAINTENANCE_LAST_CHECKED_KEY)?;
+        if last_checked.is_some_and(|last| {
+            now_unix.saturating_sub(last) < policy.minimum_check_interval_seconds
+        }) {
+            return Ok(ExactStorageMaintenanceOutcome::NotDue);
+        }
+
+        let index_path = self.connection.path.clone();
+        let operation_lock_path = sqlite_sidecar_path(&index_path, ".operation.lock");
+        let Some(_operation_lock) = CrossProcessFileLock::try_acquire(
+            &operation_lock_path,
+            "精确 token 索引存储维护",
+        )? else {
+            return Ok(ExactStorageMaintenanceOutcome::Busy);
+        };
+        let integrity_gate = index_integrity_gate(&index_path);
+        let _integrity_guard = integrity_gate.enter_silent(&index_path);
+
+        let page_size = pragma_u64(&self.connection, "page_size")?;
+        let page_count = pragma_u64(&self.connection, "page_count")?;
+        let free_pages = pragma_u64(&self.connection, "freelist_count")?;
+        let database_bytes = page_count.saturating_mul(page_size);
+        let free_bytes = free_pages.saturating_mul(page_size);
+        let ratio_reached = page_count > 0
+            && free_pages.saturating_mul(100)
+                >= page_count.saturating_mul(policy.minimum_free_percent);
+        let should_compact = free_bytes >= policy.minimum_free_bytes
+            && (ratio_reached || free_bytes >= policy.absolute_free_bytes);
+        if !should_compact {
+            self.record_storage_maintenance_check(now_unix, false)?;
+            return Ok(ExactStorageMaintenanceOutcome::BelowThreshold {
+                database_bytes,
+                free_bytes,
+            });
+        }
+
+        // SQLite documents that VACUUM can need up to roughly twice the
+        // current database size in temporary space. Keep an additional fixed
+        // reserve so reclaiming a derived cache can never consume the user's
+        // last writable bytes.
+        let required_bytes = database_bytes
+            .saturating_mul(2)
+            .saturating_add(policy.disk_reserve_bytes);
+        let capacity_root = index_path.parent().unwrap_or_else(|| Path::new("."));
+        let available_bytes = if let Some(available_bytes) = available_bytes_override {
+            available_bytes
+        } else {
+            available_space(capacity_root).map_err(|error| {
+                format!(
+                    "无法检查精确 token 索引维护可用空间 {}：{error}",
+                    capacity_root.display()
+                )
+            })?
+        };
+        if available_bytes < required_bytes {
+            self.record_storage_maintenance_check(now_unix, false)?;
+            return Ok(ExactStorageMaintenanceOutcome::InsufficientSpace {
+                database_bytes,
+                free_bytes,
+                available_bytes,
+                required_bytes,
+            });
+        }
+
+        self.connection.mark_receipt_dirty();
+        self.connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+            .map_err(|error| format!("无法压缩精确 token 索引空闲页：{error}"))?;
+        self.record_storage_maintenance_check(now_unix, true)?;
+        self.connection.mark_receipt_eligible();
+
+        let after_page_size = pragma_u64(&self.connection, "page_size")?;
+        let after_page_count = pragma_u64(&self.connection, "page_count")?;
+        let after_bytes = after_page_count.saturating_mul(after_page_size);
+        Ok(ExactStorageMaintenanceOutcome::Compacted {
+            before_bytes: database_bytes,
+            after_bytes,
+            reclaimed_bytes: database_bytes.saturating_sub(after_bytes),
+        })
+    }
+
+    fn record_storage_maintenance_check(
+        &mut self,
+        now_unix: i64,
+        compacted: bool,
+    ) -> Result<(), String> {
+        self.connection.mark_receipt_dirty();
+        set_metadata(
+            &self.connection,
+            STORAGE_MAINTENANCE_LAST_CHECKED_KEY,
+            &now_unix.to_string(),
+        )?;
+        if compacted {
+            set_metadata(
+                &self.connection,
+                STORAGE_MAINTENANCE_LAST_COMPACTED_KEY,
+                &now_unix.to_string(),
+            )?;
+        }
+        self.connection.mark_receipt_eligible();
+        Ok(())
     }
 
     pub(super) fn refresh_session_catalog<F>(

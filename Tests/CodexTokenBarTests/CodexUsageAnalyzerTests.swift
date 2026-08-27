@@ -6591,6 +6591,107 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         // and block every fresh app process before cached data can render.
     }
 
+    func testExactHistoryStorageMaintenanceReclaimsOnlyWhenDueAndDiskIsSafe() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageStorageMaintenance")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-storagemaint",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        _ = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        let databaseURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let database = SQLiteDatabaseDriver(url: databaseURL, enableWAL: true)
+        let eventCountBefore = try scalarInt("SELECT COUNT(*) FROM events;", in: database)
+        try database.execute(
+            """
+            CREATE TABLE storage_maintenance_bloat(
+                id INTEGER PRIMARY KEY,
+                payload BLOB NOT NULL
+            );
+            WITH RECURSIVE rows(value) AS (
+                VALUES(1)
+                UNION ALL
+                SELECT value + 1 FROM rows WHERE value < 4096
+            )
+            INSERT INTO storage_maintenance_bloat(payload)
+            SELECT zeroblob(4096) FROM rows;
+            DROP TABLE storage_maintenance_bloat;
+            PRAGMA wal_checkpoint(TRUNCATE);
+            """
+        )
+        let freePagesBefore = try scalarInt("PRAGMA freelist_count;", in: database)
+        XCTAssertGreaterThan(freePagesBefore, 1_000)
+        let bytesBefore = try XCTUnwrap(
+            databaseURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        )
+        let policy = CodexUsageIndexStorageMaintenancePolicy(
+            minimumCheckInterval: 60 * 60,
+            minimumFreeBytes: 1,
+            absoluteFreeBytes: 1,
+            minimumFreePercent: 0,
+            diskReserveBytes: 0
+        )
+        let firstCheck = Date(timeIntervalSince1970: 1_787_840_000)
+
+        let insufficient = try CodexUsageHistoryIndex.performStorageMaintenanceIfDue(
+            databaseURL: databaseURL,
+            now: firstCheck,
+            policy: policy,
+            availableCapacityOverride: 0
+        )
+        guard case .insufficientSpace = insufficient else {
+            return XCTFail("expected low-disk maintenance skip, got \(insufficient)")
+        }
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM events;", in: database),
+            eventCountBefore
+        )
+
+        let compactedAt = firstCheck.addingTimeInterval(60 * 60 + 1)
+        let compacted = try CodexUsageHistoryIndex.performStorageMaintenanceIfDue(
+            databaseURL: databaseURL,
+            now: compactedAt,
+            policy: policy,
+            availableCapacityOverride: .max
+        )
+        guard case let .compacted(beforeBytes, afterBytes, reclaimedBytes) = compacted else {
+            return XCTFail("expected storage compaction, got \(compacted)")
+        }
+        XCTAssertEqual(beforeBytes, UInt64(bytesBefore))
+        XCTAssertLessThan(afterBytes, beforeBytes)
+        XCTAssertGreaterThan(reclaimedBytes, 0)
+        XCTAssertLessThan(
+            try scalarInt("PRAGMA freelist_count;", in: database),
+            freePagesBefore
+        )
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM events;", in: database),
+            eventCountBefore
+        )
+        XCTAssertEqual(
+            try database.readRows("PRAGMA quick_check(1);") { $0.text(0) }.compactMap { $0 },
+            ["ok"]
+        )
+        XCTAssertEqual(
+            try CodexUsageHistoryIndex.performStorageMaintenanceIfDue(
+                databaseURL: databaseURL,
+                now: compactedAt,
+                policy: policy,
+                availableCapacityOverride: .max
+            ),
+            .notDue
+        )
+    }
+
     private func makeCodexHome() throws -> URL {
         let directory = try makeTemporaryDirectory(named: "CodexUsageAnalyzerTests")
         try FileManager.default.createDirectory(

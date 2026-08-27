@@ -55,6 +55,9 @@ static ATTRIBUTION_MUTATION_WATCHERS: OnceLock<
 > = OnceLock::new();
 static ATTRIBUTION_MARKER_WRITE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static ATTRIBUTION_WATCHER_FAILURES: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+#[cfg(not(test))]
+static EXACT_STORAGE_MAINTENANCE_SCHEDULE: OnceLock<Mutex<HashMap<PathBuf, Instant>>> =
+    OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 #[cfg(test)]
@@ -88,6 +91,10 @@ const LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
 // events only; it never rescans JSONL bodies.
 const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 20;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
+#[cfg(not(test))]
+const EXACT_STORAGE_MAINTENANCE_INTERVAL: StdDuration = StdDuration::from_secs(24 * 60 * 60);
+#[cfg(not(test))]
+const EXACT_STORAGE_MAINTENANCE_IDLE_DELAY: StdDuration = StdDuration::from_secs(30);
 const PRECISE_SUMMARY_REFRESH_TTL: StdDuration = StdDuration::from_secs(3 * 60);
 const PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL: StdDuration = StdDuration::from_secs(30);
 const PRECISE_REFRESH_COMPLETED_OWNER_WINDOW: StdDuration = StdDuration::from_secs(5 * 60);
@@ -1278,7 +1285,13 @@ fn spawn_precise_refresh_owner(
                 run_precise_refresh(&thread_coordinator, &key, &owner.state.flight)
             }));
             match result {
-                Ok(result) => owner.finish(result),
+                Ok(result) => {
+                    let completed_successfully = result.summary.is_ok();
+                    owner.finish(result);
+                    if completed_successfully {
+                        schedule_exact_storage_maintenance(&key);
+                    }
+                }
                 Err(_) => {
                     finish_precise_dashboard_progress(
                         &spawn_progress_key,
@@ -1305,6 +1318,63 @@ fn spawn_precise_refresh_owner(
         );
     }
 }
+
+#[cfg(not(test))]
+fn schedule_exact_storage_maintenance(canonical_home: &Path) {
+    let canonical_home = canonical_home.to_path_buf();
+    let now = Instant::now();
+    let schedule = EXACT_STORAGE_MAINTENANCE_SCHEDULE
+        .get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let mut schedule = schedule
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        schedule.retain(|_, last| {
+            now.saturating_duration_since(*last) < EXACT_STORAGE_MAINTENANCE_INTERVAL
+        });
+        if schedule.get(&canonical_home).is_some_and(|last| {
+            now.saturating_duration_since(*last) < EXACT_STORAGE_MAINTENANCE_INTERVAL
+        }) {
+            return;
+        }
+        schedule.insert(canonical_home.clone(), now);
+    }
+
+    let _ = std::thread::Builder::new()
+        .name("codex-index-maintenance".into())
+        .spawn(move || {
+            std::thread::sleep(EXACT_STORAGE_MAINTENANCE_IDLE_DELAY);
+            let started = Instant::now();
+            let now_unix = OffsetDateTime::now_utc().unix_timestamp();
+            let result = exact_usage_index::maintain_exact_index_storage_if_due(
+                &canonical_home,
+                now_unix,
+            );
+            let should_retry = matches!(
+                &result,
+                Ok(exact_usage_index::ExactStorageMaintenanceOutcome::Busy) | Err(_)
+            );
+            let detail = match result {
+                Ok(outcome) => format!("status=ok outcome={outcome:?}"),
+                Err(error) => format!("status=error error={error}"),
+            };
+            startup_trace::mark_performance(format!(
+                "exact_storage_maintenance elapsed_ms={} {detail}",
+                started.elapsed().as_millis()
+            ));
+            if should_retry {
+                let schedule = EXACT_STORAGE_MAINTENANCE_SCHEDULE
+                    .get_or_init(|| Mutex::new(HashMap::new()));
+                schedule
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&canonical_home);
+            }
+        });
+}
+
+#[cfg(test)]
+fn schedule_exact_storage_maintenance(_canonical_home: &Path) {}
 
 fn run_precise_refresh(
     coordinator: &PreciseRefreshCoordinator,

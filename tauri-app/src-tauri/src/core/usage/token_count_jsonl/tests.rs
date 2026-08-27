@@ -1,8 +1,10 @@
 use super::exact_usage_index::{
     estimate_precise_scan_total_with_source_revision, integrity_receipt_path_for_testing,
+    maintain_exact_index_storage_for_testing,
     open_existing_index_for_testing, open_index_for_testing,
     repair_orphaned_index_rows_for_testing, staging_batch_shape_for_testing,
-    ExactSyncMode, ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY,
+    ExactStorageMaintenanceOutcome, ExactSyncMode, ORPHAN_REPAIR_REVISION,
+    ORPHAN_REPAIR_REVISION_KEY,
     STAGED_FULL_REBUILD_PARSER_REVISION,
 };
 use super::session_files::session_id_from_file;
@@ -9567,6 +9569,115 @@ fn exact_index_readonly_reopen_does_not_rewrite_identical_integrity_receipt() {
         before_identity
     );
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_storage_maintenance_reclaims_free_pages_and_refreshes_receipt() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019estorage-maintenance-0000-0000-fast.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    dashboard_snapshot(&root).unwrap();
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&index_path).unwrap();
+    let event_count_before = connection
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE storage_maintenance_bloat(id INTEGER PRIMARY KEY, payload BLOB NOT NULL);
+            WITH RECURSIVE rows(value) AS (
+                VALUES(1)
+                UNION ALL
+                SELECT value + 1 FROM rows WHERE value < 8192
+            )
+            INSERT INTO storage_maintenance_bloat(payload)
+            SELECT zeroblob(4096) FROM rows;
+            DROP TABLE storage_maintenance_bloat;
+            PRAGMA wal_checkpoint(TRUNCATE);
+            "#,
+        )
+        .unwrap();
+    let free_pages_before = connection
+        .query_row("PRAGMA freelist_count", [], |row| row.get::<_, u64>(0))
+        .unwrap();
+    assert!(free_pages_before > 1_000);
+    drop(connection);
+    let bytes_before = fs::metadata(&index_path).unwrap().len();
+
+    let first_check = 1_787_840_000;
+    let insufficient = maintain_exact_index_storage_for_testing(
+        &root,
+        first_check,
+        60 * 60,
+        0,
+    )
+    .unwrap();
+    assert!(matches!(
+        insufficient,
+        ExactStorageMaintenanceOutcome::InsufficientSpace { .. }
+    ));
+    assert!(matches!(
+        maintain_exact_index_storage_for_testing(
+            &root,
+            first_check,
+            60 * 60,
+            u64::MAX,
+        )
+        .unwrap(),
+        ExactStorageMaintenanceOutcome::NotDue
+    ));
+
+    let outcome = maintain_exact_index_storage_for_testing(
+        &root,
+        first_check + 60 * 60 + 1,
+        60 * 60,
+        u64::MAX,
+    )
+    .unwrap();
+    let ExactStorageMaintenanceOutcome::Compacted {
+        before_bytes,
+        after_bytes,
+        reclaimed_bytes,
+    } = outcome
+    else {
+        panic!("expected storage compaction outcome");
+    };
+    assert_eq!(before_bytes, bytes_before);
+    assert!(after_bytes < before_bytes);
+    assert!(reclaimed_bytes > 0);
+
+    let connection = Connection::open(&index_path).unwrap();
+    let free_pages_after = connection
+        .query_row("PRAGMA freelist_count", [], |row| row.get::<_, u64>(0))
+        .unwrap();
+    assert!(free_pages_after < free_pages_before);
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        event_count_before
+    );
+    assert_eq!(
+        connection
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    drop(connection);
+
+    ExactUsageIndex::clear_integrity_signature_for_testing(&root);
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
     fs::remove_dir_all(root).unwrap();
 }
 
