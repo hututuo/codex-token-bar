@@ -61,13 +61,26 @@ test("quota estimate keeps historical 5h beside 7d after the current 5h window d
         const estimate = container.querySelector('[role="dialog"][aria-label="额度估算"]');
         assert.ok(estimate);
         assert.equal(estimate.closest(".recent-chart-overlay-layer"), null);
-        assert.ok(estimate.closest(".chart-section"));
+        assert.equal(estimate.closest(".chart-section"), null);
+        assert.ok(estimate.closest(".recent-chart-composition"));
         assert.equal(estimate.closest(".recent-chart-scroll-content"), null);
         assert.match(estimate.textContent, /5h/);
         assert.match(estimate.textContent, /7d/);
         assert.match(estimate.textContent, /无 5h 额度/);
         assert.doesNotMatch(estimate.textContent, /5h下降太小/);
         assert.doesNotMatch(estimate.textContent, /倍率/);
+
+        await React.act(async () => estimate.dispatchEvent(new window.PointerEvent("pointerdown", {
+          bubbles: true,
+          pointerId: 2,
+        })));
+        assert.ok(container.querySelector('[role="dialog"][aria-label="额度估算"]'));
+
+        await React.act(async () => window.document.body.dispatchEvent(new window.PointerEvent("pointerdown", {
+          bubbles: true,
+          pointerId: 3,
+        })));
+        assert.equal(container.querySelector('[role="dialog"][aria-label="额度估算"]'), null);
       } finally {
         await React.act(async () => root.unmount());
       }

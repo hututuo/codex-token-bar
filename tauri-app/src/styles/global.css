@@ -1534,6 +1534,10 @@ button {
   background: var(--panel);
 }
 
+.recent-chart-composition {
+  width: 100%;
+}
+
 .quota-strip {
   position: relative;
   z-index: 1;

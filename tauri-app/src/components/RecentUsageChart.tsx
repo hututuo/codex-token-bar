@@ -115,7 +115,7 @@ export function RecentUsageChart({
   const [previewDismissed, setPreviewDismissed] = useState(false);
   const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
   const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
-  const sectionRef = useRef<HTMLElement | null>(null);
+  const interactionRootRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pendingScrollFrameRef = useRef<number | null>(null);
@@ -364,9 +364,9 @@ export function RecentUsageChart({
 
   useEffect(() => {
     const clearForOutsidePointer = (event: PointerEvent) => {
-      const section = sectionRef.current;
+      const interactionRoot = interactionRootRef.current;
       const target = event.target;
-      if (!section || !(target instanceof Node) || section.contains(target)) return;
+      if (!interactionRoot || !(target instanceof Node) || interactionRoot.contains(target)) return;
       setHoveredIndex(null);
       setPreviewDismissed(false);
       setQuotaSelectionState((current) => (
@@ -503,14 +503,15 @@ export function RecentUsageChart({
   }
 
   return (
-    <section ref={sectionRef} className="chart-section" aria-label={data.title}>
-      <div className="recent-chart-head">
-        <div className="recent-chart-title">
-          <h2>{data.title}</h2>
-          <span className="recent-estimate-hint">点击起点/终点可估算额度</span>
-          <span>{data.subtitle}</span>
-        </div>
-        <div className="recent-range-tabs" aria-label="曲线范围">
+    <div ref={interactionRootRef} className="recent-chart-composition">
+      <section className="chart-section" aria-label={data.title}>
+        <div className="recent-chart-head">
+          <div className="recent-chart-title">
+            <h2>{data.title}</h2>
+            <span className="recent-estimate-hint">点击起点/终点可估算额度</span>
+            <span>{data.subtitle}</span>
+          </div>
+          <div className="recent-range-tabs" aria-label="曲线范围">
           {RANGE_OPTIONS.map((option) => (
             <button
               aria-pressed={range === option}
@@ -522,8 +523,8 @@ export function RecentUsageChart({
               {option}
             </button>
           ))}
-        </div>
-        <div className="recent-chart-controls">
+          </div>
+          <div className="recent-chart-controls">
           <div className="chart-legend">
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(visibleWindowSummary.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${visibleWindowSummary.callTotal}`} />
@@ -545,8 +546,8 @@ export function RecentUsageChart({
             {fiveHourQuotaPresent ? <LineToggle active={visibility.fiveHourQuota} className="toggle-five" label="5h" onClick={() => updateVisibility("fiveHourQuota")} /> : null}
             {sevenDayQuotaPresent ? <LineToggle active={visibility.sevenDayQuota} className="toggle-seven" label="7d" onClick={() => updateVisibility("sevenDayQuota")} /> : null}
           </div>
+          </div>
         </div>
-      </div>
 
       <div className="recent-chart-plot">
         <div
@@ -741,6 +742,7 @@ export function RecentUsageChart({
           ) : null}
         </div>
       </div>
+      </section>
       {consumptionSelection ? (
         <RecentChartQuotaEstimateOverlay
           currentFiveHourQuotaPresent={fiveHourQuotaPresent}
@@ -752,7 +754,7 @@ export function RecentUsageChart({
           onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
         />
       ) : null}
-    </section>
+    </div>
   );
 }
 
