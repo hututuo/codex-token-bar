@@ -726,10 +726,14 @@ fn should_insert(row: &QuotaHistoryRow, latest: &QuotaHistoryRow, now: f64) -> b
     if row.seven_day_used_percent != latest.seven_day_used_percent {
         return true;
     }
-    if row.five_hour_resets_at != latest.five_hour_resets_at {
+    // Reset timestamps are sampled countdowns and can wobble by a few
+    // seconds (or a scheduler tick) while the quota cycle is unchanged.
+    // Treat the existing cycle grace as equal for write suppression, but keep
+    // every actual usage change as its own timestamped row above.
+    if !same_observed_cycle(row.five_hour_resets_at, latest.five_hour_resets_at) {
         return true;
     }
-    if row.seven_day_resets_at != latest.seven_day_resets_at {
+    if !same_observed_cycle(row.seven_day_resets_at, latest.seven_day_resets_at) {
         return true;
     }
     if row.plan_type != latest.plan_type

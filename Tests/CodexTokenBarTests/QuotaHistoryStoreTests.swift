@@ -812,6 +812,75 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
     }
 
+    func testResetTimestampJitterIsDeduplicatedButUsageTransitionsAreRetained() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+        let first = identifiedSnapshot(
+            usedPercent: 1,
+            reset: reset,
+            homeIdentity: "/fixture/reset-jitter",
+            stableAccountKey: "sub:reset-jitter",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Reset Jitter",
+            at: now
+        )
+        let jittered = identifiedSnapshot(
+            usedPercent: 1,
+            reset: reset.addingTimeInterval(5),
+            homeIdentity: "/fixture/reset-jitter",
+            stableAccountKey: "sub:reset-jitter",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Reset Jitter",
+            at: now.addingTimeInterval(60)
+        )
+        let changed = identifiedSnapshot(
+            usedPercent: 2,
+            reset: reset.addingTimeInterval(7),
+            homeIdentity: "/fixture/reset-jitter",
+            stableAccountKey: "sub:reset-jitter",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Reset Jitter",
+            at: now.addingTimeInterval(5 * 60)
+        )
+
+        XCTAssertTrue(try database.record(first, createdAt: now))
+        XCTAssertTrue(try database.record(jittered, createdAt: now.addingTimeInterval(60)))
+        let driver = SQLiteDatabaseDriver(url: url)
+        XCTAssertEqual(
+            try driver.readRows(
+                "SELECT count(*) FROM quota_snapshots WHERE identity_version = 1;"
+            ) { statement in
+                statement.int(0) ?? 0
+            }.first,
+            1,
+            "reset countdown jitter alone must not create a duplicate row"
+        )
+
+        XCTAssertTrue(try database.record(changed, createdAt: now.addingTimeInterval(5 * 60)))
+        XCTAssertEqual(
+            try database.recordedFiveHourUsedPercents(
+                for: changed,
+                now: now.addingTimeInterval(5 * 60),
+                age: 60 * 60
+            ),
+            [1, 2],
+            "a real 99% to 98% remaining transition must keep both timestamped observations"
+        )
+        XCTAssertEqual(
+            try driver.readRows(
+                "SELECT created_at FROM quota_snapshots WHERE identity_version = 1 ORDER BY created_at;"
+            ) { statement in
+                statement.date(0)
+            }.compactMap { $0 },
+            [now, now.addingTimeInterval(5 * 60)]
+        )
+    }
+
     func testLegacyBridgeClaimSkipsNoOpWritesUntilHeartbeatIsDue() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)

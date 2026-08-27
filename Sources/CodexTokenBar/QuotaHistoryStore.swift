@@ -494,8 +494,13 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         if row.accountKey != latest.accountKey { return true }
         if row.fiveHourUsedPercent != latest.fiveHourUsedPercent { return true }
         if row.sevenDayUsedPercent != latest.sevenDayUsedPercent { return true }
-        if row.fiveHourResetsAt != latest.fiveHourResetsAt { return true }
-        if row.sevenDayResetsAt != latest.sevenDayResetsAt { return true }
+        // Reset timestamps are sampled countdowns and can wobble by a few
+        // seconds (or a scheduler tick) while the quota cycle is unchanged.
+        // The existing cycle grace is deliberately used here as well so that
+        // metadata jitter does not create a row. A real usage change still
+        // returns above and keeps the current timestamp on that observation.
+        if !row.isSameFiveHourCycle(as: latest) { return true }
+        if !row.isSameSevenDayCycle(as: latest) { return true }
         if row.planType != latest.planType || row.limitName != latest.limitName || row.accountName != latest.accountName { return true }
         return now.timeIntervalSince(latest.createdAt) >= heartbeatInterval
     }

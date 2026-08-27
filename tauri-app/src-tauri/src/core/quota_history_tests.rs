@@ -358,6 +358,78 @@ fn record_normalizes_same_reset_window_regressions() {
 }
 
 #[test]
+fn reset_timestamp_jitter_is_deduplicated_but_usage_transitions_are_retained() {
+    let path = temp_db_path("reset-jitter-write");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() as i64 + 3_600;
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/reset-jitter"),
+        Some("sub:reset-jitter"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let first = bundle_with_plan(
+        "Reset Jitter",
+        "Pro",
+        0.01,
+        reset,
+        0.40,
+        reset + 500_000,
+    );
+    let jittered = bundle_with_plan(
+        "Reset Jitter",
+        "Pro",
+        0.01,
+        reset + 5,
+        0.40,
+        reset + 500_005,
+    );
+    let changed = bundle_with_plan(
+        "Reset Jitter",
+        "Pro",
+        0.02,
+        reset + 7,
+        0.40,
+        reset + 500_007,
+    );
+
+    assert!(database
+        .record_for_identity(Some(&identity), &first)
+        .unwrap());
+    assert!(database
+        .record_for_identity(Some(&identity), &jittered)
+        .unwrap());
+    let connection = database.open().unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM quota_snapshots WHERE identity_version = 1;",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "reset countdown jitter must not create a duplicate row");
+    drop(connection);
+
+    assert!(database
+        .record_for_identity(Some(&identity), &changed)
+        .unwrap());
+    let used = database
+        .rows_for_identity(Some(&identity), &changed, 60.0 * 60.0)
+        .unwrap()
+        .into_iter()
+        .filter_map(|row| row.five_hour_used_percent)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        used,
+        vec![1, 2],
+        "a real 99% to 98% remaining transition must retain both observations"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn normalizer_matches_swift_reset_grace_and_recovered_spike_rules() {
     let reset = 1_800_000_000.0;
 
