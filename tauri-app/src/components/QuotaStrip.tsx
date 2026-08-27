@@ -766,6 +766,7 @@ function QuotaStripView({
     resetAtUnix: observedResetAtUnix,
     quotaUpdatedAtUnix: observedQuotaUpdatedAtUnix,
     accountUsedPercent,
+    cycleId: snapshot.sevenDay.cycleId,
   }), [
     accountUsedPercent,
     attributionCompatibilitySignature,
@@ -774,6 +775,7 @@ function QuotaStripView({
     observedQuotaUpdatedAtUnix,
     observedResetAtUnix,
     quotaDataStale,
+    snapshot.sevenDay.cycleId,
     sourceHomeIdentity,
   ]);
   const segmentStorageKey = attributionSettings.enabled && sourceHomeIdentity.trim()

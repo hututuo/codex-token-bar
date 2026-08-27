@@ -517,6 +517,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
         updatedAt: quota.updatedAt,
         resetAtUnix: quota.quota.sevenDay.resetsAtUnix,
         usedPercent: quota.quota.sevenDay.usedPercent,
+        cycleId: quota.quota.sevenDay.cycleId,
         identity: quota.attributionIdentity,
       },
     );

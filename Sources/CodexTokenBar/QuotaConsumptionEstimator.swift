@@ -936,9 +936,9 @@ extension RecentChartPreparedData {
         }
 
         // The final reliable observation defines the cycle at the selection
-        // endpoint. Walk backwards only while reset provenance remains within
-        // the existing two-minute same-cycle tolerance; anything before the
-        // first mismatch belongs to an older cycle and is excluded.
+        // endpoint. Walk backwards only while the persisted cycle identifier
+        // stays equal; legacy rows without that identifier must match the reset
+        // timestamp exactly or the observed calculation fails closed.
         var cycleSuffix = [authority]
         for observation in observations.dropLast().reversed() {
             guard sameQuotaCycle(observation, authority) else { break }
@@ -1060,11 +1060,22 @@ extension RecentChartPreparedData {
         _ lhs: QuotaHistoryObservation,
         _ rhs: QuotaHistoryObservation
     ) -> Bool {
+        switch (lhs.cycleID, rhs.cycleID) {
+        case let (left?, right?):
+            return left == right
+        case (_?, nil), (nil, _?):
+            return false
+        case (nil, nil):
+            break
+        }
         switch (lhs.resetsAt, rhs.resetsAt) {
         case let (left?, right?):
-            abs(left.timeIntervalSince(right)) <= 2 * 60
+            // A byte-for-byte-equivalent legacy reset is deterministic. Any
+            // drift without a migrated cycle ID fails closed instead of using
+            // the former 120-second heuristic.
+            return abs(left.timeIntervalSince(right)) < 0.5
         case (nil, nil), (_?, nil), (nil, _?):
-            false
+            return false
         }
     }
 

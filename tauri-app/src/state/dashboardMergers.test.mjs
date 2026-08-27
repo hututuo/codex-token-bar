@@ -16,8 +16,8 @@ test("mergeQuota aligns quota history by startUnix instead of array position", a
     });
     const quota = quotaBundleFixture({
       quotaHistory24h: [
-        quotaHistoryPoint({ label: "02:00", startUnix: 300, fiveHourRemainingPercent: 0.3, sevenDayRemainingPercent: 0.7 }),
-        quotaHistoryPoint({ label: "00:00", startUnix: 100, fiveHourRemainingPercent: 0.1, sevenDayRemainingPercent: 0.9 }),
+        quotaHistoryPoint({ label: "02:00", startUnix: 300, fiveHourRemainingPercent: 0.3, sevenDayRemainingPercent: 0.7, fiveHourCycleId: "five-2", sevenDayCycleId: "seven-2" }),
+        quotaHistoryPoint({ label: "00:00", startUnix: 100, fiveHourRemainingPercent: 0.1, sevenDayRemainingPercent: 0.9, fiveHourCycleId: "five-1", sevenDayCycleId: "seven-1" }),
         quotaHistoryPoint({ label: "extra", startUnix: 999, fiveHourRemainingPercent: 0.9, sevenDayRemainingPercent: 0.1 }),
       ],
     });
@@ -28,6 +28,33 @@ test("mergeQuota aligns quota history by startUnix instead of array position", a
     assert.deepEqual(next.dashboard.recentUsage24h.map((point) => point.tokens), [10, 20, 30]);
     assert.deepEqual(next.dashboard.recentUsage24h.map((point) => point.fiveHourRemainingPercent), [0.1, null, 0.3]);
     assert.deepEqual(next.dashboard.recentUsage24h.map((point) => point.sevenDayRemainingPercent), [0.9, null, 0.7]);
+    assert.deepEqual(next.dashboard.recentUsage24h.map((point) => point.fiveHourCycleId), ["five-1", undefined, "five-2"]);
+    assert.deepEqual(next.dashboard.recentUsage24h.map((point) => point.sevenDayCycleId), ["seven-1", undefined, "seven-2"]);
+  });
+});
+
+test("legacy quota history without cycle fields preserves already merged IDs", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeQuota } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      recentUsage24h: [recentUsagePoint({
+        startUnix: 100,
+        fiveHourCycleId: "five-existing",
+        sevenDayCycleId: "seven-existing",
+      })],
+    });
+    const quota = quotaBundleFixture({
+      quotaHistory24h: [quotaHistoryPoint({
+        startUnix: 100,
+        fiveHourRemainingPercent: 0.4,
+        sevenDayRemainingPercent: 0.6,
+      })],
+    });
+
+    const next = mergeQuota(state, quota);
+
+    assert.equal(next.dashboard.recentUsage24h[0].fiveHourCycleId, "five-existing");
+    assert.equal(next.dashboard.recentUsage24h[0].sevenDayCycleId, "seven-existing");
   });
 });
 

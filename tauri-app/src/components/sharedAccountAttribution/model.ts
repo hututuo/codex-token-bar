@@ -12,7 +12,6 @@ import type { SharedAccountRadarTier } from "../../settings/sharedAccountAttribu
 import type { QuotaAttributionIdentity, QuotaLimit } from "../../types/dashboard";
 import { ATTRIBUTION_BUCKET_SECONDS, type AttributionTokenBucket } from "./highWater.ts";
 import {
-  ATTRIBUTION_RESET_GRACE_SECONDS,
   type AttributionCutoverReason,
   type AttributionSegmentStatus,
   type StoredAttributionSegment,
@@ -175,8 +174,13 @@ export function estimateSharedAccountAttribution({
     || observedResetUnix <= 0) {
     return { ...base, status: "quotaResetUnavailable" };
   }
-  const resetUnix = segment !== null
-    && Math.abs(segment.resetAtUnix - observedResetUnix) <= ATTRIBUTION_RESET_GRACE_SECONDS
+  const segmentMatchesCycle = segment !== null
+    && (normalizedCycleId(segment.cycleId) !== null
+      && normalizedCycleId(sevenDayQuota.cycleId) !== null
+      ? normalizedCycleId(segment.cycleId) === normalizedCycleId(sevenDayQuota.cycleId)
+      : !(Math.abs(segment.resetAtUnix - observedResetUnix) > 5 * 60
+        && sevenDayQuota.usedPercent === 0));
+  const resetUnix = segmentMatchesCycle
     ? segment.resetAtUnix
     : observedResetUnix;
   if (resetUnix <= nowUnix) {
@@ -530,6 +534,11 @@ function normalizedRadarDate(value: string): string {
 
 function normalizedSemanticKey(value: string | null | undefined): string {
   return (value ?? "").normalize("NFKC").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizedCycleId(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
 }
 
 function finiteNonnegative(value: number): number {

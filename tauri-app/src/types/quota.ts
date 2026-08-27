@@ -19,6 +19,8 @@ export interface QuotaLimit {
   usedPercent: number | null;
   resetsAt: string;
   resetsAtUnix?: number | null;
+  /** Opaque native cycle token; consumers may compare it but must not parse it. */
+  cycleId?: string | null;
 }
 
 export interface QuotaHistoryPoint {
@@ -26,6 +28,8 @@ export interface QuotaHistoryPoint {
   startUnix: number;
   fiveHourRemainingPercent: number | null;
   sevenDayRemainingPercent: number | null;
+  fiveHourCycleId?: string | null;
+  sevenDayCycleId?: string | null;
 }
 
 export interface QuotaHistoryDailyPoint {

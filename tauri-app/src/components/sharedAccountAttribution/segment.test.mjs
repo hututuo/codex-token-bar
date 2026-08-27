@@ -127,13 +127,42 @@ test("a new reset also waits for a synthetic baseline even if identity changes",
       identity: nextIdentity,
       resetAtUnix: RESET + 7 * 24 * 60 * 60,
       quotaUpdatedAtUnix: RESET + 1_000,
-      accountUsedPercent: 2,
+      accountUsedPercent: 0,
     }));
     assert.equal(next.status, "awaitingAccountSwitchBaseline");
     assert.equal(next.scopeChanged, false);
     assert.equal(next.segment.cutoverReason, "initialActivation");
     assert.equal(next.segment.baselineAccountUsedPercent, null);
   }
+});
+
+test("a new cycle without an ID never inherits the old ID or cuts over twice", () => {
+  const current = readySegment({ cycleId: "cycle-old" });
+  const nextReset = RESET + 7 * 24 * 60 * 60;
+  const pending = resolveAttributionSegment(current, input({
+    resetAtUnix: nextReset,
+    quotaUpdatedAtUnix: RESET + 1_000,
+    accountUsedPercent: 0,
+    cycleId: null,
+  }));
+  assert.equal(pending.status, "awaitingAccountSwitchBaseline");
+  assert.equal(pending.segment.cycleId, null);
+  assert.equal(pending.segment.cutoverReason, "initialActivation");
+
+  const baselineAt = Math.max(
+    pending.segment.segmentStartUnix,
+    pending.segment.observedAtUnix + 1,
+  );
+  const finalized = resolveAttributionSegment(pending.segment, input({
+    resetAtUnix: nextReset,
+    quotaUpdatedAtUnix: baselineAt,
+    accountUsedPercent: 1,
+    cycleId: "cycle-new",
+  }));
+  assert.equal(finalized.status, "ready");
+  assert.equal(finalized.segment.cycleId, "cycle-new");
+  assert.equal(finalized.segment.segmentStartUnix, pending.segment.segmentStartUnix);
+  assert.equal(finalized.segment.cutoverReason, "initialActivation");
 });
 
 test("same-cycle account or plan switch enters its own pending segment", () => {
@@ -220,14 +249,23 @@ test("stale quota can only hold a matching durable segment unchanged", () => {
   assert.equal(wrongReset.segment, null);
 });
 
-test("two-minute reset drift preserves the canonical cycle and high-water key", () => {
+test("a non-full reset drift stays in-cycle and an authoritative ID is adopted immediately", () => {
   const current = readySegment();
   const drifted = resolveAttributionSegment(current, input({
-    resetAtUnix: RESET + 120,
+    resetAtUnix: RESET + 900,
     quotaUpdatedAtUnix: current.comparisonUpdatedAtUnix,
     accountUsedPercent: current.accountUsedObservedPercent,
+    cycleId: "cycle-7",
   }));
   assert.equal(drifted.segment.resetAtUnix, RESET);
+  assert.equal(drifted.segment.cycleId, "cycle-7");
+  assert.equal(drifted.changed, true);
+  const held = holdAttributionSegmentDuringContinuityGap(drifted.segment, input({
+    quotaDataFresh: false,
+    resetAtUnix: RESET + 1_200,
+    cycleId: "cycle-7",
+  }));
+  assert.equal(held.status, "ready");
   const highWaterKey = (segment) => attributionHighWaterStorageKey({
     ...identity(),
     resetAtUnix: segment.resetAtUnix,

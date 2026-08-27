@@ -4,7 +4,8 @@ import Foundation
 /// sessions are active, an older request can finish after a newer request and
 /// publish an older rate-limit snapshot with a later log timestamp. Within the
 /// same reset window, the newest observed used percent is the trustworthy
-/// display/history value; a reset timestamp change starts a fresh cycle.
+/// display/history value. Persisted cycle IDs are authoritative; legacy rows
+/// can start a fresh cycle only through the strict reset-delta/full-quota rule.
 enum QuotaMonotonicNormalizer {
     static func normalizedSnapshot(_ current: AccountQuotaSnapshot, after previous: AccountQuotaSnapshot?) -> AccountQuotaSnapshot {
         guard let previous, sameAccount(current, previous) else { return current }
@@ -19,7 +20,9 @@ enum QuotaMonotonicNormalizer {
         currentUsedPercent: Int?,
         currentResetsAt: Date?,
         previousUsedPercent: Int?,
-        previousResetsAt: Date?
+        previousResetsAt: Date?,
+        currentCycleID: String? = nil,
+        previousCycleID: String? = nil
     ) -> Int? {
         guard let currentUsedPercent else { return nil }
         let current = clampedPercent(currentUsedPercent)
@@ -27,10 +30,12 @@ enum QuotaMonotonicNormalizer {
         let previous = clampedPercent(previousUsedPercent)
 
         guard current < previous else { return current }
-        if QuotaHistoryCyclePolicy.startsNewCycle(
+        if startsNewCycle(
             currentUsedPercent: current,
             currentResetsAt: currentResetsAt,
-            acceptedResetsAt: previousResetsAt
+            previousResetsAt: previousResetsAt,
+            currentCycleID: currentCycleID,
+            previousCycleID: previousCycleID
         ) {
             return current
         }
@@ -49,7 +54,9 @@ enum QuotaMonotonicNormalizer {
             currentUsedPercent: current.usedPercent,
             currentResetsAt: current.resetsAt,
             previousUsedPercent: previous?.usedPercent,
-            previousResetsAt: previous?.resetsAt
+            previousResetsAt: previous?.resetsAt,
+            currentCycleID: current.cycleID,
+            previousCycleID: previous?.cycleID
         ) ?? current.usedPercent
 
         guard used != current.usedPercent else { return current }
@@ -82,5 +89,31 @@ enum QuotaMonotonicNormalizer {
 
     private static func clampedPercent(_ value: Int) -> Int {
         max(0, min(100, value))
+    }
+
+    private static func startsNewCycle(
+        currentUsedPercent: Int,
+        currentResetsAt: Date?,
+        previousResetsAt: Date?,
+        currentCycleID: String?,
+        previousCycleID: String?
+    ) -> Bool {
+        let currentID = nonempty(currentCycleID)
+        let previousID = nonempty(previousCycleID)
+        if let currentID, let previousID {
+            return currentID != previousID
+        }
+        // Introducing an ID for legacy state, or temporarily missing one, is
+        // not itself a reset. Use the same strict fallback as history replay.
+        return QuotaHistoryCyclePolicy.startsNewCycle(
+            currentUsedPercent: currentUsedPercent,
+            currentResetsAt: currentResetsAt,
+            acceptedResetsAt: previousResetsAt
+        )
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

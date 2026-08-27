@@ -1212,12 +1212,12 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
-    func testObservedResetCycleAllowsTwoMinuteResetTimestampDrift() throws {
+    func testObservedCycleIDAllowsResetTimestampDrift() throws {
         let start = Date(timeIntervalSince1970: 1_800)
         let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
         let observations = [
-            QuotaHistoryObservation(observedAt: start, remainingPercent: 90, resetsAt: reset),
-            QuotaHistoryObservation(observedAt: start.addingTimeInterval(300), remainingPercent: 72, resetsAt: reset.addingTimeInterval(120)),
+            QuotaHistoryObservation(observedAt: start, remainingPercent: 90, resetsAt: reset, cycleID: "cycle-7d-4"),
+            QuotaHistoryObservation(observedAt: start.addingTimeInterval(300), remainingPercent: 72, resetsAt: reset.addingTimeInterval(600), cycleID: "cycle-7d-4"),
         ]
         let prepared = quotaPreparedData(
             start: start,

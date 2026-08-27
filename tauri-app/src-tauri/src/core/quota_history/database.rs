@@ -1,7 +1,7 @@
 use super::{
     now_unix, QuotaHistoryIdentity, QuotaHistoryRow, QuotaWindow,
     NEW_CYCLE_RESET_THRESHOLD_SECONDS, QUOTA_HISTORY_MAINTENANCE_INTERVAL_SECONDS,
-    QUOTA_HISTORY_POLICY_VERSION,
+    QUOTA_HISTORY_POLICY_VERSION, TIMESTAMP_COMPARISON_TOLERANCE_SECONDS,
 };
 use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult, Transaction};
 use std::collections::HashSet;
@@ -1214,7 +1214,10 @@ fn compact_stable_identity(
 
 fn reset_change_is_compacted(delta: Option<f64>, has_later_stable_anchor: bool) -> bool {
     match delta {
-        Some(delta) if delta <= super::RESET_MATCH_GRACE_SECONDS => true,
+        Some(delta)
+            if delta
+                <= super::RESET_MATCH_GRACE_SECONDS
+                    + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS => true,
         Some(_) => has_later_stable_anchor,
         None => true,
     }
@@ -1259,7 +1262,9 @@ fn maintenance_window_metadata(
         let previous_anchor = state.anchor_reset;
         let strict_new_cycle = used == 0
             && reset.zip(previous_anchor).is_some_and(|(reset, anchor)| {
-                (reset - anchor as f64).abs() > NEW_CYCLE_RESET_THRESHOLD_SECONDS
+                (reset - anchor as f64).abs()
+                    > NEW_CYCLE_RESET_THRESHOLD_SECONDS
+                        + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS
             });
         if strict_new_cycle {
             new_cycle = true;
@@ -1333,7 +1338,8 @@ fn stable_final_anchor_indices(
             candidate = None;
             continue;
         };
-        if (reset - baseline_reset).abs() <= super::RESET_MATCH_GRACE_SECONDS {
+        if (reset - baseline_reset).abs()
+            <= super::RESET_MATCH_GRACE_SECONDS + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS {
             candidate = None;
             continue;
         }
@@ -1343,7 +1349,9 @@ fn stable_final_anchor_indices(
                 let next_min = min_reset.min(reset);
                 let next_max = max_reset.max(reset);
                 let out_of_band = rows[index].row.created_at < rows[last_index].row.created_at
-                    || next_max - next_min > super::STABLE_CANDIDATE_BAND_SECONDS;
+                    || next_max - next_min
+                        > super::STABLE_CANDIDATE_BAND_SECONDS
+                            + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS;
                 if out_of_band {
                     // A candidate that already covered five minutes would
                     // have been accepted on its last observation below.  An
@@ -1369,8 +1377,11 @@ fn stable_final_anchor_indices(
         if let Some((first_index, min_reset, max_reset, count, last_index)) = next_candidate {
             if count >= 2
                 && rows[last_index].row.created_at - rows[first_index].row.created_at
+                    + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS
                     >= super::STABLE_CANDIDATE_SPAN_SECONDS
-                && max_reset - min_reset <= super::STABLE_CANDIDATE_BAND_SECONDS
+                && max_reset - min_reset
+                    <= super::STABLE_CANDIDATE_BAND_SECONDS
+                        + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS
             {
                 result.insert(last_index);
                 accepted_reset = Some(reset);
@@ -1384,6 +1395,7 @@ fn stable_final_anchor_indices(
     if let Some((first_index, _min_reset, _max_reset, count, last_index)) = candidate {
         if count >= 2
             && rows[last_index].row.created_at - rows[first_index].row.created_at
+                + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS
                 >= super::STABLE_CANDIDATE_SPAN_SECONDS
         {
             result.insert(last_index);

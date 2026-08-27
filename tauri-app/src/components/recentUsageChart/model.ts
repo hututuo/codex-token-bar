@@ -907,8 +907,16 @@ export function quotaConsumptionSelection(
     breakdown,
     priceModel,
   );
-  const fiveHourDrop = quotaDropResolution(selectedPoints.map((point) => point.fiveHourRemainingPercent));
-  const sevenDayDrop = quotaDropResolution(selectedPoints.map((point) => point.sevenDayRemainingPercent));
+  const fiveHourDrop = quotaDropResolution(
+    selectedPoints,
+    "fiveHourRemainingPercent",
+    "fiveHourCycleId",
+  );
+  const sevenDayDrop = quotaDropResolution(
+    selectedPoints,
+    "sevenDayRemainingPercent",
+    "sevenDayCycleId",
+  );
   const fiveHourBoundaryBreakdown = quotaBoundaryBreakdown(
     selectedPoints,
     boundaries.fiveHour,
@@ -1354,38 +1362,56 @@ interface QuotaDropResolution {
   comparisonStartOffset: number | null;
 }
 
-function quotaDropResolution(values: Array<number | null>): QuotaDropResolution {
-  const availableSamples = values.flatMap((value, index) => {
+function quotaDropResolution(
+  points: RecentUsagePoint[],
+  valueKey: "fiveHourRemainingPercent" | "sevenDayRemainingPercent",
+  cycleKey: "fiveHourCycleId" | "sevenDayCycleId",
+): QuotaDropResolution {
+  const availableSamples = points.flatMap((point, index) => {
+    const value = point[valueKey];
     if (value === null || !Number.isFinite(value)) {
       return [];
     }
-    return [{ value: quotaPercentValue(value), index }];
+    return [{
+      value: quotaPercentValue(value),
+      cycleId: normalizedCycleId(point[cycleKey]),
+      index,
+    }];
   });
-  const sanitizedSamples = availableSamples.filter((sample, index) => {
-    const previous = index > 0 ? availableSamples[index - 1].value : null;
-    const next = index + 1 < availableSamples.length ? availableSamples[index + 1].value : null;
+  if (availableSamples.length < 2) {
+    return {
+      percent: null,
+      comparisonStartOffset: availableSamples[0]?.index ?? (points.length > 0 ? 0 : null),
+    };
+  }
+
+  const latestCycleId = availableSamples.at(-1)?.cycleId ?? null;
+  if (latestCycleId === null) {
+    // Legacy/ambiguous history remains drawable, but is never inverted into a
+    // quota budget without an authoritative backend cycle assignment.
+    return { percent: null, comparisonStartOffset: null };
+  }
+  let currentCycleStart = availableSamples.length - 1;
+  while (currentCycleStart > 0
+    && availableSamples[currentCycleStart - 1].cycleId === latestCycleId) {
+    currentCycleStart -= 1;
+  }
+  const currentCycleSamples = availableSamples.slice(currentCycleStart);
+  const sanitizedSamples = currentCycleSamples.filter((sample, index) => {
+    const previous = index > 0 ? currentCycleSamples[index - 1].value : null;
+    const next = index + 1 < currentCycleSamples.length ? currentCycleSamples[index + 1].value : null;
     return !isZeroRemainingSpike(sample.value, previous, next)
       && !isFullRemainingSpike(sample.value, previous, next);
   });
   if (sanitizedSamples.length < 2) {
-    return { percent: null, comparisonStartOffset: values.length > 0 ? 0 : null };
-  }
-  let currentCycleStart = 0;
-  for (let index = 1; index < sanitizedSamples.length; index += 1) {
-    if (sanitizedSamples[index].value > sanitizedSamples[index - 1].value + 5) {
-      currentCycleStart = index;
-    }
-  }
-  const currentCycleValues = sanitizedSamples.slice(currentCycleStart);
-  if (currentCycleValues.length < 2) {
-    return { percent: null, comparisonStartOffset: currentCycleValues[0]?.index ?? null };
+    return { percent: null, comparisonStartOffset: sanitizedSamples[0]?.index ?? null };
   }
   return {
-    percent: currentCycleValues.slice(1).reduce((total, sample, index) => {
-      const previous = currentCycleValues[index].value;
+    percent: sanitizedSamples.slice(1).reduce((total, sample, index) => {
+      const previous = sanitizedSamples[index].value;
       return total + Math.max(previous - sample.value, 0);
     }, 0),
-    comparisonStartOffset: currentCycleValues[0].index,
+    comparisonStartOffset: sanitizedSamples[0].index,
   };
 }
 
@@ -1403,6 +1429,11 @@ function isFullRemainingSpike(value: number, previous: number | null, next: numb
 
 function quotaPercentValue(value: number): number {
   return value <= 1 ? value * 100 : value;
+}
+
+function normalizedCycleId(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
 }
 
 function latestPresent(values: Array<number | null>): number | null {

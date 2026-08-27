@@ -21,6 +21,37 @@ final class QuotaHistoryCyclePolicyTests: XCTestCase {
         ))
     }
 
+    func testTimestampRoundTripResidueDoesNotCrossExactPolicyBoundaries() {
+        let anchor = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertFalse(QuotaHistoryCyclePolicy.startsNewCycle(
+            currentUsedPercent: 0,
+            currentResetsAt: anchor.addingTimeInterval(300 + 0.000_000_5),
+            acceptedResetsAt: anchor
+        ))
+        XCTAssertTrue(QuotaHistoryCyclePolicy.startsNewCycle(
+            currentUsedPercent: 0,
+            currentResetsAt: anchor.addingTimeInterval(300 + 0.000_002),
+            acceptedResetsAt: anchor
+        ))
+        XCTAssertTrue(QuotaHistoryCyclePolicy.isResetJitter(
+            anchor,
+            anchor.addingTimeInterval(5 + 0.000_000_5)
+        ))
+        XCTAssertFalse(QuotaHistoryCyclePolicy.isResetJitter(
+            anchor,
+            anchor.addingTimeInterval(5 + 0.000_002)
+        ))
+
+        var candidate = QuotaResetStabilityCandidate(
+            observedAt: anchor,
+            resetsAt: anchor.addingTimeInterval(10_000)
+        )
+        XCTAssertTrue(candidate.observe(
+            observedAt: anchor.addingTimeInterval(300 - 0.000_000_5),
+            resetsAt: anchor.addingTimeInterval(10_005 + 0.000_000_5)
+        ))
+    }
+
     func testOneToTwoSecondOscillationStabilizesAfterFiveMinutes() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let reset = start.addingTimeInterval(7 * 24 * 60 * 60)

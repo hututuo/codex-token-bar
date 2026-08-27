@@ -299,14 +299,18 @@ private struct QuotaHistoryRow {
                 currentUsedPercent: fiveHourUsedPercent,
                 currentResetsAt: fiveHourResetsAt,
                 previousUsedPercent: previous.fiveHourUsedPercent,
-                previousResetsAt: previous.fiveHourResetsAt
+                previousResetsAt: previous.fiveHourResetsAt,
+                currentCycleID: fiveHourCycleID,
+                previousCycleID: previous.fiveHourCycleID
             ),
             fiveHourResetsAt: fiveHourResetsAt,
             sevenDayUsedPercent: QuotaMonotonicNormalizer.normalizedUsedPercent(
                 currentUsedPercent: sevenDayUsedPercent,
                 currentResetsAt: sevenDayResetsAt,
                 previousUsedPercent: previous.sevenDayUsedPercent,
-                previousResetsAt: previous.sevenDayResetsAt
+                previousResetsAt: previous.sevenDayResetsAt,
+                currentCycleID: sevenDayCycleID,
+                previousCycleID: previous.sevenDayCycleID
             ),
             sevenDayResetsAt: sevenDayResetsAt,
             status: status,
@@ -634,9 +638,9 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             let history = Self.sanitizedRows(
                 Self.canonicalizedCycleRows(mergedRows(localRows + peerRows))
             )
-            let normalizedRow = row.normalized(after: history.last)
-            let annotatedRow = Self.annotatedCurrentRow(normalizedRow, after: history)
-            return Self.snapshot(from: annotatedRow, base: quota)
+            let annotatedRow = Self.annotatedCurrentRow(row, after: history)
+            let normalizedRow = annotatedRow.normalized(after: history.last)
+            return Self.snapshot(from: normalizedRow, base: quota)
         }
     }
 
@@ -1240,16 +1244,25 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return (0..<count).map { index -> QuotaHistoryRecentBucket in
             let binStart = start.addingTimeInterval(Double(index) * interval)
             let end = binStart.addingTimeInterval(interval)
-            let sampleDate = min(end, now)
+            // Calendar subtraction followed by floating-point interval
+            // addition can leave the final bin a fraction of a millisecond
+            // before `now`. Snap that numerical residue back to `now` so an
+            // observation recorded exactly at the load boundary is retained.
+            let boundaryTolerance: TimeInterval = 0.000_001
+            let sampleDate = now.timeIntervalSince(end) <= boundaryTolerance ? now : end
+            // SQLite REAL timestamps can round one ULP above the originating
+            // Date when converted back. One microsecond covers that numerical
+            // residue without changing the chart's meaningful bucket timing.
+            let inclusiveUpperBound = sampleDate.addingTimeInterval(boundaryTolerance)
             let firstUnreadRowIndex = rowIndex
 
-            while rowIndex < rows.count, rows[rowIndex].createdAt <= sampleDate {
+            while rowIndex < rows.count, rows[rowIndex].createdAt <= inclusiveUpperBound {
                 latestRow = rows[rowIndex]
                 rowIndex += 1
             }
             let nextRow = rows[safe: rowIndex]
             let observations = rows[firstUnreadRowIndex..<rowIndex].filter { row in
-                row.createdAt >= binStart && row.createdAt <= sampleDate
+                row.createdAt >= binStart && row.createdAt <= inclusiveUpperBound
             }
 
             return QuotaHistoryRecentBucket(

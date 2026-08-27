@@ -10,6 +10,9 @@ enum QuotaHistoryCyclePolicy {
     static let newCycleResetDelta: TimeInterval = 5 * 60
     static let stableBandDuration: TimeInterval = 5 * 60
     static let maintenanceInterval: TimeInterval = 24 * 60 * 60
+    /// Covers Date/Unix REAL round-trip residue without weakening any
+    /// server-visible whole-second boundary.
+    static let timestampComparisonTolerance: TimeInterval = 0.000_001
 
     /// A reset is an observation, not a timer. Full quota is required only on
     /// the boundary sample; it never has to remain full for five minutes.
@@ -21,7 +24,8 @@ enum QuotaHistoryCyclePolicy {
         guard currentUsedPercent.map(clampedPercent) == 0,
               let currentResetsAt,
               let acceptedResetsAt else { return false }
-        return abs(currentResetsAt.timeIntervalSince(acceptedResetsAt)) > newCycleResetDelta
+        return abs(currentResetsAt.timeIntervalSince(acceptedResetsAt))
+            > newCycleResetDelta + timestampComparisonTolerance
     }
 
     static func resetDelta(_ lhs: Date?, _ rhs: Date?) -> TimeInterval? {
@@ -32,7 +36,8 @@ enum QuotaHistoryCyclePolicy {
     static func isResetJitter(_ lhs: Date?, _ rhs: Date?) -> Bool {
         switch (lhs, rhs) {
         case let (lhs?, rhs?):
-            (resetDelta(lhs, rhs) ?? .infinity) <= resetJitterTolerance
+            (resetDelta(lhs, rhs) ?? .infinity)
+                <= resetJitterTolerance + timestampComparisonTolerance
         case (nil, nil):
             true
         case (_?, nil), (nil, _?):
@@ -68,7 +73,9 @@ struct QuotaResetStabilityCandidate: Equatable, Sendable {
         guard observedAt >= lastObservedAt else { return false }
         let nextMinimum = min(minimumResetsAt, resetsAt)
         let nextMaximum = max(maximumResetsAt, resetsAt)
-        if nextMaximum.timeIntervalSince(nextMinimum) > QuotaHistoryCyclePolicy.resetJitterTolerance {
+        if nextMaximum.timeIntervalSince(nextMinimum)
+            > QuotaHistoryCyclePolicy.resetJitterTolerance
+                + QuotaHistoryCyclePolicy.timestampComparisonTolerance {
             self = QuotaResetStabilityCandidate(observedAt: observedAt, resetsAt: resetsAt)
             return false
         }
@@ -77,6 +84,8 @@ struct QuotaResetStabilityCandidate: Equatable, Sendable {
         lastObservedAt = observedAt
         sampleCount += 1
         return sampleCount >= 2
-            && lastObservedAt.timeIntervalSince(firstObservedAt) >= QuotaHistoryCyclePolicy.stableBandDuration
+            && lastObservedAt.timeIntervalSince(firstObservedAt)
+                + QuotaHistoryCyclePolicy.timestampComparisonTolerance
+                >= QuotaHistoryCyclePolicy.stableBandDuration
     }
 }

@@ -39,6 +39,7 @@ pub(crate) const RESET_MATCH_GRACE_SECONDS: f64 = 5.0;
 pub(crate) const NEW_CYCLE_RESET_THRESHOLD_SECONDS: f64 = 5.0 * 60.0;
 pub(crate) const STABLE_CANDIDATE_SPAN_SECONDS: f64 = 5.0 * 60.0;
 pub(crate) const STABLE_CANDIDATE_BAND_SECONDS: f64 = 5.0;
+pub(crate) const TIMESTAMP_COMPARISON_TOLERANCE_SECONDS: f64 = 0.000_001;
 pub(crate) const QUOTA_HISTORY_POLICY_VERSION: i64 = 2;
 pub(crate) const QUOTA_HISTORY_MAINTENANCE_INTERVAL_SECONDS: f64 = 24.0 * 60.0 * 60.0;
 pub(crate) const QUOTA_HISTORY_IDENTITY_VERSION: i64 = 1;
@@ -764,7 +765,8 @@ fn candidate_plan_for_window(
     // when the server returns to the accepted reset value, matching the
     // observation-level candidate semantics.
     if accepted_anchor.is_some_and(|anchor| {
-        (reset - anchor.reset).abs() <= RESET_MATCH_GRACE_SECONDS
+        (reset - anchor.reset).abs()
+            <= RESET_MATCH_GRACE_SECONDS + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS
     }) {
         stable_candidate_map()
             .lock()
@@ -783,7 +785,9 @@ fn candidate_plan_for_window(
     let current_used = used_percent.clamp(0, 100);
     let qualifies_new_cycle = accepted_anchor.is_some_and(|anchor| {
         current_used == 0
-            && (reset - anchor.reset).abs() > NEW_CYCLE_RESET_THRESHOLD_SECONDS
+            && (reset - anchor.reset).abs()
+                > NEW_CYCLE_RESET_THRESHOLD_SECONDS
+                    + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS
     });
 
     let had_existing = existing.is_some();
@@ -799,7 +803,9 @@ fn candidate_plan_for_window(
         let next_min = candidate.min_reset.min(reset);
         let next_max = candidate.max_reset.max(reset);
         let out_of_band = now < candidate.last_observed_at
-            || next_max - next_min > STABLE_CANDIDATE_BAND_SECONDS;
+            || next_max - next_min
+                > STABLE_CANDIDATE_BAND_SECONDS
+                    + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS;
         if out_of_band {
             candidate = StableResetCandidate {
                 first_observed_at: now,
@@ -820,8 +826,11 @@ fn candidate_plan_for_window(
 
     let stable = candidate.observation_count >= 2
         && candidate.last_observed_at - candidate.first_observed_at
+            + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS
             >= STABLE_CANDIDATE_SPAN_SECONDS
-        && candidate.max_reset - candidate.min_reset <= STABLE_CANDIDATE_BAND_SECONDS;
+        && candidate.max_reset - candidate.min_reset
+            <= STABLE_CANDIDATE_BAND_SECONDS
+                + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS;
     let mut plan = WindowCandidatePlan {
         generation: Some(latest_generation),
         is_anchor: false,
@@ -1135,7 +1144,9 @@ fn canonical_window_metadata(
         anchor = true;
     } else if used_percent.map(|value| value.clamp(0, 100)) == Some(0)
         && reset.zip(state.accepted_reset).is_some_and(|(current, accepted)| {
-            (current - accepted).abs() > NEW_CYCLE_RESET_THRESHOLD_SECONDS
+            (current - accepted).abs()
+                > NEW_CYCLE_RESET_THRESHOLD_SECONDS
+                    + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS
         })
     {
         state.generation = state.generation.saturating_add(1);
@@ -1312,7 +1323,8 @@ fn history_row_fingerprint(row: &QuotaHistoryRow) -> String {
 }
 
 fn same_reset_window(left: f64, right: f64) -> bool {
-    (left - right).abs() <= RESET_MATCH_GRACE_SECONDS
+    (left - right).abs()
+        <= RESET_MATCH_GRACE_SECONDS + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS
 }
 
 fn same_observed_cycle(left: Option<f64>, right: Option<f64>) -> bool {
@@ -1365,7 +1377,8 @@ fn same_cycle_for_window(
         (Some(current_reset), Some(previous_reset)) => {
             !(current_used == Some(0)
                 && (current_reset - previous_reset).abs()
-                    > NEW_CYCLE_RESET_THRESHOLD_SECONDS)
+                    > NEW_CYCLE_RESET_THRESHOLD_SECONDS
+                        + TIMESTAMP_COMPARISON_TOLERANCE_SECONDS)
         }
         (None, None) => true,
         _ => false,

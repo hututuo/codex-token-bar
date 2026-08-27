@@ -504,6 +504,29 @@ fn stable_cycle_generation_uses_strict_reset_and_zero_usage_rules() {
 }
 
 #[test]
+fn reset_thresholds_tolerate_only_submicrosecond_storage_residue() {
+    let anchor = 1_900_000_000.0;
+    assert!(same_reset_window(anchor, anchor + 5.0 + 0.000_000_5));
+    assert!(!same_reset_window(anchor, anchor + 5.0 + 0.000_002));
+    assert!(same_cycle_for_window(
+        Some(0),
+        Some(anchor + 300.0 + 0.000_000_5),
+        None,
+        Some(20),
+        Some(anchor),
+        None,
+    ));
+    assert!(!same_cycle_for_window(
+        Some(0),
+        Some(anchor + 300.0 + 0.000_002),
+        None,
+        Some(20),
+        Some(anchor),
+        None,
+    ));
+}
+
+#[test]
 fn cycle_id_is_identity_scoped_without_raw_identity_components() {
     let identity = QuotaHistoryIdentity::from_canonical_parts(
         Path::new("/fixture/opaque-cycle-id"),

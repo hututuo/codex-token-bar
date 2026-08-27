@@ -46,6 +46,8 @@ function point(startUnix, overrides = {}) {
     cacheHitRate: null,
     fiveHourRemainingPercent: null,
     sevenDayRemainingPercent: null,
+    fiveHourCycleId: "five-default",
+    sevenDayCycleId: "seven-default",
     ...overrides,
   };
 }
@@ -408,10 +410,10 @@ test("quotaConsumptionSelection uses cumulative quota drop instead of start-end 
 test("quotaConsumptionSelection keeps only the latest quota cycle after a reset", () => {
   const data = prepareRecentChartData("24h", {
     recentUsage24h: [
-      point(0, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.20 }),
-      point(300, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.10 }),
-      point(600, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 1.00 }),
-      point(900, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.90 }),
+      point(0, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.20, sevenDayCycleId: "seven-old" }),
+      point(300, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.10, sevenDayCycleId: "seven-old" }),
+      point(600, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 1.00, sevenDayCycleId: "seven-new" }),
+      point(900, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.90, sevenDayCycleId: "seven-new" }),
     ],
     recentUsage7d: [],
     recentUsage30d: [],
@@ -466,9 +468,9 @@ test("quota consumption keeps unaligned edge buckets as separate accounting", ()
 test("latest quota cycle with one remaining point fails closed for the budget inversion", () => {
   const data = prepareRecentChartData("24h", {
     recentUsage24h: [
-      point(0, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.20 }),
-      point(300, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.10 }),
-      point(600, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 1.00 }),
+      point(0, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.20, sevenDayCycleId: "seven-old" }),
+      point(300, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.10, sevenDayCycleId: "seven-old" }),
+      point(600, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 1.00, sevenDayCycleId: "seven-new" }),
     ],
     recentUsage7d: [],
     recentUsage30d: [],
@@ -492,6 +494,7 @@ test("latest quota cycle suffix semantics cover 24h, 7d and 30d chart paths", ()
       tokens: 100_000,
       calls: 1,
       sevenDayRemainingPercent: remaining,
+      sevenDayCycleId: index < 2 ? "seven-old" : "seven-new",
     }));
     const data = prepareRecentChartData(range, {
       recentUsage24h: pointsKey === "recentUsage24h" ? points : [],
@@ -569,6 +572,7 @@ test("coarse 7d/30d reset boundaries stay provisional instead of attributing acr
       tokens: 100_000,
       calls: 1,
       sevenDayRemainingPercent: remaining,
+      sevenDayCycleId: index < 2 ? "seven-old" : "seven-new",
     }));
     const data = prepareRecentChartData(range, {
       recentUsage24h: [],
@@ -863,6 +867,7 @@ test("quotaConsumptionSelection estimates quota from the fallback -> quota -> pr
       startUnix: fallbackPoints[index].startUnix,
       fiveHourRemainingPercent: remaining,
       sevenDayRemainingPercent: null,
+      fiveHourCycleId: "five-fallback",
     }));
     const withQuota = mergeQuota(fallbackDashboard, quotaBundleWithHistory(quotaHistory));
     const merged = mergePreciseDashboard(withQuota, dashboardSnapshotWithRecentUsage(precisePoints));
@@ -879,6 +884,21 @@ test("quotaConsumptionSelection estimates quota from the fallback -> quota -> pr
     assert.equal(selection?.fiveHour.quotaDropPercent, 8);
     assert.equal(selection?.fiveHour.impliedWindowBudgetUSD?.toFixed(4), "18.7500");
   });
+});
+
+test("quota inversion fails closed when cycle provenance is absent", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { inputTokens: 100_000, tokens: 100_000, fiveHourRemainingPercent: 0.8, fiveHourCycleId: null }),
+      point(300, { inputTokens: 100_000, tokens: 100_000, fiveHourRemainingPercent: 0.7, fiveHourCycleId: null }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  const selection = quotaConsumptionSelection(data, 0, 1, "gpt55");
+  assert.equal(selection?.fiveHour.quotaDropAvailable, false);
+  assert.equal(selection?.fiveHour.impliedWindowBudgetUSD, null);
 });
 
 function dashboardStateWithRecentUsage(recentUsage24h) {

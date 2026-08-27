@@ -10,7 +10,8 @@ const LEGACY_SEGMENT_STORAGE_PREFIXES = [
   "sharedAccountAttributionSegment:v2",
 ] as const;
 const SEVEN_DAYS_SECONDS = 7 * 24 * 60 * 60;
-export const ATTRIBUTION_RESET_GRACE_SECONDS = 2 * 60;
+const RESET_JITTER_SECONDS = 5;
+const NEW_CYCLE_RESET_DELTA_SECONDS = 5 * 60;
 const ACCOUNT_USED_CHANGE_EPSILON = 0.000_1;
 
 export type AttributionSegmentStatus =
@@ -29,6 +30,7 @@ export type AttributionCutoverReason =
 
 export interface StoredAttributionSegment {
   resetAtUnix: number;
+  cycleId?: string | null;
   scopeKey: string;
   plan: string;
   limit: string;
@@ -92,6 +94,7 @@ export interface AttributionSegmentInput {
   resetAtUnix: number | null | undefined;
   quotaUpdatedAtUnix: number | null;
   accountUsedPercent: number | null;
+  cycleId?: string | null;
   /** One-shot liveness escape hatch, allowed only after raw pending usage is proven. */
   pendingRawCanAdvanceComparison?: boolean;
 }
@@ -116,10 +119,13 @@ export function resolveAttributionSegment(
 
   const storageKey = attributionSegmentStorageKey(input.sourceHomeIdentity);
   const accountUsedPercent = Math.max(0, input.accountUsedPercent);
-  if (!stored && legacyStored && sameResetCycle(legacyStored.resetAtUnix, input.resetAtUnix)) {
+  const cycleId = normalizedCycleId(input.cycleId);
+  if (!stored && legacyStored
+    && Math.abs(legacyStored.resetAtUnix - input.resetAtUnix) <= RESET_JITTER_SECONDS) {
     const canonicalResetAtUnix = legacyStored.resetAtUnix;
     const segment: StoredAttributionSegment = {
       resetAtUnix: canonicalResetAtUnix,
+      cycleId,
       scopeKey: input.identity.scopeKey,
       plan: input.identity.plan,
       limit: input.identity.limit,
@@ -156,13 +162,16 @@ export function resolveAttributionSegment(
     };
   }
 
-  const sameCycle = stored !== null && sameResetCycle(stored.resetAtUnix, input.resetAtUnix);
+  const sameCycle = stored !== null && sameQuotaCycle(stored, input);
   const sameScope = stored !== null
     && sameCycle
     && stored.scopeKey === input.identity.scopeKey
     && stored.plan === input.identity.plan
     && stored.limit === input.identity.limit;
   if (sameScope) {
+    const currentStored = stored.cycleId === (cycleId ?? normalizedCycleId(stored.cycleId))
+      ? stored
+      : { ...stored, cycleId: cycleId ?? normalizedCycleId(stored.cycleId) };
     if (!stored.baselineReady) {
       const canFinalizeBaseline = input.quotaUpdatedAtUnix >= stored.segmentStartUnix
         && input.quotaUpdatedAtUnix > stored.observedAtUnix;
@@ -170,8 +179,8 @@ export function resolveAttributionSegment(
         return {
           status: "awaitingAccountSwitchBaseline",
           storageKey,
-          segment: stored,
-          changed: false,
+          segment: currentStored,
+          changed: currentStored !== stored,
           scopeChanged: false,
           pendingAlignmentAdvanced: false,
         };
@@ -180,7 +189,7 @@ export function resolveAttributionSegment(
         status: "ready",
         storageKey,
         segment: {
-          ...stored,
+          ...currentStored,
           baselineAccountUsedPercent: accountUsedPercent,
           baselineReady: true,
           baselineObservedAtUnix: input.quotaUpdatedAtUnix,
@@ -203,7 +212,7 @@ export function resolveAttributionSegment(
         status: "ready",
         storageKey,
         segment: {
-          ...stored,
+          ...currentStored,
           accountUsedObservedPercent: accountUsedPercent,
           quotaMovementPendingUntilUnix: Math.max(
             stored.quotaMovementPendingUntilUnix ?? Number.NEGATIVE_INFINITY,
@@ -225,7 +234,7 @@ export function resolveAttributionSegment(
         status: "ready",
         storageKey,
         segment: {
-          ...stored,
+          ...currentStored,
           accountUsedObservedPercent: accountUsedPercent,
           comparisonUpdatedAtUnix: input.quotaUpdatedAtUnix,
           quotaMovementPendingUntilUnix: null,
@@ -248,7 +257,7 @@ export function resolveAttributionSegment(
         status: "ready",
         storageKey,
         segment: {
-          ...stored,
+          ...currentStored,
           accountUsedObservedPercent: accountUsedPercent,
           comparisonUpdatedAtUnix: input.quotaUpdatedAtUnix,
           requiredLocalObservationAfterUnix: input.quotaUpdatedAtUnix,
@@ -261,8 +270,8 @@ export function resolveAttributionSegment(
     return {
       status: "ready",
       storageKey,
-      segment: stored,
-      changed: false,
+      segment: currentStored,
+      changed: currentStored !== stored,
       scopeChanged: false,
       pendingAlignmentAdvanced: false,
     };
@@ -276,8 +285,11 @@ export function resolveAttributionSegment(
     && !sameIdentityScope(stored, input.identity);
   const firstObservation = !sameCycle;
   const canonicalResetAtUnix = sameCycle ? stored.resetAtUnix : input.resetAtUnix;
+  const resolvedCycleId = cycleId
+    ?? (sameCycle ? normalizedCycleId(stored?.cycleId) : null);
   const segment: StoredAttributionSegment = {
     resetAtUnix: canonicalResetAtUnix,
+    cycleId: resolvedCycleId,
     scopeKey: input.identity.scopeKey,
     plan: input.identity.plan,
     limit: input.identity.limit,
@@ -320,7 +332,7 @@ export function holdAttributionSegmentDuringContinuityGap(
   assertValidatedHoldInput(input);
   const storageKey = attributionSegmentStorageKey(input.sourceHomeIdentity);
   if (!stored
-    || !sameResetCycle(stored.resetAtUnix, input.resetAtUnix)
+    || !sameQuotaCycleWithoutUsage(stored, input)
     || !sameIdentityScope(stored, input.identity)) {
     return {
       status: "quotaTimestampUnavailable",
@@ -360,7 +372,7 @@ export function beginContinuityGapCutover(
     return unavailableResolution("quotaTimestampUnavailable");
   }
   const storageKey = attributionSegmentStorageKey(input.sourceHomeIdentity);
-  const sameCycle = stored !== null && sameResetCycle(stored.resetAtUnix, input.resetAtUnix);
+  const sameCycle = stored !== null && sameQuotaCycle(stored, input);
   const sameScope = stored !== null && sameCycle && sameIdentityScope(stored, input.identity);
   if (sameScope
     && stored.cutoverReason === "continuityGap"
@@ -370,11 +382,14 @@ export function beginContinuityGapCutover(
   const canonicalResetAtUnix = sameCycle ? stored.resetAtUnix : input.resetAtUnix;
   const cycleStartUnix = canonicalResetAtUnix - SEVEN_DAYS_SECONDS;
   const accountUsedPercent = Math.max(0, input.accountUsedPercent);
+  const resolvedCycleId = normalizedCycleId(input.cycleId)
+    ?? (sameCycle ? normalizedCycleId(stored?.cycleId) : null);
   return {
     status: "awaitingAccountSwitchBaseline",
     storageKey,
     segment: {
       resetAtUnix: canonicalResetAtUnix,
+      cycleId: resolvedCycleId,
       scopeKey: input.identity.scopeKey,
       plan: input.identity.plan,
       limit: input.identity.limit,
@@ -427,7 +442,7 @@ export function beginAttributionUnsafeEpisodeCutover(
     return unavailableResolution("quotaTimestampUnavailable");
   }
   const storageKey = attributionSegmentStorageKey(input.sourceHomeIdentity);
-  const sameCycle = stored !== null && sameResetCycle(stored.resetAtUnix, input.resetAtUnix);
+  const sameCycle = stored !== null && sameQuotaCycle(stored, input);
   const sameScope = stored !== null && sameCycle && sameIdentityScope(stored, input.identity);
   if (sameScope
     && stored.cutoverReason === "continuityGap"
@@ -673,6 +688,9 @@ function normalizeStoredSegment(value: unknown): StoredAttributionSegment | null
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<StoredAttributionSegment>;
   if (typeof candidate.resetAtUnix !== "number" || !Number.isFinite(candidate.resetAtUnix)
+    || (candidate.cycleId !== undefined
+      && candidate.cycleId !== null
+      && (typeof candidate.cycleId !== "string" || !candidate.cycleId.trim()))
     || typeof candidate.scopeKey !== "string" || !candidate.scopeKey
     || typeof candidate.plan !== "string" || !candidate.plan
     || typeof candidate.limit !== "string" || !candidate.limit
@@ -735,8 +753,35 @@ function validUUID(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-function sameResetCycle(left: number, right: number): boolean {
-  return Math.abs(left - right) <= ATTRIBUTION_RESET_GRACE_SECONDS;
+function sameQuotaCycle(
+  stored: StoredAttributionSegment,
+  input: ValidAttributionSegmentInput,
+): boolean {
+  const storedCycleId = normalizedCycleId(stored.cycleId);
+  const inputCycleId = normalizedCycleId(input.cycleId);
+  if (storedCycleId !== null && inputCycleId !== null) {
+    return storedCycleId === inputCycleId;
+  }
+  return !(Math.abs(stored.resetAtUnix - input.resetAtUnix)
+      > NEW_CYCLE_RESET_DELTA_SECONDS
+    && input.accountUsedPercent === 0);
+}
+
+function sameQuotaCycleWithoutUsage(
+  stored: StoredAttributionSegment,
+  input: ValidAttributionSegmentHoldInput,
+): boolean {
+  const storedCycleId = normalizedCycleId(stored.cycleId);
+  const inputCycleId = normalizedCycleId(input.cycleId);
+  if (storedCycleId !== null && inputCycleId !== null) {
+    return storedCycleId === inputCycleId;
+  }
+  return Math.abs(stored.resetAtUnix - input.resetAtUnix) <= RESET_JITTER_SECONDS;
+}
+
+function normalizedCycleId(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
 }
 
 function stableIdentityHash(value: string): string {

@@ -35,7 +35,7 @@ test("cache hit ranking keeps ten outer rows, opens detail, and searches with pa
         let dialog = container.querySelector('[role="dialog"][aria-modal="true"]');
         assert.ok(dialog);
         assert.equal(dialog.querySelectorAll(".ranking-row:not(.ranking-row--empty)").length, 10);
-        assert.match(dialog.textContent ?? "", /已显示 10 \/ 共 25/);
+        assert.match(dialog.textContent ?? "", /已显示 10 \/ 共 22/);
         assert.ok(dialog.querySelector('input[type="search"]'));
         assert.ok(dialog.querySelector(".cache-ranking-load-more"));
 
@@ -43,16 +43,16 @@ test("cache hit ranking keeps ten outer rows, opens detail, and searches with pa
         dialog = container.querySelector('[role="dialog"][aria-modal="true"]');
         assert.ok(dialog);
         assert.equal(dialog.querySelectorAll(".ranking-row:not(.ranking-row--empty)").length, 20);
-        assert.match(dialog.textContent ?? "", /已显示 20 \/ 共 25/);
+        assert.match(dialog.textContent ?? "", /已显示 20 \/ 共 22/);
 
         const finalLoadButton = dialog.querySelector(".cache-ranking-load-more");
         assert.ok(finalLoadButton);
-        assert.equal(finalLoadButton.textContent?.trim(), "继续加载 5 条");
+        assert.equal(finalLoadButton.textContent?.trim(), "继续加载 2 条");
         await React.act(async () => finalLoadButton.click());
         dialog = container.querySelector('[role="dialog"][aria-modal="true"]');
         assert.ok(dialog);
-        assert.equal(dialog.querySelectorAll(".ranking-row:not(.ranking-row--empty)").length, 25);
-        assert.match(dialog.textContent ?? "", /已显示 25 \/ 共 25/);
+        assert.equal(dialog.querySelectorAll(".ranking-row:not(.ranking-row--empty)").length, 22);
+        assert.match(dialog.textContent ?? "", /已显示 22 \/ 共 22/);
         assert.equal(dialog.querySelector(".cache-ranking-load-more"), null);
 
         const search = dialog.querySelector('input[type="search"]');
@@ -60,23 +60,23 @@ test("cache hit ranking keeps ten outer rows, opens detail, and searches with pa
         await setInput(React.act, search, "会话 2", dom.window);
         dialog = container.querySelector('[role="dialog"][aria-modal="true"]');
         assert.ok(dialog);
-        assert.equal(dialog.querySelectorAll(".ranking-row:not(.ranking-row--empty)").length, 6);
-        assert.match(dialog.textContent ?? "", /已显示 6 \/ 共 6/);
+        assert.equal(dialog.querySelectorAll(".ranking-row:not(.ranking-row--empty)").length, 3);
+        assert.match(dialog.textContent ?? "", /已显示 3 \/ 共 3/);
         assert.equal(dialog.querySelector(".cache-ranking-load-more"), null);
 
         await setInput(React.act, search, "", dom.window);
         dialog = container.querySelector('[role="dialog"][aria-modal="true"]');
         assert.ok(dialog);
         assert.equal(dialog.querySelectorAll(".ranking-row:not(.ranking-row--empty)").length, 10);
-        assert.match(dialog.textContent ?? "", /已显示 10 \/ 共 25/);
+        assert.match(dialog.textContent ?? "", /已显示 10 \/ 共 22/);
 
-        const turnsTab = [...dialog.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "单轮");
-        assert.ok(turnsTab);
-        await React.act(async () => turnsTab.click());
+        const sessionsTab = [...dialog.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "会话");
+        assert.ok(sessionsTab);
+        await React.act(async () => sessionsTab.click());
         dialog = container.querySelector('[role="dialog"][aria-modal="true"]');
         assert.ok(dialog);
         assert.equal(dialog.querySelectorAll(".ranking-row:not(.ranking-row--empty)").length, 10);
-        assert.match(dialog.textContent ?? "", /已显示 10 \/ 共 22/);
+        assert.match(dialog.textContent ?? "", /已显示 10 \/ 共 25/);
 
         const escape = new dom.KeyboardEvent("keydown", {
           bubbles: true,

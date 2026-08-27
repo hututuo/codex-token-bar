@@ -1,6 +1,6 @@
 import type { QuotaAttributionIdentity } from "../types/dashboard.ts";
 
-const RESET_GRACE_SECONDS = 2 * 60;
+const NEW_CYCLE_RESET_DELTA_SECONDS = 5 * 60;
 const BUCKET_SECONDS = 5 * 60;
 const USED_CHANGE_EPSILON = 0.000_001;
 
@@ -9,11 +9,13 @@ export interface QuotaComparisonObservationInput {
   updatedAt: string;
   resetAtUnix: number | null | undefined;
   usedPercent: number | null;
+  cycleId?: string | null;
   identity: QuotaAttributionIdentity | null | undefined;
 }
 
 export interface QuotaComparisonObservationState {
   canonicalResetAtUnix: number;
+  cycleId: string | null;
   scopeKey: string;
   plan: string;
   limit: string;
@@ -77,9 +79,11 @@ export function advanceQuotaComparisonObservation(
   }
 
   const nextIdentity = input.identity;
+  const nextCycleId = normalizedCycleId(input.cycleId);
   if (previous === null) {
     return changedState({
       canonicalResetAtUnix: input.resetAtUnix,
+      cycleId: nextCycleId,
       scopeKey: nextIdentity.scopeKey,
       plan: nextIdentity.plan,
       limit: nextIdentity.limit,
@@ -94,31 +98,13 @@ export function advanceQuotaComparisonObservation(
     }, "initial");
   }
 
-  const sameCycle = Math.abs(previous.canonicalResetAtUnix - input.resetAtUnix)
-    <= RESET_GRACE_SECONDS;
-  if (!sameCycle) {
-    return changedState({
-      canonicalResetAtUnix: input.resetAtUnix,
-      scopeKey: nextIdentity.scopeKey,
-      plan: nextIdentity.plan,
-      limit: nextIdentity.limit,
-      observedUsedPercent: input.usedPercent,
-      comparisonUpdatedAt: input.updatedAt,
-      comparisonUpdatedAtUnix: updatedAtUnix,
-      pendingBoundaryUnix: null,
-      pendingObservedAtUnix: null,
-      movementPendingUntilUnix: alignedCeil(updatedAtUnix),
-      movementObservedAtUnix: updatedAtUnix,
-      requiredLocalObservationAfterUnix: null,
-    }, "reset");
-  }
-
   const sameIdentity = previous.scopeKey === nextIdentity.scopeKey
     && previous.plan === nextIdentity.plan
     && previous.limit === nextIdentity.limit;
   if (!sameIdentity) {
     return changedState({
-      canonicalResetAtUnix: previous.canonicalResetAtUnix,
+      canonicalResetAtUnix: input.resetAtUnix,
+      cycleId: nextCycleId,
       scopeKey: nextIdentity.scopeKey,
       plan: nextIdentity.plan,
       limit: nextIdentity.limit,
@@ -133,15 +119,47 @@ export function advanceQuotaComparisonObservation(
     }, "identity");
   }
 
-  if (previous.pendingBoundaryUnix !== null) {
-    const canFinalize = updatedAtUnix >= previous.pendingBoundaryUnix
-      && previous.pendingObservedAtUnix !== null
-      && updatedAtUnix > previous.pendingObservedAtUnix;
+  const previousCycleId = normalizedCycleId(previous.cycleId);
+  const authoritativeCycleChanged = previousCycleId !== null
+    && nextCycleId !== null
+    && previousCycleId !== nextCycleId;
+  const legacyCycleChanged = (previousCycleId === null || nextCycleId === null)
+    && Math.abs(previous.canonicalResetAtUnix - input.resetAtUnix)
+      > NEW_CYCLE_RESET_DELTA_SECONDS
+    && input.usedPercent === 0;
+  if (authoritativeCycleChanged || legacyCycleChanged) {
+    return changedState({
+      canonicalResetAtUnix: input.resetAtUnix,
+      cycleId: nextCycleId,
+      scopeKey: nextIdentity.scopeKey,
+      plan: nextIdentity.plan,
+      limit: nextIdentity.limit,
+      observedUsedPercent: input.usedPercent,
+      comparisonUpdatedAt: input.updatedAt,
+      comparisonUpdatedAtUnix: updatedAtUnix,
+      pendingBoundaryUnix: null,
+      pendingObservedAtUnix: null,
+      movementPendingUntilUnix: alignedCeil(updatedAtUnix),
+      movementObservedAtUnix: updatedAtUnix,
+      requiredLocalObservationAfterUnix: null,
+    }, "reset");
+  }
+
+  // Adopt an authoritative ID as soon as the backend starts publishing it,
+  // without turning that schema transition into a synthetic quota reset.
+  const sameCycleState = previous.cycleId === (nextCycleId ?? previousCycleId)
+    ? previous
+    : { ...previous, cycleId: nextCycleId ?? previousCycleId };
+
+  if (sameCycleState.pendingBoundaryUnix !== null) {
+    const canFinalize = updatedAtUnix >= sameCycleState.pendingBoundaryUnix
+      && sameCycleState.pendingObservedAtUnix !== null
+      && updatedAtUnix > sameCycleState.pendingObservedAtUnix;
     if (!canFinalize) {
-      return { state: previous, shouldRefreshPreciseUsage: false, reason: "unchanged" };
+      return { state: sameCycleState, shouldRefreshPreciseUsage: false, reason: "unchanged" };
     }
     return changedState({
-      ...previous,
+      ...sameCycleState,
       observedUsedPercent: input.usedPercent,
       comparisonUpdatedAt: input.updatedAt,
       comparisonUpdatedAtUnix: updatedAtUnix,
@@ -153,27 +171,27 @@ export function advanceQuotaComparisonObservation(
     }, "baseline");
   }
 
-  const accountUsedChanged = updatedAtUnix >= previous.comparisonUpdatedAtUnix
-    && Math.abs(input.usedPercent - previous.observedUsedPercent) > USED_CHANGE_EPSILON;
+  const accountUsedChanged = updatedAtUnix >= sameCycleState.comparisonUpdatedAtUnix
+    && Math.abs(input.usedPercent - sameCycleState.observedUsedPercent) > USED_CHANGE_EPSILON;
   if (accountUsedChanged) {
     return updatedWithoutRefresh({
-      ...previous,
+      ...sameCycleState,
       observedUsedPercent: input.usedPercent,
       movementPendingUntilUnix: Math.max(
-        previous.movementPendingUntilUnix ?? Number.NEGATIVE_INFINITY,
+        sameCycleState.movementPendingUntilUnix ?? Number.NEGATIVE_INFINITY,
         alignedCeil(updatedAtUnix),
       ),
       movementObservedAtUnix: updatedAtUnix,
     }, "usagePending");
   }
 
-  const movementMatured = previous.movementPendingUntilUnix !== null
-    && previous.movementObservedAtUnix !== null
-    && updatedAtUnix >= previous.movementPendingUntilUnix
-    && updatedAtUnix > previous.movementObservedAtUnix;
+  const movementMatured = sameCycleState.movementPendingUntilUnix !== null
+    && sameCycleState.movementObservedAtUnix !== null
+    && updatedAtUnix >= sameCycleState.movementPendingUntilUnix
+    && updatedAtUnix > sameCycleState.movementObservedAtUnix;
   if (movementMatured) {
     return changedState({
-      ...previous,
+      ...sameCycleState,
       observedUsedPercent: input.usedPercent,
       comparisonUpdatedAt: input.updatedAt,
       comparisonUpdatedAtUnix: updatedAtUnix,
@@ -183,7 +201,7 @@ export function advanceQuotaComparisonObservation(
     }, "movementBoundary");
   }
 
-  return { state: previous, shouldRefreshPreciseUsage: false, reason: "unchanged" };
+  return { state: sameCycleState, shouldRefreshPreciseUsage: false, reason: "unchanged" };
 }
 
 /** Mirrors the UI's proven-pending 5m liveness advancement into hook state. */
@@ -233,6 +251,11 @@ function parsedUnix(value: string): number | null {
 
 function alignedCeil(unix: number): number {
   return Math.ceil(unix / BUCKET_SECONDS) * BUCKET_SECONDS;
+}
+
+function normalizedCycleId(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
 }
 
 function validIdentity(

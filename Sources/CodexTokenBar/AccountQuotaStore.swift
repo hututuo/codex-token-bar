@@ -283,8 +283,11 @@ final class AccountQuotaStore: ObservableObject {
                     self.snapshotSourceID == sourceID ? self.snapshot : .empty
                 }
                 let historyStore = await MainActor.run { self.historyStore }
-                let memoryAdjustedQuota = QuotaMonotonicNormalizer.normalizedSnapshot(quota, after: previousSnapshot)
-                let adjustedQuota = await historyStore?.normalizedForDisplay(memoryAdjustedQuota) ?? memoryAdjustedQuota
+                let historyAdjustedQuota = await historyStore?.normalizedForDisplay(quota) ?? quota
+                let adjustedQuota = QuotaMonotonicNormalizer.normalizedSnapshot(
+                    historyAdjustedQuota,
+                    after: previousSnapshot
+                )
 
                 await MainActor.run {
                     guard self.isCurrentQuotaRefresh(
@@ -326,7 +329,17 @@ final class AccountQuotaStore: ObservableObject {
                     let retainsSameSourceQuota = self.snapshotSourceID == sourceID
                         && self.snapshot.isAvailable
                     let retainsSameSourceReset = self.resetCreditSnapshotSourceID == sourceID
-                    var failed = (retainsSameSourceQuota || retainsSameSourceReset) ? self.snapshot : .empty
+                    let current = self.snapshot
+                    var failed = (retainsSameSourceQuota || retainsSameSourceReset) ? current : .empty
+                    // The reset-credit request is an independent channel under
+                    // the same source-binding generation. A quota failure must
+                    // not erase its in-flight or already-failed status merely
+                    // because that channel has not produced a successful card
+                    // snapshot yet.
+                    failed.resetCreditsAvailableCount = current.resetCreditsAvailableCount
+                    failed.resetCredits = current.resetCredits
+                    failed.resetCreditStatus = current.resetCreditStatus
+                    failed.resetCreditUpdatedAt = current.resetCreditUpdatedAt
                     let occurredAt = Date()
                     let diagnostic = AccountQuotaDiagnostic.classify(
                         source: .accountQuota,
@@ -344,7 +357,7 @@ final class AccountQuotaStore: ObservableObject {
                         )
                     }
                     failed.diagnostics = quotaDiagnostics
-                        + failed.diagnostics.filter { $0.source == .resetCredit }
+                        + current.diagnostics.filter { $0.source == .resetCredit }
                     let retainedStatus = retainsSameSourceQuota
                         ? "；自动重试中（最长 1 分钟），当前显示上次成功额度"
                         : "；自动重试中（最长 1 分钟）"

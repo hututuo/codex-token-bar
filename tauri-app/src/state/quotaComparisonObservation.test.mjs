@@ -65,20 +65,41 @@ test("same-bucket percent changes update observation without rescanning, then re
     "2033-05-18T03:40:20.000Z",
   ) / 1_000);
 
-  const tinyResetDrift = advanceQuotaComparisonObservation(released.state, observation({
+  const nonFullResetDrift = advanceQuotaComparisonObservation(released.state, observation({
     updatedAt: "2033-05-18T03:41:20.000Z",
     usedPercent: 0.15,
-    resetAtUnix: RESET + 120,
+    resetAtUnix: RESET + 900,
   }));
-  assert.equal(tinyResetDrift.shouldRefreshPreciseUsage, false);
-  assert.equal(tinyResetDrift.state.canonicalResetAtUnix, RESET);
+  assert.equal(nonFullResetDrift.shouldRefreshPreciseUsage, false);
+  assert.equal(nonFullResetDrift.state.canonicalResetAtUnix, RESET);
+
+  const exactlyFiveMinutes = advanceQuotaComparisonObservation(released.state, observation({
+    updatedAt: "2033-05-18T03:41:20.000Z",
+    usedPercent: 0,
+    resetAtUnix: RESET + 300,
+  }));
+  assert.notEqual(exactlyFiveMinutes.reason, "reset");
+
+  const nonFullDrift = advanceQuotaComparisonObservation(released.state, observation({
+    updatedAt: "2033-05-18T03:41:20.000Z",
+    usedPercent: 0.01,
+    resetAtUnix: RESET + 301,
+  }));
+  assert.notEqual(nonFullDrift.reason, "reset");
 
   const newReset = advanceQuotaComparisonObservation(released.state, observation({
     updatedAt: "2033-05-18T03:41:20.000Z",
-    usedPercent: 0.01,
-    resetAtUnix: RESET + 121,
+    usedPercent: 0,
+    resetAtUnix: RESET + 301,
   }));
   assert.equal(newReset.reason, "reset");
+
+  const postResetUsage = advanceQuotaComparisonObservation(newReset.state, observation({
+    updatedAt: "2033-05-18T03:42:20.000Z",
+    usedPercent: 0.01,
+    resetAtUnix: RESET + 302,
+  }));
+  assert.equal(postResetUsage.reason, "usagePending");
 
   const planSwitch = advanceQuotaComparisonObservation(released.state, observation({
     updatedAt: "2033-05-18T03:41:20.000Z",
@@ -87,6 +108,40 @@ test("same-bucket percent changes update observation without rescanning, then re
   }));
   assert.equal(planSwitch.reason, "identity");
   assert.equal(planSwitch.shouldRefreshPreciseUsage, true);
+});
+
+test("authoritative cycle IDs replace reset-time inference", () => {
+  const first = advanceQuotaComparisonObservation(null, observation({ cycleId: "cycle-7" }));
+  const drift = advanceQuotaComparisonObservation(first.state, observation({
+    updatedAt: "2033-05-18T03:34:20.000Z",
+    resetAtUnix: RESET + 900,
+    usedPercent: 0.13,
+    cycleId: "cycle-7",
+  }));
+  assert.equal(drift.reason, "unchanged");
+  assert.equal(drift.state.canonicalResetAtUnix, RESET);
+
+  const next = advanceQuotaComparisonObservation(drift.state, observation({
+    updatedAt: "2033-05-18T03:35:20.000Z",
+    resetAtUnix: RESET + 901,
+    usedPercent: 0.01,
+    cycleId: "cycle-8",
+  }));
+  assert.equal(next.reason, "reset");
+  assert.equal(next.state.cycleId, "cycle-8");
+});
+
+test("introducing a cycle ID upgrades legacy state without a synthetic reset", () => {
+  const legacy = advanceQuotaComparisonObservation(null, observation());
+  const upgraded = advanceQuotaComparisonObservation(legacy.state, observation({
+    updatedAt: "2033-05-18T03:34:20.000Z",
+    resetAtUnix: RESET + 200,
+    cycleId: "cycle-7",
+  }));
+  assert.equal(upgraded.reason, "unchanged");
+  assert.equal(upgraded.shouldRefreshPreciseUsage, false);
+  assert.equal(upgraded.state.cycleId, "cycle-7");
+  assert.equal(upgraded.state.canonicalResetAtUnix, RESET);
 });
 
 test("account switch finalizes only on a later observation at its 5m boundary", () => {

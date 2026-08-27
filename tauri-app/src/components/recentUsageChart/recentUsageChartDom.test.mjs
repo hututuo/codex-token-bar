@@ -597,7 +597,9 @@ function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
     outputTokens: 0,
     cacheHitRate: 0,
     fiveHourRemainingPercent,
+    fiveHourCycleId: fiveHourRemainingPercent === null ? null : "five-hour-cycle-1",
     sevenDayRemainingPercent,
+    sevenDayCycleId: sevenDayRemainingPercent === null ? null : "seven-day-cycle-1",
   };
 }
 

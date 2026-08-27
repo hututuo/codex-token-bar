@@ -281,7 +281,41 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
     }
 
     @MainActor
-    func testGraduallyDriftingResetBoundaryUsesLatestSameCycleSuffix() throws {
+    func testResetDriftWithoutCycleIDFailsClosed() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
+        let prepared = preparedData(
+            start: start,
+            sevenDayValues: [90, 85, 80],
+            sevenDayObservations: [
+                QuotaHistoryObservation(
+                    observedAt: start.addingTimeInterval(60),
+                    remainingPercent: 90,
+                    resetsAt: reset
+                ),
+                QuotaHistoryObservation(
+                    observedAt: start.addingTimeInterval(660),
+                    remainingPercent: 80,
+                    resetsAt: reset.addingTimeInterval(1)
+                ),
+            ]
+        )
+
+        let selection = try XCTUnwrap(
+            prepared.quotaConsumptionSelection(
+                startIndex: 0,
+                endIndex: 2,
+                priceCard: .officialAPI(.gpt56Sol)
+            )
+        )
+
+        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .unavailable)
+        XCTAssertFalse(selection.sevenDay.quotaDropObserved)
+        XCTAssertNil(selection.sevenDay.impliedWindowBudgetUSD)
+    }
+
+    @MainActor
+    func testGraduallyDriftingResetBoundaryKeepsThePersistedCycle() throws {
         let start = Date(timeIntervalSince1970: 1_800)
         let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
         let prepared = preparedData(
@@ -291,27 +325,32 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
                 QuotaHistoryObservation(
                     observedAt: start.addingTimeInterval(60),
                     remainingPercent: 90,
-                    resetsAt: reset
+                    resetsAt: reset,
+                    cycleID: "cycle-7d-drift"
                 ),
                 QuotaHistoryObservation(
                     observedAt: start.addingTimeInterval(360),
                     remainingPercent: 85,
-                    resetsAt: reset.addingTimeInterval(90)
+                    resetsAt: reset.addingTimeInterval(90),
+                    cycleID: "cycle-7d-drift"
                 ),
                 QuotaHistoryObservation(
                     observedAt: start.addingTimeInterval(660),
                     remainingPercent: 83,
-                    resetsAt: reset.addingTimeInterval(150)
+                    resetsAt: reset.addingTimeInterval(150),
+                    cycleID: "cycle-7d-drift"
                 ),
                 QuotaHistoryObservation(
                     observedAt: start.addingTimeInterval(960),
                     remainingPercent: 81,
-                    resetsAt: reset.addingTimeInterval(180)
+                    resetsAt: reset.addingTimeInterval(180),
+                    cycleID: "cycle-7d-drift"
                 ),
                 QuotaHistoryObservation(
                     observedAt: start.addingTimeInterval(1260),
                     remainingPercent: 80,
-                    resetsAt: reset.addingTimeInterval(210)
+                    resetsAt: reset.addingTimeInterval(210),
+                    cycleID: "cycle-7d-drift"
                 ),
             ]
         )
@@ -326,7 +365,7 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
 
         XCTAssertEqual(selection.sevenDay.quotaDropBasis, .observed)
         XCTAssertTrue(selection.sevenDay.quotaDropObserved)
-        XCTAssertEqual(selection.sevenDay.quotaDropPercent, 5)
+        XCTAssertEqual(selection.sevenDay.quotaDropPercent, 10)
     }
 
     @MainActor

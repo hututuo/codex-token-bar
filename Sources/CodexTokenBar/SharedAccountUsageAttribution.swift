@@ -810,6 +810,7 @@ enum SharedAccountUsageCutoverReason: String, Codable, Equatable, Sendable {
 
 struct SharedAccountUsageSegment: Codable, Equatable, Sendable {
     let cycleResetAt: Date
+    let cycleID: String?
     let start: Date
     let accountUsedBaselinePercent: Double
     let switchedAccountDuringCycle: Bool
@@ -843,6 +844,7 @@ struct SharedAccountUsageSegment: Codable, Equatable, Sendable {
 
     init(
         cycleResetAt: Date,
+        cycleID: String? = nil,
         start: Date,
         accountUsedBaselinePercent: Double,
         switchedAccountDuringCycle: Bool,
@@ -859,6 +861,7 @@ struct SharedAccountUsageSegment: Codable, Equatable, Sendable {
         cutoverRecoveryGeneration: Int64? = nil
     ) {
         self.cycleResetAt = cycleResetAt
+        self.cycleID = cycleID
         self.start = start
         self.accountUsedBaselinePercent = accountUsedBaselinePercent
         self.switchedAccountDuringCycle = switchedAccountDuringCycle
@@ -877,6 +880,7 @@ struct SharedAccountUsageSegment: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case cycleResetAt
+        case cycleID
         case start
         case accountUsedBaselinePercent
         case switchedAccountDuringCycle
@@ -896,6 +900,7 @@ struct SharedAccountUsageSegment: Codable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         cycleResetAt = try container.decode(Date.self, forKey: .cycleResetAt)
+        cycleID = try container.decodeIfPresent(String.self, forKey: .cycleID)
         start = try container.decode(Date.self, forKey: .start)
         accountUsedBaselinePercent = try container.decode(Double.self, forKey: .accountUsedBaselinePercent)
         switchedAccountDuringCycle = try container.decode(Bool.self, forKey: .switchedAccountDuringCycle)
@@ -915,6 +920,27 @@ struct SharedAccountUsageSegment: Codable, Equatable, Sendable {
         )
     }
 
+    func replacingCycleID(_ cycleID: String) -> SharedAccountUsageSegment {
+        SharedAccountUsageSegment(
+            cycleResetAt: cycleResetAt,
+            cycleID: cycleID,
+            start: start,
+            accountUsedBaselinePercent: accountUsedBaselinePercent,
+            switchedAccountDuringCycle: switchedAccountDuringCycle,
+            baselineReady: baselineReady,
+            baselineObservedAt: baselineObservedAt,
+            accountUsedObservedPercent: accountUsedObservedPercent,
+            comparisonUpdatedAt: comparisonUpdatedAt,
+            quotaMovementPendingUntil: quotaMovementPendingUntil,
+            requiredLocalObservationAfter: requiredLocalObservationAfter,
+            cutoverReason: cutoverReason,
+            cutoverDetectedAt: cutoverDetectedAt,
+            cutoverRecoveredAt: cutoverRecoveredAt,
+            continuityGapID: continuityGapID,
+            cutoverRecoveryGeneration: cutoverRecoveryGeneration
+        )
+    }
+
     var effectiveCutoverReason: SharedAccountUsageCutoverReason {
         cutoverReason ?? (switchedAccountDuringCycle ? .accountSwitch : .none)
     }
@@ -925,6 +951,21 @@ private struct SharedAccountUsageSegmentRecord: Codable, Equatable {
     let resetAt: Date
     let segment: SharedAccountUsageSegment
     let observerInstanceID: UUID?
+    let cycleID: String?
+
+    init(
+        accountScopeIdentifier: String,
+        resetAt: Date,
+        segment: SharedAccountUsageSegment,
+        observerInstanceID: UUID?,
+        cycleID: String? = nil
+    ) {
+        self.accountScopeIdentifier = accountScopeIdentifier
+        self.resetAt = resetAt
+        self.segment = segment
+        self.observerInstanceID = observerInstanceID
+        self.cycleID = cycleID
+    }
 }
 
 private struct LegacySharedAccountUsageSegmentRecordHeader: Decodable {
@@ -943,8 +984,6 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
     static var allMigrationStorageKeys: [String] {
         [defaultStorageKey] + defaultLegacyStorageKeys
     }
-    static let resetGraceInterval: TimeInterval = 2 * 60
-
     private let defaults: UserDefaults
     private let storageKey: String
     private let legacyStorageKeys: [String]
@@ -1008,7 +1047,8 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
         resetAt: Date,
         cycleStart: Date,
         quotaUpdatedAt: Date,
-        accountUsedPercent: Double
+        accountUsedPercent: Double,
+        cycleID: String? = nil
     ) -> SharedAccountUsageSegment {
         let homeIdentifier = Self.digest(identity.homeIdentity)
         let accountScopeIdentifier = Self.digest([
@@ -1026,7 +1066,12 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
         }
         let existing = values[homeIdentifier]
         let sameCycle = existing.map {
-            abs($0.resetAt.timeIntervalSince(resetAt)) <= Self.resetGraceInterval
+            Self.sameCycle(
+                record: $0,
+                resetAt: resetAt,
+                cycleID: cycleID,
+                accountUsedPercent: accountUsedPercent
+            )
         } ?? false
         if sameCycle,
            existing?.accountScopeIdentifier == accountScopeIdentifier,
@@ -1042,6 +1087,7 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
             )
             let pending = SharedAccountUsageSegment(
                 cycleResetAt: canonicalResetAt,
+                cycleID: cycleID ?? existing?.cycleID,
                 start: max(cycleStart, min(alignedObservation, canonicalResetAt)),
                 accountUsedBaselinePercent: max(0, accountUsedPercent),
                 switchedAccountDuringCycle: false,
@@ -1060,7 +1106,8 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
                 accountScopeIdentifier: accountScopeIdentifier,
                 resetAt: canonicalResetAt,
                 segment: pending,
-                observerInstanceID: observerInstanceID
+                observerInstanceID: observerInstanceID,
+                cycleID: cycleID ?? existing?.cycleID
             )
             return persist(values)
                 ? pending
@@ -1085,6 +1132,7 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
                     )
                     let advanced = SharedAccountUsageSegment(
                         cycleResetAt: segment.cycleResetAt,
+                        cycleID: cycleID ?? segment.cycleID,
                         start: segment.start,
                         accountUsedBaselinePercent: segment.accountUsedBaselinePercent,
                         switchedAccountDuringCycle: segment.switchedAccountDuringCycle,
@@ -1107,7 +1155,8 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
                         accountScopeIdentifier: accountScopeIdentifier,
                         resetAt: segment.cycleResetAt,
                         segment: advanced,
-                        observerInstanceID: observerInstanceID
+                        observerInstanceID: observerInstanceID,
+                        cycleID: cycleID ?? existing?.cycleID
                     )
                     return persist(values)
                         ? advanced
@@ -1117,6 +1166,18 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
                             quotaUpdatedAt: quotaUpdatedAt,
                             accountUsedPercent: accountUsedPercent
                         )
+                }
+                if let cycleID,
+                   segment.cycleID != cycleID || existing?.cycleID != cycleID {
+                    let upgraded = segment.replacingCycleID(cycleID)
+                    values[homeIdentifier] = SharedAccountUsageSegmentRecord(
+                        accountScopeIdentifier: accountScopeIdentifier,
+                        resetAt: segment.cycleResetAt,
+                        segment: upgraded,
+                        observerInstanceID: observerInstanceID,
+                        cycleID: cycleID
+                    )
+                    return persist(values) ? upgraded : segment
                 }
                 return segment
             }
@@ -1130,6 +1191,7 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
             // from falsely assigning it to another user.
             let finalized = SharedAccountUsageSegment(
                 cycleResetAt: segment.cycleResetAt,
+                cycleID: cycleID ?? segment.cycleID,
                 start: segment.start,
                 accountUsedBaselinePercent: max(0, accountUsedPercent),
                 switchedAccountDuringCycle: segment.switchedAccountDuringCycle,
@@ -1149,7 +1211,8 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
                 accountScopeIdentifier: accountScopeIdentifier,
                 resetAt: segment.cycleResetAt,
                 segment: finalized,
-                observerInstanceID: observerInstanceID
+                observerInstanceID: observerInstanceID,
+                cycleID: cycleID ?? existing?.cycleID
             )
             return persist(values)
                 ? finalized
@@ -1165,7 +1228,7 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
             guard let reset = legacyResetAt(for: homeIdentifier, storageKey: key) else {
                 return false
             }
-            return abs(reset.timeIntervalSince(resetAt)) <= Self.resetGraceInterval
+            return QuotaHistoryCyclePolicy.isResetJitter(reset, resetAt)
         }
         // A missing current-cycle record is unsafe whether this is the first
         // launch ever or a restart after reset. We cannot prove that local
@@ -1184,11 +1247,14 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
             .none
         }
         let canonicalResetAt = sameCycle ? (existing?.resetAt ?? resetAt) : resetAt
+        let existingCycleID = existing.flatMap { $0.cycleID ?? $0.segment.cycleID }
+        let resolvedCycleID = cycleID ?? (sameCycle ? existingCycleID : nil)
         let alignedObservation = Date(
             timeIntervalSince1970: ceil(quotaUpdatedAt.timeIntervalSince1970 / 300) * 300
         )
         let segment = SharedAccountUsageSegment(
             cycleResetAt: canonicalResetAt,
+            cycleID: resolvedCycleID,
             start: needsCutover ? max(cycleStart, min(alignedObservation, canonicalResetAt)) : cycleStart,
             accountUsedBaselinePercent: needsCutover ? max(0, accountUsedPercent) : 0,
             switchedAccountDuringCycle: switchedAccount,
@@ -1207,7 +1273,8 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
             accountScopeIdentifier: accountScopeIdentifier,
             resetAt: canonicalResetAt,
             segment: segment,
-            observerInstanceID: observerInstanceID
+            observerInstanceID: observerInstanceID,
+            cycleID: resolvedCycleID
         )
         return persist(values)
             ? segment
@@ -1224,7 +1291,8 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
     /// same persistence key but no conclusion can move forward.
     func existingSegment(
         identity: QuotaHistoryIdentity,
-        resetAt: Date
+        resetAt: Date,
+        cycleID: String? = nil
     ) -> SharedAccountUsageSegment? {
         let homeIdentifier = Self.digest(identity.homeIdentity)
         let accountScopeIdentifier = Self.digest([
@@ -1236,7 +1304,11 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
               let record = values[homeIdentifier],
               record.accountScopeIdentifier == accountScopeIdentifier,
               observerInstanceID == nil || record.observerInstanceID == observerInstanceID,
-              abs(record.resetAt.timeIntervalSince(resetAt)) <= Self.resetGraceInterval else {
+              Self.sameCycleWithoutUsage(
+                record: record,
+                resetAt: resetAt,
+                cycleID: cycleID
+              ) else {
             return nil
         }
         return record.segment
@@ -1256,7 +1328,8 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
         gapDetectedAt: Date,
         recoveredCoverageAt: Date,
         cutoverReason: SharedAccountUsageCutoverReason = .continuityGap,
-        cleanRecoveryGeneration: Int64? = nil
+        cleanRecoveryGeneration: Int64? = nil,
+        cycleID: String? = nil
     ) -> SharedAccountUsageSegment {
         let homeIdentifier = Self.digest(identity.homeIdentity)
         let accountScopeIdentifier = Self.digest([
@@ -1274,7 +1347,12 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
         }
         let existing = values[homeIdentifier]
         let sameCycle = existing.map {
-            abs($0.resetAt.timeIntervalSince(resetAt)) <= Self.resetGraceInterval
+            Self.sameCycle(
+                record: $0,
+                resetAt: resetAt,
+                cycleID: cycleID,
+                accountUsedPercent: accountUsedPercent
+            )
         } ?? false
 
         let sameCleanRecovery = cleanRecoveryGeneration == nil
@@ -1299,16 +1377,20 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
                 resetAt: resetAt,
                 cycleStart: cycleStart,
                 quotaUpdatedAt: quotaUpdatedAt,
-                accountUsedPercent: accountUsedPercent
+                accountUsedPercent: accountUsedPercent,
+                cycleID: cycleID
             )
         }
 
         let canonicalResetAt = sameCycle ? (existing?.resetAt ?? resetAt) : resetAt
+        let existingCycleID = existing.flatMap { $0.cycleID ?? $0.segment.cycleID }
+        let resolvedCycleID = cycleID ?? (sameCycle ? existingCycleID : nil)
         let alignedRecovery = Date(
             timeIntervalSince1970: ceil(recoveredCoverageAt.timeIntervalSince1970 / 300) * 300
         )
         let pending = SharedAccountUsageSegment(
             cycleResetAt: canonicalResetAt,
+            cycleID: resolvedCycleID,
             start: max(cycleStart, min(alignedRecovery, canonicalResetAt)),
             accountUsedBaselinePercent: max(0, accountUsedPercent),
             switchedAccountDuringCycle: false,
@@ -1328,7 +1410,8 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
             accountScopeIdentifier: accountScopeIdentifier,
             resetAt: canonicalResetAt,
             segment: pending,
-            observerInstanceID: observerInstanceID
+            observerInstanceID: observerInstanceID,
+            cycleID: resolvedCycleID
         )
         return persist(values)
             ? pending
@@ -1344,7 +1427,8 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
         identity: QuotaHistoryIdentity,
         resetAt: Date,
         quotaUpdatedAt: Date,
-        accountUsedPercent: Double
+        accountUsedPercent: Double,
+        cycleID: String? = nil
     ) -> SharedAccountUsageSegment? {
         let homeIdentifier = Self.digest(identity.homeIdentity)
         let accountScopeIdentifier = Self.digest([
@@ -1356,7 +1440,12 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
         guard let record = values[homeIdentifier],
               record.accountScopeIdentifier == accountScopeIdentifier,
               observerInstanceID == nil || record.observerInstanceID == observerInstanceID,
-              abs(record.resetAt.timeIntervalSince(resetAt)) <= Self.resetGraceInterval,
+              Self.sameCycle(
+                record: record,
+                resetAt: resetAt,
+                cycleID: cycleID,
+                accountUsedPercent: accountUsedPercent
+              ),
               record.segment.baselineReady,
               quotaUpdatedAt > record.segment.comparisonUpdatedAt else {
             return nil
@@ -1378,6 +1467,7 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
 
         let advanced = SharedAccountUsageSegment(
             cycleResetAt: record.segment.cycleResetAt,
+            cycleID: cycleID ?? record.segment.cycleID,
             start: record.segment.start,
             accountUsedBaselinePercent: record.segment.accountUsedBaselinePercent,
             switchedAccountDuringCycle: record.segment.switchedAccountDuringCycle,
@@ -1397,9 +1487,38 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
             accountScopeIdentifier: accountScopeIdentifier,
             resetAt: record.segment.cycleResetAt,
             segment: advanced,
-            observerInstanceID: observerInstanceID
+            observerInstanceID: observerInstanceID,
+            cycleID: cycleID ?? record.cycleID
         )
         return persist(values) ? advanced : nil
+    }
+
+    private static func sameCycle(
+        record: SharedAccountUsageSegmentRecord,
+        resetAt: Date,
+        cycleID: String?,
+        accountUsedPercent: Double
+    ) -> Bool {
+        if let stored = record.cycleID ?? record.segment.cycleID,
+           let cycleID {
+            return stored == cycleID
+        }
+        let resetMoved = abs(record.resetAt.timeIntervalSince(resetAt))
+            > QuotaHistoryCyclePolicy.newCycleResetDelta
+                + QuotaHistoryCyclePolicy.timestampComparisonTolerance
+        return !(resetMoved && accountUsedPercent == 0)
+    }
+
+    private static func sameCycleWithoutUsage(
+        record: SharedAccountUsageSegmentRecord,
+        resetAt: Date,
+        cycleID: String?
+    ) -> Bool {
+        if let stored = record.cycleID ?? record.segment.cycleID,
+           let cycleID {
+            return stored == cycleID
+        }
+        return QuotaHistoryCyclePolicy.isResetJitter(record.resetAt, resetAt)
     }
 
     @discardableResult
@@ -1757,17 +1876,27 @@ enum SharedAccountUsageAttributionEstimator {
             )
         }
 
-        let resetAt: Date
-        if let segment,
-           abs(segment.cycleResetAt.timeIntervalSince(observedResetAt))
-            <= UserDefaultsSharedAccountUsageSegmentStore.resetGraceInterval {
-            resetAt = segment.cycleResetAt
+        let activeSegment: SharedAccountUsageSegment? = if let segment {
+            if let storedCycleID = segment.cycleID,
+               let observedCycleID = sevenDayQuota.cycleID {
+                storedCycleID == observedCycleID ? segment : nil
+            } else if QuotaHistoryCyclePolicy.startsNewCycle(
+                currentUsedPercent: sevenDayQuota.usedPercent,
+                currentResetsAt: observedResetAt,
+                acceptedResetsAt: segment.cycleResetAt
+            ) {
+                nil
+            } else {
+                segment
+            }
         } else {
-            resetAt = observedResetAt
+            nil
         }
+        let resetAt = activeSegment?.cycleResetAt ?? observedResetAt
         let cycleStart = resetAt.addingTimeInterval(-sevenDayDuration)
-        let resolvedSegment = segment ?? SharedAccountUsageSegment(
+        let resolvedSegment = activeSegment ?? SharedAccountUsageSegment(
             cycleResetAt: resetAt,
+            cycleID: sevenDayQuota.cycleID,
             start: cycleStart,
             accountUsedBaselinePercent: 0,
             switchedAccountDuringCycle: false,

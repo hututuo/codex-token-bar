@@ -90,6 +90,8 @@ export interface RecentUsagePoint {
   cacheHitRate: number | null;
   fiveHourRemainingPercent: number | null;
   sevenDayRemainingPercent: number | null;
+  fiveHourCycleId?: string | null;
+  sevenDayCycleId?: string | null;
   /** Opaque stable session/event-source contributions for monotonic archival merge. */
   sourceContributions?: RecentUsageSourceContribution[];
   /** Rotates whenever the native exact index can no longer prove append-only lineage. */

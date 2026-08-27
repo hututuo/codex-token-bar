@@ -854,6 +854,12 @@ function mergeQuotaHistory(points: RecentUsagePoint[], historyPoints: QuotaHisto
       ...point,
       fiveHourRemainingPercent: history.fiveHourRemainingPercent,
       sevenDayRemainingPercent: history.sevenDayRemainingPercent,
+      fiveHourCycleId: history.fiveHourCycleId === undefined
+        ? point.fiveHourCycleId
+        : history.fiveHourCycleId,
+      sevenDayCycleId: history.sevenDayCycleId === undefined
+        ? point.sevenDayCycleId
+        : history.sevenDayCycleId,
     };
   });
 }

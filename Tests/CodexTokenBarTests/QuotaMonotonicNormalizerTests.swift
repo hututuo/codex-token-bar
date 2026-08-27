@@ -82,13 +82,123 @@ final class QuotaMonotonicNormalizerTests: XCTestCase {
         let reset = Date(timeIntervalSince1970: 10_000)
         let nextReset = Date(timeIntervalSince1970: 28_000)
         let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
-            currentUsedPercent: 1,
+            currentUsedPercent: 0,
             currentResetsAt: nextReset,
-            previousUsedPercent: 83,
+            previousUsedPercent: 10,
             previousResetsAt: reset
         )
 
-        XCTAssertEqual(adjusted, 1)
+        XCTAssertEqual(adjusted, 0)
+    }
+
+    func testResetDriftCannotStartLegacyCycleUnlessCurrentQuotaIsFull() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
+            currentUsedPercent: 1,
+            currentResetsAt: reset.addingTimeInterval(301),
+            previousUsedPercent: 10,
+            previousResetsAt: reset
+        )
+
+        XCTAssertEqual(adjusted, 10)
+    }
+
+    func testAuthoritativeCycleIDAllowsImmediatePostResetUsage() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let previous = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: 10,
+                resetsAt: reset,
+                cycleID: "g3"
+            ),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "A",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let current = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: 1,
+                resetsAt: reset.addingTimeInterval(301),
+                cycleID: "g4"
+            ),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "A",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+
+        let adjusted = QuotaMonotonicNormalizer.normalizedSnapshot(current, after: previous)
+
+        XCTAssertEqual(adjusted.sevenDay?.usedPercent, 1)
+        XCTAssertEqual(adjusted.sevenDay?.cycleID, "g4")
+    }
+
+    func testMatchingCycleIDOverridesLargeResetTimestampDrift() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let previous = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: 10,
+                resetsAt: reset,
+                cycleID: "g3"
+            ),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "A",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let current = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: 1,
+                resetsAt: reset.addingTimeInterval(900),
+                cycleID: "g3"
+            ),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "A",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+
+        let adjusted = QuotaMonotonicNormalizer.normalizedSnapshot(current, after: previous)
+
+        XCTAssertEqual(adjusted.sevenDay?.usedPercent, 10)
+    }
+
+    func testIntroducingCycleIDDoesNotCreateSyntheticReset() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let previous = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 10, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "A",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let current = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: 1,
+                resetsAt: reset.addingTimeInterval(60),
+                cycleID: "g3"
+            ),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "A",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+
+        let adjusted = QuotaMonotonicNormalizer.normalizedSnapshot(current, after: previous)
+
+        XCTAssertEqual(adjusted.sevenDay?.usedPercent, 10)
     }
 
     func testRecoveredFullUsageSpikeCanReturnToFreshLowerReadingWithinSameReset() {

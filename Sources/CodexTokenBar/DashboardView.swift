@@ -755,7 +755,8 @@ struct DashboardView: View {
                     // this quota poll; the first clean scan must reset it.
                     segment = sharedAccountSegmentStore.existingSegment(
                         identity: historyIdentity,
-                        resetAt: resetAt
+                        resetAt: resetAt,
+                        cycleID: sevenDayQuota.cycleID
                     )
                 } else if store.preciseTimeSeriesFresh,
                    let gapDetectedAt = continuityLoss,
@@ -772,7 +773,8 @@ struct DashboardView: View {
                         recoveredCoverageAt: recoveredCoverageAt,
                         cutoverReason: continuityLossReason == .storageRecovery
                             ? .storageRecovery
-                            : .continuityGap
+                            : .continuityGap,
+                        cycleID: sevenDayQuota.cycleID
                     )
                 } else if store.preciseTimeSeriesFresh,
                           let gapID = indexSafetyGapID,
@@ -787,12 +789,14 @@ struct DashboardView: View {
                         gapID: gapID,
                         gapDetectedAt: store.snapshot.generatedAt,
                         recoveredCoverageAt: recoveredCoverageAt,
-                        cleanRecoveryGeneration: unsafeSince
+                        cleanRecoveryGeneration: unsafeSince,
+                        cycleID: sevenDayQuota.cycleID
                     )
                 } else {
                     let existing = sharedAccountSegmentStore.existingSegment(
                         identity: historyIdentity,
-                        resetAt: resetAt
+                        resetAt: resetAt,
+                        cycleID: sevenDayQuota.cycleID
                     )
                     if let existing,
                        !existing.baselineReady,
@@ -807,14 +811,16 @@ struct DashboardView: View {
                             resetAt: resetAt,
                             cycleStart: cycleStart,
                             quotaUpdatedAt: quotaUpdatedAt,
-                            accountUsedPercent: Double(sevenDayQuota.usedPercent)
+                            accountUsedPercent: Double(sevenDayQuota.usedPercent),
+                            cycleID: sevenDayQuota.cycleID
                         )
                     }
                 }
             } else {
                 segment = sharedAccountSegmentStore.existingSegment(
                     identity: historyIdentity,
-                    resetAt: resetAt
+                    resetAt: resetAt,
+                    cycleID: sevenDayQuota.cycleID
                 )
             }
         } else {
@@ -916,7 +922,8 @@ struct DashboardView: View {
                identity: historyIdentity,
                resetAt: resetAt,
                quotaUpdatedAt: actualQuotaUpdatedAt,
-               accountUsedPercent: Double(sevenDayQuota.usedPercent)
+               accountUsedPercent: Double(sevenDayQuota.usedPercent),
+               cycleID: sevenDayQuota.cycleID
            ) {
             segment = advanced
             result = estimate(segment: advanced, highWatermark: highWatermark)

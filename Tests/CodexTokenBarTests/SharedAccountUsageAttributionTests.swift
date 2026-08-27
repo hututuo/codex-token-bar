@@ -2208,10 +2208,10 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             resetAt: nextReset,
             cycleStart: nextCycleStart,
             quotaUpdatedAt: resetAt,
-            accountUsedPercent: 2
+            accountUsedPercent: 0
         )
         XCTAssertEqual(nextCycle.start, nextCycleStart)
-        XCTAssertEqual(nextCycle.accountUsedBaselinePercent, 2)
+        XCTAssertEqual(nextCycle.accountUsedBaselinePercent, 0)
         XCTAssertFalse(nextCycle.switchedAccountDuringCycle)
         XCTAssertFalse(nextCycle.baselineReady)
         XCTAssertEqual(nextCycle.effectiveCutoverReason, .initialActivation)
@@ -2221,10 +2221,113 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             resetAt: nextReset,
             cycleStart: nextCycleStart,
             quotaUpdatedAt: resetAt.addingTimeInterval(60),
-            accountUsedPercent: 2
+            accountUsedPercent: 1
         )
         XCTAssertTrue(nextCycleFinalized.baselineReady)
-        XCTAssertEqual(nextCycleFinalized.accountUsedBaselinePercent, 2)
+        XCTAssertEqual(nextCycleFinalized.accountUsedBaselinePercent, 1)
+    }
+
+    func testSegmentStoreAdoptsCycleIDWithoutWaitingForQuotaMovement() {
+        let suiteName = "SharedAccountUsageCycleIDUpgradeTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsSharedAccountUsageSegmentStore(
+            defaults: defaults,
+            storageKey: "cycle-id-upgrade-test",
+            legacyStorageKeys: []
+        )
+        let account = identity(account: "cycle-id-account")
+        _ = store.resolve(
+            identity: account,
+            resetAt: resetAt,
+            cycleStart: cycleStart,
+            quotaUpdatedAt: now.addingTimeInterval(-600),
+            accountUsedPercent: 10
+        )
+        let ready = store.resolve(
+            identity: account,
+            resetAt: resetAt,
+            cycleStart: cycleStart,
+            quotaUpdatedAt: now.addingTimeInterval(-540),
+            accountUsedPercent: 10
+        )
+        XCTAssertTrue(ready.baselineReady)
+        XCTAssertNil(ready.cycleID)
+
+        let upgraded = store.resolve(
+            identity: account,
+            resetAt: resetAt.addingTimeInterval(60),
+            cycleStart: cycleStart,
+            quotaUpdatedAt: now.addingTimeInterval(-300),
+            accountUsedPercent: 10,
+            cycleID: "g7"
+        )
+        XCTAssertEqual(upgraded.cycleID, "g7")
+        XCTAssertEqual(upgraded.comparisonUpdatedAt, ready.comparisonUpdatedAt)
+        XCTAssertEqual(
+            store.existingSegment(
+                identity: account,
+                resetAt: resetAt.addingTimeInterval(120),
+                cycleID: "g7"
+            )?.cycleID,
+            "g7"
+        )
+    }
+
+    func testNewCycleWithoutIDDoesNotInheritOldCycleIDOrCutOverTwice() {
+        let suiteName = "SharedAccountUsageCycleIDResetTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsSharedAccountUsageSegmentStore(
+            defaults: defaults,
+            storageKey: "cycle-id-reset-test",
+            legacyStorageKeys: []
+        )
+        let account = identity(account: "cycle-id-reset-account")
+        _ = store.resolve(
+            identity: account,
+            resetAt: resetAt,
+            cycleStart: cycleStart,
+            quotaUpdatedAt: now.addingTimeInterval(-600),
+            accountUsedPercent: 10,
+            cycleID: "g1"
+        )
+        let previous = store.resolve(
+            identity: account,
+            resetAt: resetAt,
+            cycleStart: cycleStart,
+            quotaUpdatedAt: now.addingTimeInterval(-540),
+            accountUsedPercent: 10,
+            cycleID: "g1"
+        )
+        XCTAssertTrue(previous.baselineReady)
+        XCTAssertEqual(previous.cycleID, "g1")
+
+        let nextReset = resetAt.addingTimeInterval(7 * 24 * 60 * 60)
+        let nextCycleStart = nextReset.addingTimeInterval(-7 * 24 * 60 * 60)
+        let pending = store.resolve(
+            identity: account,
+            resetAt: nextReset,
+            cycleStart: nextCycleStart,
+            quotaUpdatedAt: resetAt,
+            accountUsedPercent: 0
+        )
+        XCTAssertNil(pending.cycleID)
+        XCTAssertFalse(pending.baselineReady)
+        XCTAssertEqual(pending.effectiveCutoverReason, .initialActivation)
+
+        let finalized = store.resolve(
+            identity: account,
+            resetAt: nextReset,
+            cycleStart: nextCycleStart,
+            quotaUpdatedAt: resetAt.addingTimeInterval(60),
+            accountUsedPercent: 1,
+            cycleID: "g2"
+        )
+        XCTAssertEqual(finalized.cycleID, "g2")
+        XCTAssertEqual(finalized.start, pending.start)
+        XCTAssertTrue(finalized.baselineReady)
+        XCTAssertEqual(finalized.effectiveCutoverReason, .initialActivation)
     }
 
     func testMidCycleFirstActivationNeverAttributesEarlierUnknownUsageToOthers() throws {

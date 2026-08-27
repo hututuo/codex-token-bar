@@ -9,7 +9,7 @@ import {
 
 const SEVEN_DAY_SECONDS = 7 * 24 * 60 * 60;
 
-function attributionPoint(startUnix, remainingPercent) {
+function attributionPoint(startUnix, remainingPercent, cycleId = "seven-day-cycle-1") {
   const inputTokens = 1_000_000;
   return {
     label: "00:00",
@@ -22,6 +22,7 @@ function attributionPoint(startUnix, remainingPercent) {
     cacheHitRate: 0,
     fiveHourRemainingPercent: null,
     sevenDayRemainingPercent: remainingPercent,
+    sevenDayCycleId: cycleId,
     modelBreakdowns: [{
       model: "gpt-5.6-terra",
       breakdown: {
@@ -108,8 +109,8 @@ test("attribution leaves the top quota strip and fixed selections feed the lower
     const resetPoints = [
       attributionPoint(0, 0.90),
       attributionPoint(bucketSeconds, 0.87),
-      attributionPoint(2 * bucketSeconds, 1.00),
-      attributionPoint(3 * bucketSeconds, 0.90),
+      attributionPoint(2 * bucketSeconds, 1.00, "seven-day-cycle-2"),
+      attributionPoint(3 * bucketSeconds, 0.90, "seven-day-cycle-2"),
     ];
     const resetData = prepareRecentChartData(range, {
       recentUsage24h: pointsKey === "recentUsage24h" ? resetPoints : [],
