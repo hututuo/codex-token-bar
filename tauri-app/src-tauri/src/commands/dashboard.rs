@@ -3129,6 +3129,7 @@ mod tests {
                 remaining_percent: None,
                 resets_at: "待读取".into(),
                 resets_at_unix: None,
+                cycle_id: None,
             },
             seven_day: QuotaLimit {
                 label: "7d".into(),
@@ -3137,6 +3138,7 @@ mod tests {
                 remaining_percent: None,
                 resets_at: "待读取".into(),
                 resets_at_unix: None,
+                cycle_id: None,
             },
             pace_label: "待读取".into(),
             reset_credit: ResetCreditSummary {

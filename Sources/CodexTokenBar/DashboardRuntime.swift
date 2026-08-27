@@ -697,6 +697,8 @@ final class DashboardRuntime: ObservableObject {
 
     private func refreshForSystemWake() {
         guard let configuration else { return }
+        quotaHistoryStore.resetStabilityTracking()
+        quotaHistoryStore.checkMaintenance()
         let context = DashboardRefreshContext.fromSurfaces(
             providerSyncVisible: configuration.providerSyncVisible,
             appActive: NSApplication.shared.isActive,

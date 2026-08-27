@@ -430,6 +430,555 @@ fn reset_timestamp_jitter_is_deduplicated_but_usage_transitions_are_retained() {
 }
 
 #[test]
+fn stable_cycle_generation_uses_strict_reset_and_zero_usage_rules() {
+    let path = temp_db_path("stable-cycle-rules");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/stable-cycle-rules"),
+        Some("sub:stable-cycle-rules"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let base_now = 1_900_000_000.0;
+    let base_reset = 1_900_010_000_i64;
+
+    let write = |database: &QuotaHistoryDatabase,
+                 at: f64,
+                 five_used: f64,
+                 five_reset: i64| {
+        database
+            .record_for_identity_at(
+                Some(&identity),
+                &bundle_with_plan(
+                    "stable-cycle-rules",
+                    "Pro",
+                    five_used,
+                    five_reset,
+                    0.20,
+                    base_reset + 500_000,
+                ),
+                at,
+            )
+            .unwrap();
+    };
+
+    write(&database, base_now, 0.0, base_reset);
+    // Exactly 300 seconds is an accepted same-cycle reset, even with 0%
+    // usage.  The sample is retained as a non-anchor observation because the
+    // reset timestamp moved by more than the five-second write grace.
+    write(&database, base_now + 300.0, 0.0, base_reset + 300);
+    // A >300-second reset with non-zero usage cannot start a new generation.
+    write(&database, base_now + 301.0, 0.01, base_reset + 301);
+    // Once the zero-usage observation is stable for five minutes, 301+
+    // seconds crosses into generation 1.  The seven-day window stays at 0.
+    write(&database, base_now + 302.0, 0.0, base_reset + 302);
+
+    let connection = database.open().unwrap();
+    let rows = connection
+        .prepare(
+            "SELECT five_hour_used_percent, five_hour_cycle_generation, five_hour_reset_anchor, seven_day_cycle_generation FROM quota_snapshots ORDER BY created_at, id;",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i32>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<SqlResult<Vec<_>>>()
+        .unwrap();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].1, Some(0));
+    assert_eq!(rows[0].2, Some(1));
+    assert_eq!(rows[1].1, Some(0));
+    assert_eq!(rows[2].1, Some(0));
+    assert_eq!(rows[3].1, Some(1));
+    assert_eq!(rows[3].2, Some(1));
+    assert!(rows.iter().all(|row| row.3 == Some(0)));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn cycle_id_is_identity_scoped_without_raw_identity_components() {
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/opaque-cycle-id"),
+        Some("sub:opaque-cycle-id"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let cycle_id = quota_cycle_id_for_identity(&identity, "5h", Some(7)).unwrap();
+    assert_eq!(cycle_id, format!(
+        "quota-cycle-v1|{}|5h|7",
+        identity.attribution_identity().scope_key
+    ));
+    assert!(!cycle_id.contains(&identity.home_identity));
+    assert!(!cycle_id.contains(&identity.stable_account_key));
+    assert!(!cycle_id.contains(&identity.limit_id));
+}
+
+#[test]
+fn reset_write_grace_is_five_seconds_without_hourly_heartbeat() {
+    let path = temp_db_path("five-second-grace");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/five-second-grace"),
+        Some("sub:five-second-grace"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let base_now = 1_900_100_000.0;
+    let reset = 1_900_110_000_i64;
+    for (at, jitter) in [(base_now, 0), (base_now + 1.0, 5), (base_now + 2.0, 6)] {
+        database
+            .record_for_identity_at(
+                Some(&identity),
+                &bundle(
+                    "five-second-grace",
+                    0.20,
+                    reset + jitter,
+                    0.30,
+                    reset + 500_000,
+                ),
+                at,
+            )
+            .unwrap();
+    }
+    let connection = database.open().unwrap();
+    let count: i64 = connection
+        .query_row("SELECT count(*) FROM quota_snapshots;", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 2, "there is no hourly heartbeat row");
+    let used: Vec<i32> = connection
+        .prepare("SELECT five_hour_used_percent FROM quota_snapshots ORDER BY created_at, id;")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<SqlResult<Vec<_>>>()
+        .unwrap();
+    assert_eq!(used, vec![20, 20]);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn stable_candidate_accepts_small_jitter_but_restarts_on_slow_drift() {
+    let path = temp_db_path("candidate-band");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/candidate-band"),
+        Some("sub:candidate-band"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let base_now = 1_900_200_000.0;
+    let reset = 1_900_210_000_i64;
+    for (at, jitter) in [
+        (base_now, 0),
+        (base_now + 300.0, 3),
+        (base_now + 600.0, 6),
+        (base_now + 900.0, 7),
+    ] {
+        database
+            .record_for_identity_at(
+                Some(&identity),
+                &bundle(
+                    "candidate-band",
+                    0.20,
+                    reset + jitter,
+                    0.30,
+                    reset + 500_000,
+                ),
+                at,
+            )
+            .unwrap();
+    }
+    let connection = database.open().unwrap();
+    let anchors: Vec<Option<i64>> = connection
+        .prepare(
+            "SELECT five_hour_reset_anchor FROM quota_snapshots ORDER BY created_at, id;",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<SqlResult<Vec<_>>>()
+        .unwrap();
+    // The +3s sample is within the accepted anchor's write grace and is not
+    // persisted.  The +6s sample starts a candidate band; the final +7s
+    // observation confirms it after five minutes and is the raw anchor.
+    assert_eq!(anchors, vec![Some(1), Some(0), Some(1)]);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn stable_nonfull_reset_drift_over_five_minutes_becomes_same_cycle_anchor() {
+    let path = temp_db_path("candidate-over-300-nonfull");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/candidate-over-300-nonfull"),
+        Some("sub:candidate-over-300-nonfull"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let base_now = 1_900_250_000.0;
+    let reset = 1_900_260_000_i64;
+    for (at, reset_delta) in [(base_now, 0), (base_now + 300.0, 301), (base_now + 600.0, 302)] {
+        database
+            .record_for_identity_at(
+                Some(&identity),
+                &bundle(
+                    "candidate-over-300-nonfull",
+                    0.20,
+                    reset + reset_delta,
+                    0.30,
+                    reset + 500_000,
+                ),
+                at,
+            )
+            .unwrap();
+    }
+
+    let connection = database.open().unwrap();
+    let rows = connection
+        .prepare(
+            "SELECT five_hour_cycle_generation, five_hour_reset_anchor, five_hour_resets_at FROM quota_snapshots ORDER BY created_at, id;",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<f64>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<SqlResult<Vec<_>>>()
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), vec![Some(0), Some(0), Some(0)]);
+    assert_eq!(rows.iter().map(|row| row.1).collect::<Vec<_>>(), vec![Some(1), Some(0), Some(1)]);
+    assert_eq!(rows[2].2, Some((reset + 302) as f64));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn maintenance_restarts_stable_band_after_out_of_band_drift_and_is_idempotent() {
+    let path = temp_db_path("maintenance-stable-suffix");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/maintenance-stable-suffix"),
+        Some("sub:maintenance-stable-suffix"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    let base_now = 1_900_300_000.0;
+    let base_reset = 1_900_310_000.0;
+    for (offset, reset_delta) in [
+        (0.0, 0.0),
+        (60.0, 56.0),
+        (120.0, 59.0),
+        (180.0, 70.0),
+        (240.0, 100.0),
+        (360.0, 102.0),
+        (540.0, 99.0),
+    ] {
+        let mut row = stable_history_row(&identity, base_now + offset, 20, "tauri");
+        row.five_hour_resets_at = Some(base_reset + reset_delta);
+        row.seven_day_resets_at = Some(base_reset + 500_000.0);
+        insert_stable_history_row(&connection, &row);
+    }
+    connection
+        .execute(
+            "UPDATE quota_history_maintenance SET value = '0' WHERE key IN ('policy_version', 'last_compacted_at');",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut connection = database.open().unwrap();
+    maintain_if_due(&mut connection, base_now + 1_000.0).unwrap();
+    let first_pass = connection
+        .prepare(
+            "SELECT created_at, five_hour_reset_anchor, five_hour_resets_at FROM quota_snapshots ORDER BY created_at, id;",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, f64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, f64>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<SqlResult<Vec<_>>>()
+        .unwrap();
+    assert_eq!(first_pass.len(), 2);
+    assert_eq!(first_pass.iter().map(|row| row.1).collect::<Vec<_>>(), vec![1, 1]);
+    assert_eq!(first_pass[1].0, base_now + 540.0);
+    assert_eq!(first_pass[1].2, base_reset + 99.0);
+    let metadata = maintenance_metadata(&connection).unwrap();
+    assert_eq!(metadata.0, QUOTA_HISTORY_POLICY_VERSION);
+    drop(connection);
+
+    // A second maintenance pass must leave both the rows and their raw
+    // timestamps unchanged.
+    let mut connection = database.open().unwrap();
+    connection
+        .execute(
+            "UPDATE quota_history_maintenance SET value = '0' WHERE key = 'last_compacted_at';",
+            [],
+        )
+        .unwrap();
+    maintain_if_due(&mut connection, base_now + 2_000.0).unwrap();
+    let second_count: i64 = connection
+        .query_row("SELECT count(*) FROM quota_snapshots;", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(second_count, 2);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn migration_compacts_56_59_then_15_second_drift_without_losing_quota_changes() {
+    let path = temp_db_path("maintenance-real-drift-fixture");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/maintenance-real-drift"),
+        Some("sub:maintenance-real-drift"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let observed = 1_900_620_000.0;
+    let reset = 1_900_630_000.0;
+    let observations = [
+        (0.0, 20, 0.0),
+        (60.0, 20, 56.0),
+        (120.0, 21, 59.0),
+        (180.0, 21, 15.0),
+        (240.0, 22, 16.0),
+        (480.0, 22, 14.0),
+    ];
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    for (offset, used, reset_delta) in observations {
+        let mut row = stable_history_row(&identity, observed + offset, used, "tauri");
+        row.five_hour_resets_at = Some(reset + reset_delta);
+        row.seven_day_resets_at = Some(reset + 500_000.0);
+        insert_stable_history_row(&connection, &row);
+    }
+    connection
+        .execute(
+            "UPDATE quota_history_maintenance SET value = '0' WHERE key IN ('policy_version', 'last_compacted_at');",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut connection = database.open().unwrap();
+    maintain_if_due(&mut connection, observed + 1_000.0).unwrap();
+    let retained = connection
+        .prepare(
+            "SELECT created_at, five_hour_used_percent, five_hour_resets_at, five_hour_reset_anchor FROM quota_snapshots ORDER BY created_at, id;",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, f64>(0)?,
+                row.get::<_, i32>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<SqlResult<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .map(|row| (row.0, row.1))
+            .collect::<Vec<_>>(),
+        vec![
+            (observed, 20),
+            (observed + 120.0, 21),
+            (observed + 240.0, 22),
+            (observed + 480.0, 22),
+        ],
+        "every quota transition keeps its original value and observation time"
+    );
+    assert_eq!(retained.last().map(|row| row.2), Some(reset + 14.0));
+    assert_eq!(retained.last().map(|row| row.3), Some(1));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn maintenance_replay_advances_a_persisted_same_cycle_anchor() {
+    let path = temp_db_path("maintenance-anchor-baseline");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/maintenance-anchor-baseline"),
+        Some("sub:maintenance-anchor-baseline"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let observed = 1_900_600_000.0;
+    let reset = 1_900_610_000.0;
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+
+    for (offset, used, reset_delta, anchor) in [
+        (0.0, 20, 0.0, 1),
+        (60.0, 20, 200.0, 1),
+        (120.0, 0, 450.0, 0),
+    ] {
+        let mut row = stable_history_row(&identity, observed + offset, used, "tauri");
+        row.five_hour_resets_at = Some(reset + reset_delta);
+        row.five_hour_cycle_generation = Some(7);
+        row.five_hour_reset_anchor = Some(anchor);
+        insert_row(&connection, &row).unwrap();
+    }
+    connection
+        .execute(
+            "UPDATE quota_history_maintenance SET value = '0' WHERE key IN ('policy_version', 'last_compacted_at');",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut connection = database.open().unwrap();
+    maintain_if_due(&mut connection, observed + 1_000.0).unwrap();
+    let generations = connection
+        .prepare(
+            "SELECT five_hour_cycle_generation FROM quota_snapshots ORDER BY created_at, id;",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, Option<i64>>(0))
+        .unwrap()
+        .collect::<SqlResult<Vec<_>>>()
+        .unwrap();
+    assert_eq!(generations, vec![Some(7), Some(7), Some(7)]);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn maintenance_failure_rolls_back_rows_and_does_not_advance_metadata() {
+    let path = temp_db_path("maintenance-rollback");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/maintenance-rollback"),
+        Some("sub:maintenance-rollback"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    insert_stable_history_row(
+        &connection,
+        &stable_history_row(&identity, 1_900_650_000.0, 20, "tauri"),
+    );
+    connection
+        .execute(
+            "UPDATE quota_history_maintenance SET value = '0' WHERE key IN ('policy_version', 'last_compacted_at');",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TRIGGER fail_quota_cycle_backfill
+            BEFORE UPDATE OF five_hour_cycle_generation ON quota_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'fixture maintenance failure');
+            END;
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut connection = database.open().unwrap();
+    assert!(maintain_if_due(&mut connection, 1_900_660_000.0).is_err());
+    let generation: Option<i64> = connection
+        .query_row(
+            "SELECT five_hour_cycle_generation FROM quota_snapshots LIMIT 1;",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(generation, None);
+    assert_eq!(maintenance_metadata(&connection).unwrap(), (0, 0));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn maintenance_due_check_runs_one_backlog_pass_after_long_offline_gap() {
+    let path = temp_db_path("maintenance-due-check");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let base = 1_900_700_000.0;
+    let mut connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+
+    maintain_if_due(&mut connection, base).unwrap();
+    assert_eq!(maintenance_metadata(&connection).unwrap().1, base as i64);
+    maintain_if_due(&mut connection, base + 23.0 * 60.0 * 60.0).unwrap();
+    assert_eq!(maintenance_metadata(&connection).unwrap().1, base as i64);
+
+    let resumed = base + 3.0 * 24.0 * 60.0 * 60.0;
+    maintain_if_due(&mut connection, resumed).unwrap();
+    assert_eq!(maintenance_metadata(&connection).unwrap().1, resumed as i64);
+    maintain_if_due(&mut connection, resumed + 1.0).unwrap();
+    assert_eq!(
+        maintenance_metadata(&connection).unwrap().1,
+        resumed as i64,
+        "missed days are compacted once, not replayed as one pass per day"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn freelist_reclamation_is_threshold_gated() {
+    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+    ensure_schema(&connection).unwrap();
+    assert!(!super::database::freelist_reclaim_due_for_test(&connection).unwrap());
+
+    connection
+        .execute_batch("CREATE TABLE freelist_probe (payload BLOB NOT NULL);")
+        .unwrap();
+    {
+        let transaction = connection.transaction().unwrap();
+        for _ in 0..512 {
+            transaction
+                .execute(
+                    "INSERT INTO freelist_probe (payload) VALUES (?1);",
+                    rusqlite::params![vec![0_u8; 4096]],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+    }
+    connection
+        .execute_batch("DROP TABLE freelist_probe;")
+        .unwrap();
+    assert!(super::database::freelist_reclaim_due_for_test(&connection).unwrap());
+}
+
+#[test]
 fn normalizer_matches_swift_reset_grace_and_recovered_spike_rules() {
     let reset = 1_800_000_000.0;
 
@@ -443,7 +992,7 @@ fn normalizer_matches_swift_reset_grace_and_recovered_spike_rules() {
     );
     assert_eq!(
         normalized_used_percent(Some(71), Some(reset + 121.0), Some(84), Some(reset)),
-        Some(71)
+        Some(84)
     );
     assert_eq!(normalized_used_percent(Some(110), None, None, None), Some(100));
 }
@@ -726,8 +1275,100 @@ fn tauri_history_merges_swift_peer_rows_and_keeps_local_same_time_authority() {
         vec![Some(20), Some(30), Some(40)],
         "stable identity must merge display-name drift, then local Tauri wins same-time conflict"
     );
+    let peer_check = rusqlite::Connection::open(&peer_path).unwrap();
+    let peer_metadata = peer_check
+        .prepare(
+            "SELECT five_hour_cycle_generation, seven_day_cycle_generation FROM quota_snapshots ORDER BY created_at, id;",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+            ))
+        })
+        .unwrap()
+        .collect::<SqlResult<Vec<_>>>()
+        .unwrap();
+    assert_eq!(peer_metadata, vec![(None, None), (None, None), (None, None)]);
+    drop(peer_check);
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn merged_cycle_replay_uses_one_generation_and_the_latest_stable_anchor() {
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/merged-cycle-replay"),
+        Some("sub:merged-cycle-replay"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let observed = 1_900_500_000.0;
+    let reset = 1_900_510_000.0;
+    let mut first = stable_history_row(&identity, observed, 20, "swift");
+    first.five_hour_resets_at = Some(reset);
+    first.five_hour_cycle_generation = Some(7);
+    first.five_hour_reset_anchor = Some(1);
+
+    let mut stable_anchor = stable_history_row(&identity, observed + 60.0, 20, "tauri");
+    stable_anchor.five_hour_resets_at = Some(reset + 200.0);
+    stable_anchor.five_hour_cycle_generation = Some(42);
+    stable_anchor.five_hour_reset_anchor = Some(1);
+
+    let mut within_latest_anchor = stable_history_row(&identity, observed + 120.0, 0, "swift");
+    within_latest_anchor.five_hour_resets_at = Some(reset + 450.0);
+    within_latest_anchor.five_hour_cycle_generation = Some(99);
+    within_latest_anchor.five_hour_reset_anchor = Some(0);
+
+    let mut strict_boundary = stable_history_row(&identity, observed + 180.0, 0, "tauri");
+    strict_boundary.five_hour_resets_at = Some(reset + 501.0);
+    strict_boundary.five_hour_cycle_generation = Some(3);
+    strict_boundary.five_hour_reset_anchor = Some(0);
+
+    let rows = canonicalized_cycle_rows(
+        vec![
+            first,
+            stable_anchor.clone(),
+            within_latest_anchor.clone(),
+            strict_boundary.clone(),
+        ],
+        Some(&identity),
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.five_hour_cycle_generation)
+            .collect::<Vec<_>>(),
+        vec![Some(2), Some(2), Some(2), Some(3)],
+        "peer/local counters must be replayed consistently while the latest local generation remains stable"
+    );
+    assert_eq!(rows[1].five_hour_reset_anchor, Some(1));
+    assert_eq!(rows[2].five_hour_reset_anchor, Some(0));
+    assert_eq!(rows[3].five_hour_reset_anchor, Some(1));
+    assert_eq!(
+        quota_cycle_id_for_identity(
+            &rows[2].stable_identity().unwrap(),
+            "5h",
+            rows[2].five_hour_cycle_generation,
+        ),
+        quota_cycle_id_for_identity(&identity, "5h", Some(2)),
+    );
+    let suffix = canonicalized_cycle_rows(
+        vec![stable_anchor, within_latest_anchor, strict_boundary],
+        Some(&identity),
+    );
+    assert_eq!(
+        suffix
+            .iter()
+            .map(|row| row.five_hour_cycle_generation)
+            .collect::<Vec<_>>(),
+        rows[1..]
+            .iter()
+            .map(|row| row.five_hour_cycle_generation)
+            .collect::<Vec<_>>(),
+        "rolling an old prefix out of the chart query must not rename surviving cycles"
+    );
 }
 
 #[test]
@@ -1260,7 +1901,7 @@ fn legacy_fake_pro_bridge_is_time_and_source_bounded() {
         .filter_map(|row| row.five_hour_used_percent)
         .collect::<Vec<_>>();
 
-    assert_eq!(used, vec![15]);
+    assert_eq!(used, vec![80, 15]);
     let _ = std::fs::remove_file(path);
 }
 
@@ -1583,12 +2224,16 @@ fn overlay_history_matches_points_by_start_unix_not_position() {
             start_unix: 1_300,
             five_hour_remaining_percent: Some(0.88),
             seven_day_remaining_percent: Some(0.77),
+            five_hour_cycle_id: None,
+            seven_day_cycle_id: None,
         },
         QuotaHistoryPoint {
             label: "00:30".into(),
             start_unix: 1_600,
             five_hour_remaining_percent: Some(0.66),
             seven_day_remaining_percent: Some(0.55),
+            five_hour_cycle_id: None,
+            seven_day_cycle_id: None,
         },
     ];
 
@@ -2159,6 +2804,7 @@ fn bundle_with_plan(
                 used_percent: Some(five_used),
                 resets_at: "12:00".into(),
                 resets_at_unix: Some(five_reset),
+                cycle_id: None,
             },
             seven_day: QuotaLimit {
                 label: "7d".into(),
@@ -2167,6 +2813,7 @@ fn bundle_with_plan(
                 used_percent: Some(seven_used),
                 resets_at: "06/18".into(),
                 resets_at_unix: Some(seven_reset),
+                cycle_id: None,
             },
             reset_credit: ResetCreditSummary {
                 available_count: 0,
@@ -2204,8 +2851,12 @@ fn history_row(
         source: None,
         five_hour_used_percent: Some(five_used_percent),
         five_hour_resets_at: Some(five_reset),
+        five_hour_cycle_generation: None,
+        five_hour_reset_anchor: None,
         seven_day_used_percent: Some(seven_used_percent),
         seven_day_resets_at: Some(seven_reset),
+        seven_day_cycle_generation: None,
+        seven_day_reset_anchor: None,
         status: "测试".into(),
         identity_version: None,
         home_identity: None,

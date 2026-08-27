@@ -59,6 +59,9 @@ pub struct QuotaLimit {
     pub used_percent: Option<f64>,
     pub resets_at: String,
     pub resets_at_unix: Option<i64>,
+    /// Opaque cycle token. IPC consumers may compare it but must not parse it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -76,6 +79,10 @@ pub struct QuotaHistoryPoint {
     pub start_unix: i64,
     pub five_hour_remaining_percent: Option<f64>,
     pub seven_day_remaining_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub five_hour_cycle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seven_day_cycle_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

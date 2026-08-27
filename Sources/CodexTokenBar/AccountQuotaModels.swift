@@ -4,6 +4,15 @@ struct AccountQuotaWindow: Equatable, Sendable {
     let label: String
     let usedPercent: Int
     let resetsAt: Date?
+    /// Opaque quota-cycle token. Consumers may compare it but must not parse it.
+    let cycleID: String?
+
+    init(label: String, usedPercent: Int, resetsAt: Date?, cycleID: String? = nil) {
+        self.label = label
+        self.usedPercent = usedPercent
+        self.resetsAt = resetsAt
+        self.cycleID = cycleID
+    }
 
     var remainingPercent: Int {
         max(0, min(100, 100 - usedPercent))

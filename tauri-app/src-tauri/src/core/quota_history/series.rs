@@ -1,4 +1,6 @@
-use super::{now_unix, same_observed_cycle, QuotaHistoryRow, RESET_MATCH_GRACE_SECONDS};
+use super::{
+    now_unix, quota_cycle_id_for_identity, same_cycle_for_window, QuotaHistoryRow,
+};
 use crate::core::time_series_timeline::{aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS};
 use crate::models::QuotaHistoryPoint;
 use std::collections::HashMap;
@@ -95,6 +97,8 @@ pub(super) fn make_interval_history_at(
                     sample_at,
                     |row| row.five_hour_remaining(),
                     |row| row.five_hour_resets_at,
+                    |row| row.five_hour_cycle_generation,
+                    |row| row.five_hour_reset_anchor,
                 ),
                 seven_day_remaining_percent: quota_remaining(
                     latest.as_ref(),
@@ -103,7 +107,27 @@ pub(super) fn make_interval_history_at(
                     sample_at,
                     |row| row.seven_day_remaining(),
                     |row| row.seven_day_resets_at,
+                    |row| row.seven_day_cycle_generation,
+                    |row| row.seven_day_reset_anchor,
                 ),
+                five_hour_cycle_id: latest.as_ref().and_then(|row| {
+                    row.stable_identity().and_then(|identity| {
+                        quota_cycle_id_for_identity(
+                            &identity,
+                            "5h",
+                            row.five_hour_cycle_generation,
+                        )
+                    })
+                }),
+                seven_day_cycle_id: latest.as_ref().and_then(|row| {
+                    row.stable_identity().and_then(|identity| {
+                        quota_cycle_id_for_identity(
+                            &identity,
+                            "7d",
+                            row.seven_day_cycle_generation,
+                        )
+                    })
+                }),
             }
         })
         .collect()
@@ -171,6 +195,7 @@ struct WindowObservation {
     created_at: f64,
     used_percent: i32,
     resets_at: Option<f64>,
+    cycle_generation: Option<i64>,
 }
 
 fn suppress_recovered_full_remaining_jumps(mut rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
@@ -178,6 +203,7 @@ fn suppress_recovered_full_remaining_jumps(mut rows: Vec<QuotaHistoryRow>) -> Ve
         &mut rows,
         |row| row.five_hour_used_percent,
         |row| row.five_hour_resets_at,
+        |row| row.five_hour_cycle_generation,
         |row, used, reset| {
             row.five_hour_used_percent = Some(used);
             row.five_hour_resets_at = reset;
@@ -187,6 +213,7 @@ fn suppress_recovered_full_remaining_jumps(mut rows: Vec<QuotaHistoryRow>) -> Ve
         &mut rows,
         |row| row.seven_day_used_percent,
         |row| row.seven_day_resets_at,
+        |row| row.seven_day_cycle_generation,
         |row, used, reset| {
             row.seven_day_used_percent = Some(used);
             row.seven_day_resets_at = reset;
@@ -199,6 +226,7 @@ fn suppress_recovered_full_remaining_jumps_for_window(
     rows: &mut [QuotaHistoryRow],
     used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
     reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
+    generation: impl Fn(&QuotaHistoryRow) -> Option<i64> + Copy,
     mut replace: impl FnMut(&mut QuotaHistoryRow, i32, Option<f64>),
 ) {
     let mut groups: HashMap<String, Vec<WindowObservation>> = HashMap::new();
@@ -214,6 +242,7 @@ fn suppress_recovered_full_remaining_jumps_for_window(
                 created_at: row.created_at,
                 used_percent: used_percent.clamp(0, 100),
                 resets_at: reset(row),
+                cycle_generation: generation(row),
             });
     }
 
@@ -234,7 +263,14 @@ fn suppress_recovered_full_remaining_jumps_for_window(
                     candidate.created_at - current.created_at <= TRANSIENT_RESET_GLITCH_MAX_SECONDS
                 })
                 .find(|candidate| {
-                    same_reset(previous.resets_at, candidate.resets_at)
+                    same_cycle_for_window(
+                        Some(candidate.used_percent),
+                        candidate.resets_at,
+                        candidate.cycle_generation,
+                        Some(previous.used_percent),
+                        previous.resets_at,
+                        previous.cycle_generation,
+                    )
                         && candidate.used_percent >= previous.used_percent - 5
                 });
             let Some(recovery) = recovery else {
@@ -268,21 +304,19 @@ fn suppress_recovered_full_remaining_jumps_for_window(
     }
 }
 
-fn same_reset(lhs: Option<f64>, rhs: Option<f64>) -> bool {
-    matches!((lhs, rhs), (Some(lhs), Some(rhs)) if (lhs - rhs).abs() <= RESET_MATCH_GRACE_SECONDS)
-}
-
 fn suppress_recovered_usage_spikes(mut rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
     suppress_recovered_usage_spikes_for_window(
         &mut rows,
         |row| row.five_hour_used_percent,
         |row| row.five_hour_resets_at,
+        |row| row.five_hour_cycle_generation,
         |row, value| row.five_hour_used_percent = value,
     );
     suppress_recovered_usage_spikes_for_window(
         &mut rows,
         |row| row.seven_day_used_percent,
         |row| row.seven_day_resets_at,
+        |row| row.seven_day_cycle_generation,
         |row, value| row.seven_day_used_percent = value,
     );
     rows
@@ -293,12 +327,14 @@ struct UsageSpikeEntry {
     row_index: usize,
     used_percent: i32,
     resets_at: Option<f64>,
+    cycle_generation: Option<i64>,
 }
 
 fn suppress_recovered_usage_spikes_for_window(
     rows: &mut [QuotaHistoryRow],
     used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
     reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
+    generation: impl Fn(&QuotaHistoryRow) -> Option<i64> + Copy,
     mut set_used: impl FnMut(&mut QuotaHistoryRow, Option<i32>),
 ) {
     let mut groups: HashMap<String, Vec<UsageSpikeEntry>> = HashMap::new();
@@ -311,6 +347,7 @@ fn suppress_recovered_usage_spikes_for_window(
                     row_index: index,
                     used_percent: value.clamp(0, 100),
                     resets_at: reset(row),
+                    cycle_generation: generation(row),
                 });
         }
     }
@@ -338,44 +375,25 @@ fn suppress_recovered_usage_spikes_for_window(
 
 fn reset_clusters(entries: &[UsageSpikeEntry]) -> Vec<Vec<UsageSpikeEntry>> {
     let mut clusters = Vec::new();
-    let missing_reset = entries
-        .iter()
-        .copied()
-        .filter(|entry| entry.resets_at.is_none())
-        .collect::<Vec<_>>();
-    if !missing_reset.is_empty() {
-        clusters.push(missing_reset);
-    }
-    for invalid in entries
-        .iter()
-        .copied()
-        .filter(|entry| entry.resets_at.is_some_and(|value| !value.is_finite()))
-    {
-        clusters.push(vec![invalid]);
-    }
-
-    let mut measured = entries
-        .iter()
-        .copied()
-        .filter_map(|entry| {
-            entry
-                .resets_at
-                .filter(|value| value.is_finite())
-                .map(|reset| (entry, reset))
-        })
-        .collect::<Vec<_>>();
-    measured.sort_by(|left, right| left.1.total_cmp(&right.1));
-
     let mut current = Vec::new();
-    let mut cluster_start = None;
-    for (entry, reset) in measured {
-        if cluster_start
-            .is_some_and(|start| reset - start > RESET_MATCH_GRACE_SECONDS)
-        {
+    for entry in entries.iter().copied() {
+        let starts_new_cluster = current.last().is_some_and(|previous: &UsageSpikeEntry| {
+            if let (Some(previous_generation), Some(current_generation)) =
+                (previous.cycle_generation, entry.cycle_generation)
+            {
+                return previous_generation != current_generation;
+            }
+            !same_cycle_for_window(
+                Some(entry.used_percent),
+                entry.resets_at,
+                entry.cycle_generation,
+                Some(previous.used_percent),
+                previous.resets_at,
+                previous.cycle_generation,
+            )
+        });
+        if starts_new_cluster {
             clusters.push(std::mem::take(&mut current));
-            cluster_start = Some(reset);
-        } else if cluster_start.is_none() {
-            cluster_start = Some(reset);
         }
         current.push(entry);
     }
@@ -411,10 +429,19 @@ fn quota_remaining(
     at: f64,
     remaining: impl Fn(&QuotaHistoryRow) -> Option<f64>,
     resets_at: impl Fn(&QuotaHistoryRow) -> Option<f64>,
+    generation: impl Fn(&QuotaHistoryRow) -> Option<i64>,
+    reset_anchor: impl Fn(&QuotaHistoryRow) -> Option<i64>,
 ) -> Option<f64> {
     let row = row?;
     let value = remaining(row)?;
-    if let Some(reset) = resets_at(row).filter(|reset| *reset > row.created_at) {
+    let boundary_reset = if generation(row).is_some() {
+        reset_anchor(row)
+            .filter(|anchor| *anchor != 0)
+            .and_then(|_| resets_at(row))
+    } else {
+        resets_at(row)
+    };
+    if let Some(reset) = boundary_reset.filter(|reset| *reset > row.created_at) {
         if previous_boundary < reset && at >= reset {
             return Some(1.0);
         }
@@ -422,14 +449,30 @@ fn quota_remaining(
             return None;
         }
         if let Some(interpolated) =
-            interpolated_quota_remaining(row, next_row, at, value, &remaining, &resets_at)
+            interpolated_quota_remaining(
+                row,
+                next_row,
+                at,
+                value,
+                &remaining,
+                &resets_at,
+                &generation,
+            )
         {
             return Some(interpolated);
         }
         return Some(value);
     }
     if let Some(interpolated) =
-        interpolated_quota_remaining(row, next_row, at, value, &remaining, &resets_at)
+        interpolated_quota_remaining(
+            row,
+            next_row,
+            at,
+            value,
+            &remaining,
+            &resets_at,
+            &generation,
+        )
     {
         return Some(interpolated);
     }
@@ -447,9 +490,17 @@ fn interpolated_quota_remaining(
     start_value: f64,
     remaining: &impl Fn(&QuotaHistoryRow) -> Option<f64>,
     resets_at: &impl Fn(&QuotaHistoryRow) -> Option<f64>,
+    generation: &impl Fn(&QuotaHistoryRow) -> Option<i64>,
 ) -> Option<f64> {
     let next_row = next_row?;
-    if !same_observed_cycle(resets_at(row), resets_at(next_row)) {
+    if !same_cycle_for_window(
+        remaining_used(row, remaining),
+        resets_at(row),
+        generation(row),
+        remaining_used(next_row, remaining),
+        resets_at(next_row),
+        generation(next_row),
+    ) {
         return None;
     }
     let end_value = remaining(next_row)?;
@@ -463,6 +514,14 @@ fn interpolated_quota_remaining(
     let progress = ((at - row.created_at) / duration).clamp(0.0, 1.0);
     Some(start_value + (end_value - start_value) * progress)
 }
+
+fn remaining_used(
+    row: &QuotaHistoryRow,
+    remaining: &impl Fn(&QuotaHistoryRow) -> Option<f64>,
+) -> Option<i32> {
+    remaining(row).map(|value| ((1.0 - value).clamp(0.0, 1.0) * 100.0).round() as i32)
+}
+
 
 fn average(total: f64, count: u32) -> Option<f64> {
     if count == 0 {

@@ -4,6 +4,13 @@ protocol QuotaHistoryLoading: Sendable {
     func loadSnapshot(for quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot
     func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot
+    func resetStabilityTracking()
+    func checkMaintenance()
+}
+
+extension QuotaHistoryLoading {
+    func resetStabilityTracking() {}
+    func checkMaintenance() {}
 }
 
 struct LiveQuotaHistoryClient: QuotaHistoryLoading {
@@ -34,6 +41,17 @@ struct LiveQuotaHistoryClient: QuotaHistoryLoading {
             try database.normalizedSnapshot(quota)
         }.value
     }
+
+    func resetStabilityTracking() {
+        database.resetStabilityTracking()
+    }
+
+    func checkMaintenance() {
+        let database = database
+        Task.detached(priority: .utility) {
+            try? database.migrate()
+        }
+    }
 }
 
 @MainActor
@@ -54,7 +72,17 @@ final class QuotaHistoryStore: ObservableObject {
     }
 
     func start() {
+        historyClient.resetStabilityTracking()
+        historyClient.checkMaintenance()
         clearIdentity()
+    }
+
+    func resetStabilityTracking() {
+        historyClient.resetStabilityTracking()
+    }
+
+    func checkMaintenance() {
+        historyClient.checkMaintenance()
     }
 
     func reload() {
@@ -166,9 +194,9 @@ final class QuotaHistoryStore: ObservableObject {
 }
 
 private struct QuotaHistoryRow {
-    fileprivate static let resetGraceInterval: TimeInterval = 2 * 60
     fileprivate static let legacyFiveHourMaxResetSpan: TimeInterval = 6 * 60 * 60
 
+    let databaseID: Int64?
     let createdAt: Date
     let accountKey: String
     let source: String?
@@ -185,6 +213,56 @@ private struct QuotaHistoryRow {
     let stableAccountKey: String?
     let identityPlanType: String?
     let identityLimitID: String?
+    let fiveHourCycleGeneration: Int?
+    let fiveHourResetAnchor: Bool
+    let sevenDayCycleGeneration: Int?
+    let sevenDayResetAnchor: Bool
+
+    init(
+        createdAt: Date,
+        accountKey: String,
+        source: String?,
+        planType: String?,
+        limitName: String?,
+        accountName: String?,
+        fiveHourUsedPercent: Int?,
+        fiveHourResetsAt: Date?,
+        sevenDayUsedPercent: Int?,
+        sevenDayResetsAt: Date?,
+        status: String,
+        identityVersion: Int?,
+        homeIdentity: String?,
+        stableAccountKey: String?,
+        identityPlanType: String?,
+        identityLimitID: String?,
+        databaseID: Int64? = nil,
+        fiveHourCycleGeneration: Int? = nil,
+        fiveHourResetAnchor: Bool = false,
+        sevenDayCycleGeneration: Int? = nil,
+        sevenDayResetAnchor: Bool = false
+    ) {
+        self.databaseID = databaseID
+        self.createdAt = createdAt
+        self.accountKey = accountKey
+        self.source = source
+        self.planType = planType
+        self.limitName = limitName
+        self.accountName = accountName
+        self.fiveHourUsedPercent = fiveHourUsedPercent
+        self.fiveHourResetsAt = fiveHourResetsAt
+        self.sevenDayUsedPercent = sevenDayUsedPercent
+        self.sevenDayResetsAt = sevenDayResetsAt
+        self.status = status
+        self.identityVersion = identityVersion
+        self.homeIdentity = homeIdentity
+        self.stableAccountKey = stableAccountKey
+        self.identityPlanType = identityPlanType
+        self.identityLimitID = identityLimitID
+        self.fiveHourCycleGeneration = fiveHourCycleGeneration
+        self.fiveHourResetAnchor = fiveHourResetAnchor
+        self.sevenDayCycleGeneration = sevenDayCycleGeneration
+        self.sevenDayResetAnchor = sevenDayResetAnchor
+    }
 
     var historyMatchKey: String {
         let fallbackAccountName = accountKey
@@ -236,7 +314,12 @@ private struct QuotaHistoryRow {
             homeIdentity: homeIdentity,
             stableAccountKey: stableAccountKey,
             identityPlanType: identityPlanType,
-            identityLimitID: identityLimitID
+            identityLimitID: identityLimitID,
+            databaseID: databaseID,
+            fiveHourCycleGeneration: fiveHourCycleGeneration,
+            fiveHourResetAnchor: fiveHourResetAnchor,
+            sevenDayCycleGeneration: sevenDayCycleGeneration,
+            sevenDayResetAnchor: sevenDayResetAnchor
         )
     }
 
@@ -262,7 +345,12 @@ private struct QuotaHistoryRow {
             homeIdentity: homeIdentity,
             stableAccountKey: stableAccountKey,
             identityPlanType: identityPlanType,
-            identityLimitID: identityLimitID
+            identityLimitID: identityLimitID,
+            databaseID: databaseID,
+            fiveHourCycleGeneration: fiveHourCycleGeneration,
+            fiveHourResetAnchor: fiveHourResetAnchor,
+            sevenDayCycleGeneration: sevenDayCycleGeneration,
+            sevenDayResetAnchor: sevenDayResetAnchor
         )
     }
 
@@ -290,27 +378,99 @@ private struct QuotaHistoryRow {
             homeIdentity: homeIdentity,
             stableAccountKey: stableAccountKey,
             identityPlanType: identityPlanType,
-            identityLimitID: identityLimitID
+            identityLimitID: identityLimitID,
+            databaseID: databaseID,
+            fiveHourCycleGeneration: nil,
+            fiveHourResetAnchor: false,
+            sevenDayCycleGeneration: fiveHourCycleGeneration,
+            sevenDayResetAnchor: fiveHourResetAnchor
         )
     }
 
     func isSameFiveHourCycle(as other: QuotaHistoryRow) -> Bool {
-        Self.isSameObservedCycle(lhs: fiveHourResetsAt, rhs: other.fiveHourResetsAt)
+        Self.isSameObservedCycle(
+            lhs: self,
+            rhs: other,
+            used: \.fiveHourUsedPercent,
+            reset: \.fiveHourResetsAt,
+            generation: \.fiveHourCycleGeneration
+        )
     }
 
     func isSameSevenDayCycle(as other: QuotaHistoryRow) -> Bool {
-        Self.isSameObservedCycle(lhs: sevenDayResetsAt, rhs: other.sevenDayResetsAt)
+        Self.isSameObservedCycle(
+            lhs: self,
+            rhs: other,
+            used: \.sevenDayUsedPercent,
+            reset: \.sevenDayResetsAt,
+            generation: \.sevenDayCycleGeneration
+        )
     }
 
-    private static func isSameObservedCycle(lhs: Date?, rhs: Date?) -> Bool {
-        switch (lhs, rhs) {
-        case let (lhs?, rhs?):
-            return abs(lhs.timeIntervalSince(rhs)) <= resetGraceInterval
-        case (nil, nil):
-            return true
-        case (_?, nil), (nil, _?):
-            return false
+    func replacingCycleMetadata(
+        fiveHourGeneration: Int?,
+        fiveHourAnchor: Bool,
+        sevenDayGeneration: Int?,
+        sevenDayAnchor: Bool
+    ) -> QuotaHistoryRow {
+        QuotaHistoryRow(
+            createdAt: createdAt,
+            accountKey: accountKey,
+            source: source,
+            planType: planType,
+            limitName: limitName,
+            accountName: accountName,
+            fiveHourUsedPercent: fiveHourUsedPercent,
+            fiveHourResetsAt: fiveHourResetsAt,
+            sevenDayUsedPercent: sevenDayUsedPercent,
+            sevenDayResetsAt: sevenDayResetsAt,
+            status: status,
+            identityVersion: identityVersion,
+            homeIdentity: homeIdentity,
+            stableAccountKey: stableAccountKey,
+            identityPlanType: identityPlanType,
+            identityLimitID: identityLimitID,
+            databaseID: databaseID,
+            fiveHourCycleGeneration: fiveHourGeneration,
+            fiveHourResetAnchor: fiveHourAnchor,
+            sevenDayCycleGeneration: sevenDayGeneration,
+            sevenDayResetAnchor: sevenDayAnchor
+        )
+    }
+
+    var fiveHourCycleID: String? {
+        cycleID(kind: .fiveHour, generation: fiveHourCycleGeneration)
+    }
+
+    var sevenDayCycleID: String? {
+        cycleID(kind: .sevenDay, generation: sevenDayCycleGeneration)
+    }
+
+    private func cycleID(kind: QuotaHistoryWindowKind, generation: Int?) -> String? {
+        guard let generation else { return nil }
+        // Identity and window are already carried by the containing quota
+        // value. Keep the token deliberately opaque and cheap to produce for
+        // thousands of chart observations; consumers only compare equality.
+        return "g\(generation)"
+    }
+
+    private static func isSameObservedCycle(
+        lhs: QuotaHistoryRow,
+        rhs: QuotaHistoryRow,
+        used: KeyPath<QuotaHistoryRow, Int?>,
+        reset: KeyPath<QuotaHistoryRow, Date?>,
+        generation: KeyPath<QuotaHistoryRow, Int?>
+    ) -> Bool {
+        if let left = lhs[keyPath: generation], let right = rhs[keyPath: generation] {
+            return left == right
         }
+        let newer = lhs.createdAt >= rhs.createdAt ? lhs : rhs
+        let older = lhs.createdAt >= rhs.createdAt ? rhs : lhs
+        return !QuotaHistoryCyclePolicy.startsNewCycle(
+            currentUsedPercent: newer[keyPath: used],
+            currentResetsAt: newer[keyPath: reset],
+            acceptedResetsAt: older[keyPath: reset]
+        )
     }
 
     private static func canonicalPlanType(_ value: String?) -> String? {
@@ -355,6 +515,7 @@ private struct QuotaHistorySpikeEntry {
     let index: Int
     let usedPercent: Int
     let resetsAt: Date?
+    let cycleGeneration: Int?
 }
 
 private struct QuotaHistoryWindowObservation {
@@ -366,19 +527,21 @@ private struct QuotaHistoryWindowObservation {
 
 final class QuotaHistoryDatabase: @unchecked Sendable {
     private static let initialHistoryWindowDays = 60
+    private static let maintenancePolicyVersion = 2
     private let fileManager: FileManager
     private let databaseURL: URL?
     private let peerDatabaseURL: URL?
-    // Quota history is intentionally unbounded. The hourly heartbeat and
-    // cross-runtime observation merge keep this percentage-only history small
-    // without deleting older quota state.
-    private let heartbeatInterval: TimeInterval = 60 * 60
     private let recentInterval: TimeInterval = 5 * 60
     private let maxCarryGap: TimeInterval = 90 * 60
-    // Compatibility bridge only: rows written before stable identity existed
-    // are ambiguous after this window, but stable rows are never pruned.
-    private let legacyBridgeMaxAge: TimeInterval = 45 * 24 * 60 * 60
-    private let legacyBridgeMaxRows = 512
+    private let legacyClaimRefreshInterval: TimeInterval = 60 * 60
+    private let stabilityLock = NSLock()
+    private var stabilityCandidates: [StabilityKey: QuotaResetStabilityCandidate] = [:]
+
+    private struct StabilityKey: Hashable {
+        let identity: QuotaHistoryIdentity
+        let window: QuotaHistoryWindowKind
+        let generation: Int
+    }
 
     init(
         databaseURL: URL? = nil,
@@ -393,36 +556,67 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         self.fileManager = fileManager
     }
 
+    func resetStabilityTracking() {
+        stabilityLock.lock()
+        stabilityCandidates.removeAll(keepingCapacity: true)
+        stabilityLock.unlock()
+    }
+
     func migrate() throws {
+        var deletedRows = 0
         try withDatabase { database in
             try ensureSchema(database)
+            deletedRows = try performMaintenanceIfNeeded(database: database, now: Date())
         }
+        reclaimDatabaseIfNeeded(deletedRows: deletedRows)
     }
 
     @discardableResult
     func record(_ quota: AccountQuotaSnapshot, createdAt: Date = Date()) throws -> Bool {
         let now = createdAt
-        guard quota.isAvailable, let row = Self.row(from: quota, createdAt: now) else {
+        guard quota.isAvailable, let rawRow = Self.row(from: quota, createdAt: now),
+              let identity = stableIdentity(from: rawRow) else {
             return false
         }
-        let peerRows = loadPeerRows(for: row, cutoff: nil)
+        let peerRows = loadPeerRows(for: rawRow, cutoff: nil)
 
-        return try withDatabase { database in
+        var deletedRows = 0
+        let recorded = try withDatabase { database in
             try ensureSchema(database)
-            let latest = try latestTrustedRow(
-                database: database,
-                row: row,
-                now: now,
-                additionalRows: peerRows
+            let localRows = try matchingRows(database: database, row: rawRow, cutoff: nil, now: now)
+            let history = Self.canonicalizedCycleRows(mergedRows(localRows + peerRows))
+            let latest = Self.sanitizedRows(history).last
+            var normalizedRow = Self.annotatedCurrentRow(rawRow, after: history)
+                .normalized(after: latest)
+            let stableAnchors = updateStabilityCandidates(
+                for: normalizedRow,
+                identity: identity,
+                history: history
             )
-            let normalizedRow = row.normalized(after: latest)
+            normalizedRow = normalizedRow.replacingCycleMetadata(
+                fiveHourGeneration: normalizedRow.fiveHourCycleGeneration,
+                fiveHourAnchor: normalizedRow.fiveHourResetAnchor || stableAnchors.fiveHour,
+                sevenDayGeneration: normalizedRow.sevenDayCycleGeneration,
+                sevenDayAnchor: normalizedRow.sevenDayResetAnchor || stableAnchors.sevenDay
+            )
+            let cycleBoundaryChanged = latest.map {
+                normalizedRow.fiveHourCycleGeneration != $0.fiveHourCycleGeneration
+                    || normalizedRow.sevenDayCycleGeneration != $0.sevenDayCycleGeneration
+            } ?? true
             if let latest,
-               !shouldInsert(normalizedRow, after: latest, now: now) {
+               !stableAnchors.fiveHour,
+               !stableAnchors.sevenDay,
+               !cycleBoundaryChanged,
+               !shouldInsert(normalizedRow, after: latest) {
+                deletedRows = try performMaintenanceIfNeeded(database: database, now: now)
                 return true
             }
             try insert(normalizedRow, database: database)
+            deletedRows = try performMaintenanceIfNeeded(database: database, now: now)
             return true
         }
+        reclaimDatabaseIfNeeded(deletedRows: deletedRows)
+        return recorded
     }
 
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) throws -> AccountQuotaSnapshot {
@@ -431,14 +625,18 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         let peerRows = loadPeerRows(for: row, cutoff: nil)
         return try withDatabase { database in
             try ensureSchema(database)
-            let latest = try latestTrustedRow(
+            let localRows = try matchingRows(
                 database: database,
                 row: row,
-                now: now,
-                additionalRows: peerRows
+                cutoff: nil,
+                now: now
             )
-            let normalizedRow = row.normalized(after: latest)
-            return Self.snapshot(from: normalizedRow, base: quota)
+            let history = Self.sanitizedRows(
+                Self.canonicalizedCycleRows(mergedRows(localRows + peerRows))
+            )
+            let normalizedRow = row.normalized(after: history.last)
+            let annotatedRow = Self.annotatedCurrentRow(normalizedRow, after: history)
+            return Self.snapshot(from: annotatedRow, base: quota)
         }
     }
 
@@ -490,19 +688,218 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return mergedRows(localRows + peerRows).compactMap(\.fiveHourUsedPercent)
     }
 
-    private func shouldInsert(_ row: QuotaHistoryRow, after latest: QuotaHistoryRow, now: Date) -> Bool {
+    private func shouldInsert(_ row: QuotaHistoryRow, after latest: QuotaHistoryRow) -> Bool {
         if row.accountKey != latest.accountKey { return true }
         if row.fiveHourUsedPercent != latest.fiveHourUsedPercent { return true }
         if row.sevenDayUsedPercent != latest.sevenDayUsedPercent { return true }
-        // Reset timestamps are sampled countdowns and can wobble by a few
-        // seconds (or a scheduler tick) while the quota cycle is unchanged.
-        // The existing cycle grace is deliberately used here as well so that
-        // metadata jitter does not create a row. A real usage change still
-        // returns above and keeps the current timestamp on that observation.
-        if !row.isSameFiveHourCycle(as: latest) { return true }
-        if !row.isSameSevenDayCycle(as: latest) { return true }
+        if !QuotaHistoryCyclePolicy.isResetJitter(row.fiveHourResetsAt, latest.fiveHourResetsAt) { return true }
+        if !QuotaHistoryCyclePolicy.isResetJitter(row.sevenDayResetsAt, latest.sevenDayResetsAt) { return true }
         if row.planType != latest.planType || row.limitName != latest.limitName || row.accountName != latest.accountName { return true }
-        return now.timeIntervalSince(latest.createdAt) >= heartbeatInterval
+        return false
+    }
+
+    private static func annotatedCurrentRow(
+        _ row: QuotaHistoryRow,
+        after history: [QuotaHistoryRow]
+    ) -> QuotaHistoryRow {
+        canonicalizedCycleRows(history + [row]).last(where: {
+            $0.databaseID == row.databaseID
+                && $0.createdAt == row.createdAt
+                && $0.source == row.source
+        }) ?? row
+    }
+
+    /// Replays the strict boundary rule over one stable-identity timeline. A
+    /// persisted non-boundary anchor advances the accepted reset timestamp
+    /// without incrementing the generation.
+    private static func canonicalizedCycleRows(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
+        var ordered = rows.sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+            return ($0.databaseID ?? Int64.max) < ($1.databaseID ?? Int64.max)
+        }
+        // Preserve the newest native Swift generation as the absolute offset.
+        // The loaded chart window is bounded, so replaying from zero alone
+        // would rename every surviving cycle whenever an old boundary rolled
+        // out of that window.
+        let fiveGenerationTarget = ordered.enumerated().reversed().first(where: { entry in
+            entry.element.source?.caseInsensitiveCompare("swift") == .orderedSame
+                && entry.element.fiveHourCycleGeneration != nil
+        }).flatMap { entry in
+            entry.element.fiveHourCycleGeneration.map { (entry.offset, $0) }
+        }
+        let sevenGenerationTarget = ordered.enumerated().reversed().first(where: { entry in
+            entry.element.source?.caseInsensitiveCompare("swift") == .orderedSame
+                && entry.element.sevenDayCycleGeneration != nil
+        }).flatMap { entry in
+            entry.element.sevenDayCycleGeneration.map { (entry.offset, $0) }
+        }
+        var fiveGeneration = 0
+        var sevenGeneration = 0
+        var fiveAcceptedReset: Date?
+        var sevenAcceptedReset: Date?
+        var hasFive = false
+        var hasSeven = false
+
+        for index in ordered.indices {
+            let row = ordered[index]
+            var fiveAnchor = false
+            var sevenAnchor = false
+            var fiveValueGeneration: Int?
+            var sevenValueGeneration: Int?
+
+            if row.fiveHourUsedPercent != nil || row.fiveHourResetsAt != nil {
+                if !hasFive {
+                    hasFive = true
+                    fiveAnchor = true
+                } else if QuotaHistoryCyclePolicy.startsNewCycle(
+                    currentUsedPercent: row.fiveHourUsedPercent,
+                    currentResetsAt: row.fiveHourResetsAt,
+                    acceptedResetsAt: fiveAcceptedReset
+                ) {
+                    fiveGeneration += 1
+                    fiveAnchor = true
+                } else if row.fiveHourResetAnchor {
+                    fiveAnchor = true
+                }
+                fiveValueGeneration = fiveGeneration
+                if fiveAnchor, let reset = row.fiveHourResetsAt {
+                    fiveAcceptedReset = reset
+                } else if fiveAcceptedReset == nil {
+                    fiveAcceptedReset = row.fiveHourResetsAt
+                }
+            }
+
+            if row.sevenDayUsedPercent != nil || row.sevenDayResetsAt != nil {
+                if !hasSeven {
+                    hasSeven = true
+                    sevenAnchor = true
+                } else if QuotaHistoryCyclePolicy.startsNewCycle(
+                    currentUsedPercent: row.sevenDayUsedPercent,
+                    currentResetsAt: row.sevenDayResetsAt,
+                    acceptedResetsAt: sevenAcceptedReset
+                ) {
+                    sevenGeneration += 1
+                    sevenAnchor = true
+                } else if row.sevenDayResetAnchor {
+                    sevenAnchor = true
+                }
+                sevenValueGeneration = sevenGeneration
+                if sevenAnchor, let reset = row.sevenDayResetsAt {
+                    sevenAcceptedReset = reset
+                } else if sevenAcceptedReset == nil {
+                    sevenAcceptedReset = row.sevenDayResetsAt
+                }
+            }
+
+            ordered[index] = row.replacingCycleMetadata(
+                fiveHourGeneration: fiveValueGeneration,
+                fiveHourAnchor: fiveAnchor,
+                sevenDayGeneration: sevenValueGeneration,
+                sevenDayAnchor: sevenAnchor
+            )
+        }
+        if let (targetIndex, persisted) = fiveGenerationTarget,
+           let relative = ordered[targetIndex].fiveHourCycleGeneration {
+            let offset = persisted - relative
+            for index in ordered.indices {
+                let row = ordered[index]
+                ordered[index] = row.replacingCycleMetadata(
+                    fiveHourGeneration: row.fiveHourCycleGeneration.map { $0 + offset },
+                    fiveHourAnchor: row.fiveHourResetAnchor,
+                    sevenDayGeneration: row.sevenDayCycleGeneration,
+                    sevenDayAnchor: row.sevenDayResetAnchor
+                )
+            }
+        }
+        if let (targetIndex, persisted) = sevenGenerationTarget,
+           let relative = ordered[targetIndex].sevenDayCycleGeneration {
+            let offset = persisted - relative
+            for index in ordered.indices {
+                let row = ordered[index]
+                ordered[index] = row.replacingCycleMetadata(
+                    fiveHourGeneration: row.fiveHourCycleGeneration,
+                    fiveHourAnchor: row.fiveHourResetAnchor,
+                    sevenDayGeneration: row.sevenDayCycleGeneration.map { $0 + offset },
+                    sevenDayAnchor: row.sevenDayResetAnchor
+                )
+            }
+        }
+        return ordered
+    }
+
+    private func updateStabilityCandidates(
+        for row: QuotaHistoryRow,
+        identity: QuotaHistoryIdentity,
+        history: [QuotaHistoryRow]
+    ) -> (fiveHour: Bool, sevenDay: Bool) {
+        let fiveAnchor = history.last(where: { $0.fiveHourResetAnchor && $0.fiveHourResetsAt != nil })
+        let sevenAnchor = history.last(where: { $0.sevenDayResetAnchor && $0.sevenDayResetsAt != nil })
+        return (
+            stabilityAnchorDecision(
+                identity: identity,
+                window: .fiveHour,
+                generation: row.fiveHourCycleGeneration,
+                currentUsedPercent: row.fiveHourUsedPercent,
+                currentResetsAt: row.fiveHourResetsAt,
+                currentIsBoundaryAnchor: row.fiveHourResetAnchor,
+                acceptedResetsAt: fiveAnchor?.fiveHourResetsAt,
+                observedAt: row.createdAt
+            ),
+            stabilityAnchorDecision(
+                identity: identity,
+                window: .sevenDay,
+                generation: row.sevenDayCycleGeneration,
+                currentUsedPercent: row.sevenDayUsedPercent,
+                currentResetsAt: row.sevenDayResetsAt,
+                currentIsBoundaryAnchor: row.sevenDayResetAnchor,
+                acceptedResetsAt: sevenAnchor?.sevenDayResetsAt,
+                observedAt: row.createdAt
+            )
+        )
+    }
+
+    private func stabilityAnchorDecision(
+        identity: QuotaHistoryIdentity,
+        window: QuotaHistoryWindowKind,
+        generation: Int?,
+        currentUsedPercent: Int?,
+        currentResetsAt: Date?,
+        currentIsBoundaryAnchor: Bool,
+        acceptedResetsAt: Date?,
+        observedAt: Date
+    ) -> Bool {
+        guard currentUsedPercent != nil,
+              let generation,
+              let currentResetsAt else { return false }
+        let key = StabilityKey(identity: identity, window: window, generation: generation)
+        stabilityLock.lock()
+        defer { stabilityLock.unlock() }
+        stabilityCandidates = stabilityCandidates.filter {
+            !($0.key.identity == identity && $0.key.window == window && $0.key.generation != generation)
+        }
+        if currentIsBoundaryAnchor {
+            stabilityCandidates.removeValue(forKey: key)
+            return false
+        }
+        guard let acceptedResetsAt,
+              !QuotaHistoryCyclePolicy.isResetJitter(currentResetsAt, acceptedResetsAt) else {
+            stabilityCandidates.removeValue(forKey: key)
+            return false
+        }
+        guard var candidate = stabilityCandidates[key] else {
+            stabilityCandidates[key] = QuotaResetStabilityCandidate(
+                observedAt: observedAt,
+                resetsAt: currentResetsAt
+            )
+            return false
+        }
+        let stable = candidate.observe(observedAt: observedAt, resetsAt: currentResetsAt)
+        if stable {
+            stabilityCandidates.removeValue(forKey: key)
+        } else {
+            stabilityCandidates[key] = candidate
+        }
+        return stable
     }
 
     private static func makeSnapshot(rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval, now: Date = Date()) -> QuotaHistorySnapshot {
@@ -512,7 +909,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         }
 
         let intervalCount = 30 * 24 * 12
-        let sorted = sanitizedRows(rows.sorted { $0.createdAt < $1.createdAt })
+        let sorted = sanitizedRows(canonicalizedCycleRows(rows))
         let recentBins = makeCarriedBins(
             rows: sorted,
             start: recentStart,
@@ -654,8 +1051,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     }
 
     private static func sameReset(_ lhs: Date?, _ rhs: Date?) -> Bool {
-        guard let lhs, let rhs else { return false }
-        return abs(lhs.timeIntervalSince(rhs)) <= QuotaHistoryRow.resetGraceInterval
+        QuotaHistoryCyclePolicy.isResetJitter(lhs, rhs)
     }
 
     private static func suppressRecoveredFullUsageSpikes(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
@@ -664,12 +1060,14 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             in: &adjusted,
             usedPercent: \.fiveHourUsedPercent,
             resetDate: \.fiveHourResetsAt,
+            cycleGeneration: \.fiveHourCycleGeneration,
             replacing: { row, value in row.replacing(fiveHourUsedPercent: value) }
         )
         suppressRecoveredFullUsageSpikes(
             in: &adjusted,
             usedPercent: \.sevenDayUsedPercent,
             resetDate: \.sevenDayResetsAt,
+            cycleGeneration: \.sevenDayCycleGeneration,
             replacing: { row, value in row.replacing(sevenDayUsedPercent: value) }
         )
         return adjusted
@@ -679,6 +1077,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         in rows: inout [QuotaHistoryRow],
         usedPercent: KeyPath<QuotaHistoryRow, Int?>,
         resetDate: KeyPath<QuotaHistoryRow, Date?>,
+        cycleGeneration: KeyPath<QuotaHistoryRow, Int?>,
         replacing: (QuotaHistoryRow, Int) -> QuotaHistoryRow
     ) {
         var groups: [String: [QuotaHistorySpikeEntry]] = [:]
@@ -688,7 +1087,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 QuotaHistorySpikeEntry(
                     index: index,
                     usedPercent: max(0, min(100, used)),
-                    resetsAt: row[keyPath: resetDate]
+                    resetsAt: row[keyPath: resetDate],
+                    cycleGeneration: row[keyPath: cycleGeneration]
                 )
             )
         }
@@ -715,36 +1115,34 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     }
 
     private static func resetClusters(_ entries: [QuotaHistorySpikeEntry]) -> [[QuotaHistorySpikeEntry]] {
-        var clusters: [[QuotaHistorySpikeEntry]] = []
-        let missingReset = entries.filter { $0.resetsAt == nil }
-        if !missingReset.isEmpty {
-            clusters.append(missingReset)
-        }
+        let ordered = entries.sorted { $0.index < $1.index }
+        let generated = Dictionary(grouping: ordered.compactMap { entry in
+            entry.cycleGeneration.map { ($0, entry) }
+        }, by: \.0)
+            .values
+            .map { $0.map(\.1) }
+        let legacy = ordered.filter { $0.cycleGeneration == nil }
+        guard !legacy.isEmpty else { return generated }
 
-        let sorted = entries
-            .compactMap { entry -> (QuotaHistorySpikeEntry, Date)? in
-                guard let reset = entry.resetsAt else { return nil }
-                return (entry, reset)
-            }
-            .sorted { $0.1 < $1.1 }
-
+        var legacyClusters: [[QuotaHistorySpikeEntry]] = []
         var current: [QuotaHistorySpikeEntry] = []
-        var clusterStart: Date?
-        for (entry, reset) in sorted {
-            if let start = clusterStart,
-               reset.timeIntervalSince(start) > QuotaHistoryRow.resetGraceInterval {
-                clusters.append(current)
+        var acceptedReset: Date?
+        for entry in legacy {
+            if !current.isEmpty,
+               QuotaHistoryCyclePolicy.startsNewCycle(
+                currentUsedPercent: entry.usedPercent,
+                currentResetsAt: entry.resetsAt,
+                acceptedResetsAt: acceptedReset
+               ) {
+                legacyClusters.append(current)
                 current = []
-                clusterStart = reset
-            } else if clusterStart == nil {
-                clusterStart = reset
+                acceptedReset = nil
             }
             current.append(entry)
+            if acceptedReset == nil { acceptedReset = entry.resetsAt }
         }
-        if !current.isEmpty {
-            clusters.append(current)
-        }
-        return clusters
+        if !current.isEmpty { legacyClusters.append(current) }
+        return generated + legacyClusters
     }
 
     private static func recoveredFullUsageReplacement(current: Int, previous: Int?, next: Int?) -> Int? {
@@ -791,21 +1189,41 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private static func snapshot(from row: QuotaHistoryRow, base quota: AccountQuotaSnapshot) -> AccountQuotaSnapshot {
         var adjusted = quota
         if quota.resolvedFiveHourAvailability == .measured {
-            adjusted.fiveHour = window(label: "5h", usedPercent: row.fiveHourUsedPercent, resetsAt: row.fiveHourResetsAt)
+            adjusted.fiveHour = window(
+                label: "5h",
+                usedPercent: row.fiveHourUsedPercent,
+                resetsAt: row.fiveHourResetsAt,
+                cycleID: row.fiveHourCycleID
+            )
         } else {
             adjusted.fiveHour = nil
         }
         if quota.resolvedSevenDayAvailability == .measured {
-            adjusted.sevenDay = window(label: "7d", usedPercent: row.sevenDayUsedPercent, resetsAt: row.sevenDayResetsAt)
+            adjusted.sevenDay = window(
+                label: "7d",
+                usedPercent: row.sevenDayUsedPercent,
+                resetsAt: row.sevenDayResetsAt,
+                cycleID: row.sevenDayCycleID
+            )
         } else {
             adjusted.sevenDay = nil
         }
         return adjusted
     }
 
-    private static func window(label: String, usedPercent: Int?, resetsAt: Date?) -> AccountQuotaWindow? {
+    private static func window(
+        label: String,
+        usedPercent: Int?,
+        resetsAt: Date?,
+        cycleID: String?
+    ) -> AccountQuotaWindow? {
         guard let usedPercent else { return nil }
-        return AccountQuotaWindow(label: label, usedPercent: usedPercent, resetsAt: resetsAt)
+        return AccountQuotaWindow(
+            label: label,
+            usedPercent: usedPercent,
+            resetsAt: resetsAt,
+            cycleID: cycleID
+        )
     }
 
     private static func makeCarriedBins(
@@ -860,14 +1278,16 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                     quotaObservation(
                         from: row,
                         remaining: \.fiveHourRemainingPercent,
-                        resetsAt: \.fiveHourResetsAt
+                        resetsAt: \.fiveHourResetsAt,
+                        cycleID: \.fiveHourCycleID
                     )
                 },
                 sevenDayObservations: observations.compactMap { row in
                     quotaObservation(
                         from: row,
                         remaining: \.sevenDayRemainingPercent,
-                        resetsAt: \.sevenDayResetsAt
+                        resetsAt: \.sevenDayResetsAt,
+                        cycleID: \.sevenDayCycleID
                     )
                 }
             )
@@ -877,13 +1297,15 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private static func quotaObservation(
         from row: QuotaHistoryRow,
         remaining: KeyPath<QuotaHistoryRow, Double?>,
-        resetsAt: KeyPath<QuotaHistoryRow, Date?>
+        resetsAt: KeyPath<QuotaHistoryRow, Date?>,
+        cycleID: KeyPath<QuotaHistoryRow, String?>
     ) -> QuotaHistoryObservation? {
         guard let remainingPercent = row[keyPath: remaining] else { return nil }
         return QuotaHistoryObservation(
             observedAt: row.createdAt,
             remainingPercent: remainingPercent,
-            resetsAt: row[keyPath: resetsAt]
+            resetsAt: row[keyPath: resetsAt],
+            cycleID: row[keyPath: cycleID]
         )
     }
 
@@ -1067,7 +1489,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 fileManager: fileManager
             )
             guard try peerSupportsStableIdentitySchema(driver) else { return [] }
-            return try stableRows(database: driver, identity: identity, cutoff: cutoff)
+            return try stableRows(
+                database: driver,
+                identity: identity,
+                cutoff: cutoff,
+                includeCycleMetadata: try peerSupportsCycleSchema(driver)
+            )
         } catch {
             // Peer history is an optional supplement. Missing, locked, corrupt,
             // or partially migrated peer state must never hide the main history.
@@ -1084,6 +1511,17 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             "five_hour_used_percent", "five_hour_resets_at", "seven_day_used_percent",
             "seven_day_resets_at", "status", "identity_version", "home_identity",
             "stable_account_key", "identity_plan_type", "identity_limit_id"
+        ])
+        return required.isSubset(of: Set(columns))
+    }
+
+    private func peerSupportsCycleSchema(_ database: DatabaseAccessing) throws -> Bool {
+        let columns = try database.readRows("PRAGMA table_info(quota_snapshots);") { statement in
+            statement.text(1) ?? ""
+        }
+        let required = Set([
+            "five_hour_cycle_generation", "five_hour_reset_anchor",
+            "seven_day_cycle_generation", "seven_day_reset_anchor"
         ])
         return required.isSubset(of: Set(columns))
     }
@@ -1134,7 +1572,11 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 home_identity TEXT,
                 stable_account_key TEXT,
                 identity_plan_type TEXT,
-                identity_limit_id TEXT
+                identity_limit_id TEXT,
+                five_hour_cycle_generation INTEGER,
+                five_hour_reset_anchor INTEGER NOT NULL DEFAULT 0,
+                seven_day_cycle_generation INTEGER,
+                seven_day_reset_anchor INTEGER NOT NULL DEFAULT 0
             );
             """
         )
@@ -1146,6 +1588,10 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         try ensureColumn("stable_account_key", definition: "TEXT", database: database)
         try ensureColumn("identity_plan_type", definition: "TEXT", database: database)
         try ensureColumn("identity_limit_id", definition: "TEXT", database: database)
+        try ensureColumn("five_hour_cycle_generation", definition: "INTEGER", database: database)
+        try ensureColumn("five_hour_reset_anchor", definition: "INTEGER NOT NULL DEFAULT 0", database: database)
+        try ensureColumn("seven_day_cycle_generation", definition: "INTEGER", database: database)
+        try ensureColumn("seven_day_reset_anchor", definition: "INTEGER NOT NULL DEFAULT 0", database: database)
         try database.execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_created_at ON quota_snapshots(created_at);")
         try database.execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_created ON quota_snapshots(account_key, created_at);")
         try database.execute(
@@ -1176,6 +1622,258 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             );
             """
         )
+        try database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS quota_history_maintenance (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
+    }
+
+    @discardableResult
+    private func performMaintenanceIfNeeded(
+        database: SQLiteDatabaseConnection,
+        now: Date
+    ) throws -> Int {
+        let metadata = try database.readRows(
+            "SELECT key, value FROM quota_history_maintenance WHERE key IN ('policy_version', 'last_compacted_at');"
+        ) { statement in
+            (statement.text(0) ?? "", statement.text(1) ?? "")
+        }
+        let values = Dictionary(uniqueKeysWithValues: metadata)
+        let policyVersion = Int(values["policy_version"] ?? "")
+        let lastCompactedAt = Double(values["last_compacted_at"] ?? "").map {
+            Date(timeIntervalSince1970: $0)
+        }
+        let policyChanged = policyVersion != Self.maintenancePolicyVersion
+        let due = lastCompactedAt.map {
+            now.timeIntervalSince($0) >= QuotaHistoryCyclePolicy.maintenanceInterval
+        } ?? true
+        guard policyChanged || due else { return 0 }
+
+        let deleted = try compactStableIdentityHistory(database: database)
+        try database.execute(
+            """
+            INSERT INTO quota_history_maintenance(key, value)
+            VALUES ('policy_version', ?), ('last_compacted_at', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            bindings: [
+                .text(String(Self.maintenancePolicyVersion)),
+                .text(String(now.timeIntervalSince1970))
+            ]
+        )
+        return deleted
+    }
+
+    private func compactStableIdentityHistory(
+        database: SQLiteDatabaseConnection
+    ) throws -> Int {
+        let identities = try database.readRows(
+            """
+            SELECT DISTINCT identity_version, home_identity, stable_account_key,
+                            identity_plan_type, identity_limit_id
+            FROM quota_snapshots
+            WHERE identity_version IS NOT NULL
+              AND trim(coalesce(home_identity, '')) <> ''
+              AND trim(coalesce(stable_account_key, '')) <> ''
+              AND trim(coalesce(identity_plan_type, '')) <> ''
+              AND trim(coalesce(identity_limit_id, '')) <> '';
+            """
+        ) { statement in
+            QuotaHistoryIdentity(
+                version: statement.int(0) ?? 0,
+                homeIdentity: statement.text(1),
+                stableAccountKey: statement.text(2),
+                planType: statement.text(3),
+                limitID: statement.text(4)
+            )
+        }.compactMap { $0 }
+
+        var deleted = 0
+        for identity in identities {
+            let rawRows = try stableRows(database: database, identity: identity, cutoff: nil)
+            let rows = Self.rowsWithHistoricalStableAnchors(rawRows)
+            for row in rows {
+                guard let id = row.databaseID else { continue }
+                try database.execute(
+                    """
+                    UPDATE quota_snapshots
+                    SET five_hour_cycle_generation = ?, five_hour_reset_anchor = ?,
+                        seven_day_cycle_generation = ?, seven_day_reset_anchor = ?
+                    WHERE id = ?;
+                    """,
+                    bindings: [
+                        .optionalInt(row.fiveHourCycleGeneration),
+                        .int(row.fiveHourResetAnchor ? 1 : 0),
+                        .optionalInt(row.sevenDayCycleGeneration),
+                        .int(row.sevenDayResetAnchor ? 1 : 0),
+                        .int64(id)
+                    ]
+                )
+            }
+
+            let deletionIDs = Self.redundantResetOnlyRowIDs(rows)
+            for id in deletionIDs {
+                deleted += try database.executeChangedRows(
+                    "DELETE FROM quota_snapshots WHERE id = ?;",
+                    bindings: [.int64(id)]
+                )
+            }
+        }
+        return deleted
+    }
+
+    private static func rowsWithHistoricalStableAnchors(
+        _ input: [QuotaHistoryRow]
+    ) -> [QuotaHistoryRow] {
+        var rows = canonicalizedCycleRows(input)
+        let five = historicalStableAnchorIndices(
+            rows,
+            used: \.fiveHourUsedPercent,
+            reset: \.fiveHourResetsAt,
+            generation: \.fiveHourCycleGeneration,
+            anchor: \.fiveHourResetAnchor
+        )
+        let seven = historicalStableAnchorIndices(
+            rows,
+            used: \.sevenDayUsedPercent,
+            reset: \.sevenDayResetsAt,
+            generation: \.sevenDayCycleGeneration,
+            anchor: \.sevenDayResetAnchor
+        )
+        for index in rows.indices where five.contains(index) || seven.contains(index) {
+            let row = rows[index]
+            rows[index] = row.replacingCycleMetadata(
+                fiveHourGeneration: row.fiveHourCycleGeneration,
+                fiveHourAnchor: row.fiveHourResetAnchor || five.contains(index),
+                sevenDayGeneration: row.sevenDayCycleGeneration,
+                sevenDayAnchor: row.sevenDayResetAnchor || seven.contains(index)
+            )
+        }
+        return canonicalizedCycleRows(rows)
+    }
+
+    private static func historicalStableAnchorIndices(
+        _ rows: [QuotaHistoryRow],
+        used: KeyPath<QuotaHistoryRow, Int?>,
+        reset: KeyPath<QuotaHistoryRow, Date?>,
+        generation: KeyPath<QuotaHistoryRow, Int?>,
+        anchor: KeyPath<QuotaHistoryRow, Bool>
+    ) -> Set<Int> {
+        var acceptedReset: Date?
+        var activeGeneration: Int?
+        var candidate: QuotaResetStabilityCandidate?
+        var anchors = Set<Int>()
+
+        for index in rows.indices {
+            let row = rows[index]
+            guard row[keyPath: used] != nil,
+                  let currentReset = row[keyPath: reset],
+                  let currentGeneration = row[keyPath: generation] else { continue }
+            if activeGeneration != currentGeneration {
+                activeGeneration = currentGeneration
+                acceptedReset = nil
+                candidate = nil
+            }
+            if row[keyPath: anchor] || acceptedReset == nil {
+                acceptedReset = currentReset
+                candidate = nil
+                continue
+            }
+            guard let baselineReset = acceptedReset,
+                  !QuotaHistoryCyclePolicy.isResetJitter(currentReset, baselineReset) else {
+                candidate = nil
+                continue
+            }
+            if candidate == nil {
+                candidate = QuotaResetStabilityCandidate(
+                    observedAt: row.createdAt,
+                    resetsAt: currentReset
+                )
+                continue
+            }
+            if candidate?.observe(observedAt: row.createdAt, resetsAt: currentReset) == true {
+                anchors.insert(index)
+                acceptedReset = currentReset
+                candidate = nil
+            }
+        }
+        return anchors
+    }
+
+    private static func redundantResetOnlyRowIDs(_ rows: [QuotaHistoryRow]) -> [Int64] {
+        guard rows.count > 1 else { return [] }
+        var nextFiveAnchor: [Int?] = Array(repeating: nil, count: rows.count)
+        var nextSevenAnchor: [Int?] = Array(repeating: nil, count: rows.count)
+        var fiveByGeneration: [Int: Int] = [:]
+        var sevenByGeneration: [Int: Int] = [:]
+        for index in rows.indices.reversed() {
+            let row = rows[index]
+            if let generation = row.fiveHourCycleGeneration {
+                nextFiveAnchor[index] = fiveByGeneration[generation]
+                if row.fiveHourResetAnchor { fiveByGeneration[generation] = index }
+            }
+            if let generation = row.sevenDayCycleGeneration {
+                nextSevenAnchor[index] = sevenByGeneration[generation]
+                if row.sevenDayResetAnchor { sevenByGeneration[generation] = index }
+            }
+        }
+
+        var retained = rows[0]
+        var deletions: [Int64] = []
+        for index in rows.indices.dropFirst() {
+            let row = rows[index]
+            guard let id = row.databaseID,
+                  !row.fiveHourResetAnchor,
+                  !row.sevenDayResetAnchor,
+                  sameNonResetPayload(row, retained),
+                  resetChangeIsCompacted(
+                    previous: retained.fiveHourResetsAt,
+                    current: row.fiveHourResetsAt,
+                    hasLaterStableAnchor: nextFiveAnchor[index] != nil
+                  ),
+                  resetChangeIsCompacted(
+                    previous: retained.sevenDayResetsAt,
+                    current: row.sevenDayResetsAt,
+                    hasLaterStableAnchor: nextSevenAnchor[index] != nil
+                  ) else {
+                retained = row
+                continue
+            }
+            deletions.append(id)
+        }
+        return deletions
+    }
+
+    private static func sameNonResetPayload(
+        _ lhs: QuotaHistoryRow,
+        _ rhs: QuotaHistoryRow
+    ) -> Bool {
+        lhs.accountKey == rhs.accountKey
+            && lhs.source == rhs.source
+            && lhs.planType == rhs.planType
+            && lhs.limitName == rhs.limitName
+            && lhs.accountName == rhs.accountName
+            && lhs.fiveHourUsedPercent == rhs.fiveHourUsedPercent
+            && lhs.sevenDayUsedPercent == rhs.sevenDayUsedPercent
+            && lhs.status == rhs.status
+            && lhs.identityVersion == rhs.identityVersion
+            && lhs.homeIdentity == rhs.homeIdentity
+            && lhs.stableAccountKey == rhs.stableAccountKey
+            && lhs.identityPlanType == rhs.identityPlanType
+            && lhs.identityLimitID == rhs.identityLimitID
+    }
+
+    private static func resetChangeIsCompacted(
+        previous: Date?,
+        current: Date?,
+        hasLaterStableAnchor: Bool
+    ) -> Bool {
+        if QuotaHistoryCyclePolicy.isResetJitter(previous, current) { return true }
+        return hasLaterStableAnchor
     }
 
     private func insert(_ row: QuotaHistoryRow, database: SQLiteDatabaseConnection) throws {
@@ -1185,8 +1883,10 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             five_hour_used_percent, five_hour_resets_at,
             seven_day_used_percent, seven_day_resets_at, status,
             identity_version, home_identity, stable_account_key,
-            identity_plan_type, identity_limit_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            identity_plan_type, identity_limit_id,
+            five_hour_cycle_generation, five_hour_reset_anchor,
+            seven_day_cycle_generation, seven_day_reset_anchor
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         try database.execute(sql, bindings: [
             .date(row.createdAt),
@@ -1204,7 +1904,11 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             .optionalText(row.homeIdentity),
             .optionalText(row.stableAccountKey),
             .optionalText(row.identityPlanType),
-            .optionalText(row.identityLimitID)
+            .optionalText(row.identityLimitID),
+            .optionalInt(row.fiveHourCycleGeneration),
+            .int(row.fiveHourResetAnchor ? 1 : 0),
+            .optionalInt(row.sevenDayCycleGeneration),
+            .int(row.sevenDayResetAnchor ? 1 : 0)
         ])
     }
 
@@ -1218,7 +1922,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         if !additionalRows.isEmpty {
             rawRows = mergedRows(rawRows + additionalRows)
         }
-        return Self.sanitizedRows(rawRows).last
+        return Self.sanitizedRows(Self.canonicalizedCycleRows(rawRows)).last
     }
 
     private func matchingRows(
@@ -1231,7 +1935,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         var matched = try stableRows(database: database, identity: identity, cutoff: cutoff)
         guard !matched.isEmpty else { return matched }
 
-        let legacyCutoff = max(cutoff ?? .distantPast, now.addingTimeInterval(-legacyBridgeMaxAge))
+        let legacyCutoff = cutoff ?? .distantPast
         for bridge in legacyBridges(row: row, identity: identity) {
             let legacyRows = try legacyRows(
                 database: database,
@@ -1260,14 +1964,19 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private func stableRows(
         database: DatabaseAccessing,
         identity: QuotaHistoryIdentity,
-        cutoff: Date?
+        cutoff: Date?,
+        includeCycleMetadata: Bool = true
     ) throws -> [QuotaHistoryRow] {
+        let cycleColumns = includeCycleMetadata
+            ? "id, five_hour_cycle_generation, five_hour_reset_anchor, seven_day_cycle_generation, seven_day_reset_anchor"
+            : "NULL, NULL, 0, NULL, 0"
         var sql = """
         SELECT created_at, account_key, plan_type, limit_name, account_name,
                source, five_hour_used_percent, five_hour_resets_at,
                seven_day_used_percent, seven_day_resets_at, status,
                identity_version, home_identity, stable_account_key,
-               identity_plan_type, identity_limit_id
+               identity_plan_type, identity_limit_id,
+               \(cycleColumns)
         FROM quota_snapshots
         WHERE identity_version = ?
           AND home_identity = ?
@@ -1327,7 +2036,9 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                    source, five_hour_used_percent, five_hour_resets_at,
                    seven_day_used_percent, seven_day_resets_at, status,
                    identity_version, home_identity, stable_account_key,
-                   identity_plan_type, identity_limit_id
+                   identity_plan_type, identity_limit_id,
+                   id, five_hour_cycle_generation, five_hour_reset_anchor,
+                   seven_day_cycle_generation, seven_day_reset_anchor
             FROM quota_snapshots
             WHERE identity_version IS NULL
               AND account_name = ?
@@ -1348,8 +2059,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 OR trim(source) = ''
                 OR lower(trim(source)) = 'swift'
               )
-            ORDER BY created_at DESC
-            LIMIT \(legacyBridgeMaxRows);
+            ORDER BY created_at DESC;
             """,
             bindings: [
                 .text(bridge.accountName),
@@ -1419,7 +2129,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 && existing.belongs(to: identity)
             let resultingState = remainsClaimed ? "claimed" : "ambiguous"
             let heartbeatDue = existing.lastSeenAt.map {
-                now.timeIntervalSince($0) >= heartbeatInterval
+                now.timeIntervalSince($0) >= legacyClaimRefreshInterval
             } ?? true
             if existing.state == resultingState, !heartbeatDue {
                 return remainsClaimed
@@ -1520,7 +2230,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 homeIdentity: statement.text(12),
                 stableAccountKey: statement.text(13),
                 identityPlanType: statement.text(14),
-                identityLimitID: statement.text(15)
+                identityLimitID: statement.text(15),
+                databaseID: statement.int64(16),
+                fiveHourCycleGeneration: statement.int(17),
+                fiveHourResetAnchor: (statement.int(18) ?? 0) != 0,
+                sevenDayCycleGeneration: statement.int(19),
+                sevenDayResetAnchor: (statement.int(20) ?? 0) != 0
             )
         }
     }
@@ -1537,6 +2252,31 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             fileManager: fileManager
         )
         return try driver.transaction(work)
+    }
+
+    private func reclaimDatabaseIfNeeded(deletedRows: Int) {
+        guard deletedRows > 0,
+              let url = databaseURL ?? Self.defaultDatabaseURL else { return }
+        let driver = SQLiteDatabaseDriver(
+            url: url,
+            readOnly: false,
+            busyTimeoutMilliseconds: 3_000,
+            enableWAL: true,
+            fileManager: fileManager
+        )
+        do {
+            let pageCount = try driver.readRows("PRAGMA page_count;") { $0.int64(0) ?? 0 }.first ?? 0
+            let freePages = try driver.readRows("PRAGMA freelist_count;") { $0.int64(0) ?? 0 }.first ?? 0
+            let pageSize = try driver.readRows("PRAGMA page_size;") { $0.int64(0) ?? 0 }.first ?? 0
+            let freeBytes = freePages * pageSize
+            let freeRatio = pageCount > 0 ? Double(freePages) / Double(pageCount) : 0
+            guard freeBytes >= 1_048_576 || freeRatio >= 0.20 else { return }
+            try driver.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            try driver.execute("VACUUM;")
+        } catch {
+            // Page reclamation is best-effort. Row compaction has already
+            // committed and a later daily pass can retry without data loss.
+        }
     }
 
     private func ensureColumn(_ name: String, definition: String, database: SQLiteDatabaseConnection) throws {

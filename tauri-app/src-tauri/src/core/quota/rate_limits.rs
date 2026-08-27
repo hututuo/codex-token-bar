@@ -12,6 +12,7 @@ pub(super) fn placeholder_quota() -> QuotaSnapshot {
             used_percent: None,
             resets_at: "待读取".into(),
             resets_at_unix: None,
+            cycle_id: None,
         },
         seven_day: QuotaLimit {
             label: "7d".into(),
@@ -20,6 +21,7 @@ pub(super) fn placeholder_quota() -> QuotaSnapshot {
             used_percent: None,
             resets_at: "待读取".into(),
             resets_at_unix: None,
+            cycle_id: None,
         },
         reset_credit: ResetCreditSummary {
             available_count: 0,
@@ -38,6 +40,7 @@ fn absent_quota(label: &str) -> QuotaLimit {
         used_percent: None,
         resets_at: "未提供".into(),
         resets_at_unix: None,
+        cycle_id: None,
     }
 }
 
@@ -49,6 +52,7 @@ fn unavailable_quota(label: &str) -> QuotaLimit {
         used_percent: None,
         resets_at: "待读取".into(),
         resets_at_unix: None,
+        cycle_id: None,
     }
 }
 
@@ -238,6 +242,7 @@ fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
             .map(|date| compact_reset_text(date, label))
             .unwrap_or_else(|| "--:--".into()),
         resets_at_unix: reset_at_unix,
+        cycle_id: None,
     })
 }
 
@@ -821,6 +826,7 @@ mod tests {
             used_percent: Some(0.30),
             resets_at: "7d".into(),
             resets_at_unix: Some(OffsetDateTime::now_utc().unix_timestamp() + 7 * 24 * 60 * 60),
+            cycle_id: None,
         };
 
         assert!(pace_label(&seven_day).starts_with("用得太快，先省着"));
@@ -835,6 +841,7 @@ mod tests {
             used_percent: Some(0.0),
             resets_at: "7d".into(),
             resets_at_unix: Some(OffsetDateTime::now_utc().unix_timestamp() + 5 * 24 * 60 * 60),
+            cycle_id: None,
         };
 
         assert!(pace_label(&seven_day).starts_with("余量很足，使劲蹬"));
@@ -849,6 +856,7 @@ mod tests {
             used_percent: Some(0.27),
             resets_at: "5d".into(),
             resets_at_unix: Some(OffsetDateTime::now_utc().unix_timestamp() + 5 * 24 * 60 * 60),
+            cycle_id: None,
         };
 
         assert_eq!(pace_label(&seven_day), "略有余量（多 2%）");

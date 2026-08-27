@@ -2544,6 +2544,7 @@ mod tests {
             used_percent: Some(1.0 - remaining),
             resets_at: String::new(),
             resets_at_unix: Some(reset),
+            cycle_id: None,
         }
     }
 

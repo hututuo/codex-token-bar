@@ -645,6 +645,63 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
     }
 
+    func testSwiftMaintenanceAndReadsNeverMutatePeerDatabase() throws {
+        let localURL = try makeDatabaseURL()
+        let peerURL = try makeDatabaseURL()
+        try createPeerQuotaSnapshotsTable(at: peerURL, includeStableIdentity: true)
+        let now = Date()
+        let quota = identifiedSnapshot(
+            usedPercent: 27,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/read-only-peer",
+            stableAccountKey: "sub:read-only-peer",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Read Only Peer",
+            at: now
+        )
+        try insertStableIdentitySnapshot(
+            databaseURL: peerURL,
+            quota: quota,
+            source: "tauri",
+            createdAt: now.addingTimeInterval(-60)
+        )
+        let peerDriver = SQLiteDatabaseDriver(url: peerURL, readOnly: true)
+        let columnsBefore = try peerDriver.readRows("PRAGMA table_info(quota_snapshots);") {
+            $0.text(1) ?? ""
+        }
+        let rowsBefore = try peerDriver.readRows(
+            "SELECT created_at, five_hour_used_percent, seven_day_used_percent FROM quota_snapshots ORDER BY id;"
+        ) { statement in
+            [
+                String(statement.double(0) ?? 0),
+                String(statement.int(1) ?? -1),
+                String(statement.int(2) ?? -1)
+            ].joined(separator: "|")
+        }
+
+        let database = QuotaHistoryDatabase(databaseURL: localURL, peerDatabaseURL: peerURL)
+        try database.migrate()
+        XCTAssertTrue(try database.record(quota, createdAt: now))
+        _ = try database.loadSnapshot(for: quota, now: now)
+
+        let columnsAfter = try peerDriver.readRows("PRAGMA table_info(quota_snapshots);") {
+            $0.text(1) ?? ""
+        }
+        let rowsAfter = try peerDriver.readRows(
+            "SELECT created_at, five_hour_used_percent, seven_day_used_percent FROM quota_snapshots ORDER BY id;"
+        ) { statement in
+            [
+                String(statement.double(0) ?? 0),
+                String(statement.int(1) ?? -1),
+                String(statement.int(2) ?? -1)
+            ].joined(separator: "|")
+        }
+        XCTAssertEqual(columnsAfter, columnsBefore)
+        XCTAssertEqual(rowsAfter, rowsBefore)
+        XCTAssertFalse(columnsAfter.contains("five_hour_cycle_generation"))
+    }
+
     func testPeerStableIdentityMismatchCannotCrossAccountHistory() throws {
         let localURL = try makeDatabaseURL()
         let peerURL = try makeDatabaseURL()
@@ -725,7 +782,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertTrue(try database.recordedFiveHourUsedPercents(for: missingIdentity, now: now).isEmpty)
     }
 
-    func testLegacyBridgeIsBoundedToFortyFiveDaysAndFiveHundredTwelveRows() throws {
+    func testSafelyClaimedLegacyBridgeIsPermanentAndUnbounded() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -769,8 +826,8 @@ final class QuotaHistoryStoreTests: XCTestCase {
             age: 60 * 24 * 60 * 60
         )
 
-        XCTAssertEqual(values.count, 513, "one stable row plus at most 512 legacy rows")
-        XCTAssertFalse(values.contains(99), "legacy rows older than 45 days must not bridge")
+        XCTAssertEqual(values.count, 515, "all safely claimed legacy rows remain available")
+        XCTAssertTrue(values.contains(99), "legacy rows older than 45 days remain permanently retained")
     }
 
     func testStableQuotaHistoryIsRetainedBeyondFormerFortyFiveDayWindow() throws {
@@ -1631,6 +1688,329 @@ final class QuotaHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(loaded.recentBins.count, 30 * 24 * 12)
         XCTAssertLessThan(elapsed, 1.0, "stable quota histories should not spend seconds scanning future rows")
+    }
+
+    func testCycleGenerationRequiresStrictResetDeltaAndFullBoundarySample() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+        let make = { (used: Int, shifted: TimeInterval, at: Date) in
+            self.identifiedSnapshot(
+                usedPercent: used,
+                reset: reset.addingTimeInterval(shifted),
+                homeIdentity: "/fixture/cycle-generation",
+                stableAccountKey: "sub:cycle-generation",
+                planType: "Pro",
+                limitID: "codex",
+                accountName: "Cycle",
+                at: at
+            )
+        }
+
+        XCTAssertTrue(try database.record(make(20, 0, now), createdAt: now))
+        XCTAssertTrue(try database.record(make(0, 300, now.addingTimeInterval(60)), createdAt: now.addingTimeInterval(60)))
+        XCTAssertTrue(try database.record(make(0, 301, now.addingTimeInterval(120)), createdAt: now.addingTimeInterval(120)))
+        XCTAssertTrue(try database.record(make(1, 301, now.addingTimeInterval(180)), createdAt: now.addingTimeInterval(180)))
+
+        let rows = try SQLiteDatabaseDriver(url: url).readRows(
+            """
+            SELECT five_hour_used_percent, five_hour_cycle_generation, five_hour_reset_anchor
+            FROM quota_snapshots ORDER BY created_at;
+            """
+        ) { statement in
+            (statement.int(0), statement.int(1), statement.int(2))
+        }
+        XCTAssertEqual(rows.map(\.0), [20, 0, 0, 1])
+        XCTAssertEqual(rows.map(\.1), [0, 0, 1, 1])
+        XCTAssertEqual(rows.map(\.2), [1, 0, 1, 0])
+    }
+
+    func testNormalizedCurrentQuotaPublishesIndependentOpaqueCycleIDs() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let fiveReset = now.addingTimeInterval(3 * 60 * 60)
+        let sevenReset = now.addingTimeInterval(4 * 24 * 60 * 60)
+        let make = { (fiveUsed: Int, sevenUsed: Int, fiveShift: TimeInterval, sevenShift: TimeInterval, at: Date) in
+            var quota = AccountQuotaSnapshot(
+                fiveHour: AccountQuotaWindow(
+                    label: "5h",
+                    usedPercent: fiveUsed,
+                    resetsAt: fiveReset.addingTimeInterval(fiveShift)
+                ),
+                sevenDay: AccountQuotaWindow(
+                    label: "7d",
+                    usedPercent: sevenUsed,
+                    resetsAt: sevenReset.addingTimeInterval(sevenShift)
+                ),
+                planType: "Pro",
+                limitName: "codex",
+                accountName: "Cycle IDs",
+                status: "额度已更新",
+                updatedAt: at
+            )
+            quota.selectedLimitID = "codex"
+            quota.historyIdentity = QuotaHistoryIdentity(
+                homeIdentity: "/fixture/current-cycle-ids",
+                stableAccountKey: "sub:current-cycle-ids",
+                planType: "Pro",
+                limitID: "codex"
+            )
+            return quota
+        }
+
+        let initial = make(20, 30, 0, 0, now)
+        XCTAssertTrue(try database.record(initial, createdAt: now))
+        let sameCycle = try database.normalizedSnapshot(
+            make(1, 31, 301, 301, now.addingTimeInterval(60))
+        )
+        XCTAssertEqual(sameCycle.fiveHour?.cycleID, "g0")
+        XCTAssertEqual(sameCycle.sevenDay?.cycleID, "g0")
+
+        let fiveOnlyReset = try database.normalizedSnapshot(
+            make(0, 32, 301, 302, now.addingTimeInterval(120))
+        )
+        XCTAssertEqual(fiveOnlyReset.fiveHour?.cycleID, "g1")
+        XCTAssertEqual(fiveOnlyReset.sevenDay?.cycleID, "g0")
+    }
+
+    func testBoundedHistoryReplayKeepsPersistedCurrentCycleID() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let dates = [
+            now.addingTimeInterval(-61 * 24 * 60 * 60),
+            now.addingTimeInterval(-59 * 24 * 60 * 60),
+            now
+        ]
+        for (index, date) in dates.enumerated() {
+            let quota = identifiedSnapshot(
+                usedPercent: index == 0 ? 20 : 0,
+                reset: date.addingTimeInterval(3 * 60 * 60),
+                homeIdentity: "/fixture/bounded-cycle-offset",
+                stableAccountKey: "sub:bounded-cycle-offset",
+                planType: "Pro",
+                limitID: "codex",
+                accountName: "Bounded Cycle Offset",
+                at: date
+            )
+            XCTAssertTrue(try database.record(quota, createdAt: date))
+        }
+
+        let current = identifiedSnapshot(
+            usedPercent: 0,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/bounded-cycle-offset",
+            stableAccountKey: "sub:bounded-cycle-offset",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Bounded Cycle Offset",
+            at: now
+        )
+        let normalized = try database.normalizedSnapshot(current)
+        let loaded = try database.loadSnapshot(for: current, now: now)
+
+        XCTAssertEqual(normalized.fiveHour?.cycleID, "g2")
+        XCTAssertEqual(
+            loaded.recentBins.last?.fiveHourObservations.last?.cycleID,
+            "g2",
+            "the two-month cutoff must not renumber the current persisted cycle"
+        )
+    }
+
+    func testFiveMinuteStableBandWritesFinalRawAnchorAndCompactsOnlyResetRows() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+        let make = { (shifted: TimeInterval, at: Date) in
+            self.identifiedSnapshot(
+                usedPercent: 20,
+                reset: reset.addingTimeInterval(shifted),
+                homeIdentity: "/fixture/five-minute-stability",
+                stableAccountKey: "sub:five-minute-stability",
+                planType: "Pro",
+                limitID: "codex",
+                accountName: "Stable",
+                at: at
+            )
+        }
+
+        XCTAssertTrue(try database.record(make(0, now), createdAt: now))
+        XCTAssertTrue(try database.record(make(60, now.addingTimeInterval(60)), createdAt: now.addingTimeInterval(60)))
+        XCTAssertTrue(try database.record(make(61, now.addingTimeInterval(120)), createdAt: now.addingTimeInterval(120)))
+        XCTAssertTrue(try database.record(make(59, now.addingTimeInterval(240)), createdAt: now.addingTimeInterval(240)))
+        let finalAt = now.addingTimeInterval(360)
+        XCTAssertTrue(try database.record(make(60, finalAt), createdAt: finalAt))
+
+        let driver = SQLiteDatabaseDriver(url: url)
+        var anchors = try driver.readRows(
+            "SELECT created_at, five_hour_reset_anchor FROM quota_snapshots ORDER BY created_at;"
+        ) { ($0.date(0), $0.int(1) ?? 0) }
+        XCTAssertEqual(anchors.count, 3, "small in-band samples stay out of the history table")
+        XCTAssertEqual(
+            try XCTUnwrap(anchors.last?.0).timeIntervalSince1970,
+            finalAt.timeIntervalSince1970,
+            accuracy: 0.001,
+            "the final server observation keeps its original timestamp"
+        )
+        XCTAssertEqual(anchors.last?.1, 1)
+
+        try driver.execute(
+            "UPDATE quota_history_maintenance SET value = ? WHERE key = 'last_compacted_at';",
+            bindings: [.text(String(now.addingTimeInterval(-25 * 60 * 60).timeIntervalSince1970))]
+        )
+        try database.migrate()
+
+        anchors = try driver.readRows(
+            "SELECT created_at, five_hour_reset_anchor FROM quota_snapshots ORDER BY created_at;"
+        ) { ($0.date(0), $0.int(1) ?? 0) }
+        XCTAssertEqual(anchors.count, 2)
+        XCTAssertEqual(anchors.map(\.1), [1, 1])
+        XCTAssertEqual(
+            try XCTUnwrap(anchors.last?.0).timeIntervalSince1970,
+            finalAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+    }
+
+    func testMigrationCompacts56And59Then15SecondDriftWithoutLosingQuotaChanges() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let observed = Date(timeIntervalSince1970: 1_900_720_000)
+        let reset = Date(timeIntervalSince1970: 1_900_730_000)
+        let observations: [(TimeInterval, Int, TimeInterval)] = [
+            (0, 20, 0),
+            (60, 20, 56),
+            (120, 21, 59),
+            (180, 21, 15),
+            (240, 22, 16),
+            (480, 22, 14)
+        ]
+        try database.migrate()
+        for (offset, used, resetDelta) in observations {
+            let createdAt = observed.addingTimeInterval(offset)
+            let quota = identifiedSnapshot(
+                usedPercent: used,
+                reset: reset.addingTimeInterval(resetDelta),
+                homeIdentity: "/fixture/migration-real-drift",
+                stableAccountKey: "sub:migration-real-drift",
+                planType: "Pro",
+                limitID: "codex",
+                accountName: "Migration Real Drift",
+                at: createdAt
+            )
+            try insertStableIdentitySnapshot(
+                databaseURL: url,
+                quota: quota,
+                source: "swift",
+                createdAt: createdAt
+            )
+        }
+        let driver = SQLiteDatabaseDriver(url: url)
+        try driver.execute(
+            "UPDATE quota_history_maintenance SET value = '0' WHERE key IN ('policy_version', 'last_compacted_at');"
+        )
+
+        try database.migrate()
+
+        let retained = try driver.readRows(
+            """
+            SELECT created_at, five_hour_used_percent,
+                   five_hour_resets_at, five_hour_reset_anchor
+            FROM quota_snapshots ORDER BY created_at, id;
+            """
+        ) { statement in
+            (
+                statement.date(0),
+                statement.int(1),
+                statement.date(2),
+                statement.int(3) ?? 0
+            )
+        }
+        XCTAssertEqual(retained.count, 4)
+        XCTAssertEqual(retained.compactMap(\.1), [20, 21, 22, 22])
+        XCTAssertEqual(
+            retained.compactMap(\.0).map(\.timeIntervalSince1970),
+            [0, 120, 240, 480].map { observed.addingTimeInterval($0).timeIntervalSince1970 }
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(retained.last?.2).timeIntervalSince1970,
+            reset.addingTimeInterval(14).timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(retained.last?.3, 1)
+    }
+
+    func testHourlyHeartbeatNoLongerCreatesQuotaHistoryRows() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let quota = identifiedSnapshot(
+            usedPercent: 20,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/no-heartbeat",
+            stableAccountKey: "sub:no-heartbeat",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "No Heartbeat",
+            at: now
+        )
+        XCTAssertTrue(try database.record(quota, createdAt: now))
+        XCTAssertTrue(try database.record(quota, createdAt: now.addingTimeInterval(2 * 60 * 60)))
+        let count = try SQLiteDatabaseDriver(url: url).readRows(
+            "SELECT count(*) FROM quota_snapshots;"
+        ) { $0.int(0) ?? 0 }.first
+        XCTAssertEqual(count, 1)
+    }
+
+    func testMaintenanceFailureRollsBackRowsAndMetadata() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let quota = identifiedSnapshot(
+            usedPercent: 20,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/maintenance-rollback",
+            stableAccountKey: "sub:maintenance-rollback",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Maintenance Rollback",
+            at: now
+        )
+        try database.migrate()
+        try insertStableIdentitySnapshot(
+            databaseURL: url,
+            quota: quota,
+            source: "swift",
+            createdAt: now
+        )
+        let driver = SQLiteDatabaseDriver(url: url)
+        try driver.execute(
+            "UPDATE quota_history_maintenance SET value = '0' WHERE key IN ('policy_version', 'last_compacted_at');"
+        )
+        try driver.execute(
+            """
+            CREATE TRIGGER fail_quota_cycle_backfill
+            BEFORE UPDATE OF five_hour_cycle_generation ON quota_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'fixture maintenance failure');
+            END;
+            """
+        )
+
+        XCTAssertThrowsError(try database.migrate())
+        let generation: Int? = try driver.readRows(
+            "SELECT five_hour_cycle_generation FROM quota_snapshots LIMIT 1;"
+        ) { $0.int(0) }.first ?? nil
+        let metadata = try driver.readRows(
+            "SELECT key, value FROM quota_history_maintenance ORDER BY key;"
+        ) { ($0.text(0) ?? "", $0.text(1) ?? "") }
+
+        XCTAssertNil(generation)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: metadata)["policy_version"], "0")
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: metadata)["last_compacted_at"], "0")
     }
 
     private func snapshot(

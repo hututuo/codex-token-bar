@@ -6,8 +6,6 @@ import Foundation
 /// same reset window, the newest observed used percent is the trustworthy
 /// display/history value; a reset timestamp change starts a fresh cycle.
 enum QuotaMonotonicNormalizer {
-    private static let resetGraceInterval: TimeInterval = 2 * 60
-
     static func normalizedSnapshot(_ current: AccountQuotaSnapshot, after previous: AccountQuotaSnapshot?) -> AccountQuotaSnapshot {
         guard let previous, sameAccount(current, previous) else { return current }
 
@@ -29,13 +27,17 @@ enum QuotaMonotonicNormalizer {
         let previous = clampedPercent(previousUsedPercent)
 
         guard current < previous else { return current }
-        if isSameObservedCycle(currentResetsAt: currentResetsAt, previousResetsAt: previousResetsAt) {
-            if previous - current >= 20 {
-                return current
-            }
-            return previous
+        if QuotaHistoryCyclePolicy.startsNewCycle(
+            currentUsedPercent: current,
+            currentResetsAt: currentResetsAt,
+            acceptedResetsAt: previousResetsAt
+        ) {
+            return current
         }
-        return current
+        if previous - current >= 20 {
+            return current
+        }
+        return previous
     }
 
     private static func normalizedWindow(
@@ -51,7 +53,12 @@ enum QuotaMonotonicNormalizer {
         ) ?? current.usedPercent
 
         guard used != current.usedPercent else { return current }
-        return AccountQuotaWindow(label: current.label, usedPercent: used, resetsAt: current.resetsAt)
+        return AccountQuotaWindow(
+            label: current.label,
+            usedPercent: used,
+            resetsAt: current.resetsAt,
+            cycleID: current.cycleID
+        )
     }
 
     private static func sameAccount(_ lhs: AccountQuotaSnapshot, _ rhs: AccountQuotaSnapshot) -> Bool {
@@ -75,16 +82,5 @@ enum QuotaMonotonicNormalizer {
 
     private static func clampedPercent(_ value: Int) -> Int {
         max(0, min(100, value))
-    }
-
-    private static func isSameObservedCycle(currentResetsAt: Date?, previousResetsAt: Date?) -> Bool {
-        switch (currentResetsAt, previousResetsAt) {
-        case let (current?, previous?):
-            return abs(current.timeIntervalSince(previous)) <= resetGraceInterval
-        case (nil, nil):
-            return true
-        case (_?, nil), (nil, _?):
-            return false
-        }
     }
 }

@@ -157,6 +157,7 @@ fn placeholder_quota() -> QuotaSnapshot {
             used_percent: None,
             resets_at: "待读取".into(),
             resets_at_unix: None,
+            cycle_id: None,
         },
         seven_day: QuotaLimit {
             label: "7d".into(),
@@ -165,6 +166,7 @@ fn placeholder_quota() -> QuotaSnapshot {
             used_percent: None,
             resets_at: "待读取".into(),
             resets_at_unix: None,
+            cycle_id: None,
         },
         reset_credit: ResetCreditSummary {
             available_count: 0,

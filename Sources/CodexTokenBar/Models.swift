@@ -470,6 +470,19 @@ struct QuotaHistoryObservation: Equatable, Sendable {
     let observedAt: Date
     let remainingPercent: Double
     let resetsAt: Date?
+    let cycleID: String?
+
+    init(
+        observedAt: Date,
+        remainingPercent: Double,
+        resetsAt: Date?,
+        cycleID: String? = nil
+    ) {
+        self.observedAt = observedAt
+        self.remainingPercent = remainingPercent
+        self.resetsAt = resetsAt
+        self.cycleID = cycleID
+    }
 }
 
 struct QuotaHistoryRecentBucket: Identifiable, Equatable {

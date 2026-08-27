@@ -188,6 +188,11 @@ pub fn read_account_quota(
     codex_home: &Path,
     force_refresh: bool,
 ) -> Result<AccountQuotaBundle, String> {
+    if force_refresh {
+        // Startup/manual/wake refreshes begin a fresh five-minute stability
+        // proof; elapsed sleep time must never count as observation evidence.
+        quota_history::reset_stability_tracking();
+    }
     read_account_quota_with_policy(codex_home, force_refresh, || {
         crate::platform::read_app_settings()
             .map(|settings| settings.quota_refresh_interval_ms)
@@ -434,6 +439,9 @@ where
 
     let previous_success = cached_successful_quota(&scope)?;
     let loaded = loader(codex_home);
+    if loaded.is_err() {
+        quota_history::reset_stability_tracking();
+    }
     let completed_scope = observed_quota_cache_scope(codex_home);
     if !scope.allows_flight_reuse(&completed_scope) {
         return Ok(identity_changed_quota_bundle(codex_home));
@@ -444,6 +452,7 @@ where
             history_limit_id,
         } = loaded;
         if account_quota_failed(&bundle) {
+            quota_history::reset_stability_tracking();
             if let Some(previous) = previous_success {
                 return Ok(stale_quota_bundle(previous, bundle));
             }
@@ -674,6 +683,13 @@ fn finalize_account_quota(
         return Ok(bundle);
     }
     refresh_quota_histories(&mut bundle, &history_identity, true);
+    if let Some(latest) = bundle.quota_history_24h.last() {
+        // The history builder replays the merged Swift + Tauri timeline, so
+        // these ids share the exact canonical generation used by chart points
+        // instead of leaking either database's local generation counter.
+        bundle.quota.five_hour.cycle_id = latest.five_hour_cycle_id.clone();
+        bundle.quota.seven_day.cycle_id = latest.seven_day_cycle_id.clone();
+    }
     Ok(bundle)
 }
 
@@ -1816,6 +1832,8 @@ mod tests {
                     start_unix: 1,
                     five_hour_remaining_percent: Some(0.8),
                     seven_day_remaining_percent: Some(0.6),
+                    five_hour_cycle_id: None,
+                    seven_day_cycle_id: None,
                 });
                 Ok(bundle)
             },
@@ -1946,6 +1964,8 @@ mod tests {
                     start_unix: next_count,
                     five_hour_remaining_percent: Some(0.8),
                     seven_day_remaining_percent: Some(0.6),
+                    five_hour_cycle_id: None,
+                    seven_day_cycle_id: None,
                 }],
                 ..Default::default()
             })
@@ -2839,6 +2859,8 @@ printf '%s\n' "$1"
                 start_unix: 1,
                 five_hour_remaining_percent: Some(0.8),
                 seven_day_remaining_percent: Some(0.6),
+                five_hour_cycle_id: None,
+                seven_day_cycle_id: None,
             });
         let mut failed_quota = placeholder_quota();
         failed_quota.pace_label = "额度读取失败".into();
@@ -3045,6 +3067,8 @@ printf '%s\n' "$1"
                 start_unix: 1,
                 five_hour_remaining_percent: Some(0.8),
                 seven_day_remaining_percent: Some(0.6),
+                five_hour_cycle_id: None,
+                seven_day_cycle_id: None,
             }],
             ..Default::default()
         }

@@ -319,6 +319,7 @@ final class AccountQuotaStore: ObservableObject {
                         bindingGeneration: bindingGeneration,
                         sourceID: sourceID
                     ) else { return }
+                    self.historyStore?.resetStabilityTracking()
                     self.isRefreshing = false
                     self.activeRefreshSourceID = nil
                     self.quotaStatusBeforeRefresh = nil
