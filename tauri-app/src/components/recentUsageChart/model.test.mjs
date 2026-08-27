@@ -1225,7 +1225,7 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.equal(source.includes("visibleWindowSummary.endIndex"), true);
 });
 
-test("clickQuotaSelection previews on hover, pins on second click, resets on third click", () => {
+test("clickQuotaSelection previews on hover, pins on second click, starts a new range on third click", () => {
   let state = clickQuotaSelection({ startIndex: null, fixedEndIndex: null }, 4, 10);
 
   assert.deepEqual(state, { startIndex: 4, fixedEndIndex: null });

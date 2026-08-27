@@ -115,6 +115,7 @@ export function RecentUsageChart({
   const [previewDismissed, setPreviewDismissed] = useState(false);
   const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
   const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
+  const sectionRef = useRef<HTMLElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pendingScrollFrameRef = useRef<number | null>(null);
@@ -362,6 +363,23 @@ export function RecentUsageChart({
   }, []);
 
   useEffect(() => {
+    const clearForOutsidePointer = (event: PointerEvent) => {
+      const section = sectionRef.current;
+      const target = event.target;
+      if (!section || !(target instanceof Node) || section.contains(target)) return;
+      setHoveredIndex(null);
+      setPreviewDismissed(false);
+      setQuotaSelectionState((current) => (
+        current.startIndex === null && current.fixedEndIndex === null
+          ? current
+          : { startIndex: null, fixedEndIndex: null }
+      ));
+    };
+    document.addEventListener("pointerdown", clearForOutsidePointer);
+    return () => document.removeEventListener("pointerdown", clearForOutsidePointer);
+  }, []);
+
+  useEffect(() => {
     const onPriceModel = (event: Event) => {
       const next = normalizeOfficialAPIPriceModel((event as CustomEvent<unknown>).detail);
       if (next) setQuotaModel(next);
@@ -485,7 +503,7 @@ export function RecentUsageChart({
   }
 
   return (
-    <section className="chart-section" aria-label={data.title}>
+    <section ref={sectionRef} className="chart-section" aria-label={data.title}>
       <div className="recent-chart-head">
         <div className="recent-chart-title">
           <h2>{data.title}</h2>

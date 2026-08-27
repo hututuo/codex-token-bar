@@ -299,6 +299,24 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         XCTAssertTrue(componentSource.contains("关闭选中区间预览"))
         XCTAssertTrue(componentSource.contains(".allowsHitTesting(true)"))
         XCTAssertTrue(chartSource.contains(".onKeyPress(.escape)"))
+        XCTAssertTrue(
+            chartSource.contains("RecentChartOutsideClickMonitor(onOutsideClick: resetChartInteractionIfNeeded)"),
+            "the production chart must connect its full section bounds to outside-click reset"
+        )
+    }
+
+    @MainActor
+    func testOutsideClickMonitorIgnoresChartBoundsAndReportsBlankSpace() {
+        var outsideClickCount = 0
+        let monitorView = RecentChartOutsideClickMonitor.MonitoringView(
+            frame: NSRect(x: 0, y: 0, width: 200, height: 100)
+        )
+        monitorView.onOutsideClick = { outsideClickCount += 1 }
+
+        monitorView.observeLocalClick(NSPoint(x: 100, y: 50))
+        XCTAssertEqual(outsideClickCount, 0)
+        monitorView.observeLocalClick(NSPoint(x: 100, y: 101))
+        XCTAssertEqual(outsideClickCount, 1)
     }
 
     func testFixedSelectionHoverDoesNotReopenDismissedTopPreview() {
@@ -321,6 +339,8 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         selection.click(index: 6, validCount: 8)
         preview.beginInteraction()
         XCTAssertTrue(preview.showsTopPreview, "a new click starts a new interaction generation")
+        XCTAssertEqual(selection.startIndex, 6, "a third in-plot click starts the next range")
+        XCTAssertNil(selection.fixedEndIndex)
 
         var openHoverPreview = RecentChartPreviewVisibilityState()
         openHoverPreview.beginInteraction()

@@ -516,7 +516,9 @@ test("top hover and fixed-selection previews can be dismissed without clearing t
     await withSsrModules(async (load) => {
       const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
       const container = window.document.createElement("div");
+      const outside = window.document.createElement("button");
       window.document.body.append(container);
+      window.document.body.append(outside);
       const root = createRoot(container);
       try {
         await React.act(async () => root.render(React.createElement(RecentUsageChart, {
@@ -568,13 +570,38 @@ test("top hover and fixed-selection previews can be dismissed without clearing t
         })));
         assert.equal(container.querySelector('[aria-label="关闭选中区间预览"]'), null);
 
-        // A third click starts a new, unpinned selection and is an explicit
-        // interaction that reopens the point preview.
+        // A third click inside the plot still starts the next range directly.
         await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
           bubbles: true, cancelable: true, clientX: 480, clientY: 80, pointerId: 1,
         })));
         assert.equal(container.querySelector('[aria-label="关闭选中区间预览"]'), null);
         assert.ok(container.querySelector('[aria-label="关闭当前点预览"]'));
+        assert.ok(container.querySelector(".chart-hover-line"));
+        assert.ok(container.querySelector('[role="dialog"][aria-label="额度估算"]'));
+
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+          bubbles: true, clientX: 720, clientY: 80, pointerId: 1,
+        })));
+        assert.ok(container.querySelector('[aria-label="关闭选中区间预览"]'));
+
+        // A pointer press outside the whole chart section clears every chart
+        // interaction artifact. The next hover starts from ordinary point
+        // preview again without carrying the old range.
+        await React.act(async () => outside.dispatchEvent(new window.PointerEvent("pointerdown", {
+          bubbles: true, cancelable: true, pointerId: 2,
+        })));
+        assert.equal(container.querySelector(".chart-hover-bubble"), null);
+        assert.equal(container.querySelector(".chart-hover-line"), null);
+        assert.equal(container.querySelector(".chart-selection-layer"), null);
+        assert.equal(container.querySelector('[role="dialog"][aria-label="额度估算"]'), null);
+
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointermove", {
+          bubbles: true, clientX: 720, clientY: 80, pointerId: 1,
+        })));
+        assert.ok(container.querySelector('[aria-label="关闭当前点预览"]'));
+        assert.ok(container.querySelector(".chart-hover-line"));
+        assert.equal(container.querySelector(".chart-selection-layer"), null);
+        assert.equal(container.querySelector('[role="dialog"][aria-label="额度估算"]'), null);
       } finally {
         await React.act(async () => root.unmount());
       }

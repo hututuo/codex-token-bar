@@ -1609,7 +1609,7 @@ struct RecentUsageChart: View, Equatable {
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("\(selectedRange.title) 曲线图")
                         .accessibilityValue(chartInteractionAccessibilityValue)
-                        .accessibilityHint("调整时间点后，执行设置选区点；第一次设起点，第二次固定终点。")
+                        .accessibilityHint("调整时间点后，执行设置选区点；第一次设起点，第二次固定终点，固定后再次设置会开始新选区。")
                         .accessibilityAdjustableAction { direction in
                             switch direction {
                             case .increment:
@@ -2181,6 +2181,9 @@ struct RecentUsageChart: View, Equatable {
             )
         }
         .frame(maxWidth: 980)
+        .background {
+            RecentChartOutsideClickMonitor(onOutsideClick: resetChartInteractionIfNeeded)
+        }
         .onAppear(perform: refreshPreparedData)
         .onChange(of: preparationInput) { _, _ in
             refreshPreparedData()
@@ -2470,6 +2473,15 @@ struct RecentUsageChart: View, Equatable {
         consumptionSelectionTimeAnchor = nil
         cachedFixedConsumptionSelection = nil
         consumptionSelectionInvalidationMessage = nil
+    }
+
+    private func resetChartInteractionIfNeeded() {
+        guard hoveredIndex != nil
+                || consumptionSelectionState.startIndex != nil
+                || consumptionSelectionInvalidationMessage != nil else { return }
+        clearConsumptionSelection()
+        accessibilityCursorState.reset()
+        previewVisibility = RecentChartPreviewVisibilityState()
     }
 
     private func updateHoveredIndex(_ index: Int?) {
