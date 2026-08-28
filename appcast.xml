@@ -3,6 +3,57 @@
     <channel>
         <title>Codex Token Bar</title>
         <item>
+            <title>0.9.1</title>
+            <pubDate>Fri, 28 Aug 2026 23:51:35 +0800</pubDate>
+            <sparkle:version>901</sparkle:version>
+            <sparkle:shortVersionString>0.9.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Codex Token Bar v0.9.1
+
+v0.9.1 继续收敛双端图表、雷达和悬浮窗的交互与显示口径，重点修复“看起来像旧数据/错位数据”的体验问题，并让缓存排行与额度统计更贴近真实用户轮次。
+
+## 更新亮点
+
+- **图表默认查看最新数据**：24 小时、7 天和 30 天图表启动后定位到最新时间段；横向滚动条保持可见，时间标注、悬停竖线、气泡和区间选择在 Swift 与跨平台版保持一致。
+- **图表比例和交互更稳定**：Token 纵轴按当前可见数据自适应，金额和缓存命中率使用独立映射；选区第二个点点击后立即汇总，悬停预览不再挡住曲线。
+- **雷达与悬浮窗对齐**：速登窗口倒计时结束后会回到正常“速登窗口”状态；普通雷达和悬浮窗的等待/动作—IQ 分割线分别按各自布局收紧，双端保持一致。
+- **缓存命中排行更接近真实轮次**：默认使用单轮最新口径，工具调用不再被误算成用户轮次；命中率分母使用压缩后的当前上下文窗口；排行支持完整查看、搜索和悬停查看被截断的问题/回答。
+- **额度和状态栏细节修复**：状态栏实验开关默认关闭并明确标记；悬浮窗额度到期时间精确到分钟，重置卡和额度显示继续保留。
+- **安全与稳定性**：Codex 运行中允许安全删除已完成归档会话；保留现有索引兼容、隐私和双端增量刷新边界。
+
+## 更新说明
+
+- 精确索引和历史聚合仍是本地可重建缓存，不保存会话正文，也不会上传本地用量。
+- macOS 构建采用 ad-hoc 签名且未经过 Apple notarization；Windows 安装器未使用商业代码签名证书，首次安装可能出现系统安全提示。
+- 正式发布后请只从官方 GitHub Release 下载，并使用随包提供的 SHA256SUMS-v0.9.1.txt 核对文件。
+
+---
+
+## English
+
+# Codex Token Bar v0.9.1
+
+v0.9.1 continues aligning chart, Radar, and floating-window behavior across both editions. It focuses on removing stale-looking or misaligned displays and making cache ranking and quota accounting follow real user turns more closely.
+
+## Highlights
+
+- **Open charts at the newest data**: the 24-hour, 7-day, and 30-day charts start at the latest time range; the horizontal scrollbar remains visible, while time labels, hover guides, bubbles, and range selection stay aligned across Swift and the cross-platform edition.
+- **More stable chart scale and interaction**: the Token axis adapts to the currently visible data, with independent mappings for cost and cache hit rate; the second range point summarizes immediately and hover previews no longer cover the curve.
+- **Aligned Radar and floating panel**: when the speed-window countdown ends, the UI returns to the normal speed-window state; the waiting/action–IQ divider is tightened per platform-specific layout while keeping Swift and Tauri consistent.
+- **Cache ranking follows real turns**: the default is latest single-turn accounting, tool calls are no longer mistaken for user turns, and the hit-rate denominator uses the compressed current context window. Full ranking, search, and hover details are available for truncated questions and answers.
+- **Quota and status-bar details**: the experimental status-bar toggle is off by default and labeled explicitly; floating quota expiry is shown to the minute while reset-credit and quota information remains available.
+- **Safety and stability**: completed archived conversations can be safely deleted while Codex is running; existing index compatibility, privacy, and dual-platform incremental-refresh boundaries remain unchanged.
+
+## Update Notes
+
+- The exact index and historical aggregates remain local rebuildable cache data. Conversation text is not stored or uploaded.
+- The macOS build is ad-hoc signed and not Apple-notarized. Windows installers do not use a commercial code-signing certificate, so the operating system may show a first-install warning.
+- After publication, download only from the official GitHub Release and verify the bundled SHA256SUMS-v0.9.1.txt.
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.1/CodexTokenBar-v0.9.1-macos-arm64.app.zip" length="11791588" type="application/octet-stream" sparkle:edSignature="HOhSphj2g/qBs8brcpsiTpM30oHxMKYvIYsp6g19W7uTQNCpXWZMAGiTfV3fM+rYP1K1gf50p2AAm8EUpbYyAQ==" />
+        </item>
+        <item>
             <title>0.9.0</title>
             <pubDate>Fri, 21 Aug 2026 23:55:58 +0800</pubDate>
             <sparkle:version>900</sparkle:version>
@@ -241,75 +292,6 @@ v0.8.0 advances Codex Token Bar from a usage dashboard into a local-first Codex 
 - Live rate and lifetime savings are local estimates. Local usage, conversations, quota, reset-credit, and Radar data are not uploaded as telemetry.
 </description>
             <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.0/CodexTokenBar-v0.8.0-macos-arm64.app.zip" length="7604402" type="application/octet-stream" sparkle:edSignature="9sIfHcHPDSJgg2FXPWySCHhCLsLulfa3Y+hTI/fy5f1uwuFVTLzcrLvHUTkLJ7ppyfjjMr62Vsy+R6ummIRaDg==" />
-        </item>
-        <item>
-            <title>0.7.3</title>
-            <pubDate>Mon, 13 Jul 2026 11:56:14 +0800</pubDate>
-            <sparkle:version>703</sparkle:version>
-            <sparkle:shortVersionString>0.7.3</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"># Codex Token Bar v0.7.3
-
-v0.7.3 是一次覆盖 macOS Swift 原生版与 Windows Tauri 跨平台版的大型正确性、性能与界面优化。
-
-## 主要更新
-
-- **额度窗口自适应**：不再把官方 `primary` 固定解释成 5 小时额度。官方只提供 7 天额度时，主界面、悬浮窗、状态栏/托盘、趣味化节奏提示和历史曲线都只显示 7 天；两种额度都存在时才同时显示。
-- **额度历史与异常点修正**：7 天历史不会再写入 5 小时列；根据真实本机历史序列过滤官方偶发的接近 100% 孤立跳点，同时保留真正的额度重置。
-- **额度条重新布局**：Swift 与 Tauri 都把更多宽度还给进度条，刷新频率移动到顶部节奏提示右侧；完整显示“额度刷新 1 分钟”等文案，点击区域更大，不再依赖省略号。
-- **缓存命中率曲线修正**：低频使用时，空时间桶不再沿用上一条命中率，消除误导性的阶梯平台；连续实测点成线，孤立实测点单独显示。
-- **雷达与模型 IQ 同步**：Dashboard 和悬浮窗共享同一批 Radar 快照；双端使用相同排序，紧凑模型名保留 `max`、`medium` 等思考强度，不再出现一端显示 Sol、另一端仍显示旧 Terra 的情况。
-- **克制的语义配色**：额度从低到高在红、琥珀、绿、主题蓝之间连续过渡；雷达等待/运行/关闭、高 IQ 与节奏状态使用少量明确点缀，整体卡片仍保持简洁中性。
-- **顶部工具区整理**：Tauri 删除冗余产品名，检查更新和开机自启保持一级可见；更多菜单只放 CSV/PNG，并补齐方向键、Home/End、Escape、Tab、失焦和焦点恢复。Swift 来源信息与操作区分行，自动发现路径更易读。
-- **辅助功能完善**：Swift 五种 Token 活动模式由真实原生 AX 按钮承载；两端活动模式、图表范围和曲线开关都能正确报告选中状态。
-- **后台性能显著降低**：Swift 在主界面、悬浮窗和状态栏都不可见时暂停高成本用量、实时速率、额度和 Radar 刷新；可信快照保留，界面恢复后立即刷新。官方 unread 可用时不再无条件扫描 session JSONL。
-- **来源与缓存更可靠**：来源切换、同路径替换和迟到异步结果由物理身份、binding 与 generation 共同约束；旧 Swift 用量迁移死代码已清理，Tauri 聚合缓存按 Codex Home 隔离。
-- **Provider Repair 加固**：备份、同步、回滚共享同一操作租约；SQLite WAL 快照、session descriptor 身份/digest、并发 append、原子替换、同长度覆写和失败清理都纳入门禁。
-- **Windows 桌面体验**：支持真正隐藏的开机自启、常驻单实例激活监听、主窗销毁后的隐藏重建，以及重复 secondary 唤醒；关键 Win32 失败不会回退成第二个主实例。
-- **更新提醒常驻**：Mac Sparkle 与 Windows 应用级更新监控默认每 4 小时检查一次。自动检查只提示，不自动安装；Windows 系统通知不可用时保留持久托盘标记和安装入口。
-
-## 说明
-
-- Mac 继续使用原生 Swift App 与 Sparkle；Windows 使用 Tauri + React + Rust App 与独立的 Tauri updater metadata，两条更新通道不会混用。
-- 自动更新只负责检查和提醒，下载、安装与重启仍需用户确认。
-- macOS 构建采用 ad-hoc 签名且未 Apple notarize；Windows 安装器未使用商业代码签名证书。请只从官方 Release 下载并核对 SHA256，系统可能显示未知开发者或未知发布者提示。
-- 实时速率是工作强度估计，不代表精确吞吐；本地使用量、会话、额度、重置卡和 Radar 数据不会作为遥测上传。
-- 完整工程报告见 `audits/v0.7.3/reports/optimization-report.md`。
-
----
-
-## English
-
-# Codex Token Bar v0.7.3
-
-v0.7.3 is a broad correctness, performance, accessibility, and interface update across the native macOS Swift app and the Windows Tauri app.
-
-## Highlights
-
-- **Adaptive quota windows**: the app no longer assumes that the API `primary` window is always 5 hours. If Codex exposes only the 7-day window, the dashboard, floating panel, status/tray surface, pace hint, and history chart show only 7d. Both windows appear only when both are actually available.
-- **Correct quota history and spike handling**: 7-day samples no longer land in the 5-hour series. Isolated near-100% API spikes are filtered from real local history while genuine resets remain visible.
-- **Longer, clearer quota bars**: both apps return more space to the tracks and place the quota-refresh selector beside the top pace hint. Full labels such as “Quota refresh 1 minute” remain visible with a larger hit target and no ellipsis fallback.
-- **Low-activity cache-hit charts**: empty buckets are now unknown instead of carrying the last measured rate forward, removing misleading stair-step plateaus.
-- **Shared Radar and IQ ranking**: dashboards and floating surfaces consume one shared Radar snapshot. Both implementations rank the same data and retain reasoning effort such as `max` or `medium` in compact model labels.
-- **Restrained semantic color**: quota moves continuously from red through amber and green to the product blue. Radar state, high IQ, and pace hints use a small number of meaningful accents while cards remain neutral.
-- **Cleaner top controls**: Tauri keeps update checking and autostart as visible primary actions, with CSV/PNG in an accessible keyboard-complete menu. Swift separates source context from actions so auto-discovered paths remain readable.
-- **Better accessibility**: the five Swift Token activity modes are real native accessibility buttons. Equivalent activity, chart-range, and line controls report selected state on both platforms.
-- **Much lower hidden background cost**: Swift pauses expensive usage, live-rate, quota, and Radar owners while every surface is hidden, retains trusted snapshots, and refreshes immediately on resume. Official unread state avoids unconditional session JSONL scans.
-- **Safer source and cache ownership**: physical source identity, bindings, and generations reject stale asynchronous completions. Swift legacy usage migration residue is removed, and Tauri aggregate caches remain scoped to the exact Codex Home.
-- **Provider Repair hardening**: backup, sync, and rollback share one lease. WAL snapshots, descriptor identity and digest checks, concurrent append/replacement/overwrite handling, and failure cleanup are covered by execution tests.
-- **Reliable Windows desktop lifecycle**: hidden autostart, persistent single-instance activation, destroyed-main recreation, and repeated secondary activation are supported without creating a second primary.
-- **Persistent update ownership**: macOS Sparkle and the Windows app-level monitor check every four hours by default. Automatic checks announce availability only; Windows retains a persistent tray fallback when system notifications are unavailable.
-
-## Notes
-
-- macOS continues to use the native Swift app and Sparkle. Windows uses the Tauri + React + Rust app and separate Tauri updater metadata; the channels are not interchangeable.
-- Automatic updating checks and presents availability only. Download, installation, and restart still require user confirmation.
-- The macOS build is ad-hoc signed and not Apple notarized. Windows installers do not use a commercial code-signing certificate. Download only from the official Release and verify SHA256; the operating system may show an unidentified-developer or unknown-publisher warning.
-- Live rate is a work-intensity estimate, not exact throughput. Local usage, session, quota, reset-credit, and Radar data are not uploaded as telemetry.
-- The complete engineering report is available at `audits/v0.7.3/reports/optimization-report.md`.
-</description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.7.3/CodexTokenBar-v0.7.3-macos-arm64.app.zip" length="6618673" type="application/octet-stream" sparkle:edSignature="r4kEEP1T20fJzm5GqCEgVNnFJpfIKOcRcZ+e+QBF2ZDmRClqAosnyczIUm4GznKykQTtYP9a5AHSv8aXFC25DQ==" />
         </item>
     </channel>
 </rss>
