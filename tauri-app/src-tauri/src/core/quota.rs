@@ -71,9 +71,20 @@ impl QuotaCacheScope {
     }
 
     fn allows_flight_reuse(&self, current: &Self) -> bool {
-        self.codex_home == current.codex_home
-            && self.account_key == current.account_key
-            && self.flight_fingerprint == current.flight_fingerprint
+        if self.codex_home != current.codex_home {
+            return false;
+        }
+
+        match (&self.account_key, &current.account_key) {
+            // A stable account key is the identity boundary. Access/refresh token
+            // rotation, last_refresh updates, and an atomic auth.json rewrite are
+            // expected within the same account and must not invalidate a read.
+            (Some(before), Some(after)) => before == after,
+            // Without a reliable account key, keep the old fail-closed behavior:
+            // only an unchanged auth snapshot may be shared across a flight.
+            _ => self.account_key == current.account_key
+                && self.flight_fingerprint == current.flight_fingerprint,
+        }
     }
 
     fn history_identity(
@@ -2097,6 +2108,7 @@ mod tests {
             })
             .unwrap();
 
+        assert!(before_rotation.allows_flight_reuse(&after_rotation));
         assert_eq!(before_history_identity, after_history_identity);
         assert_eq!(first.recent_24h[0].label, "before-rotation");
         assert_eq!(
