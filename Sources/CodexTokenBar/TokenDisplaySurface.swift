@@ -313,6 +313,8 @@ struct TokenDisplayCard: View {
     var selectedPreviewRowID: String? = nil
     var onPreviewRowSelect: ((String) -> Void)? = nil
     var onPageNavigation: (() -> Void)? = nil
+    var runningModelDetailsExpanded = false
+    var onRunningThreadsActivate: (() -> Void)? = nil
     var guideMode = false
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)
     private var fallbackPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
@@ -529,7 +531,11 @@ struct TokenDisplayCard: View {
         case .metrics:
             metricRow
         case .runningThreads:
-            TokenDisplayRunningThreadsRow(summary: snapshot.runningThreads)
+            TokenDisplayRunningThreadsRow(
+                summary: snapshot.runningThreads,
+                detailsExpanded: runningModelDetailsExpanded,
+                onActivate: onRunningThreadsActivate
+            )
         case .todayModelShare:
             FloatingTodayModelUsageRow(
                 page: .share,
@@ -776,7 +782,9 @@ struct TokenDisplayCard: View {
 
                     TokenDisplayRunningThreadsRow(
                         summary: snapshot.runningThreads,
-                        showsTotal: false
+                        showsTotal: false,
+                        detailsExpanded: runningModelDetailsExpanded,
+                        onActivate: onRunningThreadsActivate
                     )
                     .environment(\.tokenDisplayTextPalette, palette(for: .runningThreads))
                     .frame(width: 62.scaled(by: displayScale))

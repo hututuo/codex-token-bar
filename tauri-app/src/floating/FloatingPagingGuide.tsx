@@ -1,6 +1,13 @@
 import type { CSSProperties } from "react";
+import type { FloatingGuidePage } from "./floatingSettings";
+import {
+  FLOATING_RUNNING_MODEL_GUIDE_DEMO,
+  FloatingRunningThreadModelDetails,
+} from "./FloatingRunningThreadModelDetails";
 
 interface FloatingPagingGuideProps {
+  page: FloatingGuidePage;
+  isLastPage: boolean;
   error: string | null;
   saving: boolean;
   showsArrowGlyphs: boolean;
@@ -12,11 +19,16 @@ interface FloatingPagingGuideProps {
   calloutY: number;
   calloutCardY: number;
   showDemoModelUsage?: boolean;
+  modelTargetX: number;
+  modelTargetY: number;
+  modelTargetWidth: number;
   onArrowVisibilityChange: (visible: boolean) => void;
-  onComplete: () => void;
+  onAdvance: () => void;
 }
 
 export function FloatingPagingGuide({
+  page,
+  isLastPage,
   error,
   saving,
   showsArrowGlyphs,
@@ -28,9 +40,55 @@ export function FloatingPagingGuide({
   calloutY,
   calloutCardY,
   showDemoModelUsage = false,
+  modelTargetX,
+  modelTargetY,
+  modelTargetWidth,
   onArrowVisibilityChange,
-  onComplete,
+  onAdvance,
 }: FloatingPagingGuideProps) {
+  if (page === "runningModels") {
+    return (
+      <div className="floating-paging-guide floating-paging-guide--running-models" role="dialog" aria-label="运行模型详情引导">
+        <span
+          className="floating-running-model-guide-target"
+          aria-hidden="true"
+          style={{
+            left: modelTargetX,
+            top: modelTargetY,
+            width: modelTargetWidth,
+          }}
+        />
+        <span
+          className="floating-running-model-guide-pointer"
+          aria-hidden="true"
+          style={{ left: modelTargetX + 8, top: modelTargetY + 8 }}
+        />
+        <span
+          className="floating-running-model-guide-connector"
+          aria-hidden="true"
+          style={{
+            "--floating-running-model-target-right": `${modelTargetX + modelTargetWidth / 2}px`,
+            "--floating-running-model-guide-y": `${modelTargetY}px`,
+          } as CSSProperties}
+        />
+        <FloatingRunningThreadModelDetails
+          className="floating-running-model-details--guide"
+          demo
+          summary={FLOATING_RUNNING_MODEL_GUIDE_DEMO}
+        />
+        <section
+          className="floating-paging-guide-card floating-paging-guide-card--running-models"
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <strong>点击“主 / 子”查看模型</strong>
+          <p>右侧会显示模型、思考强度和数量；再点一次即可收起</p>
+          <GuideAdvanceButton isLastPage={isLastPage} saving={saving} onAdvance={onAdvance} />
+          {error ? <small role="alert">{error}</small> : null}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="floating-paging-guide" role="dialog" aria-label="悬浮窗翻页引导">
       <span className="floating-paging-guide-edge floating-paging-guide-edge--left" aria-hidden="true" />
@@ -98,17 +156,31 @@ export function FloatingPagingGuide({
             />
             <span>显示翻页箭头</span>
           </label>
-          <button
-            disabled={saving}
-            onClick={onComplete}
-            onMouseDown={(event) => event.stopPropagation()}
-            type="button"
-          >
-            {saving ? "保存中" : "开始体验"}
-          </button>
+          <GuideAdvanceButton isLastPage={isLastPage} saving={saving} onAdvance={onAdvance} />
         </div>
         {error ? <small role="alert">{error}</small> : null}
       </section>
     </div>
+  );
+}
+
+function GuideAdvanceButton({
+  isLastPage,
+  saving,
+  onAdvance,
+}: {
+  isLastPage: boolean;
+  saving: boolean;
+  onAdvance: () => void;
+}) {
+  return (
+    <button
+      disabled={saving}
+      onClick={onAdvance}
+      onMouseDown={(event) => event.stopPropagation()}
+      type="button"
+    >
+      {saving ? "保存中" : (isLastPage ? "开始体验" : "下一步")}
+    </button>
   );
 }

@@ -32,6 +32,8 @@ test("floating paging guide lets card background drag while controls stay intera
             dashboardOpens += 1;
           },
         }, React.createElement(FloatingPagingGuide, {
+          page: "paging",
+          isLastPage: false,
           error: null,
           saving: false,
           showsArrowGlyphs: false,
@@ -39,10 +41,13 @@ test("floating paging guide lets card background drag while controls stay intera
           targetY: 60,
           pointerY: 65,
           showDemoModelUsage: true,
+          modelTargetX: 260,
+          modelTargetY: 60,
+          modelTargetWidth: 70,
           onArrowVisibilityChange: (visible) => {
             arrowChanges += visible ? 1 : -1;
           },
-          onComplete: () => {
+          onAdvance: () => {
             completions += 1;
           },
         }))));
@@ -51,6 +56,7 @@ test("floating paging guide lets card background drag while controls stay intera
         assert.match(container.textContent, /点击阴影边缘试一下/);
         assert.match(container.textContent, /显示翻页箭头/);
         assert.match(container.textContent, /悬浮窗数据为示例/);
+        assert.match(container.textContent, /下一步/);
         const card = container.querySelector(".floating-paging-guide-card");
         const checkbox = container.querySelector('input[type="checkbox"]');
         const button = container.querySelector("button");
@@ -80,6 +86,8 @@ test("floating paging guide lets card background drag while controls stay intera
         await React.act(async () => checkbox.click());
         assert.equal(arrowChanges, 1);
         await React.act(async () => root.render(React.createElement(FloatingPagingGuide, {
+          page: "paging",
+          isLastPage: true,
           error: null,
           saving: false,
           showsArrowGlyphs: true,
@@ -87,10 +95,13 @@ test("floating paging guide lets card background drag while controls stay intera
           targetY: 60,
           pointerY: 65,
           showDemoModelUsage: false,
+          modelTargetX: 260,
+          modelTargetY: 60,
+          modelTargetWidth: 70,
           onArrowVisibilityChange: (visible) => {
             arrowChanges += visible ? 1 : -1;
           },
-          onComplete: () => {
+          onAdvance: () => {
             completions += 1;
           },
         })));
@@ -119,6 +130,39 @@ test("floating paging guide lets card background drag while controls stay intera
   }
 });
 
+test("running-model guide points at the main/sub trigger and shows the right-side example", async () => {
+  await withSsrModules(async (load) => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { FloatingPagingGuide } = await load("/src/floating/FloatingPagingGuide.tsx");
+
+    const html = renderToStaticMarkup(React.createElement(FloatingPagingGuide, {
+      page: "runningModels",
+      isLastPage: true,
+      error: null,
+      saving: false,
+      showsArrowGlyphs: false,
+      targetX: 120,
+      targetY: 60,
+      pointerY: 65,
+      calloutY: 55,
+      calloutCardY: 100,
+      modelTargetX: 267,
+      modelTargetY: 60,
+      modelTargetWidth: 70,
+      onArrowVisibilityChange: () => {},
+      onAdvance: () => {},
+    }));
+
+    assert.match(html, /点击“主 \/ 子”查看模型/);
+    assert.match(html, /模型、思考强度和数量/);
+    assert.match(html, /floating-running-model-guide-target/);
+    assert.match(html, /floating-running-model-details--guide/);
+    assert.match(html, /Sol · ultra/);
+    assert.match(html, /Luna · max/);
+  });
+});
+
 test("floating paging guide is versioned, persists narrowly, and keeps hidden edge controls alive", async () => {
   const [windowSource, guideSource, settingsClient, desktopEvents, styles, asset, quotaGuideAsset, provenance] = await Promise.all([
     readFile(new URL("./FloatingWindowApp.tsx", import.meta.url), "utf8"),
@@ -132,14 +176,12 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   ]);
 
   assert.match(windowSource, /CURRENT_FLOATING_PAGING_GUIDE_REVISION/);
-  assert.match(
-    windowSource,
-    /completeFloatingPagingGuide\(\s*pagingGuideShowsArrowGlyphs,\s*CURRENT_FLOATING_PAGING_GUIDE_REVISION,\s*\)/s,
-  );
+  assert.match(windowSource, /pagingGuidePages\.includes\("runningModels"\)/);
+  assert.match(windowSource, /floatingSettingsCompletingPagingGuide\([\s\S]*?completedRevision,/);
   assert.match(windowSource, /flushSync\(\(\) => \{\s*setSettings\(immediatelyAppliedSettings\);\s*setPagingGuideDismissed\(true\);/s);
   assert.match(
     windowSource,
-    /const saved = await completeFloatingPagingGuide\(\s*pagingGuideShowsArrowGlyphs,\s*CURRENT_FLOATING_PAGING_GUIDE_REVISION,\s*\);/s,
+    /const saved = await completeFloatingPagingGuide\(\s*pagingGuideShowsArrowGlyphs,\s*completedRevision,\s*\);/s,
   );
   assert.match(windowSource, /const \[pagingGuideDismissed, setPagingGuideDismissed\] = useState\(false\);/);
   assert.match(windowSource, /const pagingGuidePresented = shouldPresentFloatingPagingGuide\(/);
@@ -159,6 +201,8 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   assert.match(styles, /--floating-paging-guide-surface: rgba\(225, 236, 250, 0\.97\);/);
   assert.match(styles, /--floating-paging-guide-primary: #102b4d;/);
   assert.match(guideSource, /floating-quota-pace-guide\.png/);
+  assert.match(guideSource, /点击“主 \/ 子”查看模型/);
+  assert.match(guideSource, /FloatingRunningThreadModelDetails/);
   assert.match(guideSource, /实际剩余比按均速应剩多出来的部分，就是余量领先/);
   assert.match(styles, /\.floating-paging-guide-quota-graphic\s*\{/);
   assert.match(styles, /\.floating-paging-guide-card\s*{[\s\S]*?background: var\(--floating-paging-guide-surface\);[\s\S]*?color: var\(--floating-paging-guide-primary\);/);

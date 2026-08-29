@@ -139,11 +139,47 @@ struct TokenDisplayUsageStatusLine: View {
 struct TokenDisplayRunningThreadsRow: View {
     let summary: RunningThreadSummary
     var showsTotal = true
+    var detailsExpanded = false
+    var onActivate: (() -> Void)?
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
+    @State private var pointerInside = false
 
     var body: some View {
         let presentation = RunningThreadPresentation(summary: summary)
+        Group {
+            if let onActivate {
+                Button(action: onActivate) {
+                    ZStack {
+                        RoundedRectangle(
+                            cornerRadius: 5.scaled(by: displayScale),
+                            style: .continuous
+                        )
+                        .fill(
+                            (pointerInside || detailsExpanded)
+                                ? textPalette.primaryColor.opacity(0.08)
+                                : Color.clear
+                        )
+                        content(presentation: presentation)
+                            .contentShape(Rectangle())
+                    }
+                }
+                .buttonStyle(.plain)
+                .onHover { pointerInside = $0 }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityValue(
+                    "\(presentation.accessibilityText)，详情\(detailsExpanded ? "已展开" : "已收起")"
+                )
+                .help(detailsExpanded ? "收起运行模型详情" : "查看运行模型与思考强度")
+            } else {
+                content(presentation: presentation)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityLabel("运行线程")
+    }
+
+    private func content(presentation: RunningThreadPresentation) -> some View {
         HStack(spacing: 0) {
             if showsTotal {
                 value("运行", count: presentation.hasCounts ? summary.total : nil)
@@ -151,10 +187,7 @@ struct TokenDisplayRunningThreadsRow: View {
             value("主", count: presentation.hasCounts ? summary.main : nil)
             value("子", count: presentation.hasCounts ? summary.subagents : nil)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .help(presentation.accessibilityText)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("运行线程")
         .accessibilityValue(presentation.accessibilityText)
     }
 

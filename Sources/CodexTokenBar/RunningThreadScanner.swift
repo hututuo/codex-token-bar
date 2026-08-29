@@ -14,11 +14,38 @@ enum RunningThreadScanner {
         let fileID: UInt64
     }
 
+    private struct SessionModelConfiguration: Equatable, Sendable {
+        let model: String?
+        let reasoningEffort: String?
+    }
+
+    private struct SessionModelKey: Hashable {
+        let model: String?
+        let reasoningEffort: String?
+    }
+
+    private struct DatabaseCandidates: Equatable, Sendable {
+        let paths: Set<String>
+        let configurationsBySessionID: [String: SessionModelConfiguration]
+    }
+
+    private struct CandidateFiles {
+        let files: [URL]
+        let configurationsBySessionID: [String: SessionModelConfiguration]
+    }
+
+    private struct DatabaseCandidateRow {
+        let path: String
+        let sessionID: String
+        let model: String?
+        let reasoningEffort: String?
+    }
+
     private final class DatabaseCandidateCache: @unchecked Sendable {
         private struct Entry {
             let identity: DatabaseIdentity
             let checkedAt: Date
-            let paths: Set<String>
+            let candidates: DatabaseCandidates
         }
 
         private let lock = NSLock()
@@ -29,7 +56,7 @@ enum RunningThreadScanner {
             identity: DatabaseIdentity,
             now: Date,
             maximumAge: TimeInterval
-        ) -> Set<String>? {
+        ) -> DatabaseCandidates? {
             lock.lock()
             defer { lock.unlock() }
             guard let entry = entries[key],
@@ -39,17 +66,17 @@ enum RunningThreadScanner {
                 entries.removeValue(forKey: key)
                 return nil
             }
-            return entry.paths
+            return entry.candidates
         }
 
         func store(
-            _ paths: Set<String>,
+            _ candidates: DatabaseCandidates,
             for key: String,
             identity: DatabaseIdentity,
             now: Date
         ) {
             lock.lock()
-            entries[key] = Entry(identity: identity, checkedAt: now, paths: paths)
+            entries[key] = Entry(identity: identity, checkedAt: now, candidates: candidates)
             lock.unlock()
         }
     }
@@ -114,7 +141,7 @@ enum RunningThreadScanner {
                 dataSource: dataSource,
                 fileManager: fileManager
             )
-            let files = try candidateFiles(
+            let candidates = try candidateFiles(
                 dataSource: dataSource,
                 canonicalSource: canonicalSource,
                 cutoff: cutoff,
@@ -125,7 +152,7 @@ enum RunningThreadScanner {
             var states: [String: RunningThreadFileState] = [:]
             var hadFileReadFailure = false
 
-            for file in files {
+            for file in candidates.files {
                 if Task.isCancelled {
                     return nil
                 }
@@ -157,7 +184,12 @@ enum RunningThreadScanner {
 
             return RunningThreadScanResult(
                 states: states,
-                summary: summary(states: states, cutoff: cutoff, now: now)
+                summary: summary(
+                    states: states,
+                    configurationsBySessionID: candidates.configurationsBySessionID,
+                    cutoff: cutoff,
+                    now: now
+                )
             )
         } catch {
             return nil
@@ -203,22 +235,22 @@ enum RunningThreadScanner {
         now: Date,
         previousStates: [String: RunningThreadFileState],
         fileManager: FileManager
-    ) throws -> [URL] {
-        let databasePaths: Set<String>?
+    ) throws -> CandidateFiles {
+        let databaseCandidates: DatabaseCandidates?
         do {
-            databasePaths = try databaseCandidatePaths(
+            databaseCandidates = try databaseCandidatePaths(
                 dataSource: dataSource,
                 cutoff: cutoff,
                 now: now,
                 fileManager: fileManager
             )
         } catch {
-            databasePaths = nil
+            databaseCandidates = nil
         }
         var rawPaths: Set<String>
-        if let databasePaths {
-            rawPaths = databasePaths
-            if previousStates.isEmpty || databasePaths.isEmpty {
+        if let databaseCandidates {
+            rawPaths = databaseCandidates.paths
+            if previousStates.isEmpty || databaseCandidates.paths.isEmpty {
                 // The state database is an optimization, not the authority for
                 // local session existence. A cold scan must also discover
                 // recent JSONL files that have not reached SQLite yet.
@@ -258,7 +290,10 @@ enum RunningThreadScanner {
                 files.append(file)
             }
         }
-        return files
+        return CandidateFiles(
+            files: files,
+            configurationsBySessionID: databaseCandidates?.configurationsBySessionID ?? [:]
+        )
     }
 
     private static func databaseCandidatePaths(
@@ -266,7 +301,7 @@ enum RunningThreadScanner {
         cutoff: Date,
         now: Date,
         fileManager: FileManager
-    ) throws -> Set<String>? {
+    ) throws -> DatabaseCandidates? {
         let databaseURL = dataSource.stateDatabase
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: databaseURL.path, isDirectory: &isDirectory),
@@ -290,7 +325,7 @@ enum RunningThreadScanner {
             return cached
         }
 
-        let paths: Set<String>? = try SQLiteReadRecovery.run {
+        let candidates: DatabaseCandidates? = try SQLiteReadRecovery.run {
             try CodexStateDatabaseReadPool.shared.withConnection(
                 url: databaseURL
             ) { connection in
@@ -308,6 +343,15 @@ enum RunningThreadScanner {
                     let archivedExpression = columns.contains("archived")
                         ? "COALESCE(archived, 0)"
                         : "0"
+                    let sessionIDExpression = columns.contains("id")
+                        ? "COALESCE(id, '')"
+                        : "''"
+                    let modelExpression = columns.contains("model")
+                        ? "COALESCE(model, '')"
+                        : "''"
+                    let reasoningEffortExpression = columns.contains("reasoning_effort")
+                        ? "COALESCE(reasoning_effort, '')"
+                        : "''"
                     let updatedExpression: String
                     if columns.contains("updated_at_ms"), columns.contains("updated_at") {
                         updatedExpression = """
@@ -324,28 +368,59 @@ enum RunningThreadScanner {
 
                     let rows = try snapshot.readRows(
                         """
-                        SELECT rollout_path
+                        SELECT rollout_path,
+                               \(sessionIDExpression),
+                               \(modelExpression),
+                               \(reasoningEffortExpression)
                         FROM threads
                         WHERE \(archivedExpression) = 0
                           AND \(updatedExpression) >= ?
                         """,
                         bindings: [.int64(Int64(cutoff.timeIntervalSince1970 * 1000))]
                     ) { statement in
-                        statement.text(0) ?? ""
+                        DatabaseCandidateRow(
+                            path: statement.text(0) ?? "",
+                            sessionID: statement.text(1) ?? "",
+                            model: cleanedDatabaseValue(statement.text(2)),
+                            reasoningEffort: cleanedDatabaseValue(statement.text(3))
+                        )
                     }
-                    return Set(rows.filter { !$0.isEmpty })
+                    let paths = Set(rows.map(\.path).filter { !$0.isEmpty })
+                    let configurations = Dictionary(
+                        rows.compactMap { row -> (String, SessionModelConfiguration)? in
+                            guard !row.sessionID.isEmpty else { return nil }
+                            return (
+                                row.sessionID,
+                                SessionModelConfiguration(
+                                    model: row.model,
+                                    reasoningEffort: row.reasoningEffort
+                                )
+                            )
+                        },
+                        uniquingKeysWith: { _, latest in latest }
+                    )
+                    return DatabaseCandidates(
+                        paths: paths,
+                        configurationsBySessionID: configurations
+                    )
                 }
             }
         }
-        if let paths {
+        if let candidates {
             databaseCandidateCache.store(
-                paths,
+                candidates,
                 for: cacheKey,
                 identity: identity,
                 now: now
             )
         }
-        return paths
+        return candidates
+    }
+
+    private static func cleanedDatabaseValue(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     private static func fallbackCandidatePaths(
@@ -964,6 +1039,7 @@ enum RunningThreadScanner {
 
     private static func summary(
         states: [String: RunningThreadFileState],
+        configurationsBySessionID: [String: SessionModelConfiguration],
         cutoff: Date,
         now: Date
     ) -> RunningThreadSummary {
@@ -980,28 +1056,61 @@ enum RunningThreadScanner {
 
         var main = 0
         var subagents = 0
+        var mainModels: [SessionModelKey: Int] = [:]
+        var subagentModels: [SessionModelKey: Int] = [:]
         for state in preferredBySessionID.values where state.lifecycle == .running {
+            let configuration = configurationsBySessionID[state.sessionID]
+            let key = SessionModelKey(
+                model: configuration?.model,
+                reasoningEffort: configuration?.reasoningEffort
+            )
             if state.isSubagent {
                 subagents += 1
+                subagentModels[key, default: 0] += 1
             } else {
                 main += 1
+                mainModels[key, default: 0] += 1
             }
         }
         return RunningThreadSummary(
             main: main,
             subagents: subagents,
+            mainModels: modelBreakdowns(from: mainModels),
+            subagentModels: modelBreakdowns(from: subagentModels),
             lastCheckedAt: now,
             dataUpdatedAt: states.values
                 .filter { $0.modifiedAt >= cutoff }
                 .map(\.modifiedAt)
                 .max(),
-            summaryRevision: summaryRevision(preferredBySessionID: preferredBySessionID),
+            summaryRevision: summaryRevision(
+                preferredBySessionID: preferredBySessionID,
+                configurationsBySessionID: configurationsBySessionID
+            ),
             freshness: .fresh
         )
     }
 
+    private static func modelBreakdowns(
+        from grouped: [SessionModelKey: Int]
+    ) -> [RunningThreadModelBreakdown] {
+        grouped.map { key, count in
+            RunningThreadModelBreakdown(
+                model: key.model,
+                reasoningEffort: key.reasoningEffort,
+                count: count
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.count != rhs.count { return lhs.count > rhs.count }
+            let left = "\(lhs.model ?? "")|\(lhs.reasoningEffort ?? "")"
+            let right = "\(rhs.model ?? "")|\(rhs.reasoningEffort ?? "")"
+            return left.localizedStandardCompare(right) == .orderedAscending
+        }
+    }
+
     private static func summaryRevision(
-        preferredBySessionID: [String: RunningThreadFileState]
+        preferredBySessionID: [String: RunningThreadFileState],
+        configurationsBySessionID: [String: SessionModelConfiguration]
     ) -> UInt64 {
         let active = preferredBySessionID.values
             .filter { $0.lifecycle == .running && !$0.sessionID.isEmpty }
@@ -1021,6 +1130,15 @@ enum RunningThreadScanner {
             }
             hash ^= state.isSubagent ? 1 : 0
             hash &*= 1_099_511_628_211
+            let configuration = configurationsBySessionID[state.sessionID]
+            for value in [configuration?.model, configuration?.reasoningEffort] {
+                hash ^= 0xff
+                hash &*= 1_099_511_628_211
+                for byte in (value ?? "").utf8 {
+                    hash ^= UInt64(byte)
+                    hash &*= 1_099_511_628_211
+                }
+            }
         }
         return hash
     }

@@ -4197,7 +4197,7 @@ button.quota-side-card:hover {
 
 .floating-settings-preview-column .floating-structure-preview {
   position: sticky;
-  top: 0;
+  top: calc(4px * var(--floating-scale));
 }
 
 .floating-settings-preview-column .floating-structure-preview__stage {
@@ -8575,7 +8575,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   background: transparent;
 }
 
-.floating-window-shell--guide {
+.floating-window-shell--guide,
+.floating-window-shell--running-model-details {
   place-items: start start;
 }
 
@@ -8598,7 +8599,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   -webkit-app-region: drag;
 }
 
-.floating-panel-surface[data-guide-mode="true"] {
+.floating-panel-surface[data-guide-mode="true"],
+.floating-panel-surface[data-running-model-details="true"] {
   overflow: visible;
 }
 
@@ -9030,6 +9032,251 @@ html:not(.floating-document):not(.status-document) .brand-mark {
     animation: none;
     opacity: 1;
     transform: translate(calc(-50% + var(--floating-paging-guide-target-x)), -50%);
+  }
+}
+
+.floating-running-model-details {
+  position: absolute !important;
+  top: 0;
+  left: calc(100% + calc(10px * var(--floating-scale)));
+  z-index: 9 !important;
+  display: grid;
+  width: calc(260px * var(--floating-scale));
+  height: calc(154px * var(--floating-scale));
+  box-sizing: border-box;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: calc(7px * var(--floating-scale));
+  padding: calc(10px * var(--floating-scale));
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: calc(12px * var(--floating-scale));
+  background: rgba(255, 255, 255, 0.965);
+  box-shadow:
+    0 calc(5px * var(--floating-scale)) calc(24px * var(--floating-scale)) rgba(17, 25, 38, 0.19),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  color: #131b28;
+  cursor: default;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+.floating-running-model-details > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: calc(6px * var(--floating-scale));
+  border-bottom: 1px solid rgba(35, 46, 61, 0.12);
+}
+
+.floating-running-model-details > header > strong {
+  color: #131b28;
+  font-size: calc(12px * var(--floating-scale));
+  font-weight: var(--weight-bold);
+  line-height: 1;
+}
+
+.floating-running-model-details > header > small {
+  min-height: calc(15px * var(--floating-scale));
+  box-sizing: border-box;
+  padding: calc(2px * var(--floating-scale)) calc(6px * var(--floating-scale));
+  border-radius: 999px;
+  background: #d6f2ef;
+  color: #146b76;
+  font-size: calc(8px * var(--floating-scale));
+  font-weight: var(--weight-bold);
+  line-height: 1.25;
+}
+
+.floating-running-model-columns {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: calc(8px * var(--floating-scale));
+}
+
+.floating-running-model-section {
+  min-width: 0;
+  min-height: 0;
+}
+
+.floating-running-model-section + .floating-running-model-section {
+  padding-left: calc(8px * var(--floating-scale));
+  border-left: 1px solid rgba(35, 46, 61, 0.12);
+}
+
+.floating-running-model-section h3 {
+  margin: 0 0 calc(6px * var(--floating-scale));
+  color: #505c6d;
+  font-size: calc(8.8px * var(--floating-scale));
+  font-weight: var(--weight-bold);
+  line-height: 1;
+}
+
+.floating-running-model-section h3 b {
+  color: #131b28;
+  font-variant-numeric: tabular-nums;
+}
+
+.floating-running-model-section > p {
+  margin: 0;
+  color: #798493;
+  font-size: calc(8.4px * var(--floating-scale));
+  font-weight: var(--weight-medium);
+}
+
+.floating-running-model-list {
+  display: grid;
+  max-height: calc(91px * var(--floating-scale));
+  gap: calc(6px * var(--floating-scale));
+  overflow: auto;
+  scrollbar-width: none;
+}
+
+.floating-running-model-list::-webkit-scrollbar {
+  display: none;
+}
+
+.floating-running-model-list > span {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: calc(4px * var(--floating-scale));
+}
+
+.floating-running-model-list i {
+  width: calc(5px * var(--floating-scale));
+  height: calc(5px * var(--floating-scale));
+  border-radius: 50%;
+}
+
+.floating-running-model-list em {
+  min-width: 0;
+  color: #131b28;
+  font-size: calc(8.5px * var(--floating-scale));
+  font-style: normal;
+  font-weight: var(--weight-semibold);
+  line-height: 1.08;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-running-model-list b {
+  color: #505c6d;
+  font-size: calc(8.3px * var(--floating-scale));
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-bold);
+}
+
+.floating-running-model-guide-target {
+  position: absolute;
+  z-index: 10;
+  height: calc(22px * var(--floating-scale));
+  border: calc(1.2px * var(--floating-scale)) solid var(--floating-paging-guide-accent);
+  border-radius: calc(6px * var(--floating-scale));
+  background: rgba(20, 92, 177, 0.10);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.floating-running-model-guide-pointer {
+  position: absolute;
+  z-index: 11;
+  width: calc(19px * var(--floating-scale));
+  height: calc(19px * var(--floating-scale));
+  background: var(--floating-paging-guide-accent);
+  filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.82));
+  -webkit-mask: url("/floating-paging-touch.png") center / contain no-repeat;
+  mask: url("/floating-paging-touch.png") center / contain no-repeat;
+  animation: floating-running-model-guide-click 1.6s ease-in-out infinite;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+@keyframes floating-running-model-guide-click {
+  0%, 44%, 76%, 100% { transform: translate(-50%, -50%) scale(1); }
+  54%, 66% { transform: translate(-50%, -50%) scale(0.82); }
+}
+
+.floating-running-model-guide-connector {
+  position: absolute;
+  top: var(--floating-running-model-guide-y, 50%);
+  left: var(--floating-running-model-target-right);
+  z-index: 8;
+  width: max(0px, calc(318px * var(--floating-scale) - var(--floating-running-model-target-right)));
+  height: calc(2px * var(--floating-scale));
+  border-radius: 999px;
+  background: var(--floating-paging-guide-accent);
+  pointer-events: none;
+}
+
+.floating-running-model-details--guide {
+  top: 0;
+  height: calc(146px * var(--floating-scale));
+  pointer-events: none;
+}
+
+.floating-paging-guide-card--running-models {
+  width: calc(214px * var(--floating-scale));
+  gap: calc(5px * var(--floating-scale));
+}
+
+.floating-paging-guide-card--running-models > p {
+  line-height: 1.25;
+}
+
+.floating-paging-guide-card--running-models > button {
+  justify-self: center;
+  min-width: calc(58px * var(--floating-scale));
+  min-height: calc(24px * var(--floating-scale));
+  box-sizing: border-box;
+  border: 0;
+  border-radius: calc(7px * var(--floating-scale));
+  background: linear-gradient(135deg, #2776d3, #1454a4);
+  color: white;
+  cursor: pointer;
+  font-size: calc(8.6px * var(--floating-scale));
+  font-weight: var(--weight-semibold);
+  padding: 0 calc(8px * var(--floating-scale));
+  -webkit-app-region: no-drag;
+}
+
+.floating-running-model-trigger {
+  appearance: none;
+  box-sizing: border-box;
+  border: 0;
+  background: rgba(255, 255, 255, 0.001);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding-top: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+  padding-left: 0;
+  -webkit-app-region: no-drag;
+}
+
+.floating-embedded-running.floating-running-model-trigger {
+  padding-left: calc(5px * var(--floating-scale));
+  border-left: 1px solid var(--floating-divider);
+}
+
+.floating-running-model-trigger:hover,
+.floating-running-model-trigger:focus-visible,
+.floating-running-model-trigger[aria-expanded="true"] {
+  border-radius: calc(5px * var(--floating-scale));
+  background: color-mix(in srgb, var(--floating-primary) 8%, transparent);
+}
+
+.floating-running-model-trigger:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--floating-primary) 44%, transparent);
+  outline-offset: calc(1px * var(--floating-scale));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .floating-running-model-guide-pointer {
+    animation: none;
   }
 }
 

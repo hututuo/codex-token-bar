@@ -64,6 +64,8 @@ interface FloatingPanelSurfaceProps {
   selectedPreviewRowId?: string | null;
   onPreviewRowSelect?: (rowId: string) => void;
   onPageNavigation?: () => void;
+  runningModelDetailsExpanded?: boolean;
+  onRunningThreadsActivate?: () => void;
   guideMode?: boolean;
   overlay?: ReactNode;
 }
@@ -72,6 +74,8 @@ const PENDING_FLOATING_RUNNING_THREADS: RunningThreadSummary = {
   total: null,
   mainThreads: null,
   subagents: null,
+  mainModels: [],
+  subagentModels: [],
   status: "scanning",
   updatedAt: null,
   detail: "正在读取当前数据源的会话生命周期",
@@ -229,6 +233,8 @@ export function FloatingPanelSurface({
   selectedPreviewRowId = null,
   onPreviewRowSelect,
   onPageNavigation,
+  runningModelDetailsExpanded = false,
+  onRunningThreadsActivate,
   guideMode = false,
   overlay,
 }: FloatingPanelSurfaceProps) {
@@ -262,6 +268,7 @@ export function FloatingPanelSurface({
     <aside
       className={`floating-panel-surface${previewMode ? " floating-panel-surface--preview" : ""}`}
       data-guide-mode={guideMode ? "true" : undefined}
+      data-running-model-details={runningModelDetailsExpanded ? "true" : undefined}
       aria-label={`悬浮窗，${snapshot.unreadSummary.label}`}
       onMouseDown={previewMode ? undefined : onDragStart}
       onDoubleClick={previewMode ? undefined : onOpenDashboard}
@@ -301,6 +308,8 @@ export function FloatingPanelSurface({
             selectedPreviewRowId={selectedPreviewRowId}
             onPreviewRowSelect={onPreviewRowSelect}
             onPageNavigation={onPageNavigation}
+            runningModelDetailsExpanded={runningModelDetailsExpanded}
+            onRunningThreadsActivate={onRunningThreadsActivate}
           />
         ))}
       </div>
@@ -323,6 +332,8 @@ interface FloatingContentRowProps {
   total: number;
   modelPageIndex?: number;
   guideMode?: boolean;
+  runningModelDetailsExpanded?: boolean;
+  onRunningThreadsActivate?: () => void;
 }
 
 interface FloatingPagedContentRowProps extends Omit<FloatingContentRowProps, "group"> {
@@ -469,6 +480,8 @@ function FloatingContentRow({
   total,
   modelPageIndex = 0,
   guideMode = false,
+  runningModelDetailsExpanded = false,
+  onRunningThreadsActivate,
 }: FloatingContentRowProps) {
   const isGuideModelDemo = guideMode && snapshot.todayModelBreakdowns.length === 0;
   const modelRows = isGuideModelDemo
@@ -516,7 +529,7 @@ function FloatingContentRow({
           className={attachedRunningThreads
             ? `floating-row floating-metrics floating-metrics--with-running floating-running-threads--${runningThreads.status}`
             : "floating-row floating-metrics"}
-          role={attachedRunningThreads ? "status" : undefined}
+          role={attachedRunningThreads && !onRunningThreadsActivate ? "status" : undefined}
           style={style}
           title={attachedRunningThreads ? runningThreads.detail : undefined}
         >
@@ -526,16 +539,48 @@ function FloatingContentRow({
             <span>{snapshot.requestsLabel}</span>
           </span>
           {attachedRunningThreads ? (
-            <span className="floating-embedded-running">
-              {floatingEmbeddedRunningThreadLabels(runningThreads).map((label) => (
-                <span key={label}>{label}</span>
-              ))}
-            </span>
+            onRunningThreadsActivate ? (
+              <button
+                aria-expanded={runningModelDetailsExpanded}
+                aria-label={`${runningThreads.detail}，点击${runningModelDetailsExpanded ? "收起" : "查看"}模型详情`}
+                className="floating-embedded-running floating-running-model-trigger"
+                onClick={onRunningThreadsActivate}
+                onDoubleClick={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+                type="button"
+              >
+                {floatingEmbeddedRunningThreadLabels(runningThreads).map((label) => (
+                  <span key={label}>{label}</span>
+                ))}
+              </button>
+            ) : (
+              <span className="floating-embedded-running">
+                {floatingEmbeddedRunningThreadLabels(runningThreads).map((label) => (
+                  <span key={label}>{label}</span>
+                ))}
+              </span>
+            )
           ) : null}
         </div>
       );
     case "runningThreads":
-      return (
+      return onRunningThreadsActivate ? (
+        <button
+          aria-expanded={runningModelDetailsExpanded}
+          aria-label={`${runningThreads.detail}，点击${runningModelDetailsExpanded ? "收起" : "查看"}模型详情`}
+          className={`floating-row floating-running-threads floating-running-threads--${runningThreads.status} floating-running-model-trigger`}
+          onClick={onRunningThreadsActivate}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          style={style}
+          title={runningModelDetailsExpanded ? "收起运行模型详情" : "查看运行模型与思考强度"}
+          type="button"
+        >
+          {floatingRunningThreadLabels(runningThreads).map((label) => (
+            <span key={label}>{label}</span>
+          ))}
+        </button>
+      ) : (
         <div
           className={`floating-row floating-running-threads floating-running-threads--${runningThreads.status}`}
           role="status"

@@ -12,13 +12,25 @@ import {
 } from "../surfaces/surfaceLifecycle";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 import { useCompactPanelSource } from "../surfaces/useCompactPanelSource";
-import { pagedFloatingRowCenterYs, floatingContentHeight, layoutFloatingContentRows, usageStatusFloatingRowCenterY } from "./floatingContent";
+import {
+  embedsRunningThreadsInMetricsRow,
+  floatingContentHeight,
+  hasRunningThreadDetailsTarget,
+  layoutFloatingContentRows,
+  pagedFloatingRowCenterYs,
+  runningThreadsFloatingRowCenterY,
+  usageStatusFloatingRowCenterY,
+} from "./floatingContent";
 import {
   CURRENT_FLOATING_PAGING_GUIDE_REVISION,
   FLOATING_BASE_WIDTH,
+  FLOATING_PAGING_LEARNED_REVISION,
   FLOATING_PAGING_GUIDE_HEIGHT,
   FLOATING_PAGING_GUIDE_WIDTH,
+  FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT,
+  FLOATING_RUNNING_MODEL_DETAILS_WINDOW_WIDTH,
   DEFAULT_FLOATING_SETTINGS,
+  floatingGuidePages,
   floatingSettingsCompletingPagingGuide,
   sanitizeFloatingSettings,
   shouldPresentFloatingPagingGuide,
@@ -27,6 +39,7 @@ import {
 import { floatingPanelAppearance } from "./floatingPresentation";
 import { FloatingPanelSurface } from "./FloatingPanelPreview";
 import { FloatingPagingGuide } from "./FloatingPagingGuide";
+import { FloatingRunningThreadModelDetails } from "./FloatingRunningThreadModelDetails";
 import { useFloatingCrowdRadar, useFloatingRadar } from "./useFloatingRadar";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
@@ -52,9 +65,11 @@ export function FloatingWindowApp() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [setupGuideCompleted, setSetupGuideCompleted] = useState(false);
   const [pagingGuideShowsArrowGlyphs, setPagingGuideShowsArrowGlyphs] = useState(false);
+  const [pagingGuidePageIndex, setPagingGuidePageIndex] = useState(0);
   const [pagingGuideDismissed, setPagingGuideDismissed] = useState(false);
   const [pagingGuideSaving, setPagingGuideSaving] = useState(false);
   const [pagingGuideError, setPagingGuideError] = useState<string | null>(null);
+  const [runningModelDetailsExpanded, setRunningModelDetailsExpanded] = useState(false);
   const settingsEventGenerationRef = useRef(0);
   const displaySettingsEventGenerationRef = useRef(0);
   const appSettingsEventGenerationRef = useRef(0);
@@ -210,20 +225,50 @@ export function FloatingWindowApp() {
     };
   }, []);
 
+  const contentHasPagedRows = layoutFloatingContentRows(settings.contentVisibility)
+    .some((row) => row.groups.length > 1);
+  const contentHasRunningThreadDetailsTarget = hasRunningThreadDetailsTarget(
+    settings.contentVisibility,
+  );
+  const pagingGuidePages = floatingGuidePages({
+    pagingGuideRevision: settings.pagingGuideRevision,
+    hasPagedRows: contentHasPagedRows,
+    hasRunningThreadDetailsTarget: contentHasRunningThreadDetailsTarget,
+  });
   const pagingGuidePresented = shouldPresentFloatingPagingGuide({
     settingsLoaded,
     setupGuideCompleted,
     pagingGuideDismissed,
     pagingGuideRevision: settings.pagingGuideRevision,
-    hasPagedRows: layoutFloatingContentRows(settings.contentVisibility)
-      .some((row) => row.groups.length > 1),
+    hasPagedRows: contentHasPagedRows,
+    hasRunningThreadDetailsTarget: contentHasRunningThreadDetailsTarget,
   });
+  const safePagingGuidePageIndex = Math.min(
+    Math.max(0, pagingGuidePageIndex),
+    Math.max(0, pagingGuidePages.length - 1),
+  );
+  const activePagingGuidePage = pagingGuidePages[safePagingGuidePageIndex] ?? "runningModels";
+  const effectiveRunningModelDetailsExpanded = runningModelDetailsExpanded
+    && !pagingGuidePresented
+    && contentHasRunningThreadDetailsTarget;
   const presentedSettings = useMemo(
     () => pagingGuidePresented
       ? floatingSettingsWithPagingGuideChoice(settings, pagingGuideShowsArrowGlyphs)
       : settings,
     [pagingGuidePresented, pagingGuideShowsArrowGlyphs, settings],
   );
+
+  useEffect(() => {
+    if (pagingGuidePresented) {
+      setRunningModelDetailsExpanded(false);
+    }
+  }, [pagingGuidePresented]);
+
+  useEffect(() => {
+    if (!contentHasRunningThreadDetailsTarget) {
+      setRunningModelDetailsExpanded(false);
+    }
+  }, [contentHasRunningThreadDetailsTarget]);
 
   useEffect(() => {
     return observeFloatingSurfaceVisibility({
@@ -238,12 +283,25 @@ export function FloatingWindowApp() {
   useEffect(() => {
     const height = floatingContentHeight(presentedSettings.contentVisibility);
     void desktopPlatform.resizeFloatingWindow(
-      Math.max(FLOATING_BASE_WIDTH, pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0)
+      Math.max(
+        FLOATING_BASE_WIDTH,
+        pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0,
+        effectiveRunningModelDetailsExpanded ? FLOATING_RUNNING_MODEL_DETAILS_WINDOW_WIDTH : 0,
+      )
         * presentedSettings.scale,
-      Math.max(height, pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT : 0)
+      Math.max(
+        height,
+        pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT : 0,
+        effectiveRunningModelDetailsExpanded ? FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT : 0,
+      )
         * presentedSettings.scale,
     );
-  }, [pagingGuidePresented, presentedSettings.contentVisibility, presentedSettings.scale]);
+  }, [
+    effectiveRunningModelDetailsExpanded,
+    pagingGuidePresented,
+    presentedSettings.contentVisibility,
+    presentedSettings.scale,
+  ]);
 
   function closeFloatingWindow() {
     void desktopPlatform.hideFloatingWindow().then((visible) => {
@@ -269,10 +327,14 @@ export function FloatingWindowApp() {
     if (!pagingGuidePresented || pagingGuideSaving) {
       return;
     }
+    const completedRevision = pagingGuidePages.includes("runningModels")
+      ? CURRENT_FLOATING_PAGING_GUIDE_REVISION
+      : FLOATING_PAGING_LEARNED_REVISION;
     const previousSettings = settings;
     const immediatelyAppliedSettings = floatingSettingsCompletingPagingGuide(
       previousSettings,
       pagingGuideShowsArrowGlyphs,
+      completedRevision,
     );
     flushSync(() => {
       setSettings(immediatelyAppliedSettings);
@@ -283,7 +345,7 @@ export function FloatingWindowApp() {
     try {
       const saved = await completeFloatingPagingGuide(
         pagingGuideShowsArrowGlyphs,
-        CURRENT_FLOATING_PAGING_GUIDE_REVISION,
+        completedRevision,
       );
       const next = sanitizeFloatingSettings(saved.floatingWindow);
       setSettings(next);
@@ -302,6 +364,15 @@ export function FloatingWindowApp() {
       return;
     }
     setPagingGuideSaving(false);
+    setPagingGuidePageIndex(0);
+  }
+
+  function advancePagingGuide() {
+    if (safePagingGuidePageIndex + 1 < pagingGuidePages.length) {
+      setPagingGuidePageIndex(safePagingGuidePageIndex + 1);
+      return;
+    }
+    void completePagingGuide();
   }
 
   const { style: appearanceStyle } = floatingPanelAppearance(presentedSettings);
@@ -332,10 +403,23 @@ export function FloatingWindowApp() {
     Math.max(pagingGuideCalloutY, calloutCardMinimumY),
     calloutCardMaximumY,
   );
+  const runningModelsEmbedded = embedsRunningThreadsInMetricsRow(
+    presentedSettings.contentVisibility,
+  );
+  const runningModelsTargetX = (runningModelsEmbedded
+    ? FLOATING_BASE_WIDTH - 41
+    : FLOATING_BASE_WIDTH / 2) * guideScale;
+  const runningModelsTargetWidth = (runningModelsEmbedded
+    ? 70
+    : FLOATING_BASE_WIDTH - 20) * guideScale;
+  const runningModelsTargetY = (
+    runningThreadsFloatingRowCenterY(presentedSettings.contentVisibility)
+      ?? floatingContentHeight(presentedSettings.contentVisibility) / 2
+  ) * guideScale;
 
   return (
     <main
-      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}`}
+      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}`}
       style={shellStyle}
     >
       <FloatingPanelSurface
@@ -349,9 +433,15 @@ export function FloatingWindowApp() {
         onClose={closeFloatingWindow}
         onDragStart={startWindowDrag}
         onOpenDashboard={openDashboardWindow}
-        guideMode={pagingGuidePresented}
+        runningModelDetailsExpanded={effectiveRunningModelDetailsExpanded}
+        onRunningThreadsActivate={pagingGuidePresented ? undefined : () => {
+          setRunningModelDetailsExpanded((expanded) => !expanded);
+        }}
+        guideMode={pagingGuidePresented && activePagingGuidePage === "paging"}
         overlay={pagingGuidePresented ? (
           <FloatingPagingGuide
+            page={activePagingGuidePage}
+            isLastPage={safePagingGuidePageIndex === pagingGuidePages.length - 1}
             error={pagingGuideError}
             saving={pagingGuideSaving}
             showsArrowGlyphs={pagingGuideShowsArrowGlyphs}
@@ -363,11 +453,14 @@ export function FloatingWindowApp() {
             calloutY={pagingGuideCalloutY}
             calloutCardY={pagingGuideCalloutCardY}
             showDemoModelUsage={snapshot.todayModelBreakdowns.length === 0}
+            modelTargetX={runningModelsTargetX}
+            modelTargetY={runningModelsTargetY}
+            modelTargetWidth={runningModelsTargetWidth}
             onArrowVisibilityChange={setPagingGuideShowsArrowGlyphs}
-            onComplete={() => {
-              void completePagingGuide();
-            }}
+            onAdvance={advancePagingGuide}
           />
+        ) : effectiveRunningModelDetailsExpanded ? (
+          <FloatingRunningThreadModelDetails summary={runningThreads} />
         ) : null}
       />
     </main>

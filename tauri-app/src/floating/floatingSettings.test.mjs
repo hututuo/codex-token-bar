@@ -5,7 +5,9 @@ import {
   FLOATING_DEFAULT_HEIGHT,
   FLOATING_MIN_HEIGHT,
   CURRENT_FLOATING_PAGING_GUIDE_REVISION,
+  FLOATING_PAGING_LEARNED_REVISION,
   DEFAULT_FLOATING_SETTINGS,
+  floatingGuidePages,
   floatingGradientBackground,
   sanitizeFloatingSettings,
   shouldPresentFloatingPagingGuide,
@@ -90,7 +92,8 @@ test("sanitizeFloatingSettings defaults missing token rate full scale to Swift-s
   assert.equal(settings.tokenRateFullScale, 200);
   assert.equal(DEFAULT_FLOATING_SETTINGS.pagingGuideRevision, 0);
   assert.equal(settings.pagingGuideRevision, 0);
-  assert.equal(CURRENT_FLOATING_PAGING_GUIDE_REVISION, 4);
+  assert.equal(CURRENT_FLOATING_PAGING_GUIDE_REVISION, 5);
+  assert.equal(FLOATING_PAGING_LEARNED_REVISION, 4);
 });
 
 test("sanitizeFloatingSettings clamps invalid paging guide revisions without replaying future guides", () => {
@@ -105,6 +108,7 @@ test("floating paging guide shows once per revision and reappears only after a r
     setupGuideCompleted: true,
     pagingGuideDismissed: false,
     hasPagedRows: true,
+    hasRunningThreadDetailsTarget: true,
   };
 
   assert.equal(
@@ -127,8 +131,8 @@ test("floating paging guide shows once per revision and reappears only after a r
   );
   assert.equal(
     shouldPresentFloatingPagingGuide({ ...base, pagingGuideRevision: 4 }),
-    false,
-    "a completion from a newer revision never replays an older guide",
+    true,
+    "users who learned paging still receive the new model-details guide",
   );
   assert.equal(
     shouldPresentFloatingPagingGuide({ ...base, pagingGuideRevision: 0, pagingGuideDismissed: true }),
@@ -140,6 +144,24 @@ test("floating paging guide shows once per revision and reappears only after a r
     false,
     "startup does not present before the authoritative settings read or event",
   );
+});
+
+test("floating guide pages migrate learned users to only the new running-model page", () => {
+  assert.deepEqual(floatingGuidePages({
+    pagingGuideRevision: 0,
+    hasPagedRows: true,
+    hasRunningThreadDetailsTarget: true,
+  }), ["paging", "runningModels"]);
+  assert.deepEqual(floatingGuidePages({
+    pagingGuideRevision: 4,
+    hasPagedRows: true,
+    hasRunningThreadDetailsTarget: true,
+  }), ["runningModels"]);
+  assert.deepEqual(floatingGuidePages({
+    pagingGuideRevision: 0,
+    hasPagedRows: false,
+    hasRunningThreadDetailsTarget: true,
+  }), ["runningModels"]);
 });
 
 test("sanitizeFloatingSettings migrates legacy content order with running threads visible after metrics", () => {

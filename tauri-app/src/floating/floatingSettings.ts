@@ -19,7 +19,18 @@ export const FLOATING_DEFAULT_HEIGHT = 140;
 // back to the normal floating surface when the guide is dismissed.
 export const FLOATING_PAGING_GUIDE_WIDTH = 620;
 export const FLOATING_PAGING_GUIDE_HEIGHT = 284;
-export const CURRENT_FLOATING_PAGING_GUIDE_REVISION = 4;
+export const FLOATING_RUNNING_MODEL_DETAILS_GAP = 10;
+export const FLOATING_RUNNING_MODEL_DETAILS_WIDTH = 260;
+export const FLOATING_RUNNING_MODEL_DETAILS_TRAILING_INSET = 8;
+export const FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT = 162;
+export const FLOATING_RUNNING_MODEL_DETAILS_WINDOW_WIDTH = FLOATING_BASE_WIDTH
+  + FLOATING_RUNNING_MODEL_DETAILS_GAP
+  + FLOATING_RUNNING_MODEL_DETAILS_WIDTH
+  + FLOATING_RUNNING_MODEL_DETAILS_TRAILING_INSET;
+export const FLOATING_PAGING_LEARNED_REVISION = 4;
+export const CURRENT_FLOATING_PAGING_GUIDE_REVISION = 5;
+
+export type FloatingGuidePage = "paging" | "runningModels";
 
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   opacity: 0.92,
@@ -43,6 +54,24 @@ export interface FloatingPagingGuidePresentationInput {
   pagingGuideDismissed: boolean;
   pagingGuideRevision: number;
   hasPagedRows: boolean;
+  hasRunningThreadDetailsTarget: boolean;
+}
+
+export function floatingGuidePages({
+  pagingGuideRevision,
+  hasPagedRows,
+  hasRunningThreadDetailsTarget,
+}: Pick<
+  FloatingPagingGuidePresentationInput,
+  "pagingGuideRevision" | "hasPagedRows" | "hasRunningThreadDetailsTarget"
+>): FloatingGuidePage[] {
+  if (pagingGuideRevision >= CURRENT_FLOATING_PAGING_GUIDE_REVISION) return [];
+  const pages: FloatingGuidePage[] = [];
+  if (pagingGuideRevision < FLOATING_PAGING_LEARNED_REVISION && hasPagedRows) {
+    pages.push("paging");
+  }
+  if (hasRunningThreadDetailsTarget) pages.push("runningModels");
+  return pages;
 }
 
 export function shouldPresentFloatingPagingGuide({
@@ -51,12 +80,16 @@ export function shouldPresentFloatingPagingGuide({
   pagingGuideDismissed,
   pagingGuideRevision,
   hasPagedRows,
+  hasRunningThreadDetailsTarget,
 }: FloatingPagingGuidePresentationInput): boolean {
   return settingsLoaded
     && !pagingGuideDismissed
     && setupGuideCompleted
-    && pagingGuideRevision < CURRENT_FLOATING_PAGING_GUIDE_REVISION
-    && hasPagedRows;
+    && floatingGuidePages({
+      pagingGuideRevision,
+      hasPagedRows,
+      hasRunningThreadDetailsTarget,
+    }).length > 0;
 }
 
 export function sanitizeFloatingSettings(
@@ -85,12 +118,13 @@ export function sanitizeFloatingSettings(
 export function floatingSettingsCompletingPagingGuide(
   settings: FloatingWindowSettings,
   showPageNavigationArrows: boolean,
+  completedRevision = CURRENT_FLOATING_PAGING_GUIDE_REVISION,
 ): FloatingWindowSettings {
   return sanitizeFloatingSettings({
     ...settings,
     pagingGuideRevision: Math.max(
       settings.pagingGuideRevision,
-      CURRENT_FLOATING_PAGING_GUIDE_REVISION,
+      completedRevision,
     ),
     contentVisibility: {
       ...settings.contentVisibility,

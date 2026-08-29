@@ -13,16 +13,45 @@ const FORWARD_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_JSONL_LINE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LIFECYCLE_PREFIX_BYTES: usize = 64 * 1024;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunningThreadCounts {
     pub main_threads: u32,
     pub subagents: u32,
+    pub main_models: Vec<RunningThreadModelBreakdown>,
+    pub subagent_models: Vec<RunningThreadModelBreakdown>,
 }
 
 impl RunningThreadCounts {
-    pub fn total(self) -> u32 {
+    pub fn total(&self) -> u32 {
         self.main_threads.saturating_add(self.subagents)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningThreadModelBreakdown {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub count: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SessionFileCandidates {
+    paths: Vec<PathBuf>,
+    configurations_by_session_id: HashMap<String, SessionModelConfiguration>,
+}
+
+#[derive(Clone, Debug)]
+struct DatabaseSessionRecord {
+    path: PathBuf,
+    session_id: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SessionModelConfiguration {
+    model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Default)]
@@ -129,10 +158,10 @@ impl ThreadActivityScanner {
             self.tracked.is_empty(),
             &retained_paths,
         )?;
-        let candidate_set = candidates.iter().cloned().collect::<HashSet<_>>();
+        let candidate_set = candidates.paths.iter().cloned().collect::<HashSet<_>>();
         self.tracked.retain(|path, _| candidate_set.contains(path));
 
-        for path in candidates {
+        for path in candidates.paths {
             let next = match self.tracked.remove(&path) {
                 Some(previous) => refresh_tracked_session(&canonical_root, &path, previous)?,
                 None => cold_scan_session(&canonical_root, &path)?,
@@ -154,13 +183,28 @@ impl ThreadActivityScanner {
         }
 
         let mut counts = RunningThreadCounts::default();
+        let mut main_models = HashMap::<(Option<String>, Option<String>), u32>::new();
+        let mut subagent_models = HashMap::<(Option<String>, Option<String>), u32>::new();
         for session in preferred_by_id.values().filter(|session| session.running) {
+            let configuration = candidates
+                .configurations_by_session_id
+                .get(session.session_id.as_str());
+            let key = (
+                configuration.and_then(|value| value.model.clone()),
+                configuration.and_then(|value| value.reasoning_effort.clone()),
+            );
             if session.subagent {
                 counts.subagents = counts.subagents.saturating_add(1);
+                let value = subagent_models.entry(key).or_default();
+                *value = value.saturating_add(1);
             } else {
                 counts.main_threads = counts.main_threads.saturating_add(1);
+                let value = main_models.entry(key).or_default();
+                *value = value.saturating_add(1);
             }
         }
+        counts.main_models = model_breakdowns(main_models);
+        counts.subagent_models = model_breakdowns(subagent_models);
         Ok(counts)
     }
 }
@@ -171,12 +215,22 @@ fn collect_recent_session_files(
     cutoff: SystemTime,
     force_fallback_discovery: bool,
     retained_paths: &[PathBuf],
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<SessionFileCandidates, String> {
     let mut files = Vec::new();
-    if let Some(database_paths) = recent_database_session_paths(canonical_root, cutoff) {
-        for raw_path in database_paths {
-            if let Some(path) = trusted_session_path(canonical_root, sessions_root, &raw_path)? {
+    let mut configurations_by_session_id = HashMap::new();
+    if let Some(database_records) = recent_database_session_records(canonical_root, cutoff) {
+        for record in database_records {
+            if let Some(path) = trusted_session_path(canonical_root, sessions_root, &record.path)? {
                 files.push(path);
+                if !record.session_id.is_empty() {
+                    configurations_by_session_id.insert(
+                        record.session_id,
+                        SessionModelConfiguration {
+                            model: record.model,
+                            reasoning_effort: record.reasoning_effort,
+                        },
+                    );
+                }
             }
         }
         for raw_path in retained_paths {
@@ -192,7 +246,10 @@ fn collect_recent_session_files(
         files.sort();
         files.dedup();
         if !force_fallback_discovery && !files.is_empty() {
-            return Ok(files);
+            return Ok(SessionFileCandidates {
+                paths: files,
+                configurations_by_session_id,
+            });
         }
     }
 
@@ -239,13 +296,16 @@ fn collect_recent_session_files(
     }
     files.sort();
     files.dedup();
-    Ok(files)
+    Ok(SessionFileCandidates {
+        paths: files,
+        configurations_by_session_id,
+    })
 }
 
-fn recent_database_session_paths(
+fn recent_database_session_records(
     canonical_root: &Path,
     cutoff: SystemTime,
-) -> Option<Vec<PathBuf>> {
+) -> Option<Vec<DatabaseSessionRecord>> {
     let database_path = canonical_root.join("state_5.sqlite");
     let database_metadata = fs::symlink_metadata(&database_path).ok()?;
     if database_metadata.file_type().is_symlink() || !database_metadata.is_file() {
@@ -290,16 +350,68 @@ fn recent_database_session_paths(
         .unwrap_or_default()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    let sql = format!("SELECT rollout_path FROM threads WHERE {archived} = 0 AND {updated} >= ?1");
+    let session_id = if columns.contains("id") {
+        "COALESCE(id, '')"
+    } else {
+        "''"
+    };
+    let model = if columns.contains("model") {
+        "COALESCE(model, '')"
+    } else {
+        "''"
+    };
+    let reasoning_effort = if columns.contains("reasoning_effort") {
+        "COALESCE(reasoning_effort, '')"
+    } else {
+        "''"
+    };
+    let sql = format!(
+        "SELECT rollout_path, {session_id}, {model}, {reasoning_effort} FROM threads WHERE {archived} = 0 AND {updated} >= ?1"
+    );
     let mut statement = connection.prepare(&sql).ok()?;
-    let paths = statement
-        .query_map([cutoff_ms], |row| row.get::<_, String>(0))
+    let records = statement
+        .query_map([cutoff_ms], |row| {
+            let model = row.get::<_, String>(2)?;
+            let reasoning_effort = row.get::<_, String>(3)?;
+            Ok(DatabaseSessionRecord {
+                path: PathBuf::from(row.get::<_, String>(0)?),
+                session_id: row.get::<_, String>(1)?.trim().to_string(),
+                model: cleaned_database_value(model),
+                reasoning_effort: cleaned_database_value(reasoning_effort),
+            })
+        })
         .ok()?
         .filter_map(Result::ok)
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
+        .filter(|record| !record.path.as_os_str().is_empty())
         .collect::<Vec<_>>();
-    Some(paths)
+    Some(records)
+}
+
+fn cleaned_database_value(value: String) -> Option<String> {
+    let cleaned = value.trim();
+    (!cleaned.is_empty()).then(|| cleaned.to_string())
+}
+
+fn model_breakdowns(
+    grouped: HashMap<(Option<String>, Option<String>), u32>,
+) -> Vec<RunningThreadModelBreakdown> {
+    let mut rows = grouped
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|((model, reasoning_effort), count)| RunningThreadModelBreakdown {
+            model,
+            reasoning_effort,
+            count,
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.model.cmp(&right.model))
+            .then_with(|| left.reasoning_effort.cmp(&right.reasoning_effort))
+    });
+    rows
 }
 
 fn trusted_session_path(
@@ -1245,6 +1357,82 @@ mod tests {
         let counts = ThreadActivityScanner::default().scan(&home.root).unwrap();
         assert_eq!(counts.main_threads, 1);
         assert_eq!(counts.total(), 1);
+    }
+
+    #[test]
+    fn running_model_breakdown_reads_model_and_reasoning_effort_from_state_database() {
+        let home = TestHome::new();
+        let main = home.session();
+        let subagent = main.with_file_name("rollout-subagent.jsonl");
+        fs::write(
+            &main,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"main-model\",\"source\":\"cli\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &subagent,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"sub-model\",",
+                "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"main-model\"}}}}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let connection = rusqlite::Connection::open(home.root.join("state_5.sqlite")).unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE threads (
+                    id TEXT,
+                    rollout_path TEXT,
+                    model TEXT,
+                    reasoning_effort TEXT,
+                    updated_at INTEGER,
+                    archived INTEGER
+                );
+                ",
+            )
+            .unwrap();
+        let updated_at = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        for (id, path, model, effort) in [
+            ("main-model", &main, "gpt-5.6-sol", "ultra"),
+            ("sub-model", &subagent, "gpt-5.6-luna", "max"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO threads (id, rollout_path, model, reasoning_effort, updated_at, archived) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                    rusqlite::params![id, path.to_string_lossy(), model, effort, updated_at],
+                )
+                .unwrap();
+        }
+
+        let counts = ThreadActivityScanner::default().scan(&home.root).unwrap();
+
+        assert_eq!(counts.main_threads, 1);
+        assert_eq!(counts.subagents, 1);
+        assert_eq!(
+            counts.main_models,
+            vec![RunningThreadModelBreakdown {
+                model: Some("gpt-5.6-sol".into()),
+                reasoning_effort: Some("ultra".into()),
+                count: 1,
+            }]
+        );
+        assert_eq!(
+            counts.subagent_models,
+            vec![RunningThreadModelBreakdown {
+                model: Some("gpt-5.6-luna".into()),
+                reasoning_effort: Some("max".into()),
+                count: 1,
+            }]
+        );
     }
 
     #[test]

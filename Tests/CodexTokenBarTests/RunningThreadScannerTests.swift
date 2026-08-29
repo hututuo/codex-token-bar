@@ -330,6 +330,77 @@ final class RunningThreadScannerTests: XCTestCase {
         XCTAssertEqual(result.summary.total, 1)
     }
 
+    func testRunningModelBreakdownUsesDatabaseModelAndReasoningEffortWithoutGuessing() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let sol = fixture.sessions.appendingPathComponent("sol-main.jsonl")
+        let unknown = fixture.sessions.appendingPathComponent("unknown-main.jsonl")
+        let luna = fixture.sessions.appendingPathComponent("luna-subagent.jsonl")
+        try writeSession(
+            to: sol,
+            id: "sol-main",
+            metadata: "\"thread_source\":\"user\",\"source\":\"vscode\"",
+            events: [event("task_started", turnID: "sol-turn")]
+        )
+        try writeSession(
+            to: unknown,
+            id: "unknown-main",
+            metadata: "\"thread_source\":\"user\",\"source\":\"vscode\"",
+            events: [event("task_started", turnID: "unknown-turn")]
+        )
+        try writeSession(
+            to: luna,
+            id: "luna-subagent",
+            metadata: "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"sol-main\"}}}",
+            events: [event("task_started", turnID: "luna-turn")]
+        )
+
+        let database = SQLiteDatabaseDriver(url: fixture.source.stateDatabase)
+        try database.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT,
+                rollout_path TEXT,
+                model TEXT,
+                reasoning_effort TEXT,
+                updated_at INTEGER,
+                archived INTEGER
+            )
+            """
+        )
+        for row in [
+            ("sol-main", sol.path, "gpt-5.6-sol", "ultra"),
+            ("luna-subagent", luna.path, "gpt-5.6-luna", "max"),
+        ] {
+            try database.execute(
+                """
+                INSERT INTO threads (
+                    id, rollout_path, model, reasoning_effort, updated_at, archived
+                ) VALUES (?1, ?2, ?3, ?4, ?5, 0)
+                """,
+                bindings: [
+                    .text(row.0),
+                    .text(row.1),
+                    .text(row.2),
+                    .text(row.3),
+                    .int64(Int64(fixture.now.timeIntervalSince1970)),
+                ]
+            )
+        }
+
+        let result = try XCTUnwrap(scan(fixture))
+
+        XCTAssertEqual(result.summary.main, 2)
+        XCTAssertEqual(result.summary.subagents, 1)
+        XCTAssertEqual(result.summary.mainModels, [
+            RunningThreadModelBreakdown(model: nil, reasoningEffort: nil, count: 1),
+            RunningThreadModelBreakdown(model: "gpt-5.6-sol", reasoningEffort: "ultra", count: 1),
+        ])
+        XCTAssertEqual(result.summary.subagentModels, [
+            RunningThreadModelBreakdown(model: "gpt-5.6-luna", reasoningEffort: "max", count: 1),
+        ])
+    }
+
     func testColdScanIncludesRecentSessionMissingFromNonemptyDatabase() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.home) }

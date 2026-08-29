@@ -132,7 +132,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     static let pagePairsKey = "floatingPanelPagePairsV01"
     static let pageNavigationArrowsKey = "floatingPanelShowPageNavigationArrows"
     static let pagingGuideRevisionKey = "floatingPanelPagingGuideRevisionV01"
-    static let currentPagingGuideRevision = 4
+    static let currentPagingGuideRevision = 5
     static let defaultOrder: [FloatingPanelContentGroup] = [
         .rateAndBar,
         .usageStatus,
@@ -323,6 +323,13 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         else { return false }
 
         return abs(metricsIndex - runningIndex) == 1
+    }
+
+    var hasRunningThreadDetailsTarget: Bool {
+        embedsRunningThreadsInMetricsRow
+            || layoutRows.contains { row in
+                !row.isPaged && row.primaryGroup == .runningThreads
+            }
     }
 
     var showsStandaloneUsageStatus: Bool {

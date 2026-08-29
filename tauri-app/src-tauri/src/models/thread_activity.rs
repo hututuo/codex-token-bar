@@ -2,10 +2,20 @@ use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RunningThreadModelBreakdown {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunningThreadSummary {
     pub total: Option<u32>,
     pub main_threads: Option<u32>,
     pub subagents: Option<u32>,
+    pub main_models: Vec<RunningThreadModelBreakdown>,
+    pub subagent_models: Vec<RunningThreadModelBreakdown>,
     pub status: String,
     pub updated_at: Option<i64>,
     pub detail: String,

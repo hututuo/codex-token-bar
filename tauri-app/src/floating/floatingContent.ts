@@ -210,6 +210,13 @@ export function embedsRunningThreadsInMetricsRow(visibility: FloatingContentVisi
   return metricsIndex >= 0 && runningIndex >= 0 && Math.abs(metricsIndex - runningIndex) === 1;
 }
 
+export function hasRunningThreadDetailsTarget(visibility: FloatingContentVisibility): boolean {
+  return embedsRunningThreadsInMetricsRow(visibility)
+    || layoutFloatingContentRows(visibility).some((row) => (
+      row.groups.length === 1 && row.primaryGroup === "runningThreads"
+    ));
+}
+
 function collapseAdjacentPair(
   groups: FloatingContentGroup[],
   first: FloatingContentGroup,
@@ -419,6 +426,22 @@ export function usageStatusFloatingRowCenterY(visibility: FloatingContentVisibil
     ) {
       return cursor + height / 2;
     }
+    cursor += height;
+  }
+  return null;
+}
+
+export function runningThreadsFloatingRowCenterY(visibility: FloatingContentVisibility): number | null {
+  if (!hasRunningThreadDetailsTarget(visibility)) return null;
+  const target = embedsRunningThreadsInMetricsRow(visibility) ? "metrics" : "runningThreads";
+  const rows = layoutFloatingContentRows(visibility);
+  let cursor = 6;
+  for (const [index, row] of rows.entries()) {
+    if (index > 0) {
+      cursor += floatingContentGap(rows[index - 1].primaryGroup, row.primaryGroup);
+    }
+    const height = floatingContentRowHeight(row);
+    if (row.primaryGroup === target) return cursor + height / 2;
     cursor += height;
   }
   return null;

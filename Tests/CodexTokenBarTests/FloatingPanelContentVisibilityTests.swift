@@ -41,28 +41,57 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(visibility.showPageNavigationArrows)
     }
 
-    func testPagingGuideAppearsOnceAfterSetupWhenPagedRowsExist() {
-        XCTAssertEqual(FloatingPanelContentVisibility.currentPagingGuideRevision, 4)
+    func testGuideMigrationKeepsPagingLearningAndAddsRunningModelDetailsPage() {
+        XCTAssertEqual(FloatingPanelContentVisibility.currentPagingGuideRevision, 5)
+        XCTAssertEqual(FloatingPanelPagingGuideState.pagingLearnedRevision, 4)
         XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
             setupGuideCompleted: false,
             completedRevision: 0,
-            hasPagedRows: true
+            hasPagedRows: true,
+            hasRunningThreadDetailsTarget: true
         ))
         XCTAssertTrue(FloatingPanelPagingGuideState.shouldPresent(
             setupGuideCompleted: true,
             completedRevision: 0,
-            hasPagedRows: true
+            hasPagedRows: true,
+            hasRunningThreadDetailsTarget: true
         ))
         XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
             setupGuideCompleted: true,
             completedRevision: FloatingPanelContentVisibility.currentPagingGuideRevision,
-            hasPagedRows: true
+            hasPagedRows: true,
+            hasRunningThreadDetailsTarget: true
         ))
         XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
             setupGuideCompleted: true,
             completedRevision: 0,
-            hasPagedRows: false
+            hasPagedRows: false,
+            hasRunningThreadDetailsTarget: false
         ))
+        XCTAssertEqual(
+            FloatingPanelPagingGuideState.pages(
+                completedRevision: 0,
+                hasPagedRows: true,
+                hasRunningThreadDetailsTarget: true
+            ),
+            [.paging, .runningModels]
+        )
+        XCTAssertEqual(
+            FloatingPanelPagingGuideState.pages(
+                completedRevision: 4,
+                hasPagedRows: true,
+                hasRunningThreadDetailsTarget: true
+            ),
+            [.runningModels]
+        )
+        XCTAssertEqual(
+            FloatingPanelPagingGuideState.pages(
+                completedRevision: 0,
+                hasPagedRows: false,
+                hasRunningThreadDetailsTarget: true
+            ),
+            [.runningModels]
+        )
         XCTAssertEqual(
             FloatingTokenPanelMetrics.firstPagedRowCenterY(
                 visibility: .default,
@@ -78,18 +107,18 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     func testPagingGuideSessionCompletionPublishesTheChosenArrowStateImmediately() {
         let state = FloatingPanelPagingGuideSessionState()
 
-        XCTAssertNil(state.completion(for: 4))
+        XCTAssertNil(state.completion(for: 5))
 
-        state.complete(revision: 4, showsArrowGlyphs: true)
+        state.complete(revision: 5, showsArrowGlyphs: true)
 
         XCTAssertEqual(
-            state.completion(for: 4),
+            state.completion(for: 5),
             FloatingPanelPagingGuideSessionState.Completion(
-                revision: 4,
+                revision: 5,
                 showsArrowGlyphs: true
             )
         )
-        XCTAssertNil(state.completion(for: 5))
+        XCTAssertNil(state.completion(for: 4))
     }
 
     func testPageNavigationArrowsCanBeHiddenWithoutChangingPagePairs() {
@@ -161,6 +190,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let visibility = FloatingPanelContentVisibility.default
 
         XCTAssertTrue(visibility.embedsRunningThreadsInMetricsRow)
+        XCTAssertTrue(visibility.hasRunningThreadDetailsTarget)
         XCTAssertEqual(
             visibility.layoutGroups,
             [.rateAndBar, .metrics, .todayModelShare, .todayModelCost, .radar, .crowdRadar, .quota]
@@ -169,6 +199,68 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             visibility.layoutRows.map(\.groups),
             [[.rateAndBar], [.metrics], [.todayModelShare, .todayModelCost], [.radar], [.crowdRadar], [.quota]]
         )
+    }
+
+    func testRunningModelDetailsExpandToTheRightWithoutChangingTheSurfaceWidth() {
+        let collapsed = FloatingTokenPanelMetrics.size(
+            effectiveScale: 1,
+            visibility: .default
+        )
+        let expanded = FloatingTokenPanelMetrics.size(
+            effectiveScale: 1,
+            visibility: .default,
+            runningModelDetailsPresented: true
+        )
+
+        XCTAssertEqual(collapsed.width, FloatingTokenPanelMetrics.baseSize.width)
+        XCTAssertEqual(
+            expanded.width,
+            collapsed.width
+                + FloatingTokenPanelMetrics.runningModelDetailsGap
+                + FloatingTokenPanelMetrics.runningModelDetailsWidth
+                + FloatingTokenPanelMetrics.runningModelDetailsTrailingInset
+        )
+        XCTAssertGreaterThanOrEqual(
+            expanded.height,
+            FloatingTokenPanelMetrics.runningModelDetailsMinimumHeight
+        )
+    }
+
+    func testRunningModelDisplayRowsIncludeModelEffortAndUnresolvedCount() {
+        let rows = RunningThreadModelDetailsPresentation.rows(
+            from: [
+                RunningThreadModelBreakdown(
+                    model: "gpt-5.6-sol",
+                    reasoningEffort: "ultra",
+                    count: 2
+                ),
+            ],
+            expectedCount: 3
+        )
+
+        XCTAssertEqual(rows.map(\.title), ["Sol · ultra", "配置待读取"])
+        XCTAssertEqual(rows.map(\.count), [2, 1])
+    }
+
+    func testStandaloneRunningThreadRowAlsoGetsAFullClickFrame() {
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: false,
+            showMetrics: false,
+            showRunningThreads: true,
+            showQuota: false,
+            showRadar: false
+        )
+        let layout = FloatingTokenPanelLayout(
+            scale: FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1),
+            visibility: visibility
+        )
+        let frames = runningThreadControlFrames(layout: layout, visibility: visibility)
+
+        XCTAssertTrue(visibility.hasRunningThreadDetailsTarget)
+        XCTAssertEqual(frames.count, 1)
+        XCTAssertGreaterThan(frames[0].width, 40)
+        XCTAssertTrue(frames[0].midX > 0)
     }
 
     func testPagePairsSanitizeConflictsAndCanChangeDefaultPage() {
@@ -1664,11 +1756,11 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains("onPageNavigation?()"))
         XCTAssertTrue(guide.contains("点两侧即可翻页"))
         XCTAssertTrue(guide.contains("FloatingQuotaPaceGuide"))
-        XCTAssertTrue(guide.contains("quotaPaceCallout(in: proxy.size)"))
+        XCTAssertTrue(guide.contains("quotaPaceCallout(in: size)"))
         XCTAssertTrue(guide.contains("Text(\"显示翻页箭头\")"))
         XCTAssertTrue(guide.contains("minWidth: 88.scaled(by: scale)"))
         XCTAssertTrue(guide.contains("minHeight: 24.scaled(by: scale)"))
-        XCTAssertTrue(guide.contains("Text(\"开始体验\")"))
+        XCTAssertTrue(guide.contains("Text(isLastPage ? \"开始体验\" : \"下一步\")"))
         XCTAssertTrue(guide.contains("minWidth: 58.scaled(by: scale)"))
         XCTAssertFalse(guide.contains("Button(\"开始体验\", action: onComplete)"))
         XCTAssertFalse(guide.contains(".controlSize(.mini)"))
@@ -1688,18 +1780,22 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
         XCTAssertTrue(panel.contains("onPagingGuidePresentationChanged(false)"))
         XCTAssertTrue(guide.contains("@State private var completionTriggered = false"))
-        XCTAssertTrue(guide.contains("Button(action: completeImmediately)"))
-        XCTAssertTrue(guide.contains("completionTriggered = true\n        onComplete()"))
+        XCTAssertTrue(guide.contains("Button(action: advanceImmediately)"))
+        XCTAssertTrue(guide.contains("completionTriggered = true"))
+        XCTAssertTrue(guide.contains("onAdvance()"))
         XCTAssertFalse(guide.contains("FloatingPanelInteractionBridge"))
-        XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: true, targetY: rowY)"))
-        XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: false, targetY: rowY)"))
+        XCTAssertTrue(guide.contains("edgeArrowCue(in: size, isLeading: true, targetY: rowY)"))
+        XCTAssertTrue(guide.contains("edgeArrowCue(in: size, isLeading: false, targetY: rowY)"))
         XCTAssertTrue(guide.contains("refreshArrowCueEmphasis"))
         XCTAssertTrue(guide.contains("private let guideSurface = Color(red: 0.882, green: 0.925, blue: 0.980)"))
         XCTAssertTrue(guide.contains("private let guidePrimaryText = Color(red: 0.063, green: 0.169, blue: 0.302)"))
         XCTAssertFalse(guide.contains(".background(.ultraThinMaterial"))
         XCTAssertTrue(guide.contains("TimelineView"))
-        XCTAssertTrue(guide.contains("edgeShadow(in: proxy.size, isLeading: true)"))
-        XCTAssertTrue(guide.contains("edgeShadow(in: proxy.size, isLeading: false)"))
+        XCTAssertTrue(guide.contains("edgeShadow(in: size, isLeading: true)"))
+        XCTAssertTrue(guide.contains("edgeShadow(in: size, isLeading: false)"))
+        XCTAssertTrue(guide.contains("点击“主 / 子”查看模型"))
+        XCTAssertTrue(guide.contains("FloatingRunningThreadModelDetailsCard("))
+        XCTAssertTrue(panel.contains("runningModelDetailsPresented.toggle()"))
         XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.24)"))
         XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.38)"))
         XCTAssertFalse(guide.contains("LinearGradient("))

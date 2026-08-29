@@ -1,17 +1,45 @@
 import AppKit
 import SwiftUI
 
+enum FloatingPanelGuidePage: String, Equatable, Sendable {
+    case paging
+    case runningModels
+}
+
 enum FloatingPanelPagingGuideState {
     static let setupGuideCompletedKey = "setupGuideCompletedV01"
+    static let pagingLearnedRevision = 4
+
+    static func pages(
+        completedRevision: Int,
+        hasPagedRows: Bool,
+        hasRunningThreadDetailsTarget: Bool
+    ) -> [FloatingPanelGuidePage] {
+        guard completedRevision < FloatingPanelContentVisibility.currentPagingGuideRevision else {
+            return []
+        }
+        var pages: [FloatingPanelGuidePage] = []
+        if completedRevision < pagingLearnedRevision, hasPagedRows {
+            pages.append(.paging)
+        }
+        if hasRunningThreadDetailsTarget {
+            pages.append(.runningModels)
+        }
+        return pages
+    }
 
     static func shouldPresent(
         setupGuideCompleted: Bool,
         completedRevision: Int,
-        hasPagedRows: Bool
+        hasPagedRows: Bool,
+        hasRunningThreadDetailsTarget: Bool
     ) -> Bool {
         setupGuideCompleted
-            && completedRevision < FloatingPanelContentVisibility.currentPagingGuideRevision
-            && hasPagedRows
+            && !pages(
+                completedRevision: completedRevision,
+                hasPagedRows: hasPagedRows,
+                hasRunningThreadDetailsTarget: hasRunningThreadDetailsTarget
+            ).isEmpty
     }
 }
 
@@ -37,6 +65,8 @@ final class FloatingPanelPagingGuideSessionState: ObservableObject {
 }
 
 struct FloatingPanelPagingGuide: View {
+    let page: FloatingPanelGuidePage
+    let isLastPage: Bool
     @Binding var showsArrowGlyphs: Bool
     let scale: CGFloat
     let surfaceWidth: CGFloat
@@ -46,7 +76,10 @@ struct FloatingPanelPagingGuide: View {
     let calloutTargetY: CGFloat
     let cardY: CGFloat
     let showsDemoModelUsage: Bool
-    let onComplete: () -> Void
+    let modelTargetX: CGFloat
+    let modelTargetY: CGFloat
+    let modelTargetWidth: CGFloat
+    let onAdvance: () -> Void
 
     @State private var arrowCueEmphasized = false
     @State private var arrowCueFadeTask: Task<Void, Never>?
@@ -68,102 +101,11 @@ struct FloatingPanelPagingGuide: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                edgeShadow(in: proxy.size, isLeading: true)
-                edgeShadow(in: proxy.size, isLeading: false)
-                ForEach(Array((targetYs.isEmpty ? [targetY] : targetYs).prefix(2).enumerated()), id: \.offset) { _, rowY in
-                    if showsArrowGlyphs {
-                        edgeArrowCue(in: proxy.size, isLeading: true, targetY: rowY)
-                        edgeArrowCue(in: proxy.size, isLeading: false, targetY: rowY)
-                    }
-                    animatedPointer(in: proxy.size, targetY: rowY)
+                if page == .paging {
+                    pagingGuideContent(in: proxy.size)
+                } else {
+                    runningModelsGuideContent(in: proxy.size)
                 }
-                quotaPaceCallout(in: proxy.size)
-
-                let cardWidth = min(
-                    max(0, surfaceWidth - 16.scaled(by: scale)),
-                    180.scaled(by: scale)
-                )
-                VStack(spacing: 3.scaled(by: scale)) {
-                    Text("点两侧即可翻页")
-                        .font(.system(size: 11.4.scaled(by: scale), weight: .bold))
-                        .foregroundStyle(guidePrimaryText)
-                    Text("点击阴影边缘试一下")
-                        .font(.system(size: 8.4.scaled(by: scale), weight: .semibold))
-                        .foregroundStyle(guideSecondaryText)
-
-                    if showsDemoModelUsage {
-                        Text("悬浮窗数据为示例")
-                            .font(.system(size: 7.2.scaled(by: scale), weight: .semibold))
-                            .foregroundStyle(guideSecondaryText.opacity(0.86))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.72)
-                            .help("仅用于引导展示，不会写入真实统计")
-                    }
-
-                    HStack(spacing: 7.scaled(by: scale)) {
-                        Button {
-                            showsArrowGlyphs.toggle()
-                        } label: {
-                            HStack(spacing: 3.scaled(by: scale)) {
-                                Image(systemName: showsArrowGlyphs ? "checkmark.square.fill" : "square")
-                                    .font(.system(size: 10.scaled(by: scale), weight: .semibold))
-                                    .foregroundStyle(guideAccent)
-                                Text("显示翻页箭头")
-                                    .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
-                                    .foregroundStyle(guidePrimaryText)
-                            }
-                            .frame(
-                                minWidth: 88.scaled(by: scale),
-                                minHeight: 24.scaled(by: scale)
-                            )
-                            .background(
-                                Color.white.opacity(0.001),
-                                in: RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
-                            )
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
-                                    .stroke(guideAccent.opacity(0.34), lineWidth: 0.8.scaled(by: scale))
-                            }
-                            .contentShape(RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityValue(showsArrowGlyphs ? "已开启" : "已关闭")
-                        .help("显示翻页箭头")
-
-                        Button(action: completeImmediately) {
-                            Text("开始体验")
-                                .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(
-                                    minWidth: 58.scaled(by: scale),
-                                    minHeight: 24.scaled(by: scale)
-                                )
-                                .background(
-                                    guideAccent,
-                                    in: RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
-                                )
-                                .contentShape(
-                                    RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .help("关闭引导并保存选择")
-                    }
-                }
-                .padding(.horizontal, 9.scaled(by: scale))
-                .padding(.vertical, 7.scaled(by: scale))
-                .frame(width: cardWidth)
-                .background(
-                    guideSurface,
-                    in: RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous)
-                        .stroke(guideAccent.opacity(0.62), lineWidth: 0.9.scaled(by: scale))
-                )
-                .shadow(color: guidePrimaryText.opacity(0.34), radius: 11.scaled(by: scale), y: 4.scaled(by: scale))
-                .contentShape(RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous))
-                .position(x: surfaceWidth / 2, y: cardY)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
@@ -179,13 +121,207 @@ struct FloatingPanelPagingGuide: View {
         .opacity(completionTriggered ? 0 : 1)
         .allowsHitTesting(!completionTriggered)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("悬浮窗翻页引导")
+        .accessibilityLabel(page == .paging ? "悬浮窗翻页引导" : "运行模型详情引导")
     }
 
-    private func completeImmediately() {
+    private func advanceImmediately() {
         guard !completionTriggered else { return }
-        completionTriggered = true
-        onComplete()
+        if isLastPage {
+            completionTriggered = true
+        }
+        onAdvance()
+    }
+
+    @ViewBuilder
+    private func pagingGuideContent(in size: CGSize) -> some View {
+        edgeShadow(in: size, isLeading: true)
+        edgeShadow(in: size, isLeading: false)
+        ForEach(Array((targetYs.isEmpty ? [targetY] : targetYs).prefix(2).enumerated()), id: \.offset) { _, rowY in
+            if showsArrowGlyphs {
+                edgeArrowCue(in: size, isLeading: true, targetY: rowY)
+                edgeArrowCue(in: size, isLeading: false, targetY: rowY)
+            }
+            animatedPointer(in: size, targetY: rowY)
+        }
+        quotaPaceCallout(in: size)
+
+        let cardWidth = min(
+            max(0, surfaceWidth - 16.scaled(by: scale)),
+            180.scaled(by: scale)
+        )
+        VStack(spacing: 3.scaled(by: scale)) {
+            Text("点两侧即可翻页")
+                .font(.system(size: 11.4.scaled(by: scale), weight: .bold))
+                .foregroundStyle(guidePrimaryText)
+            Text("点击阴影边缘试一下")
+                .font(.system(size: 8.4.scaled(by: scale), weight: .semibold))
+                .foregroundStyle(guideSecondaryText)
+
+            if showsDemoModelUsage {
+                Text("悬浮窗数据为示例")
+                    .font(.system(size: 7.2.scaled(by: scale), weight: .semibold))
+                    .foregroundStyle(guideSecondaryText.opacity(0.86))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .help("仅用于引导展示，不会写入真实统计")
+            }
+
+            HStack(spacing: 7.scaled(by: scale)) {
+                Button {
+                    showsArrowGlyphs.toggle()
+                } label: {
+                    HStack(spacing: 3.scaled(by: scale)) {
+                        Image(systemName: showsArrowGlyphs ? "checkmark.square.fill" : "square")
+                            .font(.system(size: 10.scaled(by: scale), weight: .semibold))
+                            .foregroundStyle(guideAccent)
+                        Text("显示翻页箭头")
+                            .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
+                            .foregroundStyle(guidePrimaryText)
+                    }
+                    .frame(
+                        minWidth: 88.scaled(by: scale),
+                        minHeight: 24.scaled(by: scale)
+                    )
+                    .background(
+                        Color.white.opacity(0.001),
+                        in: RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
+                            .stroke(guideAccent.opacity(0.34), lineWidth: 0.8.scaled(by: scale))
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(showsArrowGlyphs ? "已开启" : "已关闭")
+                .help("显示翻页箭头")
+
+                guideAdvanceButton
+            }
+        }
+        .padding(.horizontal, 9.scaled(by: scale))
+        .padding(.vertical, 7.scaled(by: scale))
+        .frame(width: cardWidth)
+        .background(
+            guideSurface,
+            in: RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous)
+                .stroke(guideAccent.opacity(0.62), lineWidth: 0.9.scaled(by: scale))
+        )
+        .shadow(color: guidePrimaryText.opacity(0.34), radius: 11.scaled(by: scale), y: 4.scaled(by: scale))
+        .contentShape(RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous))
+        .position(x: surfaceWidth / 2, y: cardY)
+    }
+
+    @ViewBuilder
+    private func runningModelsGuideContent(in size: CGSize) -> some View {
+        let demoWidth = FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(by: scale)
+        let demoHeight = 132.scaled(by: scale)
+        let demoX = surfaceWidth
+            + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale)
+            + demoWidth / 2
+        let demoY = min(
+            max(modelTargetY, demoHeight / 2 + 6.scaled(by: scale)),
+            size.height - demoHeight / 2 - 6.scaled(by: scale)
+        )
+        let targetHeight = 22.scaled(by: scale)
+        let connectorStart = modelTargetX + modelTargetWidth / 2
+        let connectorEnd = demoX - demoWidth / 2
+        let connectorWidth = max(0, connectorEnd - connectorStart)
+
+        RoundedRectangle(cornerRadius: 6.scaled(by: scale), style: .continuous)
+            .fill(guideAccent.opacity(0.10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6.scaled(by: scale), style: .continuous)
+                    .stroke(guideAccent, lineWidth: 1.2.scaled(by: scale))
+            }
+            .frame(width: modelTargetWidth, height: targetHeight)
+            .position(x: modelTargetX, y: modelTargetY)
+            .allowsHitTesting(false)
+
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let phase = context.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: 1.6) / 1.6
+            let pressing = phase > 0.52 && phase < 0.72
+            Image(systemName: "cursorarrow.click.2")
+                .font(.system(size: 16.scaled(by: scale), weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(guideAccent)
+                .shadow(color: Color.white.opacity(0.78), radius: 2.scaled(by: scale))
+                .scaleEffect(pressing ? 0.84 : 1)
+                .position(
+                    x: modelTargetX + 8.scaled(by: scale),
+                    y: modelTargetY + 8.scaled(by: scale)
+                )
+        }
+        .allowsHitTesting(false)
+
+        Rectangle()
+            .fill(guideAccent)
+            .frame(width: connectorWidth, height: 2.scaled(by: scale))
+            .position(x: connectorStart + connectorWidth / 2, y: modelTargetY)
+            .allowsHitTesting(false)
+        Image(systemName: "chevron.right")
+            .font(.system(size: 11.scaled(by: scale), weight: .heavy))
+            .foregroundStyle(guideAccent)
+            .position(x: connectorEnd - 4.scaled(by: scale), y: modelTargetY)
+            .allowsHitTesting(false)
+
+        FloatingRunningThreadModelDetailsCard(
+            summary: .guideModelDetailsDemo,
+            scale: scale,
+            width: demoWidth,
+            height: demoHeight,
+            isDemo: true
+        )
+        .position(x: demoX, y: demoY)
+
+        VStack(spacing: 4.scaled(by: scale)) {
+            Text("点击“主 / 子”查看模型")
+                .font(.system(size: 11.4.scaled(by: scale), weight: .bold))
+                .foregroundStyle(guidePrimaryText)
+            Text("右侧会显示模型、思考强度和数量；再点一次即可收起")
+                .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
+                .foregroundStyle(guideSecondaryText)
+                .multilineTextAlignment(.center)
+            guideAdvanceButton
+        }
+        .padding(.horizontal, 9.scaled(by: scale))
+        .padding(.vertical, 7.scaled(by: scale))
+        .frame(width: min(surfaceWidth - 16.scaled(by: scale), 200.scaled(by: scale)))
+        .background(
+            guideSurface,
+            in: RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous)
+                .stroke(guideAccent.opacity(0.62), lineWidth: 0.9.scaled(by: scale))
+        }
+        .shadow(color: guidePrimaryText.opacity(0.34), radius: 11.scaled(by: scale), y: 4.scaled(by: scale))
+        .position(x: surfaceWidth / 2, y: cardY)
+    }
+
+    private var guideAdvanceButton: some View {
+        Button(action: advanceImmediately) {
+            Text(isLastPage ? "开始体验" : "下一步")
+                .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(
+                    minWidth: 58.scaled(by: scale),
+                    minHeight: 24.scaled(by: scale)
+                )
+                .background(
+                    guideAccent,
+                    in: RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
+                )
+                .contentShape(
+                    RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(isLastPage ? "关闭引导并保存选择" : "查看下一项引导")
     }
 
     private func edgeShadow(in size: CGSize, isLeading: Bool) -> some View {

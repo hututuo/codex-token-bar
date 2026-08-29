@@ -7,9 +7,33 @@ enum RunningThreadFreshness: String, Equatable, Sendable {
     case unavailable
 }
 
+struct RunningThreadModelBreakdown: Equatable, Hashable, Sendable, Identifiable {
+    let model: String?
+    let reasoningEffort: String?
+    let count: Int
+
+    init(model: String?, reasoningEffort: String?, count: Int) {
+        self.model = Self.cleaned(model)
+        self.reasoningEffort = Self.cleaned(reasoningEffort)
+        self.count = max(0, count)
+    }
+
+    var id: String {
+        "\(model ?? "unknown")|\(reasoningEffort ?? "unknown")"
+    }
+
+    private static func cleaned(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+}
+
 struct RunningThreadSummary: Equatable, Sendable {
     let main: Int
     let subagents: Int
+    let mainModels: [RunningThreadModelBreakdown]
+    let subagentModels: [RunningThreadModelBreakdown]
     /// The time at which the source was successfully checked. This is not a
     /// claim that the underlying session data changed at this time.
     let lastCheckedAt: Date?
@@ -23,12 +47,16 @@ struct RunningThreadSummary: Equatable, Sendable {
     init(
         main: Int,
         subagents: Int,
+        mainModels: [RunningThreadModelBreakdown] = [],
+        subagentModels: [RunningThreadModelBreakdown] = [],
         updatedAt: Date?,
         freshness: RunningThreadFreshness
     ) {
         self.init(
             main: main,
             subagents: subagents,
+            mainModels: mainModels,
+            subagentModels: subagentModels,
             lastCheckedAt: updatedAt,
             dataUpdatedAt: updatedAt,
             summaryRevision: 0,
@@ -39,6 +67,8 @@ struct RunningThreadSummary: Equatable, Sendable {
     init(
         main: Int,
         subagents: Int,
+        mainModels: [RunningThreadModelBreakdown] = [],
+        subagentModels: [RunningThreadModelBreakdown] = [],
         lastCheckedAt: Date? = nil,
         dataUpdatedAt: Date? = nil,
         summaryRevision: UInt64 = 0,
@@ -46,6 +76,8 @@ struct RunningThreadSummary: Equatable, Sendable {
     ) {
         self.main = max(0, main)
         self.subagents = max(0, subagents)
+        self.mainModels = mainModels.filter { $0.count > 0 }
+        self.subagentModels = subagentModels.filter { $0.count > 0 }
         self.lastCheckedAt = lastCheckedAt
         self.dataUpdatedAt = dataUpdatedAt
         self.summaryRevision = summaryRevision
@@ -83,6 +115,8 @@ struct RunningThreadSummary: Equatable, Sendable {
         return RunningThreadSummary(
             main: main,
             subagents: subagents,
+            mainModels: mainModels,
+            subagentModels: subagentModels,
             lastCheckedAt: lastCheckedAt,
             dataUpdatedAt: dataUpdatedAt,
             summaryRevision: summaryRevision,

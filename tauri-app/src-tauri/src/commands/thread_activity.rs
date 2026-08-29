@@ -4,7 +4,7 @@ use super::dashboard::{
 };
 use super::window_auth::require_window_label;
 use crate::core::thread_activity::{RunningThreadCounts, ThreadActivityScanner};
-use crate::models::RunningThreadSummary;
+use crate::models::{RunningThreadModelBreakdown, RunningThreadSummary};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -140,6 +140,8 @@ fn scanning_summary() -> RunningThreadSummary {
         total: None,
         main_threads: None,
         subagents: None,
+        main_models: Vec::new(),
+        subagent_models: Vec::new(),
         status: "scanning".into(),
         updated_at: None,
         detail: "正在读取当前数据源的会话生命周期".into(),
@@ -148,10 +150,29 @@ fn scanning_summary() -> RunningThreadSummary {
 }
 
 fn ready_summary(counts: RunningThreadCounts) -> RunningThreadSummary {
+    let total = counts.total();
     RunningThreadSummary {
-        total: Some(counts.total()),
+        total: Some(total),
         main_threads: Some(counts.main_threads),
         subagents: Some(counts.subagents),
+        main_models: counts
+            .main_models
+            .into_iter()
+            .map(|row| RunningThreadModelBreakdown {
+                model: row.model,
+                reasoning_effort: row.reasoning_effort,
+                count: row.count,
+            })
+            .collect(),
+        subagent_models: counts
+            .subagent_models
+            .into_iter()
+            .map(|row| RunningThreadModelBreakdown {
+                model: row.model,
+                reasoning_effort: row.reasoning_effort,
+                count: row.count,
+            })
+            .collect(),
         status: "ready".into(),
         updated_at: Some(unix_ms_now()),
         detail: "按每个会话最新生命周期统计；24 小时仅用于淘汰无新文件活动的孤儿运行态".into(),
@@ -174,6 +195,8 @@ fn stale_or_unavailable_summary(
         total: None,
         main_threads: None,
         subagents: None,
+        main_models: Vec::new(),
+        subagent_models: Vec::new(),
         status: "unavailable".into(),
         updated_at: None,
         detail: format!("运行线程暂不可用：{error}"),
@@ -206,6 +229,7 @@ mod tests {
         let summary = ready_summary(RunningThreadCounts {
             main_threads: 2,
             subagents: 3,
+            ..RunningThreadCounts::default()
         });
         assert_eq!(summary.total, Some(5));
         assert_eq!(summary.main_threads, Some(2));
@@ -217,6 +241,7 @@ mod tests {
         let ready = ready_summary(RunningThreadCounts {
             main_threads: 4,
             subagents: 1,
+            ..RunningThreadCounts::default()
         });
         let stale = stale_or_unavailable_summary(Some(&ready), "temporary".into());
         assert_eq!(stale.status, "stale");
