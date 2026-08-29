@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import CodexTokenBar
 
@@ -238,8 +239,88 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             expectedCount: 3
         )
 
-        XCTAssertEqual(rows.map(\.title), ["Sol · ultra", "配置待读取"])
+        XCTAssertEqual(rows.map(\.title), ["Sol · ultra", "配置同步中"])
         XCTAssertEqual(rows.map(\.count), [2, 1])
+    }
+
+    func testRunningModelGuideAlwaysPresentsStableExampleCounts() {
+        let live = RunningThreadSummary(
+            main: 0,
+            subagents: 0,
+            updatedAt: nil,
+            freshness: .loading
+        )
+
+        XCTAssertEqual(
+            FloatingPanelPagingGuideState.runningThreadSummary(
+                live: live,
+                guidePresented: true,
+                page: .runningModels
+            ),
+            .guideModelDetailsDemo
+        )
+        XCTAssertEqual(
+            FloatingPanelPagingGuideState.runningThreadSummary(
+                live: live,
+                guidePresented: true,
+                page: .paging
+            ),
+            live
+        )
+        XCTAssertEqual(
+            FloatingPanelPagingGuideState.runningThreadSummary(
+                live: live,
+                guidePresented: false,
+                page: .runningModels
+            ),
+            live
+        )
+    }
+
+    @MainActor
+    func testRunningModelDetailsSessionCanBeDismissedExternally() {
+        let state = FloatingRunningModelDetailsSessionState()
+
+        state.toggle()
+        XCTAssertTrue(state.isPresented)
+
+        state.dismiss()
+        XCTAssertFalse(state.isPresented)
+    }
+
+    func testRunningModelDetailsDismissalPolicyCoversExternalAndWindowBlankClicks() {
+        let panelFrame = NSRect(x: 100, y: 100, width: 500, height: 180)
+        XCTAssertTrue(FloatingRunningModelDetailsDismissalPolicy.shouldDismissForExternalClick(
+            isPresented: true,
+            panelFrame: panelFrame,
+            location: NSPoint(x: 20, y: 20)
+        ))
+        XCTAssertFalse(FloatingRunningModelDetailsDismissalPolicy.shouldDismissForExternalClick(
+            isPresented: true,
+            panelFrame: panelFrame,
+            location: NSPoint(x: 120, y: 120)
+        ))
+
+        let detailFrame = NSRect(x: 280, y: 4, width: 230, height: 154)
+        let triggerFrame = NSRect(x: 190, y: 60, width: 66, height: 22)
+        XCTAssertTrue(FloatingRunningModelDetailsDismissalPolicy.shouldDismissForWindowClick(
+            isPresented: true,
+            detailsFrame: detailFrame,
+            triggerFrames: [triggerFrame],
+            location: NSPoint(x: 80, y: 80)
+        ))
+        XCTAssertFalse(FloatingRunningModelDetailsDismissalPolicy.shouldDismissForWindowClick(
+            isPresented: true,
+            detailsFrame: detailFrame,
+            triggerFrames: [triggerFrame],
+            location: NSPoint(x: 300, y: 80)
+        ))
+        XCTAssertFalse(FloatingRunningModelDetailsDismissalPolicy.shouldDismissForWindowClick(
+            isPresented: true,
+            detailsFrame: detailFrame,
+            triggerFrames: [triggerFrame],
+            location: NSPoint(x: 210, y: 70)
+        ))
     }
 
     func testStandaloneRunningThreadRowAlsoGetsAFullClickFrame() {
@@ -1795,7 +1876,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(guide.contains("edgeShadow(in: size, isLeading: false)"))
         XCTAssertTrue(guide.contains("点击“主 / 子”查看模型"))
         XCTAssertTrue(guide.contains("FloatingRunningThreadModelDetailsCard("))
-        XCTAssertTrue(panel.contains("runningModelDetailsPresented.toggle()"))
+        XCTAssertTrue(panel.contains("runningModelDetailsSessionState.toggle()"))
+        XCTAssertTrue(panel.contains("dismissRunningModelDetails()"))
+        XCTAssertTrue(panel.contains("FloatingRunningModelDetailsDismissalPolicy.shouldDismissForWindowClick"))
+        XCTAssertTrue(guide.contains("右上角 ×"))
         XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.24)"))
         XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.38)"))
         XCTAssertFalse(guide.contains("LinearGradient("))

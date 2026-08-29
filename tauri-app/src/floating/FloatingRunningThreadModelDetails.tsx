@@ -3,6 +3,7 @@ import type {
   RunningThreadModelBreakdown,
   RunningThreadSummary,
 } from "../types/threadActivity";
+import type { FloatingGuidePage } from "./floatingSettings";
 
 export interface RunningThreadModelDisplayRow {
   id: string;
@@ -18,7 +19,7 @@ export function runningThreadModelDisplayRows(
   const rows = breakdowns
     .filter((row) => Number.isFinite(row.count) && row.count > 0)
     .map((row) => {
-      const modelLabel = row.model ? modelUsageLabel(row.model) : "配置待读取";
+      const modelLabel = row.model ? modelUsageLabel(row.model) : "配置同步中";
       const effort = row.reasoningEffort?.trim();
       return {
         id: `${row.model ?? "unknown"}|${effort ?? "unknown"}`,
@@ -32,7 +33,7 @@ export function runningThreadModelDisplayRows(
     rows.push({
       id: `unresolved|${expectedCount - represented}`,
       model: null,
-      title: "配置待读取",
+      title: "配置同步中",
       count: expectedCount - represented,
     });
   }
@@ -46,6 +47,7 @@ export function runningThreadModelStatusLabel(
   demo: boolean,
 ): string {
   if (demo) return "示例";
+  if (hasPendingRunningModelConfiguration(summary)) return "同步中";
   switch (summary.status) {
     case "ready": return "实时";
     case "stale": return "上次";
@@ -58,10 +60,12 @@ export function FloatingRunningThreadModelDetails({
   summary,
   demo = false,
   className = "",
+  onClose,
 }: {
   summary: RunningThreadSummary;
   demo?: boolean;
   className?: string;
+  onClose?: () => void;
 }) {
   return (
     <section
@@ -72,7 +76,17 @@ export function FloatingRunningThreadModelDetails({
     >
       <header>
         <strong>运行模型详情</strong>
-        <small>{runningThreadModelStatusLabel(summary, demo)}</small>
+        <span className="floating-running-model-header-actions">
+          <small>{runningThreadModelStatusLabel(summary, demo)}</small>
+          <button
+            aria-hidden={onClose ? undefined : true}
+            aria-label={onClose ? "关闭运行模型详情" : undefined}
+            disabled={!onClose}
+            onClick={onClose}
+            tabIndex={onClose ? 0 : -1}
+            type="button"
+          >×</button>
+        </span>
       </header>
       <div className="floating-running-model-columns">
         <RunningModelSection
@@ -90,6 +104,17 @@ export function FloatingRunningThreadModelDetails({
       </div>
     </section>
   );
+}
+
+function hasPendingRunningModelConfiguration(summary: RunningThreadSummary): boolean {
+  const resolvedMain = (summary.mainModels ?? [])
+    .filter((row) => Boolean(row.model))
+    .reduce((sum, row) => sum + Math.max(0, Math.trunc(row.count)), 0);
+  const resolvedSubagents = (summary.subagentModels ?? [])
+    .filter((row) => Boolean(row.model))
+    .reduce((sum, row) => sum + Math.max(0, Math.trunc(row.count)), 0);
+  return resolvedMain < (summary.mainThreads ?? 0)
+    || resolvedSubagents < (summary.subagents ?? 0);
 }
 
 function RunningModelSection({
@@ -141,3 +166,13 @@ export const FLOATING_RUNNING_MODEL_GUIDE_DEMO: RunningThreadSummary = {
   detail: "引导示例",
   livenessLeaseHours: 24,
 };
+
+export function floatingRunningThreadSummaryForPresentation(
+  live: RunningThreadSummary,
+  guidePresented: boolean,
+  page: FloatingGuidePage,
+): RunningThreadSummary {
+  return guidePresented && page === "runningModels"
+    ? FLOATING_RUNNING_MODEL_GUIDE_DEMO
+    : live;
+}

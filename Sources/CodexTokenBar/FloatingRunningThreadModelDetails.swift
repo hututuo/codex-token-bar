@@ -18,7 +18,7 @@ enum RunningThreadModelDetailsPresentation {
     ) -> [RunningThreadModelDisplayRow] {
         var rows = breakdowns.filter { $0.count > 0 }.map { breakdown in
             let modelLabel = breakdown.model == nil
-                ? "配置待读取"
+                ? "配置同步中"
                 : ModelUsagePresentation.label(for: breakdown.model)
             let effort = breakdown.reasoningEffort?.trimmingCharacters(
                 in: .whitespacesAndNewlines
@@ -37,7 +37,7 @@ enum RunningThreadModelDetailsPresentation {
                 RunningThreadModelDisplayRow(
                     id: "unresolved|\(expectedCount - represented)",
                     model: nil,
-                    title: "配置待读取",
+                    title: "配置同步中",
                     count: expectedCount - represented
                 )
             )
@@ -49,14 +49,29 @@ enum RunningThreadModelDetailsPresentation {
         }
     }
 
-    static func statusLabel(for freshness: RunningThreadFreshness, isDemo: Bool) -> String {
+    static func statusLabel(
+        for freshness: RunningThreadFreshness,
+        isDemo: Bool,
+        hasPendingConfiguration: Bool
+    ) -> String {
         if isDemo { return "示例" }
+        if hasPendingConfiguration { return "同步中" }
         switch freshness {
         case .loading: return "读取中"
         case .fresh: return "实时"
         case .stale: return "上次"
         case .unavailable: return "不可用"
         }
+    }
+
+    static func hasPendingConfiguration(in summary: RunningThreadSummary) -> Bool {
+        let resolvedMain = summary.mainModels
+            .filter { $0.model != nil }
+            .reduce(0) { $0 + $1.count }
+        let resolvedSubagents = summary.subagentModels
+            .filter { $0.model != nil }
+            .reduce(0) { $0 + $1.count }
+        return resolvedMain < summary.main || resolvedSubagents < summary.subagents
     }
 }
 
@@ -66,6 +81,7 @@ struct FloatingRunningThreadModelDetailsCard: View {
     let width: CGFloat
     let height: CGFloat
     var isDemo = false
+    var onClose: (() -> Void)? = nil
 
     private let primary = Color(red: 0.075, green: 0.106, blue: 0.157)
     private let secondary = Color(red: 0.31, green: 0.36, blue: 0.43)
@@ -81,7 +97,9 @@ struct FloatingRunningThreadModelDetailsCard: View {
                 Spacer(minLength: 4.scaled(by: scale))
                 Text(RunningThreadModelDetailsPresentation.statusLabel(
                     for: summary.freshness,
-                    isDemo: isDemo
+                    isDemo: isDemo,
+                    hasPendingConfiguration: RunningThreadModelDetailsPresentation
+                        .hasPendingConfiguration(in: summary)
                 ))
                     .font(.system(size: 7.6.scaled(by: scale), weight: .bold))
                     .foregroundStyle(Color(red: 0.08, green: 0.42, blue: 0.48))
@@ -91,6 +109,7 @@ struct FloatingRunningThreadModelDetailsCard: View {
                         Color(red: 0.84, green: 0.95, blue: 0.94),
                         in: Capsule()
                     )
+                closeAffordance
             }
 
             Divider().overlay(divider)
@@ -136,6 +155,42 @@ struct FloatingRunningThreadModelDetailsCard: View {
         .contentShape(RoundedRectangle(cornerRadius: 12.scaled(by: scale), style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isDemo ? "运行模型详情示例" : "运行模型详情")
+    }
+
+    @ViewBuilder
+    private var closeAffordance: some View {
+        if let onClose {
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 7.8.scaled(by: scale), weight: .bold))
+                    .foregroundStyle(secondary)
+                    .frame(
+                        width: 16.scaled(by: scale),
+                        height: 16.scaled(by: scale)
+                    )
+                    .background(
+                        Color(red: 0.92, green: 0.94, blue: 0.96),
+                        in: Circle()
+                    )
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("关闭运行模型详情")
+            .accessibilityLabel("关闭运行模型详情")
+        } else {
+            Image(systemName: "xmark")
+                .font(.system(size: 7.8.scaled(by: scale), weight: .bold))
+                .foregroundStyle(secondary)
+                .frame(
+                    width: 16.scaled(by: scale),
+                    height: 16.scaled(by: scale)
+                )
+                .background(
+                    Color(red: 0.92, green: 0.94, blue: 0.96),
+                    in: Circle()
+                )
+                .accessibilityHidden(true)
+        }
     }
 
     private func modelSection(

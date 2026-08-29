@@ -7,6 +7,13 @@ import SwiftUI
 extension FloatingTokenPanelController {
     func recordExternalMouseClick(at location: NSPoint) {
         guard FloatingPanelExternalEventRelevance.shouldRecordClick(isPresented: externalEventState.isPresented) else { return }
+        if FloatingRunningModelDetailsDismissalPolicy.shouldDismissForExternalClick(
+            isPresented: runningModelDetailsArePresented,
+            panelFrame: panel?.frame,
+            location: location
+        ) {
+            dismissRunningModelDetails()
+        }
         if let panel, panel.frame.contains(location) {
             activeLockedTargetDrag = nil
             externalMouseButtonIsDown = false

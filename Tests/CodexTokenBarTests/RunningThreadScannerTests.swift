@@ -401,6 +401,66 @@ final class RunningThreadScannerTests: XCTestCase {
         ])
     }
 
+    func testMissingActiveModelConfigurationInvalidatesDatabaseCandidateCache() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let subagent = fixture.sessions.appendingPathComponent("late-model-subagent.jsonl")
+        try writeSession(
+            to: subagent,
+            id: "late-model-subagent",
+            metadata: "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"main\"}}}",
+            events: [event("task_started", turnID: "late-model-turn")]
+        )
+
+        let database = SQLiteDatabaseDriver(url: fixture.source.stateDatabase)
+        try database.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT,
+                rollout_path TEXT,
+                model TEXT,
+                reasoning_effort TEXT,
+                updated_at INTEGER,
+                archived INTEGER
+            )
+            """
+        )
+        try database.execute(
+            """
+            INSERT INTO threads (
+                id, rollout_path, model, reasoning_effort, updated_at, archived
+            ) VALUES (?1, ?2, '', '', ?3, 0)
+            """,
+            bindings: [
+                .text("late-model-subagent"),
+                .text(subagent.path),
+                .int64(Int64(fixture.now.timeIntervalSince1970)),
+            ]
+        )
+
+        let first = try XCTUnwrap(scan(fixture))
+        XCTAssertEqual(first.summary.subagentModels, [
+            RunningThreadModelBreakdown(model: nil, reasoningEffort: nil, count: 1),
+        ])
+
+        try database.execute(
+            """
+            UPDATE threads
+            SET model = 'gpt-5.6-luna', reasoning_effort = 'max'
+            WHERE id = 'late-model-subagent'
+            """
+        )
+        let second = try XCTUnwrap(RunningThreadScanner.scan(
+            dataSource: fixture.source,
+            previousStates: first.states,
+            now: fixture.now.addingTimeInterval(1)
+        ))
+
+        XCTAssertEqual(second.summary.subagentModels, [
+            RunningThreadModelBreakdown(model: "gpt-5.6-luna", reasoningEffort: "max", count: 1),
+        ])
+    }
+
     func testColdScanIncludesRecentSessionMissingFromNonemptyDatabase() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.home) }

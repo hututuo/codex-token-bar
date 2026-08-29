@@ -58,7 +58,9 @@ test("running model card renders model, effort, counts, and unresolved fallback"
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const {
+      FLOATING_RUNNING_MODEL_GUIDE_DEMO,
       FloatingRunningThreadModelDetails,
+      floatingRunningThreadSummaryForPresentation,
       runningThreadModelDisplayRows,
     } = await load("/src/floating/FloatingRunningThreadModelDetails.tsx");
 
@@ -66,18 +68,82 @@ test("running model card renders model, effort, counts, and unresolved fallback"
       { model: "gpt-5.6-sol", reasoningEffort: "ultra", count: 2 },
     ], 3).map((row) => [row.title, row.count]), [
       ["Sol · ultra", 2],
-      ["配置待读取", 1],
+      ["配置同步中", 1],
     ]);
+
+    assert.equal(
+      floatingRunningThreadSummaryForPresentation(
+        runningSummaryFixture(),
+        true,
+        "runningModels",
+      ),
+      FLOATING_RUNNING_MODEL_GUIDE_DEMO,
+    );
+    assert.equal(
+      floatingRunningThreadSummaryForPresentation(
+        runningSummaryFixture(),
+        false,
+        "runningModels",
+      ).mainThreads,
+      2,
+    );
 
     const html = renderToStaticMarkup(React.createElement(
       FloatingRunningThreadModelDetails,
-      { summary: runningSummaryFixture() },
+      { onClose: () => {}, summary: runningSummaryFixture() },
     ));
     assert.match(html, /运行模型详情/);
     assert.match(html, /Sol · ultra/);
     assert.match(html, /Luna · max/);
     assert.match(html, /×2/);
+    assert.match(html, /aria-label="关闭运行模型详情"/);
   });
+});
+
+test("running model close button invokes the supplied dismiss action", async () => {
+  const dom = new Window({ url: "http://localhost/?surface=floating" });
+  const restoreGlobals = installDomGlobals(dom);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { FloatingRunningThreadModelDetails } = await load(
+        "/src/floating/FloatingRunningThreadModelDetails.tsx",
+      );
+      const container = dom.document.createElement("div");
+      dom.document.body.append(container);
+      const root = createRoot(container);
+      let closes = 0;
+
+      try {
+        await React.act(async () => root.render(React.createElement(
+          FloatingRunningThreadModelDetails,
+          { onClose: () => { closes += 1; }, summary: runningSummaryFixture() },
+        )));
+        const close = container.querySelector('[aria-label="关闭运行模型详情"]');
+        assert.ok(close);
+        await React.act(async () => close.click());
+        assert.equal(closes, 1);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    restoreGlobals();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    dom.close();
+  }
+});
+
+test("floating window dismisses running model details on blur and blank clicks", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./FloatingWindowApp.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /window\.addEventListener\("blur", closeForWindowBlur\)/);
+  assert.match(source, /dismissRunningModelDetailsForOutsidePointer/);
+  assert.match(source, /onMouseDownCapture=\{dismissRunningModelDetailsForOutsidePointer\}/);
 });
 
 function runningSummaryFixture() {

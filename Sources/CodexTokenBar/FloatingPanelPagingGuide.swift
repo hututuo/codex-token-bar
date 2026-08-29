@@ -41,6 +41,15 @@ enum FloatingPanelPagingGuideState {
                 hasRunningThreadDetailsTarget: hasRunningThreadDetailsTarget
             ).isEmpty
     }
+
+    static func runningThreadSummary(
+        live: RunningThreadSummary,
+        guidePresented: Bool,
+        page: FloatingPanelGuidePage
+    ) -> RunningThreadSummary {
+        guard guidePresented, page == .runningModels else { return live }
+        return .guideModelDetailsDemo
+    }
 }
 
 @MainActor
@@ -277,12 +286,13 @@ struct FloatingPanelPagingGuide: View {
             isDemo: true
         )
         .position(x: demoX, y: demoY)
+        .allowsHitTesting(false)
 
         VStack(spacing: 4.scaled(by: scale)) {
             Text("点击“主 / 子”查看模型")
                 .font(.system(size: 11.4.scaled(by: scale), weight: .bold))
                 .foregroundStyle(guidePrimaryText)
-            Text("右侧会显示模型、思考强度和数量；再点一次即可收起")
+            Text("右侧显示模型、思考强度和数量；点空白处或右上角 × 均可收起")
                 .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
                 .foregroundStyle(guideSecondaryText)
                 .multilineTextAlignment(.center)

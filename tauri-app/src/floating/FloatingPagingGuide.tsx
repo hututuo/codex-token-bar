@@ -81,7 +81,7 @@ export function FloatingPagingGuide({
           onDoubleClick={(event) => event.stopPropagation()}
         >
           <strong>点击“主 / 子”查看模型</strong>
-          <p>右侧会显示模型、思考强度和数量；再点一次即可收起</p>
+          <p>右侧显示模型、思考强度和数量；点空白处或右上角 × 均可收起</p>
           <GuideAdvanceButton isLastPage={isLastPage} saving={saving} onAdvance={onAdvance} />
           {error ? <small role="alert">{error}</small> : null}
         </section>

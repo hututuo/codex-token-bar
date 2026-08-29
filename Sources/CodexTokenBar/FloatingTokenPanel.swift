@@ -42,6 +42,41 @@ enum FloatingPanelExternalEventRelevance {
     }
 }
 
+enum FloatingRunningModelDetailsDismissalPolicy {
+    static func shouldDismissForExternalClick(
+        isPresented: Bool,
+        panelFrame: NSRect?,
+        location: NSPoint
+    ) -> Bool {
+        guard isPresented else { return false }
+        return panelFrame.map { !$0.contains(location) } ?? true
+    }
+
+    static func shouldDismissForWindowClick(
+        isPresented: Bool,
+        detailsFrame: NSRect,
+        triggerFrames: [NSRect],
+        location: NSPoint
+    ) -> Bool {
+        guard isPresented, !detailsFrame.contains(location) else { return false }
+        return !triggerFrames.contains(where: { $0.contains(location) })
+    }
+}
+
+@MainActor
+final class FloatingRunningModelDetailsSessionState: ObservableObject {
+    @Published private(set) var isPresented = false
+
+    func toggle() {
+        isPresented.toggle()
+    }
+
+    func dismiss() {
+        guard isPresented else { return }
+        isPresented = false
+    }
+}
+
 enum FloatingPanelMouseDownAction: Equatable {
     case passThrough
     case dragPanel
@@ -54,7 +89,10 @@ final class FloatingTokenPanelWindow: NSPanel {
     var suppressesBackgroundMouseActions = false
     var controlExclusionSize: CGFloat = 52
     var interactiveControlFrames: [NSRect] = []
+    var runningModelDetailsPresented = false
+    var runningModelDetailsFrame = NSRect.zero
     var onOpenDashboard: (() -> Void)?
+    var onDismissRunningModelDetails: (() -> Void)?
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -81,6 +119,17 @@ final class FloatingTokenPanelWindow: NSPanel {
 
     override func sendEvent(_ event: NSEvent) {
         guard event.type == .leftMouseDown else {
+            super.sendEvent(event)
+            return
+        }
+
+        if FloatingRunningModelDetailsDismissalPolicy.shouldDismissForWindowClick(
+            isPresented: runningModelDetailsPresented,
+            detailsFrame: runningModelDetailsFrame,
+            triggerFrames: interactiveControlFrames,
+            location: event.locationInWindow
+        ) {
+            onDismissRunningModelDetails?()
             super.sendEvent(event)
             return
         }
@@ -140,6 +189,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var onToggleLock: (() -> Void)?
     private var onOpenDashboard: (() -> Void)?
     private let pagingGuideSessionState = FloatingPanelPagingGuideSessionState()
+    private let runningModelDetailsSessionState = FloatingRunningModelDetailsSessionState()
     private var lastPanelScale: FloatingTokenPanelScale?
     private var lastPanelVisibility: FloatingPanelContentVisibility?
     private var lastPagingGuidePresented = false
@@ -296,6 +346,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         isPresented = false
         appliedLockState = false
         lastRunningModelDetailsPresented = false
+        runningModelDetailsSessionState.dismiss()
 
         if unregisterActive {
             Self.unregisterActiveController(self)
@@ -353,6 +404,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     isLocked: isLocked,
                     lockTargetDescription: lockTargetDescription,
                     pagingGuideSessionState: pagingGuideSessionState,
+                    runningModelDetailsSessionState: runningModelDetailsSessionState,
                     onPagingGuidePresentationChanged: { [weak self] presented in
                         self?.setPagingGuidePresented(presented)
                     },
@@ -388,6 +440,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             panel.onOpenDashboard = { [weak self] in
                 self?.onOpenDashboard?()
             }
+            panel.onDismissRunningModelDetails = { [weak self] in
+                self?.dismissRunningModelDetails()
+            }
             panel.hidesOnDeactivate = false
             panel.level = .statusBar
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
@@ -408,6 +463,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             panel.onOpenDashboard = { [weak self] in
                 self?.onOpenDashboard?()
             }
+            panel.onDismissRunningModelDetails = { [weak self] in
+                self?.dismissRunningModelDetails()
+            }
         }
 
         if let hostingController = panel?.contentViewController as? NSHostingController<FloatingTokenPanelView> {
@@ -422,6 +480,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 isLocked: isLocked,
                 lockTargetDescription: lockTargetDescription,
                 pagingGuideSessionState: pagingGuideSessionState,
+                runningModelDetailsSessionState: runningModelDetailsSessionState,
                 onPagingGuidePresentationChanged: { [weak self] presented in
                     self?.setPagingGuidePresented(presented)
                 },
@@ -496,6 +555,15 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         )
     }
 
+    func dismissRunningModelDetails() {
+        runningModelDetailsSessionState.dismiss()
+        setRunningModelDetailsPresented(false)
+    }
+
+    var runningModelDetailsArePresented: Bool {
+        lastRunningModelDetailsPresented
+    }
+
     func updateSize(layout: FloatingTokenPanelLayout) {
         guard let panel else { return }
         isProgrammaticPanelMove = true
@@ -506,6 +574,23 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 layout: layout,
                 visibility: visibility
             )
+            panel.runningModelDetailsPresented = lastRunningModelDetailsPresented
+                && !lastPagingGuidePresented
+            let surfaceSize = FloatingTokenPanelMetrics.size(
+                effectiveScale: layout.effectiveScale,
+                visibility: visibility
+            )
+            panel.runningModelDetailsFrame = panel.runningModelDetailsPresented
+                ? NSRect(
+                    x: surfaceSize.width
+                        + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: layout.effectiveScale),
+                    y: 4.scaled(by: layout.effectiveScale),
+                    width: FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(
+                        by: layout.effectiveScale
+                    ),
+                    height: max(0, layout.size.height - 8.scaled(by: layout.effectiveScale))
+                )
+                : .zero
         }
         panel.contentView?.layer?.cornerRadius = layout.cornerRadius
         saveLockedOrigin(panel.frame.origin)
@@ -547,6 +632,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     private func activeApplicationDidChange(processIdentifier: pid_t) {
         guard processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        dismissRunningModelDetails()
         lastExternalActivePID = processIdentifier
     }
 
@@ -564,6 +650,7 @@ struct FloatingTokenPanelView: View {
     let isLocked: Bool
     var lockTargetDescription: String?
     @ObservedObject var pagingGuideSessionState: FloatingPanelPagingGuideSessionState
+    @ObservedObject var runningModelDetailsSessionState: FloatingRunningModelDetailsSessionState
     let onPagingGuidePresentationChanged: (Bool) -> Void
     let onRunningModelDetailsPresentationChanged: (Bool) -> Void
     let onToggleLock: () -> Void
@@ -582,7 +669,6 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelContentVisibility.pageNavigationArrowsKey) private var persistedPageNavigationArrows = FloatingPanelContentVisibility.default.showPageNavigationArrows
     @State private var pagingGuideShowsArrowGlyphs = false
     @State private var pagingGuidePageIndex = 0
-    @State private var runningModelDetailsPresented = false
     let onClose: () -> Void
 
     var body: some View {
@@ -604,11 +690,12 @@ struct FloatingTokenPanelView: View {
             fixedHex: floatingQuotaFixedHex,
             gradientAppearance: appearance
         )
-        let displaySnapshot = TokenDisplaySnapshot.make(
+        let liveRunningThreads = taskCompletionMonitor.runningThreadSummary
+        let liveDisplaySnapshot = TokenDisplaySnapshot.make(
             store: store,
             monitor: monitor,
             quota: quota,
-            runningThreads: taskCompletionMonitor.runningThreadSummary
+            runningThreads: liveRunningThreads
         )
         let textTone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextWhiteOverride)
         let automaticTextPalettes = appearance.textPalettes(
@@ -621,7 +708,7 @@ struct FloatingTokenPanelView: View {
             opacity: floatingPanelOpacity,
             automaticStrength: textTone.automaticStrength,
             visibility: visibility,
-            hasPreciseTokenUsage: displaySnapshot.hasPreciseTokenUsage
+            hasPreciseTokenUsage: liveDisplaySnapshot.hasPreciseTokenUsage
         )
         let overridePalette = textTone.manualWhite.map(FloatingPanelReadableTextPalette.init(fixedWhite:))
         let baseTextPalette = overridePalette ?? automaticTextPalettes.controlPalette
@@ -654,7 +741,20 @@ struct FloatingTokenPanelView: View {
         let activePagingGuidePage = pagingGuidePages.indices.contains(safePagingGuidePageIndex)
             ? pagingGuidePages[safePagingGuidePageIndex]
             : .runningModels
-        let effectiveRunningModelDetailsPresented = runningModelDetailsPresented
+        let presentedRunningThreads = FloatingPanelPagingGuideState.runningThreadSummary(
+            live: liveRunningThreads,
+            guidePresented: pagingGuidePresented,
+            page: activePagingGuidePage
+        )
+        let displaySnapshot = presentedRunningThreads == liveRunningThreads
+            ? liveDisplaySnapshot
+            : TokenDisplaySnapshot.make(
+                store: store,
+                monitor: monitor,
+                quota: quota,
+                runningThreads: presentedRunningThreads
+            )
+        let effectiveRunningModelDetailsPresented = runningModelDetailsSessionState.isPresented
             && !pagingGuidePresented
             && visibility.hasRunningThreadDetailsTarget
         let size = FloatingTokenPanelMetrics.size(
@@ -747,7 +847,7 @@ struct FloatingTokenPanelView: View {
                     onPageNavigation: pageNavigationAction,
                     runningModelDetailsExpanded: effectiveRunningModelDetailsPresented,
                     onRunningThreadsActivate: pagingGuidePresented ? nil : {
-                        runningModelDetailsPresented.toggle()
+                        runningModelDetailsSessionState.toggle()
                     },
                     guideMode: pagingGuidePresented && activePagingGuidePage == .paging
                 )
@@ -781,7 +881,10 @@ struct FloatingTokenPanelView: View {
                     scale: scale,
                     width: FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(by: scale),
                     height: max(0, size.height - 8.scaled(by: scale)),
-                    isDemo: false
+                    isDemo: false,
+                    onClose: {
+                        runningModelDetailsSessionState.dismiss()
+                    }
                 )
                 .offset(
                     x: surfaceSize.width
@@ -826,7 +929,7 @@ struct FloatingTokenPanelView: View {
         }
         .onChange(of: pagingGuidePresented) { _, presented in
             if presented {
-                runningModelDetailsPresented = false
+                runningModelDetailsSessionState.dismiss()
                 pagingGuidePageIndex = 0
             }
             onPagingGuidePresentationChanged(presented)
@@ -836,7 +939,7 @@ struct FloatingTokenPanelView: View {
         }
         .onChange(of: visibility.hasRunningThreadDetailsTarget) { _, hasTarget in
             if !hasTarget {
-                runningModelDetailsPresented = false
+                runningModelDetailsSessionState.dismiss()
             }
         }
         .environment(\.tokenDisplayTextPalette, baseTextPalette)

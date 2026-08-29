@@ -79,6 +79,12 @@ enum RunningThreadScanner {
             entries[key] = Entry(identity: identity, checkedAt: now, candidates: candidates)
             lock.unlock()
         }
+
+        func removeValue(for key: String) {
+            lock.lock()
+            entries.removeValue(forKey: key)
+            lock.unlock()
+        }
     }
 
     private struct FileFingerprint {
@@ -181,6 +187,12 @@ enum RunningThreadScanner {
                ) != expectedIdentity {
                 return nil
             }
+
+            invalidateDatabaseCandidateCacheIfNeeded(
+                dataSource: dataSource,
+                states: states,
+                configurationsBySessionID: candidates.configurationsBySessionID
+            )
 
             return RunningThreadScanResult(
                 states: states,
@@ -315,7 +327,10 @@ enum RunningThreadScanner {
             return nil
         }
         let identity = DatabaseIdentity(deviceID: deviceID, fileID: fileID)
-        let cacheKey = "\(dataSource.stableIdentityKey)|\(databaseURL.standardizedFileURL.path)"
+        let cacheKey = databaseCandidateCacheKey(
+            dataSource: dataSource,
+            databaseURL: databaseURL
+        )
         if let cached = databaseCandidateCache.value(
             for: cacheKey,
             identity: identity,
@@ -415,6 +430,31 @@ enum RunningThreadScanner {
             )
         }
         return candidates
+    }
+
+    private static func invalidateDatabaseCandidateCacheIfNeeded(
+        dataSource: CodexDataSource,
+        states: [String: RunningThreadFileState],
+        configurationsBySessionID: [String: SessionModelConfiguration]
+    ) {
+        let hasPendingActiveModel = states.values.contains { state in
+            guard state.lifecycle == .running, !state.sessionID.isEmpty else { return false }
+            return configurationsBySessionID[state.sessionID]?.model == nil
+        }
+        guard hasPendingActiveModel else { return }
+        databaseCandidateCache.removeValue(
+            for: databaseCandidateCacheKey(
+                dataSource: dataSource,
+                databaseURL: dataSource.stateDatabase
+            )
+        )
+    }
+
+    private static func databaseCandidateCacheKey(
+        dataSource: CodexDataSource,
+        databaseURL: URL
+    ) -> String {
+        "\(dataSource.stableIdentityKey)|\(databaseURL.standardizedFileURL.path)"
     }
 
     private static func cleanedDatabaseValue(_ value: String?) -> String? {

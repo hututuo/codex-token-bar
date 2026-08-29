@@ -9075,7 +9075,13 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   line-height: 1;
 }
 
-.floating-running-model-details > header > small {
+.floating-running-model-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--floating-scale));
+}
+
+.floating-running-model-header-actions > small {
   min-height: calc(15px * var(--floating-scale));
   box-sizing: border-box;
   padding: calc(2px * var(--floating-scale)) calc(6px * var(--floating-scale));
@@ -9085,6 +9091,35 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-size: calc(8px * var(--floating-scale));
   font-weight: var(--weight-bold);
   line-height: 1.25;
+}
+
+.floating-running-model-header-actions > button {
+  display: inline-grid;
+  width: calc(16px * var(--floating-scale));
+  height: calc(16px * var(--floating-scale));
+  box-sizing: border-box;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #ebeff4;
+  color: #4f5c6d;
+  cursor: pointer;
+  font-size: calc(11px * var(--floating-scale));
+  font-weight: var(--weight-bold);
+  line-height: 1;
+  -webkit-app-region: no-drag;
+}
+
+.floating-running-model-header-actions > button:hover:not(:disabled),
+.floating-running-model-header-actions > button:focus-visible {
+  background: #dfe6ee;
+  color: #243044;
+}
+
+.floating-running-model-header-actions > button:disabled {
+  opacity: 1;
+  cursor: default;
 }
 
 .floating-running-model-columns {

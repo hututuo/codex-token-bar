@@ -39,7 +39,10 @@ import {
 import { floatingPanelAppearance } from "./floatingPresentation";
 import { FloatingPanelSurface } from "./FloatingPanelPreview";
 import { FloatingPagingGuide } from "./FloatingPagingGuide";
-import { FloatingRunningThreadModelDetails } from "./FloatingRunningThreadModelDetails";
+import {
+  FloatingRunningThreadModelDetails,
+  floatingRunningThreadSummaryForPresentation,
+} from "./FloatingRunningThreadModelDetails";
 import { useFloatingCrowdRadar, useFloatingRadar } from "./useFloatingRadar";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
@@ -251,6 +254,11 @@ export function FloatingWindowApp() {
   const effectiveRunningModelDetailsExpanded = runningModelDetailsExpanded
     && !pagingGuidePresented
     && contentHasRunningThreadDetailsTarget;
+  const presentedRunningThreads = floatingRunningThreadSummaryForPresentation(
+    runningThreads,
+    pagingGuidePresented,
+    activePagingGuidePage,
+  );
   const presentedSettings = useMemo(
     () => pagingGuidePresented
       ? floatingSettingsWithPagingGuideChoice(settings, pagingGuideShowsArrowGlyphs)
@@ -269,6 +277,17 @@ export function FloatingWindowApp() {
       setRunningModelDetailsExpanded(false);
     }
   }, [contentHasRunningThreadDetailsTarget]);
+
+  useEffect(() => {
+    if (!effectiveRunningModelDetailsExpanded) {
+      return undefined;
+    }
+    function closeForWindowBlur() {
+      setRunningModelDetailsExpanded(false);
+    }
+    window.addEventListener("blur", closeForWindowBlur);
+    return () => window.removeEventListener("blur", closeForWindowBlur);
+  }, [effectiveRunningModelDetailsExpanded]);
 
   useEffect(() => {
     return observeFloatingSurfaceVisibility({
@@ -321,6 +340,17 @@ export function FloatingWindowApp() {
       return;
     }
     void desktopPlatform.startFloatingWindowDrag();
+  }
+
+  function dismissRunningModelDetailsForOutsidePointer(event: MouseEvent<HTMLElement>) {
+    if (!effectiveRunningModelDetailsExpanded) {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (target?.closest?.(".floating-running-model-details, .floating-running-model-trigger")) {
+      return;
+    }
+    setRunningModelDetailsExpanded(false);
   }
 
   async function completePagingGuide() {
@@ -420,6 +450,7 @@ export function FloatingWindowApp() {
   return (
     <main
       className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}`}
+      onMouseDownCapture={dismissRunningModelDetailsForOutsidePointer}
       style={shellStyle}
     >
       <FloatingPanelSurface
@@ -427,7 +458,7 @@ export function FloatingWindowApp() {
         snapshot={snapshot}
         radarSnapshot={radarSnapshot}
         crowdRadarSnapshot={crowdRadarSnapshot}
-        runningThreads={runningThreads}
+        runningThreads={presentedRunningThreads}
         unreadEffect={presentedSettings.unreadEffect}
         priceModel={attributionSettings.priceModel}
         onClose={closeFloatingWindow}
@@ -460,7 +491,10 @@ export function FloatingWindowApp() {
             onAdvance={advancePagingGuide}
           />
         ) : effectiveRunningModelDetailsExpanded ? (
-          <FloatingRunningThreadModelDetails summary={runningThreads} />
+          <FloatingRunningThreadModelDetails
+            onClose={() => setRunningModelDetailsExpanded(false)}
+            summary={runningThreads}
+          />
         ) : null}
       />
     </main>
