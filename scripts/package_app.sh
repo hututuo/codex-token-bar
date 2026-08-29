@@ -163,6 +163,10 @@ codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 echo "$APP_DIR"
 
 if [[ "$CONFIGURATION" == "debug" && "${CODEX_TOKEN_BAR_NO_OPEN:-0}" != "1" ]]; then
+  # Debug previews are disposable and must never remain as persistent Dock
+  # tiles.  The release lane never enters this branch, so an installed
+  # /Applications release is the only Codex Token Bar entry we preserve.
+  "$ROOT_DIR/scripts/remove_test_dock_entries.sh"
   /usr/bin/osascript -e 'tell application id "local.codex.token-bar" to quit' >/dev/null 2>&1 || true
   /usr/bin/pkill -x "$PRODUCT_NAME" >/dev/null 2>&1 || true
   /usr/bin/pkill -x "CodexTokenDashboard" >/dev/null 2>&1 || true
@@ -175,5 +179,6 @@ if [[ "$CONFIGURATION" == "debug" && "${CODEX_TOKEN_BAR_NO_OPEN:-0}" != "1" ]]; 
   done
 
   /usr/bin/open --env CODEX_HOME --env CODEX_SQLITE_HOME "$APP_DIR"
+  "$ROOT_DIR/scripts/remove_test_dock_entries.sh"
   echo "Opened $APP_DIR"
 fi

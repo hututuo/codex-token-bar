@@ -196,6 +196,11 @@ if [[ -z "${RUN_APP_PATH:-}" ]]; then
   RUN_APP_PATH="$(stage_runnable_app)"
 fi
 
+# Tauri debug candidates are disposable previews.  Remove old candidate tiles
+# before and after launch; only the installed /Applications release is allowed
+# to remain pinned in the Dock.
+"$ROOT_DIR/scripts/remove_test_dock_entries.sh"
+
 RUN_APP_BINARY="$RUN_APP_PATH/Contents/MacOS/codex-token-bar"
 
 if [[ ! -x "$RUN_APP_BINARY" ]]; then
@@ -227,6 +232,7 @@ if [[ -n "$opened_pid" ]]; then
   if wait_for_dashboard_visible "$opened_pid"; then
     stop_other_debug_apps "$opened_pid"
     cleanup_old_run_bundles
+    "$ROOT_DIR/scripts/remove_test_dock_entries.sh"
     echo "Opened Codex Token Bar Tauri debug app."
     echo "App: $RUN_APP_PATH"
     echo "PID: $opened_pid"
