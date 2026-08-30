@@ -1474,14 +1474,22 @@ struct RecentUsageChart: View, Equatable {
                 }
 
                 HStack(spacing: 14) {
-                    ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
-                    ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
-                    ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
-                    ChartLegend(color: AppTheme.chartCost, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
-                    if quotaSeriesVisibility.showsFiveHour {
+                    if showTokens {
+                        ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
+                    }
+                    if showCalls {
+                        ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
+                    }
+                    if showCacheHitRate {
+                        ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
+                    }
+                    if showCost {
+                        ChartLegend(color: AppTheme.chartCost, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
+                    }
+                    if showFiveHourQuota && quotaSeriesVisibility.showsFiveHour {
                         ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
                     }
-                    if quotaSeriesVisibility.showsSevenDay {
+                    if showSevenDayQuota && quotaSeriesVisibility.showsSevenDay {
                         ChartLegend(color: .green, label: "7d", value: Self.percentText(visibleWindowSummary.latestSevenDayRemaining))
                     }
                 }

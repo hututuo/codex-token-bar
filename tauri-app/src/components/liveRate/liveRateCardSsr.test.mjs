@@ -153,6 +153,19 @@ test("LiveRateCard does not expose a local unread acknowledgement action when un
   });
 });
 
+test("LiveRateCard status tray toggle relies on pressed styling without duplicate state text", async () => {
+  await withSsrModules(async (load) => {
+    const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
+    const enabled = renderComponent(LiveRateCard, cardProps({ statusTrayLiveTextEnabled: true }));
+    const disabled = renderComponent(LiveRateCard, cardProps({ statusTrayLiveTextEnabled: false }));
+
+    assert.match(enabled, /aria-pressed="true"[^>]*>状态栏（实验）<\/button>/);
+    assert.match(disabled, /aria-pressed="false"[^>]*>状态栏（实验）<\/button>/);
+    assert.doesNotMatch(enabled, /状态栏（实验）：(?:开|关)/);
+    assert.doesNotMatch(disabled, /状态栏（实验）：(?:开|关)/);
+  });
+});
+
 function cardProps(overrides = {}) {
   return {
     floatingEnabled: true,
