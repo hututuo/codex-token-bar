@@ -1891,6 +1891,22 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(dashboard.contains("floatingPanelShowPageNavigationArrows ? \"1\" : \"0\""))
     }
 
+    func testRunningModelDetailsCardDoesNotUseOuterDropShadow() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: projectRoot.appendingPathComponent(
+                "Sources/CodexTokenBar/FloatingRunningThreadModelDetails.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains(".stroke(Color.white.opacity(0.92)"))
+        XCTAssertFalse(source.contains(".shadow("))
+    }
+
     func testStructureEditorShowsInsertionPreviewAndAcceptsHiddenDrops() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -147,11 +147,6 @@ struct FloatingRunningThreadModelDetailsCard: View {
             RoundedRectangle(cornerRadius: 12.scaled(by: scale), style: .continuous)
                 .stroke(Color.white.opacity(0.92), lineWidth: 1.scaled(by: scale))
         }
-        .shadow(
-            color: Color.black.opacity(0.18),
-            radius: 12.scaled(by: scale),
-            y: 5.scaled(by: scale)
-        )
         .contentShape(RoundedRectangle(cornerRadius: 12.scaled(by: scale), style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isDemo ? "运行模型详情示例" : "运行模型详情")

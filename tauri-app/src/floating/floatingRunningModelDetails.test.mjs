@@ -146,6 +146,17 @@ test("floating window dismisses running model details on blur and blank clicks",
   assert.match(source, /onMouseDownCapture=\{dismissRunningModelDetailsForOutsidePointer\}/);
 });
 
+test("running model details card keeps its border without an outer drop shadow", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
+  const block = css.match(/\.floating-running-model-details \{([\s\S]*?)\n\}/)?.[1];
+
+  assert.ok(block);
+  assert.match(block, /border: 1px solid rgba\(255, 255, 255, 0\.92\)/);
+  assert.match(block, /box-shadow: inset 0 1px 0 rgba\(255, 255, 255, 0\.88\)/);
+  assert.doesNotMatch(block, /rgba\(17, 25, 38, 0\.19\)/);
+});
+
 function runningSummaryFixture() {
   return {
     total: 3,
