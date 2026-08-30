@@ -152,9 +152,34 @@ test("running model details card keeps its border without an outer drop shadow",
   const block = css.match(/\.floating-running-model-details \{([\s\S]*?)\n\}/)?.[1];
 
   assert.ok(block);
+  assert.match(css, /--floating-running-model-card-background: #fafdff/);
   assert.match(block, /border: 1px solid rgba\(255, 255, 255, 0\.92\)/);
+  assert.match(block, /background: var\(--floating-running-model-card-background\)/);
+  assert.doesNotMatch(block, /background: rgba\(255, 255, 255, 0\.965\)/);
   assert.match(block, /box-shadow: inset 0 1px 0 rgba\(255, 255, 255, 0\.88\)/);
   assert.doesNotMatch(block, /rgba\(17, 25, 38, 0\.19\)/);
+});
+
+test("running model details card derives a softened color from the floating theme", async () => {
+  await withSsrModules(async (load) => {
+    const {
+      floatingPanelAppearance,
+      floatingRunningModelCardBackground,
+    } = await load("/src/floating/floatingPresentation.ts");
+    const { style } = floatingPanelAppearance({
+      opacity: 0.92,
+      scale: 1,
+      gradientStart: "#FAF9FF",
+      gradientEnd: "#00C2EF",
+      gradientDirection: "135deg",
+      gradientType: "conic",
+    });
+
+    assert.equal(style["--floating-running-model-card-background"], "#dbf6fd");
+    assert.equal(floatingRunningModelCardBackground("#ffffff", "#daefff"), "#fafdff");
+    assert.equal(floatingRunningModelCardBackground("#000000", "#000000"), "#b8b8b8");
+    assert.equal(floatingRunningModelCardBackground("#ffffff", "#ffffff"), "#ffffff");
+  });
 });
 
 function runningSummaryFixture() {

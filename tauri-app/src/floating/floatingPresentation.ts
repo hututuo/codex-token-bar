@@ -36,6 +36,10 @@ export function floatingPanelAppearance(
       "--floating-card-opacity": settings.opacity.toFixed(2),
       "--floating-scale": settings.scale.toFixed(2),
       "--floating-gradient-background": floatingGradientBackground(settings),
+      "--floating-running-model-card-background": floatingRunningModelCardBackground(
+        settings.gradientStart,
+        settings.gradientEnd,
+      ),
       "--floating-effect-color": floatingEffectHexColor(effectRgb),
       "--floating-effect-rgb": `${effectRgb.red}, ${effectRgb.green}, ${effectRgb.blue}`,
     },
@@ -66,6 +70,12 @@ export function floatingEffectHexColor(color: FloatingEffectRgb): string {
   return `#${[color.red, color.green, color.blue]
     .map((channel) => clampColorChannel(channel).toString(16).padStart(2, "0"))
     .join("")}`;
+}
+
+export function floatingRunningModelCardBackground(start: string, end: string): string {
+  const theme = mixRgb(parseHexColor(start), parseHexColor(end), 0.5);
+  // Preserve the theme family without compromising the compact card's dark text.
+  return floatingEffectHexColor(mixRgb(theme, { red: 255, green: 255, blue: 255 }, 0.72));
 }
 
 function parseHexColor(value: string): FloatingEffectRgb {

@@ -892,6 +892,23 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertLessThan(hiddenSize.width, FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).width)
     }
 
+    func testRunningModelDetailsBackgroundUsesSoftenedFloatingThemeColor() throws {
+        let appearance = FloatingPanelAppearance(
+            startHex: "#FAF9FF",
+            endHex: "#00C2EF",
+            directionRaw: FloatingPanelGradientDirection.topLeadingToBottomTrailing.rawValue,
+            styleRaw: FloatingPanelGradientStyle.angular.rawValue
+        )
+        let color = try XCTUnwrap(
+            NSColor(appearance.runningModelDetailsBackgroundColor).usingColorSpace(.sRGB)
+        )
+
+        XCTAssertEqual(color.redComponent, 219.0 / 255.0, accuracy: 0.005)
+        XCTAssertEqual(color.greenComponent, 246.0 / 255.0, accuracy: 0.005)
+        XCTAssertEqual(color.blueComponent, 253.0 / 255.0, accuracy: 0.005)
+        XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.001)
+    }
+
     func testFloatingPanelReadableTextPaletteCompressesGrayBandIntoBlackOrWhiteFamilies() {
         let lightAppearance = FloatingPanelAppearance(
             startHex: "#FFFFFF",
@@ -1902,9 +1919,25 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             ),
             encoding: .utf8
         )
+        let panel = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingTokenPanel.swift"),
+            encoding: .utf8
+        )
+        let guide = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelPagingGuide.swift"),
+            encoding: .utf8
+        )
 
         XCTAssertTrue(source.contains(".stroke(Color.white.opacity(0.92)"))
+        XCTAssertTrue(source.contains("let appearance: FloatingPanelAppearance"))
+        XCTAssertTrue(source.contains("appearance.runningModelDetailsBackgroundColor"))
+        XCTAssertFalse(source.contains("Color.white.opacity(0.965)"))
         XCTAssertFalse(source.contains(".shadow("))
+        XCTAssertGreaterThanOrEqual(
+            panel.components(separatedBy: "appearance: appearance").count - 1,
+            3
+        )
+        XCTAssertTrue(guide.contains("appearance: appearance"))
     }
 
     func testStructureEditorShowsInsertionPreviewAndAcceptsHiddenDrops() throws {

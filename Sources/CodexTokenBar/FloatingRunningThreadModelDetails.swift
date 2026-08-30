@@ -80,6 +80,7 @@ struct FloatingRunningThreadModelDetailsCard: View {
     let scale: CGFloat
     let width: CGFloat
     let height: CGFloat
+    let appearance: FloatingPanelAppearance
     var isDemo = false
     var onClose: (() -> Void)? = nil
 
@@ -140,7 +141,7 @@ struct FloatingRunningThreadModelDetailsCard: View {
         .padding(10.scaled(by: scale))
         .frame(width: width, height: height, alignment: .topLeading)
         .background(
-            Color.white.opacity(0.965),
+            appearance.runningModelDetailsBackgroundColor,
             in: RoundedRectangle(cornerRadius: 12.scaled(by: scale), style: .continuous)
         )
         .overlay {

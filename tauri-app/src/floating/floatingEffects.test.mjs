@@ -156,6 +156,7 @@ test("settings preview owns the same visual variables as the real floating windo
   assert.match(floatingPresentationSource, /"--floating-scale": settings\.scale\.toFixed\(2\)/);
   assert.match(floatingPresentationSource, /"--floating-card-opacity": settings\.opacity\.toFixed\(2\)/);
   assert.match(floatingPresentationSource, /"--floating-gradient-background": floatingGradientBackground\(settings\)/);
+  assert.match(floatingPresentationSource, /"--floating-running-model-card-background": floatingRunningModelCardBackground\(/);
   assert.match(floatingPresentationSource, /"--floating-effect-color": floatingEffectHexColor\(effectRgb\)/);
   assert.match(floatingPresentationSource, /"--floating-effect-rgb": `\$\{effectRgb\.red\}, \$\{effectRgb\.green\}, \$\{effectRgb\.blue\}`/);
   assert.match(stylesSource, /\.floating-panel-surface::before\s*{[^}]*background: var\(--floating-gradient-background\);[^}]*opacity: var\(--floating-card-opacity\);/s);

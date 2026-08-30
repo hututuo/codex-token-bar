@@ -78,6 +78,7 @@ struct FloatingPanelPagingGuide: View {
     let isLastPage: Bool
     @Binding var showsArrowGlyphs: Bool
     let scale: CGFloat
+    let appearance: FloatingPanelAppearance
     let surfaceWidth: CGFloat
     let surfaceHeight: CGFloat
     let targetY: CGFloat
@@ -283,6 +284,7 @@ struct FloatingPanelPagingGuide: View {
             scale: scale,
             width: demoWidth,
             height: demoHeight,
+            appearance: appearance,
             isDemo: true
         )
         .position(x: demoX, y: demoY)

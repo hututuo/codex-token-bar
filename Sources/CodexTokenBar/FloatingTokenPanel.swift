@@ -881,6 +881,7 @@ struct FloatingTokenPanelView: View {
                     scale: scale,
                     width: FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(by: scale),
                     height: max(0, size.height - 8.scaled(by: scale)),
+                    appearance: appearance,
                     isDemo: false,
                     onClose: {
                         runningModelDetailsSessionState.dismiss()
@@ -906,6 +907,7 @@ struct FloatingTokenPanelView: View {
                         }
                     ),
                     scale: scale,
+                    appearance: appearance,
                     surfaceWidth: surfaceSize.width,
                     surfaceHeight: surfaceSize.height,
                     targetY: pagingGuideTargetY,

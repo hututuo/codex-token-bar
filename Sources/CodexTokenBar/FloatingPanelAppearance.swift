@@ -474,6 +474,14 @@ struct FloatingPanelAppearance: Equatable {
         Color(floatingPanelHex: endHex) ?? Color(floatingPanelHex: Self.defaultEndHex) ?? AppTheme.raisedBackground
     }
 
+    var runningModelDetailsBackgroundColor: Color {
+        // Keep the card recognizably tied to the configured theme while
+        // preserving reliable contrast for its compact dark labels.
+        averagedRGB
+            .mixed(with: .white, progress: 0.72)
+            .color
+    }
+
     var direction: FloatingPanelGradientDirection {
         FloatingPanelGradientDirection(rawValue: directionRaw) ?? FloatingPanelGradientDirection(rawValue: Self.defaultDirection) ?? .topLeadingToBottomTrailing
     }

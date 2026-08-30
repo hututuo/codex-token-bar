@@ -8566,6 +8566,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   --floating-effect-color: #1f6ed2;
   --floating-effect-rgb: 31, 110, 210;
   --floating-gradient-background: linear-gradient(135deg, #ffffff, #daefff);
+  --floating-running-model-card-background: #fafdff;
   --floating-scale: 1;
   display: grid;
   width: 100vw;
@@ -9049,7 +9050,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   padding: calc(10px * var(--floating-scale));
   border: 1px solid rgba(255, 255, 255, 0.92);
   border-radius: calc(12px * var(--floating-scale));
-  background: rgba(255, 255, 255, 0.965);
+  background: var(--floating-running-model-card-background);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
   color: #131b28;
   cursor: default;
