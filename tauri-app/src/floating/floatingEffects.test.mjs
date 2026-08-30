@@ -182,7 +182,7 @@ test("ripple atlas ignores stale async render results", () => {
 
 test("floating panel keeps compact Swift proportions with complete readable text", () => {
   assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?border-radius: calc\(14px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?width: min\(calc\(308px \* var\(--floating-scale\)\), calc\(100vw - 2px\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?width: min\(calc\(\(308px \* var\(--floating-scale\)\) - 2px\), calc\(100vw - 2px\)\);/);
   assert.match(previewSource, /className="floating-rate-readout"/);
   assert.match(stylesSource, /\.floating-topline\s*{[\s\S]*?grid-template-columns: calc\(92px \* var\(--floating-scale\)\) minmax\(0, 1fr\);[\s\S]*?column-gap: calc\(8px \* var\(--floating-scale\)\);[\s\S]*?padding-right: calc\(17px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-readout\s*{[\s\S]*?grid-template-columns: calc\(64px \* var\(--floating-scale\)\) calc\(22px \* var\(--floating-scale\)\);[\s\S]*?column-gap: calc\(4px \* var\(--floating-scale\)\);/);

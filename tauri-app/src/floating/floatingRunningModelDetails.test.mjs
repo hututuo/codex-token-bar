@@ -160,6 +160,21 @@ test("running model details card keeps its border without an outer drop shadow",
   assert.doesNotMatch(block, /rgba\(17, 25, 38, 0\.19\)/);
 });
 
+test("expanded running-model card preserves the rounded base panel geometry", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
+  const shellBlock = css.match(/\.floating-window-shell--running-model-details \{([\s\S]*?)\n\}/)?.[1];
+  const surfaceBlock = css.match(/\.floating-panel-surface \{([\s\S]*?)\n\}/)?.[1];
+  const fillBlock = css.match(/\.floating-panel-surface::before \{([\s\S]*?)\n\}/)?.[1];
+
+  assert.ok(shellBlock);
+  assert.ok(surfaceBlock);
+  assert.ok(fillBlock);
+  assert.match(shellBlock, /padding-left: 1px/);
+  assert.match(surfaceBlock, /width: min\(calc\(\(308px \* var\(--floating-scale\)\) - 2px\), calc\(100vw - 2px\)\)/);
+  assert.match(fillBlock, /border-radius: inherit/);
+});
+
 test("running model details card derives a softened color from the floating theme", async () => {
   await withSsrModules(async (load) => {
     const {
