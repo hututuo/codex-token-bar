@@ -53,4 +53,7 @@ pub use settings::{
     UsageRefreshSettingsSnapshot,
     AUTO_RESUME_TASK_COLLECTION_VERSION, STATUS_METRIC_IDS, STATUS_SUMMARY_SECTION_IDS,
 };
-pub use thread_activity::{RunningThreadModelBreakdown, RunningThreadSummary};
+pub use thread_activity::{
+    RunningThreadGroup, RunningThreadMember, RunningThreadModelBreakdown,
+    RunningThreadSummary,
+};

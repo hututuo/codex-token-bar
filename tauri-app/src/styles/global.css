@@ -9050,7 +9050,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   z-index: 9 !important;
   display: grid;
   width: calc(260px * var(--floating-scale));
-  height: calc(154px * var(--floating-scale));
+  height: auto;
+  min-height: calc(88px * var(--floating-scale));
   box-sizing: border-box;
   grid-template-rows: auto minmax(0, 1fr);
   gap: calc(7px * var(--floating-scale));
@@ -9128,86 +9129,164 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   cursor: default;
 }
 
-.floating-running-model-columns {
+.floating-running-model-table {
   display: grid;
   min-height: 0;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: calc(8px * var(--floating-scale));
+  gap: 0;
 }
 
-.floating-running-model-section {
-  min-width: 0;
-  min-height: 0;
+.floating-running-model-column-labels,
+.floating-running-model-group-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  column-gap: calc(8px * var(--floating-scale));
 }
 
-.floating-running-model-section + .floating-running-model-section {
-  padding-left: calc(8px * var(--floating-scale));
-  border-left: 1px solid rgba(35, 46, 61, 0.12);
-}
-
-.floating-running-model-section h3 {
-  margin: 0 0 calc(6px * var(--floating-scale));
-  color: #505c6d;
-  font-size: calc(8.8px * var(--floating-scale));
+.floating-running-model-column-labels {
+  padding: 0 calc(4px * var(--floating-scale)) calc(5px * var(--floating-scale));
+  color: #596576;
+  font-size: calc(8.6px * var(--floating-scale));
   font-weight: var(--weight-bold);
   line-height: 1;
 }
 
-.floating-running-model-section h3 b {
+.floating-running-model-column-labels span + span {
+  padding-left: calc(7px * var(--floating-scale));
+  border-left: 1px solid rgba(35, 46, 61, 0.12);
+}
+
+.floating-running-model-column-labels b {
   color: #131b28;
   font-variant-numeric: tabular-nums;
 }
 
-.floating-running-model-section > p {
-  margin: 0;
-  color: #798493;
-  font-size: calc(8.4px * var(--floating-scale));
-  font-weight: var(--weight-medium);
+.floating-running-model-group-row {
+  position: relative;
+  min-height: calc(25px * var(--floating-scale));
+  align-items: center;
+  padding: calc(5px * var(--floating-scale)) calc(4px * var(--floating-scale));
+  border-top: 1px solid rgba(35, 46, 61, 0.09);
 }
 
-.floating-running-model-list {
-  display: grid;
-  max-height: calc(91px * var(--floating-scale));
-  gap: calc(6px * var(--floating-scale));
-  overflow: auto;
-  scrollbar-width: none;
-}
-
-.floating-running-model-list::-webkit-scrollbar {
-  display: none;
-}
-
-.floating-running-model-list > span {
+.floating-running-model-main {
+  position: relative;
   display: grid;
   min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: calc(4px * var(--floating-scale));
+  padding: calc(3px * var(--floating-scale)) calc(4px * var(--floating-scale));
+  border-radius: calc(6px * var(--floating-scale));
+  outline: none;
 }
 
-.floating-running-model-list i {
+.floating-running-model-main:hover,
+.floating-running-model-main:focus-visible {
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.floating-running-model-main i,
+.floating-running-model-badge i {
   width: calc(5px * var(--floating-scale));
   height: calc(5px * var(--floating-scale));
   border-radius: 50%;
 }
 
-.floating-running-model-list em {
+.floating-running-model-main em,
+.floating-running-model-badge em {
   min-width: 0;
   color: #131b28;
-  font-size: calc(8.5px * var(--floating-scale));
+  font-size: calc(8.4px * var(--floating-scale));
   font-style: normal;
   font-weight: var(--weight-semibold);
-  line-height: 1.08;
+  line-height: 1.12;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.floating-running-model-list b {
+.floating-running-model-subagent-group {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--floating-scale));
+  padding-left: calc(7px * var(--floating-scale));
+  border-left: 1px solid rgba(35, 46, 61, 0.12);
+}
+
+.floating-running-model-badge {
+  display: inline-grid;
+  max-width: 100%;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: calc(3px * var(--floating-scale));
+  padding: calc(3px * var(--floating-scale)) calc(5px * var(--floating-scale));
+  border: 1px solid rgba(45, 73, 105, 0.10);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.floating-running-model-badge b {
   color: #505c6d;
-  font-size: calc(8.3px * var(--floating-scale));
+  font-size: calc(8px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
   font-weight: var(--weight-bold);
+}
+
+.floating-running-model-no-subagents {
+  min-width: 0;
+  padding-left: calc(7px * var(--floating-scale));
+  border-left: 1px solid rgba(35, 46, 61, 0.12);
+  color: #7a8594;
+  font-size: calc(8.2px * var(--floating-scale));
+  font-weight: var(--weight-medium);
+}
+
+.floating-running-model-unassigned-label {
+  color: #7a5b4b;
+  font-size: calc(8.3px * var(--floating-scale));
+  font-weight: var(--weight-bold);
+}
+
+.floating-running-model-title-tooltip {
+  position: absolute;
+  top: calc(100% + calc(3px * var(--floating-scale)));
+  left: 0;
+  z-index: 14;
+  display: none;
+  width: max-content;
+  max-width: calc(210px * var(--floating-scale));
+  box-sizing: border-box;
+  padding: calc(6px * var(--floating-scale)) calc(8px * var(--floating-scale));
+  border: 1px solid rgba(35, 46, 61, 0.14);
+  border-radius: calc(7px * var(--floating-scale));
+  background: #ffffff;
+  box-shadow: 0 calc(3px * var(--floating-scale)) calc(10px * var(--floating-scale)) rgba(17, 25, 38, 0.12);
+  color: #243044;
+  font-size: calc(8.6px * var(--floating-scale));
+  font-weight: var(--weight-medium);
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.floating-running-model-group-row:last-child .floating-running-model-title-tooltip {
+  top: auto;
+  bottom: calc(100% + calc(3px * var(--floating-scale)));
+}
+
+.floating-running-model-main:hover .floating-running-model-title-tooltip,
+.floating-running-model-main:focus-visible .floating-running-model-title-tooltip {
+  display: block;
+}
+
+.floating-running-model-empty {
+  margin: 0;
+  padding: calc(9px * var(--floating-scale)) calc(4px * var(--floating-scale));
+  border-top: 1px solid rgba(35, 46, 61, 0.09);
+  color: #798493;
+  font-size: calc(8.4px * var(--floating-scale));
+  font-weight: var(--weight-medium);
+  text-align: center;
 }
 
 .floating-running-model-guide-target {

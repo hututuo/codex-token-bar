@@ -3,8 +3,14 @@ use super::dashboard::{
     CodexHomeSourceToken,
 };
 use super::window_auth::require_window_label;
-use crate::core::thread_activity::{RunningThreadCounts, ThreadActivityScanner};
-use crate::models::{RunningThreadModelBreakdown, RunningThreadSummary};
+use crate::core::thread_activity::{
+    RunningThreadCounts, RunningThreadGroup as CoreRunningThreadGroup,
+    RunningThreadMember as CoreRunningThreadMember, ThreadActivityScanner,
+};
+use crate::models::{
+    RunningThreadGroup, RunningThreadMember, RunningThreadModelBreakdown,
+    RunningThreadSummary,
+};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -142,6 +148,8 @@ fn scanning_summary() -> RunningThreadSummary {
         subagents: None,
         main_models: Vec::new(),
         subagent_models: Vec::new(),
+        groups: Vec::new(),
+        unassigned_subagents: Vec::new(),
         status: "scanning".into(),
         updated_at: None,
         detail: "正在读取当前数据源的会话生命周期".into(),
@@ -173,6 +181,16 @@ fn ready_summary(counts: RunningThreadCounts) -> RunningThreadSummary {
                 count: row.count,
             })
             .collect(),
+        groups: counts
+            .groups
+            .into_iter()
+            .map(model_group)
+            .collect(),
+        unassigned_subagents: counts
+            .unassigned_subagents
+            .into_iter()
+            .map(model_member)
+            .collect(),
         status: "ready".into(),
         updated_at: Some(unix_ms_now()),
         detail: "按每个会话最新生命周期统计；24 小时仅用于淘汰无新文件活动的孤儿运行态".into(),
@@ -197,10 +215,28 @@ fn stale_or_unavailable_summary(
         subagents: None,
         main_models: Vec::new(),
         subagent_models: Vec::new(),
+        groups: Vec::new(),
+        unassigned_subagents: Vec::new(),
         status: "unavailable".into(),
         updated_at: None,
         detail: format!("运行线程暂不可用：{error}"),
         liveness_lease_hours: LIVENESS_LEASE_HOURS,
+    }
+}
+
+fn model_group(group: CoreRunningThreadGroup) -> RunningThreadGroup {
+    RunningThreadGroup {
+        main_thread: model_member(group.main_thread),
+        subagents: group.subagents.into_iter().map(model_member).collect(),
+    }
+}
+
+fn model_member(member: CoreRunningThreadMember) -> RunningThreadMember {
+    RunningThreadMember {
+        thread_id: member.thread_id,
+        title: member.title,
+        model: member.model,
+        reasoning_effort: member.reasoning_effort,
     }
 }
 

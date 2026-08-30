@@ -19,6 +19,8 @@ pub struct RunningThreadCounts {
     pub subagents: u32,
     pub main_models: Vec<RunningThreadModelBreakdown>,
     pub subagent_models: Vec<RunningThreadModelBreakdown>,
+    pub groups: Vec<RunningThreadGroup>,
+    pub unassigned_subagents: Vec<RunningThreadMember>,
 }
 
 impl RunningThreadCounts {
@@ -34,6 +36,20 @@ pub struct RunningThreadModelBreakdown {
     pub count: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningThreadMember {
+    pub thread_id: String,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningThreadGroup {
+    pub main_thread: RunningThreadMember,
+    pub subagents: Vec<RunningThreadMember>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct SessionFileCandidates {
     paths: Vec<PathBuf>,
@@ -46,12 +62,16 @@ struct DatabaseSessionRecord {
     session_id: String,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    title: Option<String>,
+    parent_thread_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct SessionModelConfiguration {
     model: Option<String>,
     reasoning_effort: Option<String>,
+    title: Option<String>,
+    parent_thread_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -68,6 +88,7 @@ struct TrackedSession {
     lifecycle_known: bool,
     running: bool,
     subagent: bool,
+    parent_thread_id: Option<String>,
     lifecycle_at: Option<SystemTime>,
     last_activity: SystemTime,
 }
@@ -76,6 +97,7 @@ struct TrackedSession {
 struct SessionMetadata {
     id: String,
     subagent: bool,
+    parent_thread_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -185,6 +207,8 @@ impl ThreadActivityScanner {
         let mut counts = RunningThreadCounts::default();
         let mut main_models = HashMap::<(Option<String>, Option<String>), u32>::new();
         let mut subagent_models = HashMap::<(Option<String>, Option<String>), u32>::new();
+        let mut grouped_mains = Vec::<(SystemTime, RunningThreadGroup)>::new();
+        let mut running_subagents = Vec::<&TrackedSession>::new();
         for session in preferred_by_id.values().filter(|session| session.running) {
             let configuration = candidates
                 .configurations_by_session_id
@@ -197,12 +221,61 @@ impl ThreadActivityScanner {
                 counts.subagents = counts.subagents.saturating_add(1);
                 let value = subagent_models.entry(key).or_default();
                 *value = value.saturating_add(1);
+                running_subagents.push(session);
             } else {
                 counts.main_threads = counts.main_threads.saturating_add(1);
                 let value = main_models.entry(key).or_default();
                 *value = value.saturating_add(1);
+                grouped_mains.push((
+                    session.last_activity,
+                    RunningThreadGroup {
+                        main_thread: running_thread_member(session, configuration),
+                        subagents: Vec::new(),
+                    },
+                ));
             }
         }
+        let main_group_indexes = grouped_mains
+            .iter()
+            .enumerate()
+            .map(|(index, (_, group))| (group.main_thread.thread_id.clone(), index))
+            .collect::<HashMap<_, _>>();
+        for session in running_subagents {
+            let configuration = candidates
+                .configurations_by_session_id
+                .get(session.session_id.as_str());
+            let member = running_thread_member(session, configuration);
+            let root_main_id = root_running_main_thread_id(
+                session,
+                &preferred_by_id,
+                &candidates.configurations_by_session_id,
+            );
+            if let Some(index) = root_main_id
+                .as_ref()
+                .and_then(|thread_id| main_group_indexes.get(thread_id))
+                .copied()
+            {
+                grouped_mains[index].1.subagents.push(member);
+            } else {
+                counts.unassigned_subagents.push(member);
+            }
+        }
+        for (_, group) in &mut grouped_mains {
+            group.subagents.sort_by(compare_running_thread_members);
+        }
+        counts
+            .unassigned_subagents
+            .sort_by(compare_running_thread_members);
+        grouped_mains.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.main_thread.thread_id.cmp(&right.1.main_thread.thread_id))
+        });
+        counts.groups = grouped_mains
+            .into_iter()
+            .map(|(_, group)| group)
+            .collect();
         counts.main_models = model_breakdowns(main_models);
         counts.subagent_models = model_breakdowns(subagent_models);
         Ok(counts)
@@ -228,6 +301,8 @@ fn collect_recent_session_files(
                         SessionModelConfiguration {
                             model: record.model,
                             reasoning_effort: record.reasoning_effort,
+                            title: record.title,
+                            parent_thread_id: record.parent_thread_id,
                         },
                     );
                 }
@@ -365,19 +440,33 @@ fn recent_database_session_records(
     } else {
         "''"
     };
+    let title = if columns.contains("title") {
+        "COALESCE(title, '')"
+    } else {
+        "''"
+    };
+    let source = if columns.contains("source") {
+        "COALESCE(source, '')"
+    } else {
+        "''"
+    };
     let sql = format!(
-        "SELECT rollout_path, {session_id}, {model}, {reasoning_effort} FROM threads WHERE {archived} = 0 AND {updated} >= ?1"
+        "SELECT rollout_path, {session_id}, {model}, {reasoning_effort}, {title}, {source} FROM threads WHERE {archived} = 0 AND {updated} >= ?1"
     );
     let mut statement = connection.prepare(&sql).ok()?;
     let records = statement
         .query_map([cutoff_ms], |row| {
             let model = row.get::<_, String>(2)?;
             let reasoning_effort = row.get::<_, String>(3)?;
+            let title = row.get::<_, String>(4)?;
+            let source = row.get::<_, String>(5)?;
             Ok(DatabaseSessionRecord {
                 path: PathBuf::from(row.get::<_, String>(0)?),
                 session_id: row.get::<_, String>(1)?.trim().to_string(),
                 model: cleaned_database_value(model),
                 reasoning_effort: cleaned_database_value(reasoning_effort),
+                title: cleaned_thread_title(title),
+                parent_thread_id: parent_thread_id_from_source(&source),
             })
         })
         .ok()?
@@ -390,6 +479,96 @@ fn recent_database_session_records(
 fn cleaned_database_value(value: String) -> Option<String> {
     let cleaned = value.trim();
     (!cleaned.is_empty()).then(|| cleaned.to_string())
+}
+
+fn cleaned_thread_title(value: String) -> Option<String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    const MAX_TITLE_CHARACTERS: usize = 96;
+    if normalized.chars().count() <= MAX_TITLE_CHARACTERS {
+        return Some(normalized);
+    }
+    let mut shortened = normalized
+        .chars()
+        .take(MAX_TITLE_CHARACTERS.saturating_sub(1))
+        .collect::<String>();
+    shortened.push('…');
+    Some(shortened)
+}
+
+fn parent_thread_id_from_source(source: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(source).ok()?;
+    nested_parent_thread_id(&value)
+}
+
+fn nested_parent_thread_id(value: &Value) -> Option<String> {
+    match value {
+        Value::Array(values) => values.iter().find_map(nested_parent_thread_id),
+        Value::Object(values) => {
+            for key in ["parent_thread_id", "parentThreadId"] {
+                if let Some(thread_id) = values
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|thread_id| !thread_id.is_empty())
+                {
+                    return Some(thread_id.to_string());
+                }
+            }
+            values.values().find_map(nested_parent_thread_id)
+        }
+        _ => None,
+    }
+}
+
+fn running_thread_member(
+    session: &TrackedSession,
+    configuration: Option<&SessionModelConfiguration>,
+) -> RunningThreadMember {
+    RunningThreadMember {
+        thread_id: session.session_id.clone(),
+        title: configuration.and_then(|value| value.title.clone()),
+        model: configuration.and_then(|value| value.model.clone()),
+        reasoning_effort: configuration.and_then(|value| value.reasoning_effort.clone()),
+    }
+}
+
+fn root_running_main_thread_id(
+    session: &TrackedSession,
+    sessions_by_id: &HashMap<&str, &TrackedSession>,
+    configurations_by_session_id: &HashMap<String, SessionModelConfiguration>,
+) -> Option<String> {
+    let mut parent_thread_id = configurations_by_session_id
+        .get(session.session_id.as_str())
+        .and_then(|value| value.parent_thread_id.clone())
+        .or_else(|| session.parent_thread_id.clone());
+    let mut visited = HashSet::new();
+    while let Some(thread_id) = parent_thread_id {
+        if !visited.insert(thread_id.clone()) {
+            return None;
+        }
+        let parent = sessions_by_id.get(thread_id.as_str())?;
+        if !parent.subagent {
+            return parent.running.then_some(thread_id);
+        }
+        parent_thread_id = configurations_by_session_id
+            .get(parent.session_id.as_str())
+            .and_then(|value| value.parent_thread_id.clone())
+            .or_else(|| parent.parent_thread_id.clone());
+    }
+    None
+}
+
+fn compare_running_thread_members(
+    left: &RunningThreadMember,
+    right: &RunningThreadMember,
+) -> std::cmp::Ordering {
+    left.model
+        .cmp(&right.model)
+        .then_with(|| left.reasoning_effort.cmp(&right.reasoning_effort))
+        .then_with(|| left.thread_id.cmp(&right.thread_id))
 }
 
 fn model_breakdowns(
@@ -537,6 +716,7 @@ fn cold_scan_open_file(
         lifecycle_known: lifecycle.is_some(),
         running: lifecycle.is_some_and(|observation| observation.running),
         subagent: metadata.subagent,
+        parent_thread_id: metadata.parent_thread_id,
         lifecycle_at: lifecycle.and_then(|observation| observation.observed_at),
         last_activity: signature_modified_time(signature),
     })
@@ -611,6 +791,7 @@ fn read_session_metadata(
         metadata = Some(SessionMetadata {
             id: id.to_string(),
             subagent: session_meta_is_subagent(&value),
+            parent_thread_id: nested_parent_thread_id(payload),
         });
         true
     })?;
@@ -1433,6 +1614,132 @@ mod tests {
                 count: 1,
             }]
         );
+    }
+
+    #[test]
+    fn running_threads_are_grouped_under_their_root_main_with_titles() {
+        let home = TestHome::new();
+        let main = home.session();
+        let direct = main.with_file_name("rollout-direct-subagent.jsonl");
+        let nested = main.with_file_name("rollout-nested-subagent.jsonl");
+        let orphan = main.with_file_name("rollout-orphan-subagent.jsonl");
+        fs::write(
+            &main,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"main-group\",\"source\":\"cli\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &direct,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"direct-sub\",",
+                "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"main-group\"}}}}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &nested,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"nested-sub\",",
+                "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"direct-sub\"}}}}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &orphan,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"orphan-sub\",",
+                "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"missing-main\"}}}}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let connection = rusqlite::Connection::open(home.root.join("state_5.sqlite")).unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE threads (
+                    id TEXT,
+                    rollout_path TEXT,
+                    title TEXT,
+                    source TEXT,
+                    model TEXT,
+                    reasoning_effort TEXT,
+                    updated_at INTEGER,
+                    archived INTEGER
+                );
+                ",
+            )
+            .unwrap();
+        let updated_at = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        for (id, path, title, source, model, effort) in [
+            (
+                "main-group",
+                &main,
+                "  Main   conversation\n title  ",
+                "cli",
+                "gpt-5.6-sol",
+                "ultra",
+            ),
+            (
+                "direct-sub",
+                &direct,
+                "",
+                r#"{"subagent":{"thread_spawn":{"parent_thread_id":"main-group"}}}"#,
+                "gpt-5.6-luna",
+                "max",
+            ),
+            (
+                "nested-sub",
+                &nested,
+                "",
+                r#"{"subagent":{"thread_spawn":{"parent_thread_id":"direct-sub"}}}"#,
+                "gpt-5.6-sol",
+                "high",
+            ),
+            (
+                "orphan-sub",
+                &orphan,
+                "",
+                r#"{"subagent":{"thread_spawn":{"parent_thread_id":"missing-main"}}}"#,
+                "gpt-5.6-luna",
+                "xhigh",
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO threads (id, rollout_path, title, source, model, reasoning_effort, updated_at, archived) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+                    rusqlite::params![id, path.to_string_lossy(), title, source, model, effort, updated_at],
+                )
+                .unwrap();
+        }
+
+        let counts = ThreadActivityScanner::default().scan(&home.root).unwrap();
+
+        assert_eq!(counts.groups.len(), 1);
+        assert_eq!(counts.groups[0].main_thread.thread_id, "main-group");
+        assert_eq!(
+            counts.groups[0].main_thread.title.as_deref(),
+            Some("Main conversation title")
+        );
+        assert_eq!(
+            counts.groups[0]
+                .subagents
+                .iter()
+                .map(|member| member.thread_id.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["direct-sub", "nested-sub"])
+        );
+        assert_eq!(counts.unassigned_subagents.len(), 1);
+        assert_eq!(counts.unassigned_subagents[0].thread_id, "orphan-sub");
     }
 
     #[test]

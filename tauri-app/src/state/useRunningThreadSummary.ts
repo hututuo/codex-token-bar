@@ -11,6 +11,8 @@ export const PENDING_RUNNING_THREAD_SUMMARY: RunningThreadSummary = {
   subagents: null,
   mainModels: [],
   subagentModels: [],
+  groups: [],
+  unassignedSubagents: [],
   status: "scanning",
   updatedAt: null,
   detail: "正在读取当前数据源的会话生命周期",

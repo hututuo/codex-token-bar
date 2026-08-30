@@ -1,4 +1,4 @@
-import { type CSSProperties, type MouseEvent, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { type CSSProperties, type MouseEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { completeFloatingPagingGuide, readAppSettings, recordStartupEvent } from "../api/client";
@@ -73,6 +73,9 @@ export function FloatingWindowApp() {
   const [pagingGuideSaving, setPagingGuideSaving] = useState(false);
   const [pagingGuideError, setPagingGuideError] = useState<string | null>(null);
   const [runningModelDetailsExpanded, setRunningModelDetailsExpanded] = useState(false);
+  const [runningModelDetailsHeight, setRunningModelDetailsHeight] = useState(
+    FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT,
+  );
   const settingsEventGenerationRef = useRef(0);
   const displaySettingsEventGenerationRef = useRef(0);
   const appSettingsEventGenerationRef = useRef(0);
@@ -278,6 +281,11 @@ export function FloatingWindowApp() {
     }
   }, [contentHasRunningThreadDetailsTarget]);
 
+  const handleRunningModelDetailsHeightChange = useCallback((height: number) => {
+    const next = Math.max(1, Math.ceil(height));
+    setRunningModelDetailsHeight((current) => current === next ? current : next);
+  }, []);
+
   useEffect(() => {
     if (!effectiveRunningModelDetailsExpanded) {
       return undefined;
@@ -309,17 +317,22 @@ export function FloatingWindowApp() {
       )
         * presentedSettings.scale,
       Math.max(
-        height,
-        pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT : 0,
-        effectiveRunningModelDetailsExpanded ? FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT : 0,
-      )
-        * presentedSettings.scale,
+        height * presentedSettings.scale,
+        pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT * presentedSettings.scale : 0,
+        effectiveRunningModelDetailsExpanded
+          ? Math.max(
+              FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * presentedSettings.scale,
+              runningModelDetailsHeight + 8 * presentedSettings.scale,
+            )
+          : 0,
+      ),
     );
   }, [
     effectiveRunningModelDetailsExpanded,
     pagingGuidePresented,
     presentedSettings.contentVisibility,
     presentedSettings.scale,
+    runningModelDetailsHeight,
   ]);
 
   function closeFloatingWindow() {
@@ -494,6 +507,7 @@ export function FloatingWindowApp() {
         ) : effectiveRunningModelDetailsExpanded ? (
           <FloatingRunningThreadModelDetails
             onClose={() => setRunningModelDetailsExpanded(false)}
+            onHeightChange={handleRunningModelDetailsHeightChange}
             summary={runningThreads}
           />
         ) : null}

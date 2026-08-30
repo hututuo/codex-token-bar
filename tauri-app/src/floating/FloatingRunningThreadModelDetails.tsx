@@ -1,5 +1,8 @@
+import { useEffect, useRef } from "react";
 import { modelUsageColor, modelUsageLabel } from "../components/modelUsagePresentation";
 import type {
+  RunningThreadGroup,
+  RunningThreadMember,
   RunningThreadModelBreakdown,
   RunningThreadSummary,
 } from "../types/threadActivity";
@@ -61,18 +64,44 @@ export function FloatingRunningThreadModelDetails({
   demo = false,
   className = "",
   onClose,
+  onHeightChange,
 }: {
   summary: RunningThreadSummary;
   demo?: boolean;
   className?: string;
   onClose?: () => void;
+  onHeightChange?: (height: number) => void;
 }) {
+  const detailsRef = useRef<HTMLElement>(null);
+  const groups = summary.groups ?? [];
+  const unassignedSubagents = summary.unassignedSubagents ?? [];
+
+  useEffect(() => {
+    const element = detailsRef.current;
+    if (!element || !onHeightChange) {
+      return undefined;
+    }
+    const reportHeight = () => {
+      const height = Math.ceil(element.getBoundingClientRect().height);
+      if (height > 0) onHeightChange(height);
+    };
+    reportHeight();
+    if (typeof ResizeObserver === "undefined") {
+      return undefined;
+    }
+    const observer = new ResizeObserver(reportHeight);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [groups, onHeightChange, unassignedSubagents]);
+
+  const rowCount = groups.length + (unassignedSubagents.length > 0 ? 1 : 0);
   return (
     <section
       aria-label={demo ? "运行模型详情示例" : "运行模型详情"}
       className={`floating-running-model-details${className ? ` ${className}` : ""}`}
       onDoubleClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
+      ref={detailsRef}
     >
       <header>
         <strong>运行模型详情</strong>
@@ -88,22 +117,99 @@ export function FloatingRunningThreadModelDetails({
           >×</button>
         </span>
       </header>
-      <div className="floating-running-model-columns">
-        <RunningModelSection
-          count={summary.mainThreads ?? 0}
-          status={summary.status}
-          rows={runningThreadModelDisplayRows(summary.mainModels ?? [], summary.mainThreads ?? 0)}
-          title="主线程"
-        />
-        <RunningModelSection
-          count={summary.subagents ?? 0}
-          status={summary.status}
-          rows={runningThreadModelDisplayRows(summary.subagentModels ?? [], summary.subagents ?? 0)}
-          title="子 Agent"
-        />
+      <div className="floating-running-model-table">
+        <div aria-hidden="true" className="floating-running-model-column-labels">
+          <span>主线程 <b>{summary.mainThreads ?? 0}</b></span>
+          <span>子 Agent <b>{summary.subagents ?? 0}</b></span>
+        </div>
+        {groups.map((group) => (
+          <RunningThreadGroupRow group={group} key={group.mainThread.threadId} />
+        ))}
+        {unassignedSubagents.length > 0 ? (
+          <div className="floating-running-model-group-row floating-running-model-group-row--unassigned">
+            <span className="floating-running-model-unassigned-label">未关联</span>
+            <RunningSubagentModels members={unassignedSubagents} />
+          </div>
+        ) : null}
+        {rowCount === 0 ? (
+          <p className="floating-running-model-empty">{summary.status === "scanning"
+            ? "正在读取运行线程…"
+            : (summary.status === "unavailable" ? "运行线程暂不可用" : "暂无运行线程")}</p>
+        ) : null}
       </div>
     </section>
   );
+}
+
+function RunningThreadGroupRow({ group }: { group: RunningThreadGroup }) {
+  const title = group.mainThread.title?.trim() || "会话标题暂未读取";
+  const tooltipId = `floating-main-title-${group.mainThread.threadId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  return (
+    <div className="floating-running-model-group-row">
+      <span
+        aria-describedby={tooltipId}
+        className="floating-running-model-main"
+        tabIndex={0}
+      >
+        <ModelDot model={group.mainThread.model} />
+        <em>{runningThreadMemberLabel(group.mainThread)}</em>
+        <span className="floating-running-model-title-tooltip" id={tooltipId} role="tooltip">
+          {title}
+        </span>
+      </span>
+      <RunningSubagentModels members={group.subagents} />
+    </div>
+  );
+}
+
+function RunningSubagentModels({ members }: { members: RunningThreadMember[] }) {
+  const rows = groupedRunningThreadMembers(members);
+  if (rows.length === 0) {
+    return <span className="floating-running-model-no-subagents">暂无子 Agent</span>;
+  }
+  return (
+    <span className="floating-running-model-subagent-group">
+      {rows.map((row) => (
+        <span aria-label={`${row.title}，${row.count} 个`} className="floating-running-model-badge" key={row.id}>
+          <ModelDot model={row.model} />
+          <em>{row.title}</em>
+          {row.count > 1 ? <b>×{row.count}</b> : null}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function ModelDot({ model }: { model: string | null }) {
+  return <i aria-hidden="true" style={{ backgroundColor: modelUsageColor(model) }} />;
+}
+
+function runningThreadMemberLabel(member: RunningThreadMember): string {
+  const model = member.model ? modelUsageLabel(member.model) : "配置同步中";
+  const effort = member.reasoningEffort?.trim();
+  return effort ? `${model} · ${effort}` : model;
+}
+
+function groupedRunningThreadMembers(members: RunningThreadMember[]): RunningThreadModelDisplayRow[] {
+  const grouped = new Map<string, RunningThreadModelDisplayRow>();
+  for (const member of members) {
+    const title = runningThreadMemberLabel(member);
+    const key = `${member.model ?? "unknown"}|${member.reasoningEffort?.trim() || "unknown"}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      grouped.set(key, {
+        id: key,
+        model: member.model,
+        title,
+        count: 1,
+      });
+    }
+  }
+  return Array.from(grouped.values()).sort((left, right) => (
+    right.count - left.count || left.title.localeCompare(right.title)
+  ));
 }
 
 function hasPendingRunningModelConfiguration(summary: RunningThreadSummary): boolean {
@@ -117,39 +223,6 @@ function hasPendingRunningModelConfiguration(summary: RunningThreadSummary): boo
     || resolvedSubagents < (summary.subagents ?? 0);
 }
 
-function RunningModelSection({
-  count,
-  rows,
-  status,
-  title,
-}: {
-  count: number;
-  rows: RunningThreadModelDisplayRow[];
-  status: RunningThreadSummary["status"];
-  title: string;
-}) {
-  return (
-    <section className="floating-running-model-section">
-      <h3>{title} <b>{count}</b></h3>
-      {rows.length === 0 ? (
-        <p>{status === "scanning"
-          ? "读取中…"
-          : (status === "unavailable" ? "暂不可用" : "暂无运行")}</p>
-      ) : (
-        <div className="floating-running-model-list">
-          {rows.map((row) => (
-            <span aria-label={`${row.title}，${row.count} 个`} key={row.id}>
-              <i aria-hidden="true" style={{ backgroundColor: modelUsageColor(row.model) }} />
-              <em>{row.title}</em>
-              <b>×{row.count}</b>
-            </span>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
 export const FLOATING_RUNNING_MODEL_GUIDE_DEMO: RunningThreadSummary = {
   total: 5,
   mainThreads: 3,
@@ -161,6 +234,49 @@ export const FLOATING_RUNNING_MODEL_GUIDE_DEMO: RunningThreadSummary = {
   subagentModels: [
     { model: "gpt-5.6-luna", reasoningEffort: "max", count: 2 },
   ],
+  groups: [
+    {
+      mainThread: {
+        threadId: "guide-main-one",
+        title: "整理本周模型使用情况",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "ultra",
+      },
+      subagents: [
+        {
+          threadId: "guide-sub-one",
+          title: null,
+          model: "gpt-5.6-luna",
+          reasoningEffort: "max",
+        },
+        {
+          threadId: "guide-sub-two",
+          title: null,
+          model: "gpt-5.6-luna",
+          reasoningEffort: "max",
+        },
+      ],
+    },
+    {
+      mainThread: {
+        threadId: "guide-main-two",
+        title: "检查悬浮窗视觉细节",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "ultra",
+      },
+      subagents: [],
+    },
+    {
+      mainThread: {
+        threadId: "guide-main-three",
+        title: "更新使用说明",
+        model: "gpt-5.6-luna",
+        reasoningEffort: "max",
+      },
+      subagents: [],
+    },
+  ],
+  unassignedSubagents: [],
   status: "ready",
   updatedAt: null,
   detail: "引导示例",

@@ -33,7 +33,7 @@ test("main/sub count area is a click target that does not start panel drag", asy
         const trigger = container.querySelector(".floating-running-model-trigger");
         assert.ok(trigger);
         assert.equal(trigger.getAttribute("aria-expanded"), "false");
-        assert.match(trigger.textContent, /主 2子 1/);
+        assert.match(trigger.textContent, /主 2子 2/);
 
         await React.act(async () => trigger.dispatchEvent(new dom.MouseEvent("mousedown", {
           bubbles: true,
@@ -53,7 +53,7 @@ test("main/sub count area is a click target that does not start panel drag", asy
   }
 });
 
-test("running model card renders model, effort, counts, and unresolved fallback", async () => {
+test("running model card renders parent-grouped models, effort, and title tooltip", async () => {
   await withSsrModules(async (load) => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -95,9 +95,29 @@ test("running model card renders model, effort, counts, and unresolved fallback"
     assert.match(html, /运行模型详情/);
     assert.match(html, /Sol · ultra/);
     assert.match(html, /Luna · max/);
-    assert.match(html, /×2/);
+    assert.match(html, /第二个主会话/);
+    assert.match(html, /role="tooltip"/);
+    assert.match(html, /未关联/);
     assert.match(html, /aria-label="关闭运行模型详情"/);
   });
+});
+
+test("running model card and floating window size themselves from grouped rows", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
+  const card = css.match(/\.floating-running-model-details \{([\s\S]*?)\n\}/)?.[1];
+  const row = css.match(/\.floating-running-model-group-row \{([\s\S]*?)\n\}/)?.[1];
+  const app = await readFile(new URL("./FloatingWindowApp.tsx", import.meta.url), "utf8");
+  const details = await readFile(new URL("./FloatingRunningThreadModelDetails.tsx", import.meta.url), "utf8");
+
+  assert.ok(card);
+  assert.ok(row);
+  assert.match(card, /height: auto/);
+  assert.match(row, /grid-template-columns:/);
+  assert.match(details, /ResizeObserver/);
+  assert.match(details, /onHeightChange/);
+  assert.match(app, /runningModelDetailsHeight/);
+  assert.match(app, /onHeightChange=\{handleRunningModelDetailsHeightChange\}/);
 });
 
 test("running model close button invokes the supplied dismiss action", async () => {
@@ -218,14 +238,50 @@ test("running-model guide keeps the panel overflow open outside paging demo mode
 
 function runningSummaryFixture() {
   return {
-    total: 3,
+    total: 4,
     mainThreads: 2,
-    subagents: 1,
+    subagents: 2,
     mainModels: [
       { model: "gpt-5.6-sol", reasoningEffort: "ultra", count: 2 },
     ],
     subagentModels: [
       { model: "gpt-5.6-luna", reasoningEffort: "max", count: 1 },
+      { model: "gpt-5.6-luna", reasoningEffort: "xhigh", count: 1 },
+    ],
+    groups: [
+      {
+        mainThread: {
+          threadId: "main-one",
+          title: "第一个主会话",
+          model: "gpt-5.6-sol",
+          reasoningEffort: "ultra",
+        },
+        subagents: [
+          {
+            threadId: "sub-one",
+            title: null,
+            model: "gpt-5.6-luna",
+            reasoningEffort: "max",
+          },
+        ],
+      },
+      {
+        mainThread: {
+          threadId: "main-two",
+          title: "第二个主会话",
+          model: "gpt-5.6-sol",
+          reasoningEffort: "ultra",
+        },
+        subagents: [],
+      },
+    ],
+    unassignedSubagents: [
+      {
+        threadId: "sub-orphan",
+        title: null,
+        model: "gpt-5.6-luna",
+        reasoningEffort: "xhigh",
+      },
     ],
     status: "ready",
     updatedAt: 0,
