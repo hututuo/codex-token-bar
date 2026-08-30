@@ -67,6 +67,7 @@ interface FloatingPanelSurfaceProps {
   runningModelDetailsExpanded?: boolean;
   onRunningThreadsActivate?: () => void;
   guideMode?: boolean;
+  guideOverlayVisible?: boolean;
   overlay?: ReactNode;
 }
 
@@ -236,6 +237,7 @@ export function FloatingPanelSurface({
   runningModelDetailsExpanded = false,
   onRunningThreadsActivate,
   guideMode = false,
+  guideOverlayVisible = false,
   overlay,
 }: FloatingPanelSurfaceProps) {
   const presentationSettings = useMemo(
@@ -268,6 +270,7 @@ export function FloatingPanelSurface({
     <aside
       className={`floating-panel-surface${previewMode ? " floating-panel-surface--preview" : ""}`}
       data-guide-mode={guideMode ? "true" : undefined}
+      data-guide-overlay-visible={guideOverlayVisible ? "true" : undefined}
       data-running-model-details={runningModelDetailsExpanded ? "true" : undefined}
       aria-label={`悬浮窗，${snapshot.unreadSummary.label}`}
       onMouseDown={previewMode ? undefined : onDragStart}

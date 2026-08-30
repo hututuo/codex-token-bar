@@ -469,6 +469,7 @@ export function FloatingWindowApp() {
           setRunningModelDetailsExpanded((expanded) => !expanded);
         }}
         guideMode={pagingGuidePresented && activePagingGuidePage === "paging"}
+        guideOverlayVisible={pagingGuidePresented}
         overlay={pagingGuidePresented ? (
           <FloatingPagingGuide
             page={activePagingGuidePage}

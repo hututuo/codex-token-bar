@@ -182,6 +182,25 @@ test("running model details card derives a softened color from the floating them
   });
 });
 
+test("running-model guide keeps the panel overflow open outside paging demo mode", async () => {
+  await withSsrModules(async (load) => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { FloatingPanelSurface } = await load("/src/floating/FloatingPanelPreview.tsx");
+
+    const html = renderToStaticMarkup(React.createElement(FloatingPanelSurface, {
+      settings: floatingSettingsFixture(),
+      snapshot: floatingSnapshotFixture(),
+      guideMode: false,
+      guideOverlayVisible: true,
+      overlay: React.createElement("button", { type: "button" }, "开始体验"),
+    }));
+
+    assert.match(html, /data-guide-overlay-visible="true"/);
+    assert.match(html, />开始体验<\/button>/);
+  });
+});
+
 function runningSummaryFixture() {
   return {
     total: 3,
