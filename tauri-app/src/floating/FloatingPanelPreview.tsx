@@ -22,6 +22,7 @@ import type {
 import {
   embedsRunningThreadsInMetricsRow,
   embedsUsageStatusInRateRow,
+  floatingContentHeight,
   floatingContentRowHeight,
   initialFloatingPageIndex,
   layoutFloatingContentRows,
@@ -260,6 +261,7 @@ export function FloatingPanelSurface({
   );
   const rootStyle = {
     ...appearanceStyle,
+    "--floating-content-height": `${floatingContentHeight(presentationSettings.contentVisibility)}px`,
     "--floating-primary": rootPalette.primary,
     "--floating-secondary": rootPalette.secondary,
     "--floating-muted": rootPalette.muted,
