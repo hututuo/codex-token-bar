@@ -440,8 +440,8 @@ fn recent_database_session_records(
     } else {
         "''"
     };
-    let title = if columns.contains("title") {
-        "COALESCE(title, '')"
+    let title = if columns.contains("name") {
+        "COALESCE(name, '')"
     } else {
         "''"
     };
@@ -1666,7 +1666,7 @@ mod tests {
                 CREATE TABLE threads (
                     id TEXT,
                     rollout_path TEXT,
-                    title TEXT,
+                    name TEXT,
                     source TEXT,
                     model TEXT,
                     reasoning_effort TEXT,
@@ -1716,7 +1716,7 @@ mod tests {
         ] {
             connection
                 .execute(
-                    "INSERT INTO threads (id, rollout_path, title, source, model, reasoning_effort, updated_at, archived) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+                    "INSERT INTO threads (id, rollout_path, name, source, model, reasoning_effort, updated_at, archived) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
                     rusqlite::params![id, path.to_string_lossy(), title, source, model, effort, updated_at],
                 )
                 .unwrap();

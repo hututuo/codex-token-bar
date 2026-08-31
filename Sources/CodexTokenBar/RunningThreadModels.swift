@@ -29,11 +29,47 @@ struct RunningThreadModelBreakdown: Equatable, Hashable, Sendable, Identifiable 
     }
 }
 
+struct RunningThreadMember: Equatable, Hashable, Sendable, Identifiable {
+    let threadID: String
+    let title: String?
+    let model: String?
+    let reasoningEffort: String?
+
+    init(
+        threadID: String,
+        title: String?,
+        model: String?,
+        reasoningEffort: String?
+    ) {
+        self.threadID = threadID
+        self.title = Self.cleaned(title)
+        self.model = Self.cleaned(model)
+        self.reasoningEffort = Self.cleaned(reasoningEffort)
+    }
+
+    var id: String { threadID }
+
+    private static func cleaned(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+}
+
+struct RunningThreadGroup: Equatable, Hashable, Sendable, Identifiable {
+    let mainThread: RunningThreadMember
+    let subagents: [RunningThreadMember]
+
+    var id: String { mainThread.threadID }
+}
+
 struct RunningThreadSummary: Equatable, Sendable {
     let main: Int
     let subagents: Int
     let mainModels: [RunningThreadModelBreakdown]
     let subagentModels: [RunningThreadModelBreakdown]
+    let groups: [RunningThreadGroup]
+    let unassignedSubagents: [RunningThreadMember]
     /// The time at which the source was successfully checked. This is not a
     /// claim that the underlying session data changed at this time.
     let lastCheckedAt: Date?
@@ -49,6 +85,8 @@ struct RunningThreadSummary: Equatable, Sendable {
         subagents: Int,
         mainModels: [RunningThreadModelBreakdown] = [],
         subagentModels: [RunningThreadModelBreakdown] = [],
+        groups: [RunningThreadGroup] = [],
+        unassignedSubagents: [RunningThreadMember] = [],
         updatedAt: Date?,
         freshness: RunningThreadFreshness
     ) {
@@ -57,6 +95,8 @@ struct RunningThreadSummary: Equatable, Sendable {
             subagents: subagents,
             mainModels: mainModels,
             subagentModels: subagentModels,
+            groups: groups,
+            unassignedSubagents: unassignedSubagents,
             lastCheckedAt: updatedAt,
             dataUpdatedAt: updatedAt,
             summaryRevision: 0,
@@ -69,6 +109,8 @@ struct RunningThreadSummary: Equatable, Sendable {
         subagents: Int,
         mainModels: [RunningThreadModelBreakdown] = [],
         subagentModels: [RunningThreadModelBreakdown] = [],
+        groups: [RunningThreadGroup] = [],
+        unassignedSubagents: [RunningThreadMember] = [],
         lastCheckedAt: Date? = nil,
         dataUpdatedAt: Date? = nil,
         summaryRevision: UInt64 = 0,
@@ -78,6 +120,8 @@ struct RunningThreadSummary: Equatable, Sendable {
         self.subagents = max(0, subagents)
         self.mainModels = mainModels.filter { $0.count > 0 }
         self.subagentModels = subagentModels.filter { $0.count > 0 }
+        self.groups = groups
+        self.unassignedSubagents = unassignedSubagents
         self.lastCheckedAt = lastCheckedAt
         self.dataUpdatedAt = dataUpdatedAt
         self.summaryRevision = summaryRevision
@@ -92,6 +136,29 @@ struct RunningThreadSummary: Equatable, Sendable {
 
     var total: Int {
         main + subagents
+    }
+
+    var runningModelDetailsRowCount: Int {
+        groups.count + (unassignedSubagents.isEmpty ? 0 : 1)
+    }
+
+    var runningModelDetailsRowUnits: Int {
+        let groupedUnits = groups.reduce(0) { partial, group in
+            partial + max(1, Self.distinctConfigurationCount(in: group.subagents))
+        }
+        guard !unassignedSubagents.isEmpty else { return groupedUnits }
+        return groupedUnits + max(
+            1,
+            Self.distinctConfigurationCount(in: unassignedSubagents)
+        )
+    }
+
+    private static func distinctConfigurationCount(
+        in members: [RunningThreadMember]
+    ) -> Int {
+        Set(members.map {
+            "\($0.model ?? "unknown")|\($0.reasoningEffort ?? "unknown")"
+        }).count
     }
 
     static let loading = RunningThreadSummary(
@@ -117,6 +184,8 @@ struct RunningThreadSummary: Equatable, Sendable {
             subagents: subagents,
             mainModels: mainModels,
             subagentModels: subagentModels,
+            groups: groups,
+            unassignedSubagents: unassignedSubagents,
             lastCheckedAt: lastCheckedAt,
             dataUpdatedAt: dataUpdatedAt,
             summaryRevision: summaryRevision,
@@ -167,6 +236,7 @@ struct RunningThreadFileState: Equatable, Sendable {
     var boundarySignature: UInt64
     var sessionID: String
     var isSubagent: Bool
+    var parentThreadID: String?
     var lifecycle: RunningThreadLifecycle
     var lifecycleAt: Date?
     var modifiedAt: Date

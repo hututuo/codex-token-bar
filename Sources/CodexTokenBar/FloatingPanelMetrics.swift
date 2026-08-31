@@ -37,9 +37,11 @@ enum FloatingTokenPanelMetrics {
     // height for that card instead of stretching the whole panel vertically.
     static let pagingGuideHeight: CGFloat = 240
     static let runningModelDetailsGap: CGFloat = 10
-    static let runningModelDetailsWidth: CGFloat = 230
+    static let runningModelDetailsWidth: CGFloat = 260
     static let runningModelDetailsTrailingInset: CGFloat = 8
-    static let runningModelDetailsMinimumHeight: CGFloat = 162
+    static let runningModelDetailsMinimumHeight: CGFloat = 96
+    static let runningModelDetailsBaseHeight: CGFloat = 60
+    static let runningModelDetailsRowHeight: CGFloat = 27
     static let defaultScale = 1.0
     static let scaleRange = 0.75...2.0
 
@@ -74,13 +76,15 @@ enum FloatingTokenPanelMetrics {
         scale: Double,
         visibility: FloatingPanelContentVisibility,
         pagingGuidePresented: Bool = false,
-        runningModelDetailsPresented: Bool = false
+        runningModelDetailsPresented: Bool = false,
+        runningModelDetailsRowUnits: Int = 0
     ) -> NSSize {
         size(
             effectiveScale: clampedScale(scale),
             visibility: visibility,
             pagingGuidePresented: pagingGuidePresented,
-            runningModelDetailsPresented: runningModelDetailsPresented
+            runningModelDetailsPresented: runningModelDetailsPresented,
+            runningModelDetailsRowUnits: runningModelDetailsRowUnits
         )
     }
 
@@ -88,12 +92,14 @@ enum FloatingTokenPanelMetrics {
         effectiveScale: CGFloat,
         visibility: FloatingPanelContentVisibility,
         pagingGuidePresented: Bool = false,
-        runningModelDetailsPresented: Bool = false
+        runningModelDetailsPresented: Bool = false,
+        runningModelDetailsRowUnits: Int = 0
     ) -> NSSize {
         let unscaled = unscaledSize(
             visibility: visibility,
             pagingGuidePresented: pagingGuidePresented,
-            runningModelDetailsPresented: runningModelDetailsPresented
+            runningModelDetailsPresented: runningModelDetailsPresented,
+            runningModelDetailsRowUnits: runningModelDetailsRowUnits
         )
         return NSSize(
             width: ceil(unscaled.width * effectiveScale),
@@ -111,6 +117,14 @@ enum FloatingTokenPanelMetrics {
             partial + spacing(between: pair.0.primaryGroup, and: pair.1.primaryGroup)
         }
         return rowHeights + interRowSpacing
+    }
+
+    static func runningModelDetailsHeight(rowCount: Int) -> CGFloat {
+        max(
+            runningModelDetailsMinimumHeight,
+            runningModelDetailsBaseHeight
+                + CGFloat(max(1, rowCount)) * runningModelDetailsRowHeight
+        )
     }
 
     static func firstPagedRowCenterY(
@@ -260,7 +274,8 @@ enum FloatingTokenPanelMetrics {
     private static func unscaledSize(
         visibility: FloatingPanelContentVisibility,
         pagingGuidePresented: Bool = false,
-        runningModelDetailsPresented: Bool = false
+        runningModelDetailsPresented: Bool = false,
+        runningModelDetailsRowUnits: Int = 0
     ) -> NSSize {
         let rows = visibility.layoutRows
         guard !rows.isEmpty else { return minimumControlSize }
@@ -282,7 +297,9 @@ enum FloatingTokenPanelMetrics {
         let height = max(
             max(
                 visibility == .default ? baseSize.height : computedHeight,
-                runningModelDetailsPresented ? runningModelDetailsMinimumHeight : 0
+                runningModelDetailsPresented
+                    ? runningModelDetailsHeight(rowCount: runningModelDetailsRowUnits)
+                    : 0
             ),
             pagingGuidePresented ? pagingGuideHeight : 0
         )
@@ -311,14 +328,16 @@ struct FloatingTokenPanelLayout: Equatable {
         scale: FloatingTokenPanelScale,
         visibility: FloatingPanelContentVisibility,
         pagingGuidePresented: Bool = false,
-        runningModelDetailsPresented: Bool = false
+        runningModelDetailsPresented: Bool = false,
+        runningModelDetailsRowUnits: Int = 0
     ) {
         effectiveScale = scale.value
         size = FloatingTokenPanelMetrics.size(
             effectiveScale: scale.value,
             visibility: visibility,
             pagingGuidePresented: pagingGuidePresented,
-            runningModelDetailsPresented: runningModelDetailsPresented
+            runningModelDetailsPresented: runningModelDetailsPresented,
+            runningModelDetailsRowUnits: runningModelDetailsRowUnits
         )
         cornerRadius = FloatingTokenPanelMetrics.baseCornerRadius * scale.value
     }

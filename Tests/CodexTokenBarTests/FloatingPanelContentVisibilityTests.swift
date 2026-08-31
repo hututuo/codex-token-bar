@@ -225,6 +225,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             expanded.height,
             FloatingTokenPanelMetrics.runningModelDetailsMinimumHeight
         )
+        XCTAssertGreaterThan(
+            FloatingTokenPanelMetrics.runningModelDetailsHeight(rowCount: 5),
+            FloatingTokenPanelMetrics.runningModelDetailsHeight(rowCount: 2)
+        )
     }
 
     func testRunningModelDisplayRowsIncludeModelEffortAndUnresolvedCount() {
@@ -1896,7 +1900,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(panel.contains("runningModelDetailsSessionState.toggle()"))
         XCTAssertTrue(panel.contains("dismissRunningModelDetails()"))
         XCTAssertTrue(panel.contains("FloatingRunningModelDetailsDismissalPolicy.shouldDismissForWindowClick"))
-        XCTAssertTrue(guide.contains("右上角 ×"))
+        XCTAssertTrue(guide.contains("悬停主线程可查看会话标题"))
         XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.24)"))
         XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.38)"))
         XCTAssertFalse(guide.contains("LinearGradient("))
@@ -1931,6 +1935,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains(".stroke(Color.white.opacity(0.92)"))
         XCTAssertTrue(source.contains("let appearance: FloatingPanelAppearance"))
         XCTAssertTrue(source.contains("appearance.runningModelDetailsBackgroundColor"))
+        XCTAssertTrue(source.contains(".help(member.title ?? \"会话标题暂未生成\")"))
         XCTAssertFalse(source.contains("Color.white.opacity(0.965)"))
         XCTAssertFalse(source.contains(".shadow("))
         XCTAssertGreaterThanOrEqual(

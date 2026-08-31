@@ -228,7 +228,9 @@ struct FloatingPanelPagingGuide: View {
     @ViewBuilder
     private func runningModelsGuideContent(in size: CGSize) -> some View {
         let demoWidth = FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(by: scale)
-        let demoHeight = 132.scaled(by: scale)
+        let demoHeight = FloatingTokenPanelMetrics.runningModelDetailsHeight(
+            rowCount: RunningThreadSummary.guideModelDetailsDemo.runningModelDetailsRowUnits
+        ).scaled(by: scale)
         let demoX = surfaceWidth
             + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale)
             + demoWidth / 2
@@ -294,7 +296,7 @@ struct FloatingPanelPagingGuide: View {
             Text("点击“主 / 子”查看模型")
                 .font(.system(size: 11.4.scaled(by: scale), weight: .bold))
                 .foregroundStyle(guidePrimaryText)
-            Text("右侧显示模型、思考强度和数量；点空白处或右上角 × 均可收起")
+            Text("右侧按主线程分组显示模型和思考强度；悬停主线程可查看会话标题")
                 .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
                 .foregroundStyle(guideSecondaryText)
                 .multilineTextAlignment(.center)

@@ -401,6 +401,118 @@ final class RunningThreadScannerTests: XCTestCase {
         ])
     }
 
+    func testRunningThreadsGroupUnderRootMainAndPreserveTitle() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let main = fixture.sessions.appendingPathComponent("group-main.jsonl")
+        let direct = fixture.sessions.appendingPathComponent("group-direct.jsonl")
+        let nested = fixture.sessions.appendingPathComponent("group-nested.jsonl")
+        let orphan = fixture.sessions.appendingPathComponent("group-orphan.jsonl")
+        try writeSession(
+            to: main,
+            id: "group-main",
+            metadata: "\"thread_source\":\"user\",\"source\":\"vscode\"",
+            events: [event("task_started", turnID: "main-turn")]
+        )
+        try writeSession(
+            to: direct,
+            id: "group-direct",
+            metadata: "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"group-main\"}}}",
+            events: [event("task_started", turnID: "direct-turn")]
+        )
+        try writeSession(
+            to: nested,
+            id: "group-nested",
+            metadata: "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"group-direct\"}}}",
+            events: [event("task_started", turnID: "nested-turn")]
+        )
+        try writeSession(
+            to: orphan,
+            id: "group-orphan",
+            metadata: "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"missing-main\"}}}",
+            events: [event("task_started", turnID: "orphan-turn")]
+        )
+
+        let database = SQLiteDatabaseDriver(url: fixture.source.stateDatabase)
+        try database.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT,
+                rollout_path TEXT,
+                name TEXT,
+                source TEXT,
+                model TEXT,
+                reasoning_effort TEXT,
+                updated_at INTEGER,
+                archived INTEGER
+            )
+            """
+        )
+        for row in [
+            (
+                "group-main",
+                main.path,
+                "  Main   conversation\n title  ",
+                "vscode",
+                "gpt-5.6-sol",
+                "ultra"
+            ),
+            (
+                "group-direct",
+                direct.path,
+                "",
+                "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"group-main\"}}}",
+                "gpt-5.6-luna",
+                "max"
+            ),
+            (
+                "group-nested",
+                nested.path,
+                "",
+                "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"group-direct\"}}}",
+                "gpt-5.6-sol",
+                "high"
+            ),
+            (
+                "group-orphan",
+                orphan.path,
+                "",
+                "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"missing-main\"}}}",
+                "gpt-5.6-luna",
+                "xhigh"
+            ),
+        ] {
+            try database.execute(
+                """
+                INSERT INTO threads (
+                    id, rollout_path, name, source, model, reasoning_effort, updated_at, archived
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
+                """,
+                bindings: [
+                    .text(row.0),
+                    .text(row.1),
+                    .text(row.2),
+                    .text(row.3),
+                    .text(row.4),
+                    .text(row.5),
+                    .int64(Int64(fixture.now.timeIntervalSince1970)),
+                ]
+            )
+        }
+
+        let summary = try XCTUnwrap(scan(fixture)).summary
+
+        XCTAssertEqual(summary.groups.count, 1)
+        XCTAssertEqual(summary.groups[0].mainThread.threadID, "group-main")
+        XCTAssertEqual(summary.groups[0].mainThread.title, "Main conversation title")
+        XCTAssertEqual(
+            Set(summary.groups[0].subagents.map(\.threadID)),
+            Set(["group-direct", "group-nested"])
+        )
+        XCTAssertEqual(summary.unassignedSubagents.map(\.threadID), ["group-orphan"])
+        XCTAssertEqual(summary.runningModelDetailsRowCount, 2)
+    }
+
     func testMissingActiveModelConfigurationInvalidatesDatabaseCandidateCache() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.home) }

@@ -155,7 +155,8 @@ test("running-model guide points at the main/sub trigger and shows the right-sid
     }));
 
     assert.match(html, /点击“主 \/ 子”查看模型/);
-    assert.match(html, /模型、思考强度和数量/);
+    assert.match(html, /按主线程分组显示模型和思考强度/);
+    assert.match(html, /悬停主线程可查看会话标题/);
     assert.match(html, /floating-running-model-guide-target/);
     assert.match(html, /floating-running-model-details--guide/);
     assert.match(html, /Sol · ultra/);

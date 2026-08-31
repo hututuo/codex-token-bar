@@ -17,6 +17,8 @@ enum RunningThreadScanner {
     private struct SessionModelConfiguration: Equatable, Sendable {
         let model: String?
         let reasoningEffort: String?
+        let title: String?
+        let parentThreadID: String?
     }
 
     private struct SessionModelKey: Hashable {
@@ -39,6 +41,8 @@ enum RunningThreadScanner {
         let sessionID: String
         let model: String?
         let reasoningEffort: String?
+        let title: String?
+        let parentThreadID: String?
     }
 
     private final class DatabaseCandidateCache: @unchecked Sendable {
@@ -97,6 +101,7 @@ enum RunningThreadScanner {
     private struct SessionMetadata {
         let id: String
         let isSubagent: Bool
+        let parentThreadID: String?
     }
 
     private struct LifecycleEvent {
@@ -367,6 +372,12 @@ enum RunningThreadScanner {
                     let reasoningEffortExpression = columns.contains("reasoning_effort")
                         ? "COALESCE(reasoning_effort, '')"
                         : "''"
+                    let titleExpression = columns.contains("name")
+                        ? "COALESCE(name, '')"
+                        : "''"
+                    let sourceExpression = columns.contains("source")
+                        ? "COALESCE(source, '')"
+                        : "''"
                     let updatedExpression: String
                     if columns.contains("updated_at_ms"), columns.contains("updated_at") {
                         updatedExpression = """
@@ -386,7 +397,9 @@ enum RunningThreadScanner {
                         SELECT rollout_path,
                                \(sessionIDExpression),
                                \(modelExpression),
-                               \(reasoningEffortExpression)
+                               \(reasoningEffortExpression),
+                               \(titleExpression),
+                               \(sourceExpression)
                         FROM threads
                         WHERE \(archivedExpression) = 0
                           AND \(updatedExpression) >= ?
@@ -397,7 +410,9 @@ enum RunningThreadScanner {
                             path: statement.text(0) ?? "",
                             sessionID: statement.text(1) ?? "",
                             model: cleanedDatabaseValue(statement.text(2)),
-                            reasoningEffort: cleanedDatabaseValue(statement.text(3))
+                            reasoningEffort: cleanedDatabaseValue(statement.text(3)),
+                            title: cleanedThreadTitle(statement.text(4)),
+                            parentThreadID: parentThreadIDFromSource(statement.text(5))
                         )
                     }
                     let paths = Set(rows.map(\.path).filter { !$0.isEmpty })
@@ -408,7 +423,9 @@ enum RunningThreadScanner {
                                 row.sessionID,
                                 SessionModelConfiguration(
                                     model: row.model,
-                                    reasoningEffort: row.reasoningEffort
+                                    reasoningEffort: row.reasoningEffort,
+                                    title: row.title,
+                                    parentThreadID: row.parentThreadID
                                 )
                             )
                         },
@@ -461,6 +478,41 @@ enum RunningThreadScanner {
         guard let value else { return nil }
         let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private static func cleanedThreadTitle(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !normalized.isEmpty else { return nil }
+        let maximumCharacters = 96
+        guard normalized.count > maximumCharacters else { return normalized }
+        return String(normalized.prefix(maximumCharacters - 1)) + "…"
+    }
+
+    private static func parentThreadIDFromSource(_ source: String?) -> String? {
+        guard let source,
+              let data = source.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+        return parentThreadID(in: value)
+    }
+
+    private static func parentThreadID(in value: Any?) -> String? {
+        if let array = value as? [Any] {
+            return array.lazy.compactMap { parentThreadID(in: $0) }.first
+        }
+        guard let dictionary = value as? [String: Any] else { return nil }
+        for key in ["parent_thread_id", "parentThreadId"] {
+            if let threadID = (dictionary[key] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !threadID.isEmpty {
+                return threadID
+            }
+        }
+        return dictionary.values.lazy.compactMap { parentThreadID(in: $0) }.first
     }
 
     private static func fallbackCandidatePaths(
@@ -616,6 +668,7 @@ enum RunningThreadScanner {
             ),
             sessionID: metadata.id,
             isSubagent: metadata.isSubagent,
+            parentThreadID: metadata.parentThreadID,
             lifecycle: lifecycle?.lifecycle ?? .unknown,
             lifecycleAt: lifecycle?.timestamp,
             modifiedAt: fingerprint.modifiedAt
@@ -672,7 +725,8 @@ enum RunningThreadScanner {
         return SessionMetadata(
             id: id,
             isSubagent: isSubagentMarker(threadSource)
-                || sourceContainsSubagentNode(payload["source"])
+                || sourceContainsSubagentNode(payload["source"]),
+            parentThreadID: parentThreadID(in: payload)
         )
     }
 
@@ -1098,6 +1152,8 @@ enum RunningThreadScanner {
         var subagents = 0
         var mainModels: [SessionModelKey: Int] = [:]
         var subagentModels: [SessionModelKey: Int] = [:]
+        var runningMainStates: [RunningThreadFileState] = []
+        var runningSubagentStates: [RunningThreadFileState] = []
         for state in preferredBySessionID.values where state.lifecycle == .running {
             let configuration = configurationsBySessionID[state.sessionID]
             let key = SessionModelKey(
@@ -1107,16 +1163,55 @@ enum RunningThreadScanner {
             if state.isSubagent {
                 subagents += 1
                 subagentModels[key, default: 0] += 1
+                runningSubagentStates.append(state)
             } else {
                 main += 1
                 mainModels[key, default: 0] += 1
+                runningMainStates.append(state)
             }
         }
+        let runningMainIDs = Set(runningMainStates.map(\.sessionID))
+        var subagentsByRootMainID: [String: [RunningThreadMember]] = [:]
+        var unassignedSubagents: [RunningThreadMember] = []
+        for state in runningSubagentStates {
+            let member = runningThreadMember(
+                state: state,
+                configuration: configurationsBySessionID[state.sessionID]
+            )
+            if let rootMainID = rootRunningMainThreadID(
+                for: state,
+                preferredBySessionID: preferredBySessionID,
+                configurationsBySessionID: configurationsBySessionID
+            ), runningMainIDs.contains(rootMainID) {
+                subagentsByRootMainID[rootMainID, default: []].append(member)
+            } else {
+                unassignedSubagents.append(member)
+            }
+        }
+        let groups = runningMainStates
+            .sorted { lhs, rhs in
+                lhs.modifiedAt == rhs.modifiedAt
+                    ? lhs.sessionID < rhs.sessionID
+                    : lhs.modifiedAt > rhs.modifiedAt
+            }
+            .map { state in
+                RunningThreadGroup(
+                    mainThread: runningThreadMember(
+                        state: state,
+                        configuration: configurationsBySessionID[state.sessionID]
+                    ),
+                    subagents: (subagentsByRootMainID[state.sessionID] ?? [])
+                        .sorted(by: runningThreadMemberSort)
+                )
+            }
+        unassignedSubagents.sort(by: runningThreadMemberSort)
         return RunningThreadSummary(
             main: main,
             subagents: subagents,
             mainModels: modelBreakdowns(from: mainModels),
             subagentModels: modelBreakdowns(from: subagentModels),
+            groups: groups,
+            unassignedSubagents: unassignedSubagents,
             lastCheckedAt: now,
             dataUpdatedAt: states.values
                 .filter { $0.modifiedAt >= cutoff }
@@ -1128,6 +1223,49 @@ enum RunningThreadScanner {
             ),
             freshness: .fresh
         )
+    }
+
+    private static func runningThreadMember(
+        state: RunningThreadFileState,
+        configuration: SessionModelConfiguration?
+    ) -> RunningThreadMember {
+        RunningThreadMember(
+            threadID: state.sessionID,
+            title: configuration?.title,
+            model: configuration?.model,
+            reasoningEffort: configuration?.reasoningEffort
+        )
+    }
+
+    private static func rootRunningMainThreadID(
+        for state: RunningThreadFileState,
+        preferredBySessionID: [String: RunningThreadFileState],
+        configurationsBySessionID: [String: SessionModelConfiguration]
+    ) -> String? {
+        var parentThreadID = configurationsBySessionID[state.sessionID]?.parentThreadID
+            ?? state.parentThreadID
+        var visited: Set<String> = []
+        while let threadID = parentThreadID {
+            guard visited.insert(threadID).inserted,
+                  let parent = preferredBySessionID[threadID] else {
+                return nil
+            }
+            if !parent.isSubagent {
+                return parent.lifecycle == .running ? threadID : nil
+            }
+            parentThreadID = configurationsBySessionID[parent.sessionID]?.parentThreadID
+                ?? parent.parentThreadID
+        }
+        return nil
+    }
+
+    private static func runningThreadMemberSort(
+        _ lhs: RunningThreadMember,
+        _ rhs: RunningThreadMember
+    ) -> Bool {
+        let left = "\(lhs.model ?? "")|\(lhs.reasoningEffort ?? "")|\(lhs.threadID)"
+        let right = "\(rhs.model ?? "")|\(rhs.reasoningEffort ?? "")|\(rhs.threadID)"
+        return left.localizedStandardCompare(right) == .orderedAscending
     }
 
     private static func modelBreakdowns(
@@ -1171,7 +1309,13 @@ enum RunningThreadScanner {
             hash ^= state.isSubagent ? 1 : 0
             hash &*= 1_099_511_628_211
             let configuration = configurationsBySessionID[state.sessionID]
-            for value in [configuration?.model, configuration?.reasoningEffort] {
+            for value in [
+                configuration?.model,
+                configuration?.reasoningEffort,
+                configuration?.title,
+                configuration?.parentThreadID,
+                state.parentThreadID,
+            ] {
                 hash ^= 0xff
                 hash &*= 1_099_511_628_211
                 for byte in (value ?? "").utf8 {

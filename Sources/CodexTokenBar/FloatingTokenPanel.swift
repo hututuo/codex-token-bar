@@ -194,6 +194,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var lastPanelVisibility: FloatingPanelContentVisibility?
     private var lastPagingGuidePresented = false
     private var lastRunningModelDetailsPresented = false
+    private var lastRunningModelDetailsRowUnits = 0
     var lastExternalActivePID: pid_t?
     var lastExternalClickLocation: NSPoint?
     var lastExternalClickAt: Date?
@@ -381,15 +382,20 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         self.onToggleLock = onToggleLock
         self.onOpenDashboard = onOpenDashboard
         let pagingGuidePresented = shouldPresentPagingGuide(visibility: visibility)
+        let runningModelDetailsRowUnits = taskCompletionMonitor
+            .runningThreadSummary
+            .runningModelDetailsRowUnits
         let layout = FloatingTokenPanelLayout(
             scale: scale,
             visibility: visibility,
             pagingGuidePresented: pagingGuidePresented,
-            runningModelDetailsPresented: !pagingGuidePresented && lastRunningModelDetailsPresented
+            runningModelDetailsPresented: !pagingGuidePresented && lastRunningModelDetailsPresented,
+            runningModelDetailsRowUnits: runningModelDetailsRowUnits
         )
         lastPanelScale = scale
         lastPanelVisibility = visibility
         lastPagingGuidePresented = pagingGuidePresented
+        lastRunningModelDetailsRowUnits = runningModelDetailsRowUnits
 
         if panel == nil {
             let hostingController = NSHostingController(
@@ -410,6 +416,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     },
                     onRunningModelDetailsPresentationChanged: { [weak self] presented in
                         self?.setRunningModelDetailsPresented(presented)
+                    },
+                    onRunningModelDetailsRowUnitsChanged: { [weak self] rowUnits in
+                        self?.setRunningModelDetailsRowUnits(rowUnits)
                     },
                     onToggleLock: { [weak self] in
                         self?.onToggleLock?()
@@ -487,6 +496,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 onRunningModelDetailsPresentationChanged: { [weak self] presented in
                     self?.setRunningModelDetailsPresented(presented)
                 },
+                onRunningModelDetailsRowUnitsChanged: { [weak self] rowUnits in
+                    self?.setRunningModelDetailsRowUnits(rowUnits)
+                },
                 onToggleLock: { [weak self] in
                     self?.onToggleLock?()
                 },
@@ -533,7 +545,8 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 scale: lastPanelScale,
                 visibility: lastPanelVisibility,
                 pagingGuidePresented: presented,
-                runningModelDetailsPresented: !presented && lastRunningModelDetailsPresented
+                runningModelDetailsPresented: !presented && lastRunningModelDetailsPresented,
+                runningModelDetailsRowUnits: lastRunningModelDetailsRowUnits
             )
         )
     }
@@ -550,7 +563,27 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 scale: lastPanelScale,
                 visibility: lastPanelVisibility,
                 pagingGuidePresented: lastPagingGuidePresented,
-                runningModelDetailsPresented: presented && !lastPagingGuidePresented
+                runningModelDetailsPresented: presented && !lastPagingGuidePresented,
+                runningModelDetailsRowUnits: lastRunningModelDetailsRowUnits
+            )
+        )
+    }
+
+    private func setRunningModelDetailsRowUnits(_ rowUnits: Int) {
+        let rowUnits = max(0, rowUnits)
+        guard rowUnits != lastRunningModelDetailsRowUnits else { return }
+        lastRunningModelDetailsRowUnits = rowUnits
+        guard lastRunningModelDetailsPresented,
+              !lastPagingGuidePresented,
+              let lastPanelScale,
+              let lastPanelVisibility else { return }
+        updateSize(
+            layout: FloatingTokenPanelLayout(
+                scale: lastPanelScale,
+                visibility: lastPanelVisibility,
+                pagingGuidePresented: false,
+                runningModelDetailsPresented: true,
+                runningModelDetailsRowUnits: rowUnits
             )
         )
     }
@@ -653,6 +686,7 @@ struct FloatingTokenPanelView: View {
     @ObservedObject var runningModelDetailsSessionState: FloatingRunningModelDetailsSessionState
     let onPagingGuidePresentationChanged: (Bool) -> Void
     let onRunningModelDetailsPresentationChanged: (Bool) -> Void
+    let onRunningModelDetailsRowUnitsChanged: (Int) -> Void
     let onToggleLock: () -> Void
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
     @AppStorage(FloatingPanelAppearance.startHexKey) private var floatingPanelGradientStartHex = FloatingPanelAppearance.defaultStartHex
@@ -761,7 +795,8 @@ struct FloatingTokenPanelView: View {
             effectiveScale: scale,
             visibility: visibility,
             pagingGuidePresented: pagingGuidePresented,
-            runningModelDetailsPresented: effectiveRunningModelDetailsPresented
+            runningModelDetailsPresented: effectiveRunningModelDetailsPresented,
+            runningModelDetailsRowUnits: displaySnapshot.runningThreads.runningModelDetailsRowUnits
         )
         let surfaceSize = FloatingTokenPanelMetrics.size(
             effectiveScale: scale,
@@ -928,6 +963,9 @@ struct FloatingTokenPanelView: View {
         .onAppear {
             onPagingGuidePresentationChanged(pagingGuidePresented)
             onRunningModelDetailsPresentationChanged(effectiveRunningModelDetailsPresented)
+            onRunningModelDetailsRowUnitsChanged(
+                displaySnapshot.runningThreads.runningModelDetailsRowUnits
+            )
         }
         .onChange(of: pagingGuidePresented) { _, presented in
             if presented {
@@ -938,6 +976,9 @@ struct FloatingTokenPanelView: View {
         }
         .onChange(of: effectiveRunningModelDetailsPresented) { _, presented in
             onRunningModelDetailsPresentationChanged(presented)
+        }
+        .onChange(of: displaySnapshot.runningThreads.runningModelDetailsRowUnits) { _, rowUnits in
+            onRunningModelDetailsRowUnitsChanged(rowUnits)
         }
         .onChange(of: visibility.hasRunningThreadDetailsTarget) { _, hasTarget in
             if !hasTarget {
