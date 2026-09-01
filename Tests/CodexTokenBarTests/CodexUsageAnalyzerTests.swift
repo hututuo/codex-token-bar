@@ -4500,6 +4500,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         ]
         try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
 
+        CodexUsageHistoryIndex.resetFullContentHashCountForTesting()
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
         XCTAssertEqual(snapshot.stats.totalTokens, 140)
@@ -4508,10 +4509,16 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertNil(cacheBytes.range(of: Data(secretQuestion.utf8)))
         XCTAssertNil(cacheBytes.range(of: Data(secretAnswer.utf8)))
         XCTAssertNotNil(cacheBytes.range(of: Data("CREATE TABLE".utf8)))
+        XCTAssertEqual(
+            CodexUsageHistoryIndex.fullContentHashCountForTesting,
+            0,
+            "a stable cold rebuild must use the parser's streaming hash without rereading the file"
+        )
 
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
+        CodexUsageHistoryIndex.resetFullContentHashCountForTesting()
         let reloaded = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
         XCTAssertEqual(reloaded.stats.totalTokens, 140)
@@ -4522,6 +4529,90 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             0,
             "unchanged sources must not be reopened to hash their first/last bytes"
         )
+        XCTAssertEqual(CodexUsageHistoryIndex.fullContentHashCountForTesting, 0)
+    }
+
+    func testPersistentExactHistoryIndexRebindsDeviceIDDriftWithoutFullRebuild() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerDeviceRebind")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-device-rebind"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        try [
+            try tokenCountLine(
+                timestamp: Date().addingTimeInterval(-60),
+                total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+            )
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: sessionFile.path)
+        let currentDeviceID = try XCTUnwrap(
+            (attributes[.systemNumber] as? NSNumber)?.uint64Value
+        )
+        let storedDeviceID = currentDeviceID == UInt64.max
+            ? currentDeviceID - 1
+            : currentDeviceID + 1
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try database.execute(
+            "UPDATE sources SET device_id = ?;",
+            bindings: [.text(String(storedDeviceID))]
+        )
+        try database.execute(
+            "UPDATE event_enrichment_sources SET device_id = ?;",
+            bindings: [.text(String(storedDeviceID))]
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
+        CodexUsageHistoryIndex.resetFullContentHashCountForTesting()
+        let rebound = try analyzer.loadCompactSummary()
+
+        XCTAssertEqual(rebound?.totalTokens, 120)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(
+            CodexUsageHistoryIndex.sourceContentProbeCountForTesting,
+            1,
+            "device drift should require one bounded content probe"
+        )
+        XCTAssertEqual(
+            CodexUsageHistoryIndex.fullContentHashCountForTesting,
+            0,
+            "device drift must not trigger a full-file hash or staged rebuild"
+        )
+        XCTAssertEqual(
+            try database.readRows("SELECT device_id FROM sources LIMIT 1;") {
+                $0.text(0)
+            }.first,
+            String(currentDeviceID)
+        )
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT device_id FROM event_enrichment_sources LIMIT 1;"
+            ) { $0.text(0) }.first,
+            String(currentDeviceID)
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
+        CodexUsageHistoryIndex.resetFullContentHashCountForTesting()
+        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+        XCTAssertEqual(CodexUsageHistoryIndex.sourceContentProbeCountForTesting, 0)
+        XCTAssertEqual(CodexUsageHistoryIndex.fullContentHashCountForTesting, 0)
     }
 
     func testMalformedSourceCatalogFailsBeforeReopeningSessionFiles() throws {

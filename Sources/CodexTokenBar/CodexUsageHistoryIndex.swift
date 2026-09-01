@@ -950,12 +950,20 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         sourceProbeTestState.reset()
     }
 
+    static func resetFullContentHashCountForTesting() {
+        sourceProbeTestState.resetFullContentHashCount()
+    }
+
     static func resetSynchronizationInvocationCountForTesting() {
         sourceProbeTestState.resetSynchronizationCount()
     }
 
     static var sourceContentProbeCountForTesting: Int {
         sourceProbeTestState.count
+    }
+
+    static var fullContentHashCountForTesting: Int {
+        sourceProbeTestState.fullContentHashCount
     }
 
     static var synchronizationInvocationCountForTesting: Int {
@@ -1502,13 +1510,37 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         )
                         return
                     }
+                    var observedAfterIdentityRecovery: SourceSignature?
                     if let existing,
-                       isTrustedContentProbe(existing.signature.contentProbe),
-                       sourceMetadataMatches(existing.signature, observedMetadata) {
-                        unchangedFiles += 1
-                        return
+                       isTrustedContentProbe(existing.signature.contentProbe) {
+                        if sourceMetadataMatches(existing.signature, observedMetadata) {
+                            unchangedFiles += 1
+                            return
+                        }
+                        if existing.signature.deviceID != observedMetadata.deviceID,
+                           sourceMetadataMatchesIgnoringDeviceID(
+                               existing.signature,
+                               observedMetadata
+                           ) {
+                            let observed = try sourceSignature(
+                                metadata: observedMetadata,
+                                for: file
+                            )
+                            observedAfterIdentityRecovery = observed
+                            if observed.contentProbe == existing.signature.contentProbe {
+                                try rebindSourceDeviceID(
+                                    sourceID: existing.id,
+                                    storedDeviceID: existing.signature.deviceID,
+                                    observedDeviceID: observed.deviceID,
+                                    inode: observed.inode,
+                                    connection: connection
+                                )
+                                unchangedFiles += 1
+                                return
+                            }
+                        }
                     }
-                    let observed = try sourceSignature(
+                    let observed = try observedAfterIdentityRecovery ?? sourceSignature(
                         metadata: observedMetadata,
                         for: file
                     )
@@ -4768,13 +4800,20 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try readHandle.seek(toOffset: offset)
         var remaining = byteCount
         var hasher = SHA256()
+        var reader = CodexBoundedFileReader()
         while remaining > 0 {
-            let data = readHandle.readData(ofLength: Int(min(remaining, 1_048_576)))
-            guard !data.isEmpty else {
+            let requested = Int(min(remaining, UInt64(reader.capacity)))
+            let count = try reader.read(
+                from: readHandle,
+                upToCount: requested,
+                file: file
+            ) { bytes in
+                hasher.update(bufferPointer: bytes)
+            }
+            guard count > 0 else {
                 throw CodexUsageSourceChangedError(path: file.path)
             }
-            hasher.update(data: data)
-            remaining -= UInt64(data.count)
+            remaining -= UInt64(count)
         }
         return CodexUsageAnalyzer.IndexedChunkHash(
             index: index,
@@ -5145,6 +5184,53 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return min(jobCount, resourceCap)
     }
 
+    private func sourceCanContainPrefix(
+        _ prefix: SourceSignature,
+        current: SourceSignature
+    ) -> Bool {
+        current.deviceID == prefix.deviceID
+            && current.inode == prefix.inode
+            && current.size >= prefix.size
+    }
+
+    /// The streaming parser already hashes every byte it consumes. If both
+    /// the open descriptor and the canonical path still have the exact formal
+    /// signature captured before the scan, another full read cannot add any
+    /// evidence. If the file grew during the scan, hash the committed prefix
+    /// once through the path to prove it still names the bytes just parsed.
+    private func validateScannedSourcePrefix(
+        file: URL,
+        readHandle: FileHandle,
+        committedSignature: SourceSignature,
+        expectedContentHash: String
+    ) throws {
+        let handleSignature = try sourceSignature(
+            forOpenHandle: readHandle,
+            file: file
+        )
+        let pathSignature = try sourceSignature(for: file)
+        guard sourceCanContainPrefix(
+                  committedSignature,
+                  current: handleSignature
+              ),
+              sourceCanContainPrefix(
+                  committedSignature,
+                  current: pathSignature
+              ) else {
+            throw CodexUsageSourceChangedError(path: file.path)
+        }
+        guard handleSignature != committedSignature
+                || pathSignature != committedSignature else {
+            return
+        }
+        guard try contentHash(
+            for: file,
+            length: committedSignature.size
+        ) == expectedContentHash else {
+            throw CodexUsageSourceChangedError(path: file.path)
+        }
+    }
+
     private func stageFullRebuild(
         _ job: FullRebuildJob,
         parser: SessionParser
@@ -5307,28 +5393,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 guard result.lastOffset == committedSignature.size else {
                     throw CodexUsageSourceChangedError(path: job.file.path)
                 }
-                let handleSignature = try sourceSignature(
-                    forOpenHandle: readHandle,
-                    file: job.file
+                try validateScannedSourcePrefix(
+                    file: job.file,
+                    readHandle: readHandle,
+                    committedSignature: committedSignature,
+                    expectedContentHash: result.contentHash
                 )
-                let pathSignature = try sourceSignature(for: job.file)
-                guard handleSignature.deviceID == committedSignature.deviceID,
-                      handleSignature.inode == committedSignature.inode,
-                      handleSignature.size >= committedSignature.size,
-                      pathSignature.deviceID == committedSignature.deviceID,
-                      pathSignature.inode == committedSignature.inode,
-                      pathSignature.size >= committedSignature.size,
-                      try contentHash(
-                          forOpenHandle: readHandle,
-                          length: committedSignature.size,
-                          file: job.file
-                      ) == result.contentHash,
-                      try contentHash(
-                          for: job.file,
-                          length: committedSignature.size
-                      ) == result.contentHash else {
-                    throw CodexUsageSourceChangedError(path: job.file.path)
-                }
 
                 let chunkStatement = try transaction.prepare(
                     """
@@ -5667,18 +5737,26 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 let storedChunkCount = try? stage.readRows(
                     "SELECT COUNT(*) FROM chunks;"
                 ) { $0.int(0) ?? -1 }.first
+                let currentSignature = try? self.sourceSignature(for: job.file)
                 guard databaseSize == actualBytes,
                       storedEventCount == eventCount,
                       storedFingerprintCount == fingerprintCount,
                       storedChunkCount == chunkCount,
-                      signature.deviceID == job.observedSignature.deviceID,
-                      signature.inode == job.observedSignature.inode,
-                      signature.size <= job.observedSignature.size,
+                      self.sourceCanContainPrefix(
+                          signature,
+                          current: job.observedSignature
+                      ),
+                      let currentSignature,
+                      self.sourceCanContainPrefix(
+                          signature,
+                          current: currentSignature
+                      ),
                       rawResumeOffset <= rawSize,
-                      (try? self.contentHash(
-                          for: job.file,
-                          length: signature.size
-                      )) == prefixSHA256 else {
+                      currentSignature == signature
+                        || (try? self.contentHash(
+                            for: job.file,
+                            length: signature.size
+                        )) == prefixSHA256 else {
                     return nil
                 }
                 return StagedFullRebuild(
@@ -6339,12 +6417,62 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         _ stored: SourceSignature,
         _ observed: SourceSignature
     ) -> Bool {
+        sourceMetadataMatchesIgnoringDeviceID(stored, observed)
+            && stored.deviceID == observed.deviceID
+    }
+
+    private func sourceMetadataMatchesIgnoringDeviceID(
+        _ stored: SourceSignature,
+        _ observed: SourceSignature
+    ) -> Bool {
         stored.size == observed.size
             && stored.modifiedAt == observed.modifiedAt
-            && stored.deviceID == observed.deviceID
             && stored.inode == observed.inode
             && stored.statusChangedSeconds == observed.statusChangedSeconds
             && stored.statusChangedNanoseconds == observed.statusChangedNanoseconds
+    }
+
+    /// APFS can report a different `st_dev` for the same mounted volume after
+    /// an OS/storage transition. Treat that field as a rebindable locator only
+    /// after every stable metadata field and the bounded content probe agree.
+    /// Updating the enrichment row in the same transaction prevents the next
+    /// refresh from mistaking this identity repair for a parser migration.
+    private func rebindSourceDeviceID(
+        sourceID: Int64,
+        storedDeviceID: UInt64,
+        observedDeviceID: UInt64,
+        inode: UInt64,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        guard storedDeviceID != observedDeviceID else { return }
+        try connection.transaction { transaction in
+            try transaction.execute(
+                """
+                UPDATE sources
+                SET device_id = ?
+                WHERE source_id = ? AND device_id = ? AND inode = ?;
+                """,
+                bindings: [
+                    .text(String(observedDeviceID)),
+                    .int64(sourceID),
+                    .text(String(storedDeviceID)),
+                    .text(String(inode)),
+                ]
+            )
+            try transaction.execute(
+                """
+                UPDATE event_enrichment_sources
+                SET device_id = ?
+                WHERE source_id = ? AND device_id = ? AND inode = ?;
+                """,
+                bindings: [
+                    .text(String(observedDeviceID)),
+                    .int64(sourceID),
+                    .text(String(storedDeviceID)),
+                    .text(String(inode)),
+                ]
+            )
+        }
     }
 
     private func isTrustedContentProbe(_ value: String) -> Bool {
@@ -6365,18 +6493,25 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         length: UInt64,
         file: URL
     ) throws -> String {
+        Self.sourceProbeTestState.recordFullContentHash()
         try handle.seek(toOffset: 0)
 
         var remaining = length
         var hasher = SHA256()
+        var reader = CodexBoundedFileReader()
         while remaining > 0 {
-            let chunkSize = Int(min(remaining, 1_048_576))
-            let data = handle.readData(ofLength: chunkSize)
-            guard !data.isEmpty else {
+            let requested = Int(min(remaining, UInt64(reader.capacity)))
+            let count = try reader.read(
+                from: handle,
+                upToCount: requested,
+                file: file
+            ) { bytes in
+                hasher.update(bufferPointer: bytes)
+            }
+            guard count > 0 else {
                 throw CodexUsageSourceChangedError(path: file.path)
             }
-            hasher.update(data: data)
-            remaining -= UInt64(data.count)
+            remaining -= UInt64(count)
         }
         return hasher.finalize()
             .map { String(format: "%02x", $0) }
@@ -6606,6 +6741,7 @@ private final class CodexUsageHistoryStagingTestState: @unchecked Sendable {
 private final class CodexUsageHistorySourceProbeTestState: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
+    private var fullContentHashes = 0
     private var synchronizations = 0
 
     func record() {
@@ -6617,6 +6753,18 @@ private final class CodexUsageHistorySourceProbeTestState: @unchecked Sendable {
     func reset() {
         lock.lock()
         value = 0
+        lock.unlock()
+    }
+
+    func recordFullContentHash() {
+        lock.lock()
+        fullContentHashes += 1
+        lock.unlock()
+    }
+
+    func resetFullContentHashCount() {
+        lock.lock()
+        fullContentHashes = 0
         lock.unlock()
     }
 
@@ -6636,6 +6784,12 @@ private final class CodexUsageHistorySourceProbeTestState: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return value
+    }
+
+    var fullContentHashCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return fullContentHashes
     }
 
     var synchronizationCount: Int {

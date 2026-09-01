@@ -47,7 +47,7 @@ private struct IndexedSessionChunkHasher {
         self.validationBoundary = validationBoundary
     }
 
-    mutating func update(_ data: Data) {
+    mutating func update(_ data: UnsafeRawBufferPointer) {
         var consumed = 0
         while consumed < data.count {
             let chunkRemaining = Self.chunkSize - chunkByteCount
@@ -63,7 +63,11 @@ private struct IndexedSessionChunkHasher {
                 continue
             }
             let count = Int(amount)
-            chunkHasher.update(data: data[consumed..<(consumed + count)])
+            chunkHasher.update(
+                bufferPointer: UnsafeRawBufferPointer(
+                    rebasing: data[consumed..<(consumed + count)]
+                )
+            )
             chunkByteCount += amount
             absoluteOffset += amount
             consumed += count
@@ -1000,16 +1004,22 @@ extension CodexUsageAnalyzer {
                 validationBoundary: validationBoundary
             )
         }
+        var reader = CodexBoundedFileReader()
         var skipRemaining = offset - hashingOffset
         while skipRemaining > 0 {
-            let requested = Int(min(skipRemaining, 1_048_576))
-            let data = handle.readData(ofLength: requested)
-            guard !data.isEmpty else {
+            let requested = Int(min(skipRemaining, UInt64(reader.capacity)))
+            let count = try reader.read(
+                from: handle,
+                upToCount: requested,
+                file: file
+            ) { bytes in
+                hasher.update(bufferPointer: bytes)
+                chunkHasher?.update(bytes)
+            }
+            guard count > 0 else {
                 throw CodexUsageSourceChangedError(path: file.path)
             }
-            hasher.update(data: data)
-            chunkHasher?.update(data)
-            skipRemaining -= UInt64(data.count)
+            skipRemaining -= UInt64(count)
         }
 
         var pending = Data()
@@ -1029,19 +1039,23 @@ extension CodexUsageAnalyzer {
             if let endOffset {
                 guard pendingStartOffset + UInt64(pending.count) < endOffset else { break }
                 let remaining = endOffset - (pendingStartOffset + UInt64(pending.count))
-                requestedBytes = min(1_048_576, Int(min(remaining, UInt64(Int.max))))
+                requestedBytes = min(reader.capacity, Int(min(remaining, UInt64(Int.max))))
             } else {
-                requestedBytes = 1_048_576
+                requestedBytes = reader.capacity
             }
             guard requestedBytes > 0 else { break }
 
-            let data = handle.readData(ofLength: requestedBytes)
-            if data.isEmpty {
+            let count = try reader.read(
+                from: handle,
+                upToCount: requestedBytes,
+                file: file
+            ) { bytes in
+                hasher.update(bufferPointer: bytes)
+                chunkHasher?.update(bytes)
+                pending.append(bytes.bindMemory(to: UInt8.self))
+            }
+            if count == 0 {
                 reachedEnd = true
-            } else {
-                hasher.update(data: data)
-                chunkHasher?.update(data)
-                pending.append(data)
             }
 
             var searchStart = pending.startIndex
