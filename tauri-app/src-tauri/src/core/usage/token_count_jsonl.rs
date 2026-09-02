@@ -46,8 +46,9 @@ static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLo
 static PRECISE_REFRESH_COORDINATORS: OnceLock<
     Mutex<HashMap<PreciseRefreshHomeKey, Arc<PreciseRefreshCoordinator>>>,
 > = OnceLock::new();
-static PRECISE_INDEX_PROGRESS: OnceLock<Mutex<HashMap<PreciseProgressKey, PreciseDashboardProgress>>> =
-    OnceLock::new();
+static PRECISE_INDEX_PROGRESS: OnceLock<
+    Mutex<HashMap<PreciseProgressKey, PreciseDashboardProgress>>,
+> = OnceLock::new();
 static PRECISE_REFRESH_FLIGHT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PRECISE_PROCESS_OBSERVER_IDENTITY: OnceLock<PreciseObserverIdentity> = OnceLock::new();
 static ATTRIBUTION_MUTATION_WATCHERS: OnceLock<
@@ -78,18 +79,22 @@ static PRECISE_REFRESH_FINISH_HOOK: OnceLock<Mutex<Option<PreciseRefreshFinishHo
 #[cfg(test)]
 static FAIL_NEXT_PRECISE_REFRESH_SPAWN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-// v0.8.3 shipped the first stable DashboardSnapshot envelope (v16). v17 and
-// v18 only added serde-defaulted fields to that same envelope; keep one
-// isolated legacy decoder/sanitizer for all three versions and never write any
-// of them again.
-const LEGACY_DASHBOARD_AGGREGATE_CACHE_V16: u32 = 16;
-const LEGACY_DASHBOARD_AGGREGATE_CACHE_V17: u32 = 17;
+// v0.9.1 wrote V20. V21 removes filesystem-object identity from the durable
+// binding while retaining the canonical Home path, index lineage and
+// attribution-safety contract. V18 remains the oldest supported read format;
+// neither legacy format is written again.
 const LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
-// V20 invalidates the V19 local-day projection cache. V19 used one fixed
-// current UTC offset for all historical events, which is wrong across DST or
-// a timezone change. Rebuilding this disposable cache reads the exact SQLite
-// events only; it never rescans JSONL bodies.
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 20;
+const LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 20;
+#[cfg(test)]
+const UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V16: u32 = 16;
+#[cfg(test)]
+const UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V17: u32 = 17;
+// V20 invalidated the V19 local-day projection cache because V19 used one
+// fixed current UTC offset for all historical events. V21 keeps that corrected
+// projection while removing filesystem-object identity from the durable
+// binding. Rebuilding this disposable cache reads the exact SQLite events
+// only; it never rescans JSONL bodies.
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 21;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 #[cfg(not(test))]
 const EXACT_STORAGE_MAINTENANCE_INTERVAL: StdDuration = StdDuration::from_secs(24 * 60 * 60);
@@ -101,10 +106,8 @@ const PRECISE_REFRESH_COMPLETED_OWNER_WINDOW: StdDuration = StdDuration::from_se
 const PRECISE_SCAN_ESTIMATE_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
 thread_local! {
-    // A refresh owner keeps the physical Home identity it started with.  If a
-    // directory is replaced at the same path while that owner is unwinding,
-    // its late progress updates must not overwrite the replacement owner's
-    // slot.
+    // Refresh ownership is scoped to the normalized Home path. Source facts
+    // and the coordinator's revision fence decide whether work may publish.
     static ACTIVE_PRECISE_PROGRESS_KEY: std::cell::RefCell<Option<PreciseProgressKey>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -118,17 +121,11 @@ fn precise_progress_now() -> String {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct PreciseProgressKey {
     canonical_home: PathBuf,
-    physical_home_identity: Option<String>,
 }
 
 fn precise_progress_key(codex_home: &Path) -> PreciseProgressKey {
     let canonical_home = fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf());
-    let physical_home_identity =
-        attribution_watch_root_physical_identity(&canonical_home).ok();
-    PreciseProgressKey {
-        canonical_home,
-        physical_home_identity,
-    }
+    PreciseProgressKey { canonical_home }
 }
 
 fn active_or_current_progress_key(codex_home: &Path) -> PreciseProgressKey {
@@ -272,7 +269,6 @@ pub(crate) fn finish_precise_dashboard_progress(
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct PreciseRefreshHomeKey {
     canonical_home: PathBuf,
-    physical_home_identity: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -292,98 +288,6 @@ struct PreciseObserverIdentity {
 
 struct AttributionMutationWatcher {
     _watcher: RecommendedWatcher,
-    physical_home_identity: String,
-}
-
-#[cfg(unix)]
-fn attribution_watch_root_physical_identity(path: &Path) -> Result<String, String> {
-    use std::os::unix::fs::MetadataExt;
-
-    let handle = fs::File::open(path).map_err(|error| {
-        format!(
-            "无法打开本地用量监听目录以核对物理身份 {}：{error}",
-            path.display()
-        )
-    })?;
-    let metadata = handle.metadata().map_err(|error| {
-        format!(
-            "无法读取本地用量监听目录物理身份 {}：{error}",
-            path.display()
-        )
-    })?;
-    if !metadata.is_dir() {
-        return Err(format!("本地用量监听路径不是目录：{}", path.display()));
-    }
-    Ok(format!("unix:{}:{}", metadata.dev(), metadata.ino()))
-}
-
-#[cfg(windows)]
-fn attribution_watch_root_physical_identity(path: &Path) -> Result<String, String> {
-    use std::fs::OpenOptions;
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
-    };
-
-    const FILE_SHARE_READ: u32 = 0x0000_0001;
-    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
-    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-
-    let handle = OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)
-        .map_err(|error| {
-            format!(
-                "无法打开本地用量监听目录以核对物理身份 {}：{error}",
-                path.display()
-            )
-        })?;
-    let mut info = FILE_ID_INFO::default();
-    let succeeded = unsafe {
-        GetFileInformationByHandleEx(
-            handle.as_raw_handle() as _,
-            FileIdInfo,
-            (&mut info as *mut FILE_ID_INFO).cast(),
-            u32::try_from(std::mem::size_of::<FILE_ID_INFO>()).unwrap_or(u32::MAX),
-        )
-    };
-    if succeeded == 0 {
-        return Err(format!(
-            "无法读取 Windows 本地用量监听目录物理身份 {}：{}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
-    }
-    let file_id = info
-        .FileId
-        .Identifier
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(format!("windows:{}:{file_id}", info.VolumeSerialNumber))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn attribution_watch_root_physical_identity(path: &Path) -> Result<String, String> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        format!(
-            "无法读取本地用量监听目录物理身份 {}：{error}",
-            path.display()
-        )
-    })?;
-    if !metadata.is_dir() {
-        return Err(format!("本地用量监听路径不是目录：{}", path.display()));
-    }
-    Ok(format!(
-        "portable:{}:{:?}:{:?}",
-        metadata.len(),
-        metadata.created().ok(),
-        metadata.modified().ok()
-    ))
 }
 
 fn precise_process_observer_identity() -> &'static PreciseObserverIdentity {
@@ -542,15 +446,7 @@ fn mark_precise_refresh_source_dirty(codex_home: &Path) {
     let Ok(canonical_home) = precise_refresh_home(codex_home) else {
         return;
     };
-    let Ok(physical_home_identity) =
-        attribution_watch_root_physical_identity(&canonical_home)
-    else {
-        return;
-    };
-    let key = PreciseRefreshHomeKey {
-        canonical_home,
-        physical_home_identity,
-    };
+    let key = PreciseRefreshHomeKey { canonical_home };
     let coordinator = PRECISE_REFRESH_COORDINATORS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -613,28 +509,15 @@ fn start_attribution_mutation_watcher(codex_home: &Path) -> Result<RecommendedWa
 fn ensure_attribution_mutation_watcher(codex_home: &Path) -> Result<(), String> {
     let canonical_home = fs::canonicalize(codex_home)
         .map_err(|error| format!("无法确认本地用量监听目录 {}：{error}", codex_home.display()))?;
-    let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
     let watchers = ATTRIBUTION_MUTATION_WATCHERS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut watchers = watchers
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     watchers.retain(|path, _| path.exists());
-    if watchers
-        .get(&canonical_home)
-        .is_some_and(|entry| entry.physical_home_identity == physical_home_identity)
-    {
-        return precise_observer_identity(&canonical_home).map(|_| ());
-    }
-    let replaced_physical_root = watchers.remove(&canonical_home).is_some();
-    if replaced_physical_root {
-        if let Err(error) = write_attribution_continuity_unsafe_marker(
-            &canonical_home,
-            "watch_root_physical_identity_changed",
-        ) {
-            record_attribution_watcher_failure(&canonical_home, error.clone());
-            return Err(error);
-        }
-    }
+    // Rebind from the path on every refresh boundary. This keeps the native
+    // watcher attached even if the directory at that path was replaced, but a
+    // filesystem-object change alone is not a data-integrity event and must
+    // not invalidate attribution or reset the refresh coordinator.
     // Clear an earlier start failure before registering the callback. Clearing
     // after `watch()` would race an immediately delivered native event and
     // could erase a real marker-write failure reported by that callback.
@@ -646,35 +529,9 @@ fn ensure_attribution_mutation_watcher(codex_home: &Path) -> Result<(), String> 
             return Err(error);
         }
     };
-    let rebound_physical_home_identity =
-        match attribution_watch_root_physical_identity(&canonical_home) {
-            Ok(identity) => identity,
-            Err(error) => {
-                drop(watcher);
-                record_attribution_watcher_failure(&canonical_home, error.clone());
-                return Err(error);
-            }
-        };
-    if rebound_physical_home_identity != physical_home_identity {
-        drop(watcher);
-        let reason = "watch_root_changed_while_binding";
-        if let Err(error) = write_attribution_continuity_unsafe_marker(&canonical_home, reason) {
-            record_attribution_watcher_failure(&canonical_home, error.clone());
-            return Err(error);
-        }
-        let error = format!(
-            "本地用量监听目录在重绑期间已被替换，已停止本轮共享账号归因：{}",
-            canonical_home.display()
-        );
-        record_attribution_watcher_failure(&canonical_home, error.clone());
-        return Err(error);
-    }
     watchers.insert(
         canonical_home,
-        AttributionMutationWatcher {
-            _watcher: watcher,
-            physical_home_identity: rebound_physical_home_identity,
-        },
+        AttributionMutationWatcher { _watcher: watcher },
     );
     Ok(())
 }
@@ -991,8 +848,7 @@ impl PreciseRefreshCoordinator {
             .is_none_or(|started| now.saturating_duration_since(started) >= success_ttl);
         let retry_due = schedule.last_error.is_none()
             || schedule.last_attempt_at.is_none_or(|attempt| {
-                now.saturating_duration_since(attempt)
-                    >= PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL
+                now.saturating_duration_since(attempt) >= PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL
             });
         // A watcher event is a coalescing hint, not a request to start a new
         // owner immediately after every append. Once a successful owner has
@@ -1024,8 +880,10 @@ impl PreciseRefreshCoordinator {
                 // Changes arriving after this load remain dirty and are
                 // picked up at the next cadence; they do not recursively
                 // create another full owner while this one is publishing.
-                self.refreshed_source_revision
-                    .store(self.source_revision.load(Ordering::SeqCst), Ordering::SeqCst);
+                self.refreshed_source_revision.store(
+                    self.source_revision.load(Ordering::SeqCst),
+                    Ordering::SeqCst,
+                );
             }
             Err(error) => schedule.last_error = Some(error.clone()),
         }
@@ -1109,11 +967,7 @@ fn precise_refresh_coordinator(
     codex_home: &Path,
 ) -> Result<Arc<PreciseRefreshCoordinator>, String> {
     let canonical_home = precise_refresh_home(codex_home)?;
-    let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
-    let key = PreciseRefreshHomeKey {
-        canonical_home,
-        physical_home_identity,
-    };
+    let key = PreciseRefreshHomeKey { canonical_home };
     let registry = PRECISE_REFRESH_COORDINATORS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut registry = registry
         .lock()
@@ -1323,8 +1177,7 @@ fn spawn_precise_refresh_owner(
 fn schedule_exact_storage_maintenance(canonical_home: &Path) {
     let canonical_home = canonical_home.to_path_buf();
     let now = Instant::now();
-    let schedule = EXACT_STORAGE_MAINTENANCE_SCHEDULE
-        .get_or_init(|| Mutex::new(HashMap::new()));
+    let schedule = EXACT_STORAGE_MAINTENANCE_SCHEDULE.get_or_init(|| Mutex::new(HashMap::new()));
     {
         let mut schedule = schedule
             .lock()
@@ -1346,10 +1199,8 @@ fn schedule_exact_storage_maintenance(canonical_home: &Path) {
             std::thread::sleep(EXACT_STORAGE_MAINTENANCE_IDLE_DELAY);
             let started = Instant::now();
             let now_unix = OffsetDateTime::now_utc().unix_timestamp();
-            let result = exact_usage_index::maintain_exact_index_storage_if_due(
-                &canonical_home,
-                now_unix,
-            );
+            let result =
+                exact_usage_index::maintain_exact_index_storage_if_due(&canonical_home, now_unix);
             let should_retry = matches!(
                 &result,
                 Ok(exact_usage_index::ExactStorageMaintenanceOutcome::Busy) | Err(_)
@@ -1363,8 +1214,8 @@ fn schedule_exact_storage_maintenance(canonical_home: &Path) {
                 started.elapsed().as_millis()
             ));
             if should_retry {
-                let schedule = EXACT_STORAGE_MAINTENANCE_SCHEDULE
-                    .get_or_init(|| Mutex::new(HashMap::new()));
+                let schedule =
+                    EXACT_STORAGE_MAINTENANCE_SCHEDULE.get_or_init(|| Mutex::new(HashMap::new()));
                 schedule
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1464,12 +1315,7 @@ fn run_precise_refresh_inner(
         // the normal durable path once before allowing cache reuse again.
         None
     } else {
-        match reusable_completed_summary_revision(
-            coordinator,
-            canonical_home,
-            &mut index,
-            flight,
-        ) {
+        match reusable_completed_summary_revision(coordinator, canonical_home, &mut index, flight) {
             Ok(revision) => revision,
             Err(error) => {
                 flight.set_trace_status("summary_reuse_probe_error");
@@ -1770,13 +1616,6 @@ fn summary_after_precise_sync(
             return Err(error);
         }
     };
-    let physical_home_identity = match attribution_watch_root_physical_identity(canonical_home) {
-        Ok(identity) => identity,
-        Err(error) => {
-            flight.set_trace_status("summary_identity_error");
-            return Err(error);
-        }
-    };
     let cached = cached_dashboard_aggregate(signature)
         .filter(|cached| {
             cached.persistent_binding.as_ref().map_or(true, |binding| {
@@ -1784,7 +1623,6 @@ fn summary_after_precise_sync(
                     binding,
                     canonical_home,
                     signature,
-                    &physical_home_identity,
                     &attribution_safety,
                     None,
                 )
@@ -1814,26 +1652,18 @@ fn summary_after_precise_sync(
             cached
                 .as_ref()
                 .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
-                .filter(|cached| {
-                    cached.physical_home_identity.as_deref()
-                        == Some(physical_home_identity.as_str())
-                })
                 .and_then(|cached| cached.file_contributions.clone())
         });
-    let (summary, file_contributions) = match index.summary_with_file_contributions(
-        OffsetDateTime::now_utc(),
-        previous_contributions.as_ref(),
-    ) {
+    let (summary, file_contributions) = match index
+        .summary_with_file_contributions(OffsetDateTime::now_utc(), previous_contributions.as_ref())
+    {
         Ok(value) => value,
         Err(error) => {
             flight.set_trace_status("summary_error");
             return Err(error);
         }
     };
-    let data_updated_at = index
-        .latest_published_source_modified_at()
-        .ok()
-        .flatten();
+    let data_updated_at = index.latest_published_source_modified_at().ok().flatten();
     let published_generation = index.published_generation()?;
     // Summary is intentionally independent from chart aggregate health. A
     // malformed/old aggregate marker should make Full refuse the cache, not
@@ -1843,7 +1673,6 @@ fn summary_after_precise_sync(
     store_usage_summary_cache_with_contributions(
         signature.clone(),
         summary.clone(),
-        Some(physical_home_identity),
         data_updated_at,
         Some(file_contributions),
         Some(published_generation),
@@ -2191,7 +2020,6 @@ mod precise_refresh_trace_tests {
         let coordinator = Arc::new(PreciseRefreshCoordinator {
             home_key: PreciseRefreshHomeKey {
                 canonical_home: PathBuf::from("trace-only-home"),
-                physical_home_identity: "trace-only-physical-home".into(),
             },
             flight: Mutex::new(None),
             previous_completed_owner: Mutex::new(None),
@@ -2199,14 +2027,8 @@ mod precise_refresh_trace_tests {
             source_revision: AtomicU64::new(0),
             refreshed_source_revision: AtomicU64::new(0),
         });
-        let summary_flight = PreciseRefreshFlight::new(
-            PreciseRefreshIntent::Summary,
-            false,
-            None,
-            None,
-            0,
-            None,
-        );
+        let summary_flight =
+            PreciseRefreshFlight::new(PreciseRefreshIntent::Summary, false, None, None, 0, None);
         summary_flight.record_completed_sync(7);
         let summary_result = empty_result();
         coordinator.record_completed_owner(
@@ -2235,14 +2057,8 @@ mod precise_refresh_trace_tests {
         assert!(line.contains("after_summary_only=1"));
         assert!(line.contains("summary_gap_ms="));
 
-        let stale_summary_flight = PreciseRefreshFlight::new(
-            PreciseRefreshIntent::Summary,
-            false,
-            None,
-            None,
-            0,
-            None,
-        );
+        let stale_summary_flight =
+            PreciseRefreshFlight::new(PreciseRefreshIntent::Summary, false, None, None, 0, None);
         stale_summary_flight.record_completed_sync(8);
         coordinator.record_completed_owner(
             &stale_summary_flight,
@@ -2253,14 +2069,8 @@ mod precise_refresh_trace_tests {
             .take_previous_completed_owner(PreciseRefreshIntent::Full)
             .is_none());
 
-        let full_owner = PreciseRefreshFlight::new(
-            PreciseRefreshIntent::Full,
-            false,
-            None,
-            None,
-            0,
-            None,
-        );
+        let full_owner =
+            PreciseRefreshFlight::new(PreciseRefreshIntent::Full, false, None, None, 0, None);
         coordinator.record_completed_owner(
             &full_owner,
             &PreciseRefreshResult {
@@ -2280,7 +2090,6 @@ mod precise_refresh_trace_tests {
         let coordinator = Arc::new(PreciseRefreshCoordinator {
             home_key: PreciseRefreshHomeKey {
                 canonical_home: PathBuf::from("cadence-home"),
-                physical_home_identity: "cadence-physical-home".into(),
             },
             flight: Mutex::new(None),
             previous_completed_owner: Mutex::new(None),
@@ -2300,9 +2109,8 @@ mod precise_refresh_trace_tests {
 
         {
             let mut schedule = coordinator.schedule.lock().unwrap();
-            schedule.last_attempt_at = Some(
-                Instant::now() - PRECISE_SUMMARY_REFRESH_TTL - StdDuration::from_secs(1),
-            );
+            schedule.last_attempt_at =
+                Some(Instant::now() - PRECISE_SUMMARY_REFRESH_TTL - StdDuration::from_secs(1));
             // Simulate an owner that completed only moments ago after using
             // most of its cadence interval. The next wall-clock tick is due
             // from request start and must not be skipped.
@@ -2310,32 +2118,15 @@ mod precise_refresh_trace_tests {
         }
         assert!(coordinator.summary_refresh_due(PRECISE_SUMMARY_REFRESH_TTL));
 
-        coordinator
-            .schedule
-            .lock()
-            .unwrap()
-            .last_error = Some("transient".into());
-        coordinator
-            .schedule
-            .lock()
-            .unwrap()
-            .last_attempt_at = Some(Instant::now());
+        coordinator.schedule.lock().unwrap().last_error = Some("transient".into());
+        coordinator.schedule.lock().unwrap().last_attempt_at = Some(Instant::now());
         assert!(!coordinator.summary_refresh_due(PRECISE_SUMMARY_REFRESH_TTL));
-        coordinator
-            .schedule
-            .lock()
-            .unwrap()
-            .last_attempt_at = Some(Instant::now() - PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL);
+        coordinator.schedule.lock().unwrap().last_attempt_at =
+            Some(Instant::now() - PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL);
         assert!(coordinator.summary_refresh_due(PRECISE_SUMMARY_REFRESH_TTL));
 
-        let flight = PreciseRefreshFlight::new(
-            PreciseRefreshIntent::Summary,
-            false,
-            None,
-            None,
-            1,
-            None,
-        );
+        let flight =
+            PreciseRefreshFlight::new(PreciseRefreshIntent::Summary, false, None, None, 1, None);
         coordinator.source_revision.store(3, Ordering::SeqCst);
         coordinator.record_result(&flight, &empty_result());
         assert_eq!(
@@ -2537,10 +2328,8 @@ pub fn precise_dashboard_source_probe(
     codex_home: &Path,
 ) -> Result<PreciseDashboardSourceProbe, String> {
     let canonical_home = precise_refresh_home(codex_home)?;
-    let probe = exact_usage_index::read_only_source_probe(
-        &canonical_home,
-        StdDuration::from_millis(250),
-    )?;
+    let probe =
+        exact_usage_index::read_only_source_probe(&canonical_home, StdDuration::from_millis(250))?;
     let state = match probe.changed {
         None => "unknown",
         Some(true) => "changed",
@@ -2579,114 +2368,18 @@ pub(crate) fn precise_index_upgrade_required(
     exact_usage_index::index_upgrade_required(codex_home)
 }
 
-/// Removes only the Tauri-derived exact index and caches after an explicit UI
-/// confirmation. The outer process-local lease keeps a summary/full owner from
-/// publishing a replacement while the bound in-memory and persistent caches
-/// are cleared.
+/// The v0.9.2 recovery entry is intentionally non-destructive. A future repair
+/// flow must build and validate a candidate before an explicit user-confirmed
+/// switch; it must not clear the active database or its last-good caches.
 pub(crate) fn rebuild_precise_index_for_current_version(codex_home: &Path) -> Result<(), String> {
     let canonical_home = precise_refresh_home(codex_home)?;
     let _operation = AppOperationGuard::acquire(&canonical_home)?;
-    exact_usage_index::rebuild_derived_storage_for_current_version(&canonical_home)?;
-    clear_dashboard_caches_for_home(&canonical_home)?;
-    Ok(())
-}
-
-fn clear_dashboard_caches_for_home(canonical_home: &Path) -> Result<(), String> {
-    let belongs_to_home = |path: &Path| {
-        precise_refresh_home(path)
-            .is_ok_and(|candidate| candidate == canonical_home)
-    };
-
-    if let Ok(mut guard) = DASHBOARD_AGGREGATE_CACHE
-        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
-        .lock()
-    {
-        if guard
-            .aggregate
-            .as_ref()
-            .is_some_and(|cached| belongs_to_home(&cached.signature.codex_home))
-        {
-            guard.aggregate = None;
-            guard.persistent_loaded = false;
-        }
-    }
-    if let Ok(mut guard) = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None)).lock() {
-        if guard
-            .as_ref()
-            .is_some_and(|cached| belongs_to_home(&cached.signature.codex_home))
-        {
-            *guard = None;
-        }
-    }
-
-    if let Some(path) = app_paths::token_aggregate_cache_path() {
-        let remove = load_persistent_dashboard_aggregate()
-            .ok()
-            .flatten()
-            .is_some_and(|cached| belongs_to_home(&cached.signature.codex_home));
-        if remove {
-            match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err(format!(
-                        "拒绝删除符号链接形式的精确 token numeric cache：{}",
-                        path.display()
-                    ));
-                }
-                Ok(metadata) if !metadata.is_file() => {
-                    return Err(format!(
-                        "精确 token numeric cache 路径不是普通文件：{}",
-                        path.display()
-                    ));
-                }
-                Ok(_) => fs::remove_file(&path).map_err(|error| {
-                    format!(
-                        "无法删除当前 Home 绑定的精确 token numeric cache {}：{error}",
-                        path.display()
-                    )
-                })?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(format!(
-                        "无法检查当前 Home 绑定的精确 token numeric cache {}：{error}",
-                        path.display()
-                    ));
-                }
-            }
-        }
-    }
-
-    if let Ok(mut coordinators) = PRECISE_REFRESH_COORDINATORS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-    {
-        coordinators.retain(|key, _| key.canonical_home != canonical_home);
-    }
-    if let Ok(mut progress) = PRECISE_INDEX_PROGRESS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-    {
-        progress.retain(|key, _| key.canonical_home != canonical_home);
-    }
-    if let Ok(mut watchers) = ATTRIBUTION_MUTATION_WATCHERS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-    {
-        watchers.remove(canonical_home);
-    }
-    if let Ok(mut failures) = ATTRIBUTION_WATCHER_FAILURES
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-    {
-        failures.remove(canonical_home);
-    }
-    Ok(())
+    exact_usage_index::rebuild_derived_storage_for_current_version(&canonical_home)
 }
 
 fn invalidate_dashboard_memory_caches_for_home(canonical_home: &Path) {
-    let belongs_to_home = |path: &Path| {
-        precise_refresh_home(path)
-            .is_ok_and(|candidate| candidate == canonical_home)
-    };
+    let belongs_to_home =
+        |path: &Path| precise_refresh_home(path).is_ok_and(|candidate| candidate == canonical_home);
 
     if let Ok(mut guard) = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
@@ -2814,10 +2507,9 @@ fn build_full_dashboard_after_precise_sync(
             return Err(error);
         }
     };
-    if let Err(error) = index.mark_dashboard_aggregate_published(
-        aggregate_generation,
-        data.settled_through,
-    ) {
+    if let Err(error) =
+        index.mark_dashboard_aggregate_published(aggregate_generation, data.settled_through)
+    {
         flight.set_trace_status("aggregate_publish_error");
         return Err(error);
     }
@@ -2934,9 +2626,7 @@ fn trace_precise_failure(stage: &str, error: &str) {
     } else {
         "other"
     };
-    startup_trace::mark_performance(format!(
-        "precise_failure stage={stage} class={class}"
-    ));
+    startup_trace::mark_performance(format!("precise_failure stage={stage} class={class}"));
 }
 
 fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
@@ -2988,16 +2678,15 @@ pub fn refreshed_usage_summary_snapshot_with_interval(
     let scheduled = schedule_precise_refresh(codex_home, reuse_window)?;
     if let Some(flight) = scheduled {
         flight.wait_summary()?;
-    } else if let Some(error) = precise_refresh_coordinator(codex_home)?.last_summary_refresh_error()
+    } else if let Some(error) =
+        precise_refresh_coordinator(codex_home)?.last_summary_refresh_error()
     {
         return Err(error);
     }
     usage_summary_snapshot(codex_home)
 }
 
-pub fn schedule_usage_summary_refresh(
-    codex_home: &Path,
-) -> Result<(), String> {
+pub fn schedule_usage_summary_refresh(codex_home: &Path) -> Result<(), String> {
     schedule_usage_summary_refresh_with_interval(codex_home, None)
 }
 
@@ -3056,9 +2745,7 @@ fn cached_dashboard_usage_summary_cache_only(
 ) -> Result<Option<TokenUsageSummary>, String> {
     let local_offset = crate::core::localtime::current_local_offset();
     let now_utc = OffsetDateTime::now_utc();
-    if let Some(summary) =
-        cached_dashboard_usage_summary_at(codex_home, now_utc, local_offset)?
-    {
+    if let Some(summary) = cached_dashboard_usage_summary_at(codex_home, now_utc, local_offset)? {
         return Ok(Some(summary));
     }
     let canonical_home = precise_refresh_home(codex_home)?;
@@ -3114,25 +2801,23 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
     let index_identity = exact_usage_index::peek_startup_identity(&canonical_home)
         .ok()
         .flatten()?;
-    let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home).ok()?;
     let canonical_signature =
         dashboard_index_signature(&canonical_home, index_identity.dashboard_revision);
     if let Some(snapshot) = cached_dashboard_startup_snapshot(
         &canonical_signature,
         &canonical_home,
         &index_identity.attribution_safety,
-        &physical_home_identity,
         Some(index_identity.published_generation),
     ) {
         return Some(snapshot_with_generated_at(snapshot));
     }
 
     // A completed exact sync can monotonically advance the current revision
-    // before the next V20 checkpoint is due. Under the same Home, physical
-    // identity, parser/schema and attribution provenance, the older numeric
+    // before the next V21 checkpoint is due. Under the same canonical Home,
+    // parser/schema and attribution provenance, the older numeric
     // envelope remains a trustworthy stale last-good. It must never be marked
     // current or used for attribution coverage.
-    if let Some(cached_revision) = cached_v20_revision_for_startup()
+    if let Some(cached_revision) = cached_numeric_revision_for_startup()
         .filter(|cached_revision| *cached_revision <= index_identity.dashboard_revision)
     {
         let mut stale_signature = canonical_signature.clone();
@@ -3141,7 +2826,6 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
             &stale_signature,
             &canonical_home,
             &index_identity.attribution_safety,
-            &physical_home_identity,
             Some(index_identity.published_generation),
         ) {
             return Some(snapshot_with_generated_at(snapshot));
@@ -3163,7 +2847,6 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
             &raw_signature,
             &canonical_home,
             &index_identity.attribution_safety,
-            &physical_home_identity,
             None,
         ) {
             return Some(snapshot_with_generated_at(snapshot));
@@ -3244,10 +2927,9 @@ fn placeholder_quota() -> QuotaSnapshot {
 #[serde(rename_all = "camelCase")]
 struct PersistentNumericCacheBinding {
     canonical_home: PathBuf,
-    physical_home_identity: String,
     signature: DashboardScanSignature,
     /// Existing durable aggregate metadata captured when the complete cache
-    /// was published. Optional keeps older V20 envelopes readable as
+    /// was published. Optional keeps older envelopes readable as
     /// last-good data, but they cannot satisfy a current full-cache match.
     #[serde(default)]
     aggregate_identity: Option<DashboardAggregateIdentity>,
@@ -3261,7 +2943,7 @@ struct PersistentNumericCacheBinding {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PersistentNumericDashboardCacheV20 {
+struct PersistentNumericDashboardCache {
     version: u32,
     #[serde(flatten)]
     binding: PersistentNumericCacheBinding,
@@ -3325,9 +3007,6 @@ struct CachedUsageSummary {
     signature: DashboardScanSignature,
     summary: TokenUsageSummary,
     generated_at: String,
-    /// Process-local binding for the contribution map. It deliberately does
-    /// not alter the persisted dashboard signature/cache compatibility.
-    physical_home_identity: Option<String>,
     data_updated_at: Option<String>,
     file_contributions: Option<HashMap<String, SummaryFileContribution>>,
     published_generation: Option<u64>,
@@ -3382,14 +3061,12 @@ fn cached_dashboard_usage_summary_at(
 ) -> Result<Option<TokenUsageSummary>, String> {
     hydrate_dashboard_aggregate_cache_once()?;
     let expected_scope = dashboard_usage_scope_at(codex_home, now_utc, local_offset);
-    let physical_home_identity = attribution_watch_root_physical_identity(codex_home).ok();
     let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Some(summary) = summary_cache
         .lock()
         .ok()
         .and_then(|guard| guard.clone())
         .filter(|cached| cached.signature.usage_scope() == expected_scope)
-        .filter(|cached| cached.physical_home_identity == physical_home_identity)
         .map(|cached| cached.summary)
     {
         return Ok(Some(summary));
@@ -3408,13 +3085,7 @@ fn cached_dashboard_usage_summary_at(
             let Ok(canonical_home) = precise_refresh_home(codex_home) else {
                 return false;
             };
-            let Ok(physical_home_identity) =
-                attribution_watch_root_physical_identity(&canonical_home)
-            else {
-                return false;
-            };
             binding.canonical_home == canonical_home
-                && binding.physical_home_identity == physical_home_identity
         })
         .map(|cached| cached.summary))
 }
@@ -3426,14 +3097,12 @@ fn cached_dashboard_usage_summary_snapshot_at(
 ) -> Result<Option<TokenUsageSummarySnapshot>, String> {
     hydrate_dashboard_aggregate_cache_once()?;
     let expected_scope = dashboard_usage_scope_at(codex_home, now_utc, local_offset);
-    let physical_home_identity = attribution_watch_root_physical_identity(codex_home).ok();
     let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Some(cached) = summary_cache
         .lock()
         .ok()
         .and_then(|guard| guard.clone())
         .filter(|cached| cached.signature.usage_scope() == expected_scope)
-        .filter(|cached| cached.physical_home_identity == physical_home_identity)
     {
         return Ok(Some(TokenUsageSummarySnapshot {
             summary: cached.summary,
@@ -3475,13 +3144,7 @@ fn cached_dashboard_usage_summary_snapshot_at(
             let Ok(canonical_home) = precise_refresh_home(codex_home) else {
                 return false;
             };
-            let Ok(physical_home_identity) =
-                attribution_watch_root_physical_identity(&canonical_home)
-            else {
-                return false;
-            };
             binding.canonical_home == canonical_home
-                && binding.physical_home_identity == physical_home_identity
         })
         .and_then(|cached| {
             let generated_at = cached.snapshot.as_ref()?.generated_at.clone();
@@ -3538,10 +3201,8 @@ fn persistent_numeric_cache_binding(
     aggregate_identity: DashboardAggregateIdentity,
 ) -> Result<PersistentNumericCacheBinding, String> {
     let canonical_home = precise_refresh_home(canonical_home)?;
-    let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
     Ok(PersistentNumericCacheBinding {
         canonical_home: canonical_home.clone(),
-        physical_home_identity,
         signature,
         aggregate_identity: Some(aggregate_identity),
         precise_attribution_provenance_epoch: attribution_safety.provenance_epoch.clone(),
@@ -3563,7 +3224,6 @@ fn persistent_numeric_cache_binding_is_well_formed(
     if canonical_home != binding.canonical_home
         || binding.signature.codex_home != binding.canonical_home
         || binding.signature.local_date.trim().is_empty()
-        || binding.physical_home_identity.trim().is_empty()
         || binding
             .precise_attribution_provenance_epoch
             .trim()
@@ -3578,24 +3238,20 @@ fn persistent_numeric_cache_binding_is_well_formed(
     {
         return false;
     }
-    attribution_watch_root_physical_identity(&binding.canonical_home)
-        .is_ok_and(|identity| identity == binding.physical_home_identity)
+    true
 }
 
 fn persistent_numeric_cache_binding_matches_current(
     binding: &PersistentNumericCacheBinding,
     canonical_home: &Path,
     signature: &DashboardScanSignature,
-    physical_home_identity: &str,
     attribution_safety: &exact_usage_index::AttributionSafetyState,
     aggregate_identity: Option<&DashboardAggregateIdentity>,
 ) -> bool {
     binding.canonical_home == canonical_home
-        && binding.physical_home_identity == physical_home_identity
         && binding.signature == *signature
-        && aggregate_identity.is_none_or(|current| {
-            binding.aggregate_identity.as_ref() == Some(current)
-        })
+        && aggregate_identity
+            .is_none_or(|current| binding.aggregate_identity.as_ref() == Some(current))
         && binding.precise_attribution_provenance_epoch == attribution_safety.provenance_epoch
         && binding.precise_attribution_generation == attribution_safety.generation
         && binding.precise_attribution_unsafe_since_generation
@@ -3611,7 +3267,6 @@ fn persistent_numeric_cache_binding_matches_startup(
     binding: &PersistentNumericCacheBinding,
     canonical_home: &Path,
     signature: &DashboardScanSignature,
-    physical_home_identity: &str,
     attribution_safety: &exact_usage_index::AttributionSafetyState,
     current_published_generation: Option<u64>,
 ) -> bool {
@@ -3619,7 +3274,6 @@ fn persistent_numeric_cache_binding_matches_startup(
         return false;
     };
     binding.canonical_home == canonical_home
-        && binding.physical_home_identity == physical_home_identity
         && binding.signature == *signature
         && binding.precise_attribution_provenance_epoch == attribution_safety.provenance_epoch
         && binding.precise_attribution_generation <= current_published_generation
@@ -3641,7 +3295,7 @@ fn sanitize_numeric_recent_usage_points(points: &mut [crate::models::RecentUsage
 }
 
 fn startup_snapshot_from_persistent_numeric(
-    cache: &PersistentNumericDashboardCacheV20,
+    cache: &PersistentNumericDashboardCache,
 ) -> DashboardSnapshot {
     let recent_usage_24h = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_24h);
     let recent_usage_7d = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_7d);
@@ -3740,7 +3394,6 @@ fn cached_dashboard_snapshot_for_current(
     attribution_safety: &exact_usage_index::AttributionSafetyState,
     aggregate_identity: &DashboardAggregateIdentity,
 ) -> Option<DashboardSnapshot> {
-    let physical_home_identity = attribution_watch_root_physical_identity(canonical_home).ok()?;
     cached_dashboard_aggregate(signature)
         .filter(|cached| cached.snapshot_complete)
         .filter(|cached| {
@@ -3749,7 +3402,6 @@ fn cached_dashboard_snapshot_for_current(
                     binding,
                     canonical_home,
                     signature,
-                    &physical_home_identity,
                     attribution_safety,
                     Some(aggregate_identity),
                 )
@@ -3762,7 +3414,6 @@ fn cached_dashboard_startup_snapshot(
     signature: &DashboardScanSignature,
     canonical_home: &Path,
     attribution_safety: &exact_usage_index::AttributionSafetyState,
-    physical_home_identity: &str,
     current_published_generation: Option<u64>,
 ) -> Option<DashboardSnapshot> {
     hydrate_dashboard_aggregate_cache_once().ok()?;
@@ -3772,22 +3423,24 @@ fn cached_dashboard_startup_snapshot(
         .ok()
         .and_then(|guard| guard.aggregate.clone())
         .filter(|cached| {
-            if cached.persistent_version == DASHBOARD_AGGREGATE_CACHE_VERSION
-                || cached.persistent_version == 0
-            {
+            if matches!(
+                cached.persistent_version,
+                DASHBOARD_AGGREGATE_CACHE_VERSION
+                    | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION
+                    | 0
+            ) {
                 cached.signature == *signature
                     && cached.persistent_binding.as_ref().is_some_and(|binding| {
                         persistent_numeric_cache_binding_matches_startup(
                             binding,
                             canonical_home,
                             signature,
-                            physical_home_identity,
                             attribution_safety,
                             current_published_generation,
                         )
                     })
             } else {
-                // Legacy V16-V18 have no physical/binding proof. The caller
+                // Legacy V18 has no full binding proof. The caller
                 // must supply the exact expected signature, including Home,
                 // local date, UTC offset, and index revision. The alias
                 // fallback constructs its raw signature explicitly, so this
@@ -3798,7 +3451,7 @@ fn cached_dashboard_startup_snapshot(
         .and_then(|cached| cached.snapshot.map(sanitize_legacy_snapshot_for_startup))
 }
 
-fn cached_v20_revision_for_startup() -> Option<u64> {
+fn cached_numeric_revision_for_startup() -> Option<u64> {
     DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
         .lock()
@@ -3807,7 +3460,8 @@ fn cached_v20_revision_for_startup() -> Option<u64> {
             guard.aggregate.as_ref().and_then(|cached| {
                 matches!(
                     cached.persistent_version,
-                    0 | DASHBOARD_AGGREGATE_CACHE_VERSION
+                    0 | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION
+                        | DASHBOARD_AGGREGATE_CACHE_VERSION
                 )
                 .then_some(cached.signature.index_revision)
             })
@@ -3932,11 +3586,8 @@ fn persistent_numeric_test_binding(
         .unwrap_or_else(|_| signature.codex_home.clone());
     let mut canonical_signature = signature.clone();
     canonical_signature.codex_home = canonical_home.clone();
-    let physical_home_identity =
-        attribution_watch_root_physical_identity(&canonical_home).unwrap_or_default();
     PersistentNumericCacheBinding {
         canonical_home,
-        physical_home_identity,
         signature: canonical_signature,
         aggregate_identity: None,
         precise_attribution_provenance_epoch: Uuid::nil().to_string(),
@@ -4002,7 +3653,7 @@ fn persistent_numeric_test_snapshot(summary: &TokenUsageSummary) -> DashboardSna
 }
 
 fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSummary) {
-    // A summary refresh may run after a full V20 publish. Hydrate first so the
+    // A summary refresh may run after a full V21 publish. Hydrate first so the
     // existing binding is carried forward instead of silently downgrading the
     // in-memory aggregate to an unbound snapshot.
     let _ = hydrate_dashboard_aggregate_cache_once();
@@ -4033,8 +3684,6 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
 }
 
 fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUsageSummary) {
-    let physical_home_identity =
-        attribution_watch_root_physical_identity(&signature.codex_home).ok();
     let existing_contributions = USAGE_SUMMARY_CACHE
         .get_or_init(|| Mutex::new(None))
         .lock()
@@ -4043,7 +3692,6 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
             cached
                 .as_ref()
                 .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
-                .filter(|cached| cached.physical_home_identity == physical_home_identity)
                 .and_then(|cached| cached.file_contributions.clone())
         });
     let existing_data_updated_at = USAGE_SUMMARY_CACHE
@@ -4054,7 +3702,6 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
             cached
                 .as_ref()
                 .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
-                .filter(|cached| cached.physical_home_identity == physical_home_identity)
                 .and_then(|cached| cached.data_updated_at.clone())
         });
     let existing_published_generation = USAGE_SUMMARY_CACHE
@@ -4065,7 +3712,6 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
             cached
                 .as_ref()
                 .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
-                .filter(|cached| cached.physical_home_identity == physical_home_identity)
                 .and_then(|cached| cached.published_generation)
         });
     let existing_aggregate_identity = USAGE_SUMMARY_CACHE
@@ -4076,13 +3722,11 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
             cached
                 .as_ref()
                 .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
-                .filter(|cached| cached.physical_home_identity == physical_home_identity)
                 .and_then(|cached| cached.aggregate_identity.clone())
         });
     store_usage_summary_cache_with_contributions(
         signature,
         summary,
-        physical_home_identity,
         existing_data_updated_at,
         existing_contributions,
         existing_published_generation,
@@ -4093,7 +3737,6 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
 fn store_usage_summary_cache_with_contributions(
     signature: DashboardScanSignature,
     summary: TokenUsageSummary,
-    physical_home_identity: Option<String>,
     data_updated_at: Option<String>,
     file_contributions: Option<HashMap<String, SummaryFileContribution>>,
     published_generation: Option<u64>,
@@ -4107,7 +3750,6 @@ fn store_usage_summary_cache_with_contributions(
             generated_at: OffsetDateTime::now_utc()
                 .format(&Rfc3339)
                 .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()),
-            physical_home_identity,
             data_updated_at,
             file_contributions,
             published_generation,
@@ -4159,7 +3801,7 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
         .and_then(|version| u32::try_from(version).ok())?;
     match version {
         DASHBOARD_AGGREGATE_CACHE_VERSION => {
-            let cache = serde_json::from_slice::<PersistentNumericDashboardCacheV20>(data).ok()?;
+            let cache = serde_json::from_slice::<PersistentNumericDashboardCache>(data).ok()?;
             if cache.version != DASHBOARD_AGGREGATE_CACHE_VERSION
                 || !persistent_numeric_cache_binding_is_well_formed(&cache.binding)
                 || !valid_persistent_cache_timestamp(&cache.built_at)
@@ -4184,16 +3826,38 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
                 persistent_binding: Some(cache.binding),
             })
         }
-        LEGACY_DASHBOARD_AGGREGATE_CACHE_V16
-        | LEGACY_DASHBOARD_AGGREGATE_CACHE_V17
-        | LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION => {
+        LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION => {
+            // V20 contains an extra physicalHomeIdentity field. Serde ignores
+            // that legacy field and the V21 binding validates only data and
+            // index lineage.
+            let cache = serde_json::from_slice::<PersistentNumericDashboardCache>(data).ok()?;
+            if cache.version != LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION
+                || !persistent_numeric_cache_binding_is_well_formed(&cache.binding)
+                || !valid_persistent_cache_timestamp(&cache.built_at)
+                || cache
+                    .coverage_at
+                    .as_deref()
+                    .is_some_and(|value| !valid_persistent_cache_timestamp(value))
+                || cache
+                    .settled_through
+                    .as_deref()
+                    .is_some_and(|value| !valid_persistent_cache_timestamp(value))
+            {
+                return None;
+            }
+            let snapshot = startup_snapshot_from_persistent_numeric(&cache);
+            Some(CachedDashboardAggregate {
+                signature: cache.binding.signature.clone(),
+                snapshot: Some(snapshot),
+                summary: cache.summary,
+                snapshot_complete: false,
+                persistent_version: LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION,
+                persistent_binding: Some(cache.binding),
+            })
+        }
+        LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION => {
             let cache = serde_json::from_slice::<PersistentDashboardAggregateCache>(data).ok()?;
-            if !matches!(
-                cache.version,
-                LEGACY_DASHBOARD_AGGREGATE_CACHE_V16
-                    | LEGACY_DASHBOARD_AGGREGATE_CACHE_V17
-                    | LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION
-            ) {
+            if cache.version != LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION {
                 return None;
             }
             Some(CachedDashboardAggregate {
@@ -4242,7 +3906,7 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> 
     ) {
         return Ok(());
     }
-    let payload = PersistentNumericDashboardCacheV20 {
+    let payload = PersistentNumericDashboardCache {
         version: DASHBOARD_AGGREGATE_CACHE_VERSION,
         binding: binding.clone(),
         built_at: snapshot.generated_at.clone(),
@@ -4295,7 +3959,7 @@ fn aggregate_checkpoint_due_with_binding(
     if version != DASHBOARD_AGGREGATE_CACHE_VERSION {
         return true;
     }
-    let Ok(existing) = serde_json::from_slice::<PersistentNumericDashboardCacheV20>(&data) else {
+    let Ok(existing) = serde_json::from_slice::<PersistentNumericDashboardCache>(&data) else {
         return true;
     };
     if existing.binding.signature != *signature

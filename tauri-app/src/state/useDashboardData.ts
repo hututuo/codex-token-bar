@@ -56,6 +56,7 @@ import {
   acceptDashboardSourceEnvelope,
   acceptDashboardSourceResponse,
   createDashboardSourceTransition,
+  dashboardStatisticsSourceKey,
   dashboardSourceTokenMatches,
   type DashboardSourceToken,
 } from "./dashboardSourceTransition";
@@ -310,6 +311,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
         }
       : current);
 
+    setSourceToken((current) => current === acceptedSourceToken
+      ? current
+      : acceptedSourceToken);
+
     if (!startsSourceLoad || acceptedSourceToken === null) {
       return true;
     }
@@ -318,9 +323,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       `frontend source envelope accepted initialized=${result.initialized ? 1 : 0} changed=${result.sourceChanged ? 1 : 0} generation=${acceptedSourceToken.transitionGeneration}`,
     );
 
-    setSourceToken((current) => isSourceTokenCurrent(acceptedSourceToken)
-      ? acceptedSourceToken
-      : current);
     setFastSnapshotLoaded(false);
     setPreciseRequestInFlight(false);
     setStartupDashboardUnavailable(false);
@@ -456,7 +458,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
 
   const markPreciseSnapshotFailure = useCallback(() => {
     if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) return;
-    const sourceHomeIdentity = `${sourceToken.canonicalHomeKey}\u0000${sourceToken.physicalHomeKey}`;
+    const sourceHomeIdentity = dashboardStatisticsSourceKey(sourceToken);
+    if (sourceHomeIdentity === null) return;
     const coveredAt = latestPreciseCoverageRef.current;
     const coveredAtMillis = coveredAt === null ? Number.NaN : Date.parse(coveredAt);
     publishPreciseUsageFailure(

@@ -135,8 +135,7 @@ fn list_catalog_with_protocol(
     };
     if live_deletion_requires_archive {
         warnings.push(
-            "Codex 正在运行：已归档且未加载的会话仍可删除；未归档会话请先执行官方归档。"
-                .into(),
+            "Codex 正在运行：已归档且未加载的会话仍可删除；未归档会话请先执行官方归档。".into(),
         );
     }
     let active_rows = match protocol.list_threads(false) {
@@ -340,8 +339,7 @@ fn list_catalog_with_protocol(
             protection_reasons,
             can_archive: !archived && safe,
             can_unarchive: archived && safe,
-            can_delete: safe
-                && live_delete_archive_gate(live_deletion_requires_archive, archived),
+            can_delete: safe && live_delete_archive_gate(live_deletion_requires_archive, archived),
         });
     }
     apply_relationship_counts(&mut threads);
@@ -2370,9 +2368,9 @@ fn read_session_meta_from_reader(reader: impl Read) -> Result<SessionMeta, Strin
         cwd: payload.cwd,
         source: session_meta_source(&payload.source),
         session_id: payload.session_id,
-        forked_from_id: payload.forked_from_id.or_else(|| {
-            payload.history_base.and_then(|base| base.thread_id)
-        }),
+        forked_from_id: payload
+            .forked_from_id
+            .or_else(|| payload.history_base.and_then(|base| base.thread_id)),
         parent_thread_id: payload.parent_thread_id,
     })
 }
@@ -5327,6 +5325,44 @@ mod tests {
     }
 
     #[test]
+    fn session_catalog_creation_metadata_drift_does_not_parse_recognized_file() {
+        let home = TestHome::new("catalog-creation-drift");
+        let id = Uuid::new_v4().to_string();
+        fs::write(
+            home.session_path(&id),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/creation-drift\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let parse_count = AtomicUsize::new(0);
+        let first = counted_rollout_scan(&home.root, &parse_count);
+        assert!(first.warnings.is_empty(), "{:?}", first.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 1);
+
+        let index_path = home
+            .root
+            .join(".codex-token-bar-test-cache")
+            .join("exact-token-index.sqlite3");
+        rusqlite::Connection::open(&index_path)
+            .unwrap()
+            .execute(
+                "UPDATE session_catalog_files SET created_ns = 'legacy-creation-drift'",
+                [],
+            )
+            .unwrap();
+
+        parse_count.store(0, Ordering::Relaxed);
+        let second = counted_rollout_scan(&home.root, &parse_count);
+        assert!(second.warnings.is_empty(), "{:?}", second.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            second.supplements.get(&id).unwrap().cwd,
+            "/tmp/creation-drift"
+        );
+    }
+
+    #[test]
     fn session_catalog_only_parses_new_or_changed_metadata_and_reuses_append_metadata() {
         let home = TestHome::new("catalog-incremental-refresh");
         let first = Uuid::new_v4().to_string();
@@ -5370,7 +5406,10 @@ mod tests {
 
         let first_path = home.session_path(&first);
         let original_bytes = fs::metadata(&first_path).unwrap().len();
-        let mut first_file = fs::OpenOptions::new().append(true).open(&first_path).unwrap();
+        let mut first_file = fs::OpenOptions::new()
+            .append(true)
+            .open(&first_path)
+            .unwrap();
         writeln!(
             first_file,
             "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}"
@@ -5383,7 +5422,13 @@ mod tests {
         assert_eq!(parse_count.load(Ordering::Relaxed), 0);
         assert_eq!(appended.supplements.get(&first).unwrap().cwd, "/tmp/first");
         assert!(
-            appended.supplements.get(&first).unwrap().file_bytes.unwrap() > original_bytes
+            appended
+                .supplements
+                .get(&first)
+                .unwrap()
+                .file_bytes
+                .unwrap()
+                > original_bytes
         );
     }
 
@@ -5508,22 +5553,26 @@ mod tests {
             interrupted.supplements.get(&id).unwrap().cwd,
             "/tmp/published"
         );
-        assert!(!interrupted
-            .supplements
-            .get(&id)
-            .unwrap()
-            .rollout_identity_verified);
+        assert!(
+            !interrupted
+                .supplements
+                .get(&id)
+                .unwrap()
+                .rollout_identity_verified
+        );
 
         parse_count.store(0, Ordering::Relaxed);
         let retried = counted_rollout_scan(&home.root, &parse_count);
         assert!(retried.warnings.is_empty(), "{:?}", retried.warnings);
         assert_eq!(parse_count.load(Ordering::Relaxed), 1);
         assert_eq!(retried.supplements.get(&id).unwrap().cwd, "/tmp/pending");
-        assert!(retried
-            .supplements
-            .get(&id)
-            .unwrap()
-            .rollout_identity_verified);
+        assert!(
+            retried
+                .supplements
+                .get(&id)
+                .unwrap()
+                .rollout_identity_verified
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
-use super::{run_blocking_command, run_blocking_command_with_worker_start};
 use super::window_auth::require_window_label;
+use super::{run_blocking_command, run_blocking_command_with_worker_start};
 use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
 use crate::core::unread::{UnreadObservation, UnreadObservationBuilder};
@@ -373,6 +373,30 @@ pub(crate) fn capture_codex_home_source(
     })
 }
 
+fn capture_codex_home_statistics_source(
+    expected: &CodexHomeSourceToken,
+) -> Result<CapturedCodexHomeSource, String> {
+    with_codex_home_transition_state(|transition| {
+        if transition.canonical_home_key.is_none() {
+            resolve_codex_home_source(transition, platform::default_codex_home_status())?;
+        } else {
+            refresh_codex_home_source_identity(transition)?;
+        }
+        validate_codex_home_statistics_source_in_state(transition, expected)?;
+        Ok(CapturedCodexHomeSource {
+            source_token: current_codex_home_source_token(transition)?,
+            codex_home: transition
+                .codex_home_path
+                .clone()
+                .ok_or_else(|| "Codex Home source path is not initialized".to_string())?,
+            source_path: transition
+                .source_path
+                .clone()
+                .ok_or_else(|| "Codex Home configured path is not initialized".to_string())?,
+        })
+    })
+}
+
 fn claim_codex_home_source_transition_from(
     state: &Mutex<CodexHomeTransitionState>,
 ) -> Result<Option<CodexHomeSourceTransitionClaim>, String> {
@@ -681,13 +705,9 @@ fn create_pinned_sqlite_descriptor_view() -> Result<PinnedSqliteDescriptorView, 
                     .map_err(|error| {
                         format!("failed to create pinned unread SQLite owner lock: {error}")
                     })?;
-                rustix::fs::flock(
-                    &owner_lock,
-                    rustix::fs::FlockOperation::LockExclusive,
-                )
-                .map_err(|error| {
-                    format!("failed to lock pinned unread SQLite descriptor view: {error}")
-                })?;
+                rustix::fs::flock(&owner_lock, rustix::fs::FlockOperation::LockExclusive).map_err(
+                    |error| format!("failed to lock pinned unread SQLite descriptor view: {error}"),
+                )?;
                 #[cfg(test)]
                 PINNED_SQLITE_VIEWS_CREATED.fetch_add(1, Ordering::Relaxed);
                 return Ok(PinnedSqliteDescriptorView {
@@ -748,10 +768,7 @@ fn clean_stale_pinned_sqlite_descriptor_views() -> Result<(), String> {
             }
             Err(_) => continue,
         };
-        match rustix::fs::flock(
-            &owner,
-            rustix::fs::FlockOperation::NonBlockingLockExclusive,
-        ) {
+        match rustix::fs::flock(&owner, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => {
                 let _ = std::fs::remove_dir_all(&path);
             }
@@ -769,10 +786,11 @@ fn refresh_pinned_sqlite_descriptor_view(
     view: &mut PinnedSqliteDescriptorView,
 ) -> Result<(), String> {
     let mut desired = HashMap::new();
-    let database = open_optional_pinned_descriptor_file(root, "state_5.sqlite")?.ok_or_else(|| {
-        "pinned unread observation requires state_5.sqlite when native unread state exists"
-            .to_string()
-    })?;
+    let database =
+        open_optional_pinned_descriptor_file(root, "state_5.sqlite")?.ok_or_else(|| {
+            "pinned unread observation requires state_5.sqlite when native unread state exists"
+                .to_string()
+        })?;
     desired.insert("state_5.sqlite".to_string(), database);
     for name in ["state_5.sqlite-wal", "state_5.sqlite-shm"] {
         if let Some(file) = open_optional_pinned_descriptor_file(root, name)? {
@@ -791,7 +809,10 @@ fn validate_pinned_descriptor_set(
     use rustix::fs::{statat, AtFlags, FileType};
 
     for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
-        match (statat(root, name, AtFlags::SYMLINK_NOFOLLOW), files.get(name)) {
+        match (
+            statat(root, name, AtFlags::SYMLINK_NOFOLLOW),
+            files.get(name),
+        ) {
             (Ok(stat), Some(file))
                 if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile
                     && u64::try_from(stat.st_dev).ok() == Some(file.device)
@@ -799,8 +820,8 @@ fn validate_pinned_descriptor_set(
             (Err(rustix::io::Errno::NOENT), None) => {}
             _ => {
                 return Err(format!(
-                    "pinned unread SQLite descriptor set changed while it was being captured: {name}"
-                ))
+                "pinned unread SQLite descriptor set changed while it was being captured: {name}"
+            ))
             }
         }
     }
@@ -817,7 +838,11 @@ fn open_optional_pinned_descriptor_file(
     let before = match statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
         Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(error) => return Err(format!("failed to inspect pinned unread entry {name}: {error}")),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect pinned unread entry {name}: {error}"
+            ))
+        }
     };
     match FileType::from_raw_mode(before.st_mode) {
         FileType::RegularFile => {}
@@ -902,8 +927,7 @@ fn install_pinned_sqlite_descriptor_files(
             .get(&name)
             .ok_or_else(|| "desired pinned SQLite descriptor disappeared".to_string())?;
         let source_root = source_root.ok_or_else(|| {
-            "pinned unread SQLite source root is unavailable for descriptor publication"
-                .to_string()
+            "pinned unread SQLite source root is unavailable for descriptor publication".to_string()
         })?;
         let destination = view.directory.join(&name);
         match std::fs::remove_file(&destination) {
@@ -983,7 +1007,9 @@ fn open_pinned_directory_path(
             Ok(fd) => fd,
             Err(rustix::io::Errno::NOENT) => return Ok(None),
             Err(error) => {
-                return Err(format!("failed to open pinned session date directory: {error}"))
+                return Err(format!(
+                    "failed to open pinned session date directory: {error}"
+                ))
             }
         };
     }
@@ -996,7 +1022,8 @@ fn validate_canonical_sessions_root(root: &impl std::os::fd::AsFd) -> Result<(),
     let mut directory = Dir::read_from(root)
         .map_err(|error| format!("failed to enumerate pinned sessions root: {error}"))?;
     while let Some(entry) = directory.read() {
-        let entry = entry.map_err(|error| format!("failed to enumerate pinned sessions root: {error}"))?;
+        let entry =
+            entry.map_err(|error| format!("failed to enumerate pinned sessions root: {error}"))?;
         let name = entry.file_name().to_bytes();
         if name == b"." || name == b".." {
             continue;
@@ -1035,7 +1062,8 @@ fn collect_recent_pinned_session_candidates<Fd: std::os::fd::AsFd>(
     let mut directory = Dir::read_from(&parent)
         .map_err(|error| format!("failed to enumerate pinned sessions: {error}"))?;
     while let Some(entry) = directory.read() {
-        let entry = entry.map_err(|error| format!("failed to enumerate pinned sessions: {error}"))?;
+        let entry =
+            entry.map_err(|error| format!("failed to enumerate pinned sessions: {error}"))?;
         let bytes = entry.file_name().to_bytes();
         if bytes == b"." || bytes == b".." {
             continue;
@@ -1162,8 +1190,7 @@ pub(crate) fn pin_captured_codex_home_source(
         observation: None,
         source_scope_key: format!(
             "{}|{}",
-            captured.source_token.canonical_home_key,
-            captured.source_token.physical_home_key
+            captured.source_token.canonical_home_key, captured.source_token.physical_home_key
         ),
     })
 }
@@ -1179,11 +1206,7 @@ pub(crate) fn with_valid_codex_home_source<T>(
     source_token: &CodexHomeSourceToken,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    with_valid_codex_home_source_in_state(
-        codex_home_transition_state(),
-        source_token,
-        operation,
-    )
+    with_valid_codex_home_source_in_state(codex_home_transition_state(), source_token, operation)
 }
 
 fn with_valid_codex_home_source_in_state<T>(
@@ -1285,7 +1308,10 @@ fn refresh_codex_home_source_identity(
         codex_home: CodexHomeStatus {
             path: source_path.display().to_string(),
             exists: transition.source_exists,
-            source: transition.source_kind.clone().unwrap_or_else(|| "auto".into()),
+            source: transition
+                .source_kind
+                .clone()
+                .unwrap_or_else(|| "auto".into()),
         },
         canonical_home_key,
         physical_home_key,
@@ -1367,6 +1393,28 @@ fn validate_codex_home_source_in_state(
     }
 }
 
+fn validate_codex_home_statistics_source(expected: &CodexHomeSourceToken) -> Result<(), String> {
+    with_codex_home_transition_state(|transition| {
+        refresh_codex_home_source_identity(transition)?;
+        validate_codex_home_statistics_source_in_state(transition, expected)
+    })
+}
+
+fn validate_codex_home_statistics_source_in_state(
+    transition: &CodexHomeTransitionState,
+    expected: &CodexHomeSourceToken,
+) -> Result<(), String> {
+    let current = current_codex_home_source_token(transition)?;
+    if current.canonical_home_key == expected.canonical_home_key {
+        Ok(())
+    } else {
+        Err(format!(
+            "Codex Home statistics path changed from {} to {}",
+            expected.canonical_home_key, current.canonical_home_key
+        ))
+    }
+}
+
 fn current_codex_home_source_token(
     transition: &CodexHomeTransitionState,
 ) -> Result<CodexHomeSourceToken, String> {
@@ -1388,7 +1436,10 @@ pub(crate) fn physical_home_key(path: &Path) -> Result<String, String> {
     use std::os::unix::fs::MetadataExt;
 
     let metadata = std::fs::metadata(path).map_err(|error| {
-        format!("Codex Home physical identity unavailable for {}: {error}", path.display())
+        format!(
+            "Codex Home physical identity unavailable for {}: {error}",
+            path.display()
+        )
     })?;
     Ok(format!("unix:{}:{}", metadata.dev(), metadata.ino()))
 }
@@ -1411,7 +1462,10 @@ pub(crate) fn physical_home_key(path: &Path) -> Result<String, String> {
     let (volume, file_id) = opened
         .and_then(|file| windows_home_identity(&file))
         .map_err(|error| {
-            format!("Codex Home physical identity unavailable for {}: {error}", path.display())
+            format!(
+                "Codex Home physical identity unavailable for {}: {error}",
+                path.display()
+            )
         })?;
     Ok(format!("windows:{volume}:{file_id}"))
 }
@@ -1462,9 +1516,16 @@ fn windows_home_identity(file: &std::fs::File) -> std::io::Result<(u32, u64)> {
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn physical_home_key(path: &Path) -> Result<String, String> {
     let metadata = std::fs::metadata(path).map_err(|error| {
-        format!("Codex Home physical identity unavailable for {}: {error}", path.display())
+        format!(
+            "Codex Home physical identity unavailable for {}: {error}",
+            path.display()
+        )
     })?;
-    Ok(format!("portable:{}:{:?}", metadata.len(), metadata.created().ok()))
+    Ok(format!(
+        "portable:{}:{:?}",
+        metadata.len(),
+        metadata.created().ok()
+    ))
 }
 
 fn lexical_absolute_path(path: &Path) -> PathBuf {
@@ -1527,7 +1588,7 @@ pub async fn read_dashboard_snapshot(
     require_window_label(&window, "read_dashboard_snapshot")?;
     startup_trace::mark("command read_dashboard_snapshot start");
     let started = Instant::now();
-    let result = run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
+    let result = run_statistics_bound_dashboard_read(&app, source_token, move |codex_home| {
         crate::core::dashboard::LocalCodexDataSource::new(codex_home).read_dashboard_snapshot()
     })
     .await;
@@ -1565,13 +1626,11 @@ pub async fn read_precise_dashboard_snapshot(
     let queue_wait_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let queue_wait_for_worker = std::sync::Arc::clone(&queue_wait_ms);
     let started = Instant::now();
-    let result = run_source_bound_dashboard_read_with_worker_start(
+    let result = run_statistics_bound_dashboard_read_with_worker_start(
         &app,
         source_token,
         |codex_home| {
-            if let Some(upgrade) =
-                token_count_jsonl::precise_index_upgrade_required(&codex_home)?
-            {
+            if let Some(upgrade) = token_count_jsonl::precise_index_upgrade_required(&codex_home)? {
                 return Err(encode_precise_index_upgrade_required(upgrade));
             }
             crate::core::dashboard::LocalCodexDataSource::new(codex_home)
@@ -1618,7 +1677,7 @@ pub async fn schedule_precise_dashboard_aggregate(
     let request_reason = precise_dashboard_request_reason(request_reason.as_deref());
     let source_generation = source_token.transition_generation;
     let started = Instant::now();
-    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+    let result = run_statistics_bound_dashboard_read(&app, source_token, |codex_home| {
         if let Some(upgrade) = token_count_jsonl::precise_index_upgrade_required(&codex_home)? {
             return Err(encode_precise_index_upgrade_required(upgrade));
         }
@@ -1649,7 +1708,7 @@ pub async fn rebuild_precise_index_for_current_version(
     if confirmation != "REBUILD_TAURI_DERIVED_USAGE_INDEX" {
         return Err("精确 token 索引重建确认无效，已拒绝删除".into());
     }
-    run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+    run_statistics_bound_dashboard_read(&app, source_token, |codex_home| {
         token_count_jsonl::rebuild_precise_index_for_current_version(&codex_home)
     })
     .await
@@ -1662,13 +1721,13 @@ pub async fn read_precise_dashboard_progress(
     source_token: CodexHomeSourceToken,
 ) -> Result<PreciseDashboardProgress, String> {
     require_window_label(&window, "read_precise_dashboard_progress")?;
-    run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+    run_statistics_bound_dashboard_read(&app, source_token, |codex_home| {
         Ok(token_count_jsonl::precise_dashboard_progress(&codex_home))
     })
     .await
 }
 
-async fn run_source_bound_dashboard_read_with_worker_start<T, Read, OnWorkerStart>(
+async fn run_statistics_bound_dashboard_read_with_worker_start<T, Read, OnWorkerStart>(
     app: &AppHandle,
     expected: CodexHomeSourceToken,
     read: Read,
@@ -1682,11 +1741,11 @@ where
     run_source_bound_dashboard_read_with(
         &expected,
         || emit_detected_source_transition(app).map(|_| ()),
-        |expected| capture_codex_home_source(Some(expected)),
+        capture_codex_home_statistics_source,
         |codex_home| {
             run_blocking_command_with_worker_start(move || read(codex_home), on_worker_start)
         },
-        validate_codex_home_source,
+        validate_codex_home_statistics_source,
     )
     .await
 }
@@ -1721,7 +1780,7 @@ pub async fn acknowledge_attribution_safety(
     if uuid::Uuid::parse_str(&unsafe_id).is_err() {
         return Err("精确 token 归因安全确认的事件标识无效".into());
     }
-    run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
+    run_statistics_bound_dashboard_read(&app, source_token, move |codex_home| {
         token_count_jsonl::acknowledge_attribution_safety(
             &codex_home,
             &provenance_epoch,
@@ -1732,14 +1791,7 @@ pub async fn acknowledge_attribution_safety(
     .await
 }
 
-async fn run_source_bound_dashboard_read_with<
-    T,
-    Detect,
-    Capture,
-    Read,
-    ReadFuture,
-    Validate,
->(
+async fn run_source_bound_dashboard_read_with<T, Detect, Capture, Read, ReadFuture, Validate>(
     expected: &CodexHomeSourceToken,
     mut detect: Detect,
     capture: Capture,
@@ -1783,6 +1835,25 @@ where
     .await
 }
 
+async fn run_statistics_bound_dashboard_read<T, Read>(
+    app: &AppHandle,
+    expected: CodexHomeSourceToken,
+    read: Read,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    Read: FnOnce(PathBuf) -> Result<T, String> + Send + 'static,
+{
+    run_source_bound_dashboard_read_with(
+        &expected,
+        || emit_detected_source_transition(app).map(|_| ()),
+        capture_codex_home_statistics_source,
+        |codex_home| run_blocking_command(move || read(codex_home)),
+        validate_codex_home_statistics_source,
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn read_usage_summary_snapshot(
     window: tauri::WebviewWindow,
@@ -1792,7 +1863,7 @@ pub async fn read_usage_summary_snapshot(
 ) -> Result<Option<TokenUsageSummarySnapshot>, String> {
     require_window_label(&window, "read_usage_summary_snapshot")?;
     let started = Instant::now();
-    let result = run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
+    let result = run_statistics_bound_dashboard_read(&app, source_token, move |codex_home| {
         token_count_jsonl::refreshed_usage_summary_snapshot_with_interval(
             &codex_home,
             refresh_interval_seconds,
@@ -1815,7 +1886,7 @@ pub async fn read_precise_dashboard_source_probe(
 ) -> Result<token_count_jsonl::PreciseDashboardSourceProbe, String> {
     require_window_label(&window, "read_precise_dashboard_source_probe")?;
     let started = Instant::now();
-    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+    let result = run_statistics_bound_dashboard_read(&app, source_token, |codex_home| {
         token_count_jsonl::precise_dashboard_source_probe(&codex_home)
     })
     .await;
@@ -1853,8 +1924,7 @@ pub async fn read_account_quota(
     let started = Instant::now();
     let forced = force_refresh.unwrap_or(false);
     let result = run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
-        crate::core::dashboard::LocalCodexDataSource::new(codex_home)
-            .read_account_quota(forced)
+        crate::core::dashboard::LocalCodexDataSource::new(codex_home).read_account_quota(forced)
     })
     .await;
     if let Ok(bundle) = &result {
@@ -1986,13 +2056,12 @@ mod tests {
 
     #[test]
     fn precise_upgrade_error_is_structured_by_stable_code() {
-        let encoded = encode_precise_index_upgrade_required(
-            token_count_jsonl::ExactIndexUpgradeRequired {
+        let encoded =
+            encode_precise_index_upgrade_required(token_count_jsonl::ExactIndexUpgradeRequired {
                 component: "schema".into(),
                 stored: "12".into(),
                 supported: "9".into(),
-            },
-        );
+            });
         let error = precise_dashboard_command_error(encoded);
         let value = serde_json::to_value(error).expect("serialize typed command error");
 
@@ -2004,9 +2073,8 @@ mod tests {
 
     #[test]
     fn ordinary_precise_error_is_not_misclassified_by_localized_prose() {
-        let error = precise_dashboard_command_error(
-            "索引版本太高，需要升级软件，但没有稳定错误码".into(),
-        );
+        let error =
+            precise_dashboard_command_error("索引版本太高，需要升级软件，但没有稳定错误码".into());
         let value = serde_json::to_value(error).expect("serialize ordinary command error");
 
         assert_eq!(value["code"], "operationFailed");
@@ -2078,27 +2146,33 @@ mod tests {
         let a = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_a.clone(), "manual"),
-        ).unwrap();
+        )
+        .unwrap();
         let a_duplicate = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_a.join("."), "manual"),
-        ).unwrap();
+        )
+        .unwrap();
         let a_same_resolved_source = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_a.clone(), "auto"),
-        ).unwrap();
+        )
+        .unwrap();
         let auto = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_auto.clone(), "auto"),
-        ).unwrap();
+        )
+        .unwrap();
         let auto_duplicate = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_auto.join("."), "auto"),
-        ).unwrap();
+        )
+        .unwrap();
         let b = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_b.clone(), "manual"),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(a.transition_generation, 1);
         assert_eq!(a_duplicate.transition_generation, 1);
@@ -2125,7 +2199,8 @@ mod tests {
         let source_a = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_a.clone(), "manual"),
-        ).unwrap();
+        )
+        .unwrap();
         let source_a_token = source_a.source_token();
         let captured = capture_codex_home_source_from_state(&transition, &source_a_token)
             .expect("A should be captured before the transition");
@@ -2133,7 +2208,8 @@ mod tests {
         resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_b.clone(), "manual"),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(captured.codex_home, canonical_home_path(&home_a));
         assert_eq!(captured.source_token, source_a_token);
@@ -2233,10 +2309,7 @@ mod tests {
             |_| Err("Codex Home physical identity changed".into()),
         ));
 
-        assert_eq!(
-            result.unwrap_err(),
-            "Codex Home physical identity changed"
-        );
+        assert_eq!(result.unwrap_err(), "Codex Home physical identity changed");
     }
 
     #[test]
@@ -2248,7 +2321,8 @@ mod tests {
         let source_a = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home.clone(), "manual"),
-        ).unwrap();
+        )
+        .unwrap();
         let captured_a =
             capture_codex_home_source_from_state(&transition, &source_a.source_token())
                 .expect("capture physical home A");
@@ -2257,7 +2331,8 @@ mod tests {
         let source_b = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home.clone(), "manual"),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(source_a.canonical_home_key, source_b.canonical_home_key);
         assert_ne!(source_a.physical_home_key, source_b.physical_home_key);
@@ -2272,6 +2347,52 @@ mod tests {
 
         remove_source_test_directory(home);
         remove_source_test_directory(displaced);
+    }
+
+    #[test]
+    fn statistics_source_validation_uses_the_canonical_path_not_physical_identity() {
+        let home = disposable_source_test_directory("statistics-physical-home");
+        let displaced = home.with_extension("displaced");
+        let other = disposable_source_test_directory("statistics-other-home");
+        let mut transition = CodexHomeTransitionState::default();
+
+        let source_a = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        std::fs::rename(&home, &displaced).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        let source_b = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+
+        assert_ne!(source_a.physical_home_key, source_b.physical_home_key);
+        assert!(
+            validate_codex_home_source_in_state(&transition, &source_a.source_token()).is_err()
+        );
+        assert!(validate_codex_home_statistics_source_in_state(
+            &transition,
+            &source_a.source_token()
+        )
+        .is_ok());
+
+        resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(other.clone(), "manual"),
+        )
+        .unwrap();
+        assert!(validate_codex_home_statistics_source_in_state(
+            &transition,
+            &source_a.source_token()
+        )
+        .is_err());
+
+        remove_source_test_directory(home);
+        remove_source_test_directory(displaced);
+        remove_source_test_directory(other);
     }
 
     #[test]
@@ -2358,7 +2479,10 @@ mod tests {
         let retry = claim_codex_home_source_transition_in_state(&mut transition)
             .unwrap()
             .expect("failed emit must requeue the generation");
-        assert_eq!(retry.envelope.transition_generation, first.envelope.transition_generation);
+        assert_eq!(
+            retry.envelope.transition_generation,
+            first.envelope.transition_generation
+        );
         assert_ne!(retry.claim_nonce, first.claim_nonce);
 
         finish_codex_home_source_transition_claim_in_state(&mut transition, &retry, true);
@@ -2511,11 +2635,10 @@ mod tests {
         std::fs::remove_dir_all(&home).unwrap();
         std::fs::rename(&displaced, &home).expect("restore A before validation");
 
-        assert_eq!(
-            pinned.observation().unwrap().recent_completion_count(),
-            1
-        );
-        assert!(pinned.source_scope_key.contains(&source_a.physical_home_key));
+        assert_eq!(pinned.observation().unwrap().recent_completion_count(), 1);
+        assert!(pinned
+            .source_scope_key
+            .contains(&source_a.physical_home_key));
 
         remove_source_test_directory(home);
     }
@@ -2542,14 +2665,11 @@ mod tests {
             codex_home_status_for_test(link.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
 
         let pinned = pin_captured_codex_home_source(&captured).expect("pin canonical target");
-        assert_eq!(
-            pinned.observation().unwrap().recent_completion_count(),
-            1
-        );
+        assert_eq!(pinned.observation().unwrap().recent_completion_count(), 1);
 
         std::fs::remove_file(link).unwrap();
         remove_source_test_directory(target);
@@ -2577,8 +2697,8 @@ mod tests {
             codex_home_status_for_test(home.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
         reset_pinned_source_observation_counters_for_test();
 
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
@@ -2599,10 +2719,7 @@ mod tests {
         let base = std::time::SystemTime::now() - std::time::Duration::from_secs(20);
         for index in 0..70 {
             let path = sessions.join(format!("recent-{index:02}.jsonl"));
-            write_completion_session(
-                &path,
-                &format!("019eaaaa-0000-0000-0000-{index:012}"),
-            );
+            write_completion_session(&path, &format!("019eaaaa-0000-0000-0000-{index:012}"));
             std::fs::File::options()
                 .write(true)
                 .open(path)
@@ -2619,16 +2736,13 @@ mod tests {
             codex_home_status_for_test(home.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
 
         reset_pinned_source_observation_counters_for_test();
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
 
-        assert_eq!(
-            pinned.observation().unwrap().recent_completion_count(),
-            64
-        );
+        assert_eq!(pinned.observation().unwrap().recent_completion_count(), 64);
         remove_source_test_directory(home);
     }
 
@@ -2642,10 +2756,8 @@ mod tests {
         assert!(west.contains(&PathBuf::from("2026/07/09")));
 
         let east_now = time::macros::datetime!(2026-07-11 18:30 UTC);
-        let east = recent_session_date_paths(
-            east_now,
-            time::UtcOffset::from_hms(10, 0, 0).unwrap(),
-        );
+        let east =
+            recent_session_date_paths(east_now, time::UtcOffset::from_hms(10, 0, 0).unwrap());
         assert!(east.contains(&PathBuf::from("2026/07/12")));
         assert!(east.contains(&PathBuf::from("2026/07/11")));
         assert!(east.contains(&PathBuf::from("2026/07/10")));
@@ -2668,8 +2780,8 @@ mod tests {
             codex_home_status_for_test(home.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
 
         reset_pinned_source_observation_counters_for_test();
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
@@ -2683,10 +2795,7 @@ mod tests {
     fn pinned_source_fails_with_diagnostic_when_archived_fallback_cannot_be_safe() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("unsafe-archived-fallback");
-        write_initialized_sidebar_state(
-            &home,
-            &["019eaaaa-0000-0000-0000-0000000000aa"],
-        );
+        write_initialized_sidebar_state(&home, &["019eaaaa-0000-0000-0000-0000000000aa"]);
         let archived = home.join("archived_sessions");
         std::fs::create_dir(&archived).unwrap();
         std::fs::write(
@@ -2700,8 +2809,8 @@ mod tests {
             codex_home_status_for_test(home.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
 
         let error = match pin_captured_codex_home_source(&captured) {
             Ok(_) => panic!("unsafe archived fallback must fail closed"),
@@ -2726,8 +2835,8 @@ mod tests {
             codex_home_status_for_test(home.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
         reset_pinned_source_observation_counters_for_test();
 
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
@@ -2742,10 +2851,7 @@ mod tests {
     fn state_sqlite_directory_is_rejected_as_a_non_file() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("sqlite-directory");
-        write_initialized_sidebar_state(
-            &home,
-            &["019eaaaa-0000-0000-0000-0000000000aa"],
-        );
+        write_initialized_sidebar_state(&home, &["019eaaaa-0000-0000-0000-0000000000aa"]);
         std::fs::create_dir(home.join("state_5.sqlite")).unwrap();
         let mut transition = CodexHomeTransitionState::default();
         let source = resolve_codex_home_source(
@@ -2753,8 +2859,8 @@ mod tests {
             codex_home_status_for_test(home.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
 
         let error = match pin_captured_codex_home_source(&captured) {
             Ok(_) => panic!("SQLite directory must be rejected"),
@@ -2818,8 +2924,8 @@ mod tests {
             codex_home_status_for_test(home.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
         reset_pinned_source_observation_counters_for_test();
 
         drop(pin_captured_codex_home_source(&captured).unwrap());
@@ -2827,7 +2933,10 @@ mod tests {
             let view = pinned_sqlite_descriptor_view().lock().unwrap();
             let view = view.as_ref().unwrap();
             (
-                std::fs::metadata(&view.directory).unwrap().modified().unwrap(),
+                std::fs::metadata(&view.directory)
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
                 std::fs::symlink_metadata(view.directory.join("state_5.sqlite"))
                     .unwrap()
                     .modified()
@@ -2840,7 +2949,10 @@ mod tests {
         let view = pinned_sqlite_descriptor_view().lock().unwrap();
         let view = view.as_ref().unwrap();
         assert_eq!(
-            std::fs::metadata(&view.directory).unwrap().modified().unwrap(),
+            std::fs::metadata(&view.directory)
+                .unwrap()
+                .modified()
+                .unwrap(),
             directory_modified
         );
         assert_eq!(
@@ -2880,10 +2992,12 @@ mod tests {
                  );",
             )
             .unwrap();
-        assert!(std::fs::metadata(home.join("state_5.sqlite-wal"))
-            .unwrap()
-            .len()
-            > 32);
+        assert!(
+            std::fs::metadata(home.join("state_5.sqlite-wal"))
+                .unwrap()
+                .len()
+                > 32
+        );
 
         let mut transition = CodexHomeTransitionState::default();
         let source = resolve_codex_home_source(
@@ -2891,8 +3005,8 @@ mod tests {
             codex_home_status_for_test(home.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
 
         assert_eq!(pinned.observation().unwrap().native_unread_count(), Some(1));
@@ -2903,8 +3017,7 @@ mod tests {
             let view = view.as_ref().unwrap();
             for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
                 let source = std::fs::symlink_metadata(home.join(name)).unwrap();
-                let published =
-                    std::fs::symlink_metadata(view.directory.join(name)).unwrap();
+                let published = std::fs::symlink_metadata(view.directory.join(name)).unwrap();
                 assert!(published.file_type().is_file());
                 assert_eq!(published.dev(), source.dev());
                 assert_eq!(published.ino(), source.ino());
@@ -2937,11 +3050,7 @@ mod tests {
             .write(true)
             .open(active.join(".owner.lock"))
             .unwrap();
-        rustix::fs::flock(
-            &active_lock,
-            rustix::fs::FlockOperation::LockExclusive,
-        )
-        .unwrap();
+        rustix::fs::flock(&active_lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
 
         clean_stale_pinned_sqlite_descriptor_views().unwrap();
 
@@ -3011,10 +3120,7 @@ mod tests {
         let _guard = pinned_source_counter_test_guard();
         reset_pinned_source_observation_counters_for_test();
         let home = disposable_source_test_directory("failed-db-cache");
-        write_initialized_sidebar_state(
-            &home,
-            &["019eaaaa-0000-0000-0000-0000000000aa"],
-        );
+        write_initialized_sidebar_state(&home, &["019eaaaa-0000-0000-0000-0000000000aa"]);
         std::fs::write(home.join("state_5.sqlite"), b"not sqlite").unwrap();
         let mut transition = CodexHomeTransitionState::default();
         let source = resolve_codex_home_source(
@@ -3022,8 +3128,8 @@ mod tests {
             codex_home_status_for_test(home.clone(), "manual"),
         )
         .unwrap();
-        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
-            .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source.source_token()).unwrap();
 
         assert!(pin_captured_codex_home_source(&captured).is_err());
         remove_source_test_directory(home);
@@ -3199,5 +3305,4 @@ mod tests {
         )
         .unwrap();
     }
-
 }

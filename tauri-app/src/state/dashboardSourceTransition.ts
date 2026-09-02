@@ -65,12 +65,10 @@ export function acceptDashboardSourceEnvelope(
     };
   }
 
-  if (
-    incoming.canonicalHomeKey === current.canonicalHomeKey
-    && incoming.physicalHomeKey === current.physicalHomeKey
-  ) {
-    // The Rust publisher never advances generation for an unchanged physical source.
-    return rejectedTransition(transition);
+  if (incoming.canonicalHomeKey === current.canonicalHomeKey) {
+    return incoming.physicalHomeKey === current.physicalHomeKey
+      ? rejectedTransition(transition)
+      : acceptedPhysicalBindingRefresh(transition, incoming);
   }
 
   return {
@@ -82,6 +80,12 @@ export function acceptDashboardSourceEnvelope(
       deferredGeneration: transition.deferredGeneration + 1,
     },
   };
+}
+
+export function dashboardStatisticsSourceKey(
+  token: DashboardSourceToken | null,
+): string | null {
+  return token?.canonicalHomeKey ?? null;
 }
 
 export function acceptDashboardSourceResponse(
@@ -151,5 +155,20 @@ function rejectedTransition(
     initialized: false,
     sourceChanged: false,
     transition,
+  };
+}
+
+function acceptedPhysicalBindingRefresh(
+  transition: DashboardSourceTransition,
+  incoming: DashboardSourceToken,
+): DashboardSourceTransitionResult {
+  return {
+    accepted: true,
+    initialized: false,
+    sourceChanged: false,
+    transition: {
+      ...transition,
+      sourceToken: incoming,
+    },
   };
 }

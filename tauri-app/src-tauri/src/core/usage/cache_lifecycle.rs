@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_removes_old_discardable_caches_without_touching_current_or_swift_quota_history() {
+    fn cleanup_removes_only_allowlisted_discardable_caches() {
         let root = temp_root("cleanup");
         let _env = PathEnvGuard::new(&root);
         let cache_base = root.join("cache");
@@ -318,20 +318,21 @@ mod tests {
             .join("token-events-cache-v3");
         let old_tauri = cache_base
             .join("CodexTokenBarTauri")
-            .join("tauri-usage-cache-2026-06-v1");
+            .join("tauri-usage-cache-2026-07-v5");
         let old_tauri_other_version = cache_base
             .join("CodexTokenBarTauri")
-            .join("tauri-usage-cache-2026-05-v2");
+            .join("tauri-usage-cache-2026-07-v4");
         let old_tauri_file = cache_base
             .join("CodexTokenBarTauri")
-            .join("tauri-usage-cache-2026-04-v1.json");
+            .join("tauri-usage-cache-2026-07-v3");
+        let unknown_future_tauri = cache_base
+            .join("CodexTokenBarTauri")
+            .join("tauri-usage-cache-2026-07-v999");
         let current = app_paths::tauri_usage_cache_dir().unwrap();
         let local_candidates = cache_base
             .join("CodexTokenBarTauri")
             .join("local-candidates");
-        let unknown_directory = cache_base
-            .join("CodexTokenBarTauri")
-            .join("other-cache");
+        let unknown_directory = cache_base.join("CodexTokenBarTauri").join("other-cache");
         let unknown_file = cache_base
             .join("CodexTokenBarTauri")
             .join("cache-index.json");
@@ -343,6 +344,7 @@ mod tests {
         fs::create_dir_all(&old_tauri).unwrap();
         fs::create_dir_all(&old_tauri_other_version).unwrap();
         fs::create_dir_all(&current).unwrap();
+        fs::create_dir_all(&unknown_future_tauri).unwrap();
         fs::create_dir_all(&local_candidates).unwrap();
         fs::create_dir_all(&unknown_directory).unwrap();
         fs::create_dir_all(quota.parent().unwrap()).unwrap();
@@ -357,6 +359,7 @@ mod tests {
         assert!(!old_tauri_other_version.exists());
         assert!(!old_tauri_file.exists());
         assert!(current.exists());
+        assert!(unknown_future_tauri.exists());
         assert!(local_candidates.exists());
         assert!(unknown_directory.exists());
         assert!(unknown_file.exists());

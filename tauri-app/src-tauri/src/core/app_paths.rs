@@ -5,12 +5,15 @@ const TAURI_DIRECTORY_NAME: &str = "CodexTokenBarTauri";
 // Keep the established namespace so existing aggregate-cache cleanup and
 // migration behavior remain stable across this release.
 pub const TAURI_USAGE_CACHE_NAMESPACE: &str = "tauri-usage-cache-2026-07-v6";
-const TAURI_USAGE_CACHE_NAMESPACE_PREFIX: &str = "tauri-usage-cache-";
+const RETIRED_TAURI_USAGE_CACHE_NAMESPACES: &[&str] = &[
+    "tauri-usage-cache-2026-07-v3",
+    "tauri-usage-cache-2026-07-v4",
+    "tauri-usage-cache-2026-07-v5",
+];
 const HISTORY_REPAIR_DIRECTORY_NAME: &str = "CodexHistoryRepair";
 
 pub fn home_dir() -> PathBuf {
-    system_home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
+    system_home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn non_empty_env_path(key: &str) -> Option<PathBuf> {
@@ -112,21 +115,11 @@ pub fn discardable_usage_cache_cleanup_targets() -> Vec<PathBuf> {
     }
 
     if let Some(tauri_cache_root) = tauri_app_cache_dir() {
-        if let Ok(entries) = std::fs::read_dir(&tauri_cache_root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let is_old_tauri_usage_cache_namespace = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        name.starts_with(TAURI_USAGE_CACHE_NAMESPACE_PREFIX)
-                            && name != TAURI_USAGE_CACHE_NAMESPACE
-                    });
-                if is_old_tauri_usage_cache_namespace {
-                    targets.push(path);
-                }
-            }
-        }
+        targets.extend(
+            RETIRED_TAURI_USAGE_CACHE_NAMESPACES
+                .iter()
+                .map(|name| tauri_cache_root.join(name)),
+        );
     }
 
     targets
@@ -217,9 +210,7 @@ fn app_support_base_dir() -> Option<PathBuf> {
 
     if cfg!(target_os = "windows") {
         non_empty_env_path("APPDATA")
-            .or_else(|| {
-                system_home_dir().map(|home| home.join("AppData").join("Roaming"))
-            })
+            .or_else(|| system_home_dir().map(|home| home.join("AppData").join("Roaming")))
     } else if cfg!(target_os = "macos") {
         system_home_dir().map(|home| home.join("Library").join("Application Support"))
     } else {
@@ -270,12 +261,18 @@ pub(crate) fn app_path_test_env_guard(
     for (key, value) in overrides {
         std::env::set_var(key, value);
     }
-    AppPathTestEnvGuard { _lock: lock, originals }
+    AppPathTestEnvGuard {
+        _lock: lock,
+        originals,
+    }
 }
 
 #[cfg(test)]
 pub(crate) fn app_path_test_env_lock_is_held() -> bool {
-    matches!(APP_PATH_TEST_ENV_LOCK.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+    matches!(
+        APP_PATH_TEST_ENV_LOCK.try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    )
 }
 
 #[cfg(test)]

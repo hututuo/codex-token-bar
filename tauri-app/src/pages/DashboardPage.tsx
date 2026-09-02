@@ -38,6 +38,7 @@ import { desktopPlatform } from "../platform/desktop";
 import type { SharedAccountAttributionResult } from "../components/sharedAccountAttribution/model";
 import { floatingSnapshotForDashboardPreview } from "../surfaces/compactPanelSnapshotModel";
 import type { PreciseIndexUpgradeState } from "../state/useDashboardData";
+import { dashboardStatisticsSourceKey } from "../state/dashboardSourceTransition";
 
 const SessionManagementWorkspace = lazy(async () => {
   const module = await import("./SessionManagementWorkspace");
@@ -371,7 +372,7 @@ export function DashboardPage({
               selectedLiveThreadId={selectedLiveThreadId}
               sourceHomeIdentity={sourceToken === null
                 ? providerSourceKey
-                : `${sourceToken.canonicalHomeKey}\u0000${sourceToken.physicalHomeKey}`}
+                : dashboardStatisticsSourceKey(sourceToken) ?? providerSourceKey}
               usageCacheInitializing={usageCacheInitializing}
             />
             {analyticsReady ? (

@@ -5,6 +5,7 @@ import type {
   PreciseDashboardRequestRevision,
 } from "../types/usage";
 import { canonicalAttributionBoundaryKey } from "./attributionBoundary.ts";
+import { dashboardStatisticsSourceKey } from "./dashboardSourceTransition.ts";
 
 type PreciseDashboardLoader = () => Promise<DashboardSnapshot | null>;
 type PreciseDashboardSubscriber = (snapshot: DashboardSnapshot | null) => void;
@@ -654,11 +655,7 @@ function settleFlight(
 }
 
 function preciseDashboardSourceKey(sourceToken: CodexHomeSourceToken): string {
-  return JSON.stringify([
-    sourceToken.transitionGeneration,
-    sourceToken.canonicalHomeKey,
-    sourceToken.physicalHomeKey,
-  ]);
+  return dashboardStatisticsSourceKey(sourceToken) ?? sourceToken.canonicalHomeKey;
 }
 
 function prunePreciseDashboardCaches(currentKey: string): void {
@@ -675,9 +672,9 @@ function prunePreciseDashboardCaches(currentKey: string): void {
     }
   }
 
-  // A source token includes the transition generation, so an old dirty entry
-  // can never safely authorize a future Home. Keep only entries that still
-  // have a current last-good snapshot or an owner in flight.
+  // Statistics are isolated by canonical Home. Keep only dirty entries that
+  // still have a last-good snapshot or an owner in flight; a switch back to
+  // the same Home is forced through the native source probe before reuse.
   for (const key of dirtySources) {
     if (key !== currentKey
       && !lastSuccessfulSnapshotsBySource.has(key)
