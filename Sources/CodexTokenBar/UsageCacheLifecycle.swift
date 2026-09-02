@@ -6,6 +6,9 @@ enum UsageCacheLifecycle {
 
     private static let stateDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR"
     private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
+    private static let retiredSwiftCacheNamespaces = [
+        CodexUsageAnalyzer.SessionEventCache.previousCacheNamespace
+    ]
 
     private struct CacheState: Codable {
         let usageCacheNamespace: String
@@ -82,14 +85,10 @@ enum UsageCacheLifecycle {
             )
         }
         let swiftCacheRoot = cacheRoot.appendingPathComponent(appDirectoryName, isDirectory: true)
-        guard let children = try? FileManager.default.contentsOfDirectory(
-            at: swiftCacheRoot,
-            includingPropertiesForKeys: nil
-        ) else {
-            return
-        }
-        for child in children where child.lastPathComponent != namespace {
-            try? FileManager.default.removeItem(at: child)
+        for retiredNamespace in retiredSwiftCacheNamespaces {
+            try? FileManager.default.removeItem(
+                at: swiftCacheRoot.appendingPathComponent(retiredNamespace, isDirectory: true)
+            )
         }
     }
 

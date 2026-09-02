@@ -40,6 +40,14 @@ struct CodexUsageIndexUpgradeRequiredError: LocalizedError, Equatable, Sendable 
     }
 }
 
+struct CodexUsageIndexRepairRequiredError: LocalizedError, Equatable, Sendable {
+    let reason: String
+
+    var errorDescription: String? {
+        "精确索引需要人工修复：\(reason)。已保留上一份可信数据库，当前版本不会自动删除后重建。"
+    }
+}
+
 struct CodexUsageIndexStorageMaintenancePolicy: Equatable, Sendable {
     var minimumCheckInterval: TimeInterval = 24 * 60 * 60
     var minimumFreeBytes: UInt64 = 64 * 1_024 * 1_024
@@ -253,10 +261,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let sizeBytes: Int64
         let modifiedAt: Date
         let createdAt: Date
-        let deviceID: UInt64
-        let inode: UInt64
-        let statusChangedSeconds: Int64
-        let statusChangedNanoseconds: Int64
         let firstLineEndOffset: Int64
         let firstLineSHA256: String
         let lastSeenGeneration: String
@@ -286,10 +290,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let size: UInt64
         let modifiedAt: TimeInterval
         let contentProbe: String
-        let deviceID: UInt64
-        let inode: UInt64
-        let statusChangedSeconds: Int64
-        let statusChangedNanoseconds: Int64
     }
 
     private struct IndexedSource {
@@ -355,10 +355,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let modifiedNanoseconds: Int64
         let createdSeconds: Int64
         let createdNanoseconds: Int64
-        let deviceID: UInt64
-        let inode: UInt64
-        let statusChangedSeconds: Int64
-        let statusChangedNanoseconds: Int64
 
         var modifiedAt: Date {
             Date(
@@ -372,6 +368,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 timeIntervalSince1970: TimeInterval(createdSeconds)
                     + TimeInterval(createdNanoseconds) / 1_000_000_000
             )
+        }
+
+        /// Creation time is retained for display, but it is not a continuity
+        /// fact. A copied/replaced file with the same recognized path, size,
+        /// and mtime must stay on the catalog fast path.
+        static func == (
+            lhs: SessionCatalogFileSignature,
+            rhs: SessionCatalogFileSignature
+        ) -> Bool {
+            lhs.sizeBytes == rhs.sizeBytes
+                && lhs.modifiedSeconds == rhs.modifiedSeconds
+                && lhs.modifiedNanoseconds == rhs.modifiedNanoseconds
         }
     }
 
@@ -391,8 +399,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         case unresolved
     }
 
-    private static let schemaVersion = "6"
-    private static let inPlaceSchemaVersions: Set<String> = ["2", "3", "4", "5", "6"]
+    private static let schemaVersion = "7"
+    private static let inPlaceSchemaVersions: Set<String> = ["6", "7"]
     private static let forkReplayBoundaryRevision = "explicit-subagent-delayed-context-v3"
     /// Bump whenever event parsing or source-bucket identity semantics change.
     /// Existing attribution ledgers then fail closed instead of reconciling
@@ -437,7 +445,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         )
     }
 
-    private static let sessionCatalogSchemaVersion = "1"
+    private static let sessionCatalogSchemaVersion = "2"
     private static let chunkSize: UInt64 = 4 * 1_024 * 1_024
     private static let stagingMaxWorkers = 4
     private static let stagingMaxReadyArtifacts = 8
@@ -446,7 +454,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// Leave headroom for SQLite pages, indexes, and the ready manifest so a
     /// normal multi-file batch stays below the hard ready-artifact byte cap.
     private static let stagingPlannedReadyBytes: UInt64 = 448 * 1_024 * 1_024
-    private static let stagingManifestSchemaVersion = 1
+    private static let stagingManifestSchemaVersion = 2
     private static let stagingManifestIntegrity = "sqlite-quick-check-v1"
     private static let stagingParserRevision = "token-event-v2-\(forkReplayBoundaryRevision)"
     private static let explicitSubagentFirstLineLimit = 256 * 1_024
@@ -463,6 +471,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let operationLocks = CodexUsageHistoryIndexOperationLockRegistry()
     private static let operationLockTimeoutState = CodexUsageHistoryIndexLockTimeoutState()
     private static let stagingTestState = CodexUsageHistoryStagingTestState()
+    private static let migrationTestState = CodexUsageHistoryMigrationTestState()
     private static let sessionCatalogPublishTestState =
         CodexSessionCatalogPublishTestState()
     private static let sourceProbeTestState = CodexUsageHistorySourceProbeTestState()
@@ -571,9 +580,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 return .corrupt(component: "schema_version", rawValue: rawSchema)
             }
             if let rawSchema,
-               let stored = Int(rawSchema),
-               let supported = Int(schemaVersion),
-               stored > supported {
+               !inPlaceSchemaVersions.contains(rawSchema) {
                 return .upgradeRequired(
                     component: "主 schema",
                     stored: rawSchema,
@@ -635,7 +642,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 let catalog = try connection.readRows(
                     "SELECT value FROM session_catalog_meta WHERE key = 'schema_version' LIMIT 1;"
                 ) { $0.text(0) }.first ?? nil
-                if let catalog, catalog != sessionCatalogSchemaVersion {
+                if let catalog,
+                   catalog != "1",
+                   catalog != sessionCatalogSchemaVersion {
                     return .upgradeRequired(
                         component: "session catalog schema（会话目录）",
                         stored: catalog,
@@ -708,31 +717,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try operationGate(for: databaseURL(for: codexHome)).withLock(body)
     }
 
-    /// Explicit user-authorized recovery for an index produced by a newer app.
-    /// Only Token Bar's derived Swift index family and its staging artifacts
-    /// are removed. Raw Codex JSONL, state_5.sqlite, preferences, quota history,
-    /// and radar caches are outside this namespace and are never touched.
+    /// The v0.9.2 recovery policy deliberately disables delete-and-rebuild.
+    /// A future repair flow must build and validate a separate candidate before
+    /// an explicit user-confirmed switch; it must not repurpose this entrypoint.
     static func rebuildDerivedIndex(
         codexHome: URL,
         fileManager: FileManager = .default
     ) throws {
-        let databaseURL = databaseURL(for: codexHome)
-        try operationGate(for: databaseURL).withLock {
-            for url in [
-                databaseURL,
-                URL(fileURLWithPath: databaseURL.path + "-wal"),
-                URL(fileURLWithPath: databaseURL.path + "-shm"),
-            ] where fileManager.fileExists(atPath: url.path) {
-                try fileManager.removeItem(at: url)
-            }
-            let stagingDirectory = databaseURL
-                .deletingLastPathComponent()
-                .appendingPathComponent("staging", isDirectory: true)
-                .appendingPathComponent(databaseURL.lastPathComponent, isDirectory: true)
-            if fileManager.fileExists(atPath: stagingDirectory.path) {
-                try fileManager.removeItem(at: stagingDirectory)
-            }
-        }
+        _ = codexHome
+        _ = fileManager
+        throw CodexUsageIndexRepairRequiredError(
+            reason: "删除式恢复入口已关闭"
+        )
     }
 
     func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T {
@@ -942,6 +938,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         stagingTestState.armBatchImportFailure()
     }
 
+    static func failSchema6MigrationForTesting(at stage: Int) {
+        migrationTestState.armFailure(at: stage)
+    }
+
+    static func overrideSchema6MigrationAvailableCapacityForTesting(_ bytes: UInt64) {
+        migrationTestState.overrideAvailableCapacity(bytes)
+    }
+
     static func failNextSessionCatalogPublishForTesting() {
         sessionCatalogPublishTestState.armFailure()
     }
@@ -1147,12 +1151,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             sizeBytes: committed.sizeBytes,
                             modifiedAt: committed.modifiedAt,
                             createdAt: committed.createdAt,
-                            deviceID: committed.deviceID,
-                            inode: committed.inode,
-                            statusChangedSeconds:
-                                committed.statusChangedSeconds,
-                            statusChangedNanoseconds:
-                                committed.statusChangedNanoseconds,
                             firstLineEndOffset: firstLine.endOffset,
                             firstLineSHA256: firstLine.sha256,
                             lastSeenGeneration: generation
@@ -1184,11 +1182,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             forked_from_id, parent_thread_id, source,
                             size_bytes, modified_seconds, modified_nanoseconds,
                             created_seconds, created_nanoseconds,
-                            device_id, inode, status_changed_seconds,
-                            status_changed_nanoseconds, first_line_end_offset,
+                            first_line_end_offset,
                             first_line_sha256, last_seen_generation
                         ) VALUES (
-                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                         )
                         ON CONFLICT(path) DO UPDATE SET
                             archived = excluded.archived,
@@ -1203,10 +1200,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             modified_nanoseconds = excluded.modified_nanoseconds,
                             created_seconds = excluded.created_seconds,
                             created_nanoseconds = excluded.created_nanoseconds,
-                            device_id = excluded.device_id,
-                            inode = excluded.inode,
-                            status_changed_seconds = excluded.status_changed_seconds,
-                            status_changed_nanoseconds = excluded.status_changed_nanoseconds,
                             first_line_end_offset = excluded.first_line_end_offset,
                             first_line_sha256 = excluded.first_line_sha256,
                             last_seen_generation = excluded.last_seen_generation;
@@ -1229,10 +1222,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             .int64(signature.modifiedNanoseconds),
                             .int64(signature.createdSeconds),
                             .int64(signature.createdNanoseconds),
-                            .text(String(signature.deviceID)),
-                            .text(String(signature.inode)),
-                            .int64(signature.statusChangedSeconds),
-                            .int64(signature.statusChangedNanoseconds),
                             .int64(entry.firstLineEndOffset),
                             .text(entry.firstLineSHA256),
                             .text(generation),
@@ -1297,10 +1286,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     modified_nanoseconds,
                     created_seconds,
                     created_nanoseconds,
-                    device_id,
-                    inode,
-                    status_changed_seconds,
-                    status_changed_nanoseconds,
                     first_line_end_offset,
                     first_line_sha256,
                     last_seen_generation
@@ -1317,15 +1302,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                       let modifiedNanoseconds = row.int64(10),
                       let createdSeconds = row.int64(11),
                       let createdNanoseconds = row.int64(12),
-                      let deviceIDText = row.text(13),
-                      let deviceID = UInt64(deviceIDText),
-                      let inodeText = row.text(14),
-                      let inode = UInt64(inodeText),
-                      let statusChangedSeconds = row.int64(15),
-                      let statusChangedNanoseconds = row.int64(16),
-                      let firstLineEndOffset = row.int64(17),
-                      let firstLineSHA256 = row.text(18),
-                      let lastSeenGeneration = row.text(19) else {
+                      let firstLineEndOffset = row.int64(13),
+                      let firstLineSHA256 = row.text(14),
+                      let lastSeenGeneration = row.text(15) else {
                     throw SQLiteDatabaseError(
                         operation: "Read session catalog entry",
                         code: SQLITE_CORRUPT,
@@ -1338,11 +1317,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     modifiedSeconds: modifiedSeconds,
                     modifiedNanoseconds: modifiedNanoseconds,
                     createdSeconds: createdSeconds,
-                    createdNanoseconds: createdNanoseconds,
-                    deviceID: deviceID,
-                    inode: inode,
-                    statusChangedSeconds: statusChangedSeconds,
-                    statusChangedNanoseconds: statusChangedNanoseconds
+                    createdNanoseconds: createdNanoseconds
                 )
                 return IndexedSessionCatalogEntry(
                     entry: SessionCatalogEntry(
@@ -1359,10 +1334,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         sizeBytes: sizeBytes,
                         modifiedAt: signature.modifiedAt,
                         createdAt: signature.createdAt,
-                        deviceID: deviceID,
-                        inode: inode,
-                        statusChangedSeconds: statusChangedSeconds,
-                        statusChangedNanoseconds: statusChangedNanoseconds,
                         firstLineEndOffset: firstLineEndOffset,
                         firstLineSHA256: firstLineSHA256,
                         lastSeenGeneration: lastSeenGeneration
@@ -1386,11 +1357,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             modifiedSeconds: Int64(value.st_mtimespec.tv_sec),
             modifiedNanoseconds: Int64(value.st_mtimespec.tv_nsec),
             createdSeconds: Int64(value.st_birthtimespec.tv_sec),
-            createdNanoseconds: Int64(value.st_birthtimespec.tv_nsec),
-            deviceID: UInt64(value.st_dev),
-            inode: UInt64(value.st_ino),
-            statusChangedSeconds: Int64(value.st_ctimespec.tv_sec),
-            statusChangedNanoseconds: Int64(value.st_ctimespec.tv_nsec)
+            createdNanoseconds: Int64(value.st_birthtimespec.tv_nsec)
         )
     }
 
@@ -1480,10 +1447,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             metadata: observedMetadata,
                             for: file
                         )
-                        let isStablePublishedPrefix = observed.deviceID
-                                == existing.signature.deviceID
-                            && observed.inode == existing.signature.inode
-                            && observed.size >= existing.signature.size
+                        let isStablePublishedPrefix = observed.size >= existing.signature.size
                         if !isStablePublishedPrefix || existing.checkpoint == nil {
                             rewrittenFiles += 1
                         }
@@ -1510,29 +1474,26 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         )
                         return
                     }
-                    var observedAfterIdentityRecovery: SourceSignature?
                     if let existing,
                        isTrustedContentProbe(existing.signature.contentProbe) {
                         if sourceMetadataMatches(existing.signature, observedMetadata) {
                             unchangedFiles += 1
                             return
                         }
-                        if existing.signature.deviceID != observedMetadata.deviceID,
-                           sourceMetadataMatchesIgnoringDeviceID(
-                               existing.signature,
-                               observedMetadata
-                           ) {
+                        if existing.signature.size == observedMetadata.size {
                             let observed = try sourceSignature(
                                 metadata: observedMetadata,
                                 for: file
                             )
-                            observedAfterIdentityRecovery = observed
-                            if observed.contentProbe == existing.signature.contentProbe {
-                                try rebindSourceDeviceID(
+                            if observed.contentProbe == existing.signature.contentProbe,
+                               try sourceChunksMatch(
+                                   file: file,
+                                   source: existing,
+                                   connection: connection
+                               ) {
+                                try updateSourceFingerprint(
                                     sourceID: existing.id,
-                                    storedDeviceID: existing.signature.deviceID,
-                                    observedDeviceID: observed.deviceID,
-                                    inode: observed.inode,
+                                    signature: observed,
                                     connection: connection
                                 )
                                 unchangedFiles += 1
@@ -1540,7 +1501,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             }
                         }
                     }
-                    let observed = try observedAfterIdentityRecovery ?? sourceSignature(
+                    let observed = try sourceSignature(
                         metadata: observedMetadata,
                         for: file
                     )
@@ -1847,7 +1808,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             }
         }
-        removeStagingDirectory()
+        removeStagingDirectoryIfEmpty()
         if eventEnrichmentTotal > 0 {
             if finalSynchronization.eventEnrichmentComplete {
                 onProgress?(eventEnrichmentTotal, eventEnrichmentTotal, .publishing)
@@ -2413,20 +2374,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 row.text(0)
             }.first ?? nil
             let numericVersion = currentVersion.flatMap(Int.init)
-            let isLegacyDiscardableSchema = numericVersion.map { $0 < 2 } ?? false
             let isKnownInPlaceSchema = currentVersion.map(Self.inPlaceSchemaVersions.contains) ?? true
-            let shouldReportMigration = numericVersion.map { $0 >= 2 && $0 < Int(Self.schemaVersion)! } ?? false
+            let shouldReportMigration = numericVersion.map {
+                $0 < Int(Self.schemaVersion)!
+            } ?? false
             if let currentVersion,
-               !isKnownInPlaceSchema,
-               !isLegacyDiscardableSchema {
-                throw SQLiteDatabaseError(
-                    operation: "Open exact usage history index",
-                    code: SQLITE_MISMATCH,
-                    message: "Index schema \(currentVersion) is newer or unknown; refusing to rewrite it",
-                    path: driver.url.path
+               !isKnownInPlaceSchema {
+                throw CodexUsageIndexUpgradeRequiredError(
+                    component: "主 schema",
+                    stored: currentVersion,
+                    supported: Self.schemaVersion
                 )
             }
-            let destructiveRebuildRequired = isLegacyDiscardableSchema
 
             // Read migration markers before any DDL.  These values describe
             // the actual work this open will perform; they are also used to
@@ -2488,6 +2447,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 ) { row in row.text(0) }.first ?? nil)
                 : nil
             if let sessionCatalogVersion,
+               sessionCatalogVersion != "1",
                sessionCatalogVersion != Self.sessionCatalogSchemaVersion {
                 throw SQLiteDatabaseError(
                     operation: "Open exact usage session catalog",
@@ -2525,25 +2485,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     path: driver.url.path
                 )
             }
-            let migrationNeedsSchemaFields = !destructiveRebuildRequired
-                && shouldReportMigration
+            let migrationNeedsSchemaFields = shouldReportMigration
             // A schema downgrade/legacy reopen is a migration boundary even
             // when a previous interrupted attempt left the current replay
             // marker behind. Revalidate the source rows instead of trusting
             // that marker across schema generations.
             let migrationNeedsReplayBoundary = currentVersion != nil
-                && (
-                    storedReplayBoundaryRevision != Self.forkReplayBoundaryRevision
-                    || shouldReportMigration
-                )
-            if shouldReportMigration,
-               storedReplayBoundaryRevision == Self.forkReplayBoundaryRevision {
-                try connection.execute(
-                    "DELETE FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
-                )
-            }
-            let migrationNeedsLedger = destructiveRebuildRequired
-                || storedProvenanceRevision != Self.attributionProvenanceRevision
+                && storedReplayBoundaryRevision != Self.forkReplayBoundaryRevision
+            let migrationNeedsLedger = storedProvenanceRevision
+                != Self.attributionProvenanceRevision
             let migrationNeedsSessionCatalog = currentVersion != nil
                 && (!sessionCatalogMetaExists
                     || !sessionCatalogEntriesExist
@@ -2575,13 +2525,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 ))
             }
 
-            if !destructiveRebuildRequired,
-               currentVersion != nil {
+            if currentVersion != nil {
                 if migrationNeedsSchemaFields {
                     reportMigration("正在升级索引字段")
                     try connection.transaction { transaction in
                         try migrateV2SourcesForAppend(transaction)
                         try migrateKnownEventColumns(transaction)
+                        if currentVersion != Self.schemaVersion {
+                            try migrateV7ContentFingerprints(transaction)
+                        }
                     }
                     migrationCompleted += 1
                     reportMigration("索引字段已提交")
@@ -2594,7 +2546,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             // retryable on the next open.
             var replayBoundaryReady = true
             var replayBoundaryStageCompleted = false
-            if migrationNeedsReplayBoundary && !destructiveRebuildRequired {
+            if migrationNeedsReplayBoundary {
                 reportMigration("正在修复 replay 边界")
                 replayBoundaryReady = try repairExplicitSubagentReplayBoundary(
                     connection,
@@ -2653,22 +2605,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 """
             ) { row in (row.int(0) ?? 0) > 0 }.first ?? false
 
-            if destructiveRebuildRequired {
-                try connection.execute(
-                    """
-                    DROP TABLE IF EXISTS source_chunks;
-                    DROP TABLE IF EXISTS source_fingerprints;
-                    DROP TABLE IF EXISTS attribution_source_buckets;
-                    DROP TABLE IF EXISTS dashboard_5m;
-                    DROP TABLE IF EXISTS dashboard_source_5m;
-                    DROP TABLE IF EXISTS dashboard_source_totals;
-                    DROP TABLE IF EXISTS events;
-                    DROP TABLE IF EXISTS sources;
-                    DELETE FROM schema_meta;
-                    """
-                )
-            }
-
             try connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sources (
@@ -2678,10 +2614,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     size_bytes INTEGER NOT NULL,
                     modified_at REAL NOT NULL,
                     content_probe TEXT NOT NULL,
-                    device_id TEXT NOT NULL,
-                    inode TEXT NOT NULL,
-                    status_changed_seconds INTEGER NOT NULL,
-                    status_changed_nanoseconds INTEGER NOT NULL,
                     last_seen_generation TEXT NOT NULL,
                     append_ready INTEGER NOT NULL DEFAULT 0,
                     resume_offset INTEGER,
@@ -2727,8 +2659,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     revision TEXT NOT NULL,
                     canonical_path TEXT NOT NULL,
                     parser_revision TEXT NOT NULL,
-                    device_id TEXT NOT NULL,
-                    inode TEXT NOT NULL,
                     imported_generation TEXT NOT NULL,
                     completed_size INTEGER NOT NULL,
                     completed_probe TEXT NOT NULL
@@ -2858,8 +2788,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) THEN '1' ELSE '0' END;
                 """
             )
-            let attributionMigrationRequired = destructiveRebuildRequired
-                || storedProvenanceRevision != Self.attributionProvenanceRevision
+            let attributionMigrationRequired = storedProvenanceRevision
+                != Self.attributionProvenanceRevision
             // Do not rebuild the potentially large attribution ledger while a
             // replay-boundary probe is unresolved.  The replay marker would
             // remain pending and the next launch would repeat this O(events)
@@ -3927,6 +3857,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             row.text(0)
         }.first ?? nil
         if let currentVersion,
+           currentVersion != "1",
            currentVersion != Self.sessionCatalogSchemaVersion {
             throw SQLiteDatabaseError(
                 operation: "Prepare exact usage session catalog",
@@ -3951,10 +3882,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 modified_nanoseconds INTEGER NOT NULL,
                 created_seconds INTEGER NOT NULL,
                 created_nanoseconds INTEGER NOT NULL,
-                device_id TEXT NOT NULL,
-                inode TEXT NOT NULL,
-                status_changed_seconds INTEGER NOT NULL,
-                status_changed_nanoseconds INTEGER NOT NULL,
                 first_line_end_offset INTEGER NOT NULL,
                 first_line_sha256 TEXT NOT NULL,
                 last_seen_generation TEXT NOT NULL
@@ -3968,6 +3895,40 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ON CONFLICT(key) DO UPDATE SET value = excluded.value;
             """
         )
+        if currentVersion == "1" {
+            try dropColumnsIfPresent(
+                [
+                    "device_id",
+                    "inode",
+                    "status_changed_seconds",
+                    "status_changed_nanoseconds",
+                ],
+                from: "session_catalog_entries",
+                connection: connection
+            )
+        }
+        try connection.execute(
+            """
+            INSERT INTO session_catalog_meta(key, value)
+            VALUES ('schema_version', '\(Self.sessionCatalogSchemaVersion)')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """
+        )
+    }
+
+    private func dropColumnsIfPresent(
+        _ columns: [String],
+        from table: String,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        let existing = Set(
+            try connection.readRows("PRAGMA table_info(\(table));") { row in
+                row.text(1) ?? ""
+            }
+        )
+        for column in columns where existing.contains(column) {
+            try connection.execute("ALTER TABLE \(table) DROP COLUMN \(column);")
+        }
     }
 
     private func migrateV2SourcesForAppend(
@@ -4036,8 +3997,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         for (column, definition) in [
             ("canonical_path", "TEXT NOT NULL DEFAULT ''"),
             ("parser_revision", "TEXT NOT NULL DEFAULT ''"),
-            ("device_id", "TEXT NOT NULL DEFAULT ''"),
-            ("inode", "TEXT NOT NULL DEFAULT ''"),
             ("imported_generation", "TEXT NOT NULL DEFAULT ''"),
         ] where !columns.contains(column) {
             try connection.execute(
@@ -4054,26 +4013,211 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 ), canonical_path),
                 parser_revision = CASE
                     WHEN revision = ? THEN ? ELSE parser_revision END,
-                device_id = COALESCE((
-                    SELECT sources.device_id FROM sources
-                    WHERE sources.source_id = event_enrichment_sources.source_id
-                ), device_id),
-                inode = COALESCE((
-                    SELECT sources.inode FROM sources
-                    WHERE sources.source_id = event_enrichment_sources.source_id
-                ), inode),
                 imported_generation = COALESCE((
                     SELECT sources.last_seen_generation FROM sources
                     WHERE sources.source_id = event_enrichment_sources.source_id
                 ), imported_generation)
             WHERE canonical_path = '' OR parser_revision = ''
-               OR device_id = '' OR inode = '' OR imported_generation = '';
+               OR imported_generation = '';
             """,
             bindings: [
                 .text(Self.eventEnrichmentRevision),
                 .text(Self.stagingParserRevision),
             ]
         )
+    }
+
+    /// Schema 7 removes filesystem object observations from the read-only
+    /// statistics contract.  SQLite rewrites only these compact catalog
+    /// tables; events, chunks, fingerprints, aggregates and checkpoints stay
+    /// in place and the surrounding transaction rolls back on any failure.
+    private func migrateV7ContentFingerprints(
+        _ connection: SQLiteDatabaseConnection
+    ) throws {
+        let sourceCount = try tableRowCount("sources", connection: connection)
+        let receiptCount = try tableRowCount(
+            "event_enrichment_sources",
+            connection: connection
+        )
+        let eventCount = try tableRowCount("events", connection: connection)
+        let fingerprintCount = try tableRowCount(
+            "source_fingerprints",
+            connection: connection
+        )
+        let chunkCount = try tableRowCount("source_chunks", connection: connection)
+        let catalogCount = try tableRowCount(
+            "session_catalog_entries",
+            connection: connection
+        )
+        let aggregateTotal = try connection.readRows(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_source_totals;"
+        ) { $0.int64(0) ?? 0 }.first ?? 0
+        let aggregateBucketTotal = try connection.readRows(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_source_5m;"
+        ) { $0.int64(0) ?? 0 }.first ?? 0
+        let lineageBefore = try migrationLineage(connection: connection)
+        try ensureContentFingerprintMigrationCapacity(sourceCount: sourceCount)
+        try connection.execute("PRAGMA defer_foreign_keys=ON;")
+        try dropColumns(
+            [
+                "device_id",
+                "inode",
+                "status_changed_seconds",
+                "status_changed_nanoseconds",
+            ],
+            from: "sources",
+            connection: connection
+        )
+        try failSchema6MigrationIfRequested(stage: 1)
+        try dropColumns(
+            ["device_id", "inode"],
+            from: "event_enrichment_sources",
+            connection: connection
+        )
+        try failSchema6MigrationIfRequested(stage: 2)
+        try prepareSessionCatalogSchema(connection)
+        try failSchema6MigrationIfRequested(stage: 3)
+        try connection.execute(
+            """
+            INSERT INTO schema_meta(key, value)
+            VALUES ('schema_version', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            bindings: [.text(Self.schemaVersion)]
+        )
+        let migratedSourceCount = try tableRowCount("sources", connection: connection)
+        let migratedReceiptCount = try tableRowCount(
+            "event_enrichment_sources",
+            connection: connection
+        )
+        let migratedEventCount = try tableRowCount("events", connection: connection)
+        let migratedFingerprintCount = try tableRowCount(
+            "source_fingerprints",
+            connection: connection
+        )
+        let migratedChunkCount = try tableRowCount(
+            "source_chunks",
+            connection: connection
+        )
+        let migratedCatalogCount = try tableRowCount(
+            "session_catalog_entries",
+            connection: connection
+        )
+        let migratedAggregateTotal = try connection.readRows(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_source_totals;"
+        ) { $0.int64(0) ?? 0 }.first ?? 0
+        let migratedAggregateBucketTotal = try connection.readRows(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_source_5m;"
+        ) { $0.int64(0) ?? 0 }.first ?? 0
+        let lineageAfter = try migrationLineage(connection: connection)
+        guard sourceCount == migratedSourceCount,
+              receiptCount == migratedReceiptCount,
+              eventCount == migratedEventCount,
+              fingerprintCount == migratedFingerprintCount,
+              chunkCount == migratedChunkCount,
+              catalogCount == migratedCatalogCount,
+              aggregateTotal == migratedAggregateTotal,
+              aggregateBucketTotal == migratedAggregateBucketTotal,
+              lineageBefore == lineageAfter else {
+            throw SQLiteDatabaseError(
+                operation: "Migrate exact usage content fingerprints",
+                code: SQLITE_CORRUPT,
+                message: "Metadata or aggregate reconciliation failed",
+                path: driver.url.path
+            )
+        }
+        let foreignKeyFailures = try connection.readRows("PRAGMA foreign_key_check;") {
+            $0.text(0) ?? "unknown"
+        }
+        guard foreignKeyFailures.isEmpty else {
+            throw SQLiteDatabaseError(
+                operation: "Migrate exact usage content fingerprints",
+                code: SQLITE_CONSTRAINT,
+                message: "Foreign-key validation failed",
+                path: driver.url.path
+            )
+        }
+        try failSchema6MigrationIfRequested(stage: 4)
+    }
+
+    private func migrationLineage(
+        connection: SQLiteDatabaseConnection
+    ) throws -> [String?] {
+        try [
+            "provenance_epoch",
+            "attribution_generation",
+            "dashboard_aggregate_exact_generation",
+            "dashboard_aggregate_published_generation",
+            "dashboard_aggregate_settled_through",
+            "event_enrichment_revision",
+            "fork_replay_boundary_revision",
+        ].map { key in
+            try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = ? LIMIT 1;",
+                bindings: [.text(key)]
+            ) { $0.text(0) }.first ?? nil
+        }
+    }
+
+    private func failSchema6MigrationIfRequested(stage: Int) throws {
+        guard Self.migrationTestState.consumeFailure(at: stage) else { return }
+        throw SQLiteDatabaseError(
+            operation: "Injected schema 6 migration failure",
+            code: SQLITE_ABORT,
+            message: "Testing rollback at migration stage \(stage)",
+            path: driver.url.path
+        )
+    }
+
+    private func tableRowCount(
+        _ table: String,
+        connection: SQLiteDatabaseConnection
+    ) throws -> Int64 {
+        try connection.readRows("SELECT COUNT(*) FROM \(table);") {
+            $0.int64(0) ?? -1
+        }.first ?? -1
+    }
+
+    private func ensureContentFingerprintMigrationCapacity(sourceCount: Int64) throws {
+        let directory = driver.url.deletingLastPathComponent()
+        let available: UInt64
+        if let override = Self.migrationTestState.consumeAvailableCapacityOverride() {
+            available = override
+        } else {
+            available = try availableStorageCapacity(at: directory)
+        }
+        let normalizedCount = UInt64(max(0, sourceCount))
+        let estimatedMetadataBytes = normalizedCount.multipliedClampingOnOverflow(by: 1_024)
+        let required = estimatedMetadataBytes
+            .addingClampingOnOverflow(16 * 1_024 * 1_024)
+            .addingClampingOnOverflow(UInt64(max(0, Self.stagingMinimumFreeReserveBytes)))
+        guard available >= required else {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileWriteOutOfSpaceError,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "索引元数据升级空间不足；未开始迁移并保留 schema 6 数据。",
+                    NSFilePathErrorKey: directory.path,
+                ]
+            )
+        }
+    }
+
+    private func dropColumns(
+        _ columns: [String],
+        from table: String,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        var existing = Set(
+            try connection.readRows("PRAGMA table_info(\(table));") { row in
+                row.text(1) ?? ""
+            }
+        )
+        for column in columns where existing.contains(column) {
+            try connection.execute("ALTER TABLE \(table) DROP COLUMN \(column);")
+            existing.remove(column)
+        }
     }
 
     /// Marks only active replay sources whose first line proves an explicit
@@ -4236,10 +4380,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 size_bytes,
                 modified_at,
                 content_probe,
-                device_id,
-                inode,
-                status_changed_seconds,
-                status_changed_nanoseconds,
                 append_ready,
                 resume_offset,
                 previous_total_tokens,
@@ -4277,10 +4417,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 size_bytes,
                 modified_at,
                 content_probe,
-                device_id,
-                inode,
-                status_changed_seconds,
-                status_changed_nanoseconds,
                 append_ready,
                 resume_offset,
                 previous_total_tokens,
@@ -4310,44 +4446,38 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         startingAt offset: Int32
     ) throws -> IndexedSource {
         guard let sourceID = row.int64(offset),
-              let sessionID = row.text(offset + 19),
+              let sessionID = row.text(offset + 15),
               let rawSize = row.int64(offset + 1),
               rawSize >= 0,
               let modifiedAt = row.double(offset + 2),
-              let probe = row.text(offset + 3),
-              let rawDeviceID = row.text(offset + 4),
-              let deviceID = UInt64(rawDeviceID),
-              let rawInode = row.text(offset + 5),
-              let inode = UInt64(rawInode),
-              let statusChangedSeconds = row.int64(offset + 6),
-              let statusChangedNanoseconds = row.int64(offset + 7) else {
+              let probe = row.text(offset + 3) else {
             throw malformedIndexedSourceError("invalid required source fields")
         }
         let checkpoint: SourceCheckpoint?
-        if row.int(offset + 8) == 1,
-           let rawResumeOffset = row.int64(offset + 9),
+        if row.int(offset + 4) == 1,
+           let rawResumeOffset = row.int64(offset + 5),
            rawResumeOffset >= 0 {
             checkpoint = SourceCheckpoint(
                 resumeOffset: UInt64(rawResumeOffset),
                 parserState: CodexUsageAnalyzer.IndexedSessionParserState(
-                    previousTotalTokens: row.int(offset + 10),
-                    forkReplayStartedAt: row.double(offset + 11).map {
+                    previousTotalTokens: row.int(offset + 6),
+                    forkReplayStartedAt: row.double(offset + 7).map {
                         Date(timeIntervalSince1970: $0)
                     },
-                    isSkippingForkReplay: row.int(offset + 12) == 1,
-                    isExplicitSubagentFork: row.int(offset + 13) == 1,
-                    lastSkippedForkReplayTokenAt: row.double(offset + 14).map {
+                    isSkippingForkReplay: row.int(offset + 8) == 1,
+                    isExplicitSubagentFork: row.int(offset + 9) == 1,
+                    lastSkippedForkReplayTokenAt: row.double(offset + 10).map {
                         Date(timeIntervalSince1970: $0)
                     },
-                    currentUserPromptOffset: row.int64(offset + 15).flatMap {
+                    currentUserPromptOffset: row.int64(offset + 11).flatMap {
                         $0 >= 0 ? UInt64($0) : nil
                     },
-                    assistantStartOffset: row.int64(offset + 16).flatMap {
+                    assistantStartOffset: row.int64(offset + 12).flatMap {
                         $0 >= 0 ? UInt64($0) : nil
                     },
-                    currentModel: row.text(offset + 17)
+                    currentModel: row.text(offset + 13)
                 ),
-                auditChunkIndex: row.int64(offset + 18).flatMap {
+                auditChunkIndex: row.int64(offset + 14).flatMap {
                     $0 >= 0 ? UInt64($0) : nil
                 } ?? 0
             )
@@ -4360,11 +4490,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             signature: SourceSignature(
                 size: UInt64(rawSize),
                 modifiedAt: modifiedAt,
-                contentProbe: probe,
-                deviceID: deviceID,
-                inode: inode,
-                statusChangedSeconds: statusChangedSeconds,
-                statusChangedNanoseconds: statusChangedNanoseconds
+                contentProbe: probe
             ),
             checkpoint: checkpoint
         )
@@ -4405,8 +4531,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
              AND e.revision = ?
              AND e.canonical_path = s.path
              AND e.parser_revision = ?
-             AND e.device_id = s.device_id
-             AND e.inode = s.inode
              AND e.imported_generation = s.last_seen_generation
              AND e.completed_size = s.size_bytes
              AND e.completed_probe = s.content_probe
@@ -4431,15 +4555,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             """
             INSERT INTO event_enrichment_sources(
                 source_id, revision, canonical_path, parser_revision,
-                device_id, inode, imported_generation,
-                completed_size, completed_probe
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                imported_generation, completed_size, completed_probe
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id) DO UPDATE SET
                 revision = excluded.revision,
                 canonical_path = excluded.canonical_path,
                 parser_revision = excluded.parser_revision,
-                device_id = excluded.device_id,
-                inode = excluded.inode,
                 imported_generation = excluded.imported_generation,
                 completed_size = excluded.completed_size,
                 completed_probe = excluded.completed_probe;
@@ -4449,8 +4570,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 .text(Self.eventEnrichmentRevision),
                 .text(canonicalPath),
                 .text(Self.stagingParserRevision),
-                .text(String(signature.deviceID)),
-                .text(String(signature.inode)),
                 .text(generation),
                 .int64(try sqliteInt64(signature.size)),
                 .text(signature.contentProbe),
@@ -4502,8 +4621,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ) -> Bool {
         guard let checkpoint = source.checkpoint else { return false }
         return observed.size > source.signature.size
-            && observed.deviceID == source.signature.deviceID
-            && observed.inode == source.signature.inode
             && checkpoint.resumeOffset <= source.signature.size
     }
 
@@ -4530,9 +4647,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             forOpenHandle: readHandle,
             file: file
         )
-        guard formalSignature.deviceID == existing.signature.deviceID,
-              formalSignature.inode == existing.signature.inode,
-              formalSignature.size > existing.signature.size else {
+        guard formalSignature.size > existing.signature.size else {
             return nil
         }
 
@@ -4772,6 +4887,68 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return rows.compactMap { $0 }.first
     }
 
+    /// Revalidates one metadata-only change from the already persisted 4 MiB
+    /// chunks. This reads the file once through a bounded handle, does not run
+    /// the JSONL parser, and never treats filesystem object identity as data.
+    private func sourceChunksMatch(
+        file: URL,
+        source: IndexedSource,
+        connection: SQLiteDatabaseConnection
+    ) throws -> Bool {
+        let expectedCount = chunkCount(for: source.signature.size)
+        let stored: [CodexUsageAnalyzer.IndexedChunkHash] = try connection.readRows(
+            """
+            SELECT chunk_index, byte_count, sha256
+            FROM source_chunks
+            WHERE source_id = ?
+            ORDER BY chunk_index;
+            """,
+            bindings: [.int64(source.id)]
+        ) { row in
+            guard let rawIndex = row.int64(0), rawIndex >= 0,
+                  let rawByteCount = row.int64(1), rawByteCount >= 0,
+                  let sha256 = row.text(2) else {
+                throw SQLiteDatabaseError(
+                    operation: "Read exact usage source chunks",
+                    code: SQLITE_CORRUPT,
+                    message: "Malformed source chunk row",
+                    path: driver.url.path
+                )
+            }
+            return CodexUsageAnalyzer.IndexedChunkHash(
+                index: UInt64(rawIndex),
+                byteCount: UInt64(rawByteCount),
+                sha256: sha256
+            )
+        }
+        guard UInt64(stored.count) == expectedCount,
+              stored.enumerated().allSatisfy({ UInt64($0.offset) == $0.element.index }) else {
+            return false
+        }
+        guard expectedCount > 0 else { return source.signature.size == 0 }
+
+        let pathBefore = try sourceSignatureMetadata(for: file)
+        guard pathBefore.size == source.signature.size else { return false }
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let handleBefore = try sourceSignatureMetadata(forOpenHandle: handle, file: file)
+        guard handleBefore.size == source.signature.size else { return false }
+        for expected in stored {
+            let actual = try hashSourceChunk(
+                file: file,
+                readHandle: handle,
+                index: expected.index,
+                byteCount: expected.byteCount
+            )
+            guard actual == expected else { return false }
+        }
+        let handleAfter = try sourceSignatureMetadata(forOpenHandle: handle, file: file)
+        let pathAfter = try sourceSignatureMetadata(for: file)
+        return handleBefore == handleAfter
+            && pathBefore == pathAfter
+            && handleAfter.size == source.signature.size
+    }
+
     private func hashSourceChunk(
         file: URL,
         index: UInt64,
@@ -4837,11 +5014,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let pathSignature = try sourceSignature(for: file)
         guard handleSignature != observedSignature
                 || pathSignature != observedSignature else { return }
-        guard handleSignature.deviceID == observedSignature.deviceID,
-              handleSignature.inode == observedSignature.inode,
-              handleSignature.size >= observedSignature.size,
-              pathSignature.deviceID == observedSignature.deviceID,
-              pathSignature.inode == observedSignature.inode,
+        guard handleSignature.size >= observedSignature.size,
               pathSignature.size >= observedSignature.size else {
             throw CodexUsageSourceChangedError(path: file.path)
         }
@@ -4917,10 +5090,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 size_bytes = ?,
                 modified_at = ?,
                 content_probe = ?,
-                device_id = ?,
-                inode = ?,
-                status_changed_seconds = ?,
-                status_changed_nanoseconds = ?,
                 last_seen_generation = ?,
                 append_ready = 1,
                 resume_offset = ?,
@@ -4940,10 +5109,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 .int64(try sqliteInt64(signature.size)),
                 .double(signature.modifiedAt),
                 .text(signature.contentProbe),
-                .text(String(signature.deviceID)),
-                .text(String(signature.inode)),
-                .int64(signature.statusChangedSeconds),
-                .int64(signature.statusChangedNanoseconds),
                 .text(generation),
                 .int64(try sqliteInt64(parseResult.resumeOffset)),
                 state.previousTotalTokens.map(SQLiteBinding.int) ?? .null,
@@ -4960,6 +5125,25 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 state.currentModel.map(SQLiteBinding.text) ?? .null,
                 .int64(try sqliteInt64(auditChunkIndex)),
                 .int64(sourceID)
+            ]
+        )
+    }
+
+    private func updateSourceFingerprint(
+        sourceID: Int64,
+        signature: SourceSignature,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        try connection.execute(
+            """
+            UPDATE sources
+            SET modified_at = ?, content_probe = ?
+            WHERE source_id = ?;
+            """,
+            bindings: [
+                .double(signature.modifiedAt),
+                .text(signature.contentProbe),
+                .int64(sourceID),
             ]
         )
     }
@@ -5188,9 +5372,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         _ prefix: SourceSignature,
         current: SourceSignature
     ) -> Bool {
-        current.deviceID == prefix.deviceID
-            && current.inode == prefix.inode
-            && current.size >= prefix.size
+        current.size >= prefix.size
     }
 
     /// The streaming parser already hashes every byte it consumes. If both
@@ -5235,23 +5417,28 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         _ job: FullRebuildJob,
         parser: SessionParser
     ) throws -> StagedFullRebuild {
-        let databaseURL = stagingDatabaseURL(for: job.file)
-        if let reusable = try reusableStage(
-            at: databaseURL,
-            for: job
-        ) {
-            return reusable
+        let existingStages = stagingDatabaseURLs(for: job.file)
+        for existingStage in existingStages {
+            if let reusable = try reusableStage(
+                at: existingStage,
+                for: job
+            ) {
+                return reusable
+            }
         }
-        removeStagingDatabase(at: databaseURL)
+        guard existingStages.isEmpty else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "暂存恢复校验失败；已保留暂存文件和上一代统计，未重新解析源文件"
+            )
+        }
+        let databaseURL = stagingDatabaseURL(for: job.file)
         let readHandle = try FileHandle(forReadingFrom: job.file)
         defer { try? readHandle.close() }
         let formalSignature = try sourceSignature(
             forOpenHandle: readHandle,
             file: job.file
         )
-        guard formalSignature.deviceID == job.observedSignature.deviceID,
-              formalSignature.inode == job.observedSignature.inode,
-              formalSignature.size >= job.observedSignature.size else {
+        guard formalSignature.size >= job.observedSignature.size else {
             throw CodexUsageSourceChangedError(path: job.file.path)
         }
         let committedSignature = job.reason == .eventEnrichment
@@ -5288,10 +5475,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     size_bytes INTEGER NOT NULL,
                     modified_at REAL NOT NULL,
                     content_probe TEXT NOT NULL,
-                    device_id TEXT NOT NULL,
-                    inode TEXT NOT NULL,
-                    status_changed_seconds INTEGER NOT NULL,
-                    status_changed_nanoseconds INTEGER NOT NULL,
                     event_count INTEGER NOT NULL,
                     resume_offset INTEGER NOT NULL,
                     previous_total_tokens INTEGER,
@@ -5441,10 +5624,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         size_bytes,
                         modified_at,
                         content_probe,
-                        device_id,
-                        inode,
-                        status_changed_seconds,
-                        status_changed_nanoseconds,
                         event_count,
                         resume_offset,
                         previous_total_tokens,
@@ -5457,7 +5636,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         current_model,
                         fingerprint_count,
                         chunk_count
-                    ) VALUES (0, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    ) VALUES (0, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     bindings: [
                         .int(Self.stagingManifestSchemaVersion),
@@ -5470,10 +5649,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         .int64(try sqliteInt64(committedSignature.size)),
                         .double(committedSignature.modifiedAt),
                         .text(committedSignature.contentProbe),
-                        .text(String(committedSignature.deviceID)),
-                        .text(String(committedSignature.inode)),
-                        .int64(committedSignature.statusChangedSeconds),
-                        .int64(committedSignature.statusChangedNanoseconds),
                         .int(result.eventCount),
                         .int64(try sqliteInt64(result.resumeOffset)),
                         .optionalInt(state.previousTotalTokens),
@@ -5584,17 +5759,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'manifest');"
             ) { ($0.int(0) ?? 0) != 0 }.first ?? false
             guard manifestExists else {
-                removeStagingDatabase(at: databaseURL)
                 return nil
             }
             let manifestColumns = Set(try stage.readRows(
                 "PRAGMA table_info(manifest);"
             ) { $0.text(1) ?? "" })
             guard manifestColumns.contains("manifest_schema_version") else {
-                // This is the only known pre-versioned staging format. It was
-                // never part of a public release and cannot be trusted after a
-                // parser upgrade, so rebuild this one file.
-                removeStagingDatabase(at: databaseURL)
+                // Preserve unclassified recovery state. A fresh candidate can
+                // be built beside it; cleanup happens only after a successful
+                // atomic publish.
                 return nil
             }
             let header = try stage.readRows(
@@ -5607,7 +5780,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             }.first
             guard let header, let manifestSchema = header.schema else {
-                removeStagingDatabase(at: databaseURL)
                 return nil
             }
             if manifestSchema > Self.stagingManifestSchemaVersion {
@@ -5617,8 +5789,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     supported: String(Self.stagingManifestSchemaVersion)
                 )
             }
-            guard manifestSchema == Self.stagingManifestSchemaVersion else {
-                removeStagingDatabase(at: databaseURL)
+            // v0.9.1 wrote manifest v1. Its filesystem-object columns were
+            // observations only, so decode the common checkpoint contract and
+            // ignore those extra columns while resuming the artifact.
+            guard manifestSchema == 1
+                    || manifestSchema == Self.stagingManifestSchemaVersion else {
                 return nil
             }
             let expectedMigrationRevision = job.reason == .eventEnrichment
@@ -5646,7 +5821,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 $0.text(0) ?? ""
             }
             guard quickCheck == ["ok"] else {
-                removeStagingDatabase(at: databaseURL)
                 return nil
             }
             let rows: [StagedFullRebuild?] = try stage.readRows(
@@ -5664,10 +5838,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     size_bytes,
                     modified_at,
                     content_probe,
-                    device_id,
-                    inode,
-                    status_changed_seconds,
-                    status_changed_nanoseconds,
                     event_count,
                     resume_offset,
                     previous_total_tokens,
@@ -5685,7 +5855,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 LIMIT 1;
                 """
             ) { row in
-                guard row.int(0) == Self.stagingManifestSchemaVersion,
+                guard (row.int(0) == 1
+                        || row.int(0) == Self.stagingManifestSchemaVersion),
                       row.text(1) == job.file.path,
                       row.text(2) == job.sessionID,
                       row.text(3) == expectedMigrationRevision,
@@ -5700,28 +5871,20 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                       rawSize >= 0,
                       let modifiedAt = row.double(10),
                       let contentProbe = row.text(11),
-                      let deviceID = row.text(12).flatMap(UInt64.init),
-                      let inode = row.text(13).flatMap(UInt64.init),
-                      let changedSeconds = row.int64(14),
-                      let changedNanoseconds = row.int64(15),
-                      let eventCount = row.int(16),
+                      let eventCount = row.int(12),
                       eventCount >= 0,
-                      let rawResumeOffset = row.int64(17),
+                      let rawResumeOffset = row.int64(13),
                       rawResumeOffset >= 0,
-                      let fingerprintCount = row.int(26),
+                      let fingerprintCount = row.int(22),
                       fingerprintCount >= 0,
-                      let chunkCount = row.int(27),
+                      let chunkCount = row.int(23),
                       chunkCount >= 0 else {
                     return nil
                 }
                 let signature = SourceSignature(
                     size: UInt64(rawSize),
                     modifiedAt: modifiedAt,
-                    contentProbe: contentProbe,
-                    deviceID: deviceID,
-                    inode: inode,
-                    statusChangedSeconds: changedSeconds,
-                    statusChangedNanoseconds: changedNanoseconds
+                    contentProbe: contentProbe
                 )
                 let actualBytes = UInt64(rawActualBytes)
                 let databaseAttributes = try? self.fileManager.attributesOfItem(
@@ -5770,22 +5933,22 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     chunkCount: chunkCount,
                     resumeOffset: UInt64(rawResumeOffset),
                     parserState: CodexUsageAnalyzer.IndexedSessionParserState(
-                        previousTotalTokens: row.int(18),
-                        forkReplayStartedAt: row.double(19).map {
+                        previousTotalTokens: row.int(14),
+                        forkReplayStartedAt: row.double(15).map {
                             Date(timeIntervalSince1970: $0)
                         },
-                        isSkippingForkReplay: row.int(20) == 1,
-                        isExplicitSubagentFork: row.int(21) == 1,
-                        lastSkippedForkReplayTokenAt: row.double(22).map {
+                        isSkippingForkReplay: row.int(16) == 1,
+                        isExplicitSubagentFork: row.int(17) == 1,
+                        lastSkippedForkReplayTokenAt: row.double(18).map {
                             Date(timeIntervalSince1970: $0)
                         },
-                        currentUserPromptOffset: row.int64(23).flatMap {
+                        currentUserPromptOffset: row.int64(19).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        assistantStartOffset: row.int64(24).flatMap {
+                        assistantStartOffset: row.int64(20).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        currentModel: row.text(25)
+                        currentModel: row.text(21)
                     )
                 )
             }
@@ -5795,10 +5958,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         } catch let error as CodexUsageIndexUpgradeRequiredError {
             throw error
         } catch {
-            removeStagingDatabase(at: databaseURL)
             return nil
         }
-        removeStagingDatabase(at: databaseURL)
         return nil
     }
 
@@ -6059,12 +6220,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         size_bytes,
                         modified_at,
                         content_probe,
-                        device_id,
-                        inode,
-                        status_changed_seconds,
-                        status_changed_nanoseconds,
                         last_seen_generation
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?);
                     """,
                     bindings: [
                         .int64(sourceID),
@@ -6073,10 +6230,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         .int64(try sqliteInt64(staged.committedSignature.size)),
                         .double(staged.committedSignature.modifiedAt),
                         .text(staged.committedSignature.contentProbe),
-                        .text(String(staged.committedSignature.deviceID)),
-                        .text(String(staged.committedSignature.inode)),
-                        .int64(staged.committedSignature.statusChangedSeconds),
-                        .int64(staged.committedSignature.statusChangedNanoseconds),
                         .text(generation)
                     ]
                 )
@@ -6313,11 +6466,37 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func stagingDatabaseURL(for file: URL) -> URL {
-        let digest = SHA256.hash(data: Data(file.path.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
+        let digest = stagingDatabaseDigest(for: file)
         return stagingDirectoryURL
             .appendingPathComponent("\(digest).sqlite")
+    }
+
+    private func stagingDatabaseURLs(for file: URL) -> [URL] {
+        let primary = stagingDatabaseURL(for: file)
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: stagingDirectoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return fileManager.fileExists(atPath: primary.path) ? [primary] : []
+        }
+        let digest = stagingDatabaseDigest(for: file)
+        let candidatePrefix = "\(digest).candidate-"
+        return entries.filter { entry in
+            let name = entry.lastPathComponent
+            return name == primary.lastPathComponent
+                || (name.hasPrefix(candidatePrefix) && name.hasSuffix(".sqlite"))
+        }.sorted { lhs, rhs in
+            if lhs == primary { return true }
+            if rhs == primary { return false }
+            return lhs.lastPathComponent < rhs.lastPathComponent
+        }
+    }
+
+    private func stagingDatabaseDigest(for file: URL) -> String {
+        SHA256.hash(data: Data(file.path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private func removeStagingDatabase(at url: URL) {
@@ -6326,8 +6505,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try? fileManager.removeItem(atPath: url.path + "-shm")
     }
 
-    private func removeStagingDirectory() {
-        try? fileManager.removeItem(at: stagingDirectoryURL)
+    private func removeStagingDirectoryIfEmpty() {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: stagingDirectoryURL,
+            includingPropertiesForKeys: nil
+        ), entries.isEmpty else {
+            return
+        }
+        _ = rmdir(stagingDirectoryURL.path)
         _ = rmdir(stagingRootURL.path)
     }
 
@@ -6364,11 +6549,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             size: size,
             modifiedAt: TimeInterval(fileStatus.st_mtimespec.tv_sec)
                 + TimeInterval(fileStatus.st_mtimespec.tv_nsec) / 1_000_000_000,
-            contentProbe: "",
-            deviceID: UInt64(fileStatus.st_dev),
-            inode: UInt64(fileStatus.st_ino),
-            statusChangedSeconds: Int64(fileStatus.st_ctimespec.tv_sec),
-            statusChangedNanoseconds: Int64(fileStatus.st_ctimespec.tv_nsec)
+            contentProbe: ""
         )
     }
 
@@ -6379,11 +6560,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         SourceSignature(
             size: metadata.size,
             modifiedAt: metadata.modifiedAt,
-            contentProbe: try contentProbe(for: file, size: metadata.size),
-            deviceID: metadata.deviceID,
-            inode: metadata.inode,
-            statusChangedSeconds: metadata.statusChangedSeconds,
-            statusChangedNanoseconds: metadata.statusChangedNanoseconds
+            contentProbe: try contentProbe(for: file, size: metadata.size)
         )
     }
 
@@ -6395,21 +6572,32 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         forOpenHandle handle: FileHandle,
         file: URL
     ) throws -> SourceSignature {
+        let metadata = try sourceSignatureMetadata(
+            forOpenHandle: handle,
+            file: file
+        )
+        return SourceSignature(
+            size: metadata.size,
+            modifiedAt: metadata.modifiedAt,
+            contentProbe: try contentProbe(forOpenHandle: handle, size: metadata.size)
+        )
+    }
+
+    private func sourceSignatureMetadata(
+        forOpenHandle handle: FileHandle,
+        file: URL
+    ) throws -> SourceSignature {
         var status = Darwin.stat()
         guard fstat(handle.fileDescriptor, &status) == 0,
+              (status.st_mode & S_IFMT) == S_IFREG,
               status.st_size >= 0 else {
             throw CocoaError(.fileReadUnknown)
         }
-        let size = UInt64(status.st_size)
         return SourceSignature(
-            size: size,
+            size: UInt64(status.st_size),
             modifiedAt: TimeInterval(status.st_mtimespec.tv_sec)
                 + TimeInterval(status.st_mtimespec.tv_nsec) / 1_000_000_000,
-            contentProbe: try contentProbe(forOpenHandle: handle, size: size),
-            deviceID: UInt64(status.st_dev),
-            inode: UInt64(status.st_ino),
-            statusChangedSeconds: Int64(status.st_ctimespec.tv_sec),
-            statusChangedNanoseconds: Int64(status.st_ctimespec.tv_nsec)
+            contentProbe: ""
         )
     }
 
@@ -6417,62 +6605,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         _ stored: SourceSignature,
         _ observed: SourceSignature
     ) -> Bool {
-        sourceMetadataMatchesIgnoringDeviceID(stored, observed)
-            && stored.deviceID == observed.deviceID
-    }
-
-    private func sourceMetadataMatchesIgnoringDeviceID(
-        _ stored: SourceSignature,
-        _ observed: SourceSignature
-    ) -> Bool {
         stored.size == observed.size
             && stored.modifiedAt == observed.modifiedAt
-            && stored.inode == observed.inode
-            && stored.statusChangedSeconds == observed.statusChangedSeconds
-            && stored.statusChangedNanoseconds == observed.statusChangedNanoseconds
-    }
-
-    /// APFS can report a different `st_dev` for the same mounted volume after
-    /// an OS/storage transition. Treat that field as a rebindable locator only
-    /// after every stable metadata field and the bounded content probe agree.
-    /// Updating the enrichment row in the same transaction prevents the next
-    /// refresh from mistaking this identity repair for a parser migration.
-    private func rebindSourceDeviceID(
-        sourceID: Int64,
-        storedDeviceID: UInt64,
-        observedDeviceID: UInt64,
-        inode: UInt64,
-        connection: SQLiteDatabaseConnection
-    ) throws {
-        guard storedDeviceID != observedDeviceID else { return }
-        try connection.transaction { transaction in
-            try transaction.execute(
-                """
-                UPDATE sources
-                SET device_id = ?
-                WHERE source_id = ? AND device_id = ? AND inode = ?;
-                """,
-                bindings: [
-                    .text(String(observedDeviceID)),
-                    .int64(sourceID),
-                    .text(String(storedDeviceID)),
-                    .text(String(inode)),
-                ]
-            )
-            try transaction.execute(
-                """
-                UPDATE event_enrichment_sources
-                SET device_id = ?
-                WHERE source_id = ? AND device_id = ? AND inode = ?;
-                """,
-                bindings: [
-                    .text(String(observedDeviceID)),
-                    .int64(sourceID),
-                    .text(String(storedDeviceID)),
-                    .text(String(inode)),
-                ]
-            )
-        }
     }
 
     private func isTrustedContentProbe(_ value: String) -> Bool {
@@ -6734,6 +6868,40 @@ private final class CodexUsageHistoryStagingTestState: @unchecked Sendable {
         defer { lock.unlock() }
         let value = shouldFailNextBatchAfterFirstImport
         shouldFailNextBatchAfterFirstImport = false
+        return value
+    }
+}
+
+private final class CodexUsageHistoryMigrationTestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failureStage: Int?
+    private var availableCapacityOverride: UInt64?
+
+    func armFailure(at stage: Int) {
+        lock.lock()
+        failureStage = stage
+        lock.unlock()
+    }
+
+    func consumeFailure(at stage: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard failureStage == stage else { return false }
+        failureStage = nil
+        return true
+    }
+
+    func overrideAvailableCapacity(_ bytes: UInt64) {
+        lock.lock()
+        availableCapacityOverride = bytes
+        lock.unlock()
+    }
+
+    func consumeAvailableCapacityOverride() -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = availableCapacityOverride
+        availableCapacityOverride = nil
         return value
     }
 }
