@@ -69,10 +69,18 @@ extension CodexUsageAnalyzer {
         let path: String
         let size: UInt64
         let modifiedAt: TimeInterval
-        let deviceID: UInt64?
-        let inode: UInt64?
-        let statusChangedSeconds: Int64?
-        let statusChangedNanoseconds: Int64?
+
+        private enum CodingKeys: String, CodingKey {
+            case path
+            case size
+            case modifiedAt
+        }
+
+        init(path: String, size: UInt64, modifiedAt: TimeInterval) {
+            self.path = path
+            self.size = size
+            self.modifiedAt = modifiedAt
+        }
     }
 
     struct SessionTreeSignature: Codable, Equatable, Sendable {
@@ -254,7 +262,8 @@ extension CodexUsageAnalyzer {
         /// boundary.
         private struct PersistentExactSnapshot: Codable {
             static let legacyExactOnlyPayloadVersion = 1
-            static let currentPayloadVersion = 2
+            static let legacySchemaBoundPayloadVersion = 2
+            static let currentPayloadVersion = 3
 
             private typealias SnapshotCompatibility =
                 CodexUsageHistoryIndex.PersistentSnapshotCompatibility
@@ -385,6 +394,7 @@ extension CodexUsageAnalyzer {
                 attributionState: CodexUsageHistoryIndex.AttributionState
             ) -> DashboardFastSnapshotFreshness? {
                 let supportedVersion = payloadVersion == Self.currentPayloadVersion
+                    || payloadVersion == Self.legacySchemaBoundPayloadVersion
                     || payloadVersion == Self.legacyExactOnlyPayloadVersion
                 guard supportedVersion else { return nil }
 
@@ -394,6 +404,13 @@ extension CodexUsageAnalyzer {
                           parserRevision == compatibility.parserRevision,
                           provenanceRevision == compatibility.provenanceRevision,
                           homeIdentityKey == currentHomeIdentityKey else {
+                        return nil
+                    }
+                } else if payloadVersion == Self.legacySchemaBoundPayloadVersion {
+                    let compatibility = Self.compatibility
+                    guard indexSchemaVersion == "6",
+                          parserRevision == compatibility.parserRevision,
+                          provenanceRevision == compatibility.provenanceRevision else {
                         return nil
                     }
                 }
@@ -436,8 +453,6 @@ extension CodexUsageAnalyzer {
                 }
                 return signature.files.allSatisfy { stored in
                     guard let current = currentFiles[stored.path],
-                          stored.deviceID == current.deviceID,
-                          stored.inode == current.inode,
                           stored.size <= current.size else {
                         return false
                     }
@@ -610,19 +625,6 @@ extension CodexUsageAnalyzer {
             didLoadPersistentExactSnapshotRoots.insert(canonicalRoot)
             lock.unlock()
             Self.persistPersistentExactSnapshot(persistentPayload)
-        }
-
-        func removeDerivedSnapshots(for root: String) {
-            let canonicalRoot = Self.canonicalRootPath(root)
-            lock.lock()
-            snapshotStorage.removeValue(forKey: root)
-            snapshotStorage.removeValue(forKey: canonicalRoot)
-            persistentExactSnapshotStorage.removeValue(forKey: canonicalRoot)
-            didLoadPersistentExactSnapshotRoots.remove(canonicalRoot)
-            lock.unlock()
-            if let url = Self.persistentExactSnapshotURL(for: canonicalRoot) {
-                try? FileManager.default.removeItem(at: url)
-            }
         }
 
         func persistentExactSnapshot(
@@ -988,11 +990,7 @@ extension CodexUsageAnalyzer {
                 let key = SessionCacheKey(
                     path: path,
                     size: metadata.size,
-                    modifiedAt: metadata.modifiedAt,
-                    deviceID: nil,
-                    inode: nil,
-                    statusChangedSeconds: nil,
-                    statusChangedNanoseconds: nil
+                    modifiedAt: metadata.modifiedAt
                 )
                 loaded[path] = CachedSession(
                     key: key,
@@ -1031,11 +1029,7 @@ extension CodexUsageAnalyzer {
                 let key = SessionCacheKey(
                     path: path,
                     size: entry.size,
-                    modifiedAt: entry.modifiedAt,
-                    deviceID: nil,
-                    inode: nil,
-                    statusChangedSeconds: nil,
-                    statusChangedNanoseconds: nil
+                    modifiedAt: entry.modifiedAt
                 )
                 loaded[path] = CachedSession(
                     key: key,
@@ -1348,9 +1342,6 @@ extension CodexUsageAnalyzer {
 
     static let sessionEventCache = SessionEventCache()
 
-    static func removeDerivedUsageSnapshots(for codexHome: URL) {
-        sessionEventCache.removeDerivedSnapshots(for: codexHome.path)
-    }
     static var isPersistentSessionEventCacheDisabled: Bool {
         ProcessInfo.processInfo.environment["CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"] == "1"
     }

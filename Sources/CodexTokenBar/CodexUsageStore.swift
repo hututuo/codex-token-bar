@@ -206,7 +206,7 @@ final class CodexUsageStore: ObservableObject {
         self.continuitySafetyDatabase = continuitySafetyDatabase
         self.transientDatabaseRecoveryDelay = max(0.05, transientDatabaseRecoveryDelay)
         dataSource = resolver.resolve()
-        dataSourceIdentity = dataSource?.stableIdentityKey
+        dataSourceIdentity = dataSource?.usageIdentityKey
         dataSourceBindingKey = Self.bindingKey(for: dataSource)
         if continuitySafetyDatabase != nil {
             let center = DistributedNotificationCenter.default()
@@ -397,7 +397,7 @@ final class CodexUsageStore: ObservableObject {
             guard !Task.isCancelled,
                   self.pendingAttributionSafetyAckKey == key,
                   self.dataSourceBindingKey == bindingKey,
-                  self.dataSource?.stableIdentityKey == sourceID else {
+                  self.dataSource?.usageIdentityKey == sourceID else {
                 return
             }
             self.pendingAttributionSafetyAckKey = nil
@@ -441,8 +441,8 @@ final class CodexUsageStore: ObservableObject {
 
     @discardableResult
     func setDataSource(_ nextDataSource: CodexDataSource?) -> Bool {
-        let previousIdentity = dataSource?.stableIdentityKey
-        let nextIdentity = nextDataSource?.stableIdentityKey
+        let previousIdentity = dataSource?.usageIdentityKey
+        let nextIdentity = nextDataSource?.usageIdentityKey
         let previousPath = dataSource?.codexHome.standardizedFileURL.path
         let nextPath = nextDataSource?.codexHome.standardizedFileURL.path
         let identityChanged = previousIdentity != nextIdentity
@@ -511,7 +511,7 @@ final class CodexUsageStore: ObservableObject {
 
     private static func bindingKey(for dataSource: CodexDataSource?) -> String {
         guard let dataSource else { return "none" }
-        return "\(dataSource.stableIdentityKey)\u{0}\(dataSource.codexHome.standardizedFileURL.path)"
+        return "\(dataSource.usageIdentityKey)\u{0}\(dataSource.codexHome.standardizedFileURL.path)"
     }
 
     private func refreshInitialSnapshot() {
@@ -1192,61 +1192,20 @@ final class CodexUsageStore: ObservableObject {
     }
 
     func rebuildIndexForCurrentVersion() {
-        guard let source = dataSource, indexUpgradeRequired != nil else { return }
-        let bindingKey = dataSourceBindingKey
+        guard dataSource != nil, indexUpgradeRequired != nil else { return }
         indexRebuildTask?.cancel()
-        refreshTask?.cancel()
-        refreshTask = nil
         transientDatabaseRecoveryTask?.cancel()
         transientDatabaseRecoveryTask = nil
-        isRefreshing = true
+        isRefreshing = false
         isDetailHydrating = false
         preciseTimeSeriesFresh = false
         preciseIndexProgress = PreciseIndexProgress(
-            phase: .preparing,
-            message: "正在为当前版本重建派生索引",
+            phase: .failed,
+            message: "自动删除式重建已关闭",
             completed: 0,
             total: nil
         )
-        status = "正在删除当前平台的派生索引；原始 JSONL 不会改动"
-        indexRebuildTask = Task { @MainActor [weak self] in
-            let failure = await Task.detached(priority: .utility) {
-                do {
-                    try CodexUsageHistoryIndex.rebuildDerivedIndex(
-                        codexHome: source.codexHome
-                    )
-                    CodexUsageAnalyzer.removeDerivedUsageSnapshots(
-                        for: source.codexHome
-                    )
-                    return Optional<String>.none
-                } catch {
-                    return Optional(error.localizedDescription)
-                }
-            }.value
-            guard let self,
-                  !Task.isCancelled,
-                  self.dataSourceBindingKey == bindingKey else { return }
-            self.indexRebuildTask = nil
-            self.isRefreshing = false
-            if let failure {
-                self.preciseIndexProgress = PreciseIndexProgress(
-                    phase: .failed,
-                    message: "派生索引重建准备失败",
-                    completed: 0,
-                    total: nil
-                )
-                self.status = "无法为当前版本重建派生索引：\(failure)"
-                return
-            }
-            self.indexUpgradeRequired = nil
-            self.preciseIndexProgress = .idle
-            self.status = "派生索引已清理，准备从原始 JSONL 重建"
-            self.refresh(
-                includePreciseScan: true,
-                forceFullTimeSeries: true,
-                requestKind: .explicit
-            )
-        }
+        status = "已保留上一份可信索引；当前版本不会自动删除数据库，请等待候选库修复流程"
     }
 
     private static func indexUpgradeRequiredError(
@@ -1392,7 +1351,7 @@ final class CodexUsageStore: ObservableObject {
     }
 
     private func refreshSourceID(for dataSource: CodexDataSource) -> String {
-        dataSource.stableIdentityKey
+        dataSource.usageIdentityKey
     }
 
     /// Merge one asynchronous snapshot without allowing an older lineage to
@@ -1791,7 +1750,7 @@ final class CodexUsageStore: ObservableObject {
                 return true
             }
             if persisted == true,
-               dataSource?.stableIdentityKey == source.stableIdentityKey {
+               dataSource?.usageIdentityKey == source.usageIdentityKey {
                 preciseTimeSeriesContinuityLostAt = loss.detectedAt
                 preciseTimeSeriesContinuityLossID = loss.id
                 preciseTimeSeriesContinuityLossReason = loss.reason
@@ -1812,7 +1771,7 @@ final class CodexUsageStore: ObservableObject {
         }
         values[identifier] = loss
         if persistContinuityLosses(values),
-           dataSource?.stableIdentityKey == source.stableIdentityKey {
+           dataSource?.usageIdentityKey == source.usageIdentityKey {
             preciseTimeSeriesContinuityLostAt = loss.detectedAt
             preciseTimeSeriesContinuityLossID = loss.id
             preciseTimeSeriesContinuityLossReason = loss.reason
@@ -2036,7 +1995,7 @@ final class CodexUsageStore: ObservableObject {
     }
 
     nonisolated static func continuityIdentifier(for source: CodexDataSource) -> String {
-        SHA256.hash(data: Data(source.stableIdentityKey.utf8))
+        SHA256.hash(data: Data(source.usageIdentityKey.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
     }

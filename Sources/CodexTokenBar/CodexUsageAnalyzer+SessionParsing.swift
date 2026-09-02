@@ -952,16 +952,10 @@ extension CodexUsageAnalyzer {
             ?? attributes[.size] as? UInt64
             ?? 0
         let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        var status = stat()
-        let hasStatus = lstat(file.path, &status) == 0
         return SessionCacheKey(
             path: file.resolvingSymlinksInPath().path,
             size: size,
-            modifiedAt: modifiedAt,
-            deviceID: hasStatus ? UInt64(status.st_dev) : nil,
-            inode: hasStatus ? UInt64(status.st_ino) : nil,
-            statusChangedSeconds: hasStatus ? Int64(status.st_ctimespec.tv_sec) : nil,
-            statusChangedNanoseconds: hasStatus ? Int64(status.st_ctimespec.tv_nsec) : nil
+            modifiedAt: modifiedAt
         )
     }
 

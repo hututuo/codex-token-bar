@@ -22,6 +22,9 @@ final class DashboardSourceTransitionCoordinator {
         taskCompletionMonitor: TaskCompletionMonitor,
         providerSyncStore: ProviderSyncStore
     ) -> DashboardSourceTransitionResult {
+        // This coordinator also owns mutation-sensitive and live subsystems.
+        // Keep its cross-owner transition identity strict; CodexUsageStore
+        // independently scopes read-only statistics by usageIdentityKey.
         let nextIdentity = dataSource?.stableIdentityKey
         let nextPath = dataSource?.codexHome.standardizedFileURL.path
         let nextStateDatabasePath = dataSource?.stateDatabase.standardizedFileURL.path

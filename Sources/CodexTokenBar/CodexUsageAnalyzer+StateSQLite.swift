@@ -159,7 +159,7 @@ extension CodexUsageAnalyzer {
             // prove that token data changed, so do not manufacture a data
             // timestamp from the check time.
             dataUpdatedAt: nil,
-            homeIdentity: dataSource.stableIdentityKey,
+            homeIdentity: dataSource.usageIdentityKey,
             coverageKind: .summary,
             observedThrough: Date()
         )

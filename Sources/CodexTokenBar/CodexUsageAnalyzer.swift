@@ -292,12 +292,12 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 generatedAt: summaryGeneratedAt,
                 lastCheckedAt: summaryGeneratedAt,
                 dataUpdatedAt: dataUpdatedAt,
-                homeIdentity: dataSource.stableIdentityKey,
+                homeIdentity: dataSource.usageIdentityKey,
                 coverageKind: .summary,
                 observedThrough: summaryGeneratedAt,
                 exactGeneration: synchronization.attributionGeneration,
                 exactSynchronizationReceipt: CompactUsageSummary.ExactSynchronizationReceipt(
-                    homeIdentity: dataSource.stableIdentityKey,
+                    homeIdentity: dataSource.usageIdentityKey,
                     sourcePaths: sessionFiles.map { $0.standardizedFileURL.path },
                     signature: synchronizedSignature,
                     observedAt: summaryGeneratedAt,
@@ -357,7 +357,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         }
         guard let persistent = Self.sessionEventCache.persistentExactSnapshot(
             for: dataSource.codexHome.path,
-            homeIdentityKey: dataSource.stableIdentityKey,
+            homeIdentityKey: dataSource.usageIdentityKey,
             signature: signature,
             attributionState: attributionState
         ) else {
@@ -444,7 +444,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 generatedAt: Date(),
                 lastCheckedAt: Date(),
                 dataUpdatedAt: phase.snapshot.dataUpdatedAt ?? phase.sourceDataUpdatedAt,
-                homeIdentity: dataSource.stableIdentityKey,
+                homeIdentity: dataSource.usageIdentityKey,
                 coverageKind: .full,
                 observedThrough: phase.snapshot.observedThrough,
                 settledThrough: phase.snapshot.settledThrough,
@@ -467,7 +467,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 Self.sessionEventCache.storeSnapshot(
                     finalSnapshot,
                     for: dataSource.codexHome.path,
-                    homeIdentityKey: dataSource.stableIdentityKey,
+                    homeIdentityKey: dataSource.usageIdentityKey,
                     signature: phase.signature
                 )
                 return true
@@ -507,7 +507,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             "sessionsRoot": dataSource.sessionsRoot.path
         ])
         let requestedReceipt = synchronizationReceipt.flatMap { receipt in
-            receipt.homeIdentity == dataSource.stableIdentityKey ? receipt : nil
+            receipt.homeIdentity == dataSource.usageIdentityKey ? receipt : nil
         }
         trace?.mark("jsonlFiles.begin")
         var sessionFiles: [URL]
@@ -635,7 +635,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 generatedAt: Date(),
                 lastCheckedAt: Date(),
                 dataUpdatedAt: cached.dataUpdatedAt ?? sourceDataUpdatedAt,
-                homeIdentity: dataSource.stableIdentityKey,
+                homeIdentity: dataSource.usageIdentityKey,
                 coverageKind: .full,
                 observedThrough: preciseCoverageAt,
                 settledThrough: cached.settledThrough
@@ -894,7 +894,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             generatedAt: Date(),
             lastCheckedAt: Date(),
             dataUpdatedAt: sourceDataUpdatedAt,
-            homeIdentity: dataSource.stableIdentityKey,
+            homeIdentity: dataSource.usageIdentityKey,
             coverageKind: .settled,
             observedThrough: preciseCoverageAt,
             settledThrough: settledThrough,
@@ -918,7 +918,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         Self.sessionEventCache.storeNumericSnapshot(
             numericSnapshot,
             for: dataSource.codexHome.path,
-            homeIdentityKey: dataSource.stableIdentityKey,
+            homeIdentityKey: dataSource.usageIdentityKey,
             signature: synchronizedSignature
         )
         trace?.mark("numericPhase.persist.end", metadata: [

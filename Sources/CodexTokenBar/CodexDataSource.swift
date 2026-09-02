@@ -68,6 +68,13 @@ struct CodexDataSource: Equatable, Sendable {
         return "fs:\(homeIdentity.deviceID):\(homeIdentity.fileID)"
     }
 
+    /// Read-only usage statistics are scoped by the selected canonical path.
+    /// Filesystem object identifiers remain available to mutation workflows,
+    /// but never decide cache or incremental-history continuity.
+    var usageIdentityKey: String {
+        "usage-path:\(codexHome.standardizedFileURL.resolvingSymlinksInPath().path)"
+    }
+
     var displayPath: String {
         Self.userFacingPath(codexHome)
     }
