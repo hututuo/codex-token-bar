@@ -1,17 +1,15 @@
 use super::exact_usage_index::{
     estimate_precise_scan_total_with_source_revision, integrity_receipt_path_for_testing,
-    maintain_exact_index_storage_for_testing,
-    open_existing_index_for_testing, open_index_for_testing,
-    repair_orphaned_index_rows_for_testing, staging_batch_shape_for_testing,
-    ExactStorageMaintenanceOutcome, ExactSyncMode, ORPHAN_REPAIR_REVISION,
-    ORPHAN_REPAIR_REVISION_KEY,
-    STAGED_FULL_REBUILD_PARSER_REVISION,
+    maintain_exact_index_storage_for_testing, open_existing_index_for_testing,
+    open_index_for_testing, staging_batch_shape_for_testing,
+    verify_no_orphaned_index_rows_for_testing, ExactStorageMaintenanceOutcome, ExactSyncMode,
+    ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY, STAGED_FULL_REBUILD_PARSER_REVISION,
 };
 use super::session_files::session_id_from_file;
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
 use super::*;
 use crate::models::RecentUsagePoint;
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
 #[cfg(unix)]
@@ -276,45 +274,47 @@ fn attribution_mutation_watcher_persists_a_create_consume_delete_gap() {
 }
 
 #[test]
-fn attribution_mutation_watcher_rebinds_when_the_same_path_points_to_a_new_directory() {
+fn attribution_mutation_watcher_rebinds_same_path_without_filesystem_identity_gate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let retired_root = root.with_extension("retired-watch-root");
     fs::create_dir_all(root.join("sessions")).unwrap();
     ensure_attribution_mutation_watcher(&root).unwrap();
     let canonical_home = fs::canonicalize(&root).unwrap();
-    let first_identity = attribution_watch_root_physical_identity(&root).unwrap();
-    assert_eq!(
-        ATTRIBUTION_MUTATION_WATCHERS
-            .get()
-            .unwrap()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&canonical_home)
-            .map(|entry| entry.physical_home_identity.as_str()),
-        Some(first_identity.as_str())
-    );
-
-    fs::rename(&root, &retired_root).unwrap();
-    fs::create_dir_all(root.join("sessions")).unwrap();
-    let replacement_identity = attribution_watch_root_physical_identity(&root).unwrap();
-    assert_ne!(replacement_identity, first_identity);
-
-    ensure_attribution_mutation_watcher(&root).unwrap();
-    let rebound_identity = ATTRIBUTION_MUTATION_WATCHERS
+    assert!(ATTRIBUTION_MUTATION_WATCHERS
         .get()
         .unwrap()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(&canonical_home)
-        .map(|entry| entry.physical_home_identity.clone());
-    assert_eq!(
-        rebound_identity.as_deref(),
-        Some(replacement_identity.as_str())
+        .contains_key(&canonical_home));
+
+    fs::rename(&root, &retired_root).unwrap();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+
+    ensure_attribution_mutation_watcher(&root).unwrap();
+    assert!(ATTRIBUTION_MUTATION_WATCHERS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&canonical_home));
+
+    let marker_path = observer_marker_path(&root).unwrap();
+    let _ = fs::remove_file(&marker_path);
+    let transient = root.join("sessions/rollout-rebound.jsonl");
+    write_lines(
+        &transient,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg"}"#],
     );
-    let marker = precise_observer_identity(&root).unwrap();
-    assert!(marker.sequence > 0);
-    assert_ne!(marker.epoch, precise_process_observer_identity().epoch);
+    fs::remove_file(&transient).unwrap();
+    let deadline = Instant::now() + StdDuration::from_secs(5);
+    while !marker_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(StdDuration::from_millis(20));
+    }
+    assert!(
+        marker_path.exists(),
+        "the path-bound replacement watcher must observe mutations in the new directory"
+    );
 
     let removed = ATTRIBUTION_MUTATION_WATCHERS
         .get()
@@ -928,15 +928,15 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     let rewritten_timestamp = recent_test_timestamp(8);
     write_lines(
         &changed_file,
-        &[
-            format!(r#"{{"timestamp":"{initial_changed_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}}}}}"#),
-        ],
+        &[format!(
+            r#"{{"timestamp":"{initial_changed_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}}}}}"#
+        )],
     );
     write_lines(
         &deleted_file,
-        &[
-            format!(r#"{{"timestamp":"{initial_deleted_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}}}}}"#),
-        ],
+        &[format!(
+            r#"{{"timestamp":"{initial_deleted_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}}}}}"#
+        )],
     );
 
     let initial = dashboard_snapshot(&root).unwrap();
@@ -956,9 +956,9 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
 
     write_lines(
         &changed_file,
-        &[
-            format!(r#"{{"timestamp":"{rewritten_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":50,"cached_input_tokens":10,"output_tokens":15,"total_tokens":75}}}}}}}}"#),
-        ],
+        &[format!(
+            r#"{{"timestamp":"{rewritten_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":50,"cached_input_tokens":10,"output_tokens":15,"total_tokens":75}}}}}}}}"#
+        )],
     );
     let rebuilt = dashboard_snapshot(&root).unwrap();
     assert_eq!(rebuilt.stats.total_tokens, 105);
@@ -1006,7 +1006,7 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
 }
 
 #[test]
-fn exact_index_rebuild_recovers_orphaned_events_from_foreign_keys_disabled_storage() {
+fn exact_index_open_preserves_orphaned_rows_and_requires_explicit_repair() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1100,16 +1100,13 @@ fn exact_index_rebuild_recovers_orphaned_events_from_foreign_keys_disabled_stora
         .unwrap();
     drop(connection);
 
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":125,"cached_input_tokens":20,"output_tokens":25,"total_tokens":150}}}}"#,
-        ],
-    );
-
-    let repaired = dashboard_snapshot(&root).unwrap();
-    assert_eq!(repaired.stats.total_tokens, 150);
-    assert_eq!(repaired.stats.total_calls, 1);
+    let database_bytes_before = fs::read(&index_path).unwrap();
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("orphaned rows must require an explicit candidate repair"),
+        Err(error) => error,
+    };
+    assert!(error.contains("repair required"), "{error}");
+    assert_eq!(fs::read(&index_path).unwrap(), database_bytes_before);
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection
@@ -1126,18 +1123,40 @@ fn exact_index_rebuild_recovers_orphaned_events_from_foreign_keys_disabled_stora
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
-        0
+        1,
+        "automatic open must not delete the orphaned event"
     );
     assert_eq!(
         connection
             .query_row(
-                "SELECT value FROM metadata WHERE key = ?1",
+                "SELECT COUNT(*) FROM metadata WHERE key = ?1",
                 params![ORPHAN_REPAIR_REVISION_KEY],
-                |row| row.get::<_, String>(0),
+                |row| row.get::<_, i64>(0),
             )
-            .unwrap()
-            .as_str(),
-        ORPHAN_REPAIR_REVISION
+            .unwrap(),
+        0,
+        "a failed verification must not claim the orphan repair marker"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        published_generation
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM published_events",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+        120,
+        "the previous published generation must remain readable"
     );
     drop(connection);
 
@@ -1159,7 +1178,7 @@ fn orphan_repair_marks_a_legacy_index_without_orphans() {
         )
         .unwrap();
 
-    repair_orphaned_index_rows_for_testing(&mut connection).unwrap();
+    verify_no_orphaned_index_rows_for_testing(&mut connection).unwrap();
     assert_eq!(
         connection
             .query_row(
@@ -1176,7 +1195,7 @@ fn orphan_repair_marks_a_legacy_index_without_orphans() {
 }
 
 #[test]
-fn orphan_repair_cleans_orphans_and_rewrites_a_wrong_marker() {
+fn orphan_verification_preserves_orphans_and_a_wrong_marker() {
     let root = temp_root();
     let index_path = root
         .join(".codex-token-bar-test-cache")
@@ -1223,7 +1242,8 @@ fn orphan_repair_cleans_orphans_and_rewrites_a_wrong_marker() {
         )
         .unwrap();
 
-    repair_orphaned_index_rows_for_testing(&mut connection).unwrap();
+    let error = verify_no_orphaned_index_rows_for_testing(&mut connection).unwrap_err();
+    assert!(error.contains("repair required"), "{error}");
     assert_eq!(
         connection
             .query_row(
@@ -1233,7 +1253,8 @@ fn orphan_repair_cleans_orphans_and_rewrites_a_wrong_marker() {
             )
             .unwrap()
             .as_str(),
-        ORPHAN_REPAIR_REVISION
+        "old-revision",
+        "failed verification must not rewrite the legacy marker"
     );
     for table in ["events", "file_fingerprints", "file_chunks"] {
         let count = connection
@@ -1243,7 +1264,7 @@ fn orphan_repair_cleans_orphans_and_rewrites_a_wrong_marker() {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap();
-        assert_eq!(count, 0, "legacy orphan rows remained in {table}");
+        assert_eq!(count, 1, "legacy orphan rows were deleted from {table}");
     }
     drop(connection);
     fs::remove_dir_all(root).unwrap();
@@ -1257,13 +1278,13 @@ fn orphan_repair_marker_hit_skips_writer_upgrade_under_another_immediate_lock() 
         .join("exact-token-index.sqlite3");
     fs::create_dir_all(index_path.parent().unwrap()).unwrap();
     let mut connection = open_index_for_testing(&index_path).unwrap();
-    repair_orphaned_index_rows_for_testing(&mut connection).unwrap();
+    verify_no_orphaned_index_rows_for_testing(&mut connection).unwrap();
 
     let mut holder = open_index_for_testing(&index_path).unwrap();
     let lock = holder
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .unwrap();
-    repair_orphaned_index_rows_for_testing(&mut connection).unwrap();
+    verify_no_orphaned_index_rows_for_testing(&mut connection).unwrap();
     drop(lock);
     drop(holder);
     drop(connection);
@@ -1292,7 +1313,7 @@ fn orphan_repair_marker_miss_fails_closed_when_writer_upgrade_is_busy() {
     let lock = holder
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .unwrap();
-    let error = repair_orphaned_index_rows_for_testing(&mut connection).unwrap_err();
+    let error = verify_no_orphaned_index_rows_for_testing(&mut connection).unwrap_err();
     assert!(
         error.contains("database is locked"),
         "unexpected busy error: {error}"
@@ -1729,7 +1750,7 @@ fn codex_home_replacement_during_precise_scan_blocks_generation_publish() {
 }
 
 #[test]
-fn missing_active_rollout_marks_the_scan_unsafe_without_losing_session_totals() {
+fn missing_active_rollout_keeps_last_good_and_blocks_publish() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1742,6 +1763,16 @@ fn missing_active_rollout_marks_the_scan_unsafe_without_losing_session_totals() 
     );
     let initial = dashboard_snapshot(&root).unwrap();
     assert_eq!(initial.stats.total_tokens, 120);
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&index_path).unwrap();
+    let published_before = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    drop(connection);
 
     let missing_rollout = root
         .join("active-rollouts")
@@ -1751,22 +1782,46 @@ fn missing_active_rollout_marks_the_scan_unsafe_without_losing_session_totals() 
         "019emissing-active-0000-0000-0000-rollout",
         &missing_rollout,
     );
-    let incomplete = dashboard_snapshot(&root).unwrap();
-    assert_eq!(incomplete.stats.total_tokens, 120);
-    assert!(!incomplete.precise_recent_usage_fresh);
-    assert!(incomplete.precise_attribution_current_scan_unsafe);
-    assert!(incomplete.warnings.iter().any(|warning| {
-        warning.source == "jsonl_scan"
-            && warning
-                .message
-                .contains("无法确认 active rollout 会话文件边界")
-    }));
+    let error = dashboard_snapshot(&root).unwrap_err();
+    assert!(error.contains("会话源扫描不完整"), "{error}");
+
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        published_before
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM published_events",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        120
+    );
+    assert!(connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'building_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .unwrap()
+        .is_some());
+    drop(connection);
 
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn staged_jsonl_open_failure_is_a_structured_incomplete_scan() {
+fn staged_jsonl_open_failure_keeps_last_good_and_checkpoint() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1779,6 +1834,16 @@ fn staged_jsonl_open_failure_is_a_structured_incomplete_scan() {
     );
     let initial = dashboard_snapshot(&root).unwrap();
     assert_eq!(initial.stats.total_tokens, 100);
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&index_path).unwrap();
+    let published_before = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    drop(connection);
 
     let disappearing = session_dir.join("rollout-019estage-open-new-0000-0000-0000.jsonl");
     let mut handle = std::io::BufWriter::new(fs::File::create(&disappearing).unwrap());
@@ -1800,13 +1865,40 @@ fn staged_jsonl_open_failure_is_a_structured_incomplete_scan() {
         |path| fs::remove_file(path).unwrap(),
     );
 
-    let incomplete = dashboard_snapshot(&root).unwrap();
-    assert_eq!(incomplete.stats.total_tokens, 100);
-    assert!(!incomplete.precise_recent_usage_fresh);
-    assert!(incomplete.precise_attribution_current_scan_unsafe);
-    assert!(incomplete.warnings.iter().any(|warning| {
-        warning.source == "jsonl_scan" && warning.message.contains("暂存读取不完整")
-    }));
+    let error = dashboard_snapshot(&root).unwrap_err();
+    assert!(error.contains("会话源扫描不完整"), "{error}");
+
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        published_before
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM published_events",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        100
+    );
+    assert!(connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'building_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .unwrap()
+        .is_some());
+    drop(connection);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1823,9 +1915,9 @@ fn compact_sync_preserves_a_source_deleted_before_the_next_full_snapshot() {
     let transient_timestamp = recent_test_timestamp(9);
     write_lines(
         &stable_file,
-        &[
-            format!(r#"{{"timestamp":"{stable_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}}}}}"#),
-        ],
+        &[format!(
+            r#"{{"timestamp":"{stable_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}}}}}"#
+        )],
     );
     let initial = dashboard_snapshot(&root).unwrap();
     let epoch = initial.recent_usage_24h[0]
@@ -1836,9 +1928,9 @@ fn compact_sync_preserves_a_source_deleted_before_the_next_full_snapshot() {
 
     write_lines(
         &transient_file,
-        &[
-            format!(r#"{{"timestamp":"{transient_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300}}}}}}}}"#),
-        ],
+        &[format!(
+            r#"{{"timestamp":"{transient_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300}}}}}}}}"#
+        )],
     );
     assert_eq!(dashboard_usage_summary(&root).unwrap().total_tokens, 400);
     fs::remove_file(&transient_file).unwrap();
@@ -2233,7 +2325,9 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
     assert_eq!(cold_bytes, initial_size);
     assert_eq!(append_bytes_before, 0);
 
-    let appended = format!(r#"{{"timestamp":"{appended_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}}}}}"#);
+    let appended = format!(
+        r#"{{"timestamp":"{appended_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}}}}}"#
+    );
     let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
     handle.write_all(appended.as_bytes()).unwrap();
     handle.write_all(b"\n").unwrap();
@@ -2780,172 +2874,175 @@ fn exact_index_reuses_private_staging_after_an_interrupted_import() {
 }
 
 #[test]
-fn exact_index_rebuilds_staging_when_parser_revision_is_missing_or_mismatched() {
+fn exact_index_reuses_v091_staging_manifest_while_ignoring_physical_fields() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
-    for (case_name, legacy_manifest) in [("legacy", true), ("mismatched", false)] {
-        let root = temp_root();
-        let session_dir = root.join("sessions");
-        let index_path = root
-            .join(".codex-token-bar-test-cache")
-            .join("exact-token-index.sqlite3");
-        fs::create_dir_all(&session_dir).unwrap();
-        let file = session_dir.join(format!(
-            "rollout-019estage-revision-{case_name}-0000-0000-exact.jsonl"
-        ));
-        let mut source = std::io::BufWriter::new(fs::File::create(&file).unwrap());
-        source.write_all(br#"{"padding":""#).unwrap();
-        source
-            .write_all(&vec![b'p'; EXACT_INDEX_CHUNK_SIZE as usize])
-            .unwrap();
-        source.write_all(b"\"}\n").unwrap();
-        writeln!(
-            source,
-            "{}",
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-v091-staging-manifest.jsonl");
+    let mut source = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    source.write_all(br#"{"padding":""#).unwrap();
+    source
+        .write_all(&vec![b'p'; EXACT_INDEX_CHUNK_SIZE as usize])
+        .unwrap();
+    source.write_all(b"\"}\n").unwrap();
+    writeln!(
+        source,
+        "{}",
+        r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#
+    )
+    .unwrap();
+    source.flush().unwrap();
+    drop(source);
+
+    ExactUsageIndex::fail_after_staging_once_for_testing();
+    let mut interrupted = ExactUsageIndex::open(&root).unwrap();
+    let error = interrupted.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("injected interruption"), "{error}");
+    drop(interrupted);
+
+    let mut staging_path = index_path.as_os_str().to_os_string();
+    staging_path.push(".staging");
+    let staging_path = PathBuf::from(staging_path);
+    let staged_database = fs::read_dir(&staging_path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().and_then(|value| value.to_str()) == Some("sqlite3"))
+        .expect("the interrupted build must leave a staged database");
+    let staged_connection = Connection::open(&staged_database).unwrap();
+    staged_connection
+        .execute_batch(
+            r#"
+            ALTER TABLE manifest ADD COLUMN device_id TEXT NOT NULL DEFAULT 'legacy-device';
+            ALTER TABLE manifest ADD COLUMN file_id TEXT NOT NULL DEFAULT 'legacy-file';
+            ALTER TABLE manifest ADD COLUMN changed_ns TEXT NOT NULL DEFAULT '0';
+            ALTER TABLE manifest DROP COLUMN manifest_schema_version;
+            "#,
         )
         .unwrap();
-        source.flush().unwrap();
-        drop(source);
+    drop(staged_connection);
 
-        ExactUsageIndex::fail_after_staging_once_for_testing();
-        let mut interrupted = ExactUsageIndex::open(&root).unwrap();
-        let error = interrupted.sync(&root, &mut Vec::new()).unwrap_err();
-        assert!(error.contains("injected interruption"), "{error}");
-        drop(interrupted);
-
-        let mut staging_path = index_path.as_os_str().to_os_string();
-        staging_path.push(".staging");
-        let staging_path = PathBuf::from(staging_path);
-        let staged_database = fs::read_dir(&staging_path)
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut resumed = ExactUsageIndex::open(&root).unwrap();
+    resumed.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing().0,
+        0,
+        "the v0.9.1 stage must resume without rereading its JSONL body"
+    );
+    assert_eq!(
+        resumed
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
             .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .find(|path| path.extension().and_then(|value| value.to_str()) == Some("sqlite3"))
-            .expect("the interrupted build must leave a staged database");
-        let staged_connection = Connection::open(&staged_database).unwrap();
-        staged_connection
-            .execute(
-                "UPDATE events SET tokens = 999, input_tokens = 999, cached_input_tokens = 0, output_tokens = 999",
-                [],
-            )
-            .unwrap();
-        if legacy_manifest {
-            staged_connection
-                .execute_batch(
-                    r#"
-                    BEGIN IMMEDIATE;
-                    ALTER TABLE manifest RENAME TO manifest_with_revision;
-                    CREATE TABLE manifest (
-                        complete INTEGER PRIMARY KEY CHECK(complete = 1),
-                        path TEXT NOT NULL,
-                        session_id TEXT NOT NULL,
-                        size INTEGER NOT NULL,
-                        modified_ns TEXT NOT NULL,
-                        device_id TEXT NOT NULL,
-                        file_id TEXT NOT NULL,
-                        changed_ns TEXT NOT NULL,
-                        prefix_sha256 BLOB NOT NULL,
-                        resume_offset INTEGER NOT NULL,
-                        previous_total_tokens INTEGER,
-                        fork_replay_started_ns TEXT,
-                        fork_replay_active INTEGER NOT NULL,
-                        is_explicit_subagent_fork INTEGER NOT NULL,
-                        last_skipped_fork_replay_token_ns TEXT,
-                        current_model TEXT,
-                        current_user_prompt_start INTEGER,
-                        current_user_prompt_end INTEGER,
-                        assistant_response_start INTEGER,
-                        assistant_response_end INTEGER,
-                        event_count INTEGER NOT NULL,
-                        fingerprint_count INTEGER NOT NULL,
-                        chunk_count INTEGER NOT NULL
-                    ) WITHOUT ROWID;
-                    INSERT INTO manifest(
-                        complete,
-                        path,
-                        session_id,
-                        size,
-                        modified_ns,
-                        device_id,
-                        file_id,
-                        changed_ns,
-                        prefix_sha256,
-                        resume_offset,
-                        previous_total_tokens,
-                        fork_replay_started_ns,
-                        fork_replay_active,
-                        is_explicit_subagent_fork,
-                        last_skipped_fork_replay_token_ns,
-                        current_model,
-                        current_user_prompt_start,
-                        current_user_prompt_end,
-                        assistant_response_start,
-                        assistant_response_end,
-                        event_count,
-                        fingerprint_count,
-                        chunk_count
-                    )
-                    SELECT
-                        complete,
-                        path,
-                        session_id,
-                        size,
-                        modified_ns,
-                        device_id,
-                        file_id,
-                        changed_ns,
-                        prefix_sha256,
-                        resume_offset,
-                        previous_total_tokens,
-                        fork_replay_started_ns,
-                        fork_replay_active,
-                        is_explicit_subagent_fork,
-                        last_skipped_fork_replay_token_ns,
-                        current_model,
-                        current_user_prompt_start,
-                        current_user_prompt_end,
-                        assistant_response_start,
-                        assistant_response_end,
-                        event_count,
-                        fingerprint_count,
-                        chunk_count
-                    FROM manifest_with_revision;
-                    DROP TABLE manifest_with_revision;
-                    COMMIT;
-                    "#,
-                )
-                .unwrap();
-        } else {
-            staged_connection
-                .execute(
-                    "UPDATE manifest SET parser_revision = ?1 WHERE complete = 1",
-                    ["legacy-parser-revision"],
-                )
-                .unwrap();
-        }
-        drop(staged_connection);
+            .total_tokens,
+        120
+    );
+    drop(resumed);
+    assert!(
+        !staging_path.exists(),
+        "a successfully published resumed stage may be cleaned up"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
 
-        ExactUsageIndex::reset_scan_bytes_for_testing();
-        let mut resumed = ExactUsageIndex::open(&root).unwrap();
-        resumed.sync(&root, &mut Vec::new()).unwrap();
-        assert!(
-            ExactUsageIndex::scan_bytes_for_testing().0 > 0,
-            "{case_name} staging must be rebuilt from the source"
-        );
-        assert_eq!(
-            resumed
-                .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
-                .unwrap()
-                .total_tokens,
-            120,
-            "{case_name} staging events must not be imported"
-        );
-        drop(resumed);
-        assert!(
-            !staging_path.exists(),
-            "{case_name} staging and its sidecars must be removed after rebuild"
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
+#[test]
+fn exact_index_invalid_staging_is_preserved_without_reparse_or_last_good_loss() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-invalid-stage-preservation.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let connection = Connection::open(&index_path).unwrap();
+    let published_before = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut replacement = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    replacement.write_all(br#"{"padding":""#).unwrap();
+    replacement
+        .write_all(&vec![b'x'; EXACT_INDEX_CHUNK_SIZE as usize])
+        .unwrap();
+    replacement.write_all(b"\"}\n").unwrap();
+    writeln!(
+        replacement,
+        "{}",
+        r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":130}}}}"#
+    )
+    .unwrap();
+    replacement.flush().unwrap();
+    drop(replacement);
+
+    ExactUsageIndex::fail_after_staging_once_for_testing();
+    let mut interrupted = ExactUsageIndex::open(&root).unwrap();
+    assert!(interrupted
+        .sync(&root, &mut Vec::new())
+        .unwrap_err()
+        .contains("injected interruption"));
+    drop(interrupted);
+    let mut staging_path = index_path.as_os_str().to_os_string();
+    staging_path.push(".staging");
+    let staging_path = PathBuf::from(staging_path);
+    let staged_database = fs::read_dir(&staging_path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().and_then(|value| value.to_str()) == Some("sqlite3"))
+        .unwrap();
+    let stage = Connection::open(&staged_database).unwrap();
+    stage
+        .execute(
+            "UPDATE manifest SET parser_revision = 'unsupported-parser' WHERE complete = 1",
+            [],
+        )
+        .unwrap();
+    drop(stage);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut resumed = ExactUsageIndex::open(&root).unwrap();
+    let error = resumed.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("已保留暂存和上一代统计"), "{error}");
+    let (full_scan_bytes, append_validation_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(full_scan_bytes, 0);
+    assert!(append_validation_bytes > 0);
+    assert!(staged_database.exists());
+    assert_eq!(
+        resumed
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        120
+    );
+    drop(resumed);
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        published_before
+    );
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -2961,7 +3058,49 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
             .expect("CODEX_TOKEN_BAR_LIVE_CODEX_HOME must point to the frozen snapshot"),
     );
     assert!(root.join("sessions").is_dir(), "{}", root.display());
+    let copied_index = PathBuf::from(
+        std::env::var("CODEX_TOKEN_BAR_TEST_EXACT_INDEX_PATH")
+            .expect("CODEX_TOKEN_BAR_TEST_EXACT_INDEX_PATH must point to a disposable index copy"),
+    );
+    assert!(copied_index.is_absolute());
+    assert!(copied_index.is_file(), "{}", copied_index.display());
+    assert_eq!(
+        super::exact_usage_index::database_path(&root).unwrap(),
+        copied_index,
+        "the opt-in live-history test must never open the production index"
+    );
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let facts = |path: &Path| {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .query_row(
+                "SELECT
+                    CAST((SELECT value FROM metadata WHERE key = 'schema_version') AS INTEGER),
+                    COALESCE(CAST((SELECT value FROM metadata WHERE key = 'building_generation') AS INTEGER), -1),
+                    COALESCE(CAST((SELECT value FROM metadata WHERE key = 'published_generation') AS INTEGER), -1),
+                    (SELECT COUNT(*) FROM files),
+                    (SELECT COUNT(*) FROM events)",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .unwrap()
+    };
+    let before = facts(&copied_index);
+    if std::env::var("CODEX_TOKEN_BAR_LIVE_REQUIRE_BUILDING_GENERATION").as_deref() == Ok("1") {
+        assert_eq!(
+            before.1, 1,
+            "the supplied production copy must contain building_generation=1"
+        );
+    }
+    ExactUsageIndex::reset_scan_bytes_for_testing();
 
     let cold_started = Instant::now();
     let mut cold_index = ExactUsageIndex::open(&root).unwrap();
@@ -2975,13 +3114,43 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
         )
         .unwrap();
     let cold_elapsed = cold_started.elapsed();
+    let cold_scan_bytes = ExactUsageIndex::scan_bytes_for_testing();
+    let cold_metadata_validation_bytes = ExactUsageIndex::metadata_validation_bytes_for_testing();
+    let after_cold = facts(&copied_index);
+    assert_eq!(after_cold.0, 10);
+    assert_eq!(
+        after_cold.1, -1,
+        "building generation must be atomically published"
+    );
+    assert!(after_cold.2 >= 1);
+    assert!(
+        after_cold.3 >= before.3,
+        "staged file rows must not be lost"
+    );
+    assert!(
+        after_cold.4 >= before.4,
+        "staged event rows must not be lost"
+    );
     println!(
-        "LIVE_EXACT_INDEX_COLD_RESULT elapsed_seconds={:.3} revision={} total_tokens={} total_calls={} total_threads={}",
+        "LIVE_EXACT_INDEX_COLD_RESULT elapsed_seconds={:.3} revision={} total_tokens={} total_calls={} total_threads={} full_body_bytes={} append_scan_bytes={} metadata_validation_bytes={} schema_before={} schema_after={} building_before={} building_after={} published_before={} published_after={} files_before={} files_after={} events_before={} events_after={}",
         cold_elapsed.as_secs_f64(),
         cold_revision,
         cold.stats.total_tokens,
         cold.stats.total_calls,
-        cold.stats.total_threads
+        cold.stats.total_threads,
+        cold_scan_bytes.0,
+        cold_scan_bytes.1,
+        cold_metadata_validation_bytes,
+        before.0,
+        after_cold.0,
+        before.1,
+        after_cold.1,
+        before.2,
+        after_cold.2,
+        before.3,
+        after_cold.3,
+        before.4,
+        after_cold.4,
     );
     drop(cold_index);
 
@@ -2997,22 +3166,32 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
         )
         .unwrap();
     let warm_elapsed = warm_started.elapsed();
-    assert_eq!(warm_revision, cold_revision);
-    assert_eq!(warm.stats.total_tokens, cold.stats.total_tokens);
-    assert_eq!(warm.stats.total_calls, cold.stats.total_calls);
-    assert_eq!(warm.stats.total_threads, cold.stats.total_threads);
+    let warm_scan_bytes = ExactUsageIndex::scan_bytes_for_testing();
+    let warm_metadata_validation_bytes = ExactUsageIndex::metadata_validation_bytes_for_testing();
+    let mutable_source = std::env::var("CODEX_TOKEN_BAR_LIVE_SOURCE_MUTABLE").as_deref() == Ok("1");
+    if mutable_source {
+        assert!(warm_revision >= cold_revision);
+    } else {
+        assert_eq!(warm_revision, cold_revision);
+        assert_eq!(warm.stats.total_tokens, cold.stats.total_tokens);
+        assert_eq!(warm.stats.total_calls, cold.stats.total_calls);
+        assert_eq!(warm.stats.total_threads, cold.stats.total_threads);
+    }
     println!(
-        "LIVE_EXACT_INDEX_WARM_RESULT elapsed_seconds={:.3} revision={} total_tokens={} total_calls={} total_threads={}",
+        "LIVE_EXACT_INDEX_WARM_RESULT elapsed_seconds={:.3} revision={} total_tokens={} total_calls={} total_threads={} additional_full_body_bytes={} additional_append_scan_bytes={} additional_metadata_validation_bytes={}",
         warm_elapsed.as_secs_f64(),
         warm_revision,
         warm.stats.total_tokens,
         warm.stats.total_calls,
-        warm.stats.total_threads
+        warm.stats.total_threads,
+        warm_scan_bytes.0.saturating_sub(cold_scan_bytes.0),
+        warm_scan_bytes.1.saturating_sub(cold_scan_bytes.1),
+        warm_metadata_validation_bytes.saturating_sub(cold_metadata_validation_bytes),
     );
 }
 
 #[test]
-fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
+fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoint() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -3020,7 +3199,7 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
         .join(".codex-token-bar-test-cache")
         .join("exact-token-index.sqlite3");
     fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019emigrate-v6-0000-0000-0000-exact.jsonl");
+    let file = session_dir.join("rollout-v091-schema9-migration.jsonl");
     write_lines(
         &file,
         &[
@@ -3033,7 +3212,7 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
     let connection = Connection::open(&index_path).unwrap();
     let before = connection
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM published_events), (SELECT COUNT(*) FROM published_files), (SELECT COUNT(*) FROM file_fingerprints ff JOIN published_files f ON f.generation = ff.file_generation AND f.path = ff.file_path), (SELECT COUNT(*) FROM file_chunks fc JOIN published_files f ON f.generation = fc.file_generation AND f.path = fc.file_path), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+            "SELECT (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT COUNT(*) FROM event_enrichment_sources), (SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_file_totals), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'revision'), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
             [],
             |row| {
                 Ok((
@@ -3042,158 +3221,165 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
                 ))
             },
         )
         .unwrap();
     drop(connection);
+    convert_current_index_to_v091_schema9(&index_path);
 
-    for (legacy_version, missing_columns) in [
-        (
-            6_i64,
-            vec![
-                ("files", "current_model"),
-                ("files", "is_explicit_subagent_fork"),
-                ("events", "model"),
-                ("events", "reasoning_output_tokens"),
-            ],
-        ),
-        (
-            7_i64,
-            vec![
-                ("files", "is_explicit_subagent_fork"),
-                ("events", "reasoning_output_tokens"),
-            ],
-        ),
-    ] {
-        let connection = Connection::open(&index_path).unwrap();
-        for (table, column) in missing_columns {
-            connection
-                .execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
-                .unwrap();
-        }
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut migrated = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing(),
+        (0, 0),
+        "schema 9→10 migration must not parse JSONL bodies"
+    );
+    let connection = Connection::open(&index_path).unwrap();
+    let after = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT COUNT(*) FROM event_enrichment_sources), (SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_file_totals), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'revision'), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(
         connection
-            .execute(
-                "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
-                [legacy_version],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "DELETE FROM metadata WHERE key = 'event_enrichment_revision'",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute("DELETE FROM event_enrichment_sources", [])
-            .unwrap();
-        connection
-            .execute(
-                "DELETE FROM metadata WHERE key = 'codex_home_physical_identity'",
-                [],
-            )
-            .unwrap();
-        let model_column_exists = connection
             .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'model'",
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "10"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'session_catalog_schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "2"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM metadata WHERE key = 'codex_home_physical_identity'",
                 [],
                 |row| row.get::<_, i64>(0),
             )
-            .unwrap()
-            > 0;
-        if model_column_exists {
+            .unwrap(),
+        0
+    );
+    for (table, column) in [
+        ("files", "device_id"),
+        ("files", "file_id"),
+        ("files", "changed_ns"),
+        ("event_enrichment_sources", "device_id"),
+        ("event_enrichment_sources", "file_id"),
+        ("session_catalog_files", "stat_device_id"),
+        ("session_catalog_files", "stat_file_id"),
+        ("session_catalog_files", "stat_changed_ns"),
+        ("session_catalog_files", "device_id"),
+        ("session_catalog_files", "file_id"),
+        ("session_catalog_files", "changed_ns"),
+    ] {
+        assert_eq!(
             connection
-                .execute("UPDATE events SET model = NULL", [])
-                .unwrap();
-        }
-        drop(connection);
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"
+                    ),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "schema 10 must not retain {table}.{column}"
+        );
+    }
+    drop(connection);
+
+    let appended = r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}"#;
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(handle, "{appended}").unwrap();
+    drop(handle);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    migrated.sync(&root, &mut Vec::new()).unwrap();
+    let (full_scan_bytes, append_scan_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(full_scan_bytes, 0);
+    assert!(append_scan_bytes > 0);
+    assert_eq!(
+        migrated
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        170
+    );
+    drop(migrated);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_schema9_migration_rolls_back_every_swap_stage_without_data_loss() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    for stage in 1..=4 {
+        let root = temp_root();
+        let session_dir = root.join("sessions");
+        let index_path = root
+            .join(".codex-token-bar-test-cache")
+            .join("exact-token-index.sqlite3");
+        fs::create_dir_all(&session_dir).unwrap();
+        let source_path = session_dir.join(format!("rollout-v091-rollback-{stage}.jsonl"));
+        write_lines(
+            &source_path,
+            &[
+                r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            ],
+        );
+        assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+        convert_current_index_to_v091_schema9(&index_path);
+        let facts_before = exact_migration_facts(&index_path);
+        let database_bytes_before = fs::read(&index_path).unwrap();
+        let source_bytes_before = fs::read(&source_path).unwrap();
 
         ExactUsageIndex::reset_scan_bytes_for_testing();
-        let structural = ExactUsageIndex::open(&root).unwrap();
-        drop(structural);
-        assert_eq!(
-            ExactUsageIndex::scan_bytes_for_testing(),
-            (0, 0),
-            "v{legacy_version} structural migration must not read JSONL bodies"
-        );
-        let structurally_migrated = Connection::open(&index_path).unwrap();
+        ExactUsageIndex::fail_schema9_migration_stage_for_testing(stage);
+        let error = match ExactUsageIndex::open(&root) {
+            Ok(_) => panic!("migration stage {stage} must fail"),
+            Err(error) => error,
+        };
         assert!(
-            structurally_migrated
-                .query_row(
-                    "SELECT value FROM metadata WHERE key = 'codex_home_physical_identity'",
-                    [],
-                    |row| row.get::<_, String>(0),
-                )
-                .unwrap()
-                .len()
-                > 0,
-            "the public legacy index must bind its missing physical Home identity in place"
+            error.contains(&format!(
+                "injected schema 9 migration failure at stage {stage}"
+            )),
+            "{error}"
         );
-        assert_eq!(
-            structurally_migrated
-                .query_row(
-                    "SELECT value FROM metadata WHERE key = 'schema_version'",
-                    [],
-                    |row| row.get::<_, String>(0),
-                )
-                .unwrap(),
-            legacy_version.to_string(),
-            "the final schema marker must wait for historical enrichment"
-        );
-        assert_eq!(
-            structurally_migrated
-                .query_row(
-                    "SELECT model, reasoning_output_tokens FROM published_events",
-                    [],
-                    |row| Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, Option<i64>>(1)?
-                    )),
-                )
-                .unwrap(),
-            (None, None),
-            "structure-only migration must preserve unknown historical fields as NULL"
-        );
-        drop(structurally_migrated);
-
-        ExactUsageIndex::reset_scan_bytes_for_testing();
-        assert_eq!(
-            dashboard_snapshot(&root).unwrap().stats.total_tokens,
-            120,
-            "v{legacy_version} migration must leave the published dashboard immediately readable"
-        );
-        let (full_scan_bytes, append_scan_bytes) = ExactUsageIndex::scan_bytes_for_testing();
-        assert_eq!(append_scan_bytes, 0);
-        assert_eq!(
-            full_scan_bytes,
-            fs::metadata(&file).unwrap().len(),
-            "v{legacy_version} must enrich the old published watermark exactly once"
-        );
+        assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+        assert!(index_path.exists());
+        assert_eq!(fs::read(&source_path).unwrap(), source_bytes_before);
+        assert_eq!(fs::read(&index_path).unwrap(), database_bytes_before);
+        assert_eq!(exact_migration_facts(&index_path), facts_before);
+        assert!(exact_column_exists(&index_path, "files", "device_id"));
         let connection = Connection::open(&index_path).unwrap();
-        let after = connection
-            .query_row(
-                "SELECT (SELECT COUNT(*) FROM published_events), (SELECT COUNT(*) FROM published_files), (SELECT COUNT(*) FROM file_fingerprints ff JOIN published_files f ON f.generation = ff.file_generation AND f.path = ff.file_path), (SELECT COUNT(*) FROM file_chunks fc JOIN published_files f ON f.generation = fc.file_generation AND f.path = fc.file_path), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, i64>(4)?,
-                    ))
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            (after.0, after.1, after.2, after.3),
-            (before.0, before.1, before.2, before.3),
-            "v{legacy_version} migration changed published event/file identity"
-        );
-        assert!(
-            after.4 > before.4,
-            "enrichment must publish one new generation"
-        );
         assert_eq!(
             connection
                 .query_row(
@@ -3206,63 +3392,90 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
         );
         assert_eq!(
             connection
-                .query_row(
-                    "SELECT value FROM metadata WHERE key = 'event_enrichment_revision'",
-                    [],
-                    |row| row.get::<_, String>(0),
-                )
+                .query_row("PRAGMA foreign_key_check", [], |_| Ok(true))
+                .optional()
                 .unwrap(),
-            "model-reasoning-v1"
+            None
         );
-        assert_eq!(
-            connection
-                .query_row("SELECT model FROM published_events", [], |row| {
-                    row.get::<_, Option<String>>(0)
-                })
-                .unwrap(),
-            Some("gpt-5.6-sol".into())
-        );
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT reasoning_output_tokens FROM published_events",
-                    [],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-                .unwrap(),
-            Some(7)
-        );
-        for (table, column) in [
-            ("files", "current_model"),
-            ("files", "is_explicit_subagent_fork"),
-            ("events", "model"),
-            ("events", "reasoning_output_tokens"),
-        ] {
-            let exists = connection
-                .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"
-                    ),
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap();
-            assert_eq!(
-                exists, 1,
-                "v{legacy_version} migration must add {table}.{column}"
-            );
-        }
         drop(connection);
 
         ExactUsageIndex::reset_scan_bytes_for_testing();
-        assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
-        assert_eq!(
-            ExactUsageIndex::scan_bytes_for_testing(),
-            (0, 0),
-            "completed enrichment must not reread historical JSONL"
-        );
+        drop(ExactUsageIndex::open(&root).unwrap());
+        assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+        assert!(!exact_column_exists(&index_path, "files", "device_id"));
+        fs::remove_dir_all(root).unwrap();
     }
+}
 
+#[test]
+fn exact_index_schema9_migration_refuses_low_space_before_writing() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let source_path = session_dir.join("rollout-v091-low-space.jsonl");
+    write_lines(
+        &source_path,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    convert_current_index_to_v091_schema9(&index_path);
+    let facts_before = exact_migration_facts(&index_path);
+    let database_bytes_before = fs::read(&index_path).unwrap();
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    ExactUsageIndex::override_migration_available_bytes_for_testing(0);
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("zero migration space must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.contains("迁移空间不足"), "{error}");
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(fs::read(&index_path).unwrap(), database_bytes_before);
+    assert_eq!(exact_migration_facts(&index_path), facts_before);
+    assert!(exact_column_exists(&index_path, "files", "device_id"));
+
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert!(!exact_column_exists(&index_path, "files", "device_id"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_rebuild_entry_keeps_the_active_index_and_last_good_cache() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-disabled-rebuild.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let facts_before = exact_migration_facts(&index_path);
+    let database_bytes_before = fs::read(&index_path).unwrap();
+
+    let error = rebuild_precise_index_for_current_version(&root).unwrap_err();
+    assert!(error.contains("自动删除式恢复入口已关闭"), "{error}");
+    assert!(index_path.exists());
+    assert_eq!(fs::read(&index_path).unwrap(), database_bytes_before);
+    assert_eq!(exact_migration_facts(&index_path), facts_before);
+    assert_eq!(
+        cached_dashboard_snapshot_for_startup(&root)
+            .unwrap()
+            .stats
+            .total_tokens,
+        120
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -3287,14 +3500,14 @@ fn exact_index_enrichment_publishes_an_appended_tail_in_the_same_snapshot() {
 
     let connection = Connection::open(&index_path).unwrap();
     connection
-        .execute("ALTER TABLE events DROP COLUMN model", [])
-        .unwrap();
-    connection
-        .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
+        .execute(
+            "UPDATE events SET model = NULL, reasoning_output_tokens = NULL",
+            [],
+        )
         .unwrap();
     connection
         .execute(
-            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
@@ -3305,7 +3518,10 @@ fn exact_index_enrichment_publishes_an_appended_tail_in_the_same_snapshot() {
         )
         .unwrap();
     connection
-        .execute("DELETE FROM event_enrichment_sources", [])
+        .execute(
+            "UPDATE event_enrichment_sources SET revision = 'v091-incomplete'",
+            [],
+        )
         .unwrap();
     drop(connection);
     let published_prefix_size = fs::metadata(&file).unwrap().len();
@@ -3320,11 +3536,13 @@ fn exact_index_enrichment_publishes_an_appended_tail_in_the_same_snapshot() {
     assert_eq!(refreshed.stats.total_tokens, 170);
     let (full_scan_bytes, append_scan_bytes) = ExactUsageIndex::scan_bytes_for_testing();
     assert_eq!(
-        full_scan_bytes,
-        published_prefix_size,
+        full_scan_bytes, published_prefix_size,
         "enrichment must read the old published prefix once"
     );
-    assert!(append_scan_bytes > 0, "the same owner must publish the appended tail");
+    assert!(
+        append_scan_bytes > 0,
+        "the same owner must publish the appended tail"
+    );
 
     ExactUsageIndex::reset_scan_bytes_for_testing();
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 170);
@@ -3358,14 +3576,14 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
 
     let connection = Connection::open(&index_path).unwrap();
     connection
-        .execute("ALTER TABLE events DROP COLUMN model", [])
-        .unwrap();
-    connection
-        .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
+        .execute(
+            "UPDATE events SET model = NULL, reasoning_output_tokens = NULL",
+            [],
+        )
         .unwrap();
     connection
         .execute(
-            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
@@ -3376,7 +3594,10 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
         )
         .unwrap();
     connection
-        .execute("DELETE FROM event_enrichment_sources", [])
+        .execute(
+            "UPDATE event_enrichment_sources SET revision = 'v091-incomplete'",
+            [],
+        )
         .unwrap();
     drop(connection);
 
@@ -3400,7 +3621,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "6"
+        "10"
     );
     assert_eq!(
         interrupted_database
@@ -3433,7 +3654,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "9"
+        "10"
     );
     assert_eq!(
         completed
@@ -3478,14 +3699,14 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
 
     let connection = Connection::open(&index_path).unwrap();
     connection
-        .execute("ALTER TABLE events DROP COLUMN model", [])
-        .unwrap();
-    connection
-        .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
+        .execute(
+            "UPDATE events SET model = NULL, reasoning_output_tokens = NULL",
+            [],
+        )
         .unwrap();
     connection
         .execute(
-            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
@@ -3496,7 +3717,10 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
         )
         .unwrap();
     connection
-        .execute("DELETE FROM event_enrichment_sources", [])
+        .execute(
+            "UPDATE event_enrichment_sources SET revision = 'v091-incomplete'",
+            [],
+        )
         .unwrap();
     let published_before = connection
         .query_row(
@@ -3623,14 +3847,14 @@ fn event_enrichment_keeps_the_previous_published_generation_until_every_source_c
 
     let connection = Connection::open(&index_path).unwrap();
     connection
-        .execute("ALTER TABLE events DROP COLUMN model", [])
-        .unwrap();
-    connection
-        .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
+        .execute(
+            "UPDATE events SET model = NULL, reasoning_output_tokens = NULL",
+            [],
+        )
         .unwrap();
     connection
         .execute(
-            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
@@ -3641,7 +3865,10 @@ fn event_enrichment_keeps_the_previous_published_generation_until_every_source_c
         )
         .unwrap();
     connection
-        .execute("DELETE FROM event_enrichment_sources", [])
+        .execute(
+            "UPDATE event_enrichment_sources SET revision = 'v091-incomplete'",
+            [],
+        )
         .unwrap();
     let published_before = connection
         .query_row(
@@ -3840,7 +4067,7 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
 }
 
 #[test]
-fn confirmed_future_index_rebuild_removes_only_tauri_derived_storage() {
+fn future_index_repair_request_preserves_all_existing_storage() {
     let root = temp_root();
     let aggregate_cache = root.join("tauri-derived").join("dashboard-aggregate.json");
     let _test_state = app_paths::app_path_test_env_guard(&[(
@@ -3860,11 +4087,10 @@ fn confirmed_future_index_rebuild_removes_only_tauri_derived_storage() {
     let settings = root.join("settings.json");
     let quota = root.join("quota-history.sqlite");
     let radar = root.join("radar-cache.json");
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
     for path in [&state_db, &settings, &quota, &radar] {
         fs::write(path, b"must-survive").unwrap();
     }
-
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
     let index_path = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(&index_path).unwrap();
     connection
@@ -3882,17 +4108,25 @@ fn confirmed_future_index_rebuild_removes_only_tauri_derived_storage() {
     fs::write(staging.join("ready.sqlite3"), b"derived").unwrap();
     let receipt = integrity_receipt_path_for_testing(&root).unwrap();
     fs::write(&receipt, b"derived receipt").unwrap();
+    let index_bytes = fs::read(&index_path).unwrap();
+    let aggregate_bytes = fs::read(&aggregate_cache).unwrap();
+    let staging_bytes = fs::read(staging.join("ready.sqlite3")).unwrap();
+    let receipt_bytes = fs::read(&receipt).unwrap();
 
     let upgrade = precise_index_upgrade_required(&root)
         .expect("read-only assessment")
         .expect("future schema should require upgrade");
     assert_eq!(upgrade.stored, "999");
-    rebuild_precise_index_for_current_version(&root).unwrap();
+    let error = rebuild_precise_index_for_current_version(&root).unwrap_err();
+    assert!(error.contains("自动删除式恢复入口已关闭"), "{error}");
 
-    assert!(!index_path.exists());
-    assert!(!staging.exists());
-    assert!(!receipt.exists());
-    assert!(!aggregate_cache.exists(), "bound numeric cache is derived");
+    assert_eq!(fs::read(&index_path).unwrap(), index_bytes);
+    assert_eq!(fs::read(&aggregate_cache).unwrap(), aggregate_bytes);
+    assert_eq!(
+        fs::read(staging.join("ready.sqlite3")).unwrap(),
+        staging_bytes
+    );
+    assert_eq!(fs::read(&receipt).unwrap(), receipt_bytes);
     for path in [&raw_jsonl, &state_db, &settings, &quota, &radar] {
         assert!(
             path.exists(),
@@ -3990,7 +4224,7 @@ fn exact_index_restores_a_missing_marker_for_the_known_session_catalog_shape() {
     let connection = Connection::open(&index_path).unwrap();
     connection
         .execute(
-            "INSERT OR REPLACE INTO session_catalog_files(path, archived, thread_id, cwd, source, session_id, forked_from_id, parent_thread_id, size, modified_ns, created_ns, modified_at, created_at, stat_device_id, stat_file_id, stat_changed_ns, device_id, file_id, changed_ns, first_line_bytes, first_line_sha256, last_seen_generation) VALUES (?1, 0, 'known-thread', '/known', 'known', NULL, NULL, NULL, 0, '0', '0', NULL, NULL, 'known-device', 'known-file', '0', 'known-device', 'known-file', '0', 0, X'00', 7)",
+            "INSERT OR REPLACE INTO session_catalog_files(path, archived, thread_id, cwd, source, session_id, forked_from_id, parent_thread_id, size, modified_ns, created_ns, modified_at, created_at, first_line_bytes, first_line_sha256, last_seen_generation) VALUES (?1, 0, 'known-thread', '/known', 'known', NULL, NULL, NULL, 0, '0', '0', NULL, NULL, 0, X'00', 7)",
             ["/known/catalog.jsonl"],
         )
         .unwrap();
@@ -4013,7 +4247,7 @@ fn exact_index_restores_a_missing_marker_for_the_known_session_catalog_shape() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "1"
+        "2"
     );
     assert_eq!(
         connection
@@ -4115,7 +4349,7 @@ fn exact_index_refuses_future_session_catalog_without_dropping_table_or_rows() {
         .unwrap();
     connection
         .execute(
-            "INSERT INTO session_catalog_files(path, archived, thread_id, cwd, source, session_id, forked_from_id, parent_thread_id, size, modified_ns, created_ns, modified_at, created_at, stat_device_id, stat_file_id, stat_changed_ns, device_id, file_id, changed_ns, first_line_bytes, first_line_sha256, last_seen_generation, future_marker) VALUES (?1, 0, 'future-thread', '/future', 'future', NULL, NULL, NULL, 0, '0', '0', NULL, NULL, 'future-device', 'future-file', '0', 'future-device', 'future-file', '0', 0, X'00', 0, 'keep-me')",
+            "INSERT INTO session_catalog_files(path, archived, thread_id, cwd, source, session_id, forked_from_id, parent_thread_id, size, modified_ns, created_ns, modified_at, created_at, first_line_bytes, first_line_sha256, last_seen_generation, future_marker) VALUES (?1, 0, 'future-thread', '/future', 'future', NULL, NULL, NULL, 0, '0', '0', NULL, NULL, 0, X'00', 0, 'keep-me')",
             ["/future/catalog.jsonl"],
         )
         .unwrap();
@@ -4168,7 +4402,7 @@ fn exact_index_refuses_future_session_catalog_without_dropping_table_or_rows() {
 }
 
 #[test]
-fn exact_index_migration_marks_only_explicit_replay_for_targeted_replacement() {
+fn exact_index_replay_marker_repair_targets_only_explicit_replay() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -4219,7 +4453,7 @@ fn exact_index_migration_marks_only_explicit_replay_for_targeted_replacement() {
         .unwrap();
     let before = connection
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'), (SELECT changed_ns FROM files WHERE deleted = 0 LIMIT 1)",
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
             [],
             |row| {
                 Ok((
@@ -4227,7 +4461,6 @@ fn exact_index_migration_marks_only_explicit_replay_for_targeted_replacement() {
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
                 ))
             },
         )
@@ -4241,7 +4474,7 @@ fn exact_index_migration_marks_only_explicit_replay_for_targeted_replacement() {
         .unwrap();
     connection
         .execute(
-            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            "DELETE FROM metadata WHERE key = 'fork_replay_boundary_revision'",
             [],
         )
         .unwrap();
@@ -4264,7 +4497,7 @@ fn exact_index_migration_marks_only_explicit_replay_for_targeted_replacement() {
     let connection = Connection::open(&index_path).unwrap();
     let after = connection
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'), (SELECT is_explicit_subagent_fork FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1), (SELECT append_ready FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1), (SELECT resume_offset FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1), (SELECT changed_ns FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1)",
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'), (SELECT is_explicit_subagent_fork FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1), (SELECT append_ready FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1), (SELECT resume_offset FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1)",
             params![relative_file],
             |row| {
                 Ok((
@@ -4275,7 +4508,6 @@ fn exact_index_migration_marks_only_explicit_replay_for_targeted_replacement() {
                     row.get::<_, bool>(4)?,
                     row.get::<_, bool>(5)?,
                     row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, String>(7)?,
                 ))
             },
         )
@@ -4287,7 +4519,6 @@ fn exact_index_migration_marks_only_explicit_replay_for_targeted_replacement() {
     assert!(after.4);
     assert!(!after.5);
     assert_eq!(after.6, None);
-    assert!(after.7.starts_with("migration:"));
     drop(connection);
 
     assert_eq!(
@@ -4374,12 +4605,6 @@ fn exact_index_retries_unresolved_replay_candidate_without_persisting_marker() {
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
     let connection = Connection::open(&index_path).unwrap();
-    connection
-        .execute(
-            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
-            [],
-        )
-        .unwrap();
     connection
         .execute(
             "UPDATE files SET fork_replay_active = 1, is_explicit_subagent_fork = 0",
@@ -4683,10 +4908,13 @@ fn exact_index_cold_scan_resumes_committed_files_without_publishing_partial_tota
 }
 
 #[test]
-fn exact_index_resumed_building_generation_appends_without_full_rescan() {
+fn exact_index_resumed_building_generation_survives_schema9_migration_and_appends() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
     fs::create_dir_all(&session_dir).unwrap();
     let file = session_dir.join("rollout-019eresume-append-0000-0000-0000-exact.jsonl");
     // 超过一个 4 MiB 块的大文件，让"整文件重扫 vs 尾块追加"在扫描字节数上可区分。
@@ -4713,6 +4941,10 @@ fn exact_index_resumed_building_generation_appends_without_full_rescan() {
     let mut index = ExactUsageIndex::open(&root).unwrap();
     let error = index.sync(&root, &mut Vec::new()).unwrap_err();
     assert!(error.contains("injected interruption"), "{error}");
+    drop(index);
+    let staged_before_migration = exact_migration_facts(&index_path);
+    assert!(staged_before_migration.building_generation.is_some());
+    convert_current_index_to_v091_schema9(&index_path);
 
     // 追加少量数据后复用同一 building 代次续扫：检查点代次 == 当前代次。
     let appended = br#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#;
@@ -4723,6 +4955,12 @@ fn exact_index_resumed_building_generation_appends_without_full_rescan() {
     drop(handle);
 
     ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(
+        exact_migration_facts(&index_path),
+        staged_before_migration,
+        "schema 9→10 must retain the unfinished generation and its staged rows"
+    );
     index.sync(&root, &mut Vec::new()).unwrap();
     assert_eq!(
         index
@@ -5104,7 +5342,7 @@ fn exact_index_rolls_back_when_the_scanned_prefix_is_rewritten() {
 }
 
 #[test]
-fn exact_index_detects_an_equal_length_rewrite_after_mtime_is_restored() {
+fn exact_index_same_path_size_and_mtime_uses_the_metadata_fast_path() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
@@ -5137,16 +5375,111 @@ fn exact_index_detects_an_equal_length_rewrite_after_mtime_is_restored() {
         original_modified
     );
 
-    let rebuilt = dashboard_snapshot(&root).unwrap();
-    assert_eq!(rebuilt.stats.total_tokens, 121);
-    assert_eq!(rebuilt.stats.total_calls, 1);
-    assert_ne!(
-        rebuilt.recent_usage_24h[0]
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let cached = dashboard_snapshot(&root).unwrap();
+    assert_eq!(cached.stats.total_tokens, 120);
+    assert_eq!(cached.stats.total_calls, 1);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(
+        cached.recent_usage_24h[0]
             .source_contribution_epoch
             .as_deref(),
         Some(initial_epoch.as_str()),
-        "a same-size rewrite with restored mtime must rotate attribution provenance"
+        "unchanged path, size and mtime must not rotate attribution provenance"
     );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_mtime_only_change_revalidates_chunks_without_jsonl_parse() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019emetadata-only-0000-0000-exact.jsonl");
+    let line = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    write_lines(&file, &[line]);
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 120);
+    let initial_epoch = initial.recent_usage_24h[0]
+        .source_contribution_epoch
+        .clone()
+        .unwrap();
+    let file_size = fs::metadata(&file).unwrap().len();
+    let before = Connection::open(&index_path)
+        .unwrap()
+        .query_row(
+            "SELECT CAST((SELECT value FROM metadata WHERE key = 'revision') AS INTEGER), CAST((SELECT value FROM metadata WHERE key = 'published_generation') AS INTEGER)",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap();
+
+    let original_modified = fs::metadata(&file).unwrap().modified().unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(original_modified + StdDuration::from_secs(5)))
+        .unwrap();
+    let refreshed_modified_ns = fs::metadata(&file)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_string();
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let refreshed = dashboard_snapshot(&root).unwrap();
+    assert_eq!(refreshed.stats.total_tokens, 120);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(
+        ExactUsageIndex::metadata_validation_bytes_for_testing(),
+        file_size,
+        "mtime-only validation must hash the stored 4 MiB chunks without invoking the JSONL parser"
+    );
+    assert_eq!(
+        refreshed.recent_usage_24h[0]
+            .source_contribution_epoch
+            .as_deref(),
+        Some(initial_epoch.as_str())
+    );
+
+    let connection = Connection::open(&index_path).unwrap();
+    let after = connection
+        .query_row(
+            "SELECT CAST((SELECT value FROM metadata WHERE key = 'revision') AS INTEGER), CAST((SELECT value FROM metadata WHERE key = 'published_generation') AS INTEGER)",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "content-identical metadata must not publish a new generation"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT modified_ns FROM published_files WHERE path = ?1",
+                [file.canonicalize().unwrap().to_string_lossy().as_ref()],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        refreshed_modified_ns
+    );
+    drop(connection);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(ExactUsageIndex::metadata_validation_bytes_for_testing(), 0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -5259,113 +5592,57 @@ fn exact_index_existing_open_never_recreates_a_missing_database() {
 }
 
 #[test]
-fn exact_index_replaces_plaintext_v1_storage_and_keeps_only_source_offsets() {
+fn exact_index_preserves_pre_v091_schema1_storage_without_automatic_rebuild() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
-    let session_dir = root.join("sessions");
     let index_dir = root.join(".codex-token-bar-test-cache");
     let index_path = index_dir.join("exact-token-index.sqlite3");
-    fs::create_dir_all(&session_dir).unwrap();
     fs::create_dir_all(&index_dir).unwrap();
-
-    let secret_question = "SECRET_PROMPT_EXACT_INDEX_MUST_NOT_PERSIST_7E2B";
-    let secret_answer = "SECRET_ANSWER_EXACT_INDEX_MUST_NOT_PERSIST_91FC";
-    {
-        let legacy = Connection::open(&index_path).unwrap();
-        legacy
-            .execute_batch(
-                r#"
-                PRAGMA journal_mode = WAL;
-                CREATE TABLE metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                ) WITHOUT ROWID;
-                INSERT INTO metadata(key, value) VALUES ('schema_version', '1');
-                CREATE TABLE legacy_events (
-                    user_prompt TEXT NOT NULL,
-                    assistant_response TEXT NOT NULL
-                );
-                "#,
-            )
-            .unwrap();
-        legacy
-            .execute(
-                "INSERT INTO legacy_events(user_prompt, assistant_response) VALUES (?1, ?2)",
-                rusqlite::params![secret_question, secret_answer],
-            )
-            .unwrap();
-    }
-
-    let user_line = format!(
-        r#"{{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{{"type":"user_message","message":"{secret_question}"}}}}"#
-    );
-    let assistant_line = format!(
-        r#"{{"timestamp":"2026-07-20T01:00:20Z","type":"event_msg","payload":{{"type":"agent_message","message":"{secret_answer}"}}}}"#
-    );
-    write_lines(
-        &session_dir.join("rollout-019eprivacy-0000-0000-0000-offsets.jsonl"),
-        &[
-            user_line.as_str(),
-            assistant_line.as_str(),
-            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":100,"output_tokens":50,"total_tokens":1250}}}}"#,
-        ],
-    );
-
-    let snapshot = dashboard_snapshot(&root).unwrap();
-    assert_eq!(snapshot.cache_usage.turns[0].user_prompt, secret_question);
-    assert_eq!(
-        snapshot.cache_usage.turns[0].assistant_response,
-        secret_answer
-    );
-
-    let connection = Connection::open(&index_path).unwrap();
-    let columns = connection
-        .prepare("PRAGMA table_info(events)")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(1))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert!(!columns.iter().any(|column| column == "user_prompt"));
-    assert!(!columns.iter().any(|column| column == "assistant_response"));
-    assert!(columns.iter().any(|column| column == "user_prompt_start"));
-    assert!(columns
-        .iter()
-        .any(|column| column == "assistant_response_end"));
-    connection
+    let legacy = Connection::open(&index_path).unwrap();
+    legacy
         .execute_batch(
             r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA wal_autocheckpoint = 0;
-            INSERT OR REPLACE INTO metadata(key, value) VALUES ('privacy_test_probe', '1');
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) WITHOUT ROWID;
+            INSERT INTO metadata(key, value) VALUES ('schema_version', '1');
+            CREATE TABLE legacy_events (
+                user_prompt TEXT NOT NULL,
+                assistant_response TEXT NOT NULL
+            );
+            INSERT INTO legacy_events(user_prompt, assistant_response)
+            VALUES ('keep-prompt', 'keep-answer');
             "#,
         )
         .unwrap();
+    drop(legacy);
 
-    for path in [
-        index_path.clone(),
-        PathBuf::from(format!("{}-wal", index_path.display())),
-        PathBuf::from(format!("{}-shm", index_path.display())),
-    ] {
-        let bytes = fs::read(&path)
-            .unwrap_or_else(|error| panic!("failed to scan {}: {error}", path.display()));
-        assert!(
-            !bytes
-                .windows(secret_question.len())
-                .any(|window| window == secret_question.as_bytes()),
-            "{} retained the prompt plaintext",
-            path.display()
-        );
-        assert!(
-            !bytes
-                .windows(secret_answer.len())
-                .any(|window| window == secret_answer.as_bytes()),
-            "{} retained the answer plaintext",
-            path.display()
-        );
-    }
-    drop(connection);
-
+    let error = dashboard_snapshot(&root).unwrap_err();
+    assert!(error.contains("低于最低兼容版本"), "{error}");
+    assert!(index_path.exists());
+    let legacy = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        legacy
+            .query_row(
+                "SELECT user_prompt || ':' || assistant_response FROM legacy_events",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "keep-prompt:keep-answer"
+    );
+    assert_eq!(
+        legacy
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "1"
+    );
+    drop(legacy);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -5440,7 +5717,8 @@ fn exact_index_skips_an_unreadable_session_file_and_keeps_published_stats() {
 
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     let mut warnings = Vec::new();
-    index.sync(&root, &mut warnings).unwrap();
+    let error = index.sync(&root, &mut warnings).unwrap_err();
+    assert!(error.contains("会话源扫描不完整"), "{error}");
     assert_eq!(
         total(&index),
         150,
@@ -5506,7 +5784,8 @@ fn exact_index_skips_an_unreadable_directory_without_tombstoning_published_files
 
     fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o000)).unwrap();
     let mut warnings = Vec::new();
-    index.sync(&root, &mut warnings).unwrap();
+    let error = index.sync(&root, &mut warnings).unwrap_err();
+    assert!(error.contains("会话源扫描不完整"), "{error}");
     assert_eq!(
         total(&index),
         150,
@@ -6760,8 +7039,16 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.cache_usage.sessions.len(), 1);
     assert_eq!(snapshot.cache_usage.sessions[0].breakdown.calls, 2);
-    assert_eq!(snapshot.cache_usage.sessions[0].breakdown.input_tokens, 1_600);
-    assert_eq!(snapshot.cache_usage.sessions[0].breakdown.cached_input_tokens, 650);
+    assert_eq!(
+        snapshot.cache_usage.sessions[0].breakdown.input_tokens,
+        1_600
+    );
+    assert_eq!(
+        snapshot.cache_usage.sessions[0]
+            .breakdown
+            .cached_input_tokens,
+        650
+    );
     assert_eq!(snapshot.cache_usage.turns.len(), 2);
     let second_turn = snapshot
         .cache_usage
@@ -7177,7 +7464,9 @@ fn negative_dashboard_revision_is_rejected_instead_of_clamped() {
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
         &session_dir.join("rollout-019e-dashboard-revision-negative.jsonl"),
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
     );
     let _ = dashboard_snapshot(&root).unwrap();
     let database = super::exact_usage_index::database_path(&root).unwrap();
@@ -7323,12 +7612,24 @@ fn lifetime_model_breakdown_reads_all_published_file_generations() {
         .stats
         .model_breakdowns
         .iter()
-        .filter_map(|row| row.model.as_ref().map(|model| (model.as_str(), row.breakdown.total_tokens)))
+        .filter_map(|row| {
+            row.model
+                .as_ref()
+                .map(|model| (model.as_str(), row.breakdown.total_tokens))
+        })
         .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(snapshot.stats.total_tokens, 150);
     assert_eq!(by_model.remove("gpt-5.6-sol"), Some(100));
     assert_eq!(by_model.remove("gpt-5.6-luna"), Some(50));
-    assert_eq!(snapshot.stats.model_breakdowns.iter().map(|row| row.breakdown.total_tokens).sum::<u64>(), 150);
+    assert_eq!(
+        snapshot
+            .stats
+            .model_breakdowns
+            .iter()
+            .map(|row| row.breakdown.total_tokens)
+            .sum::<u64>(),
+        150
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -7343,11 +7644,15 @@ fn summary_generation_full_aggregate_repair_keeps_unchanged_files() {
     let unchanged = session_dir.join("rollout-019e-summary-aggregate-unchanged.jsonl");
     write_lines(
         &changed,
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
     write_lines(
         &unchanged,
-        &[r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
+        ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
 
@@ -7392,18 +7697,24 @@ fn current_dashboard_aggregate_truncation_self_repairs_without_jsonl_body_reads(
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
         &session_dir.join("rollout-019e-dashboard-integrity-old.jsonl"),
-        &[r#"{"timestamp":"2026-06-17T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"cached_input_tokens":20,"output_tokens":20,"total_tokens":100}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-17T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"cached_input_tokens":20,"output_tokens":20,"total_tokens":100}}}}"#,
+        ],
     );
     write_lines(
         &session_dir.join("rollout-019e-dashboard-integrity-new.jsonl"),
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}"#,
+        ],
     );
 
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(&database).unwrap();
     let rows_before = connection
-        .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| row.get::<_, i64>(0))
+        .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| {
+            row.get::<_, i64>(0)
+        })
         .unwrap();
     assert!(rows_before >= 2);
     connection
@@ -7426,7 +7737,8 @@ fn current_dashboard_aggregate_truncation_self_repairs_without_jsonl_body_reads(
     let connection = Connection::open(database).unwrap();
     assert_eq!(
         connection
-            .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| row.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| row
+                .get::<_, i64>(0))
             .unwrap(),
         rows_before
     );
@@ -7436,7 +7748,8 @@ fn current_dashboard_aggregate_truncation_self_repairs_without_jsonl_body_reads(
 }
 
 #[test]
-fn full_generation_after_summary_copies_the_last_aggregate_generation_not_the_newer_event_generation() {
+fn full_generation_after_summary_copies_the_last_aggregate_generation_not_the_newer_event_generation(
+) {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -7445,11 +7758,15 @@ fn full_generation_after_summary_copies_the_last_aggregate_generation_not_the_ne
     let unchanged = session_dir.join("rollout-019e-summary-gap-unchanged.jsonl");
     write_lines(
         &changed,
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
     write_lines(
         &unchanged,
-        &[r#"{"timestamp":"2026-06-17T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-17T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
+        ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
 
@@ -7499,11 +7816,10 @@ fn full_generation_after_summary_copies_the_last_aggregate_generation_not_the_ne
     );
     assert_eq!(
         connection
-            .query_row(
-                "SELECT MIN(bucket_start) FROM dashboard_5m",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
+            .query_row("SELECT MIN(bucket_start) FROM dashboard_5m", [], |row| row
+                .get::<_, i64>(
+                0
+            ),)
             .unwrap(),
         OffsetDateTime::parse("2026-06-17T01:00:00Z", &Rfc3339)
             .unwrap()
@@ -7524,21 +7840,26 @@ fn lightweight_summary_reuses_unchanged_file_contributions() {
     let unchanged = session_dir.join("rollout-019e-summary-delta-unchanged.jsonl");
     write_lines(
         &changed,
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
     write_lines(
         &unchanged,
-        &[r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
+        ],
     );
     dashboard_snapshot(&root).unwrap();
 
     let now = OffsetDateTime::parse("2026-06-18T12:00:00Z", &Rfc3339).unwrap();
     let mut index = ExactUsageIndex::open(&root).unwrap();
-    let (before, mut contributions) = index
-        .summary_with_file_contributions(now, None)
-        .unwrap();
+    let (before, mut contributions) = index.summary_with_file_contributions(now, None).unwrap();
     assert_eq!(before.total_tokens, 150);
-    let unchanged_path = fs::canonicalize(&unchanged).unwrap().to_string_lossy().into_owned();
+    let unchanged_path = fs::canonicalize(&unchanged)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let unchanged_generation = contributions
         .get(&unchanged_path)
         .map(|contribution| contribution.generation)
@@ -7802,7 +8123,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
         persisted.len()
     );
     let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(json["version"], 20);
+    assert_eq!(json["version"], 21);
     assert!(json.get("snapshot").is_none());
     let persisted_text = String::from_utf8_lossy(&persisted);
     assert!(!persisted_text.contains("sourceContribution"));
@@ -7866,7 +8187,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
 }
 
 #[test]
-fn v20_startup_accepts_stale_last_good_after_monotonic_index_advance_without_open() {
+fn v21_startup_accepts_stale_last_good_after_monotonic_index_advance_without_open() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -7908,7 +8229,7 @@ fn v20_startup_accepts_stale_last_good_after_monotonic_index_advance_without_ope
     ExactUsageIndex::clear_integrity_signature_for_testing(&root);
     ExactUsageIndex::reset_quick_check_count_for_testing();
     let stale = cached_dashboard_snapshot_for_startup(&root)
-        .expect("same-provenance monotonic advance should retain stale V20 numerics");
+        .expect("same-provenance monotonic advance should retain stale V21 numerics");
 
     assert_eq!(stale.stats.total_tokens, 120);
     assert!(!stale.precise_recent_usage_fresh);
@@ -8067,7 +8388,7 @@ fn public_legacy_dashboard_fixture(
 
     // v17 added attribution fields; v16 is the public v0.8.3 shape and has
     // none of them. V18 retains this envelope and adds model breakdowns.
-    if version == LEGACY_DASHBOARD_AGGREGATE_CACHE_V16 {
+    if version == UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V16 {
         for field in [
             "preciseRecentUsageCoveredAt",
             "preciseRecentUsageFresh",
@@ -8083,7 +8404,7 @@ fn public_legacy_dashboard_fixture(
             snapshot.remove(field);
         }
     }
-    if version <= LEGACY_DASHBOARD_AGGREGATE_CACHE_V17 {
+    if version <= UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V17 {
         snapshot
             .get_mut("stats")
             .and_then(serde_json::Value::as_object_mut)
@@ -8110,7 +8431,7 @@ fn public_legacy_dashboard_fixture(
                 });
         }
     }
-    if version == LEGACY_DASHBOARD_AGGREGATE_CACHE_V16 {
+    if version == UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V16 {
         for field in ["recentUsage24h", "recentUsage7d", "recentUsage30d"] {
             snapshot
                 .get_mut(field)
@@ -8128,7 +8449,7 @@ fn public_legacy_dashboard_fixture(
 }
 
 #[test]
-fn legacy_dashboard_envelope_accepts_public_v16_v17_v18_and_sanitizes_stale_restore() {
+fn legacy_dashboard_envelope_reads_v18_and_rejects_v16_v17() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
@@ -8203,135 +8524,94 @@ fn legacy_dashboard_envelope_accepts_public_v16_v17_v18_and_sanitizes_stale_rest
         });
 
     for version in [
-        LEGACY_DASHBOARD_AGGREGATE_CACHE_V16,
-        LEGACY_DASHBOARD_AGGREGATE_CACHE_V17,
-        LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION,
+        UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V16,
+        UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V17,
     ] {
-        let decoded = decode_persistent_dashboard_aggregate(&public_legacy_dashboard_fixture(
-            version,
-            signature.clone(),
-            &snapshot,
-            summary.clone(),
-        ))
-        .expect("public v16-v18 DashboardSnapshot envelope must decode");
-        assert_eq!(decoded.persistent_version, version);
-        let restored = decoded.snapshot.expect("legacy snapshot");
-        assert_eq!(restored.account.display_name, "账户待读取");
-        assert_eq!(restored.quota.pace_label, "额度待读取");
-        assert!(restored.cache_hit_ranking.is_empty());
-        assert!(restored.cache_usage.sessions.is_empty());
-        assert!(restored.cache_usage.turns.is_empty());
-        assert!(restored.warnings.is_empty());
-        assert!(!restored.precise_recent_usage_fresh);
-        assert!(restored.precise_observer_epoch.is_none());
-        assert!(restored
-            .recent_usage_24h
-            .iter()
-            .all(|point| point.source_contribution_epoch.is_none()
-                && point.source_contributions.is_empty()));
+        assert!(
+            decode_persistent_dashboard_aggregate(&public_legacy_dashboard_fixture(
+                version,
+                signature.clone(),
+                &snapshot,
+                summary.clone(),
+            ))
+            .is_none()
+        );
     }
+    let decoded = decode_persistent_dashboard_aggregate(&public_legacy_dashboard_fixture(
+        LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION,
+        signature,
+        &snapshot,
+        summary,
+    ))
+    .expect("V18 DashboardSnapshot envelope must remain readable");
+    assert_eq!(
+        decoded.persistent_version,
+        LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION
+    );
+    let restored = decoded.snapshot.expect("legacy snapshot");
+    assert_eq!(restored.account.display_name, "账户待读取");
+    assert_eq!(restored.quota.pace_label, "额度待读取");
+    assert!(restored.cache_hit_ranking.is_empty());
+    assert!(restored.cache_usage.sessions.is_empty());
+    assert!(restored.cache_usage.turns.is_empty());
+    assert!(restored.warnings.is_empty());
+    assert!(!restored.precise_recent_usage_fresh);
+    assert!(restored.precise_observer_epoch.is_none());
+    assert!(restored
+        .recent_usage_24h
+        .iter()
+        .all(|point| point.source_contribution_epoch.is_none()
+            && point.source_contributions.is_empty()));
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn public_v16_schema6_keeps_startup_last_good_then_enriches_once() {
+fn pre_v091_schema6_is_preserved_and_refused_without_automatic_rebuild() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
-    let cache_path = root.join("dashboard-aggregate.json");
-    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
-        &session_dir.join("rollout-019epublic-v16-upgrade.jsonl"),
+        &session_dir.join("rollout-pre-v091-schema6.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
         ],
     );
-
-    let full = dashboard_snapshot(&root).unwrap();
+    dashboard_snapshot(&root).unwrap();
     let index_path = root
         .join(".codex-token-bar-test-cache")
         .join("exact-token-index.sqlite3");
-    let index = ExactUsageIndex::open(&root).unwrap();
-    let signature = dashboard_index_signature(&root, index.revision().unwrap());
-    drop(index);
-    fs::write(
-        &cache_path,
-        public_legacy_dashboard_fixture(
-            LEGACY_DASHBOARD_AGGREGATE_CACHE_V16,
-            signature,
-            &full,
-            TokenUsageSummary {
-                total_tokens: 120,
-                today_tokens: 120,
-                today_requests: 1,
-                today_model_breakdowns: Vec::new(),
-            },
-        ),
-    )
-    .unwrap();
-
-    // Recreate the public v0.8.3 exact schema6 shape. Startup may keep the
-    // trusted last-good envelope while the normal owner performs one measured
-    // model/reasoning enrichment pass over the old published watermark.
     let connection = Connection::open(&index_path).unwrap();
-    for (table, column) in [
-        ("files", "current_model"),
-        ("files", "is_explicit_subagent_fork"),
-        ("events", "model"),
-        ("events", "reasoning_output_tokens"),
-    ] {
-        connection
-            .execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
-            .unwrap();
-    }
     connection
         .execute(
             "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
-    connection
-        .execute(
-            "DELETE FROM metadata WHERE key = 'event_enrichment_revision'",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute("DELETE FROM event_enrichment_sources", [])
+    let published_rows = connection
+        .query_row("SELECT COUNT(*) FROM events", [], |row| {
+            row.get::<_, i64>(0)
+        })
         .unwrap();
     drop(connection);
+    let bytes_before = fs::read(&index_path).unwrap();
 
-    reset_dashboard_aggregate_build_count_for_testing();
-    assert!(
-        cached_dashboard_snapshot_for_startup(&root).is_some(),
-        "a supported old schema must keep its trusted startup last-good during enrichment"
-    );
-
-    ExactUsageIndex::reset_scan_bytes_for_testing();
-    let rebuilt = dashboard_snapshot(&root).unwrap();
-    assert_eq!(rebuilt.stats.total_tokens, 120);
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("pre-v0.9.1 schema must not be upgraded automatically"),
+        Err(error) => error,
+    };
+    assert!(error.contains("版本 6"), "{error}");
+    assert!(error.contains("最低兼容版本 9"), "{error}");
+    assert!(error.contains("拒绝写入或删除索引"), "{error}");
+    assert_eq!(fs::read(&index_path).unwrap(), bytes_before);
+    let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
-        ExactUsageIndex::scan_bytes_for_testing(),
-        (
-            fs::metadata(session_dir.join("rollout-019epublic-v16-upgrade.jsonl"))
-                .unwrap()
-                .len(),
-            0
-        )
+        connection
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        published_rows
     );
-    let upgraded: serde_json::Value =
-        serde_json::from_slice(&fs::read(&cache_path).unwrap()).unwrap();
-    assert_eq!(upgraded["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
-    assert!(upgraded.get("snapshot").is_none());
-    assert!(fs::read_dir(cache_path.parent().unwrap())
-        .unwrap()
-        .flatten()
-        .all(|entry| !entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".dashboard-aggregate.json.codex-token-bar-")));
-    let connection = Connection::open(index_path).unwrap();
     assert_eq!(
         connection
             .query_row(
@@ -8340,7 +8620,7 @@ fn public_v16_schema6_keeps_startup_last_good_then_enriches_once() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "9"
+        "6"
     );
     drop(connection);
     fs::remove_dir_all(root).unwrap();
@@ -8389,6 +8669,51 @@ fn v18_cache_is_automatically_upgraded_by_the_next_successful_full_refresh() {
 }
 
 #[test]
+fn v20_cache_ignores_legacy_physical_identity_and_upgrades_to_v21() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-v20-cache-upgrade.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    dashboard_snapshot(&root).unwrap();
+    let mut v20 =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap()).unwrap();
+    v20["version"] = serde_json::json!(LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION);
+    v20["physicalHomeIdentity"] = serde_json::json!("legacy-volume-and-file-id");
+    fs::write(&cache_path, serde_json::to_vec(&v20).unwrap()).unwrap();
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    let decoded = load_persistent_dashboard_aggregate()
+        .unwrap()
+        .expect("v0.9.1 V20 cache must remain readable");
+    assert_eq!(
+        decoded.persistent_version,
+        LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION
+    );
+    assert_eq!(
+        cached_dashboard_snapshot_for_startup(&root)
+            .expect("V20 cache should provide startup last-good numerics")
+            .stats
+            .total_tokens,
+        120
+    );
+
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let upgraded =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap()).unwrap();
+    assert_eq!(upgraded["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
+    assert!(upgraded.get("physicalHomeIdentity").is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn legacy_startup_requires_exact_home_and_revision_signature() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -8402,7 +8727,6 @@ fn legacy_startup_requires_exact_home_and_revision_signature() {
     let index_a = ExactUsageIndex::open(&home_a).unwrap();
     let signature_a = dashboard_index_signature(&home_a, index_a.revision().unwrap());
     let safety_a = index_a.attribution_safety_state().unwrap();
-    let physical_a = attribution_watch_root_physical_identity(&home_a).unwrap();
     drop(index_a);
     let snapshot = persistent_numeric_test_snapshot(&TokenUsageSummary {
         total_tokens: 42,
@@ -8413,7 +8737,7 @@ fn legacy_startup_requires_exact_home_and_revision_signature() {
     fs::write(
         &cache_path,
         public_legacy_dashboard_fixture(
-            LEGACY_DASHBOARD_AGGREGATE_CACHE_V16,
+            LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION,
             signature_a.clone(),
             &snapshot,
             TokenUsageSummary {
@@ -8430,35 +8754,23 @@ fn legacy_startup_requires_exact_home_and_revision_signature() {
     // Legacy startup must not treat a stale envelope from home A as home B.
     let index_b = ExactUsageIndex::open(&home_b).unwrap();
     let safety_b = index_b.attribution_safety_state().unwrap();
-    let physical_b = attribution_watch_root_physical_identity(&home_b).unwrap();
     let mut other_home_signature = signature_a.clone();
     other_home_signature.codex_home = home_b.clone();
-    assert!(cached_dashboard_startup_snapshot(
-        &other_home_signature,
-        &home_b,
-        &safety_b,
-        &physical_b,
-        None,
-    )
-    .is_none());
+    assert!(
+        cached_dashboard_startup_snapshot(&other_home_signature, &home_b, &safety_b, None,)
+            .is_none()
+    );
     drop(index_b);
 
     // A matching Home/date/offset with a different revision must also miss.
     let mut other_revision_signature = signature_a.clone();
     other_revision_signature.index_revision =
         other_revision_signature.index_revision.saturating_add(1);
-    assert!(cached_dashboard_startup_snapshot(
-        &other_revision_signature,
-        &home_a,
-        &safety_a,
-        &physical_a,
-        None,
-    )
-    .is_none());
     assert!(
-        cached_dashboard_startup_snapshot(&signature_a, &home_a, &safety_a, &physical_a, None,)
-            .is_some()
+        cached_dashboard_startup_snapshot(&other_revision_signature, &home_a, &safety_a, None,)
+            .is_none()
     );
+    assert!(cached_dashboard_startup_snapshot(&signature_a, &home_a, &safety_a, None).is_some());
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -8490,7 +8802,7 @@ fn legacy_alias_startup_matches_raw_signature_but_uses_only_canonical_index() {
     fs::write(
         &cache_path,
         public_legacy_dashboard_fixture(
-            LEGACY_DASHBOARD_AGGREGATE_CACHE_V16,
+            LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION,
             raw_signature,
             &snapshot,
             TokenUsageSummary {
@@ -8529,7 +8841,7 @@ fn legacy_alias_startup_matches_raw_signature_but_uses_only_canonical_index() {
 }
 
 #[test]
-fn v20_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
+fn v21_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -8544,7 +8856,7 @@ fn v20_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
     );
     dashboard_snapshot(&root).unwrap();
     let baseline = serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap())
-        .expect("full dashboard should publish V20 JSON");
+        .expect("full dashboard should publish V21 JSON");
     assert_eq!(baseline["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
 
     {
@@ -8553,7 +8865,7 @@ fn v20_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
             reset_dashboard_aggregate_build_count_for_testing();
             assert!(
                 cached_dashboard_snapshot_for_startup(&root).is_none(),
-                "mismatched V20 binding must not hydrate startup numerics: {candidate}"
+                "mismatched V21 data binding must not hydrate startup numerics: {candidate}"
             );
         };
 
@@ -8569,9 +8881,6 @@ fn v20_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
         let mut canonical_home = baseline.clone();
         canonical_home["canonicalHome"] = serde_json::json!(root.join("other-home"));
         assert_miss(canonical_home);
-        let mut physical_home = baseline.clone();
-        physical_home["physicalHomeIdentity"] = serde_json::json!("not-the-same-home");
-        assert_miss(physical_home);
         let mut provenance = baseline.clone();
         provenance["preciseAttributionProvenanceEpoch"] =
             serde_json::json!(Uuid::new_v4().to_string());
@@ -8581,6 +8890,20 @@ fn v20_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
         reset_dashboard_aggregate_build_count_for_testing();
         assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
     }
+
+    let mut legacy_physical_field = baseline.clone();
+    legacy_physical_field["physicalHomeIdentity"] =
+        serde_json::json!("ignored-v0.9.1-filesystem-object");
+    fs::write(
+        &cache_path,
+        serde_json::to_vec(&legacy_physical_field).unwrap(),
+    )
+    .unwrap();
+    reset_dashboard_aggregate_build_count_for_testing();
+    assert!(
+        cached_dashboard_snapshot_for_startup(&root).is_some(),
+        "filesystem identity must not participate in V21 cache matching"
+    );
 
     fs::write(&cache_path, serde_json::to_vec(&baseline).unwrap()).unwrap();
     let database = super::exact_usage_index::database_path(&root).unwrap();
@@ -8606,7 +8929,7 @@ fn v20_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
         .unwrap();
     connection
         .execute(
-            "UPDATE metadata SET value = '7' WHERE key = 'schema_version'",
+            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
@@ -8614,14 +8937,14 @@ fn v20_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
     reset_dashboard_aggregate_build_count_for_testing();
     assert!(
         cached_dashboard_snapshot_for_startup(&root).is_some(),
-        "a supported v7 index upgrade must keep the trusted last-good cache visible"
+        "a supported v0.9.1 schema-9 upgrade must keep the trusted last-good cache visible"
     );
     fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(unix)]
 #[test]
-fn v20_startup_rejects_symlink_cache_without_following_it() {
+fn v21_startup_rejects_symlink_cache_without_following_it() {
     use std::os::unix::fs::symlink;
 
     let _test_state = app_paths::app_path_test_env_guard(&[]);
@@ -8680,7 +9003,7 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 }
 
 #[test]
-fn usage_summary_rejects_v11_and_reuses_rebuilt_v20_dashboard_aggregate() {
+fn usage_summary_rejects_v11_and_reuses_rebuilt_v21_dashboard_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
@@ -8716,7 +9039,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v20_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":20"#));
+    assert!(aggregate_cache_text().contains(r#""version":21"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -8725,7 +9048,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v20_dashboard_aggregate() {
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
-        "current v20 aggregate should be reused after memory state is cleared"
+        "current v21 aggregate should be reused after memory state is cleared"
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -8770,14 +9093,14 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
     reset_dashboard_aggregate_build_count_for_testing();
     assert_eq!(
         cached_dashboard_snapshot_for_startup(&home_a)
-            .expect("home A should restore its own V20 startup numerics")
+            .expect("home A should restore its own V21 startup numerics")
             .stats
             .total_tokens,
         120
     );
     assert!(
         cached_dashboard_snapshot_for_startup(&home_b).is_none(),
-        "home B must not hydrate home A's one-file V20 cache"
+        "home B must not hydrate home A's one-file V21 cache"
     );
 
     let snapshot_b = dashboard_snapshot(&home_b).unwrap();
@@ -9112,7 +9435,7 @@ fn aggregate_persistence_failure_keeps_memory_snapshot_with_one_warning() {
 }
 
 #[test]
-fn v20_atomic_replace_failure_keeps_last_good_cache_bytes() {
+fn v21_atomic_replace_failure_keeps_last_good_cache_bytes() {
     let root = temp_root();
     let path = root.join("dashboard-aggregate.json");
     fs::create_dir_all(&root).unwrap();
@@ -9261,7 +9584,9 @@ fn compatible_exact_index_reopen_skips_migration_ddl_and_write_transactions() {
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
         &session_dir.join("rollout-019ecompatible-reopen-0000-0000-fast.jsonl"),
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
     );
     dashboard_snapshot(&root).unwrap();
 
@@ -9344,7 +9669,7 @@ fn exact_index_integrity_check_is_reused_and_trusted_sync_refreshes_its_signatur
 #[test]
 fn exact_index_integrity_receipt_corruption_or_mismatch_rechecks_without_deleting_db() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
-    for (label, corrupt) in [("corrupt", true), ("mismatch", false)] {
+    for label in ["corrupt", "published-mismatch", "revision-mismatch"] {
         let root = temp_root();
         let session_dir = root.join("sessions");
         fs::create_dir_all(&session_dir).unwrap();
@@ -9357,12 +9682,19 @@ fn exact_index_integrity_receipt_corruption_or_mismatch_rechecks_without_deletin
         dashboard_snapshot(&root).unwrap();
         let receipt = integrity_receipt_path_for_testing(&root).unwrap();
         let original = fs::read(&receipt).unwrap();
-        if corrupt {
-            fs::write(&receipt, b"{not-json").unwrap();
-        } else {
-            let mut json: serde_json::Value = serde_json::from_slice(&original).unwrap();
-            json["publishedGeneration"] = serde_json::json!(u64::MAX);
-            fs::write(&receipt, serde_json::to_vec(&json).unwrap()).unwrap();
+        match label {
+            "corrupt" => fs::write(&receipt, b"{not-json").unwrap(),
+            "published-mismatch" => {
+                let mut json: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                json["publishedGeneration"] = serde_json::json!(u64::MAX);
+                fs::write(&receipt, serde_json::to_vec(&json).unwrap()).unwrap();
+            }
+            "revision-mismatch" => {
+                let mut json: serde_json::Value = serde_json::from_slice(&original).unwrap();
+                json["revision"] = serde_json::json!(i64::MAX);
+                fs::write(&receipt, serde_json::to_vec(&json).unwrap()).unwrap();
+            }
+            _ => unreachable!(),
         }
         ExactUsageIndex::clear_integrity_signature_for_testing(&root);
         ExactUsageIndex::reset_quick_check_count_for_testing();
@@ -9378,6 +9710,7 @@ fn exact_index_integrity_receipt_corruption_or_mismatch_rechecks_without_deletin
         let repaired_receipt: serde_json::Value =
             serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
         assert!(repaired_receipt.get("sessions").is_none());
+        assert!(repaired_receipt.get("revision").is_some());
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -9588,7 +9921,9 @@ fn exact_index_storage_maintenance_reclaims_free_pages_and_refreshes_receipt() {
     let index_path = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(&index_path).unwrap();
     let event_count_before = connection
-        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+        .query_row("SELECT COUNT(*) FROM events", [], |row| {
+            row.get::<_, i64>(0)
+        })
         .unwrap();
     connection
         .execute_batch(
@@ -9614,25 +9949,14 @@ fn exact_index_storage_maintenance_reclaims_free_pages_and_refreshes_receipt() {
     let bytes_before = fs::metadata(&index_path).unwrap().len();
 
     let first_check = 1_787_840_000;
-    let insufficient = maintain_exact_index_storage_for_testing(
-        &root,
-        first_check,
-        60 * 60,
-        0,
-    )
-    .unwrap();
+    let insufficient =
+        maintain_exact_index_storage_for_testing(&root, first_check, 60 * 60, 0).unwrap();
     assert!(matches!(
         insufficient,
         ExactStorageMaintenanceOutcome::InsufficientSpace { .. }
     ));
     assert!(matches!(
-        maintain_exact_index_storage_for_testing(
-            &root,
-            first_check,
-            60 * 60,
-            u64::MAX,
-        )
-        .unwrap(),
+        maintain_exact_index_storage_for_testing(&root, first_check, 60 * 60, u64::MAX,).unwrap(),
         ExactStorageMaintenanceOutcome::NotDue
     ));
 
@@ -9662,7 +9986,8 @@ fn exact_index_storage_maintenance_reclaims_free_pages_and_refreshes_receipt() {
     assert!(free_pages_after < free_pages_before);
     assert_eq!(
         connection
-            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
             .unwrap(),
         event_count_before
     );
@@ -9833,6 +10158,98 @@ fn summary_only_success_is_not_a_full_precise_completion() {
         full.terminal_progress(),
         PreciseRefreshTerminalProgress::FullSuccess
     );
+}
+
+fn convert_current_index_to_v091_schema9(index_path: &Path) {
+    let connection = Connection::open(index_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            ALTER TABLE files ADD COLUMN device_id TEXT NOT NULL DEFAULT 'legacy-device';
+            ALTER TABLE files ADD COLUMN file_id TEXT NOT NULL DEFAULT 'legacy-file';
+            ALTER TABLE files ADD COLUMN changed_ns TEXT NOT NULL DEFAULT '0';
+            ALTER TABLE event_enrichment_sources ADD COLUMN device_id TEXT NOT NULL DEFAULT 'legacy-device';
+            ALTER TABLE event_enrichment_sources ADD COLUMN file_id TEXT NOT NULL DEFAULT 'legacy-file';
+            ALTER TABLE session_catalog_files ADD COLUMN stat_device_id TEXT NOT NULL DEFAULT 'legacy-device';
+            ALTER TABLE session_catalog_files ADD COLUMN stat_file_id TEXT NOT NULL DEFAULT 'legacy-file';
+            ALTER TABLE session_catalog_files ADD COLUMN stat_changed_ns TEXT NOT NULL DEFAULT '0';
+            ALTER TABLE session_catalog_files ADD COLUMN device_id TEXT NOT NULL DEFAULT 'legacy-device';
+            ALTER TABLE session_catalog_files ADD COLUMN file_id TEXT NOT NULL DEFAULT 'legacy-file';
+            ALTER TABLE session_catalog_files ADD COLUMN changed_ns TEXT NOT NULL DEFAULT '0';
+            UPDATE metadata SET value = '9' WHERE key = 'schema_version';
+            UPDATE metadata SET value = '1' WHERE key = 'session_catalog_schema_version';
+            INSERT OR REPLACE INTO metadata(key, value)
+            VALUES ('codex_home_physical_identity', 'legacy-volume-and-file-id');
+            PRAGMA wal_checkpoint(TRUNCATE);
+            "#,
+        )
+        .unwrap();
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ExactMigrationFacts {
+    files: i64,
+    events: i64,
+    fingerprints: i64,
+    chunks: i64,
+    enrichment_sources: i64,
+    catalog_files: i64,
+    aggregate_tokens: i64,
+    aggregate_bucket_tokens: i64,
+    revision: i64,
+    published_generation: i64,
+    building_generation: Option<i64>,
+}
+
+fn exact_migration_facts(index_path: &Path) -> ExactMigrationFacts {
+    let connection = Connection::open(index_path).unwrap();
+    connection
+        .query_row(
+            r#"
+            SELECT
+                (SELECT COUNT(*) FROM files),
+                (SELECT COUNT(*) FROM events),
+                (SELECT COUNT(*) FROM file_fingerprints),
+                (SELECT COUNT(*) FROM file_chunks),
+                (SELECT COUNT(*) FROM event_enrichment_sources),
+                (SELECT COUNT(*) FROM session_catalog_files),
+                (SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_file_totals),
+                (SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_file_5m),
+                CAST((SELECT value FROM metadata WHERE key = 'revision') AS INTEGER),
+                CAST((SELECT value FROM metadata WHERE key = 'published_generation') AS INTEGER),
+                CAST((SELECT value FROM metadata WHERE key = 'building_generation') AS INTEGER)
+            "#,
+            [],
+            |row| {
+                Ok(ExactMigrationFacts {
+                    files: row.get(0)?,
+                    events: row.get(1)?,
+                    fingerprints: row.get(2)?,
+                    chunks: row.get(3)?,
+                    enrichment_sources: row.get(4)?,
+                    catalog_files: row.get(5)?,
+                    aggregate_tokens: row.get(6)?,
+                    aggregate_bucket_tokens: row.get(7)?,
+                    revision: row.get(8)?,
+                    published_generation: row.get(9)?,
+                    building_generation: row.get(10)?,
+                })
+            },
+        )
+        .unwrap()
+}
+
+fn exact_column_exists(index_path: &Path, table: &str, column: &str) -> bool {
+    let connection = Connection::open(index_path).unwrap();
+    connection
+        .query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name = '{column}')"
+            ),
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
 }
 
 fn temp_root() -> PathBuf {

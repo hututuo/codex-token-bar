@@ -67,6 +67,39 @@ final class SessionCatalogIndexTests: XCTestCase {
         XCTAssertGreaterThan(changedEntry.sizeBytes, originalFingerprint.sizeBytes)
     }
 
+    func testCreationMetadataDriftDoesNotReparseRecognizedFile() throws {
+        let fixture = try makeFixture()
+        let rollout = try fixture.writeRollout(
+            name: "creation-drift.jsonl",
+            threadID: "thread-creation-drift"
+        )
+        let probe = SessionCatalogParserProbe()
+        let candidates = [candidate(rollout)]
+
+        let cold = try fixture.index.synchronizeSessionCatalog(
+            candidates: candidates,
+            parser: probe.parse
+        )
+        XCTAssertEqual(cold.parsedFirstLines, 1)
+        _ = probe.takeParsedPaths()
+
+        let database = SQLiteDatabaseDriver(
+            url: fixture.root.appendingPathComponent("usage-index.sqlite")
+        )
+        try database.execute(
+            "UPDATE session_catalog_entries SET created_seconds = created_seconds - 1;"
+        )
+
+        let warm = try fixture.index.synchronizeSessionCatalog(
+            candidates: candidates,
+            parser: probe.parse
+        )
+        XCTAssertEqual(warm.changedFiles, 0)
+        XCTAssertEqual(warm.unchangedFiles, 1)
+        XCTAssertEqual(warm.parsedFirstLines, 0)
+        XCTAssertTrue(probe.takeParsedPaths().isEmpty)
+    }
+
     func testDeleteAndArchiveMovePublishOnlyCurrentPaths() throws {
         let fixture = try makeFixture()
         let moving = try fixture.writeRollout(

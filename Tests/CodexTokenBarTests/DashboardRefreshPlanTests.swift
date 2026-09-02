@@ -337,7 +337,7 @@ final class DashboardRefreshPlanTests: XCTestCase {
         XCTAssertEqual(quotaStore.currentDataSourcePath, newHome.path)
         let readCountAfterRebind = await quotaReader.readCount()
         XCTAssertEqual(readCountAfterRebind, 2)
-        XCTAssertEqual(usageStore.sourceIdentityGeneration, usageIdentityGenerationBefore)
+        XCTAssertEqual(usageStore.sourceIdentityGeneration, usageIdentityGenerationBefore + 1)
         XCTAssertEqual(usageStore.sourceBindingGeneration, usageBindingGenerationBefore + 1)
         XCTAssertEqual(quotaStore.sourceIdentityGeneration, quotaIdentityGenerationBefore)
         XCTAssertEqual(quotaStore.sourceBindingGeneration, quotaBindingGenerationBefore + 1)
@@ -473,7 +473,7 @@ final class DashboardRefreshPlanTests: XCTestCase {
             await quotaReader.readCount() == 3 && quotaStore.snapshot.status.hasPrefix("额度读取失败")
         }
 
-        XCTAssertEqual(usageStore.dataSourceIdentity, sourceB.stableIdentityKey)
+        XCTAssertEqual(usageStore.dataSourceIdentity, sourceB.usageIdentityKey)
         XCTAssertEqual(quotaStore.currentDataSourceIdentity, sourceB.stableIdentityKey)
         XCTAssertEqual(liveMonitor.currentDataSourceIdentity, sourceB.stableIdentityKey)
         XCTAssertEqual(taskMonitor.currentDataSourceIdentity, sourceB.stableIdentityKey)

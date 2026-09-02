@@ -8,6 +8,8 @@ import {
   acceptDashboardSourceResponse,
   captureDashboardSourceToken,
   createDashboardSourceTransition,
+  dashboardSourceTokenFromEnvelope,
+  dashboardStatisticsSourceKey,
   publishForDashboardSource,
 } from "./dashboardSourceTransition.ts";
 
@@ -115,7 +117,7 @@ test("same canonical source command and event envelopes do not advance deferred 
   assert.equal(transition.deferredGeneration, 2);
 });
 
-test("same canonical path with a replaced physical Home advances the source", () => {
+test("same canonical path refreshes the security binding without resetting statistics", () => {
   let transition = createDashboardSourceTransition();
   transition = acceptedTransition(
     transition,
@@ -128,9 +130,39 @@ test("same canonical path with a replaced physical Home advances the source", ()
   );
 
   assert.equal(replaced.accepted, true);
-  assert.equal(replaced.sourceChanged, true);
+  assert.equal(replaced.sourceChanged, false);
   assert.equal(replaced.transition.sourceToken.physicalHomeKey, "unix:1:200");
-  assert.equal(replaced.transition.deferredGeneration, 1);
+  assert.equal(replaced.transition.deferredGeneration, 0);
+});
+
+test("same-generation physical conflicts remain rejected by the security fence", () => {
+  const transition = acceptedTransition(
+    createDashboardSourceTransition(),
+    envelope("/source/A", 1, "manual", "unix:1:100"),
+  );
+
+  const conflicted = acceptDashboardSourceEnvelope(
+    transition,
+    envelope("/source/A", 1, "manual", "unix:1:200"),
+  );
+
+  assert.equal(conflicted.accepted, false);
+  assert.deepEqual(conflicted.transition, transition);
+});
+
+test("statistics source key ignores physical identity and transition generation", () => {
+  const sourceA = dashboardSourceTokenFromEnvelope(
+    envelope("/source/A", 1, "manual", "unix:1:100"),
+  );
+  const reboundA = dashboardSourceTokenFromEnvelope(
+    envelope("/source/A", 2, "manual", "unix:2:200"),
+  );
+  const sourceB = dashboardSourceTokenFromEnvelope(
+    envelope("/source/B", 3, "manual", "unix:2:200"),
+  );
+
+  assert.equal(dashboardStatisticsSourceKey(sourceA), dashboardStatisticsSourceKey(reboundA));
+  assert.notEqual(dashboardStatisticsSourceKey(sourceA), dashboardStatisticsSourceKey(sourceB));
 });
 
 test("completion publication requires the exact generation and canonical source", () => {

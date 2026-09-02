@@ -892,6 +892,41 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         // an otherwise current, legal payload.
         _ = try analyzer.load()
         let validData = try Data(contentsOf: snapshotURL)
+        var legacyV2Object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: validData) as? [String: Any]
+        )
+        XCTAssertEqual(legacyV2Object["payloadVersion"] as? Int, 3)
+        XCTAssertTrue(
+            (legacyV2Object["homeIdentityKey"] as? String)?.hasPrefix("usage-path:") == true
+        )
+        legacyV2Object["payloadVersion"] = 2
+        legacyV2Object["indexSchemaVersion"] = "6"
+        legacyV2Object["homeIdentityKey"] = "fs:legacy-device:legacy-file"
+        var legacyV2Signature = try XCTUnwrap(
+            legacyV2Object["signature"] as? [String: Any]
+        )
+        var legacyV2Files = try XCTUnwrap(
+            legacyV2Signature["files"] as? [[String: Any]]
+        )
+        for index in legacyV2Files.indices {
+            legacyV2Files[index]["deviceID"] = 16_777_233
+            legacyV2Files[index]["fileID"] = 42
+            legacyV2Files[index]["statusChangedSeconds"] = 1
+            legacyV2Files[index]["statusChangedNanoseconds"] = 2
+        }
+        legacyV2Signature["files"] = legacyV2Files
+        legacyV2Object["signature"] = legacyV2Signature
+        try JSONSerialization.data(
+            withJSONObject: legacyV2Object,
+            options: [.sortedKeys]
+        ).write(to: snapshotURL, options: [.atomic])
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        let legacyV2 = try analyzer.loadFastSnapshotResult()
+        XCTAssertEqual(legacyV2.freshness, .current)
+        XCTAssertEqual(legacyV2.snapshot.stats.totalTokens, 500)
+        try validData.write(to: snapshotURL, options: [.atomic])
+
         var legacyExactObject = try XCTUnwrap(
             JSONSerialization.jsonObject(with: validData) as? [String: Any]
         )
@@ -2966,6 +3001,122 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
+    func testInvalidCurrentStagingIsPreservedWithoutReparseOrLastGoodLoss() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageInvalidStaging")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let sessionID = "019eaaaa-bbbb-4ccc-8ddd-invalidstaging"
+        let first = try writeTokenCountRollout(
+            in: sessions,
+            sessionID: sessionID,
+            timestamp: Date().addingTimeInterval(-120),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let published = try CodexUsageHistoryIndex(codexHome: codexHome)
+        _ = try published.synchronize(
+            files: [first],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+
+        let rewritten = try writeTokenCountRollout(
+            in: sessions,
+            sessionID: sessionID,
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 130
+        )
+        let parseCount = ThreadSafeCounter()
+        let parser: CodexUsageHistoryIndex.SessionParser = {
+            file, parsedSessionID, request, insertFingerprint, emit in
+            parseCount.increment()
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        let interrupted = try CodexUsageHistoryIndex(codexHome: codexHome)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(
+            try interrupted.synchronize(
+                files: [rewritten],
+                sessionID: analyzer.sessionID(from:),
+                parser: parser
+            )
+        )
+        XCTAssertEqual(parseCount.value, 1)
+
+        let stagingRoot = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("staging", isDirectory: true)
+        let stageEnumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: stagingRoot,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ))
+        let stagingDatabases = stageEnumerator.compactMap { $0 as? URL }.filter {
+            $0.pathExtension == "sqlite"
+                && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
+        let stagingDatabase = try XCTUnwrap(stagingDatabases.first)
+        let stage = SQLiteDatabaseDriver(url: stagingDatabase)
+        try stage.execute("UPDATE manifest SET actual_bytes = actual_bytes + 1;")
+
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let eventsBefore = try scalarInt("SELECT COUNT(*) FROM events;", in: database)
+        let tokensBefore = try scalarInt("SELECT COALESCE(SUM(tokens), 0) FROM events;", in: database)
+        let sourcesBefore = try scalarInt("SELECT COUNT(*) FROM sources;", in: database)
+        let resumed = try CodexUsageHistoryIndex(codexHome: codexHome)
+        XCTAssertThrowsError(
+            try resumed.synchronize(
+                files: [rewritten],
+                sessionID: analyzer.sessionID(from:),
+                parser: parser
+            )
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("暂存恢复校验失败"))
+        }
+
+        XCTAssertEqual(parseCount.value, 1, "invalid staging must not trigger another JSONL parse")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stagingDatabase.path))
+        let preservedEnumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: stagingRoot,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ))
+        let preservedStageCount = preservedEnumerator.compactMap { $0 as? URL }.filter {
+            $0.pathExtension == "sqlite"
+                && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }.count
+        XCTAssertEqual(
+            preservedStageCount,
+            1,
+            "invalid staging must not create a parallel candidate database"
+        )
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), eventsBefore)
+        XCTAssertEqual(
+            try scalarInt("SELECT COALESCE(SUM(tokens), 0) FROM events;", in: database),
+            tokensBefore
+        )
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), sourcesBefore)
+        XCTAssertEqual(tokensBefore, 120)
+    }
+
     func testFutureEventEnrichmentReceiptFailsClosedBeforeSchemaWrites() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageFutureReceipt")
@@ -2999,7 +3150,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
-    func testUserConfirmedDerivedIndexRebuildPreservesRawAndCodexState() throws {
+    func testDeleteAndRebuildEntryPointIsDisabledAndPreservesAllData() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageDerivedRebuild")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -3027,17 +3178,22 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             "UPDATE schema_meta SET value = '99' WHERE key = 'schema_version';"
         )
 
-        try CodexUsageHistoryIndex.rebuildDerivedIndex(codexHome: codexHome)
-        CodexUsageAnalyzer.removeDerivedUsageSnapshots(for: codexHome)
+        let indexBytesBefore = try Data(contentsOf: indexURL)
+        XCTAssertThrowsError(
+            try CodexUsageHistoryIndex.rebuildDerivedIndex(codexHome: codexHome)
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("不会自动删除"))
+        }
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: indexURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: indexURL.path))
+        XCTAssertEqual(try Data(contentsOf: indexURL), indexBytesBefore)
         XCTAssertTrue(FileManager.default.fileExists(atPath: sessionFile.path))
         XCTAssertEqual(
             try stateDriver.readRows("SELECT value FROM sentinel;") { $0.text(0) }
                 .compactMap { $0 },
             ["codex-owned-state"]
         )
-        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        XCTAssertThrowsError(try analyzer.load())
     }
 
     func testExactHistoryIndexKeepsInterruptedStagesIsolatedAcrossCodexHomes() throws {
@@ -4088,7 +4244,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertGreaterThan(seenGeneration, initialGeneration)
 
         try FileManager.default.removeItem(at: transientFile)
-        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
         let returnedGeneration = try scalarInt(
             "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'attribution_generation';",
             in: database
@@ -4098,7 +4254,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         let afterABA = try analyzer.load()
         XCTAssertEqual(afterABA.stats.totalTokens, 120)
-        XCTAssertEqual(CodexUsageAnalyzer.preciseSnapshotBuildCountForTesting, 1)
+        XCTAssertEqual(
+            CodexUsageAnalyzer.preciseSnapshotBuildCountForTesting,
+            0,
+            "the generation-correct snapshot built after the ABA transition is reusable"
+        )
         XCTAssertEqual(
             afterABA.cacheUsage.attributionEvents.reduce(0) {
                 $0 + $1.breakdown.totalTokens
@@ -4532,9 +4692,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(CodexUsageHistoryIndex.fullContentHashCountForTesting, 0)
     }
 
-    func testPersistentExactHistoryIndexRebindsDeviceIDDriftWithoutFullRebuild() throws {
+    func testSchema6IndexDropsFilesystemIdentityWithoutReparsingAndKeepsAppend() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
-        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerDeviceRebind")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerSchema6Identity")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
         defer {
@@ -4544,7 +4704,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
 
         let codexHome = try makeCodexHome()
-        let sessionID = "019eaaaa-bbbb-cccc-dddd-device-rebind"
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-schema6-identity"
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
@@ -4558,64 +4718,191 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             .write(to: sessionFile, atomically: true, encoding: .utf8)
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
-        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
 
-        let attributes = try FileManager.default.attributesOfItem(atPath: sessionFile.path)
-        let currentDeviceID = try XCTUnwrap(
-            (attributes[.systemNumber] as? NSNumber)?.uint64Value
-        )
-        let storedDeviceID = currentDeviceID == UInt64.max
-            ? currentDeviceID - 1
-            : currentDeviceID + 1
         let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
         try database.execute(
-            "UPDATE sources SET device_id = ?;",
-            bindings: [.text(String(storedDeviceID))]
+            """
+            ALTER TABLE sources ADD COLUMN device_id TEXT NOT NULL DEFAULT '16777233';
+            ALTER TABLE sources ADD COLUMN inode TEXT NOT NULL DEFAULT '42';
+            ALTER TABLE sources ADD COLUMN status_changed_seconds INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE sources ADD COLUMN status_changed_nanoseconds INTEGER NOT NULL DEFAULT 2;
+            ALTER TABLE event_enrichment_sources ADD COLUMN device_id TEXT NOT NULL DEFAULT '16777233';
+            ALTER TABLE event_enrichment_sources ADD COLUMN inode TEXT NOT NULL DEFAULT '42';
+            ALTER TABLE session_catalog_entries ADD COLUMN device_id TEXT NOT NULL DEFAULT '16777233';
+            ALTER TABLE session_catalog_entries ADD COLUMN inode TEXT NOT NULL DEFAULT '42';
+            ALTER TABLE session_catalog_entries ADD COLUMN status_changed_seconds INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE session_catalog_entries ADD COLUMN status_changed_nanoseconds INTEGER NOT NULL DEFAULT 2;
+            UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';
+            UPDATE session_catalog_meta SET value = '1' WHERE key = 'schema_version';
+            """
         )
-        try database.execute(
-            "UPDATE event_enrichment_sources SET device_id = ?;",
-            bindings: [.text(String(storedDeviceID))]
-        )
+        let sourceRowsBefore = try scalarInt("SELECT COUNT(*) FROM sources;", in: database)
+        let eventRowsBefore = try scalarInt("SELECT COUNT(*) FROM events;", in: database)
+        let chunkRowsBefore = try scalarInt("SELECT COUNT(*) FROM source_chunks;", in: database)
 
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
         CodexUsageHistoryIndex.resetFullContentHashCountForTesting()
-        let rebound = try analyzer.loadCompactSummary()
+        let migrated = try analyzer.load()
 
-        XCTAssertEqual(rebound?.totalTokens, 120)
+        XCTAssertEqual(migrated.stats.totalTokens, 120)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
-        XCTAssertEqual(
-            CodexUsageHistoryIndex.sourceContentProbeCountForTesting,
-            1,
-            "device drift should require one bounded content probe"
-        )
-        XCTAssertEqual(
-            CodexUsageHistoryIndex.fullContentHashCountForTesting,
-            0,
-            "device drift must not trigger a full-file hash or staged rebuild"
-        )
-        XCTAssertEqual(
-            try database.readRows("SELECT device_id FROM sources LIMIT 1;") {
-                $0.text(0)
-            }.first,
-            String(currentDeviceID)
-        )
-        XCTAssertEqual(
-            try database.readRows(
-                "SELECT device_id FROM event_enrichment_sources LIMIT 1;"
-            ) { $0.text(0) }.first,
-            String(currentDeviceID)
-        )
-
-        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
-        CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
-        CodexUsageHistoryIndex.resetFullContentHashCountForTesting()
-        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
         XCTAssertEqual(CodexUsageHistoryIndex.sourceContentProbeCountForTesting, 0)
         XCTAssertEqual(CodexUsageHistoryIndex.fullContentHashCountForTesting, 0)
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+            ) { $0.text(0) }.first,
+            "7"
+        )
+        for table in ["sources", "event_enrichment_sources", "session_catalog_entries"] {
+            XCTAssertEqual(
+                try scalarInt(
+                    "SELECT COUNT(*) FROM pragma_table_info('\(table)') WHERE name IN ('device_id', 'inode', 'status_changed_seconds', 'status_changed_nanoseconds');",
+                    in: database
+                ),
+                0
+            )
+        }
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), sourceRowsBefore)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), eventRowsBefore)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM source_chunks;", in: database), chunkRowsBefore)
+
+        try appendLines([
+            try tokenCountLine(
+                timestamp: Date().addingTimeInterval(-30),
+                total: Usage(input: 120, cachedInput: 25, output: 25, reasoning: 0, total: 150),
+                last: Usage(input: 20, cachedInput: 5, output: 5, reasoning: 0, total: 30)
+            )
+        ], to: sessionFile)
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 150)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 1)
     }
 
-    func testMalformedSourceCatalogFailsBeforeReopeningSessionFiles() throws {
+    func testSchema6MigrationRollsBackEveryStageWithoutTouchingData() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        for stage in 1...4 {
+            let cacheRoot = try makeTemporaryDirectory(
+                named: "CodexUsageSchema6Rollback-\(stage)"
+            )
+            setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+            setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+            let codexHome = try makeCodexHome()
+            let sessionFile = try writeTokenCountRollout(
+                in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+                sessionID: "019eaaaa-bbbb-4ccc-8ddd-schema6rollback\(stage)",
+                timestamp: Date().addingTimeInterval(-60),
+                totalTokens: 120
+            )
+            let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+            XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+            let databaseURL = try exactUsageDatabaseURL(in: cacheRoot)
+            let database = SQLiteDatabaseDriver(url: databaseURL)
+            try convertCurrentSwiftIndexToSchema6(database)
+            try database.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            let factsBefore = try swiftSchemaMigrationFacts(database)
+            let databaseBytesBefore = try Data(contentsOf: databaseURL)
+            let sourceBytesBefore = try Data(contentsOf: sessionFile)
+
+            CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+            CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
+            CodexUsageHistoryIndex.failSchema6MigrationForTesting(at: stage)
+            XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: codexHome)) { error in
+                XCTAssertTrue(
+                    error.localizedDescription.contains("migration stage \(stage)"),
+                    error.localizedDescription
+                )
+            }
+
+            XCTAssertEqual(CodexUsageHistoryIndex.sourceContentProbeCountForTesting, 0)
+            XCTAssertEqual(try Data(contentsOf: sessionFile), sourceBytesBefore)
+            XCTAssertEqual(try Data(contentsOf: databaseURL), databaseBytesBefore)
+            XCTAssertEqual(try swiftSchemaMigrationFacts(database), factsBefore)
+            XCTAssertEqual(
+                try database.readRows(
+                    "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+                ) { $0.text(0) }.first,
+                "6"
+            )
+            XCTAssertGreaterThan(
+                try scalarInt(
+                    "SELECT COUNT(*) FROM pragma_table_info('sources') WHERE name = 'device_id';",
+                    in: database
+                ),
+                0
+            )
+
+            _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+            XCTAssertEqual(
+                try database.readRows(
+                    "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+                ) { $0.text(0) }.first,
+                "7"
+            )
+        }
+    }
+
+    func testSchema6MigrationRefusesLowSpaceBeforeChangingSchema() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageSchema6LowSpace")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-schema6lowspace",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        let databaseURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let database = SQLiteDatabaseDriver(url: databaseURL)
+        try convertCurrentSwiftIndexToSchema6(database)
+        try database.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        let factsBefore = try swiftSchemaMigrationFacts(database)
+        let databaseBytesBefore = try Data(contentsOf: databaseURL)
+
+        CodexUsageHistoryIndex.overrideSchema6MigrationAvailableCapacityForTesting(0)
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: codexHome)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("空间不足"))
+        }
+        XCTAssertEqual(try Data(contentsOf: databaseURL), databaseBytesBefore)
+        XCTAssertEqual(try swiftSchemaMigrationFacts(database), factsBefore)
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+            ) { $0.text(0) }.first,
+            "6"
+        )
+
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+            ) { $0.text(0) }.first,
+            "7"
+        )
+    }
+
+    func testFutureSchemaFailsClosedBeforeReopeningSessionFiles() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerMalformedCatalog")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -4643,24 +4930,26 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
         let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
-        try database.execute("UPDATE sources SET device_id = 'invalid-device-id';")
+        let rowsBefore = try scalarInt("SELECT COUNT(*) FROM events;", in: database)
+        try database.execute("UPDATE schema_meta SET value = '99' WHERE key = 'schema_version';")
 
         CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
         XCTAssertThrowsError(try analyzer.loadCompactSummary()) { error in
             XCTAssertTrue(
-                error.localizedDescription.contains("Decode exact usage source catalog"),
+                error.localizedDescription.contains("schema"),
                 error.localizedDescription
             )
         }
         XCTAssertEqual(
             CodexUsageHistoryIndex.sourceContentProbeCountForTesting,
             0,
-            "a malformed source catalog must fail closed before staging a potentially multi-gigabyte JSONL rebuild"
+            "an unknown schema must fail closed before reopening JSONL"
         )
         XCTAssertEqual(
-            try database.readRows("SELECT device_id FROM sources LIMIT 1;") { $0.text(0) }.first,
-            "invalid-device-id"
+            try scalarInt("SELECT COUNT(*) FROM events;", in: database),
+            rowsBefore
         )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try exactUsageDatabaseURL(in: cacheRoot).path))
     }
 
     func testPersistentExactHistoryIndexRebuildsChangedSourceAndSkipsUnchangedSource() throws {
@@ -4745,7 +5034,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
     }
 
-    func testPersistentExactHistoryIndexMigratesV2WithoutDiscardingEvents() throws {
+    func testPreV091SchemaIsPreservedAndRejectedWithoutReparsing() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV2Migration")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -4757,7 +5046,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
 
         let codexHome = try makeCodexHome()
-        let sessionID = "019eaaaa-bbbb-cccc-dddd-v2migration"
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-old-schema"
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
@@ -4775,48 +5064,31 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let initial = try analyzer.load()
         XCTAssertEqual(initial.stats.totalTokens, 120)
-        let initialProvenanceEpoch = try XCTUnwrap(
-            initial.cacheUsage.attributionProvenanceEpoch
-        )
         let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let eventCountBefore = try scalarInt("SELECT COUNT(*) FROM events;", in: database)
         try database.execute(
             "UPDATE schema_meta SET value = '2' WHERE key = 'schema_version';"
         )
-        try database.execute(
-            "UPDATE sources SET append_ready = 0, resume_offset = NULL;"
-        )
-        try database.execute("DROP TABLE source_chunks;")
-        try database.execute("DROP TABLE source_fingerprints;")
 
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
-        let migratedV2 = try analyzer.load()
-        XCTAssertEqual(migratedV2.stats.totalTokens, 120)
-        XCTAssertEqual(
-            migratedV2.cacheUsage.attributionProvenanceEpoch,
-            initialProvenanceEpoch
-        )
+        XCTAssertThrowsError(try analyzer.load()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("schema"))
+            XCTAssertTrue(error.localizedDescription.contains("2"))
+        }
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
-        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 1)
-        let schemaVersion = try XCTUnwrap(
-            database.readRows(
-                "SELECT value FROM schema_meta WHERE key = 'schema_version';"
-            ) { $0.text(0) }.compactMap { $0 }.first
-        )
-        XCTAssertEqual(schemaVersion, "6")
-
-        try appendLines([
-            try tokenCountLine(
-                timestamp: now.addingTimeInterval(-10),
-                total: Usage(input: 120, cachedInput: 25, output: 25, reasoning: 0, total: 150),
-                last: Usage(input: 20, cachedInput: 5, output: 5, reasoning: 0, total: 30)
-            )
-        ], to: sessionFile)
-        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
-        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
-        XCTAssertEqual(try analyzer.load().stats.totalTokens, 150)
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM events;", in: database),
+            eventCountBefore
+        )
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+            ) { $0.text(0) }.first,
+            "2"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sessionFile.path))
     }
 
     func testDashboardAggregateV1UpgradesFromSQLiteWithoutReopeningJSONL() throws {
@@ -4981,7 +5253,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             bindings: [.text(missingPath)]
         )
         try database.execute(
-            "UPDATE schema_meta SET value = '4' WHERE key = 'schema_version';"
+            "UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';"
         )
         try database.execute(
             "UPDATE schema_meta SET value = 'legacy-ledger-v1' WHERE key = 'provenance_revision';"
@@ -5025,12 +5297,20 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "4"
+            "7",
+            "the transactional identity-column migration is independent from replay repair"
+        )
+        XCTAssertEqual(
+            try scalarInt(
+                "SELECT COUNT(*) FROM pragma_table_info('sources') WHERE name IN ('device_id', 'inode', 'status_changed_seconds', 'status_changed_nanoseconds');",
+                in: database
+            ),
+            0
         )
         XCTAssertNil(
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
-            ) { $0.text(0) }.first
+            ) { $0.text(0) }.first ?? nil
         )
         XCTAssertEqual(
             try scalarInt(
@@ -5053,10 +5333,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let sessionID = "019eaaaa-bbbb-4ccc-8ddd-0000000000ab"
         let canonicalLineage = "session:\(sessionID)"
 
-        // GitHub's published schema v3 and the previous schema v5 both migrate
-        // in place. Dropping the new index before each reopen proves that the
-        // normal schema path recreates it before attribution backfill runs.
-        for schemaVersion in ["3", "5"] {
+        // The public v0.9.1 schema 6 migrates in place. Dropping the index
+        // proves that the normal migration recreates it before backfill runs.
+        for schemaVersion in ["6"] {
             let cacheRoot = try makeTemporaryDirectory(
                 named: "CodexUsageAnalyzerAttributionIndex-\(schemaVersion)"
             )
@@ -5067,6 +5346,16 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 )
             }
             let database = SQLiteDatabaseDriver(url: databaseURL)
+            try database.execute(
+                """
+                ALTER TABLE sources ADD COLUMN device_id TEXT NOT NULL DEFAULT '0';
+                ALTER TABLE sources ADD COLUMN inode TEXT NOT NULL DEFAULT '0';
+                ALTER TABLE sources ADD COLUMN status_changed_seconds INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE sources ADD COLUMN status_changed_nanoseconds INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE event_enrichment_sources ADD COLUMN device_id TEXT NOT NULL DEFAULT '0';
+                ALTER TABLE event_enrichment_sources ADD COLUMN inode TEXT NOT NULL DEFAULT '0';
+                """
+            )
             XCTAssertEqual(
                 try scalarInt(
                     "SELECT COUNT(*) FROM pragma_index_list('sources') WHERE name = 'sources_session_nocase';",
@@ -5150,7 +5439,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "6"
+                "7"
             )
 
             let planDetails = try database.readRows(
@@ -5223,7 +5512,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
     }
 
-    func testPersistentExactHistoryIndexMigratesLegacyV3AndV4ColumnsInPlace() throws {
+    func testPersistentExactHistoryIndexMigratesSchema6EnrichmentInPlace() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerLegacyColumnMigration")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -5281,17 +5570,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             }.first
         )
 
-        let legacyFixtures: [(String, [(String, String)])] = [
-            (
-                "3",
-                [
-                    ("sources", "current_model"),
-                    ("sources", "is_explicit_subagent_fork"),
-                    ("events", "model")
-                ]
-            ),
-            ("4", [("sources", "is_explicit_subagent_fork")])
-        ]
+        let legacyFixtures: [(String, [(String, String)])] = [("6", [])]
         var expectedAttributionGeneration = before.attributionGeneration
         for (schemaVersion, missingColumns) in legacyFixtures {
             for (table, column) in missingColumns {
@@ -5484,7 +5763,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "6"
+                "7"
             )
             XCTAssertEqual(
                 try database.readRows("SELECT model FROM events LIMIT 1;") {
@@ -5561,7 +5840,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
         let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
-        try database.execute("UPDATE schema_meta SET value = '4' WHERE key = 'schema_version';")
+        try database.execute("UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';")
+        try database.execute(
+            "DELETE FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
+        )
         try database.execute(
             "UPDATE sources SET is_skipping_fork_replay = 1, is_explicit_subagent_fork = 0, fork_replay_started_at = ?;",
             bindings: [.date(forkedAt)]
@@ -5715,7 +5997,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'attribution_generation';",
             in: database
         )
-        try database.execute("UPDATE schema_meta SET value = '4' WHERE key = 'schema_version';")
+        try database.execute("UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';")
+        try database.execute(
+            "DELETE FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
+        )
         try database.execute(
             "UPDATE sources SET is_skipping_fork_replay = 1, is_explicit_subagent_fork = 0, fork_replay_started_at = ? WHERE path = ?;",
             bindings: [.date(forkedAt), .text(sessionFile.path)]
@@ -5831,7 +6116,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(unrelatedCheckpointAfter.1, unrelatedCheckpointBeforeMigration.1)
     }
 
-    func testExactHistoryIndexDetectsSameSizeMiddleRewriteWithRestoredModificationDate() throws {
+    func testExactHistoryIndexDetectsSameSizeMiddleRewriteWhenMtimeChanges() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerExactIdentity")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -5862,10 +6147,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             ].joined(separator: "\n").appending("\n").utf8
         )
         try initial.write(to: sessionFile)
-        let originalModificationDate = try XCTUnwrap(
-            FileManager.default.attributesOfItem(atPath: sessionFile.path)[.modificationDate] as? Date
-        )
-
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let initialSnapshot = try analyzer.load()
         XCTAssertEqual(initialSnapshot.stats.totalTokens, 120)
@@ -5877,16 +6158,14 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let identityBefore = try XCTUnwrap(
             database.readRows(
                 """
-                SELECT modified_at, content_probe, status_changed_seconds, status_changed_nanoseconds
+                SELECT modified_at, content_probe
                 FROM sources
                 LIMIT 1;
                 """
             ) {
                 (
                     modifiedAt: $0.double(0),
-                    contentProbe: $0.text(1),
-                    changedSeconds: $0.int64(2),
-                    changedNanoseconds: $0.int64(3)
+                    contentProbe: $0.text(1)
                 )
             }.first
         )
@@ -5908,10 +6187,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try handle.write(contentsOf: replacement)
         try handle.truncate(atOffset: UInt64(replacement.count))
         try handle.close()
-        try FileManager.default.setAttributes(
-            [.modificationDate: originalModificationDate],
-            ofItemAtPath: sessionFile.path
-        )
 
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         let updated = try analyzer.load()
@@ -5925,29 +6200,101 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let identityAfter = try XCTUnwrap(
             database.readRows(
                 """
-                SELECT modified_at, content_probe, status_changed_seconds, status_changed_nanoseconds
+                SELECT modified_at, content_probe
                 FROM sources
                 LIMIT 1;
                 """
             ) {
                 (
                     modifiedAt: $0.double(0),
-                    contentProbe: $0.text(1),
-                    changedSeconds: $0.int64(2),
-                    changedNanoseconds: $0.int64(3)
+                    contentProbe: $0.text(1)
                 )
             }.first
         )
-        XCTAssertEqual(
-            try XCTUnwrap(identityAfter.modifiedAt),
-            try XCTUnwrap(identityBefore.modifiedAt),
-            accuracy: 0.000_001
-        )
+        XCTAssertNotEqual(identityAfter.modifiedAt, identityBefore.modifiedAt)
         XCTAssertEqual(identityAfter.contentProbe, identityBefore.contentProbe)
-        XCTAssertNotEqual(
-            [identityAfter.changedSeconds, identityAfter.changedNanoseconds],
-            [identityBefore.changedSeconds, identityBefore.changedNanoseconds]
+    }
+
+    func testExactHistoryIndexTreatsSameContentReplacementWithStableMetadataAsNoOp() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageSameContentReplacement")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-same-content",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
         )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+        let contents = try Data(contentsOf: sessionFile)
+        let originalMtime = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: sessionFile.path)[.modificationDate]
+                as? Date
+        )
+        try contents.write(to: sessionFile, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.modificationDate: originalMtime],
+            ofItemAtPath: sessionFile.path
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
+        CodexUsageHistoryIndex.resetFullContentHashCountForTesting()
+        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+        XCTAssertLessThanOrEqual(
+            CodexUsageHistoryIndex.sourceContentProbeCountForTesting,
+            1,
+            "filesystem timestamp precision may route an atomic replacement through one bounded probe"
+        )
+        XCTAssertEqual(CodexUsageHistoryIndex.fullContentHashCountForTesting, 0)
+    }
+
+    func testExactHistoryIndexRevalidatesMtimeOnlyChangeWithoutJSONLParse() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageMtimeOnly")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-mtime-only",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(5)],
+            ofItemAtPath: sessionFile.path
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
+        CodexUsageHistoryIndex.resetFullContentHashCountForTesting()
+        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageHistoryIndex.sourceContentProbeCountForTesting, 1)
+        XCTAssertEqual(CodexUsageHistoryIndex.fullContentHashCountForTesting, 0)
     }
 
     func testExactHistoryIndexIgnoresAndCleansThePreviousBoundedCacheNamespace() throws {
@@ -5987,6 +6334,13 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let legacyDirectory = legacyNamespace
             .appendingPathComponent("session-token-events-v6", isDirectory: true)
         try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        let unknownFutureNamespace = cacheRoot
+            .appendingPathComponent(UsageCacheLifecycle.appDirectoryName, isDirectory: true)
+            .appendingPathComponent("exact-usage-history-v999", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: unknownFutureNamespace,
+            withIntermediateDirectories: true
+        )
         let legacyPayload: [String: Any] = [
             "version": 8,
             "entry": [
@@ -6029,6 +6383,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         UsageCacheLifecycle.markCurrentCachePrepared()
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyNamespace.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: exactDirectory.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: unknownFutureNamespace.path),
+            "unknown or future cache namespaces must be preserved"
+        )
     }
 
     func testPersistentExactHistoryIndexPreservesCorruptDatabaseForExplicitRecovery() throws {
@@ -6425,8 +6783,16 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             FileManager.default.fileExists(atPath: codexHome.path),
             "Live Codex Home does not exist: \(codexHome.path)"
         )
+        let copiedCacheRoot = try XCTUnwrap(
+            environment["CODEX_TOKEN_BAR_LIVE_USAGE_CACHE_DIR"]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            "CODEX_TOKEN_BAR_LIVE_USAGE_CACHE_DIR must point to a disposable index copy"
+        )
+        XCTAssertFalse(copiedCacheRoot.isEmpty)
+        XCTAssertTrue(copiedCacheRoot.hasPrefix("/"))
 
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", copiedCacheRoot, 1)
         defer { setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1) }
         let dataSource = dataSource(for: codexHome)
 
@@ -6434,6 +6800,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let coldSnapshot = try CodexUsageAnalyzer(dataSource: dataSource).load()
         let coldElapsed = Date().timeIntervalSince(coldStartedAt)
         let coldFullParseCount = CodexUsageAnalyzer.fullSessionParseCountForTesting
+        let coldIncrementalParseCount = CodexUsageAnalyzer.incrementalSessionParseCountForTesting
 
         XCTAssertEqual(coldSnapshot.usagePrecision, .precise)
         XCTAssertGreaterThan(coldSnapshot.stats.totalTokens, 0)
@@ -6445,6 +6812,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             "LIVE_EXACT_HISTORY_COLD_RESULT"
                 + " elapsed_seconds=\(String(format: "%.3f", coldElapsed))"
                 + " full_parse_count=\(coldFullParseCount)"
+                + " incremental_parse_count=\(coldIncrementalParseCount)"
                 + " total_tokens=\(coldSnapshot.stats.totalTokens)"
                 + " total_calls=\(coldSnapshot.stats.totalCalls)"
                 + " total_threads=\(coldSnapshot.stats.totalThreads)"
@@ -6464,7 +6832,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         // invariant is therefore source reuse, not point-in-time equality.
         let warmFullParseCount = CodexUsageAnalyzer.fullSessionParseCountForTesting
         let additionalFullParseCount = warmFullParseCount - coldFullParseCount
+        let warmIncrementalParseCount = CodexUsageAnalyzer.incrementalSessionParseCountForTesting
+        let additionalIncrementalParseCount = warmIncrementalParseCount - coldIncrementalParseCount
         XCTAssertGreaterThanOrEqual(additionalFullParseCount, 0)
+        XCTAssertGreaterThanOrEqual(additionalIncrementalParseCount, 0)
         // Deterministic fixture tests above prove unchanged-source reuse. A
         // live Home may create a new session or legitimately rewrite a source
         // between observations, so its additional full parses are evidence to
@@ -6476,6 +6847,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             "LIVE_EXACT_HISTORY_WARM_RESULT"
                 + " elapsed_seconds=\(String(format: "%.3f", warmElapsed))"
                 + " additional_full_parse_count=\(additionalFullParseCount)"
+                + " additional_incremental_parse_count=\(additionalIncrementalParseCount)"
                 + " total_tokens=\(warmSnapshot.stats.totalTokens)"
                 + " total_calls=\(warmSnapshot.stats.totalCalls)"
                 + " total_threads=\(warmSnapshot.stats.totalThreads)"
@@ -7095,6 +7467,52 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try XCTUnwrap(
             database.readRows(sql) { $0.int(0) }.compactMap { $0 }.first
         )
+    }
+
+    private func convertCurrentSwiftIndexToSchema6(
+        _ database: SQLiteDatabaseDriver
+    ) throws {
+        try database.execute(
+            """
+            ALTER TABLE sources ADD COLUMN device_id TEXT NOT NULL DEFAULT '16777233';
+            ALTER TABLE sources ADD COLUMN inode TEXT NOT NULL DEFAULT '42';
+            ALTER TABLE sources ADD COLUMN status_changed_seconds INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE sources ADD COLUMN status_changed_nanoseconds INTEGER NOT NULL DEFAULT 2;
+            ALTER TABLE event_enrichment_sources ADD COLUMN device_id TEXT NOT NULL DEFAULT '16777233';
+            ALTER TABLE event_enrichment_sources ADD COLUMN inode TEXT NOT NULL DEFAULT '42';
+            ALTER TABLE session_catalog_entries ADD COLUMN device_id TEXT NOT NULL DEFAULT '16777233';
+            ALTER TABLE session_catalog_entries ADD COLUMN inode TEXT NOT NULL DEFAULT '42';
+            ALTER TABLE session_catalog_entries ADD COLUMN status_changed_seconds INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE session_catalog_entries ADD COLUMN status_changed_nanoseconds INTEGER NOT NULL DEFAULT 2;
+            UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';
+            UPDATE session_catalog_meta SET value = '1' WHERE key = 'schema_version';
+            """
+        )
+    }
+
+    private func swiftSchemaMigrationFacts(
+        _ database: SQLiteDatabaseDriver
+    ) throws -> [String] {
+        let countQueries = [
+            "SELECT COUNT(*) FROM sources;",
+            "SELECT COUNT(*) FROM events;",
+            "SELECT COUNT(*) FROM source_fingerprints;",
+            "SELECT COUNT(*) FROM source_chunks;",
+            "SELECT COUNT(*) FROM event_enrichment_sources;",
+            "SELECT COUNT(*) FROM session_catalog_entries;",
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_source_totals;",
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_source_5m;",
+        ]
+        var facts = try countQueries.map {
+            String(try scalarInt($0, in: database))
+        }
+        facts.append(contentsOf: try database.readRows(
+            "SELECT key || '=' || value FROM schema_meta ORDER BY key;"
+        ) { $0.text(0) }.compactMap { $0 })
+        facts.append(contentsOf: try database.readRows(
+            "SELECT 'catalog:' || key || '=' || value FROM session_catalog_meta ORDER BY key;"
+        ) { $0.text(0) }.compactMap { $0 })
+        return facts
     }
 
     private func cacheDataContents(under directory: URL) throws -> Data {

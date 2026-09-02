@@ -1966,7 +1966,7 @@ final class CodexUsageStoreTests: XCTestCase {
         }
 
         XCTAssertEqual(store.currentDataSource, sourceB)
-        XCTAssertEqual(store.dataSourceIdentity, sourceB.stableIdentityKey)
+        XCTAssertEqual(store.dataSourceIdentity, sourceB.usageIdentityKey)
         XCTAssertEqual(store.snapshot.stats.totalTokens, 0)
         XCTAssertFalse(store.snapshot.hasPreciseTokenUsage)
         XCTAssertFalse(store.isCompactSummaryPending)
@@ -2000,7 +2000,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertTrue(store.setDataSource(sourceB))
 
         XCTAssertEqual(store.currentDataSource, sourceB)
-        XCTAssertEqual(store.dataSourceIdentity, sourceB.stableIdentityKey)
+        XCTAssertEqual(store.dataSourceIdentity, sourceB.usageIdentityKey)
         XCTAssertEqual(store.dataSourceLabel, sourceB.displayPath)
         XCTAssertEqual(store.snapshot.stats.totalTokens, 0)
         XCTAssertFalse(store.snapshot.hasPreciseTokenUsage)
@@ -2062,7 +2062,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(store.status.contains(sourceA.displayPath))
     }
 
-    func testInFlightSameIdentityPathRebindRejectsOldCompletionAndRestartsOnNewPath() async throws {
+    func testInFlightPhysicalIdentityPathMoveUsesNewStatisticsNamespaceAndRejectsOldCompletion() async throws {
         let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("UsagePathRebind-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -2086,13 +2086,14 @@ final class CodexUsageStoreTests: XCTestCase {
         try FileManager.default.moveItem(at: oldHome, to: newHome)
         let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
         XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
+        XCTAssertNotEqual(sourceAtNewPath.usageIdentityKey, sourceAtOldPath.usageIdentityKey)
         resolver.source = sourceAtNewPath
 
         store.refresh()
 
         XCTAssertEqual(store.currentDataSource?.codexHome.path, newHome.path)
         XCTAssertNotEqual(store.dataSourceBindingKey, oldBindingKey)
-        XCTAssertEqual(store.sourceIdentityGeneration, identityGeneration)
+        XCTAssertEqual(store.sourceIdentityGeneration, identityGeneration + 1)
         XCTAssertEqual(store.sourceBindingGeneration, oldBindingGeneration + 1)
         XCTAssertNotEqual(store.preciseObservationSessionID, oldObservationSessionID)
         XCTAssertTrue(store.isRefreshing)
