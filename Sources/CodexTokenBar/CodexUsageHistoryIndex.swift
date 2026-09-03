@@ -1225,14 +1225,24 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
               manifest.sourcePath == databaseURL.path else {
             return
         }
+        let candidateURL = URL(fileURLWithPath: manifest.candidatePath)
+        // A surviving candidate main database is ambiguous recovery state, not
+        // disposable residue. Preserve the complete migration family until a
+        // later repair can classify it instead of deleting around it.
+        guard !fileManager.fileExists(atPath: candidateURL.path) else { return }
         let rollbackURL = URL(fileURLWithPath: manifest.rollbackPath)
-        let rollbackMembers = [
+        let successfulMigrationResidue = [
             rollbackURL,
             URL(fileURLWithPath: rollbackURL.path + "-wal"),
             URL(fileURLWithPath: rollbackURL.path + "-shm"),
             URL(fileURLWithPath: rollbackURL.path + "-journal"),
+            URL(fileURLWithPath: candidateURL.path + "-wal"),
+            URL(fileURLWithPath: candidateURL.path + "-shm"),
+            URL(fileURLWithPath: candidateURL.path + "-journal"),
+            candidateURL.appendingPathExtension("operation.lock"),
         ]
-        for member in rollbackMembers where fileManager.fileExists(atPath: member.path) {
+        for member in successfulMigrationResidue
+            where fileManager.fileExists(atPath: member.path) {
             do {
                 try fileManager.removeItem(at: member)
             } catch {

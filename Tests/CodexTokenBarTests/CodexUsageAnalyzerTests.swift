@@ -4982,6 +4982,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
 
         let rollbackURL = URL(fileURLWithPath: databaseURL.path + ".schema11-rollback")
+        let candidateURL = URL(fileURLWithPath: databaseURL.path + ".schema11-candidate")
         let manifestURL = URL(fileURLWithPath: databaseURL.path + ".schema11-migration.json")
         XCTAssertEqual(try Data(contentsOf: rollbackURL), databaseBytesBefore)
         XCTAssertTrue(manifestURL.isFileURL && FileManager.default.fileExists(atPath: manifestURL.path))
@@ -4992,6 +4993,12 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: rollbackURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: manifestURL.path))
+        for suffix in ["-wal", "-shm", "-journal", ".operation.lock"] {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: candidateURL.path + suffix),
+                "successful migration must remove only its exact candidate residue"
+            )
+        }
     }
 
     func testSchema6MigrationRollsBackEveryStageWithoutTouchingData() throws {
