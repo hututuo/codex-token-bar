@@ -15,7 +15,7 @@ struct TokenQuotaMiniStrip: View {
 
             HStack(spacing: spacing) {
                 ForEach(windows, id: \.label) { window in
-                    TokenQuotaMiniSegment(window: window)
+                    TokenQuotaMiniSegment(window: window, isStale: snapshot.staleDataDisplayed)
                         .frame(width: segmentWidth, height: height)
                 }
                 if !snapshot.isAvailable {
@@ -39,7 +39,8 @@ struct TokenQuotaMiniStrip: View {
         guard snapshot.isAvailable else { return snapshot.status }
         let chunks = [snapshot.fiveHour, snapshot.sevenDay].compactMap { window -> String? in
             guard let window else { return nil }
-            return "\(window.label) 剩余 \(window.remainingPercent)%，\(window.accessibleResetText) 重置"
+            let staleText = snapshot.staleDataDisplayed ? "，当前为旧数据" : ""
+            return "\(window.label) 剩余 \(window.remainingPercent)%\(staleText)，\(window.accessibleResetText) 重置"
         }
         return chunks.joined(separator: "；")
     }
@@ -47,6 +48,7 @@ struct TokenQuotaMiniStrip: View {
 
 struct TokenQuotaMiniSegment: View {
     let window: AccountQuotaWindow
+    var isStale = false
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
     @Environment(\.tokenDisplayQuotaColorStyle) private var quotaColorStyle
@@ -79,7 +81,7 @@ struct TokenQuotaMiniSegment: View {
                 .clipShape(quotaSegmentShape)
                 .overlay(quotaSegmentShape.stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
 
-                Text("\(window.compactDisplayLabel) \(window.remainingPercent)% \(window.compactResetText)")
+                Text("\(window.compactDisplayLabel) \(window.remainingPercent)%\(isStale ? " 旧" : "") \(window.compactResetText)")
                     .font(.system(size: 9.4.scaled(by: displayScale), weight: .bold))
                     .foregroundStyle(textPalette.primaryColor)
                     .monospacedDigit()
@@ -91,7 +93,7 @@ struct TokenQuotaMiniSegment: View {
         .frame(height: 16.5.scaled(by: displayScale))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
-        .accessibilityValue("剩余 \(window.remainingPercent)%，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
+        .accessibilityValue("剩余 \(window.remainingPercent)%\(isStale ? "，旧数据" : "")，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
     }
 
     private func quotaSegmentShape(height: CGFloat) -> RoundedRectangle {

@@ -75,7 +75,7 @@ test("quotaReadWarnings prefers the primary cause and one combined cached-data s
 
   assert.deepEqual(quotaReadWarnings(warnings, diagnostics), [
     "登录凭证缺失",
-    "额度刷新失败，自动重试中（最长 1 分钟）；当前显示上次成功额度。",
+    "额度刷新失败，自动重试中（最长 2 分钟）；当前显示上次成功额度。",
   ]);
 });
 
@@ -110,7 +110,7 @@ test("quotaReadWarnings collapses the observed timeout/network cascade into two 
 
   assert.deepEqual(quotaReadWarnings([], diagnostics), [
     "重置卡读取失败：网络连接失败",
-    "额度和重置卡刷新失败，自动重试中（最长 1 分钟）；当前显示上次成功结果。",
+    "额度和重置卡刷新失败，自动重试中（最长 2 分钟）；当前显示上次成功结果。",
   ]);
 });
 
@@ -127,7 +127,7 @@ test("quotaRefreshAttemptStatus separates the latest attempt from the retained s
 
   const status = quotaRefreshAttemptStatus("2026-08-13T01:55:00Z", diagnostics);
 
-  assert.match(status, /^自动重试中（最长 1 分钟）/);
+  assert.match(status, /^自动重试中（最长 2 分钟）/);
   assert.match(status, /上次尝试/);
   assert.match(status, /上次成功/);
   assert.doesNotMatch(status, /尚无成功额度/);

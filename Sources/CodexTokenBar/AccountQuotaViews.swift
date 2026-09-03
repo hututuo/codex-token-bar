@@ -170,13 +170,15 @@ struct AccountQuotaStrip: View {
                     if let fiveHour = snapshot.fiveHour {
                         AccountQuotaSegment(
                             window: fiveHour,
-                            accent: AppTheme.quotaRemainingColor(percent: Double(fiveHour.remainingPercent))
+                            accent: AppTheme.quotaRemainingColor(percent: Double(fiveHour.remainingPercent)),
+                            isStale: snapshot.staleDataDisplayed
                         )
                     }
                     if let sevenDay = snapshot.sevenDay {
                         AccountQuotaSegment(
                             window: sevenDay,
-                            accent: AppTheme.quotaRemainingColor(percent: Double(sevenDay.remainingPercent))
+                            accent: AppTheme.quotaRemainingColor(percent: Double(sevenDay.remainingPercent)),
+                            isStale: snapshot.staleDataDisplayed
                         )
                     }
                 }
@@ -230,7 +232,8 @@ struct AccountQuotaStrip: View {
         guard snapshot.isAvailable else { return snapshot.status }
         return [snapshot.fiveHour, snapshot.sevenDay].compactMap { window -> String? in
             guard let window else { return nil }
-            return "\(window.label)：已用 \(window.usedPercent)%，剩余 \(window.remainingPercent)%，\(window.accessibleResetText) 重置"
+            let staleText = snapshot.staleDataDisplayed ? "，旧数据" : ""
+            return "\(window.label)：已用 \(window.usedPercent)%，剩余 \(window.remainingPercent)%\(staleText)，\(window.accessibleResetText) 重置"
         }.joined(separator: "；")
     }
 }
@@ -644,6 +647,7 @@ private struct AccountQuotaResetCreditAvatarView: View {
 struct AccountQuotaSegment: View {
     let window: AccountQuotaWindow
     let accent: Color
+    var isStale = false
 
     private var presentation: AccountQuotaSegmentPresentation {
         AccountQuotaSegmentPresentation(window: window)
@@ -690,7 +694,7 @@ struct AccountQuotaSegment: View {
                     .clipShape(Capsule())
 
                     HStack(spacing: AccountQuotaSegmentLayout.progressTextSpacing) {
-                        Text(presentation.remainingText)
+                        Text("\(presentation.remainingText)\(isStale ? " 旧" : "")")
                             .fontWeight(.semibold)
                             .fixedSize(horizontal: true, vertical: false)
                         Spacer(minLength: 0)
@@ -708,7 +712,7 @@ struct AccountQuotaSegment: View {
         .frame(maxWidth: .infinity, minHeight: AccountQuotaSegmentLayout.controlHeight, maxHeight: AccountQuotaSegmentLayout.controlHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
-        .accessibilityValue("剩余 \(window.remainingPercent)%，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
+        .accessibilityValue("剩余 \(window.remainingPercent)%\(isStale ? "，旧数据" : "")，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
     }
 }
 

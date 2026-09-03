@@ -98,12 +98,14 @@ export function FloatingQuotaBar({
   label,
   remainingPercent,
   expectedRemainingPercent,
+  stale = false,
   settings,
 }: {
   availability: "measured" | "unavailable" | "absent";
   label: string;
   remainingPercent: number | null;
   expectedRemainingPercent: number | null;
+  stale?: boolean;
   settings: FloatingWindowSettings;
 }) {
   if (availability !== "measured" || typeof remainingPercent !== "number" || !Number.isFinite(remainingPercent)) {
@@ -120,7 +122,7 @@ export function FloatingQuotaBar({
     <span
       className="floating-quota-bar"
       role="meter"
-      aria-label={`${label}，剩余 ${Math.round(fillPercent)}%`}
+      aria-label={`${label}，剩余 ${Math.round(fillPercent)}%${stale ? "，旧数据" : ""}`}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(fillPercent)}
@@ -133,7 +135,7 @@ export function FloatingQuotaBar({
       <span className="floating-quota-track" aria-hidden="true">
         <span className="floating-quota-fill" />
       </span>
-      <span className="floating-quota-label">{label}</span>
+      <span className="floating-quota-label">{label}{stale ? " 旧" : ""}</span>
     </span>
   );
 }
@@ -655,6 +657,7 @@ function FloatingContentRow({
               label={window.label}
               remainingPercent={window.remainingPercent}
               expectedRemainingPercent={window.expectedRemainingPercent}
+              stale={snapshot.quotaDataStale === true}
               settings={settings}
             />
           ))}

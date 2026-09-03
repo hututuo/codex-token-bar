@@ -123,7 +123,7 @@ function persistenceFenceKey(fence: AttributionPersistenceOwnerLease): string {
   ].join(":");
 }
 
-function QuotaBar({ quota }: { quota: QuotaLimit }) {
+function QuotaBar({ quota, stale = false }: { quota: QuotaLimit; stale?: boolean }) {
   const remainingPercent = typeof quota.remainingPercent === "number" ? quota.remainingPercent : null;
   const measured = quota.availability === "measured" && remainingPercent !== null;
   const measuredLabel = remainingPercent === null ? "" : formatPercent(remainingPercent);
@@ -139,7 +139,7 @@ function QuotaBar({ quota }: { quota: QuotaLimit }) {
   return (
     <div
       aria-label={measured
-        ? `${quota.label} 剩 ${measuredLabel}，已用 ${usedLabel}，重置 ${quota.resetsAt}`
+        ? `${quota.label} 剩 ${measuredLabel}${stale ? "，旧数据" : ""}，已用 ${usedLabel}，重置 ${quota.resetsAt}`
         : `${quota.label} 额度待读取，重置 ${quota.resetsAt}`}
       className={measured ? "quota-bar" : "quota-bar quota-bar--unavailable"}
     >
@@ -150,7 +150,7 @@ function QuotaBar({ quota }: { quota: QuotaLimit }) {
         )}
       </div>
       <div className="quota-bar-meta">
-        {measured ? <span><b>剩 {measuredLabel}</b><em>已用 {usedLabel}</em></span> : <span>额度待读取</span>}
+        {measured ? <span><b>剩 {measuredLabel}{stale ? " 旧" : ""}</b><em>已用 {usedLabel}</em></span> : <span>额度待读取</span>}
         <em>{quota.resetsAt}</em>
       </div>
     </div>
@@ -1660,7 +1660,7 @@ function QuotaStripView({
         <span>本地账户额度</span>
         <strong>本地读取</strong>
       </div>
-      {visibleQuotaLimits.map((quota) => <QuotaBar key={quota.label} quota={quota} />)}
+      {visibleQuotaLimits.map((quota) => <QuotaBar key={quota.label} quota={quota} stale={quotaDataStale} />)}
       <button
         type="button"
         className="quota-side-card quota-reset-card"

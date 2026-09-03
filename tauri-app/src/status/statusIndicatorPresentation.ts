@@ -110,22 +110,15 @@ export function statusSnapshotForQuotaDiagnostics(
   diagnostics: readonly QuotaDiagnostic[],
 ): FloatingPanelSnapshot {
   const staleQuotaDisplayed = diagnostics.some((diagnostic) => (
-    diagnostic.staleDataDisplayed === true
-    && diagnostic.source === "account_quota"
+    diagnostic.source === "account_quota"
+      && (diagnostic.staleDataDisplayed === true || diagnostic.category === "stale_cached_data")
   ));
   if (!staleQuotaDisplayed) {
     return snapshot;
   }
   return {
     ...snapshot,
-    fiveHourAvailability: "unavailable",
-    fiveHourExpectedRemainingPercent: null,
-    fiveHourLabel: "5h",
-    fiveHourRemainingPercent: null,
-    sevenDayAvailability: "unavailable",
-    sevenDayExpectedRemainingPercent: null,
-    sevenDayLabel: "7d",
-    sevenDayRemainingPercent: null,
+    quotaDataStale: true,
   };
 }
 
@@ -242,6 +235,7 @@ function statusIndicatorItem(
         "5 小时额度",
         snapshot.fiveHourAvailability,
         snapshot.fiveHourRemainingPercent,
+        snapshot.quotaDataStale === true,
         labelStyle,
       );
     case "sevenDay":
@@ -250,6 +244,7 @@ function statusIndicatorItem(
         "7 天额度",
         snapshot.sevenDayAvailability,
         snapshot.sevenDayRemainingPercent,
+        snapshot.quotaDataStale === true,
         labelStyle,
       );
     case "iq":
@@ -297,6 +292,7 @@ function quotaItem(
   tooltipPrefix: string,
   availability: FloatingPanelSnapshot["fiveHourAvailability"],
   remainingPercent: number | null,
+  stale: boolean,
   labelStyle: StatusMetricLabelStyle,
 ): StatusIndicatorItem {
   const measured = availability === "measured"
@@ -305,7 +301,7 @@ function quotaItem(
     ? remainingPercent
     : null;
   const value = measured !== null
-    ? `${Math.round(Math.min(1, Math.max(0, measured)) * 100)}%`
+    ? `${Math.round(Math.min(1, Math.max(0, measured)) * 100)}%${stale ? " 旧" : ""}`
     : "—";
   return {
     available: measured !== null,

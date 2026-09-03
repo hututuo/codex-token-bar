@@ -432,7 +432,7 @@ final class StatusBarMetricsTests: XCTestCase {
         XCTAssertEqual(presentation.text, "今— · 总— · 次— · 5H0%")
     }
 
-    func testQuotaReadFailureShowsDashesInsteadOfStaleCachedPercentages() {
+    func testQuotaReadFailureKeepsPercentagesAndMarksThemOld() {
         let snapshot = TokenDisplaySnapshot(
             title: "全会话实时",
             status: "等待输出",
@@ -459,7 +459,7 @@ final class StatusBarMetricsTests: XCTestCase {
         )
 
         XCTAssertFalse(values.fiveHourWindowOfficiallyAbsent)
-        XCTAssertEqual(presentation.text, "5H— · 7D—")
+        XCTAssertEqual(presentation.text, "5H80% 旧 · 7D60% 旧")
     }
 
     func testLabelStylesChangePrefixesWithoutChangingValuesOrOrder() {

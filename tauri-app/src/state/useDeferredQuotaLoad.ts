@@ -1,11 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { AccountQuotaBundle, CodexHomeSourceToken } from "../types/dashboard";
 import type { ResetCreditBundle } from "../types/quota";
 import {
   persistentRefreshDelayMs,
   quotaRefreshDelayMs,
-  shouldPublishQuotaRefreshResult,
+  quotaRefreshFailureNoticeDelayMs,
 } from "../utils/persistentRefreshBackoff";
 
 // The 7d model-cost row needs the authoritative reset boundary. Starting the
@@ -46,7 +46,14 @@ export function useDeferredQuotaLoad({
   const resetRequestKey = useRef<string | null>(null);
   const quotaFailureCount = useRef(0);
   const resetFailureCount = useRef(0);
+  const quotaFailureStartedAt = useRef<number | null>(null);
+  const quotaFailureNoticeTimer = useRef<number | null>(null);
+  const latestFailedQuota = useRef<AccountQuotaBundle | null>(null);
+  const quotaFailureNoticePublished = useRef(false);
+  const quotaNoticeMounted = useRef(true);
+  const onQuotaRef = useRef(onQuota);
   const forceQuotaRefreshRef = useRef(forceQuotaRefresh);
+  onQuotaRef.current = onQuota;
   forceQuotaRefreshRef.current = forceQuotaRefresh;
   const sourceKey = sourceToken === null
     ? null
@@ -56,12 +63,80 @@ export function useDeferredQuotaLoad({
         sourceToken.transitionGeneration,
       ].join("\u0000");
 
+  const quotaLifecycleRef = useRef({ active, dashboardReady, sourceKey });
+  quotaLifecycleRef.current = { active, dashboardReady, sourceKey };
+
+  const scheduleQuotaFailureNotice = useCallback(() => {
+    if (
+      quotaFailureNoticeTimer.current !== null
+      || quotaFailureNoticePublished.current
+      || quotaFailureStartedAt.current === null
+      || latestFailedQuota.current === null
+    ) {
+      return;
+    }
+    const expectedSourceKey = sourceKey;
+    const delayMs = quotaRefreshFailureNoticeDelayMs(quotaFailureStartedAt.current);
+    quotaFailureNoticeTimer.current = window.setTimeout(() => {
+      quotaFailureNoticeTimer.current = null;
+      const lifecycle = quotaLifecycleRef.current;
+      const startedAt = quotaFailureStartedAt.current;
+      const latest = latestFailedQuota.current;
+      if (
+        !quotaNoticeMounted.current
+        || !lifecycle.active
+        || !lifecycle.dashboardReady
+        || lifecycle.sourceKey !== expectedSourceKey
+        || startedAt === null
+        || latest === null
+      ) {
+        return;
+      }
+      const remainingMs = quotaRefreshFailureNoticeDelayMs(startedAt);
+      if (remainingMs > 0) {
+        scheduleQuotaFailureNotice();
+        return;
+      }
+      quotaFailureNoticePublished.current = true;
+      onQuotaRef.current(latest);
+    }, delayMs);
+  }, [sourceKey]);
+
   useEffect(() => {
     quotaFailureCount.current = 0;
     resetFailureCount.current = 0;
     quotaRequestKey.current = null;
     resetRequestKey.current = null;
+    quotaFailureStartedAt.current = null;
+    latestFailedQuota.current = null;
+    quotaFailureNoticePublished.current = false;
+    if (quotaFailureNoticeTimer.current !== null) {
+      window.clearTimeout(quotaFailureNoticeTimer.current);
+      quotaFailureNoticeTimer.current = null;
+    }
   }, [sourceKey]);
+
+  useEffect(() => {
+    quotaNoticeMounted.current = true;
+    return () => {
+      quotaNoticeMounted.current = false;
+      if (quotaFailureNoticeTimer.current !== null) {
+        window.clearTimeout(quotaFailureNoticeTimer.current);
+        quotaFailureNoticeTimer.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!active || !dashboardReady || sourceKey === null) {
+      if (quotaFailureNoticeTimer.current !== null) {
+        window.clearTimeout(quotaFailureNoticeTimer.current);
+        quotaFailureNoticeTimer.current = null;
+      }
+      return;
+    }
+    scheduleQuotaFailureNotice();
+  }, [active, dashboardReady, scheduleQuotaFailureNotice, sourceKey]);
 
   useEffect(() => {
     const requestKey = sourceKey === null ? null : `${sourceKey}\u0000${generation}`;
@@ -92,8 +167,29 @@ export function useDeferredQuotaLoad({
           succeeded = !quota.diagnostics.some((diagnostic) => (
             diagnostic.source === "account_quota"
           ));
-          if (shouldPublishQuotaRefreshResult(succeeded, quotaFailureCount.current)) {
+          if (succeeded) {
+            quotaFailureStartedAt.current = null;
+            latestFailedQuota.current = null;
+            quotaFailureNoticePublished.current = false;
+            if (quotaFailureNoticeTimer.current !== null) {
+              window.clearTimeout(quotaFailureNoticeTimer.current);
+              quotaFailureNoticeTimer.current = null;
+            }
             onQuota(quota);
+          } else {
+            latestFailedQuota.current = quota;
+            quotaFailureStartedAt.current ??= Date.now();
+            const noticeDue = quotaRefreshFailureNoticeDelayMs(quotaFailureStartedAt.current) <= 0;
+            if (quotaFailureNoticePublished.current || noticeDue) {
+              quotaFailureNoticePublished.current = true;
+              if (quotaFailureNoticeTimer.current !== null) {
+                window.clearTimeout(quotaFailureNoticeTimer.current);
+                quotaFailureNoticeTimer.current = null;
+              }
+              onQuota(quota);
+            } else {
+              scheduleQuotaFailureNotice();
+            }
           }
         }
       } catch {
@@ -139,6 +235,7 @@ export function useDeferredQuotaLoad({
     onLoadEnd,
     onLoadStart,
     onQuota,
+    scheduleQuotaFailureNotice,
     source,
     sourceKey,
     sourceToken,

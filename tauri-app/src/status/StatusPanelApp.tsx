@@ -350,6 +350,7 @@ export function StatusPanelApp() {
                   remainingPercent={window.remainingPercent}
                   resetText={window.resetText}
                   expectedRemainingPercent={window.expectedRemainingPercent}
+                  stale={displaySnapshot.quotaDataStale === true}
                   settings={settings}
                 />
               ))}
@@ -456,6 +457,7 @@ function StatusPanelQuotaRow({
   label,
   remainingPercent,
   resetText,
+  stale = false,
   settings,
 }: {
   availability: FloatingPanelSnapshot["fiveHourAvailability"];
@@ -463,6 +465,7 @@ function StatusPanelQuotaRow({
   label: string;
   remainingPercent: number | null;
   resetText: string;
+  stale?: boolean;
   settings: FloatingWindowSettings;
 }) {
   const measured = availability === "measured"
@@ -479,7 +482,7 @@ function StatusPanelQuotaRow({
 
   return (
     <div
-      aria-label={measured ? `${compactLabel}，剩余 ${Math.round(percent)}%` : `${compactLabel}，额度待读取`}
+      aria-label={measured ? `${compactLabel}，剩余 ${Math.round(percent)}%${stale ? "，旧数据" : ""}` : `${compactLabel}，额度待读取`}
       aria-valuemax={measured ? 100 : undefined}
       aria-valuemin={measured ? 0 : undefined}
       aria-valuenow={measured ? Math.round(percent) : undefined}
@@ -495,7 +498,7 @@ function StatusPanelQuotaRow({
           }}
         />
       </i>
-      <strong>{measured ? `剩 ${Math.round(percent)}% · ${resetText || "—"}` : "—"}</strong>
+      <strong>{measured ? `剩 ${Math.round(percent)}%${stale ? " 旧" : ""} · ${resetText || "—"}` : "—"}</strong>
     </div>
   );
 }

@@ -18,7 +18,7 @@ final class AccountQuotaRefreshIsolationTests: XCTestCase {
     }
 
     func testPersistentBackoffUsesProgressiveQuotaScheduleAndRemainsAtTwoMinutesForever() {
-        var backoff = PersistentRefreshBackoff()
+        var backoff = PersistentRefreshBackoff(steps: PersistentRefreshBackoff.quotaSteps)
         let delays = (0..<10).map { _ in
             backoff.recordFailure(maximumDelay: 120)
         }
@@ -108,44 +108,30 @@ final class AccountQuotaRefreshIsolationTests: XCTestCase {
         XCTAssertFalse(store.snapshot.diagnostics.contains { $0.source == .resetCredit })
     }
 
-    func testStartedStoreKeepsLastGoodSilentForThreeFailuresThenReportsTheFourth() async {
-        let quotaReader = IsolationQuotaReader(results: [
-            .success(Self.quotaSnapshot(usedPercent: 34)),
-            .failure(IsolationQuotaError()),
-            .failure(IsolationQuotaError()),
-            .failure(IsolationQuotaError()),
-            .failure(IsolationQuotaError()),
-        ])
-        let retryScheduler = ControlledIsolationRetryScheduler()
-        let store = AccountQuotaStore(
-            quotaReader: quotaReader,
-            timerScheduler: IsolationTimerScheduler(),
-            retryScheduler: retryScheduler,
-            observesUserDefaults: false
+    func testQuotaFailureNoticeWaitsSixtySecondsAfterLastGoodValue() {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertFalse(
+            QuotaFailureNoticePolicy.shouldPublish(
+                lastGoodAvailable: true,
+                startedAt: startedAt,
+                now: Date(timeIntervalSince1970: 1_059)
+            )
         )
-
-        store.start()
-        await waitUntil("initial quota succeeds") {
-            store.snapshot.fiveHour?.usedPercent == 34
-        }
-
-        store.refresh()
-        for (index, expectedDelay) in [1.0, 3.0, 5.0].enumerated() {
-            await waitUntil("silent retry delay \(expectedDelay)") {
-                await retryScheduler.delays().count == index + 1
-            }
-            XCTAssertEqual(store.snapshot.status, "额度已更新")
-            XCTAssertFalse(store.snapshot.diagnostics.contains { $0.source == .accountQuota })
-            await retryScheduler.resumeNext()
-        }
-
-        await waitUntil("fourth failure becomes visible") {
-            await retryScheduler.delays() == [1, 3, 5, 10]
-                && store.snapshot.status.hasPrefix("额度读取失败")
-        }
-        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 34)
-        XCTAssertTrue(store.snapshot.staleDataDisplayed)
-        store.stop()
+        XCTAssertTrue(
+            QuotaFailureNoticePolicy.shouldPublish(
+                lastGoodAvailable: true,
+                startedAt: startedAt,
+                now: Date(timeIntervalSince1970: 1_060)
+            )
+        )
+        XCTAssertTrue(
+            QuotaFailureNoticePolicy.shouldPublish(
+                lastGoodAvailable: false,
+                startedAt: nil,
+                now: startedAt
+            )
+        )
     }
 
     func testStartedStoreRetriesForeverWithCappedSequenceAndStopCancelsPendingRetry() async {

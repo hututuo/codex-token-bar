@@ -234,7 +234,7 @@ test("QuotaStrip distinguishes a failed refresh attempt from the retained succes
       warnings: [],
     });
 
-    assert.match(html, /自动重试中（最长 1 分钟）/);
+    assert.match(html, /自动重试中（最长 2 分钟）/);
     assert.match(html, /上次尝试/);
     assert.match(html, /上次成功/);
   });

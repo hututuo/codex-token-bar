@@ -6,6 +6,7 @@ import type {
   RunningThreadSummary,
 } from "../types/dashboard";
 import { compactQuotaLabel, expectedRemainingPercentByEvenPace } from "../utils/quota";
+import { hasStaleAccountQuotaData } from "../state/dashboardWarnings";
 import {
   compactFloatingPaceLabel,
   compactResetCreditRateBarSuffix,
@@ -112,6 +113,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
         sevenDayAvailability: quota.quota.sevenDay.availability,
         sevenDayRemainingPercent: quota.quota.sevenDay.remainingPercent,
         sevenDayExpectedRemainingPercent: expectedRemainingPercentByEvenPace(quota.quota.sevenDay),
+        quotaDataStale: hasStaleAccountQuotaData(quota.diagnostics),
       };
     },
     [quota, quotaLabels, rawSnapshot],

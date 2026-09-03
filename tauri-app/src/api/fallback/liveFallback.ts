@@ -50,6 +50,7 @@ export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   sevenDayAvailability: "unavailable",
   sevenDayRemainingPercent: null,
   sevenDayExpectedRemainingPercent: null,
+  quotaDataStale: false,
   unread: false,
   unreadSummary: emptyUnreadSummary,
 };

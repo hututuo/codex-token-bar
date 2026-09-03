@@ -69,7 +69,7 @@ export function quotaRefreshAttemptStatus(
   const successStatus = successfulAt === null
     ? "尚无成功额度"
     : `上次成功 ${formatTimestamp(successfulAt)}`;
-  return `自动重试中（最长 1 分钟） · 上次尝试 ${formatTimestamp(lastAttemptAt)} · ${successStatus}`;
+  return `自动重试中（最长 2 分钟） · 上次尝试 ${formatTimestamp(lastAttemptAt)} · ${successStatus}`;
 }
 
 function summarizedDiagnosticMessages(diagnostics: QuotaDiagnostic[]): string[] {
@@ -101,13 +101,13 @@ function combinedStaleMessage(sources: ReadonlySet<string>): string | null {
   const quotaStale = sources.has("account_quota") || sources.has("frontend_command");
   const resetStale = sources.has("reset_credit");
   if (quotaStale && resetStale) {
-    return "额度和重置卡刷新失败，自动重试中（最长 1 分钟）；当前显示上次成功结果。";
+    return "额度和重置卡刷新失败，自动重试中（最长 2 分钟）；当前显示上次成功结果。";
   }
   if (quotaStale) {
-    return "额度刷新失败，自动重试中（最长 1 分钟）；当前显示上次成功额度。";
+    return "额度刷新失败，自动重试中（最长 2 分钟）；当前显示上次成功额度。";
   }
   if (resetStale) {
-    return "重置卡刷新失败，自动重试中（最长 1 分钟）；当前显示上次成功结果。";
+    return "重置卡刷新失败，自动重试中（最长 2 分钟）；当前显示上次成功结果。";
   }
   return null;
 }

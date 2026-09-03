@@ -76,10 +76,10 @@ struct FloatingPanelPresentationModel: Equatable {
             parts.append(resolvedCompactUsageStatus)
         }
         if visibility.showQuota, let fiveHour = snapshot.quota.fiveHour {
-            parts.append("5 小时额度剩余 \(fiveHour.remainingPercent)%，\(fiveHour.accessibleResetText) 重置")
+            parts.append("5 小时额度剩余 \(fiveHour.remainingPercent)%\(snapshot.quota.staleDataDisplayed ? "，旧数据" : "")，\(fiveHour.accessibleResetText) 重置")
         }
         if visibility.showQuota, let sevenDay = snapshot.quota.sevenDay {
-            parts.append("7 天额度剩余 \(sevenDay.remainingPercent)%，\(sevenDay.accessibleResetText) 重置")
+            parts.append("7 天额度剩余 \(sevenDay.remainingPercent)%\(snapshot.quota.staleDataDisplayed ? "，旧数据" : "")，\(sevenDay.accessibleResetText) 重置")
         }
         if visibility.showRadar {
             if let radarSnapshot = radarPresentation.snapshot {

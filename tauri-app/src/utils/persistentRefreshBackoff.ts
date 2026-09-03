@@ -22,7 +22,7 @@ export const QUOTA_REFRESH_RETRY_DELAYS_MS = [
 
 export const MAX_QUOTA_REFRESH_DELAY_MS = 60_000;
 export const MAX_BACKGROUND_REFRESH_DELAY_MS = 600_000;
-export const SILENT_QUOTA_REFRESH_FAILURES = 3;
+export const QUOTA_REFRESH_FAILURE_NOTICE_DELAY_MS = 60_000;
 
 export function persistentRefreshDelayMs(
   failureCount: number,
@@ -52,9 +52,15 @@ export function quotaRefreshDelayMs(failureCount: number): number {
   return QUOTA_REFRESH_RETRY_DELAYS_MS[index];
 }
 
-export function shouldPublishQuotaRefreshResult(
-  succeeded: boolean,
-  previousFailureCount: number,
-): boolean {
-  return succeeded || previousFailureCount >= SILENT_QUOTA_REFRESH_FAILURES;
+export function quotaRefreshFailureNoticeDelayMs(
+  failureStartedAtMs: number,
+  nowMs = Date.now(),
+): number {
+  if (!Number.isFinite(failureStartedAtMs) || !Number.isFinite(nowMs)) {
+    return QUOTA_REFRESH_FAILURE_NOTICE_DELAY_MS;
+  }
+  return Math.max(
+    0,
+    QUOTA_REFRESH_FAILURE_NOTICE_DELAY_MS - Math.max(0, nowMs - failureStartedAtMs),
+  );
 }

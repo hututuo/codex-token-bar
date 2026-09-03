@@ -307,6 +307,7 @@ struct StatusBarMetricValues: Equatable, Sendable {
     let rate: Double?
     let fiveHourRemainingPercent: Int?
     let sevenDayRemainingPercent: Int?
+    let quotaDataStale: Bool
     let fiveHourWindowOfficiallyAbsent: Bool
     let modelRankings: [StatusBarModelRankingEntry]
     let todayTokens: Int?
@@ -325,13 +326,15 @@ struct StatusBarMetricValues: Equatable, Sendable {
         totalTokens: Int?,
         requests: Int?,
         runningThreads: RunningThreadSummary,
-        unreadThreadCount: Int?
+        unreadThreadCount: Int?,
+        quotaDataStale: Bool = false
     ) {
         self.rate = rate.flatMap { $0.isFinite ? max(0, $0) : nil }
         let normalizedFiveHour = fiveHourRemainingPercent.map { min(100, max(0, $0)) }
         let normalizedSevenDay = sevenDayRemainingPercent.map { min(100, max(0, $0)) }
         self.fiveHourRemainingPercent = normalizedFiveHour
         self.sevenDayRemainingPercent = normalizedSevenDay
+        self.quotaDataStale = quotaDataStale
         let resolvedFiveHourAvailability = normalizedFiveHour == nil
             ? (fiveHourAvailability ?? (normalizedSevenDay != nil ? .absent : .unavailable))
             : .measured
@@ -361,15 +364,9 @@ struct StatusBarMetricValues: Equatable, Sendable {
         }
         self.init(
             rate: rateAvailable ? snapshot.rate : nil,
-            fiveHourRemainingPercent: quotaReadFailed
-                ? nil
-                : snapshot.quota.fiveHour?.remainingPercent,
-            sevenDayRemainingPercent: quotaReadFailed
-                ? nil
-                : snapshot.quota.sevenDay?.remainingPercent,
-            fiveHourAvailability: quotaReadFailed
-                ? .unavailable
-                : snapshot.quota.resolvedFiveHourAvailability,
+            fiveHourRemainingPercent: snapshot.quota.fiveHour?.remainingPercent,
+            sevenDayRemainingPercent: snapshot.quota.sevenDay?.remainingPercent,
+            fiveHourAvailability: snapshot.quota.resolvedFiveHourAvailability,
             modelRankings: radar.staleDataDisplayed
                 ? []
                 : Self.modelRankings(
@@ -381,7 +378,8 @@ struct StatusBarMetricValues: Equatable, Sendable {
             totalTokens: snapshot.hasPreciseTokenUsage ? snapshot.consumedTokens : nil,
             requests: snapshot.hasPreciseTokenUsage ? snapshot.todayRequests : nil,
             runningThreads: snapshot.runningThreads,
-            unreadThreadCount: unreadThreadCount
+            unreadThreadCount: unreadThreadCount,
+            quotaDataStale: quotaReadFailed
         )
     }
 
@@ -639,7 +637,7 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
                 )
             )
         case .fiveHour:
-            let value = values.fiveHourRemainingPercent.map { "\($0)%" } ?? "—"
+            let value = values.fiveHourRemainingPercent.map { "\($0)%\(values.quotaDataStale ? " 旧" : "")" } ?? "—"
             let label = quotaColumnLabel(full: "5h", compact: "5", style: labelStyle)
             return StatusBarMetricSegment(
                 id: metric,
@@ -650,14 +648,14 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
                     style: labelStyle
                 ),
                 accessibilityText: values.fiveHourRemainingPercent.map {
-                    "5 小时额度剩余 \($0)%"
+                    "5 小时额度剩余 \($0)%\(values.quotaDataStale ? "，旧数据" : "")"
                 } ?? "5 小时额度暂不可用",
                 layout: .quotaLine(
                     StatusBarMetricLine(text: joinedColumnLabel(label, value: value))
                 )
             )
         case .sevenDay:
-            let value = values.sevenDayRemainingPercent.map { "\($0)%" } ?? "—"
+            let value = values.sevenDayRemainingPercent.map { "\($0)%\(values.quotaDataStale ? " 旧" : "")" } ?? "—"
             let label = quotaColumnLabel(full: "7d", compact: "7", style: labelStyle)
             return StatusBarMetricSegment(
                 id: metric,
@@ -668,7 +666,7 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
                     style: labelStyle
                 ),
                 accessibilityText: values.sevenDayRemainingPercent.map {
-                    "7 天额度剩余 \($0)%"
+                    "7 天额度剩余 \($0)%\(values.quotaDataStale ? "，旧数据" : "")"
                 } ?? "7 天额度暂不可用",
                 layout: .quotaLine(
                     StatusBarMetricLine(text: joinedColumnLabel(label, value: value))

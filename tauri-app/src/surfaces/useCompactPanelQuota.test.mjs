@@ -314,6 +314,9 @@ test("compact quota keeps last good data through three failures and publishes th
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const realDateNow = Date.now;
+  let nowMs = 0;
+  Date.now = () => nowMs;
   const timeouts = new Map();
   const intervals = new Map();
   let nextTimerId = 1;
@@ -392,14 +395,19 @@ test("compact quota keeps last good data through three failures and publishes th
         });
         assert.equal(container.textContent, "good|0.88");
 
+        nowMs = 0;
         await fireInterval();
+        nowMs = 30_000;
         await fireInterval();
+        nowMs = 59_000;
         await fireInterval();
         assert.equal(container.textContent, "good|0.88");
 
+        nowMs = 60_000;
         await fireInterval();
         assert.equal(container.textContent, "failed|0.88");
 
+        nowMs = 61_000;
         await fireInterval();
         assert.equal(container.textContent, "recovered|0.98");
       } finally {
@@ -408,6 +416,7 @@ test("compact quota keeps last good data through three failures and publishes th
     });
   } finally {
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Date.now = realDateNow;
     restoreGlobals();
     window.close();
   }

@@ -71,7 +71,7 @@ final class StatusBarTokenPanelTests: XCTestCase {
         XCTAssertEqual(items.last?.window?.usedPercent, 58)
     }
 
-    func testStatusBarQuotaPresentationReplacesStaleCacheWithDashesAfterReadFailure() {
+    func testStatusBarQuotaPresentationKeepsStalePercentagesAndMarksThemOld() {
         let quota = AccountQuotaSnapshot(
             fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: nil),
             sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: nil),
@@ -81,7 +81,8 @@ final class StatusBarTokenPanelTests: XCTestCase {
         let items = StatusBarQuotaPresentation.items(for: quota)
 
         XCTAssertEqual(items.map(\.title), ["5h", "7d"])
-        XCTAssertTrue(items.allSatisfy { $0.window == nil })
+        XCTAssertEqual(items.map { $0.window?.remainingPercent }, [80, 60])
+        XCTAssertTrue(items.allSatisfy(\.isStale))
     }
 
     func testStatusBarQuotaPresentationKeepsBothDashesForTotalFailure() {

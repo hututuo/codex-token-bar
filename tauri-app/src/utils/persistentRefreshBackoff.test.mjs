@@ -6,7 +6,7 @@ import {
   MAX_BACKGROUND_REFRESH_DELAY_MS,
   persistentRefreshDelayMs,
   quotaRefreshDelayMs,
-  shouldPublishQuotaRefreshResult,
+  quotaRefreshFailureNoticeDelayMs,
 } from "./persistentRefreshBackoff.ts";
 
 test("legacy persistent retry remains capped at one minute for non-quota callers", () => {
@@ -25,14 +25,14 @@ test("quota retry follows the user-visible progressive schedule and stays at two
   assert.equal(quotaRefreshDelayMs(Number.NaN), 1_000);
 });
 
-test("quota failures stay silent for three attempts while successful reads publish immediately", () => {
+test("quota failure notice waits sixty seconds from the first failed read", () => {
   assert.deepEqual(
-    [0, 1, 2, 3, 4].map((failureCount) => (
-      shouldPublishQuotaRefreshResult(false, failureCount)
+    [0, 1_000, 30_000, 60_000, 90_000].map((nowMs) => (
+      quotaRefreshFailureNoticeDelayMs(0, nowMs)
     )),
-    [false, false, false, true, true],
+    [60_000, 59_000, 30_000, 0, 0],
   );
-  assert.equal(shouldPublishQuotaRefreshResult(true, 0), true);
+  assert.equal(quotaRefreshFailureNoticeDelayMs(Number.NaN, 0), 60_000);
 });
 
 test("channel-specific maximum delay is honored without terminating retries", () => {

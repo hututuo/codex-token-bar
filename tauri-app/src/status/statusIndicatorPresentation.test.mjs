@@ -352,7 +352,7 @@ test("status quota uses the shared zero-to-one contract and preserves measured z
   assert.deepEqual(result.visibleItems[1].compactMarker, { top: "7", bottom: "D" });
 });
 
-test("stale cached quota diagnostics replace retained percentages with two unavailable dashes", () => {
+test("stale cached quota diagnostics keep retained percentages and mark them old", () => {
   const staleSnapshot = statusSnapshotForQuotaDiagnostics(BASE_SNAPSHOT, [{
     category: "stale_cached_data",
     message: "额度刷新失败，暂时显示上次成功额度。",
@@ -362,10 +362,11 @@ test("stale cached quota diagnostics replace retained percentages with two unava
     source: "account_quota",
     staleDataDisplayed: true,
   }]);
-  assert.equal(staleSnapshot.fiveHourAvailability, "unavailable");
-  assert.equal(staleSnapshot.fiveHourRemainingPercent, null);
-  assert.equal(staleSnapshot.sevenDayAvailability, "unavailable");
-  assert.equal(staleSnapshot.sevenDayRemainingPercent, null);
+  assert.equal(staleSnapshot.fiveHourAvailability, BASE_SNAPSHOT.fiveHourAvailability);
+  assert.equal(staleSnapshot.fiveHourRemainingPercent, BASE_SNAPSHOT.fiveHourRemainingPercent);
+  assert.equal(staleSnapshot.sevenDayAvailability, BASE_SNAPSHOT.sevenDayAvailability);
+  assert.equal(staleSnapshot.sevenDayRemainingPercent, BASE_SNAPSHOT.sevenDayRemainingPercent);
+  assert.equal(staleSnapshot.quotaDataStale, true);
 
   const result = buildStatusIndicatorPresentation({
     labelStyle: "compact",
@@ -373,7 +374,7 @@ test("stale cached quota diagnostics replace retained percentages with two unava
     order: ["fiveHour", "sevenDay"],
     snapshot: staleSnapshot,
   });
-  assert.equal(result.title, "5H— · 7D—");
+  assert.equal(result.title, "5H41% 旧 · 7D76% 旧");
   assert.deepEqual(result.visibleItems.map((item) => item.id), ["fiveHour", "sevenDay"]);
 });
 

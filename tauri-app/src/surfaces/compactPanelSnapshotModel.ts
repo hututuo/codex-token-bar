@@ -25,6 +25,7 @@ const baseFloatingPanelSnapshot: FloatingPanelSnapshot = {
   sevenDayAvailability: "unavailable",
   sevenDayRemainingPercent: null,
   sevenDayExpectedRemainingPercent: null,
+  quotaDataStale: false,
   unread: false,
   unreadSummary: {
     active: false,
@@ -94,6 +95,10 @@ export function floatingSnapshotForDashboardPreview(
     sevenDayAvailability: dashboard.quota.sevenDay.availability,
     sevenDayRemainingPercent: dashboard.quota.sevenDay.remainingPercent,
     sevenDayExpectedRemainingPercent: null,
+    quotaDataStale: dashboard.diagnostics.some((diagnostic) => (
+      diagnostic.source === "account_quota"
+      && (diagnostic.staleDataDisplayed || diagnostic.category === "stale_cached_data")
+    )),
   };
 }
 

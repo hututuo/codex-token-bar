@@ -19,7 +19,7 @@ protocol AccountQuotaRetryScheduling: Sendable {
 
 private struct DefaultAccountQuotaRetryScheduler: AccountQuotaRetryScheduling {
     func wait(for delay: TimeInterval) async throws {
-        let seconds = min(max(delay, 0.1), 60)
+        let seconds = min(max(delay, 0.1), 120)
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 }
@@ -68,7 +68,6 @@ private final class FoundationAccountQuotaTimerToken: AccountQuotaTimerToken {
 final class AccountQuotaStore: ObservableObject {
     private static let maximumAutomaticRefreshInterval = AccountQuotaRefreshCadence.tenMinutes.seconds
     private static let maximumRetryDelay: TimeInterval = 120
-    private static let silentQuotaFailureCount = 3
 
     @Published private(set) var snapshot = AccountQuotaSnapshot.empty
 
@@ -79,6 +78,8 @@ final class AccountQuotaStore: ObservableObject {
     private var isRefreshing = false
     private var isResetCreditRefreshing = false
     private var lastSuccessfulRefreshCompletedAt: Date?
+    private var quotaFailureStartedAt: Date?
+    private var lastQuotaFailureDiagnostic: AccountQuotaDiagnostic?
     private(set) var automaticRefreshInterval: TimeInterval
 
     private let quotaReader: any QuotaReading
@@ -92,8 +93,9 @@ final class AccountQuotaStore: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var resetCreditTask: Task<Void, Never>?
     private var quotaRetryTask: Task<Void, Never>?
+    private var quotaFailureNoticeTask: Task<Void, Never>?
     private var resetCreditRetryTask: Task<Void, Never>?
-    private var quotaRetryBackoff = PersistentRefreshBackoff()
+    private var quotaRetryBackoff = PersistentRefreshBackoff(steps: PersistentRefreshBackoff.quotaSteps)
     private var resetCreditRetryBackoff = PersistentRefreshBackoff()
 
     private var refreshGeneration = 0
@@ -167,6 +169,7 @@ final class AccountQuotaStore: ObservableObject {
         cancelQuotaRefresh(restoreStatus: true)
         cancelResetCreditRefresh(restoreStatus: true)
         cancelQuotaRetry(resetBackoff: true)
+        cancelQuotaFailureNotice(resetTracking: true)
         cancelResetCreditRetry(resetBackoff: true)
         sourceBindingGeneration += 1
         guard identityChanged else { return true }
@@ -174,6 +177,7 @@ final class AccountQuotaStore: ObservableObject {
         historyStore?.clearIdentity()
         sourceIdentityGeneration += 1
         lastSuccessfulRefreshCompletedAt = nil
+        quotaFailureStartedAt = nil
         snapshot = .empty
         snapshotSourceID = nil
         resetCreditSnapshotSourceID = nil
@@ -199,6 +203,7 @@ final class AccountQuotaStore: ObservableObject {
         cancelQuotaRefresh(restoreStatus: true)
         cancelResetCreditRefresh(restoreStatus: true)
         cancelQuotaRetry(resetBackoff: true)
+        cancelQuotaFailureNotice(resetTracking: true)
         cancelResetCreditRetry(resetBackoff: true)
     }
 
@@ -298,6 +303,7 @@ final class AccountQuotaStore: ObservableObject {
                     self.activeRefreshSourceID = nil
                     self.quotaStatusBeforeRefresh = nil
                     self.lastSuccessfulRefreshCompletedAt = Date()
+                    self.cancelQuotaFailureNotice(resetTracking: true)
                     self.cancelQuotaRetry(resetBackoff: true)
                     published.status = quota.status
                     self.snapshot = published
@@ -332,18 +338,30 @@ final class AccountQuotaStore: ObservableObject {
                     failed.resetCredits = current.resetCredits
                     failed.resetCreditStatus = current.resetCreditStatus
                     failed.resetCreditUpdatedAt = current.resetCreditUpdatedAt
+                    let occurredAt = Date()
+                    let diagnostic = AccountQuotaDiagnostic.classify(
+                        source: .accountQuota,
+                        error: error,
+                        occurredAt: occurredAt
+                    )
+                    if retainsSameSourceQuota {
+                        self.quotaFailureStartedAt = self.quotaFailureStartedAt ?? occurredAt
+                        self.lastQuotaFailureDiagnostic = diagnostic
+                    } else {
+                        self.cancelQuotaFailureNotice(resetTracking: true)
+                    }
                     let silentlyRetainsLastGood = retainsSameSourceQuota
-                        && self.quotaRetryBackoff.failureCount < Self.silentQuotaFailureCount
+                        && !QuotaFailureNoticePolicy.shouldPublish(
+                            lastGoodAvailable: true,
+                            startedAt: self.quotaFailureStartedAt,
+                            now: occurredAt
+                        )
                     if silentlyRetainsLastGood {
                         failed.status = retainedStatus ?? current.status
                         failed.diagnostics = current.diagnostics
+                        self.scheduleQuotaFailureNotice(sourceID: sourceID, bindingGeneration: bindingGeneration)
                     } else {
-                        let occurredAt = Date()
-                        let diagnostic = AccountQuotaDiagnostic.classify(
-                            source: .accountQuota,
-                            error: error,
-                            occurredAt: occurredAt
-                        )
+                        self.cancelQuotaFailureNotice(resetTracking: false)
                         var quotaDiagnostics = [diagnostic]
                         if retainsSameSourceQuota {
                             quotaDiagnostics.append(
@@ -499,6 +517,53 @@ final class AccountQuotaStore: ObservableObject {
             self.quotaRetryTask = nil
             self.refreshQuota(force: true)
         }
+    }
+
+    private func scheduleQuotaFailureNotice(sourceID: String, bindingGeneration: Int) {
+        guard isStarted,
+              quotaFailureNoticeTask == nil,
+              quotaFailureStartedAt != nil else { return }
+        quotaFailureNoticeTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(QuotaFailureNoticePolicy.noticeDelay * 1_000_000_000))
+            } catch {
+                return
+            }
+            guard let self else { return }
+            self.quotaFailureNoticeTask = nil
+            guard self.isStarted,
+                  self.sourceBindingGeneration == bindingGeneration,
+                  self.quotaSourceID(for: self.currentDataSource) == sourceID,
+                  self.snapshotSourceID == sourceID,
+                  self.snapshot.isAvailable,
+                  let diagnostic = self.lastQuotaFailureDiagnostic else { return }
+            self.publishQuotaFailureNotice(diagnostic)
+        }
+    }
+
+    private func publishQuotaFailureNotice(_ diagnostic: AccountQuotaDiagnostic) {
+        guard snapshot.isAvailable else { return }
+        var failed = snapshot
+        var quotaDiagnostics = [diagnostic]
+        quotaDiagnostics.append(
+            .staleCachedData(
+                source: .accountQuota,
+                rawCause: diagnostic.rawCause,
+                occurredAt: diagnostic.occurredAt
+            )
+        )
+        failed.diagnostics = quotaDiagnostics
+            + snapshot.diagnostics.filter { $0.source == .resetCredit }
+        failed.status = "额度读取失败：\(diagnostic.message)；自动重试中（最长 2 分钟），当前显示上次成功额度"
+        snapshot = failed
+    }
+
+    private func cancelQuotaFailureNotice(resetTracking: Bool) {
+        quotaFailureNoticeTask?.cancel()
+        quotaFailureNoticeTask = nil
+        guard resetTracking else { return }
+        quotaFailureStartedAt = nil
+        lastQuotaFailureDiagnostic = nil
     }
 
     private func scheduleResetCreditRetry(sourceID: String, bindingGeneration: Int) {

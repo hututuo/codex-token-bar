@@ -18,7 +18,7 @@ import {
   MAX_QUOTA_REFRESH_DELAY_MS,
   persistentRefreshDelayMs,
   quotaRefreshDelayMs,
-  shouldPublishQuotaRefreshResult,
+  quotaRefreshFailureNoticeDelayMs,
 } from "../utils/persistentRefreshBackoff";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
 import { useWakeRefresh } from "../utils/useWakeRefresh";
@@ -78,6 +78,10 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
   const resetInFlightGeneration = useRef<number | null>(null);
   const quotaFailureCount = useRef(0);
   const resetFailureCount = useRef(0);
+  const quotaFailureStartedAt = useRef<number | null>(null);
+  const quotaFailureNoticeTimer = useRef<number | null>(null);
+  const latestFailedQuota = useRef<AccountQuotaBundle | null>(null);
+  const quotaFailureNoticePublished = useRef(false);
   const quotaRetryTimer = useRef<number | null>(null);
   const resetRetryTimer = useRef<number | null>(null);
   const lifecycleRef = useRef({ active, enabled, generation: 0, sourceKey });
@@ -102,6 +106,10 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
       clearRetryTimer(resetRetryTimer);
       quotaFailureCount.current = 0;
       resetFailureCount.current = 0;
+      quotaFailureStartedAt.current = null;
+      latestFailedQuota.current = null;
+      quotaFailureNoticePublished.current = false;
+      clearRetryTimer(quotaFailureNoticeTimer);
       setQuota(emptyAccountQuotaBundle());
     }
   }, [active, enabled, sourceKey]);
@@ -112,7 +120,33 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
       mounted.current = false;
       clearRetryTimer(quotaRetryTimer);
       clearRetryTimer(resetRetryTimer);
+      clearRetryTimer(quotaFailureNoticeTimer);
     };
+  }, []);
+
+  const scheduleQuotaFailureNotice = useCallback(() => {
+    if (
+      quotaFailureNoticeTimer.current !== null
+      || quotaFailureNoticePublished.current
+      || quotaFailureStartedAt.current === null
+      || latestFailedQuota.current === null
+    ) {
+      return;
+    }
+    const delayMs = quotaRefreshFailureNoticeDelayMs(quotaFailureStartedAt.current);
+    quotaFailureNoticeTimer.current = window.setTimeout(() => {
+      quotaFailureNoticeTimer.current = null;
+      const startedAt = quotaFailureStartedAt.current;
+      const latest = latestFailedQuota.current;
+      if (!mounted.current || startedAt === null || latest === null) return;
+      const remainingMs = quotaRefreshFailureNoticeDelayMs(startedAt);
+      if (remainingMs > 0) {
+        scheduleQuotaFailureNotice();
+        return;
+      }
+      quotaFailureNoticePublished.current = true;
+      setQuota((previous) => mergeCompactQuota(previous, latest));
+    }, delayMs);
   }, []);
 
   useEffect(() => {
@@ -192,16 +226,30 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
     const succeeded = next !== null && !next.diagnostics.some((diagnostic) => (
       diagnostic.source === "account_quota"
     ));
-    if (next !== null && shouldPublishQuotaRefreshResult(
-      succeeded,
-      quotaFailureCount.current,
-    )) {
-      setQuota((previous) => mergeCompactQuota(previous, next));
-    }
     if (succeeded) {
+      quotaFailureStartedAt.current = null;
+      latestFailedQuota.current = null;
+      quotaFailureNoticePublished.current = false;
+      clearRetryTimer(quotaFailureNoticeTimer);
+      if (next !== null) {
+        setQuota((previous) => mergeCompactQuota(previous, next));
+      }
       quotaFailureCount.current = 0;
       clearRetryTimer(quotaRetryTimer);
       return;
+    }
+
+    if (next !== null) {
+      latestFailedQuota.current = next;
+      quotaFailureStartedAt.current ??= Date.now();
+      const noticeDue = quotaRefreshFailureNoticeDelayMs(quotaFailureStartedAt.current) <= 0;
+      if (quotaFailureNoticePublished.current || noticeDue) {
+        quotaFailureNoticePublished.current = true;
+        clearRetryTimer(quotaFailureNoticeTimer);
+        setQuota((previous) => mergeCompactQuota(previous, next));
+      } else {
+        scheduleQuotaFailureNotice();
+      }
     }
 
     const delayMs = quotaRefreshDelayMs(quotaFailureCount.current);
@@ -211,7 +259,7 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
       quotaRetryTimer.current = null;
       void refreshQuota(true);
     }, delayMs);
-  }, [active, enabled, followDashboardUpdates, readQuota, sourceToken]);
+  }, [active, enabled, followDashboardUpdates, readQuota, scheduleQuotaFailureNotice, sourceToken]);
 
   const refreshResetCredits = useCallback(async function refreshResetCredits(forceRefresh = false) {
     const lifecycle = lifecycleRef.current;

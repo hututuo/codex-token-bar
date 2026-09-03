@@ -53,6 +53,8 @@ export interface FloatingPanelSnapshot {
   sevenDayAvailability: "measured" | "unavailable" | "absent";
   sevenDayRemainingPercent: number | null;
   sevenDayExpectedRemainingPercent: number | null;
+  /** The displayed quota is last-good data after a prolonged read failure. */
+  quotaDataStale?: boolean;
   unread: boolean;
   unreadSummary: UnreadSummary;
 }

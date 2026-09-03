@@ -699,7 +699,7 @@ struct StatusBarTokenPopoverView: View {
             StatusSummaryCard(section: section) {
                 VStack(alignment: .leading, spacing: 7) {
                     ForEach(StatusBarQuotaPresentation.items(for: snapshot.quota)) { item in
-                        StatusBarQuotaLine(title: item.title, window: item.window)
+                        StatusBarQuotaLine(title: item.title, window: item.window, isStale: item.isStale)
                     }
                 }
             }
@@ -889,23 +889,32 @@ private struct StatusBarMetricTile: View {
 struct StatusBarQuotaPresentationItem: Identifiable {
     let title: String
     let window: AccountQuotaWindow?
+    let isStale: Bool
 
     var id: String { title }
+
+    init(title: String, window: AccountQuotaWindow?, isStale: Bool = false) {
+        self.title = title
+        self.window = window
+        self.isStale = isStale
+    }
 }
 
 enum StatusBarQuotaPresentation {
     static func items(for quota: AccountQuotaSnapshot) -> [StatusBarQuotaPresentationItem] {
-        if quota.staleDataDisplayed {
-            return [
-                StatusBarQuotaPresentationItem(title: "5h", window: nil),
-                StatusBarQuotaPresentationItem(title: "7d", window: nil),
-            ]
-        }
         var items: [StatusBarQuotaPresentationItem] = []
         if quota.resolvedFiveHourAvailability != .absent {
-            items.append(StatusBarQuotaPresentationItem(title: "5h", window: quota.fiveHour))
+            items.append(StatusBarQuotaPresentationItem(
+                title: "5h",
+                window: quota.fiveHour,
+                isStale: quota.staleDataDisplayed && quota.fiveHour != nil
+            ))
         }
-        items.append(StatusBarQuotaPresentationItem(title: "7d", window: quota.sevenDay))
+        items.append(StatusBarQuotaPresentationItem(
+            title: "7d",
+            window: quota.sevenDay,
+            isStale: quota.staleDataDisplayed && quota.sevenDay != nil
+        ))
         return items
     }
 }
@@ -913,6 +922,7 @@ enum StatusBarQuotaPresentation {
 private struct StatusBarQuotaLine: View {
     let title: String
     let window: AccountQuotaWindow?
+    let isStale: Bool
 
     @AppStorage(FloatingPanelAppearance.startHexKey) private var floatingPanelGradientStartHex = FloatingPanelAppearance.defaultStartHex
     @AppStorage(FloatingPanelAppearance.endHexKey) private var floatingPanelGradientEndHex = FloatingPanelAppearance.defaultEndHex
@@ -964,7 +974,7 @@ private struct StatusBarQuotaLine: View {
             }
             .frame(height: 10)
 
-            Text(window.map { "剩 \($0.remainingPercent)% · \($0.compactResetText)" } ?? "—")
+            Text(window.map { "剩 \($0.remainingPercent)%\(isStale ? " 旧" : "") · \($0.compactResetText)" } ?? "—")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -972,6 +982,6 @@ private struct StatusBarQuotaLine: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title) 额度")
-        .accessibilityValue(window.map { "剩余 \($0.remainingPercent)%，已用 \($0.usedPercent)%，\($0.accessibleResetText) 重置" } ?? "暂不可用")
+        .accessibilityValue(window.map { "剩余 \($0.remainingPercent)%\(isStale ? "，旧数据" : "")，已用 \($0.usedPercent)%，\($0.accessibleResetText) 重置" } ?? "暂不可用")
     }
 }
