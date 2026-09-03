@@ -4,7 +4,7 @@ import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("fast and precise dashboard clients invoke production IPC with the exact source token", async () => {
+test("cached and precise dashboard clients invoke production IPC with the exact source token", async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const calls = [];
   Object.defineProperty(globalThis, "window", {
@@ -44,7 +44,7 @@ test("fast and precise dashboard clients invoke production IPC with the exact so
       assert.equal(await readPreciseDashboardSnapshot(sourceToken), null);
       assert.equal(await readPreciseDashboardSourceProbe(sourceToken), null);
       assert.deepEqual(calls, [
-        { command: "read_dashboard_snapshot", args: { sourceToken } },
+        { command: "read_cached_dashboard_snapshot", args: { sourceToken } },
         { command: "read_precise_dashboard_snapshot", args: { sourceToken } },
         { command: "read_precise_dashboard_source_probe", args: { sourceToken } },
       ]);

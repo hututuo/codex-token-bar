@@ -3368,8 +3368,8 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
                     CAST((SELECT value FROM metadata WHERE key = 'schema_version') AS INTEGER),
                     COALESCE(CAST((SELECT value FROM metadata WHERE key = 'building_generation') AS INTEGER), -1),
                     COALESCE(CAST((SELECT value FROM metadata WHERE key = 'published_generation') AS INTEGER), -1),
-                    (SELECT COUNT(*) FROM files),
-                    (SELECT COUNT(*) FROM events)",
+                    (SELECT COUNT(*) FROM published_files),
+                    (SELECT COUNT(*) FROM published_events)",
                 [],
                 |row| {
                     Ok((
@@ -3390,6 +3390,8 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
             "the supplied production copy must contain building_generation=1"
         );
     }
+    let mutable_source =
+        std::env::var("CODEX_TOKEN_BAR_LIVE_SOURCE_MUTABLE").as_deref() == Ok("1");
     ExactUsageIndex::reset_scan_bytes_for_testing();
 
     let cold_started = Instant::now();
@@ -3407,20 +3409,22 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
     let cold_scan_bytes = ExactUsageIndex::scan_bytes_for_testing();
     let cold_metadata_validation_bytes = ExactUsageIndex::metadata_validation_bytes_for_testing();
     let after_cold = facts(&copied_index);
-    assert_eq!(after_cold.0, 10);
+    assert_eq!(after_cold.0, 11);
     assert_eq!(
         after_cold.1, -1,
         "building generation must be atomically published"
     );
     assert!(after_cold.2 >= 1);
-    assert!(
-        after_cold.3 >= before.3,
-        "staged file rows must not be lost"
-    );
-    assert!(
-        after_cold.4 >= before.4,
-        "staged event rows must not be lost"
-    );
+    if !mutable_source {
+        assert!(
+            after_cold.3 >= before.3,
+            "published files and newly published staged files must not be lost"
+        );
+        assert!(
+            after_cold.4 >= before.4,
+            "published events and newly published staged events must not be lost"
+        );
+    }
     println!(
         "LIVE_EXACT_INDEX_COLD_RESULT elapsed_seconds={:.3} revision={} total_tokens={} total_calls={} total_threads={} full_body_bytes={} append_scan_bytes={} metadata_validation_bytes={} schema_before={} schema_after={} building_before={} building_after={} published_before={} published_after={} files_before={} files_after={} events_before={} events_after={}",
         cold_elapsed.as_secs_f64(),
@@ -3458,7 +3462,6 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
     let warm_elapsed = warm_started.elapsed();
     let warm_scan_bytes = ExactUsageIndex::scan_bytes_for_testing();
     let warm_metadata_validation_bytes = ExactUsageIndex::metadata_validation_bytes_for_testing();
-    let mutable_source = std::env::var("CODEX_TOKEN_BAR_LIVE_SOURCE_MUTABLE").as_deref() == Ok("1");
     if mutable_source {
         assert!(warm_revision >= cold_revision);
     } else {
@@ -3501,6 +3504,27 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
 
     convert_current_index_to_v091_schema9(&index_path);
     let connection = Connection::open(&index_path).unwrap();
+    for leading_value in [1_u64, 256_u64] {
+        let mut values = [0_u64; 11];
+        values[0] = leading_value;
+        let legacy = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
+                    SELECT generation, path, ?1
+                    FROM files WHERE deleted = 0 ORDER BY generation DESC LIMIT 1
+                    "#,
+                    params![legacy],
+                )
+                .unwrap(),
+            1
+        );
+    }
     let before = connection
         .query_row(
             "SELECT (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT COUNT(*) FROM event_enrichment_sources), (SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_file_totals), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'revision'), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
@@ -3623,6 +3647,148 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
             .total_tokens,
         170
     );
+    drop(migrated);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn schema9_migration_rebinds_lagging_turns_to_the_current_source_generation() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session_id = "019e1234-5678-7abc-8def-0123456789ab";
+    write_lines(
+        &session_dir.join(format!("rollout-{session_id}.jsonl")),
+        &[
+            r#"{"timestamp":"2026-07-20T00:59:00Z","type":"event_msg","payload":{"type":"user_message","message":"迁移后仍应显示的问题"}}"#,
+            r#"{"timestamp":"2026-07-20T00:59:30Z","type":"event_msg","payload":{"type":"agent_message","message":"迁移后仍应显示的回答"}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":200,"output_tokens":100,"total_tokens":1300}}}}"#,
+        ],
+    );
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.cache_usage.turns.len(), 1);
+    convert_current_index_to_v091_schema9(&index_path);
+
+    let mut connection = Connection::open(&index_path).unwrap();
+    let aggregate_generation = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'dashboard_aggregate_exact_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    let next_generation = aggregate_generation + 1;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    for (table, column) in [
+        ("files", "generation"),
+        ("events", "file_generation"),
+        ("file_fingerprints", "file_generation"),
+        ("file_chunks", "file_generation"),
+        ("event_enrichment_sources", "file_generation"),
+        ("dashboard_file_totals", "file_generation"),
+        ("dashboard_file_5m", "file_generation"),
+    ] {
+        transaction
+            .execute(
+                &format!("UPDATE {table} SET {column} = ?1 WHERE {column} = ?2"),
+                params![next_generation, aggregate_generation],
+            )
+            .unwrap();
+    }
+    transaction
+        .execute(
+            "UPDATE metadata SET value = ?1 WHERE key = 'published_generation'",
+            params![next_generation.to_string()],
+        )
+        .unwrap();
+    transaction
+        .execute(
+            "UPDATE metadata SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision'",
+            [],
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT source_file_generation FROM dashboard_turn_candidates LIMIT 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        aggregate_generation,
+        "fixture must retain the lagging legacy turn pointer"
+    );
+    drop(connection);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let migrated = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing(),
+        (0, 0),
+        "rebinding a lagging derived turn must not parse JSONL"
+    );
+    let connection = Connection::open(&index_path).unwrap();
+    let (source_generation, turn_generation) = connection
+        .query_row(
+            r#"
+            SELECT s.last_seen_generation, t.source_file_generation
+            FROM dashboard_turn_candidates_current t
+            JOIN sources s ON s.source_id = t.source_id
+            LIMIT 1
+            "#,
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(source_generation, next_generation);
+    assert_eq!(turn_generation, next_generation);
+    assert_eq!(
+        connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM dashboard_turn_candidates c
+                JOIN files f
+                  ON f.generation = c.source_file_generation
+                 AND f.path = c.file_path
+                WHERE c.aggregate_generation = (
+                    SELECT CAST(value AS INTEGER) FROM metadata
+                    WHERE key = 'published_generation'
+                )
+                "#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "the migrated turn must remain query-visible"
+    );
+    drop(connection);
+
+    let data = migrated
+        .dashboard_data(
+            &root,
+            OffsetDateTime::now_utc(),
+            UtcOffset::UTC,
+            &mut Vec::new(),
+        )
+        .unwrap();
+    assert!(data
+        .cache_usage
+        .turns
+        .iter()
+        .any(|turn| turn.session_id == session_id));
+
     drop(migrated);
     fs::remove_dir_all(root).unwrap();
 }

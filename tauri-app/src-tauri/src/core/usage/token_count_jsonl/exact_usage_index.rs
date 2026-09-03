@@ -11497,29 +11497,68 @@ fn schema11_fingerprint_digest(
         .query(parameters)
         .map_err(|error| format!("无法读取 schema 11 指纹逐行对账：{error}"))?;
     let mut hasher = Sha256::new();
-    hasher.update(b"codex-token-bar-schema11-fingerprint-digest-v1");
+    hasher.update(b"codex-token-bar-schema11-fingerprint-digest-v2");
+    let mut current_source: Option<(i64, String)> = None;
+    let mut canonical_fingerprints = Vec::<Vec<u8>>::new();
     while let Some(row) = rows
         .next()
         .map_err(|error| format!("无法遍历 schema 11 指纹逐行对账：{error}"))?
     {
-        hasher.update([0xff]);
-        schema11_digest_value(
-            &mut hasher,
-            row.get_ref(0)
-                .map_err(|error| format!("无法解码 schema 11 指纹代次：{error}"))?,
-        );
-        schema11_digest_value(
-            &mut hasher,
-            row.get_ref(1)
-                .map_err(|error| format!("无法解码 schema 11 指纹路径：{error}"))?,
-        );
+        let generation = row
+            .get::<_, i64>(0)
+            .map_err(|error| format!("无法解码 schema 11 指纹代次：{error}"))?;
+        let path = row
+            .get::<_, String>(1)
+            .map_err(|error| format!("无法解码 schema 11 指纹路径：{error}"))?;
+        if current_source
+            .as_ref()
+            .is_some_and(|current| current.0 != generation || current.1 != path)
+        {
+            let (current_generation, current_path) = current_source
+                .take()
+                .expect("checked schema 11 fingerprint source");
+            schema11_digest_fingerprint_group(
+                &mut hasher,
+                current_generation,
+                &current_path,
+                &mut canonical_fingerprints,
+            );
+        }
+        current_source.get_or_insert((generation, path));
         let canonical = canonicalize_legacy_fingerprint(
             row.get_ref(2)
                 .map_err(|error| format!("无法解码 schema 11 指纹值：{error}"))?,
         )?;
-        schema11_digest_value(&mut hasher, rusqlite::types::ValueRef::Blob(&canonical));
+        canonical_fingerprints.push(canonical);
+    }
+    if let Some((generation, path)) = current_source {
+        schema11_digest_fingerprint_group(
+            &mut hasher,
+            generation,
+            &path,
+            &mut canonical_fingerprints,
+        );
     }
     Ok(schema11_finish_digest(hasher))
+}
+
+fn schema11_digest_fingerprint_group(
+    hasher: &mut Sha256,
+    generation: i64,
+    path: &str,
+    canonical_fingerprints: &mut Vec<Vec<u8>>,
+) {
+    // Legacy fixed-width little-endian bytes and canonical unsigned LEB128
+    // bytes do not have the same lexicographic order. Sort the canonical form
+    // within one source so the digest proves the exact same multiset without
+    // retaining the full index in memory.
+    canonical_fingerprints.sort_unstable();
+    for canonical in canonical_fingerprints.drain(..) {
+        hasher.update([0xff]);
+        schema11_digest_value(hasher, rusqlite::types::ValueRef::Integer(generation));
+        schema11_digest_value(hasher, rusqlite::types::ValueRef::Text(path.as_bytes()));
+        schema11_digest_value(hasher, rusqlite::types::ValueRef::Blob(&canonical));
+    }
 }
 
 fn schema11_migration_digests(
@@ -11676,19 +11715,39 @@ fn schema11_migration_digests(
         )
     "#;
     let turn_cte = r#"
-        WITH current_rows AS (
-            SELECT file_path, ordinal, source_file_generation, timestamp, session_id,
-                   total_tokens, input_tokens, cached_input_tokens, output_tokens,
-                   user_prompt_start, user_prompt_end, assistant_response_start,
-                   assistant_response_end, turn_index, session_calls
-            FROM dashboard_turn_candidates WHERE aggregate_generation = ?1
+        WITH current_versions AS (
+            SELECT path, MAX(generation) AS generation
+            FROM files
+            WHERE generation <= COALESCE(
+                (SELECT CAST(value AS INTEGER) FROM metadata
+                 WHERE key = 'published_generation'), 0
+            )
+            GROUP BY path
+        ), building_versions AS (
+            SELECT path, generation FROM files
+            WHERE ?2 IS NOT NULL AND generation = ?2
+        ), current_rows AS (
+            SELECT t.file_path, t.ordinal,
+                   COALESCE(v.generation, t.source_file_generation) AS source_file_generation,
+                   t.timestamp, t.session_id, t.total_tokens, t.input_tokens,
+                   t.cached_input_tokens, t.output_tokens, t.user_prompt_start,
+                   t.user_prompt_end, t.assistant_response_start,
+                   t.assistant_response_end, t.turn_index, t.session_calls
+            FROM dashboard_turn_candidates t
+            LEFT JOIN current_versions v ON v.path = t.file_path
+            WHERE t.aggregate_generation = ?1
         ), building_rows AS (
-            SELECT file_path, ordinal, source_file_generation, timestamp, session_id,
-                   total_tokens, input_tokens, cached_input_tokens, output_tokens,
-                   user_prompt_start, user_prompt_end, assistant_response_start,
-                   assistant_response_end, turn_index, session_calls
-            FROM dashboard_turn_candidates
-            WHERE ?2 IS NOT NULL AND aggregate_generation = ?2
+            SELECT t.file_path, t.ordinal,
+                   COALESCE(b.generation, v.generation, t.source_file_generation)
+                       AS source_file_generation,
+                   t.timestamp, t.session_id, t.total_tokens, t.input_tokens,
+                   t.cached_input_tokens, t.output_tokens, t.user_prompt_start,
+                   t.user_prompt_end, t.assistant_response_start,
+                   t.assistant_response_end, t.turn_index, t.session_calls
+            FROM dashboard_turn_candidates t
+            LEFT JOIN building_versions b ON b.path = t.file_path
+            LEFT JOIN current_versions v ON v.path = t.file_path
+            WHERE ?2 IS NOT NULL AND t.aggregate_generation = ?2
         ), logical_rows AS (
             SELECT * FROM current_rows
             UNION ALL SELECT * FROM building_rows
@@ -12521,7 +12580,7 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
                     assistant_response_start, assistant_response_end,
                     turn_index, session_calls
                 )
-                SELECT s.source_id, t.ordinal, e.id, t.source_file_generation,
+                SELECT s.source_id, t.ordinal, e.id, s.last_seen_generation,
                        t.timestamp, t.total_tokens, t.input_tokens,
                        t.cached_input_tokens, t.output_tokens, t.user_prompt_start,
                        t.user_prompt_end, t.assistant_response_start,
@@ -12597,22 +12656,25 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
                             turn_index, session_calls
                         )
                         SELECT ?1, s.source_id, t.ordinal, COALESCE(pe.id, e.id),
-                               t.source_file_generation, t.timestamp, t.total_tokens,
+                               COALESCE(p.target_generation, s.last_seen_generation),
+                               t.timestamp, t.total_tokens,
                                t.input_tokens, t.cached_input_tokens, t.output_tokens,
                                t.user_prompt_start, t.user_prompt_end,
                                t.assistant_response_start, t.assistant_response_end,
                                t.turn_index, t.session_calls
                         FROM schema11_legacy_turns t
                         JOIN sources s ON s.path = t.file_path
-                        JOIN pending_sources p ON p.source_id = s.source_id
+                        LEFT JOIN pending_sources p
+                          ON p.source_id = s.source_id AND p.target_generation = ?1
                         LEFT JOIN pending_event_rows pe
                           ON pe.source_id = s.source_id AND pe.ordinal = t.ordinal
                         LEFT JOIN event_rows e
                           ON e.source_id = s.source_id AND e.ordinal = t.ordinal
                         WHERE t.aggregate_generation = ?1
-                          AND p.mode <> 'tombstone'
+                          AND (p.mode IS NULL OR p.mode <> 'tombstone')
                           AND (
-                            (p.mode = 'full' AND pe.id IS NOT NULL)
+                            (p.mode IS NULL AND e.id IS NOT NULL)
+                            OR (p.mode = 'full' AND pe.id IS NOT NULL)
                             OR (p.mode = 'delta' AND COALESCE(pe.id, e.id) IS NOT NULL)
                           )
                         "#,
@@ -13077,21 +13139,30 @@ fn validate_schema11_storage(
             SELECT EXISTS(
                 SELECT 1
                 FROM dashboard_turn_candidates_current t
+                JOIN sources s ON s.source_id = t.source_id
                 LEFT JOIN event_rows e
                   ON e.id = t.event_id AND e.source_id = t.source_id
                  AND e.ordinal = t.ordinal
                 WHERE e.id IS NULL
+                   OR t.source_file_generation <> s.last_seen_generation
                 UNION ALL
                 SELECT 1
                 FROM pending_dashboard_turn_candidates t
-                JOIN pending_sources p ON p.source_id = t.source_id
+                JOIN sources s ON s.source_id = t.source_id
+                LEFT JOIN pending_sources p
+                  ON p.source_id = t.source_id
+                 AND p.target_generation = t.target_generation
                 LEFT JOIN pending_event_rows pe
                   ON pe.id = t.event_id AND pe.source_id = t.source_id
                  AND pe.ordinal = t.ordinal
                 LEFT JOIN event_rows e
                   ON e.id = t.event_id AND e.source_id = t.source_id
                  AND e.ordinal = t.ordinal
-                WHERE p.mode = 'tombstone'
+                WHERE t.source_file_generation <> COALESCE(
+                          p.target_generation, s.last_seen_generation
+                      )
+                   OR p.mode = 'tombstone'
+                   OR (p.mode IS NULL AND e.id IS NULL)
                    OR (p.mode = 'full' AND pe.id IS NULL)
                    OR (p.mode = 'delta' AND pe.id IS NULL AND e.id IS NULL)
             )
@@ -13101,7 +13172,10 @@ fn validate_schema11_storage(
         )
         .map_err(|error| format!("无法检查 schema 11 轮次候选事件引用：{error}"))?;
     if invalid_turn_reference {
-        return Err("schema 11 候选库轮次候选未绑定同一 source/ordinal 的稳定事件".into());
+        return Err(
+            "schema 11 候选库轮次候选未绑定同一 source/ordinal 的稳定事件与真实文件代次"
+                .into(),
+        );
     }
     if let Some(expected_facts) = expected_facts {
         let actual_facts = schema11_migration_facts(&connection, INDEX_SCHEMA_VERSION)?;
