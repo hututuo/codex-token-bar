@@ -2933,6 +2933,95 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
+    func testExactHistoryIndexReusesV2TextFingerprintStagingWithoutReparse() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV2StageRecovery")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-v2stagerecover"
+        let file = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: sessionID,
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let parseCount = ThreadSafeCounter()
+        let parser: CodexUsageHistoryIndex.SessionParser = {
+            file, parsedSessionID, request, insertFingerprint, emit in
+            parseCount.increment()
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        let interrupted = try CodexUsageHistoryIndex(codexHome: codexHome)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(
+            try interrupted.synchronize(
+                files: [file],
+                sessionID: analyzer.sessionID(from:),
+                parser: parser
+            )
+        )
+        XCTAssertEqual(parseCount.value, 1)
+
+        let stagingRoot = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("staging", isDirectory: true)
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: stagingRoot,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ))
+        let stagingDatabase = try XCTUnwrap(
+            enumerator.compactMap { $0 as? URL }.first {
+                $0.pathExtension == "sqlite"
+                    && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+        )
+        let stage = SQLiteDatabaseDriver(url: stagingDatabase)
+        let canonicalFingerprint = try XCTUnwrap(
+            try stage.readRows("SELECT value FROM fingerprints LIMIT 1;") {
+                $0.data(0)
+            }.first ?? nil
+        )
+        let legacyText = try UsageFingerprintCodec.decode(canonicalFingerprint)
+            .map(String.init)
+            .joined(separator: ":")
+        try stage.execute(
+            "UPDATE fingerprints SET value = ?;",
+            bindings: [.text(legacyText)]
+        )
+        try stage.execute("UPDATE manifest SET manifest_schema_version = 2;")
+
+        let resumed = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let result = try resumed.synchronize(
+            files: [file],
+            sessionID: analyzer.sessionID(from:),
+            parser: parser
+        )
+
+        XCTAssertEqual(result.changedFiles, 1)
+        XCTAssertEqual(parseCount.value, 1, "v2 staging must be upgraded without reopening JSONL")
+        let exactDatabase = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        XCTAssertEqual(
+            try scalarInt(
+                "SELECT COUNT(*) FROM source_fingerprints WHERE typeof(value) = 'blob';",
+                in: exactDatabase
+            ),
+            1
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagingRoot.path))
+    }
+
     func testExactHistoryBatchImportRollsBackAllSourcesTogether() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageBatchAtomicity")
