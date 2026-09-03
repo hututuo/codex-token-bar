@@ -158,6 +158,50 @@ test("mounted main forwards exact tokens and never publishes a delayed snapshot 
   });
 });
 
+test("a visible stale last-good snapshot starts the initial precise owner", async () => {
+  await withMountedDashboard(async ({ React, container, load, render }) => {
+    const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
+    const { INITIAL_PRECISE_DASHBOARD_DELAY_MS } = await load(
+      "/src/state/preciseDashboardSchedule.ts",
+    );
+    const sourceA = sourceEnvelope("physical-a", 1);
+    const cached = snapshot(emptyDashboardSnapshot, "cached-last-good");
+    cached.stats.totalTokens = 120;
+    cached.preciseRecentUsageFresh = false;
+    cached.settledThrough = "2026-09-03T06:00:00Z";
+    const preciseTokens = [];
+    const source = dashboardSource({
+      emptyDashboardSnapshot,
+      fallbackPlatformCapabilities,
+      getCodexHome: () => Promise.resolve(sourceA),
+      readDashboardSnapshot: () => Promise.resolve(cached),
+      readPreciseDashboardSnapshot(token) {
+        preciseTokens.push(token);
+        return Promise.resolve({
+          ...cached,
+          generatedAt: "fresh-precise",
+          preciseRecentUsageFresh: true,
+        });
+      },
+    });
+
+    await render(source, {
+      strict: true,
+      subscribeToSourceChanges: () => Promise.resolve({ ok: true, unlisten: () => {} }),
+    });
+    await waitForAct(React, () => JSON.parse(container.textContent).generatedAt === "cached-last-good");
+    await React.act(async () => {
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        INITIAL_PRECISE_DASHBOARD_DELAY_MS + 50,
+      ));
+    });
+    await waitForAct(React, () => preciseTokens.length > 0);
+    assert.equal(preciseTokens[0].physicalHomeKey, "physical-a");
+    await waitForAct(React, () => JSON.parse(container.textContent).generatedAt === "fresh-precise");
+  });
+});
+
 test("main listener failure reconciles slowly and focus advances to B while a healthy listener never polls", async () => {
   await withMountedDashboard(async ({ React, container, load, render, window }) => {
     const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
