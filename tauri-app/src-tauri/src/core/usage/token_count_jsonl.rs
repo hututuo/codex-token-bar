@@ -30,6 +30,7 @@ mod aggregates;
 #[cfg(test)]
 mod cache_version_tests;
 mod exact_usage_index;
+mod fingerprint_codec;
 mod session_files;
 mod session_parser;
 #[cfg(test)]
