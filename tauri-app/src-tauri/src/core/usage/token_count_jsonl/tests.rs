@@ -4268,6 +4268,84 @@ fn schema11_migration_preserves_stale_published_enrichment_receipt() {
 }
 
 #[test]
+fn schema11_migration_revalidates_persisted_validated_candidate_before_switch() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-schema11-validated-resume.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":7,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    convert_current_index_to_v091_schema9(&index_path);
+    let active_bytes_before = fs::read(&index_path).unwrap();
+    let active_facts_before = exact_migration_facts(&index_path);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    ExactUsageIndex::fail_schema9_migration_stage_for_testing(13);
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("stage 13 must stop after persisting Validated"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("injected schema 11 candidate migration failure at stage 13"),
+        "{error}"
+    );
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+
+    let mut candidate_value = index_path.as_os_str().to_os_string();
+    candidate_value.push(".schema11-candidate");
+    let candidate_path = PathBuf::from(candidate_value);
+    let mut rollback_value = index_path.as_os_str().to_os_string();
+    rollback_value.push(".schema11-rollback");
+    let rollback_path = PathBuf::from(rollback_value);
+    let mut manifest_value = index_path.as_os_str().to_os_string();
+    manifest_value.push(".schema11-migration.json");
+    let manifest_path = PathBuf::from(manifest_value);
+    assert!(candidate_path.exists());
+    assert!(manifest_path.exists());
+    assert!(!rollback_path.exists());
+
+    let candidate = Connection::open(&candidate_path).unwrap();
+    assert_eq!(
+        candidate
+            .execute(
+                "UPDATE event_rows SET timestamp = timestamp + 1 WHERE id = (SELECT MIN(id) FROM event_rows)",
+                [],
+            )
+            .unwrap(),
+        1
+    );
+    candidate
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+    drop(candidate);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("a persisted Validated candidate must be rechecked before switching"),
+        Err(error) => error,
+    };
+    assert!(error.contains("对账失败"), "{error}");
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(fs::read(&index_path).unwrap(), active_bytes_before);
+    assert_eq!(exact_migration_facts(&index_path), active_facts_before);
+    assert!(exact_column_exists(&index_path, "files", "device_id"));
+    assert!(candidate_path.exists());
+    assert!(manifest_path.exists());
+    assert!(!rollback_path.exists());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_schema9_migration_rolls_back_every_swap_stage_without_data_loss() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     for stage in 1..=9 {

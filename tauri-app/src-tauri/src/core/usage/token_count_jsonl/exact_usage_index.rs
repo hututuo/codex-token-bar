@@ -12929,6 +12929,7 @@ fn schema11_resume_candidate(
     rollback_path: &Path,
     codex_home: &Path,
 ) -> Result<(), String> {
+    let resumed_from_validated = manifest.phase == Schema11CandidatePhase::Validated;
     if manifest.phase == Schema11CandidatePhase::Switched {
         // The switched schema 11 database is allowed to accumulate a durable
         // unfinished generation before the first successful refresh. The
@@ -13052,9 +13053,16 @@ fn schema11_resume_candidate(
         maybe_fail_schema11_migration_for_testing(8)?;
         manifest.phase = Schema11CandidatePhase::Validated;
         schema11_store_manifest(manifest_path, manifest)?;
+        maybe_fail_schema11_migration_for_testing(13)?;
     }
 
     if manifest.phase == Schema11CandidatePhase::Validated {
+        if resumed_from_validated {
+            // A prior process may have stopped after persisting Validated. The
+            // private candidate has crossed a process boundary since its last
+            // facts check, so revalidate it before any rename can occur.
+            validate_schema11_candidate(candidate_path, &source_facts)?;
+        }
         super::update_precise_dashboard_progress(
             codex_home,
             "migrating",
