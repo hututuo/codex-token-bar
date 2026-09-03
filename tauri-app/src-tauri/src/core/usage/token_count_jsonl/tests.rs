@@ -3815,7 +3815,13 @@ fn exact_index_migrates_fba33820_schema10_without_reparsing_and_keeps_append_che
     convert_current_index_to_fba33820_schema10(&index_path);
 
     ExactUsageIndex::reset_scan_bytes_for_testing();
+    ExactUsageIndex::reset_quick_check_count_for_testing();
     let mut migrated = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(
+        ExactUsageIndex::quick_check_count_for_testing(),
+        5,
+        "schema 10→11 must not repeat an integrity scan without a new durability boundary"
+    );
     assert_eq!(
         ExactUsageIndex::scan_bytes_for_testing(),
         (0, 0),
@@ -4377,6 +4383,13 @@ fn exact_index_schema11_switch_interruptions_resume_without_jsonl_reparse() {
                 "injected schema 11 candidate migration failure at stage {stage}"
             )),
             "{error}"
+        );
+        let progress = precise_dashboard_progress(&root);
+        assert_eq!(progress.phase, "migrating");
+        assert!(
+            progress.message.contains("完成") && !progress.message.contains("准备"),
+            "the active Switching phase must describe the atomic switch itself: {}",
+            progress.message
         );
         assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
         assert_eq!(fs::read(&source_path).unwrap(), source_bytes_before);

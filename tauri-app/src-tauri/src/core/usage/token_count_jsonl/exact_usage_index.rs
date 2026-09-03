@@ -11165,14 +11165,29 @@ fn schema11_source_receipt(index_path: &Path) -> Result<Schema11SourceReceipt, S
     let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(1))
         .map_err(|error| format!("无法读取 schema 11 活动索引收据：{error}"))?;
     quick_check_index(&connection, Some(index_path))?;
-    let schema_version = metadata_i64(&connection, "schema_version")?
+    schema11_source_receipt_from_connection(index_path, &connection)
+}
+
+fn schema11_source_receipt_without_quick_check(
+    index_path: &Path,
+) -> Result<Schema11SourceReceipt, String> {
+    let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(1))
+        .map_err(|error| format!("无法读取 schema 11 活动索引收据：{error}"))?;
+    schema11_source_receipt_from_connection(index_path, &connection)
+}
+
+fn schema11_source_receipt_from_connection(
+    index_path: &Path,
+    connection: &Connection,
+) -> Result<Schema11SourceReceipt, String> {
+    let schema_version = metadata_i64(connection, "schema_version")?
         .ok_or_else(|| "schema 11 候选迁移缺少活动索引 schema 版本".to_string())?;
     Ok(Schema11SourceReceipt {
         schema_version,
-        revision: metadata_text(&connection, "revision")?,
-        dashboard_revision: metadata_text(&connection, DASHBOARD_REVISION_KEY)?,
-        published_generation: metadata_i64(&connection, "published_generation")?,
-        building_generation: metadata_i64(&connection, "building_generation")?,
+        revision: metadata_text(connection, "revision")?,
+        dashboard_revision: metadata_text(connection, DASHBOARD_REVISION_KEY)?,
+        published_generation: metadata_i64(connection, "published_generation")?,
+        building_generation: metadata_i64(connection, "building_generation")?,
         database: schema11_file_stamp(index_path)?,
         wal: optional_index_sidecar_signature(&sqlite_sidecar_path(index_path, "-wal"))?.map(
             |signature| Schema11FileStamp {
@@ -11184,6 +11199,13 @@ fn schema11_source_receipt(index_path: &Path) -> Result<Schema11SourceReceipt, S
 }
 
 fn schema11_receipt_matches_current(
+    index_path: &Path,
+    expected: &Schema11SourceReceipt,
+) -> Result<bool, String> {
+    Ok(schema11_source_receipt_without_quick_check(index_path)? == *expected)
+}
+
+fn schema11_receipt_matches_current_with_integrity(
     index_path: &Path,
     expected: &Schema11SourceReceipt,
 ) -> Result<bool, String> {
@@ -12761,7 +12783,11 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
     connection
         .execute_batch("VACUUM; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")
         .map_err(|error| format!("无法压实 schema 11 候选库：{error}"))?;
-    quick_check_index(&connection, Some(candidate_path))
+    // The caller immediately advances to the Migrated phase and performs the
+    // complete candidate validation, including quick_check. Repeating it here
+    // scans the same private database twice without creating a new durability
+    // boundary between the checks.
+    Ok(())
 }
 
 #[cfg(test)]
@@ -12848,8 +12874,13 @@ fn prepare_schema11_candidate_if_needed(
         schema11_migration_capacity(index_path)?;
         let source_connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
             .map_err(|error| format!("无法只读读取 schema 11 迁移基线：{error}"))?;
+        let source_facts_started = Instant::now();
         let source_facts =
             schema11_migration_facts(&source_connection, source_receipt.schema_version)?;
+        startup_trace::mark_performance(format!(
+            "schema11_migration stage=source_facts elapsed_ms={}",
+            source_facts_started.elapsed().as_millis()
+        ));
         let mut manifest = Schema11CandidateManifest {
             manifest_version: SCHEMA11_CANDIDATE_MANIFEST_VERSION,
             source_path: index_path.to_string_lossy().into_owned(),
@@ -12933,6 +12964,7 @@ fn schema11_resume_candidate(
             candidate_path,
             rollback_path,
             &facts,
+            true,
         )?;
         return Ok(());
     }
@@ -12956,10 +12988,11 @@ fn schema11_resume_candidate(
         super::update_precise_dashboard_progress(
             codex_home,
             "migrating",
-            "正在复制旧索引到受管候选库",
+            "正在复制旧索引到 schema 11 受管候选库",
             0,
             None,
         );
+        let stage_started = Instant::now();
         if existing_regular_index(candidate_path)? {
             let candidate = sqlite::open_read_only(candidate_path, StdDuration::from_secs(5))
                 .map_err(|error| format!("无法验证已有 schema 11 候选副本：{error}"))?;
@@ -12971,6 +13004,10 @@ fn schema11_resume_candidate(
         } else {
             schema11_copy_candidate(index_path, candidate_path)?;
         }
+        startup_trace::mark_performance(format!(
+            "schema11_migration stage=copy_candidate elapsed_ms={}",
+            stage_started.elapsed().as_millis()
+        ));
         maybe_fail_schema11_migration_for_testing(6)?;
         manifest.phase = Schema11CandidatePhase::Copied;
         schema11_store_manifest(manifest_path, manifest)?;
@@ -12984,7 +13021,12 @@ fn schema11_resume_candidate(
             0,
             None,
         );
+        let stage_started = Instant::now();
         migrate_schema9_or10_to_schema11_candidate(candidate_path)?;
+        startup_trace::mark_performance(format!(
+            "schema11_migration stage=convert_and_vacuum elapsed_ms={}",
+            stage_started.elapsed().as_millis()
+        ));
         maybe_fail_schema11_migration_for_testing(7)?;
         manifest.phase = Schema11CandidatePhase::Migrated;
         schema11_store_manifest(manifest_path, manifest)?;
@@ -12998,8 +13040,13 @@ fn schema11_resume_candidate(
             0,
             None,
         );
+        let stage_started = Instant::now();
         validate_schema11_candidate(candidate_path, &source_facts)?;
-        if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
+        startup_trace::mark_performance(format!(
+            "schema11_migration stage=validate_candidate elapsed_ms={}",
+            stage_started.elapsed().as_millis()
+        ));
+        if !schema11_receipt_matches_current_with_integrity(index_path, &manifest.source_receipt)? {
             return Err("活动索引在 schema 11 候选校验期间发生变化；尚未切换".into());
         }
         maybe_fail_schema11_migration_for_testing(8)?;
@@ -13023,6 +13070,14 @@ fn schema11_resume_candidate(
     }
 
     if manifest.phase == Schema11CandidatePhase::Switching {
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "正在完成 schema 11 索引原子切换",
+            0,
+            None,
+        );
+        let stage_started = Instant::now();
         schema11_finish_candidate_switch(
             manifest,
             manifest_path,
@@ -13030,7 +13085,12 @@ fn schema11_resume_candidate(
             candidate_path,
             rollback_path,
             &source_facts,
+            false,
         )?;
+        startup_trace::mark_performance(format!(
+            "schema11_migration stage=switch_candidate elapsed_ms={}",
+            stage_started.elapsed().as_millis()
+        ));
     }
     Ok(())
 }
@@ -13042,6 +13102,7 @@ fn schema11_finish_candidate_switch(
     candidate_path: &Path,
     rollback_path: &Path,
     facts: &Schema11MigrationFacts,
+    revalidate_facts_after_interruption: bool,
 ) -> Result<(), String> {
     if existing_regular_index(index_path)? && !existing_regular_index(rollback_path)? {
         fs::rename(index_path, rollback_path)
@@ -13092,7 +13153,17 @@ fn schema11_finish_candidate_switch(
     }
     schema11_sync_file(index_path)?;
     schema11_sync_parent(index_path)?;
-    validate_schema11_candidate(index_path, facts)?;
+    if revalidate_facts_after_interruption {
+        // A resumed Switching phase may have crossed any rename/fsync boundary
+        // in a prior process, so repeat the complete deterministic facts check.
+        validate_schema11_candidate(index_path, facts)?;
+    } else {
+        // In the uninterrupted path these exact candidate bytes were fully
+        // validated immediately before the atomic rename. Reopen the canonical
+        // path and recheck structure/integrity without hashing every logical
+        // row a second time.
+        validate_schema11_storage(index_path, None)?;
+    }
     maybe_fail_schema11_migration_for_testing(12)?;
     manifest.phase = Schema11CandidatePhase::Switched;
     schema11_store_manifest(manifest_path, manifest)
