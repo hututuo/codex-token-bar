@@ -45,13 +45,10 @@ export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
 export function readDashboardSnapshot(
   sourceToken: CodexHomeSourceToken,
 ): Promise<DashboardStartupRead> {
-  // A cold local index can legitimately take longer than the generic 4 second
-  // command budget. JavaScript cannot cancel the native IPC, so racing this
-  // read against an arbitrary deadline publishes the empty fallback as a false
-  // failure while the native command is still running. Keep the existing
-  // loading state until the native operation itself succeeds or rejects.
+  // First paint is cache-only. The precise owner is scheduled separately after
+  // this same-Home last-good projection becomes visible (or reports a miss).
   return callCommandOptional<DashboardSnapshot>(
-    "read_dashboard_snapshot",
+    "read_cached_dashboard_snapshot",
     { sourceToken },
     null,
   ).then((snapshot) => snapshot === null

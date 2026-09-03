@@ -388,6 +388,49 @@ extension CodexUsageAnalyzer {
                 )
             }
 
+            func rootOnlyLastGoodSnapshot(
+                currentHomeIdentityKey: String
+            ) -> DashboardSnapshot? {
+                guard matchesKnownLastGoodFormat(
+                    currentHomeIdentityKey: currentHomeIdentityKey
+                ) else {
+                    return nil
+                }
+                // Root-only startup data has not observed the current source
+                // tree or safety ledger. Keep every attribution detail gate
+                // incomplete until the normal exact refresh validates it.
+                let conservativeState = CodexUsageHistoryIndex.AttributionState(
+                    provenanceEpoch: signature.attributionProvenanceEpoch,
+                    generation: signature.attributionGeneration,
+                    unsafeProvenanceEpoch: nil,
+                    unsafeSinceGeneration: nil,
+                    currentScanUnsafeCauseDetected: false
+                )
+                return restoredSnapshot(attributionState: conservativeState)
+            }
+
+            private func matchesKnownLastGoodFormat(
+                currentHomeIdentityKey: String
+            ) -> Bool {
+                switch payloadVersion {
+                case Self.currentPayloadVersion:
+                    let compatibility = Self.compatibility
+                    return indexSchemaVersion == compatibility.indexSchemaVersion
+                        && parserRevision == compatibility.parserRevision
+                        && provenanceRevision == compatibility.provenanceRevision
+                        && homeIdentityKey == currentHomeIdentityKey
+                case Self.legacySchemaBoundPayloadVersion:
+                    let compatibility = Self.compatibility
+                    return indexSchemaVersion == "6"
+                        && parserRevision == compatibility.parserRevision
+                        && provenanceRevision == compatibility.provenanceRevision
+                case Self.legacyExactOnlyPayloadVersion:
+                    return true
+                default:
+                    return false
+                }
+            }
+
             func freshness(
                 for currentSignature: SessionTreeSignature,
                 currentHomeIdentityKey: String,
@@ -697,6 +740,66 @@ extension CodexUsageAnalyzer {
                         attributionState: attributionState
                     ),
                     freshness: freshness
+                )
+            }
+        }
+
+        func persistentLastGoodSnapshot(
+            for root: String,
+            homeIdentityKey: String
+        ) -> DashboardFastSnapshotResult? {
+            guard !CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled else {
+                return nil
+            }
+            let canonicalRoot = Self.canonicalRootPath(root)
+
+            while true {
+                lock.lock()
+                if let cached = persistentExactSnapshotStorage[canonicalRoot] {
+                    lock.unlock()
+                    guard let snapshot = cached.payload.rootOnlyLastGoodSnapshot(
+                        currentHomeIdentityKey: homeIdentityKey
+                    ) else {
+                        return nil
+                    }
+                    return DashboardFastSnapshotResult(
+                        snapshot: snapshot,
+                        freshness: .lastGoodUnverified
+                    )
+                }
+                if didLoadPersistentExactSnapshotRoots.contains(canonicalRoot) {
+                    lock.unlock()
+                    return nil
+                }
+                if let loading = persistentExactSnapshotLoads[canonicalRoot] {
+                    lock.unlock()
+                    loading.wait()
+                    continue
+                }
+                let loading = DispatchGroup()
+                loading.enter()
+                persistentExactSnapshotLoads[canonicalRoot] = loading
+                lock.unlock()
+
+                let loaded = Self.loadPersistentExactSnapshot(root: canonicalRoot)
+                lock.lock()
+                if let loaded {
+                    persistentExactSnapshotStorage[canonicalRoot] = loaded
+                }
+                didLoadPersistentExactSnapshotRoots.insert(canonicalRoot)
+                persistentExactSnapshotLoads.removeValue(forKey: canonicalRoot)
+                lock.unlock()
+                loading.leave()
+
+                guard let loaded,
+                      let snapshot = loaded.payload.rootOnlyLastGoodSnapshot(
+                          currentHomeIdentityKey: homeIdentityKey
+                      ) else {
+                    return nil
+                }
+                return DashboardFastSnapshotResult(
+                    snapshot: snapshot,
+                    freshness: .lastGoodUnverified
                 )
             }
         }

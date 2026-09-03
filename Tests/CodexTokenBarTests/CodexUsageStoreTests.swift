@@ -987,6 +987,44 @@ final class CodexUsageStoreTests: XCTestCase {
         store.setBackgroundActivityEnabled(false)
     }
 
+    func testUnverifiedLastGoodBecomesVisibleBeforePreciseRefreshCompletes() async {
+        let source = CodexDataSource(
+            codexHome: URL(
+                fileURLWithPath: "/tmp/codex-token-bar-tests/root-only-last-good/.codex"
+            ),
+            origin: .defaultHome
+        )
+        let lastGood = makeSnapshot(
+            totalTokens: 64_000,
+            dayTokens: 6_400,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 6_400)
+        )
+        let loader = SuspendedDashboardSnapshotLoader(
+            fastResult: DashboardFastSnapshotResult(
+                snapshot: lastGood,
+                freshness: .lastGoodUnverified
+            )
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("root-only last-good before precise completion") {
+            await loader.hasPendingPreciseRequest(for: source)
+                && store.snapshot.stats.totalTokens == 64_000
+        }
+
+        XCTAssertFalse(store.isInitialLoading)
+        XCTAssertTrue(store.isRefreshing)
+        XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.status.contains("上次统计"), store.status)
+        XCTAssertTrue(store.status.contains("正在更新"), store.status)
+        store.setBackgroundActivityEnabled(false)
+    }
+
     func testCurrentPreciseRefreshPreservesFreshnessWithoutStaleStatus() async {
         let source = CodexDataSource(
             codexHome: URL(

@@ -9,7 +9,7 @@ const sourceToken = {
   transitionGeneration: 1,
 };
 
-test("startup dashboard reads stay pending past the legacy 4000ms budget", async () => {
+test("startup dashboard reads use the cache-only native command", async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   let resolveInvoke;
   const nativeSnapshot = {
@@ -22,7 +22,7 @@ test("startup dashboard reads stay pending past the legacy 4000ms budget", async
     value: {
       __TAURI_INTERNALS__: {
         invoke(command, args) {
-          assert.equal(command, "read_dashboard_snapshot");
+          assert.equal(command, "read_cached_dashboard_snapshot");
           assert.deepEqual(args, { sourceToken });
           return new Promise((resolve) => {
             resolveInvoke = resolve;
@@ -44,11 +44,11 @@ test("startup dashboard reads stay pending past the legacy 4000ms budget", async
         settled = true;
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 4_050));
+      await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(
         settled,
         false,
-        "the startup IPC must not resolve with an empty fallback at 4000ms",
+        "the startup cache IPC remains authoritative until it resolves",
       );
 
       resolveInvoke(nativeSnapshot);
@@ -118,7 +118,7 @@ test("a real startup dashboard rejection remains visible as a local failure", as
     value: {
       __TAURI_INTERNALS__: {
         invoke(command, args) {
-          assert.equal(command, "read_dashboard_snapshot");
+          assert.equal(command, "read_cached_dashboard_snapshot");
           assert.deepEqual(args, { sourceToken });
           return Promise.reject(new Error("state database unavailable"));
         },
@@ -135,7 +135,7 @@ test("a real startup dashboard rejection remains visible as a local failure", as
         "/src/api/command.ts",
       );
       const fallback = await callCommand(
-        "read_dashboard_snapshot",
+        "read_cached_dashboard_snapshot",
         { stats: { totalTokens: 0 } },
         { sourceToken },
         null,
@@ -143,7 +143,7 @@ test("a real startup dashboard rejection remains visible as a local failure", as
 
       assert.equal(fallback.stats.totalTokens, 0);
       const diagnostic = getCommandDiagnosticsSnapshot().find(
-        (item) => item.command === "read_dashboard_snapshot",
+        (item) => item.command === "read_cached_dashboard_snapshot",
       );
       assert.equal(diagnostic?.message, "state database unavailable");
     });

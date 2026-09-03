@@ -824,6 +824,41 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(rebuilt.cacheUsage.turns.first?.assistantResponse, "restart answer")
     }
 
+    func testRootOnlyLastGoodDoesNotRequireSourceDiscoveryOrExactDatabase() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexRootOnlyLastGood")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019faaaa-bbbb-cccc-dddd-root-only-last-good",
+            timestamp: Date(timeIntervalSince1970: 1_800_000_000),
+            totalTokens: 777
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let precise = try analyzer.load()
+        let parseCount = CodexUsageAnalyzer.fullSessionParseCountForTesting
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        try FileManager.default.removeItem(at: sessionFile)
+        try FileManager.default.removeItem(at: try exactUsageDatabaseURL(in: cacheRoot))
+
+        let lastGood = try XCTUnwrap(analyzer.loadLastGoodSnapshotResult())
+        XCTAssertEqual(lastGood.freshness, .lastGoodUnverified)
+        XCTAssertEqual(lastGood.snapshot.stats.totalTokens, precise.stats.totalTokens)
+        XCTAssertEqual(lastGood.snapshot.usagePrecision, .precise)
+        XCTAssertFalse(lastGood.snapshot.cacheUsage.attributionEventsComplete)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, parseCount)
+    }
+
     func testPersistentExactSnapshotAcceptsCompatibleAdvanceAndRejectsIdentityOrCorruptPayload() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexPersistentExactSnapshotMismatch")

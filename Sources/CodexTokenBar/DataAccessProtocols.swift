@@ -43,6 +43,7 @@ extension CodexDataSourceResolver: CodexDataSourceResolving {}
 enum DashboardFastSnapshotFreshness: Equatable, Sendable {
     case current
     case staleCompatible
+    case lastGoodUnverified
     case unavailable
 }
 
@@ -177,6 +178,11 @@ enum PreciseSnapshotClassification: Equatable {
 
 protocol DashboardSnapshotLoading: Sendable {
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
+    /// Returns a same-Home persisted projection without enumerating source
+    /// files or opening the exact index. A nil result is a normal cache miss.
+    func loadLastGoodSnapshotResult(
+        dataSource: CodexDataSource
+    ) async throws -> DashboardFastSnapshotResult?
     /// Returns the same fast projection together with whether its exact
     /// numeric identity is current or a safe same-Home last-good value. The
     /// legacy method remains the required seam for existing loaders/tests.
@@ -204,6 +210,12 @@ protocol DashboardSnapshotLoading: Sendable {
 }
 
 extension DashboardSnapshotLoading {
+    func loadLastGoodSnapshotResult(
+        dataSource: CodexDataSource
+    ) async throws -> DashboardFastSnapshotResult? {
+        try await loadFastSnapshotResult(dataSource: dataSource)
+    }
+
     func loadFastSnapshotResult(
         dataSource: CodexDataSource
     ) async throws -> DashboardFastSnapshotResult {
@@ -257,6 +269,14 @@ struct CodexDashboardSnapshotLoader:
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
         try await Task.detached(priority: .utility) {
             try CodexUsageAnalyzer(dataSource: dataSource).loadFastSnapshot()
+        }.value
+    }
+
+    func loadLastGoodSnapshotResult(
+        dataSource: CodexDataSource
+    ) async throws -> DashboardFastSnapshotResult? {
+        await Task.detached(priority: .userInitiated) {
+            CodexUsageAnalyzer(dataSource: dataSource).loadLastGoodSnapshotResult()
         }.value
     }
 

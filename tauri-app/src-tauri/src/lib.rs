@@ -133,6 +133,7 @@ pub fn run() {
             commands::dashboard::read_account_quota,
             commands::dashboard::read_account_reset_credits,
             commands::dashboard::read_dashboard_snapshot,
+            commands::dashboard::read_cached_dashboard_snapshot,
             commands::dashboard::read_precise_dashboard_snapshot,
             commands::dashboard::schedule_precise_dashboard_aggregate,
             commands::dashboard::rebuild_precise_index_for_current_version,

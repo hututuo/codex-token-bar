@@ -757,7 +757,7 @@ final class CodexUsageStore: ObservableObject {
                 if isFirstLoad || !effectiveIncludePreciseScan {
                     if effectiveIncludePreciseScan {
                         trace?.mark("fastSnapshot.begin")
-                        if let quick = try? await self.snapshotLoader.loadFastSnapshotResult(
+                        if let quick = try? await self.snapshotLoader.loadLastGoodSnapshotResult(
                             dataSource: source
                         ) {
                             guard self.isCurrentRefresh(
@@ -770,6 +770,11 @@ final class CodexUsageStore: ObservableObject {
                             }
                             self.publish(quick.snapshot, sourceID: sourceID)
                             self.applyFastSnapshotFreshness(quick)
+                            if quick.freshness == .lastGoodUnverified,
+                               quick.snapshot.hasPreciseTokenUsage {
+                                self.isInitialLoading = false
+                                self.isPreparingUsageCache = false
+                            }
                             self.status = self.fastSnapshotStatus(
                                 quick,
                                 origin: source.originLabel,
@@ -2063,7 +2068,7 @@ final class CodexUsageStore: ObservableObject {
         case .current:
             preciseTimeSeriesFresh = result.snapshot.hasPreciseTokenUsage
                 && result.snapshot.preciseTimeSeriesGeneratedAt != nil
-        case .staleCompatible, .unavailable:
+        case .staleCompatible, .lastGoodUnverified, .unavailable:
             preciseTimeSeriesFresh = false
         }
     }
@@ -2080,6 +2085,8 @@ final class CodexUsageStore: ObservableObject {
                 : metadataOnlyStatus(origin: origin)
         case .staleCompatible:
             return "\(origin) · token_count · 正在核对上次精确数据（保留旧值）..."
+        case .lastGoodUnverified:
+            return "\(origin) · token_count · 上次统计 · 正在更新..."
         case .unavailable:
             return metadataOnlyStatus(origin: origin)
         }

@@ -9105,6 +9105,57 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v21_dashboard_aggregate() {
 }
 
 #[test]
+fn cached_last_good_dashboard_snapshot_rehydrates_persistent_cache_without_sources() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("token-aggregate-cache.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let timestamp = recent_test_timestamp(1);
+    let session = session_dir.join("rollout-019elast-good-cache-0000-0000.jsonl");
+    write_lines(
+        &session,
+        &[format!(
+            r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}}}}}"#
+        )],
+    );
+
+    let fresh = dashboard_snapshot(&root).unwrap();
+    assert_eq!(fresh.stats.total_tokens, 120);
+    assert!(fresh.precise_recent_usage_fresh);
+    assert!(cache_path.is_file());
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    assert!(index_path.is_file());
+
+    // Simulate a restart where neither the JSONL source nor the exact index is
+    // available. The persisted aggregate is the only remaining last-good data.
+    fs::remove_dir_all(&session_dir).unwrap();
+    fs::remove_dir_all(index_path.parent().unwrap()).unwrap();
+    reset_dashboard_aggregate_build_count_for_testing();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    ExactUsageIndex::reset_open_work_counters_for_testing();
+
+    let cached = cached_last_good_dashboard_snapshot(&root)
+        .unwrap()
+        .expect("same Home must rehydrate the persisted last-good dashboard snapshot");
+    assert_eq!(cached.stats.total_tokens, 120);
+    assert_eq!(cached.stats.total_calls, 1);
+    assert!(!cached.recent_usage_24h.is_empty());
+    assert!(!cached.precise_recent_usage_fresh);
+
+    assert_eq!(precise_refresh_sync_call_count_for_testing(), 0);
+    assert_eq!(dashboard_scan_signature_count_for_testing(), 0);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(ExactUsageIndex::metadata_validation_bytes_for_testing(), 0);
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
+    assert_eq!(ExactUsageIndex::open_work_counters_for_testing(), (0, 0, 0));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cached_usage_summary_is_scoped_to_codex_home() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

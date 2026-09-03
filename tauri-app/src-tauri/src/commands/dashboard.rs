@@ -1612,6 +1612,28 @@ pub async fn read_dashboard_snapshot(
 }
 
 #[tauri::command]
+pub async fn read_cached_dashboard_snapshot(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+) -> Result<Option<DashboardSnapshot>, String> {
+    require_window_label(&window, "read_cached_dashboard_snapshot")?;
+    startup_trace::mark("command read_cached_dashboard_snapshot start");
+    let started = Instant::now();
+    let result = run_statistics_bound_dashboard_read(&app, source_token, move |codex_home| {
+        token_count_jsonl::cached_last_good_dashboard_snapshot(&codex_home)
+    })
+    .await;
+    startup_trace::mark_performance(format!(
+        "read_cached_dashboard_snapshot {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result),
+    ));
+    startup_trace::mark("command read_cached_dashboard_snapshot end");
+    result
+}
+
+#[tauri::command]
 pub async fn read_precise_dashboard_snapshot(
     window: tauri::WebviewWindow,
     app: AppHandle,

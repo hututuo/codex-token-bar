@@ -123,6 +123,16 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         try loadFastSnapshotResult().snapshot
     }
 
+    /// Reads only the path-bound persisted projection. Source discovery and
+    /// exact-index validation intentionally remain in the follow-up refresh so
+    /// a large history cannot delay first paint.
+    func loadLastGoodSnapshotResult() -> DashboardFastSnapshotResult? {
+        Self.sessionEventCache.persistentLastGoodSnapshot(
+            for: dataSource.codexHome.path,
+            homeIdentityKey: dataSource.usageIdentityKey
+        )
+    }
+
     func loadFastSnapshotResult() throws -> DashboardFastSnapshotResult {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.loadFastSnapshot", metadata: [
             "source": dataSource.displayPath

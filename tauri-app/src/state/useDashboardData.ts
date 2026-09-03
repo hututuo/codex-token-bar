@@ -829,12 +829,23 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
         setFastSnapshotLoaded(true);
         setStartupDashboardUnavailable(true);
         setStartupRetrySequence((current) => current + 1);
+        requestPreciseRefresh(
+          true,
+          "unknown",
+          `startup-${sourceToken.transitionGeneration}`,
+        );
       },
     });
     return () => {
       cancelled = true;
     };
-  }, [isSourceTokenCurrent, source, sourceLoadGeneration, sourceToken]);
+  }, [
+    isSourceTokenCurrent,
+    requestPreciseRefresh,
+    source,
+    sourceLoadGeneration,
+    sourceToken,
+  ]);
 
   useEffect(() => {
     if (!startupDashboardUnavailable || sourceToken === null) {

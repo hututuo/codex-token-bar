@@ -2362,6 +2362,36 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         .unwrap_or_else(|| Err("精确 token full refresh 未发布结果".into()))
 }
 
+/// Returns the same-Home persisted last-good projection without opening the
+/// exact index or waiting for a precise owner. The caller must keep it marked
+/// stale until a normal refresh validates current source and attribution
+/// state.
+pub fn cached_last_good_dashboard_snapshot(
+    codex_home: &Path,
+) -> Result<Option<DashboardSnapshot>, String> {
+    hydrate_dashboard_aggregate_cache_once()?;
+    let canonical_home = precise_refresh_home(codex_home)?;
+    let cached = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
+        .lock()
+        .map_err(|_| "精确 token numeric cache 内存状态不可用".to_string())?
+        .aggregate
+        .clone();
+    let Some(cached) = cached else {
+        return Ok(None);
+    };
+    let belongs_to_home = if let Some(binding) = cached.persistent_binding.as_ref() {
+        binding.canonical_home == canonical_home
+    } else {
+        precise_refresh_home(&cached.signature.codex_home)
+            .is_ok_and(|candidate| candidate == canonical_home)
+    };
+    if !belongs_to_home {
+        return Ok(None);
+    }
+    Ok(cached.snapshot.map(sanitize_legacy_snapshot_for_startup))
+}
+
 pub(crate) fn precise_index_upgrade_required(
     codex_home: &Path,
 ) -> Result<Option<exact_usage_index::ExactIndexUpgradeRequired>, String> {
