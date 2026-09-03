@@ -2346,22 +2346,37 @@ impl ExactUsageIndex {
                 &mut visit,
             )?;
         }
-        super::update_precise_dashboard_progress(
-            codex_home,
-            "publishing",
-            "正在写入精确索引并发布本轮结果",
-            0,
-            Some(1),
-        );
         diagnostics.scanned_files = scanned_files;
         diagnostics.full_rebuild_files = diagnostics
             .full_rebuild_files
             .saturating_add(full_rebuild_jobs.len() as u64);
+        let full_rebuild_total = full_rebuild_jobs.len() as u64;
+        let mut completed_full_rebuilds = 0_u64;
+        if full_rebuild_total > 0 {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "scanning",
+                "正在解析需要补齐的精确历史文件",
+                0,
+                Some(full_rebuild_total),
+            );
+        }
         for batch in staging_job_batches(&full_rebuild_jobs) {
             let estimated_bytes = batch
                 .iter()
                 .fold(0_u64, |total, job| total.saturating_add(job.signature.size));
             ensure_staging_capacity(&index_path, estimated_bytes)?;
+            let progress_home = codex_home.to_path_buf();
+            let completed_before_batch = completed_full_rebuilds;
+            let progress_callback: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |staged_count| {
+                super::update_precise_dashboard_progress(
+                    &progress_home,
+                    "scanning",
+                    "正在解析需要补齐的精确历史文件",
+                    completed_before_batch.saturating_add(staged_count),
+                    Some(full_rebuild_total),
+                );
+            });
             let staged = stage_full_rebuilds(
                 &batch,
                 &index_path,
@@ -2369,8 +2384,9 @@ impl ExactUsageIndex {
                 codex_home,
                 warnings,
                 &mut scan_completeness,
-                None,
+                Some(progress_callback),
             )?;
+            completed_full_rebuilds = completed_full_rebuilds.saturating_add(staged.len() as u64);
             diagnostics.full_body_bytes = diagnostics.full_body_bytes.saturating_add(
                 staged.iter().fold(0_u64, |total, item| {
                     total.saturating_add(item.committed_signature.size)
@@ -2403,6 +2419,13 @@ impl ExactUsageIndex {
             self.connection.mark_receipt_dirty();
             return Err("会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into());
         }
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "publishing",
+            "正在原子提交精确索引 generation",
+            0,
+            Some(1),
+        );
         let run_migrations = !migration_markers_complete(&self.connection, true)?;
         let revision = finalize_generation(
             &mut self.connection,

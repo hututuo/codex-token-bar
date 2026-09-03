@@ -2745,6 +2745,56 @@ fn exact_index_parallel_stage_uses_worker_open_boundary_without_second_owner() {
 }
 
 #[test]
+fn exact_index_reports_full_rebuild_staging_as_scanning_until_publish() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let rollout = session_dir.join("rollout-019eprogress-stage-0000-0000-exact.jsonl");
+    let mut writer = std::io::BufWriter::new(fs::File::create(&rollout).unwrap());
+    writer.write_all(br#"{"padding":""#).unwrap();
+    writer
+        .write_all(&vec![b'p'; EXACT_INDEX_CHUNK_SIZE as usize])
+        .unwrap();
+    writer.write_all(b"\"}\n").unwrap();
+    writeln!(
+        writer,
+        "{}",
+        r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120}}}}"#,
+    )
+    .unwrap();
+    writer.flush().unwrap();
+    drop(writer);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    ExactUsageIndex::set_before_staging_open_hook_for_testing(
+        fs::canonicalize(&rollout).unwrap(),
+        move |_| {
+            entered_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        },
+    );
+
+    let refresh_root = root.clone();
+    let refresh = std::thread::spawn(move || dashboard_snapshot(&refresh_root));
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let progress = precise_dashboard_progress(&root);
+    release_tx.send(()).unwrap();
+    let snapshot = refresh.join().unwrap().unwrap();
+
+    assert_eq!(progress.phase, "scanning");
+    assert_eq!(progress.message, "正在解析需要补齐的精确历史文件");
+    assert_eq!(progress.completed, 0);
+    assert_eq!(progress.total, Some(1));
+    assert_eq!(snapshot.stats.total_tokens, 120);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_reuses_private_staging_after_an_interrupted_import() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     ExactUsageIndex::reset_scan_bytes_for_testing();
