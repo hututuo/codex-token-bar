@@ -12785,7 +12785,7 @@ fn maybe_fail_schema11_migration_for_testing(_stage: u8) -> Result<(), String> {
 
 fn prepare_schema11_candidate_if_needed(
     index_path: &Path,
-    _codex_home: &Path,
+    codex_home: &Path,
 ) -> Result<bool, String> {
     let candidate_path = schema11_candidate_path(index_path);
     let rollback_path = schema11_rollback_path(index_path);
@@ -12838,6 +12838,13 @@ fn prepare_schema11_candidate_if_needed(
             return Ok(false);
         }
         let source_receipt = schema11_source_receipt(index_path)?;
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "正在核对旧索引并准备 schema 11 无损升级",
+            0,
+            None,
+        );
         schema11_migration_capacity(index_path)?;
         let source_connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
             .map_err(|error| format!("无法只读读取 schema 11 迁移基线：{error}"))?;
@@ -12859,6 +12866,7 @@ fn prepare_schema11_candidate_if_needed(
             index_path,
             &candidate_path,
             &rollback_path,
+            codex_home,
         )?;
         return Ok(true);
     }
@@ -12877,6 +12885,7 @@ fn prepare_schema11_candidate_if_needed(
         index_path,
         &candidate_path,
         &rollback_path,
+        codex_home,
     )?;
     Ok(true)
 }
@@ -12887,6 +12896,7 @@ fn schema11_resume_candidate(
     index_path: &Path,
     candidate_path: &Path,
     rollback_path: &Path,
+    codex_home: &Path,
 ) -> Result<(), String> {
     if manifest.phase == Schema11CandidatePhase::Switched {
         // The switched schema 11 database is allowed to accumulate a durable
@@ -12894,10 +12904,24 @@ fn schema11_resume_candidate(
         // source facts were already checked before the atomic switch; on a
         // later open validate structure and integrity without comparing the
         // now-legitimate pending overlay to the pre-switch snapshot.
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "正在复核已切换的 schema 11 索引",
+            0,
+            None,
+        );
         validate_schema11_storage(index_path, None)?;
         return Ok(());
     }
     if manifest.phase == Schema11CandidatePhase::Switching {
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "正在完成 schema 11 索引原子切换",
+            0,
+            None,
+        );
         let facts = manifest
             .source_facts
             .clone()
@@ -12929,6 +12953,13 @@ fn schema11_resume_candidate(
     };
 
     if manifest.phase == Schema11CandidatePhase::Prepared {
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "正在复制旧索引到受管候选库",
+            0,
+            None,
+        );
         if existing_regular_index(candidate_path)? {
             let candidate = sqlite::open_read_only(candidate_path, StdDuration::from_secs(5))
                 .map_err(|error| format!("无法验证已有 schema 11 候选副本：{error}"))?;
@@ -12946,6 +12977,13 @@ fn schema11_resume_candidate(
     }
 
     if manifest.phase == Schema11CandidatePhase::Copied {
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "正在转换 schema 11 索引结构并压实候选库",
+            0,
+            None,
+        );
         migrate_schema9_or10_to_schema11_candidate(candidate_path)?;
         maybe_fail_schema11_migration_for_testing(7)?;
         manifest.phase = Schema11CandidatePhase::Migrated;
@@ -12953,6 +12991,13 @@ fn schema11_resume_candidate(
     }
 
     if manifest.phase == Schema11CandidatePhase::Migrated {
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "正在校验 schema 11 候选库数据与完整性",
+            0,
+            None,
+        );
         validate_schema11_candidate(candidate_path, &source_facts)?;
         if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
             return Err("活动索引在 schema 11 候选校验期间发生变化；尚未切换".into());
@@ -12963,6 +13008,13 @@ fn schema11_resume_candidate(
     }
 
     if manifest.phase == Schema11CandidatePhase::Validated {
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "正在同步并准备原子切换 schema 11 索引",
+            0,
+            None,
+        );
         schema11_sync_file(candidate_path)?;
         schema11_sync_parent(index_path)?;
         manifest.phase = Schema11CandidatePhase::Switching;

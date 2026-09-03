@@ -4297,6 +4297,13 @@ fn exact_index_schema9_migration_rolls_back_every_swap_stage_without_data_loss()
             )),
             "{error}"
         );
+        let progress = precise_dashboard_progress(&root);
+        assert_eq!(progress.phase, "migrating");
+        assert!(
+            progress.message.contains("schema 11"),
+            "migration work must not remain mislabeled as preparation: {}",
+            progress.message
+        );
         assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
         assert!(index_path.exists());
         assert_eq!(fs::read(&source_path).unwrap(), source_bytes_before);
