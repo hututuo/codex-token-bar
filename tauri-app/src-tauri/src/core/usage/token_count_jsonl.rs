@@ -82,20 +82,23 @@ static FAIL_NEXT_PRECISE_REFRESH_SPAWN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 // v0.9.1 wrote V20. V21 removes filesystem-object identity from the durable
 // binding while retaining the canonical Home path, index lineage and
-// attribution-safety contract. V18 remains the oldest supported read format;
-// neither legacy format is written again.
+// attribution-safety contract. V22 is the current JSON cache envelope; V18
+// remains the oldest supported read format and neither legacy format is written
+// again. This version is deliberately independent from the SQLite aggregate
+// schema stored inside the exact index.
 const LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
-const LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 20;
+const LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20: u32 = 20;
+const LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21: u32 = 21;
 #[cfg(test)]
 const UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V16: u32 = 16;
 #[cfg(test)]
 const UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V17: u32 = 17;
 // V20 invalidated the V19 local-day projection cache because V19 used one
-// fixed current UTC offset for all historical events. V21 keeps that corrected
+// fixed current UTC offset for all historical events. V21 kept that corrected
 // projection while removing filesystem-object identity from the durable
 // binding. Rebuilding this disposable cache reads the exact SQLite events
 // only; it never rescans JSONL bodies.
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 21;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 22;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 #[cfg(not(test))]
 const EXACT_STORAGE_MAINTENANCE_INTERVAL: StdDuration = StdDuration::from_secs(24 * 60 * 60);
@@ -2844,7 +2847,7 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
     }
 
     // A completed exact sync can monotonically advance the current revision
-    // before the next V21 checkpoint is due. Under the same canonical Home,
+    // before the next V22 checkpoint is due. Under the same canonical Home,
     // parser/schema and attribution provenance, the older numeric
     // envelope remains a trustworthy stale last-good. It must never be marked
     // current or used for attribution coverage.
@@ -2974,7 +2977,7 @@ struct PersistentNumericCacheBinding {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PersistentNumericDashboardCache {
+struct PersistentNumericDashboardCacheV22 {
     version: u32,
     #[serde(flatten)]
     binding: PersistentNumericCacheBinding,
@@ -3326,7 +3329,7 @@ fn sanitize_numeric_recent_usage_points(points: &mut [crate::models::RecentUsage
 }
 
 fn startup_snapshot_from_persistent_numeric(
-    cache: &PersistentNumericDashboardCache,
+    cache: &PersistentNumericDashboardCacheV22,
 ) -> DashboardSnapshot {
     let recent_usage_24h = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_24h);
     let recent_usage_7d = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_7d);
@@ -3457,7 +3460,8 @@ fn cached_dashboard_startup_snapshot(
             if matches!(
                 cached.persistent_version,
                 DASHBOARD_AGGREGATE_CACHE_VERSION
-                    | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION
+                    | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21
+                    | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20
                     | 0
             ) {
                 cached.signature == *signature
@@ -3491,7 +3495,8 @@ fn cached_numeric_revision_for_startup() -> Option<u64> {
             guard.aggregate.as_ref().and_then(|cached| {
                 matches!(
                     cached.persistent_version,
-                    0 | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION
+                    0 | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21
+                        | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20
                         | DASHBOARD_AGGREGATE_CACHE_VERSION
                 )
                 .then_some(cached.signature.index_revision)
@@ -3684,7 +3689,7 @@ fn persistent_numeric_test_snapshot(summary: &TokenUsageSummary) -> DashboardSna
 }
 
 fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSummary) {
-    // A summary refresh may run after a full V21 publish. Hydrate first so the
+    // A summary refresh may run after a full V22 publish. Hydrate first so the
     // existing binding is carried forward instead of silently downgrading the
     // in-memory aggregate to an unbound snapshot.
     let _ = hydrate_dashboard_aggregate_cache_once();
@@ -3832,21 +3837,8 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
         .and_then(|version| u32::try_from(version).ok())?;
     match version {
         DASHBOARD_AGGREGATE_CACHE_VERSION => {
-            let cache = serde_json::from_slice::<PersistentNumericDashboardCache>(data).ok()?;
-            if cache.version != DASHBOARD_AGGREGATE_CACHE_VERSION
-                || !persistent_numeric_cache_binding_is_well_formed(&cache.binding)
-                || !valid_persistent_cache_timestamp(&cache.built_at)
-                || cache
-                    .coverage_at
-                    .as_deref()
-                    .is_some_and(|value| !valid_persistent_cache_timestamp(value))
-                || cache
-                    .settled_through
-                    .as_deref()
-                    .is_some_and(|value| !valid_persistent_cache_timestamp(value))
-            {
-                return None;
-            }
+            let cache =
+                decode_persistent_numeric_dashboard_cache(data, DASHBOARD_AGGREGATE_CACHE_VERSION)?;
             let snapshot = startup_snapshot_from_persistent_numeric(&cache);
             Some(CachedDashboardAggregate {
                 signature: cache.binding.signature.clone(),
@@ -3857,32 +3849,38 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
                 persistent_binding: Some(cache.binding),
             })
         }
-        LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION => {
+        LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20 => {
             // V20 contains an extra physicalHomeIdentity field. Serde ignores
-            // that legacy field and the V21 binding validates only data and
-            // index lineage.
-            let cache = serde_json::from_slice::<PersistentNumericDashboardCache>(data).ok()?;
-            if cache.version != LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION
-                || !persistent_numeric_cache_binding_is_well_formed(&cache.binding)
-                || !valid_persistent_cache_timestamp(&cache.built_at)
-                || cache
-                    .coverage_at
-                    .as_deref()
-                    .is_some_and(|value| !valid_persistent_cache_timestamp(value))
-                || cache
-                    .settled_through
-                    .as_deref()
-                    .is_some_and(|value| !valid_persistent_cache_timestamp(value))
-            {
-                return None;
-            }
+            // that legacy field. It is adapted into the current in-memory
+            // representation and can only be written back as V22.
+            let cache = decode_persistent_numeric_dashboard_cache(
+                data,
+                LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20,
+            )?;
             let snapshot = startup_snapshot_from_persistent_numeric(&cache);
             Some(CachedDashboardAggregate {
                 signature: cache.binding.signature.clone(),
                 snapshot: Some(snapshot),
                 summary: cache.summary,
                 snapshot_complete: false,
-                persistent_version: LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION,
+                persistent_version: LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20,
+                persistent_binding: Some(cache.binding),
+            })
+        }
+        LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21 => {
+            // V21 is the compact numeric cache without the obsolete physical
+            // Home identity. It remains readable only as a legacy adapter.
+            let cache = decode_persistent_numeric_dashboard_cache(
+                data,
+                LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21,
+            )?;
+            let snapshot = startup_snapshot_from_persistent_numeric(&cache);
+            Some(CachedDashboardAggregate {
+                signature: cache.binding.signature.clone(),
+                snapshot: Some(snapshot),
+                summary: cache.summary,
+                snapshot_complete: false,
+                persistent_version: LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21,
                 persistent_binding: Some(cache.binding),
             })
         }
@@ -3902,6 +3900,28 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
         }
         _ => None,
     }
+}
+
+fn decode_persistent_numeric_dashboard_cache(
+    data: &[u8],
+    expected_version: u32,
+) -> Option<PersistentNumericDashboardCacheV22> {
+    let cache = serde_json::from_slice::<PersistentNumericDashboardCacheV22>(data).ok()?;
+    if cache.version != expected_version
+        || !persistent_numeric_cache_binding_is_well_formed(&cache.binding)
+        || !valid_persistent_cache_timestamp(&cache.built_at)
+        || cache
+            .coverage_at
+            .as_deref()
+            .is_some_and(|value| !valid_persistent_cache_timestamp(value))
+        || cache
+            .settled_through
+            .as_deref()
+            .is_some_and(|value| !valid_persistent_cache_timestamp(value))
+    {
+        return None;
+    }
+    Some(cache)
 }
 
 fn valid_persistent_cache_timestamp(value: &str) -> bool {
@@ -3937,7 +3957,7 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> 
     ) {
         return Ok(());
     }
-    let payload = PersistentNumericDashboardCache {
+    let payload = PersistentNumericDashboardCacheV22 {
         version: DASHBOARD_AGGREGATE_CACHE_VERSION,
         binding: binding.clone(),
         built_at: snapshot.generated_at.clone(),
@@ -3987,10 +4007,16 @@ fn aggregate_checkpoint_due_with_binding(
     else {
         return true;
     };
+    // A cache written by a newer build is valid data owned by that build. Do
+    // not let this build's checkpoint path turn an unknown future envelope into
+    // a V22 payload; the next compatible build can decide how to migrate it.
+    if version > DASHBOARD_AGGREGATE_CACHE_VERSION {
+        return false;
+    }
     if version != DASHBOARD_AGGREGATE_CACHE_VERSION {
         return true;
     }
-    let Ok(existing) = serde_json::from_slice::<PersistentNumericDashboardCache>(&data) else {
+    let Ok(existing) = serde_json::from_slice::<PersistentNumericDashboardCacheV22>(&data) else {
         return true;
     };
     if existing.binding.signature != *signature

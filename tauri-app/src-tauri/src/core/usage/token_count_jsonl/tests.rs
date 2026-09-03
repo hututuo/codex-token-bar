@@ -8067,6 +8067,38 @@ fn future_dashboard_aggregate_version_fails_closed_without_rewriting_rows() {
 }
 
 #[test]
+fn future_json_dashboard_cache_version_is_rejected_and_preserved() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-future-json-cache-version.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let mut future =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap()).unwrap();
+    future["version"] = serde_json::json!(DASHBOARD_AGGREGATE_CACHE_VERSION + 1);
+    fs::write(&cache_path, serde_json::to_vec(&future).unwrap()).unwrap();
+    let future_bytes = fs::read(&cache_path).unwrap();
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    assert_eq!(
+        fs::read(&cache_path).unwrap(),
+        future_bytes,
+        "a future JSON cache must remain untouched by a V22 refresh"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn unknown_dashboard_pricing_revision_fails_closed_without_rewriting_rows() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -8173,7 +8205,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
         persisted.len()
     );
     let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(json["version"], 21);
+    assert_eq!(json["version"], 22);
     assert!(json.get("snapshot").is_none());
     let persisted_text = String::from_utf8_lossy(&persisted);
     assert!(!persisted_text.contains("sourceContribution"));
@@ -8237,7 +8269,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
 }
 
 #[test]
-fn v21_startup_accepts_stale_last_good_after_monotonic_index_advance_without_open() {
+fn v22_startup_accepts_stale_last_good_after_monotonic_index_advance_without_open() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -8279,7 +8311,7 @@ fn v21_startup_accepts_stale_last_good_after_monotonic_index_advance_without_ope
     ExactUsageIndex::clear_integrity_signature_for_testing(&root);
     ExactUsageIndex::reset_quick_check_count_for_testing();
     let stale = cached_dashboard_snapshot_for_startup(&root)
-        .expect("same-provenance monotonic advance should retain stale V21 numerics");
+        .expect("same-provenance monotonic advance should retain stale V22 numerics");
 
     assert_eq!(stale.stats.total_tokens, 120);
     assert!(!stale.precise_recent_usage_fresh);
@@ -8719,7 +8751,7 @@ fn v18_cache_is_automatically_upgraded_by_the_next_successful_full_refresh() {
 }
 
 #[test]
-fn v20_cache_ignores_legacy_physical_identity_and_upgrades_to_v21() {
+fn v20_cache_ignores_legacy_physical_identity_and_upgrades_to_v22() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -8735,7 +8767,7 @@ fn v20_cache_ignores_legacy_physical_identity_and_upgrades_to_v21() {
     dashboard_snapshot(&root).unwrap();
     let mut v20 =
         serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap()).unwrap();
-    v20["version"] = serde_json::json!(LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION);
+    v20["version"] = serde_json::json!(LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20);
     v20["physicalHomeIdentity"] = serde_json::json!("legacy-volume-and-file-id");
     fs::write(&cache_path, serde_json::to_vec(&v20).unwrap()).unwrap();
 
@@ -8745,11 +8777,57 @@ fn v20_cache_ignores_legacy_physical_identity_and_upgrades_to_v21() {
         .expect("v0.9.1 V20 cache must remain readable");
     assert_eq!(
         decoded.persistent_version,
-        LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_VERSION
+        LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20
     );
     assert_eq!(
         cached_dashboard_snapshot_for_startup(&root)
             .expect("V20 cache should provide startup last-good numerics")
+            .stats
+            .total_tokens,
+        120
+    );
+
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let upgraded =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap()).unwrap();
+    assert_eq!(upgraded["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
+    assert!(upgraded.get("physicalHomeIdentity").is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn v21_cache_is_read_as_legacy_numeric_and_upgrades_to_v22() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-v21-cache-upgrade.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    dashboard_snapshot(&root).unwrap();
+
+    let mut v21 =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap()).unwrap();
+    v21["version"] = serde_json::json!(LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21);
+    v21.as_object_mut().unwrap().remove("physicalHomeIdentity");
+    fs::write(&cache_path, serde_json::to_vec(&v21).unwrap()).unwrap();
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    let decoded = load_persistent_dashboard_aggregate()
+        .unwrap()
+        .expect("V0.9.2 V21 cache must remain readable");
+    assert_eq!(
+        decoded.persistent_version,
+        LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21
+    );
+    assert_eq!(
+        cached_dashboard_snapshot_for_startup(&root)
+            .expect("V21 cache should provide startup last-good numerics")
             .stats
             .total_tokens,
         120
@@ -8891,7 +8969,7 @@ fn legacy_alias_startup_matches_raw_signature_but_uses_only_canonical_index() {
 }
 
 #[test]
-fn v21_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
+fn v22_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -8906,7 +8984,7 @@ fn v21_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
     );
     dashboard_snapshot(&root).unwrap();
     let baseline = serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap())
-        .expect("full dashboard should publish V21 JSON");
+        .expect("full dashboard should publish V22 JSON");
     assert_eq!(baseline["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
 
     {
@@ -8915,7 +8993,7 @@ fn v21_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
             reset_dashboard_aggregate_build_count_for_testing();
             assert!(
                 cached_dashboard_snapshot_for_startup(&root).is_none(),
-                "mismatched V21 data binding must not hydrate startup numerics: {candidate}"
+                "mismatched V22 data binding must not hydrate startup numerics: {candidate}"
             );
         };
 
@@ -8952,7 +9030,7 @@ fn v21_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
     reset_dashboard_aggregate_build_count_for_testing();
     assert!(
         cached_dashboard_snapshot_for_startup(&root).is_some(),
-        "filesystem identity must not participate in V21 cache matching"
+        "filesystem identity must not participate in V22 cache matching"
     );
 
     fs::write(&cache_path, serde_json::to_vec(&baseline).unwrap()).unwrap();
@@ -8994,7 +9072,7 @@ fn v21_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
 
 #[cfg(unix)]
 #[test]
-fn v21_startup_rejects_symlink_cache_without_following_it() {
+fn v22_startup_rejects_symlink_cache_without_following_it() {
     use std::os::unix::fs::symlink;
 
     let _test_state = app_paths::app_path_test_env_guard(&[]);
@@ -9053,7 +9131,7 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 }
 
 #[test]
-fn usage_summary_rejects_v11_and_reuses_rebuilt_v21_dashboard_aggregate() {
+fn usage_summary_rejects_v11_and_reuses_rebuilt_v22_dashboard_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
@@ -9089,7 +9167,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v21_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":21"#));
+    assert!(aggregate_cache_text().contains(r#""version":22"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -9098,7 +9176,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v21_dashboard_aggregate() {
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
-        "current v21 aggregate should be reused after memory state is cleared"
+        "current v22 aggregate should be reused after memory state is cleared"
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -9194,14 +9272,14 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
     reset_dashboard_aggregate_build_count_for_testing();
     assert_eq!(
         cached_dashboard_snapshot_for_startup(&home_a)
-            .expect("home A should restore its own V21 startup numerics")
+            .expect("home A should restore its own V22 startup numerics")
             .stats
             .total_tokens,
         120
     );
     assert!(
         cached_dashboard_snapshot_for_startup(&home_b).is_none(),
-        "home B must not hydrate home A's one-file V21 cache"
+        "home B must not hydrate home A's one-file V22 cache"
     );
 
     let snapshot_b = dashboard_snapshot(&home_b).unwrap();
@@ -9536,7 +9614,7 @@ fn aggregate_persistence_failure_keeps_memory_snapshot_with_one_warning() {
 }
 
 #[test]
-fn v21_atomic_replace_failure_keeps_last_good_cache_bytes() {
+fn v22_atomic_replace_failure_keeps_last_good_cache_bytes() {
     let root = temp_root();
     let path = root.join("dashboard-aggregate.json");
     fs::create_dir_all(&root).unwrap();
