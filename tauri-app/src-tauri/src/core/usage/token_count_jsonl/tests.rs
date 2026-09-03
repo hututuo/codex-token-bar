@@ -5,7 +5,6 @@ use super::exact_usage_index::{
     verify_no_orphaned_index_rows_for_testing, ExactStorageMaintenanceOutcome, ExactSyncMode,
     ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY, STAGED_FULL_REBUILD_PARSER_REVISION,
 };
-use super::session_files::session_id_from_file;
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
 use super::*;
 use crate::models::RecentUsagePoint;
@@ -1024,10 +1023,6 @@ fn exact_index_open_preserves_orphaned_rows_and_requires_explicit_repair() {
 
     let initial = dashboard_snapshot(&root).unwrap();
     assert_eq!(initial.stats.total_tokens, 120);
-    let canonical_path = fs::canonicalize(&file)
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
     let connection = Connection::open(&index_path).unwrap();
     let published_generation = connection
         .query_row(
@@ -1036,7 +1031,14 @@ fn exact_index_open_preserves_orphaned_rows_and_requires_explicit_repair() {
             |row| row.get::<_, i64>(0),
         )
         .unwrap();
-    let orphan_generation = published_generation + 1;
+    let orphan_source_id = 9_999_999_i64;
+    let orphan_event_id = connection
+        .query_row(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM event_rows",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
     connection
         .execute_batch("PRAGMA foreign_keys = OFF;")
         .unwrap();
@@ -1049,28 +1051,12 @@ fn exact_index_open_preserves_orphaned_rows_and_requires_explicit_repair() {
     connection
         .execute(
             r#"
-            INSERT INTO events(
-                file_generation,
-                file_path,
-                ordinal,
-                timestamp,
-                session_id,
-                tokens,
-                input_tokens,
-                cached_input_tokens,
-                output_tokens,
-                model,
-                user_prompt_start,
-                user_prompt_end,
-                assistant_response_start,
-                assistant_response_end
-            ) VALUES (?1, ?2, 1, 1, ?3, 120, 100, 20, 20, NULL, NULL, NULL, NULL, NULL)
+            INSERT INTO event_rows(
+                id, source_id, ordinal, timestamp, tokens, input_tokens,
+                cached_input_tokens, output_tokens, reasoning_output_tokens
+            ) VALUES (?1, ?2, 1, 1, 120, 100, 20, 20, 0)
             "#,
-            rusqlite::params![
-                orphan_generation,
-                canonical_path,
-                session_id_from_file(&file),
-            ],
+            rusqlite::params![orphan_event_id, orphan_source_id],
         )
         .unwrap();
     assert_eq!(
@@ -1078,11 +1064,9 @@ fn exact_index_open_preserves_orphaned_rows_and_requires_explicit_repair() {
             .query_row(
                 r#"
                 SELECT COUNT(*)
-                FROM events e
-                LEFT JOIN files f
-                  ON f.generation = e.file_generation
-                 AND f.path = e.file_path
-                WHERE f.generation IS NULL
+                FROM event_rows e
+                LEFT JOIN sources s ON s.source_id = e.source_id
+                WHERE s.source_id IS NULL
                 "#,
                 [],
                 |row| row.get::<_, i64>(0),
@@ -1113,11 +1097,9 @@ fn exact_index_open_preserves_orphaned_rows_and_requires_explicit_repair() {
             .query_row(
                 r#"
                 SELECT COUNT(*)
-                FROM events e
-                LEFT JOIN files f
-                  ON f.generation = e.file_generation
-                 AND f.path = e.file_path
-                WHERE f.generation IS NULL
+                FROM event_rows e
+                LEFT JOIN sources s ON s.source_id = e.source_id
+                WHERE s.source_id IS NULL
                 "#,
                 [],
                 |row| row.get::<_, i64>(0),
@@ -1215,10 +1197,10 @@ fn orphan_verification_preserves_orphans_and_a_wrong_marker() {
     connection
         .execute(
             r#"
-            INSERT INTO events(
-                file_generation, file_path, ordinal, timestamp, session_id,
-                tokens, input_tokens, cached_input_tokens, output_tokens
-            ) VALUES (99, '/legacy-orphan.jsonl', 1, 1, 'legacy-orphan', 1, 1, 0, 0)
+            INSERT INTO event_rows(
+                id, source_id, ordinal, timestamp, tokens, input_tokens,
+                cached_input_tokens, output_tokens, reasoning_output_tokens
+            ) VALUES (99, 99, 1, 1, 1, 1, 0, 0, 0)
             "#,
             [],
         )
@@ -1226,8 +1208,8 @@ fn orphan_verification_preserves_orphans_and_a_wrong_marker() {
     connection
         .execute(
             r#"
-            INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
-            VALUES (99, '/legacy-orphan.jsonl', X'01')
+            INSERT INTO source_fingerprints(source_id, fingerprint)
+            VALUES (99, X'01')
             "#,
             [],
         )
@@ -1235,8 +1217,8 @@ fn orphan_verification_preserves_orphans_and_a_wrong_marker() {
     connection
         .execute(
             r#"
-            INSERT INTO file_chunks(file_generation, file_path, chunk_index, byte_count, sha256)
-            VALUES (99, '/legacy-orphan.jsonl', 0, 1, X'02')
+            INSERT INTO source_chunks(source_id, chunk_index, byte_count, sha256)
+            VALUES (99, 0, 1, X'02')
             "#,
             [],
         )
@@ -1256,10 +1238,10 @@ fn orphan_verification_preserves_orphans_and_a_wrong_marker() {
         "old-revision",
         "failed verification must not rewrite the legacy marker"
     );
-    for table in ["events", "file_fingerprints", "file_chunks"] {
+    for table in ["event_rows", "source_fingerprints", "source_chunks"] {
         let count = connection
             .query_row(
-                &format!("SELECT COUNT(*) FROM {table} WHERE file_generation = 99"),
+                &format!("SELECT COUNT(*) FROM {table} WHERE source_id = 99"),
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -1983,7 +1965,7 @@ fn attribution_source_tokens(snapshot: &DashboardSnapshot) -> u64 {
 }
 
 #[test]
-fn exact_index_prunes_superseded_file_versions_on_the_next_streaming_scan() {
+fn exact_index_reuses_one_stable_source_across_file_rewrites() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -2000,6 +1982,15 @@ fn exact_index_prunes_superseded_file_versions_on_the_next_streaming_scan() {
     );
     let initial = dashboard_snapshot(&root).unwrap();
     assert_eq!(initial.stats.total_tokens, 120);
+    let canonical_path = file.canonicalize().unwrap();
+    let stable_source_id = Connection::open(&index_path)
+        .unwrap()
+        .query_row(
+            "SELECT source_id FROM sources WHERE path = ?1",
+            [canonical_path.to_string_lossy().as_ref()],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
     write_lines(
         &file,
         &[
@@ -2010,9 +2001,24 @@ fn exact_index_prunes_superseded_file_versions_on_the_next_streaming_scan() {
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection
-            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sources WHERE path = ?1 AND source_id = ?2",
+                params![canonical_path.to_string_lossy().as_ref(), stable_source_id],
+                |row| row.get::<_, i64>(0),
+            )
             .unwrap(),
-        2
+        1,
+        "a rewrite must replace one source's children without allocating a new source identity"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(tokens), 0) FROM event_rows WHERE source_id = ?1",
+                [stable_source_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap(),
+        (1, 121)
     );
     drop(connection);
 
@@ -2020,10 +2026,11 @@ fn exact_index_prunes_superseded_file_versions_on_the_next_streaming_scan() {
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection
-            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM sources", [], |row| row
+                .get::<_, i64>(0))
             .unwrap(),
         1,
-        "obsolete file generations must not accumulate without bound"
+        "a no-op scan must keep the single stable source"
     );
     drop(connection);
 
@@ -2359,6 +2366,156 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
 }
 
 #[test]
+fn exact_index_append_stages_only_suffix_rows_without_copying_history() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019e-append-delta-no-copy.jsonl");
+    let mut lines = Vec::new();
+    for ordinal in 0_u64..64 {
+        let total = 100 + ordinal;
+        lines.push(
+            serde_json::json!({
+                "timestamp": format!("2026-07-20T01:{:02}:00Z", ordinal % 60),
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": total.saturating_sub(20),
+                            "cached_input_tokens": 10,
+                            "output_tokens": 20,
+                            "total_tokens": total
+                        },
+                        "last_token_usage": {
+                            "input_tokens": total.saturating_sub(20),
+                            "cached_input_tokens": 10,
+                            "output_tokens": 20,
+                            "total_tokens": total
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        );
+    }
+    write_lines(&file, &lines);
+    dashboard_snapshot(&root).unwrap();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let published_rows = {
+        let connection = Connection::open(&index_path).unwrap();
+        connection
+            .query_row("SELECT COUNT(*) FROM event_rows", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(published_rows, 64);
+
+    let mut append = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(
+        append,
+        "{}",
+        serde_json::json!({
+            "timestamp": "2026-07-20T02:05:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": 900,
+                        "cached_input_tokens": 100,
+                        "output_tokens": 99,
+                        "total_tokens": 999
+                    },
+                    "last_token_usage": {
+                        "input_tokens": 900,
+                        "cached_input_tokens": 100,
+                        "output_tokens": 99,
+                        "total_tokens": 999
+                    }
+                }
+            }
+        })
+    )
+    .unwrap();
+    drop(append);
+
+    ExactUsageIndex::set_after_file_commit_hook_for_testing(|_| {
+        Err("injected interruption after append delta commit".into())
+    });
+    let mut interrupted = ExactUsageIndex::open(&root).unwrap();
+    let error = interrupted.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("append delta commit"), "{error}");
+    drop(interrupted);
+
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM event_rows", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        published_rows,
+        "append staging must not rewrite published event rows"
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM pending_event_rows", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        1,
+        "pending storage must contain only the appended event"
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM pending_fingerprints", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        1,
+        "pending storage must contain only the appended fingerprint"
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        published_rows
+    );
+    drop(connection);
+
+    let mut resumed = ExactUsageIndex::open(&root).unwrap();
+    resumed.sync(&root, &mut Vec::new()).unwrap();
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM event_rows", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        published_rows + 1
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM pending_event_rows", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0
+    );
+
+    drop(connection);
+    drop(resumed);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_append_reuses_checkpoint_when_open_line_crosses_chunk_boundary() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     reset_dashboard_aggregate_build_count_for_testing();
@@ -2604,6 +2761,60 @@ fn exact_index_parallel_stages_large_cold_files() {
         ExactUsageIndex::stage_peak_concurrency_for_testing() >= 2,
         "large cold files must be parsed by more than one staging worker"
     );
+    assert_eq!(
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        expected_total
+    );
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_parallel_stages_small_cold_files_with_bounded_workers() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let mut expected_total = 0_u64;
+    for index in 0_u64..8 {
+        let total = 40 + index;
+        expected_total += total;
+        write_lines(
+            &session_dir.join(format!(
+                "rollout-019esmall-parallel-{index:04}-0000-0000.jsonl"
+            )),
+            &[&serde_json::json!({
+                "timestamp": "2026-07-20T01:00:00Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": total.saturating_sub(10),
+                            "cached_input_tokens": 5,
+                            "output_tokens": 10,
+                            "total_tokens": total
+                        }
+                    }
+                }
+            })
+            .to_string()],
+        );
+    }
+    ExactUsageIndex::reset_stage_concurrency_for_testing(75);
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+
+    let peak = ExactUsageIndex::stage_peak_concurrency_for_testing();
+    assert!(
+        peak > 1,
+        "small cold files must use concurrent parser workers"
+    );
+    assert!(peak <= 4, "the parser pool must retain the four-worker cap");
     assert_eq!(
         index
             .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
@@ -2897,6 +3108,35 @@ fn exact_index_reuses_private_staging_after_an_interrupted_import() {
         STAGED_FULL_REBUILD_PARSER_REVISION,
         "staged manifests must bind the exact parser semantics revision"
     );
+    let v3_proof = staged_connection
+        .query_row(
+            r#"
+            SELECT manifest_schema_version, staging_mode, source_id,
+                   base_generation, base_resume_offset, base_prefix_sha256,
+                   fingerprint_codec_version
+            FROM manifest WHERE complete = 1
+            "#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(v3_proof.0, 3);
+    assert_eq!(v3_proof.1, "full");
+    assert!(v3_proof.2 > 0);
+    assert_eq!(v3_proof.3, 0);
+    assert_eq!(v3_proof.4, None);
+    assert_eq!(v3_proof.5, None);
+    assert_eq!(v3_proof.6, 1);
     drop(staged_connection);
 
     ExactUsageIndex::reset_scan_bytes_for_testing();
@@ -3259,6 +3499,7 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
+    convert_current_index_to_v091_schema9(&index_path);
     let connection = Connection::open(&index_path).unwrap();
     let before = connection
         .query_row(
@@ -3279,14 +3520,13 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
         )
         .unwrap();
     drop(connection);
-    convert_current_index_to_v091_schema9(&index_path);
 
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let mut migrated = ExactUsageIndex::open(&root).unwrap();
     assert_eq!(
         ExactUsageIndex::scan_bytes_for_testing(),
         (0, 0),
-        "schema 9→10 migration must not parse JSONL bodies"
+        "schema 9→11 migration must not parse JSONL bodies"
     );
     let connection = Connection::open(&index_path).unwrap();
     let after = connection
@@ -3316,7 +3556,7 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "10"
+        "11"
     );
     assert_eq!(
         connection
@@ -3362,7 +3602,7 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
                 )
                 .unwrap(),
             0,
-            "schema 10 must not retain {table}.{column}"
+            "schema 11 must not retain {table}.{column}"
         );
     }
     drop(connection);
@@ -3388,9 +3628,477 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
 }
 
 #[test]
+fn exact_index_migrates_fba33820_schema10_without_reparsing_and_keeps_append_checkpoint() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-fba33820-schema10-migration.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"cached_input_tokens":20,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":100}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 100);
+    let before = exact_migration_facts(&index_path);
+    convert_current_index_to_fba33820_schema10(&index_path);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut migrated = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing(),
+        (0, 0),
+        "schema 10→11 migration must not parse JSONL bodies"
+    );
+    assert_eq!(exact_migration_facts(&index_path), before);
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "11"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM metadata WHERE key = 'codex_home_physical_identity'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    drop(connection);
+
+    let appended = r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30,"cached_input_tokens":5,"output_tokens":10,"total_tokens":40}}}}"#;
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(handle, "{appended}").unwrap();
+    drop(handle);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    migrated.sync(&root, &mut Vec::new()).unwrap();
+    let (full_scan_bytes, append_scan_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(full_scan_bytes, 0);
+    assert!(append_scan_bytes > 0);
+    assert_eq!(
+        migrated
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        140
+    );
+
+    drop(migrated);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn schema11_active_build_fences_current_writes_and_hides_stale_pending_rows() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-schema11-current-fence.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let connection = Connection::open(&index_path).unwrap();
+    let published = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    let source_id = connection
+        .query_row("SELECT source_id FROM sources LIMIT 1", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    let before = (
+        connection
+            .query_row("SELECT COUNT(*) FROM sources", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        connection
+            .query_row("SELECT COUNT(*) FROM event_rows", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        connection
+            .query_row("SELECT COUNT(*) FROM source_chunks", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        connection
+            .query_row("SELECT COUNT(*) FROM dashboard_source_totals", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        connection
+            .query_row("SELECT COUNT(*) FROM dashboard_source_5m", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+    );
+    connection
+        .execute(
+            "INSERT INTO metadata(key, value) VALUES ('building_generation', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [published.saturating_add(1).to_string()],
+        )
+        .unwrap();
+    for sql in [
+        "DELETE FROM files WHERE generation = ?1",
+        "DELETE FROM events WHERE file_generation = ?1",
+        "DELETE FROM file_chunks WHERE file_generation = ?1",
+        "DELETE FROM dashboard_file_totals WHERE file_generation = ?1",
+        "DELETE FROM dashboard_file_5m WHERE file_generation = ?1",
+    ] {
+        let error = connection.execute(sql, params![published]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("blocked during building generation"));
+    }
+    assert_eq!(
+        (
+            connection
+                .query_row("SELECT COUNT(*) FROM sources", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            connection
+                .query_row("SELECT COUNT(*) FROM event_rows", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            connection
+                .query_row("SELECT COUNT(*) FROM source_chunks", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            connection
+                .query_row("SELECT COUNT(*) FROM dashboard_source_totals", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            connection
+                .query_row("SELECT COUNT(*) FROM dashboard_source_5m", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+        ),
+        before
+    );
+
+    let stale_generation = published.saturating_add(2);
+    connection
+        .execute(
+            "INSERT INTO pending_sources(source_id, target_generation, mode, deleted) VALUES (?1, ?2, 'delta', 0)",
+            params![source_id, stale_generation],
+        )
+        .unwrap();
+    let stale_event_id = connection
+        .query_row(
+            "SELECT COALESCE(MAX(id), 0) + 100 FROM event_rows",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO pending_event_rows(id, source_id, ordinal, timestamp, tokens, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens) VALUES (?1, ?2, 999, 1, 1, 1, 0, 0, 0)",
+            params![stale_event_id, source_id],
+        )
+        .unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE generation = ?1",
+                params![stale_generation],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1",
+                params![stale_event_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM published_events",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+        120
+    );
+
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn schema11_migration_rejects_invalid_generation_markers_without_artifacts_or_parsing() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-schema11-invalid-generations.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    dashboard_snapshot(&root).unwrap();
+    convert_current_index_to_v091_schema9(&index_path);
+
+    let mut candidate_value = index_path.as_os_str().to_os_string();
+    candidate_value.push(".schema11-candidate");
+    let candidate_path = PathBuf::from(candidate_value);
+    let mut manifest_value = index_path.as_os_str().to_os_string();
+    manifest_value.push(".schema11-migration.json");
+    let manifest_path = PathBuf::from(manifest_value);
+    let assert_rejected_without_write = |expected: &str| {
+        let bytes_before = fs::read(&index_path).unwrap();
+        ExactUsageIndex::reset_scan_bytes_for_testing();
+        let error = match ExactUsageIndex::open(&root) {
+            Ok(_) => panic!("invalid generation metadata must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+        assert_eq!(fs::read(&index_path).unwrap(), bytes_before);
+        assert!(!candidate_path.exists());
+        assert!(!manifest_path.exists());
+    };
+
+    let connection = Connection::open(&index_path).unwrap();
+    let published = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = 'published_generation'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+    drop(connection);
+    assert_rejected_without_write("缺少 published_generation");
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO metadata(key, value) VALUES ('published_generation', ?1)",
+            [published.to_string()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO metadata(key, value) VALUES ('building_generation', ?1)",
+            [published.to_string()],
+        )
+        .unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+    drop(connection);
+    assert_rejected_without_write("未严格晚于");
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = ?1 WHERE key = 'building_generation'",
+            [published.saturating_add(1).to_string()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE files SET generation = ?1",
+            params![published.saturating_add(2)],
+        )
+        .unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+    drop(connection);
+    assert_rejected_without_write("之外的代次");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn schema11_migration_rejects_same_count_candidate_content_corruption() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let source_path = session_dir.join("rollout-schema11-digest-corruption.jsonl");
+    write_lines(
+        &source_path,
+        &[
+            r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":7,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    convert_current_index_to_v091_schema9(&index_path);
+    let active_bytes_before = fs::read(&index_path).unwrap();
+    let active_facts_before = exact_migration_facts(&index_path);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    ExactUsageIndex::fail_schema9_migration_stage_for_testing(8);
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("stage 8 must leave the validated candidate resumable"),
+        Err(error) => error,
+    };
+    assert!(error.contains("injected schema 11 candidate migration failure at stage 8"));
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+
+    let mut candidate_value = index_path.as_os_str().to_os_string();
+    candidate_value.push(".schema11-candidate");
+    let candidate_path = PathBuf::from(candidate_value);
+    let candidate = Connection::open(&candidate_path).unwrap();
+    assert_eq!(
+        candidate
+            .execute(
+                "UPDATE event_rows SET timestamp = timestamp + 1 WHERE id = (SELECT MIN(id) FROM event_rows)",
+                [],
+            )
+            .unwrap(),
+        1
+    );
+    candidate
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+    drop(candidate);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("same-count candidate content corruption must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.contains("对账失败"), "{error}");
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(fs::read(&index_path).unwrap(), active_bytes_before);
+    assert_eq!(exact_migration_facts(&index_path), active_facts_before);
+    assert!(exact_column_exists(&index_path, "files", "device_id"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn schema11_migration_preserves_stale_published_enrichment_receipt() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let source_path = session_dir.join("rollout-schema11-stale-enrichment.jsonl");
+    write_lines(
+        &source_path,
+        &[
+            r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":9,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    convert_current_index_to_v091_schema9(&index_path);
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .execute(
+                r#"
+                INSERT OR REPLACE INTO event_enrichment_sources(
+                    path, revision, parser_revision, file_generation,
+                    completed_size, completed_prefix_sha256
+                )
+                SELECT path, 'legacy-stale', 'legacy-parser', generation,
+                       size, prefix_sha256
+                FROM files
+                WHERE deleted = 0
+                ORDER BY generation DESC
+                LIMIT 1
+                "#,
+                [],
+            )
+            .unwrap(),
+        1
+    );
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+    drop(connection);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+
+    let migrated = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        migrated
+            .query_row(
+                "SELECT COUNT(*) FROM source_enrichment WHERE revision = 'legacy-stale' AND parser_revision = 'legacy-parser'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "a stale receipt is still published evidence and must survive migration"
+    );
+    assert_eq!(
+        migrated
+            .query_row("SELECT COUNT(*) FROM pending_enrichment", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0,
+        "a published receipt must not be misclassified as unfinished building data"
+    );
+    drop(migrated);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_schema9_migration_rolls_back_every_swap_stage_without_data_loss() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
-    for stage in 1..=4 {
+    for stage in 1..=9 {
         let root = temp_root();
         let session_dir = root.join("sessions");
         let index_path = root
@@ -3419,7 +4127,7 @@ fn exact_index_schema9_migration_rolls_back_every_swap_stage_without_data_loss()
         };
         assert!(
             error.contains(&format!(
-                "injected schema 9 migration failure at stage {stage}"
+                "injected schema 11 candidate migration failure at stage {stage}"
             )),
             "{error}"
         );
@@ -3453,6 +4161,78 @@ fn exact_index_schema9_migration_rolls_back_every_swap_stage_without_data_loss()
         drop(ExactUsageIndex::open(&root).unwrap());
         assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
         assert!(!exact_column_exists(&index_path, "files", "device_id"));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn exact_index_schema11_switch_interruptions_resume_without_jsonl_reparse() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    for stage in 10..=12 {
+        let root = temp_root();
+        let session_dir = root.join("sessions");
+        let index_path = root
+            .join(".codex-token-bar-test-cache")
+            .join("exact-token-index.sqlite3");
+        fs::create_dir_all(&session_dir).unwrap();
+        let source_path = session_dir.join(format!("rollout-schema11-switch-{stage}.jsonl"));
+        write_lines(
+            &source_path,
+            &[
+                r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            ],
+        );
+        assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+        convert_current_index_to_v091_schema9(&index_path);
+        let facts_before = exact_migration_facts(&index_path);
+        let source_bytes_before = fs::read(&source_path).unwrap();
+        let mut rollback_value = index_path.as_os_str().to_os_string();
+        rollback_value.push(".schema11-rollback");
+        let rollback_path = PathBuf::from(rollback_value);
+        let mut manifest_value = index_path.as_os_str().to_os_string();
+        manifest_value.push(".schema11-migration.json");
+        let manifest_path = PathBuf::from(manifest_value);
+
+        ExactUsageIndex::reset_scan_bytes_for_testing();
+        ExactUsageIndex::fail_schema9_migration_stage_for_testing(stage);
+        let error = match ExactUsageIndex::open(&root) {
+            Ok(_) => panic!("switch stage {stage} must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains(&format!(
+                "injected schema 11 candidate migration failure at stage {stage}"
+            )),
+            "{error}"
+        );
+        assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+        assert_eq!(fs::read(&source_path).unwrap(), source_bytes_before);
+        assert!(rollback_path.exists());
+        assert!(manifest_path.exists());
+
+        ExactUsageIndex::reset_scan_bytes_for_testing();
+        let mut resumed = ExactUsageIndex::open(&root).unwrap();
+        assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+        assert_eq!(exact_migration_facts(&index_path), facts_before);
+        assert_eq!(
+            Connection::open(&index_path)
+                .unwrap()
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "11"
+        );
+        assert!(rollback_path.exists());
+        assert!(manifest_path.exists());
+
+        resumed.sync(&root, &mut Vec::new()).unwrap();
+        assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+        assert!(!rollback_path.exists());
+        assert!(!manifest_path.exists());
+        drop(resumed);
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -3548,16 +4328,11 @@ fn exact_index_enrichment_publishes_an_appended_tail_in_the_same_snapshot() {
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
+    convert_current_index_to_v091_schema9(&index_path);
     let connection = Connection::open(&index_path).unwrap();
     connection
         .execute(
             "UPDATE events SET model = NULL, reasoning_output_tokens = NULL",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
@@ -3624,16 +4399,11 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
+    convert_current_index_to_v091_schema9(&index_path);
     let connection = Connection::open(&index_path).unwrap();
     connection
         .execute(
             "UPDATE events SET model = NULL, reasoning_output_tokens = NULL",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
@@ -3671,7 +4441,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "10"
+        "11"
     );
     assert_eq!(
         interrupted_database
@@ -3704,7 +4474,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "10"
+        "11"
     );
     assert_eq!(
         completed
@@ -3747,16 +4517,11 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 100);
 
+    convert_current_index_to_v091_schema9(&index_path);
     let connection = Connection::open(&index_path).unwrap();
     connection
         .execute(
             "UPDATE events SET model = NULL, reasoning_output_tokens = NULL",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
@@ -3834,14 +4599,21 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
     assert_eq!(
         interrupted_database
             .query_row(
-                "SELECT file_generation FROM event_enrichment_sources WHERE path = ?1 AND revision = 'model-reasoning-v1'",
-                [canonical_file.to_string_lossy().as_ref()],
+                "SELECT COUNT(*) FROM pending_enrichment e JOIN pending_sources p USING(source_id) WHERE p.mode = 'tombstone'",
+                [],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
-        building,
-        "the enrichment receipt must point at the durable tombstone generation"
+        0,
+        "a durable tombstone must never carry an enrichment child row"
     );
+    let stable_source_id = interrupted_database
+        .query_row(
+            "SELECT source_id FROM sources WHERE path = ?1",
+            [canonical_file.to_string_lossy().as_ref()],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
     drop(interrupted_database);
 
     let mut resumed = ExactUsageIndex::open(&root).unwrap();
@@ -3857,6 +4629,17 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
             .unwrap(),
         0,
         "resume must publish the durable tombstone instead of resurrecting the missing source"
+    );
+    assert_eq!(
+        completed
+            .query_row(
+                "SELECT source_id FROM sources WHERE path = ?1 AND deleted = 1",
+                [canonical_file.to_string_lossy().as_ref()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        stable_source_id,
+        "publishing a tombstone must retain the stable source id"
     );
     assert_eq!(
         completed
@@ -3895,16 +4678,11 @@ fn event_enrichment_keeps_the_previous_published_generation_until_every_source_c
     write_lines(&second, &second_lines);
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
 
+    convert_current_index_to_v091_schema9(&index_path);
     let connection = Connection::open(&index_path).unwrap();
     connection
         .execute(
             "UPDATE events SET model = NULL, reasoning_output_tokens = NULL",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE metadata SET value = '9' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
@@ -4913,11 +5691,8 @@ fn exact_index_cold_scan_resumes_committed_files_without_publishing_partial_tota
     drop(index);
     assert!(cached_dashboard_usage_summary(&root).is_none());
 
-    let resumed_parse = Arc::new(Mutex::new(None::<PathBuf>));
-    let resumed_parse_for_hook = Arc::clone(&resumed_parse);
-    ExactUsageIndex::set_after_prefix_scan_hook_for_testing(move |path| {
-        *resumed_parse_for_hook.lock().unwrap() = Some(path.to_path_buf());
-    });
+    assert!(committed_path.lock().unwrap().is_some());
+    ExactUsageIndex::reset_scan_bytes_for_testing();
     let mut resumed = ExactUsageIndex::open(&root).unwrap();
     let completed_revision = resumed.sync(&root, &mut Vec::new()).unwrap();
     assert!(completed_revision > initial_revision);
@@ -4928,12 +5703,10 @@ fn exact_index_cold_scan_resumes_committed_files_without_publishing_partial_tota
             .total_tokens,
         150
     );
-    assert!(resumed_parse.lock().unwrap().is_some());
-    assert!(committed_path.lock().unwrap().is_some());
-    assert_ne!(
-        resumed_parse.lock().unwrap().as_ref(),
-        committed_path.lock().unwrap().as_ref(),
-        "resume must skip the file whose current signature was already committed"
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing().0,
+        0,
+        "all completed private artifacts must be reused even when publication stopped after the first import"
     );
     let connection = Connection::open(&index_path).unwrap();
     assert!(connection
@@ -5009,7 +5782,7 @@ fn exact_index_resumed_building_generation_survives_schema9_migration_and_append
     assert_eq!(
         exact_migration_facts(&index_path),
         staged_before_migration,
-        "schema 9→10 must retain the unfinished generation and its staged rows"
+        "schema 9→11 must retain the unfinished generation and its staged rows"
     );
     index.sync(&root, &mut Vec::new()).unwrap();
     assert_eq!(
@@ -5059,7 +5832,7 @@ fn exact_index_installs_the_published_summary_covering_index() {
         .join("exact-token-index.sqlite3");
     let connection = Connection::open(index_path).unwrap();
     let columns = connection
-        .prepare("PRAGMA index_info('events_file_summary_idx')")
+        .prepare("PRAGMA index_info('event_rows_source_idx')")
         .unwrap()
         .query_map([], |row| row.get::<_, String>(2))
         .unwrap()
@@ -5067,7 +5840,7 @@ fn exact_index_installs_the_published_summary_covering_index() {
         .unwrap();
     assert_eq!(
         columns,
-        ["file_generation", "file_path", "timestamp", "tokens"],
+        ["source_id", "timestamp", "tokens", "ordinal"],
         "the status summary must stay on a semantics-preserving covering index"
     );
 
@@ -5241,6 +6014,276 @@ fn p1_4_failed_thread_metadata_staging_keeps_published_rows_and_signature() {
     assert_eq!(after_signature, before_signature);
     assert_eq!(read_published_metadata(&connection), before_metadata);
     assert_eq!(fs::read(&wal_path).ok(), wal_before);
+
+    drop(connection);
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn thread_metadata_single_row_update_does_not_rewrite_unchanged_rows() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let first_id = "019emetadata-incremental-0000-0000-000000000001";
+    let second_id = "019emetadata-incremental-0000-0000-000000000002";
+    create_state_database(&root, first_id, second_id);
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let before_revision = index.revision().unwrap();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    {
+        let connection = Connection::open(&index_path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE session_metadata_write_audit (
+                    operation TEXT NOT NULL,
+                    session_id TEXT NOT NULL
+                );
+                CREATE TRIGGER session_metadata_audit_insert
+                AFTER INSERT ON session_metadata BEGIN
+                    INSERT INTO session_metadata_write_audit VALUES ('insert', NEW.session_id);
+                END;
+                CREATE TRIGGER session_metadata_audit_update
+                AFTER UPDATE ON session_metadata BEGIN
+                    INSERT INTO session_metadata_write_audit VALUES ('update', NEW.session_id);
+                END;
+                CREATE TRIGGER session_metadata_audit_delete
+                AFTER DELETE ON session_metadata BEGIN
+                    INSERT INTO session_metadata_write_audit VALUES ('delete', OLD.session_id);
+                END;
+                "#,
+            )
+            .unwrap();
+    }
+    {
+        let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+        connection
+            .execute(
+                "UPDATE threads SET title = '仅第一行变化', updated_at_ms = updated_at_ms + 1 WHERE id = ?1",
+                [first_id],
+            )
+            .unwrap();
+    }
+
+    let revision = index
+        .sync_thread_metadata_without_scan(&root, &mut Vec::new())
+        .unwrap();
+    assert_eq!(revision, before_revision + 1);
+    let connection = Connection::open(&index_path).unwrap();
+    let writes = connection
+        .prepare("SELECT operation, session_id FROM session_metadata_write_audit ORDER BY rowid")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(writes, vec![("update".to_string(), first_id.to_string())]);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT title FROM session_metadata WHERE session_id = ?1",
+                [second_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "高命中会话"
+    );
+
+    drop(connection);
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn thread_metadata_signature_only_change_does_not_advance_revision() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    create_state_database(
+        &root,
+        "019emetadata-signature-0000-0000-000000000001",
+        "019emetadata-signature-0000-0000-000000000002",
+    );
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let before_revision = index.revision().unwrap();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let before_signature = {
+        let connection = Connection::open(&index_path).unwrap();
+        connection
+            .query_row(
+                "SELECT (SELECT value FROM metadata WHERE key = 'state_size'), (SELECT value FROM metadata WHERE key = 'state_modified_ns')",
+                [],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap()
+    };
+    age_file(
+        &root.join("state_5.sqlite"),
+        StdDuration::from_secs(24 * 60 * 60),
+    );
+
+    let revision = index
+        .sync_thread_metadata_without_scan(&root, &mut Vec::new())
+        .unwrap();
+    assert_eq!(revision, before_revision);
+    let connection = Connection::open(&index_path).unwrap();
+    let after_signature = connection
+        .query_row(
+            "SELECT (SELECT value FROM metadata WHERE key = 'state_size'), (SELECT value FROM metadata WHERE key = 'state_modified_ns')",
+            [],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .unwrap();
+    assert_ne!(after_signature, before_signature);
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM session_metadata", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        2
+    );
+
+    drop(connection);
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn thread_metadata_complete_stage_adds_and_removes_only_changed_rows() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let retained_id = "019emetadata-membership-0000-0000-000000000001";
+    let removed_id = "019emetadata-membership-0000-0000-000000000002";
+    let added_id = "019emetadata-membership-0000-0000-000000000003";
+    create_state_database(&root, retained_id, removed_id);
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let before_revision = index.revision().unwrap();
+    let state = Connection::open(root.join("state_5.sqlite")).unwrap();
+    state
+        .execute("DELETE FROM threads WHERE id = ?1", [removed_id])
+        .unwrap();
+    state
+        .execute(
+            "INSERT INTO threads(id, title, first_user_message, preview, updated_at, updated_at_ms) VALUES (?1, '新增标题', NULL, NULL, 3, 3000)",
+            [added_id],
+        )
+        .unwrap();
+    drop(state);
+
+    assert_eq!(
+        index
+            .sync_thread_metadata_without_scan(&root, &mut Vec::new())
+            .unwrap(),
+        before_revision + 1
+    );
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let connection = Connection::open(index_path).unwrap();
+    let rows = connection
+        .prepare("SELECT session_id, title FROM session_metadata ORDER BY session_id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (retained_id.to_string(), "低命中会话".to_string()),
+            (added_id.to_string(), "新增标题".to_string()),
+        ]
+    );
+
+    drop(connection);
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn thread_metadata_preserves_formal_title_and_bounds_unicode_fallbacks() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let formal = format!("  {}  ", "正式标题".repeat(80));
+    let fallback_body = "🙂中文".repeat(100);
+    let database = root.join("state_5.sqlite");
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                first_user_message TEXT,
+                preview TEXT,
+                updated_at INTEGER NOT NULL,
+                updated_at_ms INTEGER
+            );
+            "#,
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO threads VALUES ('formal', ?1, 'ignored', 'ignored', 1, 1000)",
+            [&formal],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO threads VALUES ('fallback', '   ', ?1, 'ignored', 2, 2000)",
+            [format!("  {fallback_body}  ")],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO threads VALUES ('preview', NULL, '  \n\t ', '  预览标题  ', 3, 3000)",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let connection = Connection::open(index_path).unwrap();
+    let read_title = |session_id: &str| {
+        connection
+            .query_row(
+                "SELECT title FROM session_metadata WHERE session_id = ?1",
+                [session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(read_title("formal"), formal);
+    let fallback = read_title("fallback");
+    assert_eq!(fallback.chars().count(), 240);
+    assert!(fallback.ends_with('…'));
+    assert_eq!(
+        fallback.chars().take(239).collect::<String>(),
+        fallback_body.chars().take(239).collect::<String>()
+    );
+    assert_eq!(read_title("preview"), "预览标题");
 
     drop(connection);
     drop(index);
@@ -6104,7 +7147,7 @@ fn dashboard_temp_view_keeps_one_wal_snapshot_across_all_sections() {
         writer.busy_timeout(StdDuration::from_secs(1)).unwrap();
         writer
             .execute(
-                "UPDATE events SET tokens = 999, input_tokens = 900, cached_input_tokens = 0, output_tokens = 99",
+                "UPDATE event_rows SET tokens = 999, input_tokens = 900, cached_input_tokens = 0, output_tokens = 99",
                 [],
             )
             .unwrap();
@@ -6126,7 +7169,7 @@ fn dashboard_temp_view_keeps_one_wal_snapshot_across_all_sections() {
     let writer = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
     assert_eq!(
         writer
-            .query_row("SELECT tokens FROM events LIMIT 1", [], |row| {
+            .query_row("SELECT tokens FROM event_rows LIMIT 1", [], |row| {
                 row.get::<_, i64>(0)
             })
             .unwrap(),
@@ -10340,10 +11383,149 @@ fn summary_only_success_is_not_a_full_precise_completion() {
 }
 
 fn convert_current_index_to_v091_schema9(index_path: &Path) {
-    let connection = Connection::open(index_path).unwrap();
+    let mut connection = Connection::open(index_path).unwrap();
     connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .unwrap();
+    let fingerprints = {
+        let mut statement = connection
+            .prepare(
+                "SELECT file_generation, file_path, fingerprint FROM file_fingerprints ORDER BY file_generation, file_path",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    transaction
         .execute_batch(
             r#"
+            CREATE TABLE schema9_files AS
+            SELECT generation, path, deleted, session_id, size, modified_ns,
+                   prefix_sha256, append_ready, resume_offset, previous_total_tokens,
+                   fork_replay_started_ns, fork_replay_active,
+                   is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
+                   current_model, current_user_prompt_start, current_user_prompt_end,
+                   assistant_response_start, assistant_response_end, audit_chunk_index
+            FROM files f
+            WHERE NOT (
+                f.generation = 0 AND f.deleted = 1
+                AND EXISTS(SELECT 1 FROM pending_sources p
+                           WHERE p.source_id = f.source_id)
+            );
+            CREATE TABLE schema9_events AS
+            SELECT id, file_generation, file_path, ordinal, timestamp, session_id,
+                   tokens, input_tokens, cached_input_tokens, output_tokens,
+                   reasoning_output_tokens, model, user_prompt_start, user_prompt_end,
+                   assistant_response_start, assistant_response_end
+            FROM events;
+            CREATE TABLE schema9_fingerprints(
+                file_generation INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                fingerprint BLOB NOT NULL
+            );
+            CREATE TABLE schema9_chunks AS
+            SELECT file_generation, file_path, chunk_index, byte_count, sha256
+            FROM file_chunks;
+            CREATE TABLE schema9_enrichment AS
+            SELECT path, revision, parser_revision, file_generation,
+                   completed_size, completed_prefix_sha256
+            FROM event_enrichment_sources;
+            CREATE TABLE schema9_file_totals AS
+            SELECT file_generation, file_path, session_id, total_tokens, calls,
+                   input_tokens, cached_input_tokens, output_tokens,
+                   first_timestamp, last_timestamp
+            FROM dashboard_file_totals;
+            CREATE TABLE schema9_file_5m AS
+            SELECT file_generation, file_path, bucket_start, model_key, model,
+                   total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_file_5m;
+            CREATE TABLE schema9_dashboard_5m AS
+            SELECT file_generation, bucket_start, model_key, model, total_tokens,
+                   calls, input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_5m;
+            CREATE TABLE schema9_turns AS
+            SELECT aggregate_generation, event_id, source_file_generation,
+                   file_path, ordinal, timestamp, session_id, total_tokens,
+                   input_tokens, cached_input_tokens, output_tokens,
+                   user_prompt_start, user_prompt_end, assistant_response_start,
+                   assistant_response_end, turn_index, session_calls
+            FROM dashboard_turn_candidates;
+            "#,
+        )
+        .unwrap();
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO schema9_fingerprints(file_generation, file_path, fingerprint) VALUES (?1, ?2, ?3)",
+            )
+            .unwrap();
+        for (generation, path, encoded) in fingerprints {
+            let values = super::fingerprint_codec::decode(&encoded).unwrap();
+            let legacy = values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>();
+            insert.execute(params![generation, path, legacy]).unwrap();
+        }
+    }
+    transaction
+        .execute_batch(
+            r#"
+            DROP VIEW published_events;
+            DROP VIEW published_files;
+            DROP VIEW dashboard_turn_candidates;
+            DROP VIEW dashboard_5m;
+            DROP VIEW dashboard_file_5m;
+            DROP VIEW dashboard_file_totals;
+            DROP VIEW event_enrichment_sources;
+            DROP VIEW file_chunks;
+            DROP VIEW file_fingerprints;
+            DROP VIEW events;
+            DROP VIEW files;
+
+            DROP TABLE pending_event_rows;
+            DROP TABLE pending_fingerprints;
+            DROP TABLE pending_chunks;
+            DROP TABLE pending_enrichment;
+            DROP TABLE pending_dashboard_source_totals;
+            DROP TABLE pending_dashboard_source_5m;
+            DROP TABLE pending_dashboard_5m;
+            DROP TABLE pending_dashboard_5m_tombstones;
+            DROP TABLE pending_dashboard_turn_candidates;
+            DROP TABLE pending_dashboard_turn_tombstones;
+            DROP TABLE pending_sources;
+            DROP TABLE event_rows;
+            DROP TABLE source_fingerprints;
+            DROP TABLE source_chunks;
+            DROP TABLE source_enrichment;
+            DROP TABLE dashboard_source_totals;
+            DROP TABLE dashboard_source_5m;
+            DROP TABLE dashboard_5m_current;
+            DROP TABLE dashboard_turn_candidates_current;
+            DROP TABLE sources;
+
+            ALTER TABLE schema9_files RENAME TO files;
+            ALTER TABLE schema9_events RENAME TO events;
+            ALTER TABLE schema9_fingerprints RENAME TO file_fingerprints;
+            ALTER TABLE schema9_chunks RENAME TO file_chunks;
+            ALTER TABLE schema9_enrichment RENAME TO event_enrichment_sources;
+            ALTER TABLE schema9_file_totals RENAME TO dashboard_file_totals;
+            ALTER TABLE schema9_file_5m RENAME TO dashboard_file_5m;
+            ALTER TABLE schema9_dashboard_5m RENAME TO dashboard_5m;
+            ALTER TABLE schema9_turns RENAME TO dashboard_turn_candidates;
+
             ALTER TABLE files ADD COLUMN device_id TEXT NOT NULL DEFAULT 'legacy-device';
             ALTER TABLE files ADD COLUMN file_id TEXT NOT NULL DEFAULT 'legacy-file';
             ALTER TABLE files ADD COLUMN changed_ns TEXT NOT NULL DEFAULT '0';
@@ -10359,6 +11541,52 @@ fn convert_current_index_to_v091_schema9(index_path: &Path) {
             UPDATE metadata SET value = '1' WHERE key = 'session_catalog_schema_version';
             INSERT OR REPLACE INTO metadata(key, value)
             VALUES ('codex_home_physical_identity', 'legacy-volume-and-file-id');
+
+            CREATE VIEW published_files AS
+            WITH latest AS (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation <= COALESCE(
+                    (SELECT CAST(value AS INTEGER) FROM metadata
+                     WHERE key = 'published_generation'), 0)
+                GROUP BY path
+            )
+            SELECT f.* FROM latest
+            JOIN files f ON f.path = latest.path AND f.generation = latest.generation
+            WHERE f.deleted = 0;
+            CREATE VIEW published_events AS
+            SELECT e.* FROM events e
+            JOIN published_files f
+              ON f.generation = e.file_generation AND f.path = e.file_path;
+            "#,
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON; PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+}
+
+fn convert_current_index_to_fba33820_schema10(index_path: &Path) {
+    convert_current_index_to_v091_schema9(index_path);
+    let connection = Connection::open(index_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            ALTER TABLE files DROP COLUMN device_id;
+            ALTER TABLE files DROP COLUMN file_id;
+            ALTER TABLE files DROP COLUMN changed_ns;
+            ALTER TABLE event_enrichment_sources DROP COLUMN device_id;
+            ALTER TABLE event_enrichment_sources DROP COLUMN file_id;
+            ALTER TABLE session_catalog_files DROP COLUMN stat_device_id;
+            ALTER TABLE session_catalog_files DROP COLUMN stat_file_id;
+            ALTER TABLE session_catalog_files DROP COLUMN stat_changed_ns;
+            ALTER TABLE session_catalog_files DROP COLUMN device_id;
+            ALTER TABLE session_catalog_files DROP COLUMN file_id;
+            ALTER TABLE session_catalog_files DROP COLUMN changed_ns;
+            UPDATE metadata SET value = '10' WHERE key = 'schema_version';
+            UPDATE metadata SET value = '2' WHERE key = 'session_catalog_schema_version';
+            DELETE FROM metadata WHERE key = 'codex_home_physical_identity';
             PRAGMA wal_checkpoint(TRUNCATE);
             "#,
         )

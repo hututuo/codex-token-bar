@@ -1,9 +1,10 @@
+use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
 use super::session_parser::{
     probe_explicit_subagent_session_file, read_event_excerpts, stream_session_file_exact,
     stream_session_file_exact_from, ExactChunkHash, ExactEventSourceOffsets, ExactSessionEventSink,
     ExactSessionParserState, ExactTokenEvent, ExplicitSubagentSessionFileProbe, SourceByteRange,
-    UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE, USAGE_SNAPSHOT_FINGERPRINT_BYTES,
+    UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE,
 };
 use super::{
     IndexedSessionCatalogEntry, IndexedSessionCatalogSnapshot, IndexedSessionMetadata,
@@ -26,7 +27,8 @@ use crate::models::{
 };
 use fs2::available_space;
 use rusqlite::{
-    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+    backup::Backup, params, Connection, OpenFlags, OptionalExtension, Transaction,
+    TransactionBehavior,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -52,7 +54,7 @@ use uuid::Uuid;
 
 // v0.9.1 is the only forward-migration baseline for v0.9.2. Earlier and future
 // layouts are preserved read-only and rejected instead of being deleted.
-const INDEX_SCHEMA_VERSION: i64 = 10;
+const INDEX_SCHEMA_VERSION: i64 = 11;
 const GITHUB_BASE_SCHEMA_VERSION: i64 = 9;
 const INDEX_INTEGRITY_RECEIPT_VERSION: u32 = 2;
 const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
@@ -115,13 +117,13 @@ const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
 const THIRTY_DAY_POINT_COUNT: i64 = 30 * 4;
 const CACHE_USAGE_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_USAGE_CANDIDATE_LIMIT: i64 = 40;
-const PARALLEL_STAGING_MIN_BYTES: u64 = EXACT_INDEX_CHUNK_SIZE;
+const THREAD_METADATA_FALLBACK_MAX_CHARS: usize = 240;
 const PARALLEL_HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const STAGING_MAX_WORKERS: usize = 4;
 const STAGING_MAX_READY_ARTIFACTS: usize = 8;
 const STAGING_MAX_READY_BYTES: u64 = 512 * 1024 * 1024;
 const STAGING_MIN_FREE_RESERVE_BYTES: u64 = 64 * 1024 * 1024;
-const STAGING_MANIFEST_SCHEMA_VERSION: i64 = 2;
+const STAGING_MANIFEST_SCHEMA_VERSION: i64 = 3;
 const STAGING_MANIFEST_INTEGRITY: &str = "sqlite-quick-check-v1";
 const MIGRATION_STAGE_TOTAL: u64 = 6;
 const STORAGE_MAINTENANCE_LAST_CHECKED_KEY: &str = "storage_maintenance_last_checked_unix";
@@ -226,6 +228,109 @@ enum MigrationAssessment {
         component: &'static str,
         raw_value: String,
     },
+}
+
+// Schema-11 migration is deliberately file-backed and resumable.  The
+// manifest is a small control receipt; all user rows remain in SQLite and are
+// copied through SQLite's online-backup API before any DDL runs.  Keep the
+// phase names stable so an interrupted switch can be resumed by a later
+// process without guessing which side of the rename was committed.
+const SCHEMA11_CANDIDATE_MANIFEST_VERSION: u32 = 1;
+const SCHEMA11_CANDIDATE_SUFFIX: &str = ".schema11-candidate";
+const SCHEMA11_ROLLBACK_SUFFIX: &str = ".schema11-rollback";
+const SCHEMA11_MIGRATION_SUFFIX: &str = ".schema11-migration.json";
+const SCHEMA11_MIGRATION_SPACE_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+enum Schema11CandidatePhase {
+    Prepared,
+    Copied,
+    Migrated,
+    Validated,
+    Switching,
+    Switched,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct Schema11FileStamp {
+    size: u64,
+    modified_ns: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct Schema11SourceReceipt {
+    schema_version: i64,
+    revision: Option<String>,
+    dashboard_revision: Option<String>,
+    published_generation: Option<i64>,
+    building_generation: Option<i64>,
+    database: Schema11FileStamp,
+    wal: Option<Schema11FileStamp>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct Schema11CandidateManifest {
+    manifest_version: u32,
+    source_path: String,
+    candidate_path: String,
+    rollback_path: String,
+    source_receipt: Schema11SourceReceipt,
+    #[serde(default)]
+    source_facts: Option<Schema11MigrationFacts>,
+    phase: Schema11CandidatePhase,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct Schema11MigrationFacts {
+    source_count: i64,
+    event_count: i64,
+    fingerprint_count: i64,
+    chunk_count: i64,
+    enrichment_count: i64,
+    catalog_count: i64,
+    catalog_size_total: i64,
+    aggregate_total: i64,
+    aggregate_bucket_total: i64,
+    global_aggregate: Schema11UsageFacts,
+    turn_aggregate: Schema11UsageFacts,
+    attribution_aggregate: Schema11UsageFacts,
+    session_metadata_count: i64,
+    session_metadata_title_bytes: i64,
+    session_metadata_updated_at_total: i64,
+    digests: Schema11MigrationDigests,
+    lineage: Vec<Option<String>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct Schema11UsageFacts {
+    row_count: i64,
+    total_tokens: i64,
+    calls: i64,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct Schema11MigrationDigests {
+    sources: String,
+    events: String,
+    fingerprints: String,
+    chunks: String,
+    enrichment: String,
+    file_totals: String,
+    file_buckets: String,
+    global_buckets: String,
+    turn_candidates: String,
+    attribution: String,
+    session_catalog: String,
+    session_metadata: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LegacyGenerationState {
+    published: i64,
+    building: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -526,6 +631,13 @@ struct StagedThreadMetadata {
     rows: Vec<(String, String, Option<i64>)>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ThreadMetadataApplyOutcome {
+    Unchanged,
+    SignatureOnly,
+    ContentChanged,
+}
+
 enum ThreadMetadataStage {
     /// The state database signature still matches the published metadata.
     Unchanged,
@@ -774,9 +886,21 @@ struct FullRebuildJob {
     file: PathBuf,
     path: String,
     session_id: String,
+    source_id: i64,
+    base_generation: i64,
+    base_resume_offset: Option<u64>,
+    base_prefix_sha256: Option<[u8; 32]>,
     signature: FileSignature,
     event_enrichment: bool,
     expected_published_prefix_sha256: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StagingSourceBase {
+    source_id: i64,
+    generation: i64,
+    resume_offset: Option<u64>,
+    prefix_sha256: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug)]
@@ -942,6 +1066,7 @@ thread_local! {
     static PREFIX_REHASH_COUNT: Cell<u64> = const { Cell::new(0) };
     static FAIL_NEXT_SESSION_CATALOG_PUBLISH: Cell<bool> = const { Cell::new(false) };
     static FAIL_SCHEMA9_MIGRATION_STAGE: Cell<u8> = const { Cell::new(0) };
+    static FAIL_SCHEMA11_MIGRATION_STAGE: Cell<u8> = const { Cell::new(0) };
     static MIGRATION_AVAILABLE_BYTES_OVERRIDE: Cell<Option<u64>> = const { Cell::new(None) };
 }
 #[cfg(test)]
@@ -1246,6 +1371,15 @@ impl ExactUsageIndex {
                 )
             },
         )?;
+        // Schema 9/10 are migrated in a managed sibling database.  The
+        // active database is only opened read-only while the candidate is
+        // copied and validated; the normal writable connection is created
+        // only after the atomic switch has completed. Always consult the
+        // managed manifest first: during the narrow rename window the
+        // canonical path is intentionally absent, and treating that state as
+        // a fresh install would create an empty replacement database.
+        let migrated_via_schema11_candidate =
+            prepare_schema11_candidate_if_needed(&path, codex_home)?;
         let existed_before = existing_regular_index(&path)?;
         let (migration_assessment, metadata_table_exists) = if existed_before {
             let read_only =
@@ -1283,7 +1417,7 @@ impl ExactUsageIndex {
         let (mut connection, recovered_corrupt_index) = open_index_connection_with_recovery(
             &path,
             existed_before,
-            !existed_before || !metadata_table_exists,
+            !existed_before || !metadata_table_exists || migrated_via_schema11_candidate,
         )?;
         let raw_schema_version = metadata_text(&connection, "schema_version")?;
         let has_schema_version = raw_schema_version.is_some();
@@ -1966,6 +2100,7 @@ impl ExactUsageIndex {
     #[cfg(test)]
     pub(super) fn fail_schema9_migration_stage_for_testing(stage: u8) {
         FAIL_SCHEMA9_MIGRATION_STAGE.with(|value| value.set(stage));
+        FAIL_SCHEMA11_MIGRATION_STAGE.with(|value| value.set(stage));
     }
 
     #[cfg(test)]
@@ -2104,103 +2239,108 @@ impl ExactUsageIndex {
         scan_total_override: Option<u64>,
         mode: ExactSyncMode,
     ) -> Result<u64, String> {
-        // The derived aggregate layer is disposable, but a newer build may
-        // have written a schema this binary does not understand. Reject it
-        // before the scan transaction can touch any aggregate rows.
-        self.validate_dashboard_aggregate_compatibility()?;
-        let scan_total =
-            scan_total_override.or_else(|| discovery.as_ref().map(|plan| plan.candidate_total));
-        let mut diagnostics = ExactScanDiagnostics {
-            candidate_count: discovery
-                .as_ref()
-                .map(|plan| plan.candidates.len() as u64)
-                .unwrap_or_default(),
-            ..ExactScanDiagnostics::default()
-        };
-        let index_path = database_path(codex_home)?;
-        let operation_lock_path = sqlite_sidecar_path(&index_path, ".operation.lock");
-        let _operation_lock = CrossProcessFileLock::acquire_wait_with_hook(
-            &operation_lock_path,
-            "精确 token 索引",
-            StdDuration::from_secs(30),
-            || {
-                super::update_precise_dashboard_progress(
-                    codex_home,
-                    "waiting",
-                    "等待其他精确统计实例完成",
-                    0,
-                    scan_total,
-                )
-            },
-        )?;
-        let integrity_gate = index_integrity_gate(&index_path);
-        let _sync_gate_guard = integrity_gate.enter_silent(&index_path);
-        let reusable_discovery = discovery.filter(|plan| plan.is_usable(codex_home));
-
-        // Historical model/reasoning enrichment is a one-time, serial owner.
-        // A brand-new index has no published files to enrich yet; let the
-        // normal checkpoint scan create its first generation instead of
-        // returning early after merely stamping the enrichment revision.
-        // Once a generation has been published, enrichment owns that old
-        // watermark first and then the same owner continues through the
-        // ordinary checkpoint path.
-        let has_published_sources = event_enrichment_source_count(&self.connection)? > 0;
-        if has_published_sources
-            && metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
-                != Some(EVENT_ENRICHMENT_REVISION)
-        {
-            let enrichment_revision =
-                self.synchronize_event_enrichment(codex_home, &index_path, warnings, mode)?;
-            if metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
-                != Some(EVENT_ENRICHMENT_REVISION)
-            {
-                return Ok(enrichment_revision);
-            }
-            if !self.migration_pending {
-                self.connection.mark_receipt_eligible();
-            }
-        }
-
-        // A steady-state refresh is common: the source files and state
-        // database have not changed since the last publication. Probe that
-        // case before touching the durable scan state. In particular, do not
-        // call begin_or_resume_generation here: it allocates a new generation
-        // and copies the published dashboard rows even when the scan would be
-        // a no-op.
-        if !self.migration_pending
-            && metadata_i64(&self.connection, "building_generation")?.is_none()
-        {
-            let sources_changed = if let Some(plan) = reusable_discovery.as_ref() {
-                self.sources_changed_from_discovery(plan)?
-            } else {
-                self.sources_changed(codex_home, warnings)?
+        let cleanup_index_path = database_path(codex_home)?;
+        let result = (|| -> Result<u64, String> {
+            // The derived aggregate layer is disposable, but a newer build may
+            // have written a schema this binary does not understand. Reject it
+            // before the scan transaction can touch any aggregate rows.
+            self.validate_dashboard_aggregate_compatibility()?;
+            let scan_total =
+                scan_total_override.or_else(|| discovery.as_ref().map(|plan| plan.candidate_total));
+            let mut diagnostics = ExactScanDiagnostics {
+                candidate_count: discovery
+                    .as_ref()
+                    .map(|plan| plan.candidates.len() as u64)
+                    .unwrap_or_default(),
+                ..ExactScanDiagnostics::default()
             };
-            // A source probe can prove that JSONL files are unchanged while a
-            // previously published attribution bucket was removed or edited.
-            // The ledger integrity digest is cheap to recompute from SQLite;
-            // only a mismatch bypasses the normal no-op fast path so the next
-            // full owner can rotate and rebuild the ledger. Summary owners do
-            // not pay this cost or start a repair scan.
-            let ledger_integrity_mismatch = mode.builds_dashboard_derived_data()
-                && attribution_ledger_integrity_mismatch(&self.connection)?;
-            let safety_retry_required = mode.builds_dashboard_derived_data()
-                && (metadata_i64(&self.connection, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?
-                    .unwrap_or(0)
-                    != 0
-                    || metadata_i64(&self.connection, ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY)?
+            let index_path = database_path(codex_home)?;
+            let operation_lock_path = sqlite_sidecar_path(&index_path, ".operation.lock");
+            let _operation_lock = CrossProcessFileLock::acquire_wait_with_hook(
+                &operation_lock_path,
+                "精确 token 索引",
+                StdDuration::from_secs(30),
+                || {
+                    super::update_precise_dashboard_progress(
+                        codex_home,
+                        "waiting",
+                        "等待其他精确统计实例完成",
+                        0,
+                        scan_total,
+                    )
+                },
+            )?;
+            let integrity_gate = index_integrity_gate(&index_path);
+            let _sync_gate_guard = integrity_gate.enter_silent(&index_path);
+            let reusable_discovery = discovery.filter(|plan| plan.is_usable(codex_home));
+
+            // Historical model/reasoning enrichment is a one-time, serial owner.
+            // A brand-new index has no published files to enrich yet; let the
+            // normal checkpoint scan create its first generation instead of
+            // returning early after merely stamping the enrichment revision.
+            // Once a generation has been published, enrichment owns that old
+            // watermark first and then the same owner continues through the
+            // ordinary checkpoint path.
+            let has_published_sources = event_enrichment_source_count(&self.connection)? > 0;
+            if has_published_sources
+                && metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
+                    != Some(EVENT_ENRICHMENT_REVISION)
+            {
+                let enrichment_revision =
+                    self.synchronize_event_enrichment(codex_home, &index_path, warnings, mode)?;
+                if metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
+                    != Some(EVENT_ENRICHMENT_REVISION)
+                {
+                    return Ok(enrichment_revision);
+                }
+                if !self.migration_pending {
+                    self.connection.mark_receipt_eligible();
+                }
+            }
+
+            // A steady-state refresh is common: the source files and state
+            // database have not changed since the last publication. Probe that
+            // case before touching the durable scan state. In particular, do not
+            // call begin_or_resume_generation here: it allocates a new generation
+            // and copies the published dashboard rows even when the scan would be
+            // a no-op.
+            if !self.migration_pending
+                && metadata_i64(&self.connection, "building_generation")?.is_none()
+            {
+                let sources_changed = if let Some(plan) = reusable_discovery.as_ref() {
+                    self.sources_changed_from_discovery(plan)?
+                } else {
+                    self.sources_changed(codex_home, warnings)?
+                };
+                // A source probe can prove that JSONL files are unchanged while a
+                // previously published attribution bucket was removed or edited.
+                // The ledger integrity digest is cheap to recompute from SQLite;
+                // only a mismatch bypasses the normal no-op fast path so the next
+                // full owner can rotate and rebuild the ledger. Summary owners do
+                // not pay this cost or start a repair scan.
+                let ledger_integrity_mismatch = mode.builds_dashboard_derived_data()
+                    && attribution_ledger_integrity_mismatch(&self.connection)?;
+                let safety_retry_required = mode.builds_dashboard_derived_data()
+                    && (metadata_i64(&self.connection, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?
                         .unwrap_or(0)
-                        != 0);
-            if !sources_changed && !ledger_integrity_mismatch && !safety_retry_required {
-                // A rewrite can leave an obsolete file generation behind even
-                // when the next source probe is otherwise unchanged.  Clean
-                // only those already-published superseded rows here; this is
-                // a metadata-only repair and never reads JSONL bodies or
-                // allocates a new generation.  The common no-op path still
-                // performs zero writes because the candidate query is empty.
-                let obsolete_paths = self
-                    .connection
-                    .prepare(
-                        r#"
+                        != 0
+                        || metadata_i64(
+                            &self.connection,
+                            ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY,
+                        )?
+                        .unwrap_or(0)
+                            != 0);
+                if !sources_changed && !ledger_integrity_mismatch && !safety_retry_required {
+                    // A rewrite can leave an obsolete file generation behind even
+                    // when the next source probe is otherwise unchanged.  Clean
+                    // only those already-published superseded rows here; this is
+                    // a metadata-only repair and never reads JSONL bodies or
+                    // allocates a new generation.  The common no-op path still
+                    // performs zero writes because the candidate query is empty.
+                    let obsolete_paths = self
+                        .connection
+                        .prepare(
+                            r#"
                         SELECT DISTINCT candidate.path
                         FROM files candidate
                         WHERE candidate.generation < (
@@ -2217,227 +2357,236 @@ impl ExactUsageIndex {
                               )
                         )
                         "#,
-                    )
-                    .map_err(|error| format!("无法检查会话文件旧索引版本：{error}"))?
-                    .query_map([], |row| row.get::<_, String>(0))
-                    .map_err(|error| format!("无法读取会话文件旧索引版本：{error}"))?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| format!("无法解码会话文件旧索引版本：{error}"))?;
-                for path in obsolete_paths {
-                    prune_obsolete_file_versions(&self.connection, &path)?;
+                        )
+                        .map_err(|error| format!("无法检查会话文件旧索引版本：{error}"))?
+                        .query_map([], |row| row.get::<_, String>(0))
+                        .map_err(|error| format!("无法读取会话文件旧索引版本：{error}"))?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| format!("无法解码会话文件旧索引版本：{error}"))?;
+                    for path in obsolete_paths {
+                        prune_obsolete_file_versions(&self.connection, &path)?;
+                    }
+                    let previous = (
+                        metadata_text(&self.connection, "state_size")?,
+                        metadata_text(&self.connection, "state_modified_ns")?,
+                    );
+                    let staged_thread_metadata =
+                        stage_thread_metadata(codex_home, previous, warnings)?;
+                    if !mode.builds_dashboard_derived_data() {
+                        // Summary owns exact facts only. Leave state_5.sqlite
+                        // metadata for the Full owner; its signature is not
+                        // advanced here, so a later owner will retry the same
+                        // incremental metadata publication.
+                        return match staged_thread_metadata {
+                            ThreadMetadataStage::Updated(staged) => {
+                                publish_thread_metadata_only(&mut self.connection, staged)
+                            }
+                            ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => {
+                                self.revision()
+                            }
+                        };
+                    }
+                    if !safety_retry_required {
+                        // A preceding Summary owner may have committed new exact
+                        // events while intentionally leaving the disposable
+                        // aggregate generation behind. A Full request with no
+                        // new JSONL must still consume that dirty derived scope.
+                        // A state database that changed but could not be read is
+                        // deliberately kept in this metadata-only path: the
+                        // published JSONL rows remain trustworthy, and retrying
+                        // the same read on the next cadence must not allocate a
+                        // generation or write a WAL. Active rollout additions or
+                        // removals are already surfaced by sources_changed.
+                        let revision = match staged_thread_metadata {
+                            ThreadMetadataStage::Updated(staged) => {
+                                publish_thread_metadata_only(&mut self.connection, staged)?
+                            }
+                            ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => {
+                                self.revision()?
+                            }
+                        };
+                        self.ensure_dashboard_aggregates(codex_home)?;
+                        return Ok(revision);
+                    }
+                } else {
+                    // sources_changed uses a temporary published-files snapshot.
+                    // Drop it before the durable scan so dashboard reads cannot
+                    // accidentally keep the pre-scan generation selector.
+                    self.connection
+                        .execute("DROP TABLE IF EXISTS temp.published_files", [])
+                        .map_err(|error| format!("无法清理精确 token 源文件快照：{error}"))?;
                 }
-                let previous = (
-                    metadata_text(&self.connection, "state_size")?,
-                    metadata_text(&self.connection, "state_modified_ns")?,
-                );
-                let staged_thread_metadata = stage_thread_metadata(codex_home, previous, warnings)?;
-                if !mode.builds_dashboard_derived_data() {
-                    // Summary owns exact facts only. Leave state_5.sqlite
-                    // metadata for the Full owner; its signature is not
-                    // advanced here, so a later owner will retry the same
-                    // incremental metadata publication.
-                    return match staged_thread_metadata {
-                        ThreadMetadataStage::Updated(staged) => {
-                            publish_thread_metadata_only(&mut self.connection, staged)
-                        }
-                        ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => {
-                            self.revision()
-                        }
-                    };
-                }
-                if !safety_retry_required {
-                    // A preceding Summary owner may have committed new exact
-                    // events while intentionally leaving the disposable
-                    // aggregate generation behind. A Full request with no
-                    // new JSONL must still consume that dirty derived scope.
-                    // A state database that changed but could not be read is
-                    // deliberately kept in this metadata-only path: the
-                    // published JSONL rows remain trustworthy, and retrying
-                    // the same read on the next cadence must not allocate a
-                    // generation or write a WAL. Active rollout additions or
-                    // removals are already surfaced by sources_changed.
-                    let revision = match staged_thread_metadata {
-                        ThreadMetadataStage::Updated(staged) => {
-                            publish_thread_metadata_only(&mut self.connection, staged)?
-                        }
-                        ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => {
-                            self.revision()?
-                        }
-                    };
-                    self.ensure_dashboard_aggregates(codex_home)?;
-                    return Ok(revision);
-                }
-            } else {
-                // sources_changed uses a temporary published-files snapshot.
-                // Drop it before the durable scan so dashboard reads cannot
-                // accidentally keep the pre-scan generation selector.
-                self.connection
-                    .execute("DROP TABLE IF EXISTS temp.published_files", [])
-                    .map_err(|error| format!("无法清理精确 token 源文件快照：{error}"))?;
             }
-        }
 
-        self.connection.mark_receipt_dirty();
-        let mut scan_completeness = ExactScanCompleteness::default();
-        prune_published_tombstone_versions(&self.connection)?;
-        prepare_scan_temp_tables(&self.connection)?;
-        let generation = begin_or_resume_generation(&mut self.connection, mode)?;
-        let mut full_rebuild_jobs = Vec::new();
-        let mut scanned_files = 0_u64;
-        let mut scanned_paths = HashSet::new();
-        super::update_precise_dashboard_progress(
-            codex_home,
-            "scanning",
-            "正在扫描精确历史；首次建立索引可能需要数分钟",
-            0,
-            scan_total,
-        );
-        if let Some(plan) = reusable_discovery {
-            if plan.unresolved_boundary {
-                scan_completeness.mark_incomplete();
-            }
-            for message in plan.boundary_warnings {
-                warnings.push(scan_warning(message));
-            }
-            for candidate in plan.candidates {
-                process_scan_file_with_progress(
-                    &mut self.connection,
-                    generation,
-                    codex_home,
-                    &candidate.canonical_path,
-                    warnings,
-                    &mut scan_completeness,
-                    &mut full_rebuild_jobs,
-                    &mut scanned_files,
-                    &mut scanned_paths,
-                    scan_total,
-                    &mut diagnostics,
-                    Some(candidate.signature),
-                    mode,
-                )?;
-            }
-        } else {
-            let mut visit = |connection: &mut Connection,
-                             file: &Path,
-                             warnings: &mut Vec<LocalDataWarning>,
-                             scan_completeness: &mut ExactScanCompleteness|
-             -> Result<(), String> {
-                process_scan_file_with_progress(
-                    connection,
-                    generation,
-                    codex_home,
-                    file,
-                    warnings,
-                    scan_completeness,
-                    &mut full_rebuild_jobs,
-                    &mut scanned_files,
-                    &mut scanned_paths,
-                    scan_total,
-                    &mut diagnostics,
-                    None,
-                    mode,
-                )
-            };
-            visit_session_files(
-                &mut self.connection,
-                codex_home,
-                warnings,
-                &mut scan_completeness,
-                &mut visit,
-            )?;
-        }
-        diagnostics.scanned_files = scanned_files;
-        diagnostics.full_rebuild_files = diagnostics
-            .full_rebuild_files
-            .saturating_add(full_rebuild_jobs.len() as u64);
-        let full_rebuild_total = full_rebuild_jobs.len() as u64;
-        let mut completed_full_rebuilds = 0_u64;
-        if full_rebuild_total > 0 {
+            self.connection.mark_receipt_dirty();
+            let mut scan_completeness = ExactScanCompleteness::default();
+            prune_published_tombstone_versions(&self.connection)?;
+            prepare_scan_temp_tables(&self.connection)?;
+            let generation = begin_or_resume_generation(&mut self.connection, mode)?;
+            let mut full_rebuild_jobs = Vec::new();
+            let mut scanned_files = 0_u64;
+            let mut scanned_paths = HashSet::new();
             super::update_precise_dashboard_progress(
                 codex_home,
                 "scanning",
-                "正在解析需要补齐的精确历史文件",
+                "正在扫描精确历史；首次建立索引可能需要数分钟",
                 0,
-                Some(full_rebuild_total),
+                scan_total,
             );
-        }
-        for batch in staging_job_batches(&full_rebuild_jobs) {
-            let estimated_bytes = batch
-                .iter()
-                .fold(0_u64, |total, job| total.saturating_add(job.signature.size));
-            ensure_staging_capacity(&index_path, estimated_bytes)?;
-            let progress_home = codex_home.to_path_buf();
-            let completed_before_batch = completed_full_rebuilds;
-            let progress_callback: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |staged_count| {
+            if let Some(plan) = reusable_discovery {
+                if plan.unresolved_boundary {
+                    scan_completeness.mark_incomplete();
+                }
+                for message in plan.boundary_warnings {
+                    warnings.push(scan_warning(message));
+                }
+                for candidate in plan.candidates {
+                    process_scan_file_with_progress(
+                        &mut self.connection,
+                        generation,
+                        codex_home,
+                        &candidate.canonical_path,
+                        warnings,
+                        &mut scan_completeness,
+                        &mut full_rebuild_jobs,
+                        &mut scanned_files,
+                        &mut scanned_paths,
+                        scan_total,
+                        &mut diagnostics,
+                        Some(candidate.signature),
+                        mode,
+                    )?;
+                }
+            } else {
+                let mut visit = |connection: &mut Connection,
+                                 file: &Path,
+                                 warnings: &mut Vec<LocalDataWarning>,
+                                 scan_completeness: &mut ExactScanCompleteness|
+                 -> Result<(), String> {
+                    process_scan_file_with_progress(
+                        connection,
+                        generation,
+                        codex_home,
+                        file,
+                        warnings,
+                        scan_completeness,
+                        &mut full_rebuild_jobs,
+                        &mut scanned_files,
+                        &mut scanned_paths,
+                        scan_total,
+                        &mut diagnostics,
+                        None,
+                        mode,
+                    )
+                };
+                visit_session_files(
+                    &mut self.connection,
+                    codex_home,
+                    warnings,
+                    &mut scan_completeness,
+                    &mut visit,
+                )?;
+            }
+            diagnostics.scanned_files = scanned_files;
+            diagnostics.full_rebuild_files = diagnostics
+                .full_rebuild_files
+                .saturating_add(full_rebuild_jobs.len() as u64);
+            let full_rebuild_total = full_rebuild_jobs.len() as u64;
+            let mut completed_full_rebuilds = 0_u64;
+            if full_rebuild_total > 0 {
                 super::update_precise_dashboard_progress(
-                    &progress_home,
+                    codex_home,
                     "scanning",
                     "正在解析需要补齐的精确历史文件",
-                    completed_before_batch.saturating_add(staged_count),
+                    0,
                     Some(full_rebuild_total),
                 );
-            });
-            let staged = stage_full_rebuilds(
-                &batch,
-                &index_path,
+            }
+            for batch in staging_job_batches(&full_rebuild_jobs) {
+                let estimated_bytes = batch
+                    .iter()
+                    .fold(0_u64, |total, job| total.saturating_add(job.signature.size));
+                ensure_staging_capacity(&index_path, estimated_bytes)?;
+                let progress_home = codex_home.to_path_buf();
+                let completed_before_batch = completed_full_rebuilds;
+                let progress_callback: Arc<dyn Fn(u64) + Send + Sync> =
+                    Arc::new(move |staged_count| {
+                        super::update_precise_dashboard_progress(
+                            &progress_home,
+                            "scanning",
+                            "正在解析需要补齐的精确历史文件",
+                            completed_before_batch.saturating_add(staged_count),
+                            Some(full_rebuild_total),
+                        );
+                    });
+                let staged = stage_full_rebuilds(
+                    &batch,
+                    &index_path,
+                    generation,
+                    codex_home,
+                    warnings,
+                    &mut scan_completeness,
+                    Some(progress_callback),
+                )?;
+                completed_full_rebuilds =
+                    completed_full_rebuilds.saturating_add(staged.len() as u64);
+                diagnostics.full_body_bytes = diagnostics.full_body_bytes.saturating_add(
+                    staged.iter().fold(0_u64, |total, item| {
+                        total.saturating_add(item.committed_signature.size)
+                    }),
+                );
+                #[cfg(test)]
+                if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
+                    return Err("injected interruption after durable exact token staging".into());
+                }
+                for staged_file in staged {
+                    import_staged_full_rebuild(
+                        &mut self.connection,
+                        generation,
+                        &staged_file,
+                        mode,
+                    )?;
+                    remove_staging_database_storage(&staged_file.database_path)?;
+                    run_after_file_commit_hook_for_testing(&staged_file.job.file)?;
+                }
+            }
+            if scan_completeness.block_generation_publish {
+                self.connection.mark_receipt_dirty();
+                return Err("会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into());
+            }
+            if scan_completeness.incomplete_source_scan {
+                self.connection.mark_receipt_dirty();
+                return Err("会话源扫描不完整，已保留上一份可信索引和本轮断点，停止发布".into());
+            }
+            if let Err(error) =
+                validate_building_generation_commit_scope(&self.connection, generation)
+            {
+                scan_completeness.block_publish();
+                warnings.push(scan_warning(error));
+            }
+            if scan_completeness.block_generation_publish {
+                self.connection.mark_receipt_dirty();
+                return Err("会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into());
+            }
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "publishing",
+                "正在原子提交精确索引 generation",
+                0,
+                Some(1),
+            );
+            let run_migrations = !migration_markers_complete(&self.connection, true)?;
+            let revision = finalize_generation(
+                &mut self.connection,
                 generation,
                 codex_home,
                 warnings,
-                &mut scan_completeness,
-                Some(progress_callback),
+                scan_completeness,
+                mode,
+                run_migrations,
             )?;
-            completed_full_rebuilds = completed_full_rebuilds.saturating_add(staged.len() as u64);
-            diagnostics.full_body_bytes = diagnostics.full_body_bytes.saturating_add(
-                staged.iter().fold(0_u64, |total, item| {
-                    total.saturating_add(item.committed_signature.size)
-                }),
-            );
-            #[cfg(test)]
-            if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
-                return Err("injected interruption after durable exact token staging".into());
-            }
-            for staged_file in staged {
-                import_staged_full_rebuild(&mut self.connection, generation, &staged_file, mode)?;
-                remove_staging_database_storage(&staged_file.database_path)?;
-                run_after_file_commit_hook_for_testing(&staged_file.job.file)?;
-            }
-        }
-        if scan_completeness.block_generation_publish {
-            self.connection.mark_receipt_dirty();
-            return Err("会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into());
-        }
-        if scan_completeness.incomplete_source_scan {
-            self.connection.mark_receipt_dirty();
-            return Err("会话源扫描不完整，已保留上一份可信索引和本轮断点，停止发布".into());
-        }
-        if let Err(error) = validate_building_generation_commit_scope(&self.connection, generation)
-        {
-            scan_completeness.block_publish();
-            warnings.push(scan_warning(error));
-        }
-        if scan_completeness.block_generation_publish {
-            self.connection.mark_receipt_dirty();
-            return Err("会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into());
-        }
-        super::update_precise_dashboard_progress(
-            codex_home,
-            "publishing",
-            "正在原子提交精确索引 generation",
-            0,
-            Some(1),
-        );
-        let run_migrations = !migration_markers_complete(&self.connection, true)?;
-        let revision = finalize_generation(
-            &mut self.connection,
-            generation,
-            codex_home,
-            warnings,
-            scan_completeness,
-            mode,
-            run_migrations,
-        )?;
-        diagnostics.published_watermark = revision;
-        startup_trace::mark_performance(format!(
+            diagnostics.published_watermark = revision;
+            startup_trace::mark_performance(format!(
             "precise_scan candidate_count={} scanned_files={} append_scan_bytes={} metadata_validation_bytes={} metadata_only_files={} full_body_bytes={} pending_tail_bytes={} full_rebuild_files={} source_drift={} published_watermark={}",
             diagnostics.candidate_count,
             diagnostics.scanned_files,
@@ -2450,18 +2599,41 @@ impl ExactUsageIndex {
             u8::from(diagnostics.source_drift),
             diagnostics.published_watermark,
         ));
-        if self.migration_pending {
-            let migration_complete = migration_markers_complete(&self.connection, true)?;
-            if migration_complete {
-                self.migration_pending = false;
-                super::update_precise_dashboard_progress(
-                    codex_home,
-                    "migrating",
-                    "索引升级完成，归因账本已提交",
-                    MIGRATION_STAGE_TOTAL,
-                    Some(MIGRATION_STAGE_TOTAL),
-                );
+            if self.migration_pending {
+                let migration_complete = migration_markers_complete(&self.connection, true)?;
+                if migration_complete {
+                    self.migration_pending = false;
+                    super::update_precise_dashboard_progress(
+                        codex_home,
+                        "migrating",
+                        "索引升级完成，归因账本已提交",
+                        MIGRATION_STAGE_TOTAL,
+                        Some(MIGRATION_STAGE_TOTAL),
+                    );
+                } else {
+                    super::update_precise_dashboard_progress(
+                        codex_home,
+                        "migrating",
+                        "索引升级尚未完成，保留已发布数据并将在下次启动继续",
+                        5,
+                        Some(MIGRATION_STAGE_TOTAL),
+                    );
+                }
+            }
+            remove_staging_directory(&index_path)?;
+            if !self.migration_pending {
+                self.connection.mark_receipt_eligible();
             } else {
+                self.connection.mark_receipt_dirty();
+            }
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "publishing",
+                "正在提交精确统计结果",
+                1,
+                Some(1),
+            );
+            if self.migration_pending {
                 super::update_precise_dashboard_progress(
                     codex_home,
                     "migrating",
@@ -2470,33 +2642,19 @@ impl ExactUsageIndex {
                     Some(MIGRATION_STAGE_TOTAL),
                 );
             }
+            if mode.builds_dashboard_derived_data() {
+                self.ensure_dashboard_aggregates(codex_home)?;
+            }
+            Ok(revision)
+        })();
+        if result.is_ok() {
+            if let Err(error) = cleanup_successful_schema11_migration(&cleanup_index_path) {
+                warnings.push(scan_warning(format!(
+                    "schema 11 已成功刷新，但受管回滚资料暂未清理，将保留并稍后重试：{error}"
+                )));
+            }
         }
-        remove_staging_directory(&index_path)?;
-        if !self.migration_pending {
-            self.connection.mark_receipt_eligible();
-        } else {
-            self.connection.mark_receipt_dirty();
-        }
-        super::update_precise_dashboard_progress(
-            codex_home,
-            "publishing",
-            "正在提交精确统计结果",
-            1,
-            Some(1),
-        );
-        if self.migration_pending {
-            super::update_precise_dashboard_progress(
-                codex_home,
-                "migrating",
-                "索引升级尚未完成，保留已发布数据并将在下次启动继续",
-                5,
-                Some(MIGRATION_STAGE_TOTAL),
-            );
-        }
-        if mode.builds_dashboard_derived_data() {
-            self.ensure_dashboard_aggregates(codex_home)?;
-        }
-        Ok(revision)
+        result
     }
 
     /// Refreshes the disposable session title projection without starting a
@@ -2514,7 +2672,12 @@ impl ExactUsageIndex {
         );
         match stage_thread_metadata(codex_home, previous, warnings)? {
             ThreadMetadataStage::Updated(staged) => {
-                publish_thread_metadata_only(&mut self.connection, staged)
+                self.connection.mark_receipt_dirty();
+                let result = publish_thread_metadata_only(&mut self.connection, staged);
+                if result.is_ok() && !self.migration_pending {
+                    self.connection.mark_receipt_eligible();
+                }
+                result
             }
             ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => self.revision(),
         }
@@ -2679,10 +2842,16 @@ impl ExactUsageIndex {
                     "1",
                 )?;
             }
+            let staging_base =
+                reserve_staging_source(&self.connection, &candidate.path, &candidate.session_id)?;
             jobs.push(FullRebuildJob {
                 file,
                 path: candidate.path,
                 session_id: candidate.session_id,
+                source_id: staging_base.source_id,
+                base_generation: staging_base.generation,
+                base_resume_offset: staging_base.resume_offset,
+                base_prefix_sha256: staging_base.prefix_sha256,
                 signature: if stable_published_prefix {
                     candidate.signature
                 } else {
@@ -5064,7 +5233,7 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
         &mut self,
         fingerprint: &UsageSnapshotFingerprint,
     ) -> Result<bool, String> {
-        let encoded = encode_fingerprint(fingerprint);
+        let encoded = encode_fingerprint(fingerprint)?;
         let inserted = self
             .transaction
             .execute(
@@ -5168,7 +5337,7 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
         &mut self,
         fingerprint: &UsageSnapshotFingerprint,
     ) -> Result<bool, String> {
-        let encoded = encode_fingerprint(fingerprint);
+        let encoded = encode_fingerprint(fingerprint)?;
         self.transaction
             .execute(
                 "INSERT OR IGNORE INTO fingerprints(fingerprint) VALUES (?1)",
@@ -5238,6 +5407,12 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
 
 struct StageManifest {
     schema_version: i64,
+    staging_mode: Option<String>,
+    source_id: Option<i64>,
+    base_generation: Option<i64>,
+    base_resume_offset: Option<i64>,
+    base_prefix_sha256: Option<Vec<u8>>,
+    fingerprint_codec_version: Option<i64>,
     path: String,
     session_id: String,
     migration_revision: String,
@@ -5298,15 +5473,9 @@ impl StageActivityGuard {
     }
 }
 
-fn encode_fingerprint(
-    fingerprint: &UsageSnapshotFingerprint,
-) -> [u8; USAGE_SNAPSHOT_FINGERPRINT_BYTES] {
-    let mut encoded = [0_u8; USAGE_SNAPSHOT_FINGERPRINT_BYTES];
-    for (index, value) in fingerprint.iter().enumerate() {
-        let start = index * 8;
-        encoded[start..start + 8].copy_from_slice(&value.to_le_bytes());
-    }
-    encoded
+fn encode_fingerprint(fingerprint: &UsageSnapshotFingerprint) -> Result<Vec<u8>, String> {
+    fingerprint_codec::encode(fingerprint)
+        .map_err(|error| format!("无法编码精确 token 去重指纹：{error}"))
 }
 
 fn stage_full_rebuilds(
@@ -5528,6 +5697,10 @@ pub(super) fn staging_batch_shape_for_testing(sizes: &[u64]) -> Vec<Vec<u64>> {
             file: PathBuf::from(format!("/tmp/staging-batch-{index}.jsonl")),
             path: format!("/tmp/staging-batch-{index}.jsonl"),
             session_id: format!("staging-batch-{index}"),
+            source_id: i64::try_from(index).unwrap_or(0).saturating_add(1),
+            base_generation: 0,
+            base_resume_offset: None,
+            base_prefix_sha256: None,
             signature: FileSignature {
                 size: *size,
                 modified_ns: 0,
@@ -5705,6 +5878,12 @@ fn build_staged_full_rebuild(
             INSERT INTO manifest(
                 complete,
                 manifest_schema_version,
+                staging_mode,
+                source_id,
+                base_generation,
+                base_resume_offset,
+                base_prefix_sha256,
+                fingerprint_codec_version,
                 path,
                 session_id,
                 migration_revision,
@@ -5730,10 +5909,17 @@ fn build_staged_full_rebuild(
                 event_count,
                 fingerprint_count,
                 chunk_count
-            ) VALUES (0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, '', ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+            ) VALUES (0, ?1, 'full', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, '', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)
             "#,
             params![
                 STAGING_MANIFEST_SCHEMA_VERSION,
+                job.source_id,
+                job.base_generation,
+                checked_optional_i64(job.base_resume_offset, "暂存基础续扫位置")?,
+                job.base_prefix_sha256
+                    .as_ref()
+                    .map(|value| value.as_slice()),
+                i64::from(fingerprint_codec::FINGERPRINT_VERSION),
                 &job.path,
                 &job.session_id,
                 migration_revision,
@@ -5929,6 +6115,12 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
             CREATE TABLE manifest (
                 complete INTEGER PRIMARY KEY CHECK(complete IN (0, 1)),
                 manifest_schema_version INTEGER NOT NULL,
+                staging_mode TEXT NOT NULL CHECK(staging_mode IN ('full', 'delta')),
+                source_id INTEGER NOT NULL,
+                base_generation INTEGER NOT NULL,
+                base_resume_offset INTEGER,
+                base_prefix_sha256 BLOB,
+                fingerprint_codec_version INTEGER NOT NULL,
                 path TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 migration_revision TEXT NOT NULL,
@@ -6031,7 +6223,10 @@ fn validated_staged_full_rebuild(
             "精确 token 暂存 schema {manifest_schema_version} 高于当前支持版本 {STAGING_MANIFEST_SCHEMA_VERSION}，已保留原暂存"
         ));
     }
-    if !matches!(manifest_schema_version, 1 | STAGING_MANIFEST_SCHEMA_VERSION) {
+    if !matches!(
+        manifest_schema_version,
+        1 | 2 | STAGING_MANIFEST_SCHEMA_VERSION
+    ) {
         return Ok(None);
     }
     let manifest = connection
@@ -6071,6 +6266,12 @@ fn validated_staged_full_rebuild(
             |row| {
                 Ok(StageManifest {
                     schema_version: manifest_schema_version,
+                    staging_mode: None,
+                    source_id: None,
+                    base_generation: None,
+                    base_resume_offset: None,
+                    base_prefix_sha256: None,
+                    fingerprint_codec_version: None,
                     path: row.get(0)?,
                     session_id: row.get(1)?,
                     migration_revision: row.get(2)?,
@@ -6104,6 +6305,38 @@ fn validated_staged_full_rebuild(
     let Some(manifest) = manifest else {
         return Ok(None);
     };
+    let mut manifest = manifest;
+    if manifest_schema_version == STAGING_MANIFEST_SCHEMA_VERSION {
+        let v3 = connection
+            .query_row(
+                r#"
+                SELECT staging_mode, source_id, base_generation,
+                       base_resume_offset, base_prefix_sha256,
+                       fingerprint_codec_version
+                FROM manifest
+                WHERE complete = 1
+                LIMIT 1
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<Vec<u8>>>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .map_err(|error| format!("无法读取精确 token v3 暂存证明：{error}"))?;
+        manifest.staging_mode = Some(v3.0);
+        manifest.source_id = Some(v3.1);
+        manifest.base_generation = Some(v3.2);
+        manifest.base_resume_offset = v3.3;
+        manifest.base_prefix_sha256 = v3.4;
+        manifest.fingerprint_codec_version = Some(v3.5);
+    }
     let expected_migration_revision = if job.event_enrichment {
         EVENT_ENRICHMENT_REVISION
     } else {
@@ -6128,7 +6361,10 @@ fn validated_staged_full_rebuild(
         || manifest.integrity != STAGING_MANIFEST_INTEGRITY
         || manifest.actual_bytes < 0
         || nonnegative_u64(manifest.actual_bytes) != artifact_bytes
-        || !matches!(manifest.schema_version, 1 | STAGING_MANIFEST_SCHEMA_VERSION)
+        || !matches!(
+            manifest.schema_version,
+            1 | 2 | STAGING_MANIFEST_SCHEMA_VERSION
+        )
         || manifest_signature.size < job.signature.size
         || (job.event_enrichment
             && job.expected_published_prefix_sha256.is_some()
@@ -6141,6 +6377,26 @@ fn validated_staged_full_rebuild(
         || manifest.chunk_count < 0
     {
         return Ok(None);
+    }
+    if manifest_schema_version == STAGING_MANIFEST_SCHEMA_VERSION {
+        let expected_base_resume_offset = job
+            .base_resume_offset
+            .map(|value| checked_i64(value, "暂存基础续扫位置"))
+            .transpose()?;
+        let expected_base_prefix = job
+            .base_prefix_sha256
+            .as_ref()
+            .map(|value| value.as_slice());
+        if manifest.staging_mode.as_deref() != Some("full")
+            || manifest.source_id != Some(job.source_id)
+            || manifest.base_generation != Some(job.base_generation)
+            || manifest.base_resume_offset != expected_base_resume_offset
+            || manifest.base_prefix_sha256.as_deref() != expected_base_prefix
+            || manifest.fingerprint_codec_version
+                != Some(i64::from(fingerprint_codec::FINGERPRINT_VERSION))
+        {
+            return Ok(None);
+        }
     }
     let prefix_sha256: [u8; 32] = match manifest.prefix_sha256.as_slice().try_into() {
         Ok(value) => value,
@@ -6178,14 +6434,51 @@ fn validated_staged_full_rebuild(
     let malformed_hashes = connection
         .query_row(
             r#"
-            SELECT
-                EXISTS(SELECT 1 FROM fingerprints WHERE length(fingerprint) <> ?1),
-                EXISTS(SELECT 1 FROM chunks WHERE length(sha256) <> 32)
+            SELECT EXISTS(SELECT 1 FROM chunks WHERE length(sha256) <> 32)
             "#,
-            params![USAGE_SNAPSHOT_FINGERPRINT_BYTES as i64],
-            |row| Ok(row.get::<_, bool>(0)? || row.get::<_, bool>(1)?),
+            [],
+            |row| row.get::<_, bool>(0),
         )
         .map_err(|error| format!("无法验证精确 token 暂存哈希形状：{error}"))?;
+    let mut fingerprint_statement = connection
+        .prepare("SELECT fingerprint FROM fingerprints")
+        .map_err(|error| format!("无法准备精确 token 暂存指纹验证：{error}"))?;
+    let mut fingerprint_rows = fingerprint_statement
+        .query([])
+        .map_err(|error| format!("无法读取精确 token 暂存指纹：{error}"))?;
+    let mut malformed_fingerprint = false;
+    while let Some(row) = fingerprint_rows
+        .next()
+        .map_err(|error| format!("无法遍历精确 token 暂存指纹：{error}"))?
+    {
+        let value = row
+            .get_ref(0)
+            .map_err(|error| format!("无法解码精确 token 暂存指纹列：{error}"))?;
+        let valid = match value {
+            rusqlite::types::ValueRef::Blob(bytes) => {
+                if manifest_schema_version == STAGING_MANIFEST_SCHEMA_VERSION {
+                    fingerprint_codec::decode(bytes).is_ok()
+                } else {
+                    fingerprint_codec::decode_legacy_fixed_width(bytes).is_ok()
+                        || fingerprint_codec::decode(bytes).is_ok()
+                }
+            }
+            rusqlite::types::ValueRef::Text(bytes)
+                if manifest_schema_version < STAGING_MANIFEST_SCHEMA_VERSION =>
+            {
+                std::str::from_utf8(bytes)
+                    .ok()
+                    .is_some_and(|value| fingerprint_codec::decode_legacy_text(value).is_ok())
+            }
+            _ => false,
+        };
+        if !valid {
+            malformed_fingerprint = true;
+            break;
+        }
+    }
+    drop(fingerprint_rows);
+    drop(fingerprint_statement);
     let expected_chunks = manifest_signature
         .size
         .checked_sub(1)
@@ -6195,6 +6488,7 @@ fn validated_staged_full_rebuild(
         || chunk_count != manifest.chunk_count
         || nonnegative_u64(chunk_count) != expected_chunks
         || malformed_hashes
+        || malformed_fingerprint
     {
         return Ok(None);
     }
@@ -6273,6 +6567,16 @@ fn import_staged_full_rebuild(
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("无法开始精确 token 暂存导入事务：{error}"))?;
         ensure_active_build_generation(&transaction, generation)?;
+        let durable_source_id = transaction
+            .query_row(
+                "SELECT source_id FROM sources WHERE path = ?1",
+                params![&validated.job.path],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("无法确认精确 token 暂存稳定来源编号：{error}"))?;
+        if durable_source_id != validated.job.source_id {
+            return Err("精确 token 暂存稳定来源编号与活动索引不一致".into());
+        }
         delete_file_version_rows(&transaction, generation, &validated.job.path)?;
         transaction
             .execute(
@@ -6284,8 +6588,9 @@ fn import_staged_full_rebuild(
                     session_id,
                     size,
                     modified_ns,
-                    prefix_sha256
-                ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6)
+                    prefix_sha256,
+                    source_id
+                ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7)
                 "#,
                 params![
                     generation,
@@ -6294,20 +6599,36 @@ fn import_staged_full_rebuild(
                     checked_i64(validated.job.signature.size, "导入会话文件大小")?,
                     validated.job.signature.modified_ns.to_string(),
                     validated.prefix_sha256.as_slice(),
+                    validated.job.source_id,
                 ],
             )
             .map_err(|error| format!("无法登记待导入的精确 token 会话：{error}"))?;
+        {
+            let mut fingerprints = transaction
+                .prepare("SELECT fingerprint FROM exact_stage_import.fingerprints")
+                .map_err(|error| format!("无法准备导入精确 token 去重状态：{error}"))?;
+            let mut rows = fingerprints
+                .query([])
+                .map_err(|error| format!("无法读取待导入精确 token 去重状态：{error}"))?;
+            let mut insert = transaction
+                .prepare(
+                    "INSERT OR IGNORE INTO file_fingerprints(file_generation, file_path, fingerprint) VALUES (?1, ?2, ?3)",
+                )
+                .map_err(|error| format!("无法准备写入精确 token 去重状态：{error}"))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|error| format!("无法遍历待导入精确 token 去重状态：{error}"))?
+            {
+                let encoded = canonicalize_legacy_fingerprint(
+                    row.get_ref(0)
+                        .map_err(|error| format!("无法读取待导入精确 token 指纹：{error}"))?,
+                )?;
+                insert
+                    .execute(params![generation, &validated.job.path, encoded])
+                    .map_err(|error| format!("无法导入精确 token 去重状态：{error}"))?;
+            }
+        }
         transaction
-            .execute(
-                r#"
-                INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
-                SELECT ?1, ?2, fingerprint
-                FROM exact_stage_import.fingerprints
-                "#,
-                params![generation, &validated.job.path],
-            )
-            .map_err(|error| format!("无法批量导入精确 token 去重状态：{error}"))?;
-        let imported_events = transaction
             .execute(
                 r#"
                 INSERT INTO events(
@@ -6349,6 +6670,13 @@ fn import_staged_full_rebuild(
                 params![generation, &validated.job.path, &validated.job.session_id],
             )
             .map_err(|error| format!("无法批量导入精确 token 暂存事件：{error}"))?;
+        let imported_events = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE file_generation = ?1 AND file_path = ?2",
+                params![generation, &validated.job.path],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("无法复核精确 token 暂存事件导入数量：{error}"))?;
         let imported_events = u64::try_from(imported_events)
             .map_err(|_| "精确 token 暂存事件导入数量超出支持范围".to_string())?;
         if imported_events != validated.event_count {
@@ -6386,26 +6714,27 @@ fn import_staged_full_rebuild(
             0,
         )?;
         if validated.job.event_enrichment {
-            transaction
+            let recorded = transaction
                 .execute(
                     r#"
-                    INSERT INTO event_enrichment_sources(
-                        path,
-                        revision,
-                        parser_revision,
-                        file_generation,
-                        completed_size,
+                    INSERT INTO pending_enrichment(
+                        source_id, revision, parser_revision, completed_size,
                         completed_prefix_sha256
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                    ON CONFLICT(path) DO UPDATE SET
+                    )
+                    SELECT ?1, ?2, ?3, ?5, ?6
+                    WHERE EXISTS(
+                        SELECT 1 FROM pending_sources p
+                        WHERE p.source_id = ?1 AND p.target_generation = ?4
+                          AND p.mode <> 'tombstone'
+                    )
+                    ON CONFLICT(source_id) DO UPDATE SET
                         revision = excluded.revision,
                         parser_revision = excluded.parser_revision,
-                        file_generation = excluded.file_generation,
                         completed_size = excluded.completed_size,
                         completed_prefix_sha256 = excluded.completed_prefix_sha256
                     "#,
                     params![
-                        &validated.job.path,
+                        validated.job.source_id,
                         EVENT_ENRICHMENT_REVISION,
                         STAGED_FULL_REBUILD_PARSER_REVISION,
                         generation,
@@ -6414,6 +6743,11 @@ fn import_staged_full_rebuild(
                     ],
                 )
                 .map_err(|error| format!("无法保存历史 model/reasoning 补全检查点：{error}"))?;
+            if recorded != 1 {
+                return Err(
+                    "历史 model/reasoning 补全来源没有匹配的 building 记录，已停止导入".into(),
+                );
+            }
         }
         mark_dashboard_changed(&transaction)?;
         transaction
@@ -6662,46 +6996,13 @@ fn prepare_scan_temp_tables(connection: &Connection) -> Result<(), String> {
 }
 
 fn prune_published_tombstone_versions(connection: &Connection) -> Result<(), String> {
-    loop {
-        let tombstone = connection
-            .query_row(
-                r#"
-                WITH latest AS (
-                    SELECT path, MAX(generation) AS generation
-                    FROM files
-                    WHERE generation <= COALESCE(
-                        (
-                            SELECT CAST(value AS INTEGER)
-                            FROM metadata
-                            WHERE key = 'published_generation'
-                        ),
-                        0
-                    )
-                    GROUP BY path
-                )
-                SELECT f.path, f.generation
-                FROM latest
-                JOIN files f
-                  ON f.path = latest.path
-                 AND f.generation = latest.generation
-                WHERE f.deleted = 1
-                LIMIT 1
-                "#,
-                [],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()
-            .map_err(|error| format!("无法检查已发布的会话删除墓碑：{error}"))?;
-        let Some((path, tombstone_generation)) = tombstone else {
-            return Ok(());
-        };
-        connection
-            .execute(
-                "DELETE FROM files WHERE path = ?1 AND generation <= ?2",
-                params![path, tombstone_generation],
-            )
-            .map_err(|error| format!("无法清理已发布删除会话的旧索引版本：{error}"))?;
-    }
+    // Schema 11 has no historical file-version rows to prune. Keep published
+    // tombstone sources permanently so a later restore reuses the same stable
+    // source_id, and keep generation-0 reservations so durable staging
+    // manifests remain resumable. The parameter stays for the legacy call
+    // site while the compatibility layer is retired incrementally.
+    let _ = connection;
+    Ok(())
 }
 
 type Dashboard5mProjectionSignature = (i64, Option<i64>, Option<i64>, i64, i64, i64, i64, i64);
@@ -6789,22 +7090,12 @@ fn dashboard_5m_projection_matches_published_files(
 
 fn begin_or_resume_generation(
     connection: &mut Connection,
-    mode: ExactSyncMode,
+    _mode: ExactSyncMode,
 ) -> Result<i64, String> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始精确 token 同步状态事务：{error}"))?;
     let published = metadata_i64(&transaction, "published_generation")?.unwrap_or(0);
-    let aggregate_source_generation =
-        if metadata_i64(&transaction, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?
-            == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
-        {
-            metadata_i64(&transaction, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?
-                .filter(|generation| *generation >= 0 && *generation <= published)
-                .unwrap_or(published)
-        } else {
-            published
-        };
     if let Some(building) = metadata_i64(&transaction, "building_generation")? {
         if building > published {
             // A scan started by an older binary may not have initialized the
@@ -6855,60 +7146,10 @@ fn begin_or_resume_generation(
         BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
         "0",
     )?;
-    if mode.builds_dashboard_derived_data() {
-        transaction
-            .execute(
-                "DELETE FROM dashboard_5m WHERE file_generation = ?1",
-                params![generation],
-            )
-            .map_err(|error| format!("无法清理新一轮全局五分钟聚合：{error}"))?;
-        transaction
-            .execute(
-                "DELETE FROM dashboard_turn_candidates WHERE aggregate_generation = ?1",
-                params![generation],
-            )
-            .map_err(|error| format!("无法清理新一轮轮次候选聚合：{error}"))?;
-        transaction
-            .execute(
-                r#"
-                INSERT INTO dashboard_5m(
-                    file_generation, bucket_start, model_key, model,
-                    total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
-                )
-                SELECT
-                    ?1, bucket_start, model_key, model,
-                    total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
-                FROM dashboard_5m
-                WHERE file_generation = ?2
-                "#,
-                params![generation, aggregate_source_generation],
-            )
-            .map_err(|error| format!("无法复制已发布全局五分钟聚合：{error}"))?;
-        transaction
-            .execute(
-                r#"
-                INSERT INTO dashboard_turn_candidates(
-                    aggregate_generation, event_id, source_file_generation,
-                    file_path, ordinal, timestamp, session_id,
-                    total_tokens, input_tokens, cached_input_tokens, output_tokens,
-                    user_prompt_start, user_prompt_end,
-                    assistant_response_start, assistant_response_end,
-                    turn_index, session_calls
-                )
-                SELECT
-                    ?1, event_id, source_file_generation,
-                    file_path, ordinal, timestamp, session_id,
-                    total_tokens, input_tokens, cached_input_tokens, output_tokens,
-                    user_prompt_start, user_prompt_end,
-                    assistant_response_start, assistant_response_end,
-                    turn_index, session_calls
-                FROM dashboard_turn_candidates
-                WHERE aggregate_generation = ?2
-                "#,
-                params![generation, aggregate_source_generation],
-            )
-            .map_err(|error| format!("无法复制已发布轮次候选聚合：{error}"))?;
-    }
+    // Schema 11 exposes the published aggregate layer through generation-
+    // aware overlay views. Starting a generation therefore writes no copied
+    // events, fingerprints, chunks, file aggregates, global buckets, or turn
+    // candidates; only later deltas/replacements occupy pending storage.
     transaction
         .commit()
         .map_err(|error| format!("无法持久化精确 token 同步状态：{error}"))?;
@@ -6953,14 +7194,9 @@ fn incremental_rebuild_published_dashboard_aggregates(
             FROM (
                 SELECT b.bucket_start
                 FROM dashboard_file_5m b
-                JOIN touched t ON t.path = b.file_path
-                WHERE b.file_generation = (
-                    SELECT MAX(previous.generation)
-                    FROM files previous
-                    WHERE previous.path = b.file_path
-                      AND previous.generation <= ?2
-                      AND previous.deleted = 0
-                )
+                JOIN touched t
+                  ON t.path = b.file_path
+                 AND t.generation = b.file_generation
                 UNION ALL
                 SELECT e.timestamp - (e.timestamp % 300)
                 FROM events e
@@ -6978,60 +7214,6 @@ fn incremental_rebuild_published_dashboard_aggregates(
         )
         .map(|(start, end)| start.zip(end))
         .map_err(|error| format!("无法读取增量聚合受影响桶范围：{error}"))?;
-
-    transaction
-        .execute(
-            "DELETE FROM dashboard_5m WHERE file_generation = ?1",
-            params![generation],
-        )
-        .map_err(|error| format!("无法清理增量仪表盘五分钟聚合：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO dashboard_5m(
-                file_generation, bucket_start, model_key, model,
-                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
-            )
-            SELECT
-                ?1, bucket_start, model_key, model,
-                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
-            FROM dashboard_5m
-            WHERE file_generation = ?2
-            "#,
-            params![generation, previous_generation],
-        )
-        .map_err(|error| format!("无法复制已发布增量五分钟聚合：{error}"))?;
-
-    transaction
-        .execute(
-            "DELETE FROM dashboard_turn_candidates WHERE aggregate_generation = ?1",
-            params![generation],
-        )
-        .map_err(|error| format!("无法清理增量轮次候选聚合：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO dashboard_turn_candidates(
-                aggregate_generation, event_id, source_file_generation,
-                file_path, ordinal, timestamp, session_id,
-                total_tokens, input_tokens, cached_input_tokens, output_tokens,
-                user_prompt_start, user_prompt_end,
-                assistant_response_start, assistant_response_end,
-                turn_index, session_calls
-            )
-            SELECT
-                ?1, event_id, source_file_generation,
-                file_path, ordinal, timestamp, session_id,
-                total_tokens, input_tokens, cached_input_tokens, output_tokens,
-                user_prompt_start, user_prompt_end,
-                assistant_response_start, assistant_response_end,
-                turn_index, session_calls
-            FROM dashboard_turn_candidates
-            WHERE aggregate_generation = ?2
-            "#,
-            params![generation, previous_generation],
-        )
-        .map_err(|error| format!("无法复制已发布增量轮次候选聚合：{error}"))?;
 
     transaction
         .execute(
@@ -7099,7 +7281,7 @@ fn incremental_rebuild_published_dashboard_aggregates(
     transaction
         .execute(
             r#"
-            INSERT INTO dashboard_file_5m(
+            INSERT OR IGNORE INTO dashboard_file_5m(
                 file_generation, file_path, bucket_start, model_key, model,
                 total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
             )
@@ -7139,18 +7321,6 @@ fn incremental_rebuild_published_dashboard_aggregates(
         previous_generation,
     )?;
 
-    transaction
-        .execute(
-            "DELETE FROM dashboard_5m WHERE file_generation <> ?1",
-            params![generation],
-        )
-        .map_err(|error| format!("无法清理旧版增量五分钟聚合：{error}"))?;
-    transaction
-        .execute(
-            "DELETE FROM dashboard_turn_candidates WHERE aggregate_generation <> ?1",
-            params![generation],
-        )
-        .map_err(|error| format!("无法清理旧版增量轮次候选聚合：{error}"))?;
     Ok(())
 }
 
@@ -7735,10 +7905,25 @@ fn update_dashboard_append_aggregates(
     path: &str,
     previous_ordinal: u64,
 ) -> Result<(), String> {
+    let source_id = transaction
+        .query_row(
+            r#"
+            SELECT p.source_id
+            FROM pending_sources p JOIN sources s ON s.source_id = p.source_id
+            WHERE p.target_generation = ?1 AND s.path = ?2 AND p.mode = 'delta'
+            "#,
+            params![generation, path],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| format!("无法读取单文件增量来源：{error}"))?;
+    let Some(source_id) = source_id else {
+        return refresh_dashboard_file_aggregates(transaction, generation, path);
+    };
     let existing = transaction
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM dashboard_file_totals WHERE file_generation = ?1 AND file_path = ?2)",
-            params![generation, path],
+            "SELECT EXISTS(SELECT 1 FROM dashboard_source_totals WHERE source_id = ?1)",
+            params![source_id],
             |row| row.get::<_, bool>(0),
         )
         .map_err(|error| format!("无法检查单文件增量聚合水位：{error}"))?;
@@ -7763,40 +7948,46 @@ fn update_dashboard_append_aggregates(
     transaction
         .execute(
             r#"
-            INSERT INTO dashboard_file_totals(
-                file_generation, file_path, session_id, total_tokens, calls,
-                input_tokens, cached_input_tokens, output_tokens,
-                first_timestamp, last_timestamp
+            INSERT INTO pending_dashboard_source_totals(
+                source_id, total_tokens, calls, input_tokens,
+                cached_input_tokens, output_tokens, first_timestamp, last_timestamp
             )
             SELECT
-                file_generation, file_path, MAX(session_id), SUM(tokens), COUNT(*),
+                ?4, SUM(tokens), COUNT(*),
                 SUM(input_tokens), SUM(MIN(cached_input_tokens, input_tokens)),
                 SUM(output_tokens), MIN(timestamp), MAX(timestamp)
             FROM events
             WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
-            GROUP BY file_generation, file_path
-            ON CONFLICT(file_generation, file_path) DO UPDATE SET
-                total_tokens = dashboard_file_totals.total_tokens + excluded.total_tokens,
-                calls = dashboard_file_totals.calls + excluded.calls,
-                input_tokens = dashboard_file_totals.input_tokens + excluded.input_tokens,
-                cached_input_tokens = dashboard_file_totals.cached_input_tokens + excluded.cached_input_tokens,
-                output_tokens = dashboard_file_totals.output_tokens + excluded.output_tokens,
-                first_timestamp = MIN(dashboard_file_totals.first_timestamp, excluded.first_timestamp),
-                last_timestamp = MAX(dashboard_file_totals.last_timestamp, excluded.last_timestamp)
+            HAVING COUNT(*) > 0
+            ON CONFLICT(source_id) DO UPDATE SET
+                total_tokens = pending_dashboard_source_totals.total_tokens + excluded.total_tokens,
+                calls = pending_dashboard_source_totals.calls + excluded.calls,
+                input_tokens = pending_dashboard_source_totals.input_tokens + excluded.input_tokens,
+                cached_input_tokens = pending_dashboard_source_totals.cached_input_tokens + excluded.cached_input_tokens,
+                output_tokens = pending_dashboard_source_totals.output_tokens + excluded.output_tokens,
+                first_timestamp = CASE
+                    WHEN pending_dashboard_source_totals.first_timestamp IS NULL THEN excluded.first_timestamp
+                    WHEN excluded.first_timestamp IS NULL THEN pending_dashboard_source_totals.first_timestamp
+                    ELSE MIN(pending_dashboard_source_totals.first_timestamp, excluded.first_timestamp)
+                END,
+                last_timestamp = CASE
+                    WHEN pending_dashboard_source_totals.last_timestamp IS NULL THEN excluded.last_timestamp
+                    WHEN excluded.last_timestamp IS NULL THEN pending_dashboard_source_totals.last_timestamp
+                    ELSE MAX(pending_dashboard_source_totals.last_timestamp, excluded.last_timestamp)
+                END
             "#,
-            params![generation, path, previous_ordinal],
+            params![generation, path, previous_ordinal, source_id],
         )
         .map_err(|error| format!("无法更新单文件增量总量聚合：{error}"))?;
     transaction
         .execute(
             r#"
-            INSERT INTO dashboard_file_5m(
-                file_generation, file_path, bucket_start, model_key, model,
+            INSERT INTO pending_dashboard_source_5m(
+                source_id, bucket_start, model_key, model,
                 total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
             )
             SELECT
-                file_generation,
-                file_path,
+                ?4,
                 timestamp - (timestamp % 300),
                 COALESCE(model, ''),
                 model,
@@ -7807,62 +7998,21 @@ fn update_dashboard_append_aggregates(
                 SUM(output_tokens)
             FROM events
             WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
-            GROUP BY file_generation, file_path, timestamp - (timestamp % 300), COALESCE(model, '')
-            ON CONFLICT(file_generation, file_path, bucket_start, model_key) DO UPDATE SET
-                total_tokens = dashboard_file_5m.total_tokens + excluded.total_tokens,
-                calls = dashboard_file_5m.calls + excluded.calls,
-                input_tokens = dashboard_file_5m.input_tokens + excluded.input_tokens,
-                cached_input_tokens = dashboard_file_5m.cached_input_tokens + excluded.cached_input_tokens,
-                output_tokens = dashboard_file_5m.output_tokens + excluded.output_tokens,
+            GROUP BY timestamp - (timestamp % 300), COALESCE(model, '')
+            ON CONFLICT(source_id, bucket_start, model_key) DO UPDATE SET
+                total_tokens = pending_dashboard_source_5m.total_tokens + excluded.total_tokens,
+                calls = pending_dashboard_source_5m.calls + excluded.calls,
+                input_tokens = pending_dashboard_source_5m.input_tokens + excluded.input_tokens,
+                cached_input_tokens = pending_dashboard_source_5m.cached_input_tokens + excluded.cached_input_tokens,
+                output_tokens = pending_dashboard_source_5m.output_tokens + excluded.output_tokens,
                 model = excluded.model
             "#,
-            params![generation, path, previous_ordinal],
+            params![generation, path, previous_ordinal, source_id],
         )
         .map_err(|error| format!("无法更新单文件增量五分钟聚合：{error}"))?;
     if let Some((start, end)) = affected_bounds {
         refresh_dashboard_5m_range(transaction, generation, start, end)?;
     }
-    Ok(())
-}
-
-fn copy_dashboard_file_aggregates(
-    transaction: &Transaction<'_>,
-    generation: i64,
-    checkpoint_generation: i64,
-    path: &str,
-) -> Result<(), String> {
-    transaction
-        .execute(
-            r#"
-            INSERT INTO dashboard_file_totals(
-                file_generation, file_path, session_id, total_tokens, calls,
-                input_tokens, cached_input_tokens, output_tokens,
-                first_timestamp, last_timestamp
-            )
-            SELECT ?1, file_path, session_id, total_tokens, calls,
-                input_tokens, cached_input_tokens, output_tokens,
-                first_timestamp, last_timestamp
-            FROM dashboard_file_totals
-            WHERE file_generation = ?2 AND file_path = ?3
-            "#,
-            params![generation, checkpoint_generation, path],
-        )
-        .map_err(|error| format!("无法复制单文件总量聚合：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO dashboard_file_5m(
-                file_generation, file_path, bucket_start, model_key, model,
-                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
-            )
-            SELECT ?1, file_path, bucket_start, model_key, model,
-                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
-            FROM dashboard_file_5m
-            WHERE file_generation = ?2 AND file_path = ?3
-            "#,
-            params![generation, checkpoint_generation, path],
-        )
-        .map_err(|error| format!("无法复制单文件五分钟聚合：{error}"))?;
     Ok(())
 }
 
@@ -7917,7 +8067,6 @@ fn backfill_missing_dashboard_aggregates_for_generation(
             WHERE e.file_generation = ?1
             GROUP BY e.file_generation, e.file_path,
                 e.timestamp - (e.timestamp % 300), COALESCE(e.model, '')
-            ON CONFLICT(file_generation, file_path, bucket_start, model_key) DO NOTHING
             "#,
             params![generation],
         )
@@ -7925,6 +8074,397 @@ fn backfill_missing_dashboard_aggregates_for_generation(
     if inserted_totals > 0 || inserted_buckets > 0 {
         rebuild_dashboard_5m_generation(transaction, generation)?;
     }
+    Ok(())
+}
+
+fn discard_schema11_tombstone_pending_children(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            r#"
+            DELETE FROM pending_event_rows
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_fingerprints
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_chunks
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_enrichment
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_dashboard_source_totals
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_dashboard_source_5m
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_dashboard_turn_candidates
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_dashboard_turn_tombstones
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            "#,
+        )
+        .map_err(|error| format!("无法隔离 schema 11 单文件墓碑的暂存子行：{error}"))
+}
+
+fn publish_schema11_pending_generation(
+    transaction: &Transaction<'_>,
+    generation: i64,
+) -> Result<(), String> {
+    let active_generation = transaction
+        .query_row(
+            "SELECT generation FROM active_building_generation",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| format!("无法读取 schema 11 活动 building generation：{error}"))?;
+    if active_generation != Some(generation) {
+        return Err("schema 11 发布代次不是唯一活动 building generation，已停止发布".into());
+    }
+    let wrong_generation = transaction
+        .query_row(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM pending_sources WHERE target_generation <> ?1
+                UNION ALL
+                SELECT 1 FROM pending_dashboard_5m WHERE target_generation <> ?1
+                UNION ALL
+                SELECT 1 FROM pending_dashboard_5m_tombstones WHERE target_generation <> ?1
+                UNION ALL
+                SELECT 1 FROM pending_dashboard_turn_candidates WHERE target_generation <> ?1
+                UNION ALL
+                SELECT 1 FROM pending_dashboard_turn_tombstones WHERE target_generation <> ?1
+            )
+            "#,
+            params![generation],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法验证 schema 11 pending 代次：{error}"))?;
+    if wrong_generation {
+        return Err("schema 11 pending 来源混入其他 building generation，已停止发布".into());
+    }
+    let tombstone_has_children = transaction
+        .query_row(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM pending_sources p
+                WHERE p.target_generation = ?1 AND p.mode = 'tombstone'
+                  AND (
+                    EXISTS(SELECT 1 FROM pending_event_rows e
+                           WHERE e.source_id = p.source_id)
+                    OR EXISTS(SELECT 1 FROM pending_fingerprints f
+                              WHERE f.source_id = p.source_id)
+                    OR EXISTS(SELECT 1 FROM pending_chunks c
+                              WHERE c.source_id = p.source_id)
+                    OR EXISTS(SELECT 1 FROM pending_enrichment e
+                              WHERE e.source_id = p.source_id)
+                    OR EXISTS(SELECT 1 FROM pending_dashboard_source_totals t
+                              WHERE t.source_id = p.source_id)
+                    OR EXISTS(SELECT 1 FROM pending_dashboard_source_5m b
+                              WHERE b.source_id = p.source_id)
+                    OR EXISTS(SELECT 1 FROM pending_dashboard_turn_candidates t
+                              WHERE t.target_generation = ?1
+                                AND t.source_id = p.source_id)
+                  )
+            )
+            "#,
+            params![generation],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法验证 schema 11 墓碑发布范围：{error}"))?;
+    if tombstone_has_children {
+        return Err("schema 11 单文件墓碑仍携带暂存子行，已停止发布并保留现场".into());
+    }
+
+    // Full replacements and tombstones discard only the affected source's
+    // published children. The transaction still exposes the old current layer
+    // to every other connection until all replacements and the publication
+    // receipt commit together.
+    transaction
+        .execute_batch(
+            r#"
+            DELETE FROM event_rows
+            WHERE source_id IN (
+                SELECT source_id FROM pending_sources WHERE mode IN ('full', 'tombstone')
+            );
+            DELETE FROM source_fingerprints
+            WHERE source_id IN (
+                SELECT source_id FROM pending_sources WHERE mode IN ('full', 'tombstone')
+            );
+            DELETE FROM source_chunks
+            WHERE source_id IN (
+                SELECT source_id FROM pending_sources WHERE mode IN ('full', 'tombstone')
+            );
+            DELETE FROM source_enrichment
+            WHERE source_id IN (
+                SELECT source_id FROM pending_sources WHERE mode IN ('full', 'tombstone')
+            );
+            DELETE FROM dashboard_source_totals
+            WHERE source_id IN (
+                SELECT source_id FROM pending_sources WHERE mode IN ('full', 'tombstone')
+            );
+            DELETE FROM dashboard_source_5m
+            WHERE source_id IN (
+                SELECT source_id FROM pending_sources WHERE mode IN ('full', 'tombstone')
+            );
+
+            INSERT INTO event_rows(
+                id, source_id, ordinal, timestamp, tokens, input_tokens,
+                cached_input_tokens, output_tokens, reasoning_output_tokens, model,
+                user_prompt_start, user_prompt_end, assistant_response_start,
+                assistant_response_end
+            )
+            SELECT e.id, e.source_id, e.ordinal, e.timestamp, e.tokens, e.input_tokens,
+                   e.cached_input_tokens, e.output_tokens, e.reasoning_output_tokens,
+                   e.model, e.user_prompt_start, e.user_prompt_end,
+                   e.assistant_response_start, e.assistant_response_end
+            FROM pending_event_rows e
+            JOIN pending_sources p ON p.source_id = e.source_id
+            WHERE p.target_generation = (
+                SELECT CAST(value AS INTEGER) FROM metadata
+                WHERE key = 'building_generation'
+            ) AND p.mode <> 'tombstone';
+
+            INSERT OR IGNORE INTO source_fingerprints(source_id, fingerprint)
+            SELECT f.source_id, f.fingerprint
+            FROM pending_fingerprints f JOIN pending_sources p USING(source_id)
+            WHERE p.mode <> 'tombstone';
+
+            INSERT INTO source_chunks(source_id, chunk_index, byte_count, sha256)
+            SELECT c.source_id, c.chunk_index, c.byte_count, c.sha256
+            FROM pending_chunks c JOIN pending_sources p USING(source_id)
+            WHERE p.mode <> 'tombstone'
+            ON CONFLICT(source_id, chunk_index) DO UPDATE SET
+                byte_count = excluded.byte_count,
+                sha256 = excluded.sha256;
+
+            INSERT INTO source_enrichment(
+                source_id, revision, parser_revision, completed_size,
+                completed_prefix_sha256
+            )
+            SELECT e.source_id, e.revision, e.parser_revision,
+                   e.completed_size, e.completed_prefix_sha256
+            FROM pending_enrichment e JOIN pending_sources p USING(source_id)
+            WHERE p.mode <> 'tombstone'
+            ON CONFLICT(source_id) DO UPDATE SET
+                revision = excluded.revision,
+                parser_revision = excluded.parser_revision,
+                completed_size = excluded.completed_size,
+                completed_prefix_sha256 = excluded.completed_prefix_sha256;
+
+            INSERT INTO dashboard_source_totals(
+                source_id, total_tokens, calls, input_tokens, cached_input_tokens,
+                output_tokens, first_timestamp, last_timestamp
+            )
+            SELECT t.source_id, t.total_tokens, t.calls, t.input_tokens,
+                   t.cached_input_tokens, t.output_tokens,
+                   t.first_timestamp, t.last_timestamp
+            FROM pending_dashboard_source_totals t
+            JOIN pending_sources p USING(source_id)
+            WHERE p.mode = 'full'
+            ON CONFLICT(source_id) DO UPDATE SET
+                total_tokens = excluded.total_tokens,
+                calls = excluded.calls,
+                input_tokens = excluded.input_tokens,
+                cached_input_tokens = excluded.cached_input_tokens,
+                output_tokens = excluded.output_tokens,
+                first_timestamp = excluded.first_timestamp,
+                last_timestamp = excluded.last_timestamp;
+
+            INSERT INTO dashboard_source_totals(
+                source_id, total_tokens, calls, input_tokens, cached_input_tokens,
+                output_tokens, first_timestamp, last_timestamp
+            )
+            SELECT t.source_id, t.total_tokens, t.calls, t.input_tokens,
+                   t.cached_input_tokens, t.output_tokens,
+                   t.first_timestamp, t.last_timestamp
+            FROM pending_dashboard_source_totals t
+            JOIN pending_sources p USING(source_id)
+            WHERE p.mode = 'delta'
+            ON CONFLICT(source_id) DO UPDATE SET
+                total_tokens = dashboard_source_totals.total_tokens + excluded.total_tokens,
+                calls = dashboard_source_totals.calls + excluded.calls,
+                input_tokens = dashboard_source_totals.input_tokens + excluded.input_tokens,
+                cached_input_tokens = dashboard_source_totals.cached_input_tokens + excluded.cached_input_tokens,
+                output_tokens = dashboard_source_totals.output_tokens + excluded.output_tokens,
+                first_timestamp = CASE
+                    WHEN dashboard_source_totals.first_timestamp IS NULL THEN excluded.first_timestamp
+                    WHEN excluded.first_timestamp IS NULL THEN dashboard_source_totals.first_timestamp
+                    ELSE MIN(dashboard_source_totals.first_timestamp, excluded.first_timestamp)
+                END,
+                last_timestamp = CASE
+                    WHEN dashboard_source_totals.last_timestamp IS NULL THEN excluded.last_timestamp
+                    WHEN excluded.last_timestamp IS NULL THEN dashboard_source_totals.last_timestamp
+                    ELSE MAX(dashboard_source_totals.last_timestamp, excluded.last_timestamp)
+                END;
+
+            INSERT INTO dashboard_source_5m(
+                source_id, bucket_start, model_key, model, total_tokens, calls,
+                input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT b.source_id, b.bucket_start, b.model_key, b.model,
+                   b.total_tokens, b.calls, b.input_tokens,
+                   b.cached_input_tokens, b.output_tokens
+            FROM pending_dashboard_source_5m b
+            JOIN pending_sources p USING(source_id)
+            WHERE p.mode = 'full'
+            ON CONFLICT(source_id, bucket_start, model_key) DO UPDATE SET
+                model = excluded.model, total_tokens = excluded.total_tokens,
+                calls = excluded.calls, input_tokens = excluded.input_tokens,
+                cached_input_tokens = excluded.cached_input_tokens,
+                output_tokens = excluded.output_tokens;
+
+            INSERT INTO dashboard_source_5m(
+                source_id, bucket_start, model_key, model, total_tokens, calls,
+                input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT b.source_id, b.bucket_start, b.model_key, b.model,
+                   b.total_tokens, b.calls, b.input_tokens,
+                   b.cached_input_tokens, b.output_tokens
+            FROM pending_dashboard_source_5m b
+            JOIN pending_sources p USING(source_id)
+            WHERE p.mode = 'delta'
+            ON CONFLICT(source_id, bucket_start, model_key) DO UPDATE SET
+                model = excluded.model,
+                total_tokens = dashboard_source_5m.total_tokens + excluded.total_tokens,
+                calls = dashboard_source_5m.calls + excluded.calls,
+                input_tokens = dashboard_source_5m.input_tokens + excluded.input_tokens,
+                cached_input_tokens = dashboard_source_5m.cached_input_tokens + excluded.cached_input_tokens,
+                output_tokens = dashboard_source_5m.output_tokens + excluded.output_tokens;
+
+            DELETE FROM dashboard_5m_current
+            WHERE EXISTS(
+                SELECT 1 FROM pending_dashboard_5m_tombstones t
+                WHERE t.target_generation = (
+                    SELECT CAST(value AS INTEGER) FROM metadata
+                    WHERE key = 'building_generation'
+                )
+                  AND t.bucket_start = dashboard_5m_current.bucket_start
+                  AND t.model_key = dashboard_5m_current.model_key
+            );
+            INSERT INTO dashboard_5m_current(
+                bucket_start, model_key, model, total_tokens, calls,
+                input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT bucket_start, model_key, model, total_tokens, calls,
+                   input_tokens, cached_input_tokens, output_tokens
+            FROM pending_dashboard_5m
+            WHERE target_generation = (
+                SELECT CAST(value AS INTEGER) FROM metadata
+                WHERE key = 'building_generation'
+            )
+            ON CONFLICT(bucket_start, model_key) DO UPDATE SET
+                model = excluded.model, total_tokens = excluded.total_tokens,
+                calls = excluded.calls, input_tokens = excluded.input_tokens,
+                cached_input_tokens = excluded.cached_input_tokens,
+                output_tokens = excluded.output_tokens;
+
+            DELETE FROM dashboard_turn_candidates_current
+            WHERE EXISTS(
+                SELECT 1 FROM pending_dashboard_turn_tombstones t
+                WHERE t.target_generation = (
+                    SELECT CAST(value AS INTEGER) FROM metadata
+                    WHERE key = 'building_generation'
+                )
+                  AND t.source_id = dashboard_turn_candidates_current.source_id
+                  AND t.ordinal = dashboard_turn_candidates_current.ordinal
+            ) OR source_id IN (
+                SELECT source_id FROM pending_sources WHERE mode = 'tombstone'
+            );
+            INSERT INTO dashboard_turn_candidates_current(
+                source_id, ordinal, event_id, source_file_generation, timestamp,
+                total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                user_prompt_start, user_prompt_end, assistant_response_start,
+                assistant_response_end, turn_index, session_calls
+            )
+            SELECT source_id, ordinal, event_id, source_file_generation, timestamp,
+                   total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                   user_prompt_start, user_prompt_end, assistant_response_start,
+                   assistant_response_end, turn_index, session_calls
+            FROM pending_dashboard_turn_candidates
+            WHERE target_generation = (
+                SELECT CAST(value AS INTEGER) FROM metadata
+                WHERE key = 'building_generation'
+            )
+            ON CONFLICT(source_id, ordinal) DO UPDATE SET
+                event_id = excluded.event_id,
+                source_file_generation = excluded.source_file_generation,
+                timestamp = excluded.timestamp, total_tokens = excluded.total_tokens,
+                input_tokens = excluded.input_tokens,
+                cached_input_tokens = excluded.cached_input_tokens,
+                output_tokens = excluded.output_tokens,
+                user_prompt_start = excluded.user_prompt_start,
+                user_prompt_end = excluded.user_prompt_end,
+                assistant_response_start = excluded.assistant_response_start,
+                assistant_response_end = excluded.assistant_response_end,
+                turn_index = excluded.turn_index, session_calls = excluded.session_calls;
+
+            UPDATE sources SET
+                deleted = (SELECT p.deleted FROM pending_sources p
+                           WHERE p.source_id = sources.source_id),
+                last_seen_generation = (SELECT p.target_generation FROM pending_sources p
+                                        WHERE p.source_id = sources.source_id),
+                size = (SELECT p.size FROM pending_sources p
+                        WHERE p.source_id = sources.source_id),
+                modified_ns = (SELECT p.modified_ns FROM pending_sources p
+                               WHERE p.source_id = sources.source_id),
+                prefix_sha256 = (SELECT p.prefix_sha256 FROM pending_sources p
+                                 WHERE p.source_id = sources.source_id),
+                append_ready = (SELECT p.append_ready FROM pending_sources p
+                                WHERE p.source_id = sources.source_id),
+                resume_offset = (SELECT p.resume_offset FROM pending_sources p
+                                 WHERE p.source_id = sources.source_id),
+                previous_total_tokens = (SELECT p.previous_total_tokens FROM pending_sources p
+                                         WHERE p.source_id = sources.source_id),
+                fork_replay_started_ns = (SELECT p.fork_replay_started_ns FROM pending_sources p
+                                          WHERE p.source_id = sources.source_id),
+                fork_replay_active = (SELECT p.fork_replay_active FROM pending_sources p
+                                      WHERE p.source_id = sources.source_id),
+                is_explicit_subagent_fork = (SELECT p.is_explicit_subagent_fork
+                                             FROM pending_sources p
+                                             WHERE p.source_id = sources.source_id),
+                last_skipped_fork_replay_token_ns = (
+                    SELECT p.last_skipped_fork_replay_token_ns FROM pending_sources p
+                    WHERE p.source_id = sources.source_id
+                ),
+                current_model = (SELECT p.current_model FROM pending_sources p
+                                 WHERE p.source_id = sources.source_id),
+                current_user_prompt_start = (SELECT p.current_user_prompt_start
+                                             FROM pending_sources p
+                                             WHERE p.source_id = sources.source_id),
+                current_user_prompt_end = (SELECT p.current_user_prompt_end
+                                           FROM pending_sources p
+                                           WHERE p.source_id = sources.source_id),
+                assistant_response_start = (SELECT p.assistant_response_start
+                                            FROM pending_sources p
+                                            WHERE p.source_id = sources.source_id),
+                assistant_response_end = (SELECT p.assistant_response_end
+                                          FROM pending_sources p
+                                          WHERE p.source_id = sources.source_id),
+                audit_chunk_index = (SELECT p.audit_chunk_index FROM pending_sources p
+                                     WHERE p.source_id = sources.source_id)
+            WHERE source_id IN (SELECT source_id FROM pending_sources);
+
+            DELETE FROM pending_sources;
+            DELETE FROM pending_dashboard_5m
+            WHERE target_generation = (
+                SELECT CAST(value AS INTEGER) FROM metadata
+                WHERE key = 'building_generation'
+            );
+            DELETE FROM pending_dashboard_5m_tombstones
+            WHERE target_generation = (
+                SELECT CAST(value AS INTEGER) FROM metadata
+                WHERE key = 'building_generation'
+            );
+            DELETE FROM pending_dashboard_turn_candidates
+            WHERE target_generation = (
+                SELECT CAST(value AS INTEGER) FROM metadata
+                WHERE key = 'building_generation'
+            );
+            DELETE FROM pending_dashboard_turn_tombstones
+            WHERE target_generation = (
+                SELECT CAST(value AS INTEGER) FROM metadata
+                WHERE key = 'building_generation'
+            );
+            "#,
+        )
+        .map_err(|error| format!("无法合并 schema 11 pending generation：{error}"))?;
     Ok(())
 }
 
@@ -7951,25 +8491,16 @@ fn finalize_generation(
     let missing_count = transaction
         .query_row(
             r#"
-            WITH latest AS (
-                SELECT path, MAX(generation) AS generation
-                FROM files
-                WHERE generation <= ?1
-                GROUP BY path
-            )
             SELECT COUNT(*)
-            FROM latest
-            JOIN files f
-              ON f.path = latest.path
-             AND f.generation = latest.generation
-            WHERE f.deleted = 0
+            FROM sources s
+            WHERE s.deleted = 0
               AND NOT EXISTS (
                   SELECT 1
                   FROM exact_seen_files seen
-                  WHERE seen.path = latest.path
+                  WHERE seen.path = s.path
               )
             "#,
-            params![generation],
+            [],
             |row| row.get::<_, i64>(0),
         )
         .map_err(|error| format!("无法检查本轮已删除的会话文件：{error}"))?;
@@ -7977,30 +8508,15 @@ fn finalize_generation(
         let missing_dashboard_bounds = transaction
             .query_row(
                 r#"
-                WITH latest AS (
-                    SELECT path, MAX(generation) AS generation
-                    FROM files
-                    WHERE generation <= ?1
-                    GROUP BY path
-                ),
-                missing AS (
-                    SELECT latest.path, latest.generation
-                    FROM latest
-                    JOIN files f
-                      ON f.path = latest.path
-                     AND f.generation = latest.generation
-                    WHERE f.deleted = 0
-                      AND NOT EXISTS (
-                          SELECT 1 FROM exact_seen_files seen WHERE seen.path = latest.path
-                      )
-                )
                 SELECT MIN(b.bucket_start), MAX(b.bucket_start)
-                FROM dashboard_file_5m b
-                JOIN missing m
-                  ON m.path = b.file_path
-                 AND m.generation = b.file_generation
+                FROM dashboard_source_5m b
+                JOIN sources s ON s.source_id = b.source_id
+                WHERE s.deleted = 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM exact_seen_files seen WHERE seen.path = s.path
+                  )
                 "#,
-                params![generation],
+                [],
                 |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .map(|(start, end)| start.zip(end))
@@ -8008,76 +8524,37 @@ fn finalize_generation(
         transaction
             .execute(
                 r#"
-                WITH latest AS (
-                    SELECT path, MAX(generation) AS generation
-                    FROM files
-                    WHERE generation <= ?1
-                    GROUP BY path
-                ),
-                missing AS (
-                    SELECT latest.path
-                    FROM latest
-                    JOIN files f
-                      ON f.path = latest.path
-                     AND f.generation = latest.generation
-                    WHERE f.deleted = 0
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM exact_seen_files seen
-                          WHERE seen.path = latest.path
-                      )
+                INSERT INTO pending_sources(
+                    source_id, target_generation, mode, deleted, size, modified_ns,
+                    prefix_sha256, append_ready, resume_offset, previous_total_tokens,
+                    fork_replay_started_ns, fork_replay_active,
+                    is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
+                    current_model, current_user_prompt_start, current_user_prompt_end,
+                    assistant_response_start, assistant_response_end, audit_chunk_index
                 )
-                DELETE FROM events
-                WHERE file_generation = ?1
-                  AND file_path IN (SELECT path FROM missing)
-                "#,
-                params![generation],
-            )
-            .map_err(|error| format!("无法清理本轮已删除会话的暂存事件：{error}"))?;
-        transaction
-            .execute(
-                r#"
-                WITH latest AS (
-                    SELECT path, MAX(generation) AS generation
-                    FROM files
-                    WHERE generation <= ?1
-                    GROUP BY path
-                ),
-                missing AS (
-                    SELECT latest.path
-                    FROM latest
-                    JOIN files f
-                      ON f.path = latest.path
-                     AND f.generation = latest.generation
-                    WHERE f.deleted = 0
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM exact_seen_files seen
-                          WHERE seen.path = latest.path
-                      )
-                )
-                INSERT INTO files(
-                    generation,
-                    path,
-                    deleted,
-                    session_id,
-                    size,
-                    modified_ns,
-                    prefix_sha256
-                )
-                SELECT ?1, path, 1, '', 0, '0', X''
-                FROM missing
-                WHERE true
-                ON CONFLICT(generation, path) DO UPDATE SET
-                    deleted = 1,
-                    session_id = '',
-                    size = 0,
-                    modified_ns = '0',
-                    prefix_sha256 = X''
+                SELECT s.source_id, ?1, 'tombstone', 1, 0, '0', X'', 0,
+                       NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, 0
+                FROM sources s
+                WHERE s.deleted = 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM exact_seen_files seen WHERE seen.path = s.path
+                  )
+                ON CONFLICT(source_id) DO UPDATE SET
+                    target_generation = excluded.target_generation,
+                    mode = 'tombstone', deleted = 1, size = 0,
+                    modified_ns = '0', prefix_sha256 = X'', append_ready = 0,
+                    resume_offset = NULL, previous_total_tokens = NULL,
+                    fork_replay_started_ns = NULL, fork_replay_active = 0,
+                    is_explicit_subagent_fork = 0,
+                    last_skipped_fork_replay_token_ns = NULL,
+                    current_model = NULL, current_user_prompt_start = NULL,
+                    current_user_prompt_end = NULL, assistant_response_start = NULL,
+                    assistant_response_end = NULL, audit_chunk_index = 0
                 "#,
                 params![generation],
             )
             .map_err(|error| format!("无法登记本轮已删除的会话文件：{error}"))?;
+        discard_schema11_tombstone_pending_children(&transaction)?;
         if mode.builds_dashboard_derived_data() {
             if let Some((start, end)) = missing_dashboard_bounds {
                 refresh_dashboard_5m_range(&transaction, generation, start, end)?;
@@ -8185,12 +8662,20 @@ fn finalize_generation(
         } else {
             false
         };
+    let pending_source_count = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM pending_sources WHERE target_generation = ?1",
+            params![generation],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("无法统计 schema 11 pending 来源：{error}"))?;
     let changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0) != 0;
     let dashboard_changed =
         metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?.unwrap_or(0) != 0;
     let current_revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
-    let revision = if changed {
-        if dashboard_changed {
+    let revision = if changed || pending_source_count > 0 {
+        if dashboard_changed || pending_source_count > 0 {
+            publish_schema11_pending_generation(&transaction, generation)?;
             set_metadata(
                 &transaction,
                 "published_generation",
@@ -8555,6 +9040,92 @@ fn process_scan_file_with_progress(
     Ok(())
 }
 
+fn reserve_staging_source(
+    connection: &Connection,
+    path: &str,
+    session_id: &str,
+) -> Result<StagingSourceBase, String> {
+    let read = |connection: &Connection| {
+        connection
+            .query_row(
+                r#"
+                SELECT source_id, session_id, last_seen_generation,
+                       resume_offset, prefix_sha256
+                FROM sources
+                WHERE path = ?1
+                "#,
+                params![path],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("无法读取精确 token 稳定来源编号：{error}"))
+    };
+
+    let mut stored = read(connection)?;
+    if stored.is_none() {
+        connection
+            .execute(
+                r#"
+                INSERT INTO sources(
+                    source_id, path, session_id, deleted, last_seen_generation
+                )
+                SELECT COALESCE(MAX(source_id), 0) + 1, ?1, ?2, 1, 0
+                FROM sources
+                "#,
+                params![path, session_id],
+            )
+            .map_err(|error| format!("无法预留精确 token 稳定来源编号：{error}"))?;
+        stored = read(connection)?;
+    }
+    let Some((source_id, stored_session_id, generation, resume_offset, prefix)) = stored else {
+        return Err("精确 token 稳定来源编号预留后仍不可见".into());
+    };
+    if !stored_session_id.is_empty() && stored_session_id != session_id {
+        return Err(format!(
+            "同一会话文件路径的 session ID 已变化，已保留上一份可信索引：{path}"
+        ));
+    }
+    if stored_session_id.is_empty() && !session_id.is_empty() {
+        connection
+            .execute(
+                "UPDATE sources SET session_id = ?2 WHERE source_id = ?1 AND session_id = ''",
+                params![source_id, session_id],
+            )
+            .map_err(|error| format!("无法绑定精确 token 稳定来源会话：{error}"))?;
+    }
+    let resume_offset = match resume_offset {
+        Some(value) => Some(
+            u64::try_from(value)
+                .map_err(|_| "精确 token 稳定来源 checkpoint 为负数".to_string())?,
+        ),
+        None => None,
+    };
+    let prefix_sha256 = if prefix.is_empty() {
+        None
+    } else {
+        Some(
+            prefix
+                .as_slice()
+                .try_into()
+                .map_err(|_| "精确 token 稳定来源前缀证明长度无效".to_string())?,
+        )
+    };
+    Ok(StagingSourceBase {
+        source_id,
+        generation,
+        resume_offset,
+        prefix_sha256,
+    })
+}
+
 fn process_session_file(
     connection: &mut Connection,
     generation: i64,
@@ -8713,134 +9284,26 @@ fn process_session_file(
         set_metadata(connection, BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY, "1")?;
     }
 
-    if signature.size < PARALLEL_STAGING_MIN_BYTES {
-        rebuild_session_file_direct(
-            connection,
-            generation,
-            codex_home,
-            file,
-            &path,
-            &mut handle,
-            signature,
-            warnings,
-            diagnostics,
-        )?;
-        return Ok(None);
-    }
+    let session_id = session_id_from_file(file);
+    let staging_base = reserve_staging_source(connection, &path, &session_id)?;
 
+    // Full rebuilds of every size use the bounded private-staging pool. The
+    // workers never write the main index; imports remain deterministic and
+    // single-writer, while small files can finally make use of the available
+    // parser lanes instead of serializing on the scan thread.
+    drop(handle);
     Ok(Some(FullRebuildJob {
         file: canonical,
         path,
-        session_id: session_id_from_file(file),
+        session_id,
+        source_id: staging_base.source_id,
+        base_generation: staging_base.generation,
+        base_resume_offset: staging_base.resume_offset,
+        base_prefix_sha256: staging_base.prefix_sha256,
         signature,
         event_enrichment: false,
         expected_published_prefix_sha256: None,
     }))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn rebuild_session_file_direct(
-    connection: &mut Connection,
-    generation: i64,
-    codex_home: &Path,
-    file: &Path,
-    path: &str,
-    handle: &mut fs::File,
-    signature: FileSignature,
-    warnings: &mut Vec<LocalDataWarning>,
-    diagnostics: &mut ExactScanDiagnostics,
-) -> Result<(), String> {
-    diagnostics.full_rebuild_files = diagnostics.full_rebuild_files.saturating_add(1);
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| format!("无法开始单文件精确 token 索引事务：{error}"))?;
-    ensure_active_build_generation(&transaction, generation)?;
-    delete_file_version_rows(&transaction, generation, path)?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO files(
-                generation,
-                path,
-                deleted,
-                session_id,
-                size,
-                modified_ns,
-                prefix_sha256
-            ) VALUES (?1, ?2, 0, ?3, ?4, ?5, X'')
-            "#,
-            params![
-                generation,
-                path,
-                session_id_from_file(file),
-                checked_i64(signature.size, "会话文件大小")?,
-                signature.modified_ns.to_string(),
-            ],
-        )
-        .map_err(|error| format!("无法登记会话文件索引：{error}"))?;
-    transaction
-        .execute("DELETE FROM exact_fingerprints", [])
-        .map_err(|error| format!("无法重置会话 token 去重表：{error}"))?;
-
-    let session_id = session_id_from_file(file);
-    let mut sink = SqliteEventSink {
-        transaction: &transaction,
-        file_generation: generation,
-        file_path: path,
-        ordinal: 0,
-    };
-    let parsed = stream_session_file_exact(
-        file,
-        handle,
-        signature.size,
-        &session_id,
-        &mut sink,
-        warnings,
-    )?;
-    #[cfg(test)]
-    FULL_SCAN_BYTES.fetch_add(signature.size, Ordering::SeqCst);
-    diagnostics.full_body_bytes = diagnostics.full_body_bytes.saturating_add(signature.size);
-    diagnostics.pending_tail_bytes = diagnostics
-        .pending_tail_bytes
-        .saturating_add(signature.size.saturating_sub(parsed.resume_offset));
-    drop(sink);
-    debug_assert_eq!(parsed.bytes_read, signature.size);
-
-    run_after_prefix_scan_hook_for_testing(file);
-    validate_same_file_prefix(file, handle, signature, parsed.prefix_sha256).map_err(|reason| {
-        format!(
-            "会话文件在精确扫描期间发生非追加变化，将在下一次刷新重试：{}（{}）",
-            relative_display_path(codex_home, file),
-            reason
-        )
-    })?;
-    transaction
-        .execute(
-            "UPDATE files SET prefix_sha256 = ?3 WHERE generation = ?1 AND path = ?2",
-            params![generation, path, parsed.prefix_sha256.as_slice()],
-        )
-        .map_err(|error| format!("无法保存会话文件前缀校验值：{error}"))?;
-    replace_file_chunks(&transaction, generation, path, 0, &parsed.chunk_hashes)?;
-    save_file_checkpoint(
-        &transaction,
-        generation,
-        path,
-        signature,
-        parsed.resume_offset,
-        parsed.state,
-        0,
-    )?;
-    if parsed.bytes_read != signature.size {
-        return Err(format!(
-            "会话文件固定前缀未完整扫描，将在下一次刷新重试：{}",
-            relative_display_path(codex_home, file)
-        ));
-    }
-    mark_dashboard_changed(&transaction)?;
-    transaction
-        .commit()
-        .map_err(|error| format!("无法提交单文件精确 token 索引：{error}"))?;
-    run_after_file_commit_hook_for_testing(file)
 }
 
 fn indexed_file_checkpoint(
@@ -9100,144 +9563,67 @@ fn append_session_file(
     Ok(true)
 }
 
-/// 把旧代次的追加检查点行（files 及级联的 events/指纹/分块）复制进当前代次。
-/// 返回 false 表示检查点源行不存在（复制不到恰好一行），调用方应回退全量重建。
+/// Stages only the source checkpoint for an append. Published events,
+/// fingerprints, chunks and aggregates remain in the current layer and are
+/// projected into the building generation by schema-11 views. This keeps the
+/// durable write volume proportional to the suffix instead of the file's
+/// complete history.
 fn copy_append_checkpoint_rows(
     transaction: &Transaction<'_>,
     generation: i64,
     checkpoint_generation: i64,
     path: &str,
-    mode: ExactSyncMode,
+    _mode: ExactSyncMode,
 ) -> Result<bool, String> {
-    delete_file_version_rows(transaction, generation, path)?;
     let copied = transaction
         .execute(
             r#"
-            INSERT INTO files(
-                generation,
-                path,
-                deleted,
-                session_id,
-                size,
-                modified_ns,
-                prefix_sha256,
-                append_ready,
-                resume_offset,
-                previous_total_tokens,
-                fork_replay_started_ns,
-                fork_replay_active,
-                is_explicit_subagent_fork,
-                last_skipped_fork_replay_token_ns,
-                current_model,
-                current_user_prompt_start,
-                current_user_prompt_end,
-                assistant_response_start,
-                assistant_response_end,
+            INSERT INTO pending_sources(
+                source_id, target_generation, mode, deleted, size,
+                modified_ns, prefix_sha256, append_ready, resume_offset,
+                previous_total_tokens, fork_replay_started_ns,
+                fork_replay_active, is_explicit_subagent_fork,
+                last_skipped_fork_replay_token_ns, current_model,
+                current_user_prompt_start, current_user_prompt_end,
+                assistant_response_start, assistant_response_end,
                 audit_chunk_index
             )
             SELECT
-                ?1,
-                path,
-                0,
-                session_id,
-                size,
-                modified_ns,
-                prefix_sha256,
-                append_ready,
-                resume_offset,
-                previous_total_tokens,
-                fork_replay_started_ns,
-                fork_replay_active,
-                is_explicit_subagent_fork,
-                last_skipped_fork_replay_token_ns,
-                current_model,
-                current_user_prompt_start,
-                current_user_prompt_end,
-                assistant_response_start,
-                assistant_response_end,
+                source_id, ?1, 'delta', 0, size, modified_ns,
+                prefix_sha256, append_ready, resume_offset,
+                previous_total_tokens, fork_replay_started_ns,
+                fork_replay_active, is_explicit_subagent_fork,
+                last_skipped_fork_replay_token_ns, current_model,
+                current_user_prompt_start, current_user_prompt_end,
+                assistant_response_start, assistant_response_end,
                 audit_chunk_index
-            FROM files
-            WHERE generation = ?2 AND path = ?3
+            FROM sources
+            WHERE last_seen_generation = ?2 AND path = ?3 AND deleted = 0
+            ON CONFLICT(source_id) DO UPDATE SET
+                target_generation = excluded.target_generation,
+                mode = 'delta', deleted = 0, size = excluded.size,
+                modified_ns = excluded.modified_ns,
+                prefix_sha256 = excluded.prefix_sha256,
+                append_ready = excluded.append_ready,
+                resume_offset = excluded.resume_offset,
+                previous_total_tokens = excluded.previous_total_tokens,
+                fork_replay_started_ns = excluded.fork_replay_started_ns,
+                fork_replay_active = excluded.fork_replay_active,
+                is_explicit_subagent_fork = excluded.is_explicit_subagent_fork,
+                last_skipped_fork_replay_token_ns = excluded.last_skipped_fork_replay_token_ns,
+                current_model = excluded.current_model,
+                current_user_prompt_start = excluded.current_user_prompt_start,
+                current_user_prompt_end = excluded.current_user_prompt_end,
+                assistant_response_start = excluded.assistant_response_start,
+                assistant_response_end = excluded.assistant_response_end,
+                audit_chunk_index = excluded.audit_chunk_index
             "#,
             params![generation, checkpoint_generation, path],
         )
-        .map_err(|error| format!("无法复制会话文件追加检查点：{error}"))?;
+        .map_err(|error| format!("无法登记会话文件追加 delta：{error}"))?;
     if copied != 1 {
         return Ok(false);
     }
-    transaction
-        .execute(
-            r#"
-            INSERT INTO events(
-                file_generation,
-                file_path,
-                ordinal,
-                timestamp,
-                session_id,
-                tokens,
-                input_tokens,
-                cached_input_tokens,
-                output_tokens,
-                reasoning_output_tokens,
-                model,
-                user_prompt_start,
-                user_prompt_end,
-                assistant_response_start,
-                assistant_response_end
-            )
-            SELECT
-                ?1,
-                file_path,
-                ordinal,
-                timestamp,
-                session_id,
-                tokens,
-                input_tokens,
-                cached_input_tokens,
-                output_tokens,
-                reasoning_output_tokens,
-                model,
-                user_prompt_start,
-                user_prompt_end,
-                assistant_response_start,
-                assistant_response_end
-            FROM events
-            WHERE file_generation = ?2 AND file_path = ?3
-            "#,
-            params![generation, checkpoint_generation, path],
-        )
-        .map_err(|error| format!("无法复制会话文件既有 token 事件：{error}"))?;
-    if mode.builds_dashboard_derived_data() {
-        copy_dashboard_file_aggregates(transaction, generation, checkpoint_generation, path)?;
-    }
-    transaction
-        .execute(
-            r#"
-            INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
-            SELECT ?1, file_path, fingerprint
-            FROM file_fingerprints
-            WHERE file_generation = ?2 AND file_path = ?3
-            "#,
-            params![generation, checkpoint_generation, path],
-        )
-        .map_err(|error| format!("无法复制会话文件去重状态：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO file_chunks(
-                file_generation,
-                file_path,
-                chunk_index,
-                byte_count,
-                sha256
-            )
-            SELECT ?1, file_path, chunk_index, byte_count, sha256
-            FROM file_chunks
-            WHERE file_generation = ?2 AND file_path = ?3
-            "#,
-            params![generation, checkpoint_generation, path],
-        )
-        .map_err(|error| format!("无法复制会话文件分块校验状态：{error}"))?;
     Ok(true)
 }
 
@@ -9304,24 +9690,45 @@ fn revalidate_metadata_only_file(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始会话文件元数据复核事务：{error}"))?;
     ensure_active_build_generation(&transaction, generation)?;
-    let updated = transaction
-        .execute(
-            r#"
-            UPDATE files
-            SET modified_ns = ?3
-            WHERE generation = ?1
-              AND path = ?2
-              AND deleted = 0
-              AND size = ?4
-            "#,
-            params![
-                checkpoint.generation,
-                path,
-                signature.modified_ns.to_string(),
-                checked_i64(signature.size, "会话文件大小")?,
-            ],
-        )
-        .map_err(|error| format!("无法保存会话文件内容复核结果：{error}"))?;
+    let size = checked_i64(signature.size, "会话文件大小")?;
+    let modified_ns = signature.modified_ns.to_string();
+    let updated = if checkpoint.generation == generation {
+        transaction
+            .execute(
+                r#"
+                UPDATE pending_sources
+                SET modified_ns = ?3
+                WHERE target_generation = ?1
+                  AND source_id = (SELECT source_id FROM sources WHERE path = ?2)
+                  AND deleted = 0
+                  AND size = ?4
+                "#,
+                params![generation, path, &modified_ns, size],
+            )
+            .map_err(|error| format!("无法保存暂存会话文件内容复核结果：{error}"))?
+    } else {
+        // A metadata-only difference has now been proven byte-for-byte
+        // content-identical. It is safe to accept only the mtime on the stable
+        // published source without creating a new semantic generation. This
+        // keeps numeric lastGood, revision, and aggregate lineage unchanged.
+        transaction
+            .execute(
+                r#"
+                UPDATE sources
+                SET modified_ns = ?3
+                WHERE path = ?2
+                  AND last_seen_generation = ?1
+                  AND deleted = 0
+                  AND size = ?4
+                  AND NOT EXISTS(
+                      SELECT 1 FROM pending_sources p
+                      WHERE p.source_id = sources.source_id
+                  )
+                "#,
+                params![checkpoint.generation, path, &modified_ns, size],
+            )
+            .map_err(|error| format!("无法保存已发布会话文件内容复核结果：{error}"))?
+    };
     if updated != 1 {
         return Err(format!(
             "会话文件内容复核完成但检查点已变化，将在下一次刷新重试：{}",
@@ -10387,7 +10794,43 @@ fn sync_thread_metadata(
         metadata_text(transaction, "state_modified_ns")?,
     );
     let stage = stage_thread_metadata(codex_home, previous, warnings)?;
-    apply_thread_metadata_stage(transaction, stage)
+    Ok(matches!(
+        apply_thread_metadata_stage(transaction, stage)?,
+        ThreadMetadataApplyOutcome::ContentChanged
+    ))
+}
+
+fn display_thread_title(
+    title: Option<String>,
+    first_user_message: Option<String>,
+    preview: Option<String>,
+) -> String {
+    if let Some(title) = title.filter(|value| !value.trim().is_empty()) {
+        // A formal title is authoritative product data. Keep it byte-for-byte
+        // instead of applying a display-layer limit in the durable catalog.
+        return title;
+    }
+
+    for fallback in [first_user_message, preview] {
+        let Some(fallback) = fallback else {
+            continue;
+        };
+        let fallback = fallback.trim();
+        if fallback.is_empty() {
+            continue;
+        }
+        if fallback.chars().count() <= THREAD_METADATA_FALLBACK_MAX_CHARS {
+            return fallback.to_owned();
+        }
+        let mut bounded = fallback
+            .chars()
+            .take(THREAD_METADATA_FALLBACK_MAX_CHARS.saturating_sub(1))
+            .collect::<String>();
+        bounded.push('…');
+        return bounded;
+    }
+
+    "Untitled".into()
 }
 
 fn stage_thread_metadata(
@@ -10417,7 +10860,7 @@ fn stage_thread_metadata(
             return Ok(ThreadMetadataStage::Failed);
         }
         match file_signature(&database) {
-            Ok(value) => Some((value.size.to_string(), value.modified_ns.to_string())),
+            Ok(value) => Some(value),
             Err(error) => {
                 warnings.push(thread_info_warning(format!(
                     "读取会话标题索引签名失败：{}（{}）",
@@ -10430,11 +10873,13 @@ fn stage_thread_metadata(
     } else {
         None
     };
-    if previous == signature.clone().unzip() {
+    let signature_text =
+        signature.map(|value| (value.size.to_string(), value.modified_ns.to_string()));
+    if previous == signature_text.clone().unzip() {
         return Ok(ThreadMetadataStage::Unchanged);
     }
 
-    let Some((size, modified_ns)) = signature else {
+    let Some(signature_before) = signature else {
         return Ok(ThreadMetadataStage::Updated(StagedThreadMetadata {
             signature: None,
             rows: Vec::new(),
@@ -10471,12 +10916,11 @@ fn stage_thread_metadata(
     let rows = match statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            first_non_empty([
+            display_thread_title(
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
-            ])
-            .unwrap_or_else(|| "Untitled".into()),
+            ),
             row.get::<_, Option<i64>>(4)?
                 .map(normalize_thread_timestamp),
         ))
@@ -10505,8 +10949,30 @@ fn stage_thread_metadata(
             }
         }
     }
+    drop(statement);
+    drop(connection);
+
+    let signature_after = match file_signature(&database) {
+        Ok(value) => value,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!(
+                "读取会话标题索引结束签名失败：{}（{}）",
+                database.display(),
+                error
+            )));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    if signature_after != signature_before {
+        warnings.push(thread_info_warning(format!(
+            "会话标题索引在读取期间发生变化，本轮保留已有标题：{}",
+            database.display()
+        )));
+        return Ok(ThreadMetadataStage::Failed);
+    }
+
     Ok(ThreadMetadataStage::Updated(StagedThreadMetadata {
-        signature: Some((size, modified_ns)),
+        signature: signature_text,
         rows: staged_rows,
     }))
 }
@@ -10514,21 +10980,101 @@ fn stage_thread_metadata(
 fn apply_thread_metadata_stage(
     transaction: &Transaction<'_>,
     stage: ThreadMetadataStage,
-) -> Result<bool, String> {
+) -> Result<ThreadMetadataApplyOutcome, String> {
     let ThreadMetadataStage::Updated(staged) = stage else {
-        return Ok(false);
+        return Ok(ThreadMetadataApplyOutcome::Unchanged);
     };
     transaction
-        .execute("DELETE FROM session_metadata", [])
-        .map_err(|error| format!("无法刷新会话标题索引：{error}"))?;
-    for (session_id, title, updated_at) in staged.rows {
+        .execute_batch(
+            r#"
+            CREATE TEMP TABLE IF NOT EXISTS thread_metadata_stage (
+                session_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                updated_at INTEGER
+            ) WITHOUT ROWID;
+            DELETE FROM temp.thread_metadata_stage;
+            "#,
+        )
+        .map_err(|error| format!("无法准备会话标题增量暂存：{error}"))?;
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO temp.thread_metadata_stage(session_id, title, updated_at) VALUES (?1, ?2, ?3)",
+            )
+            .map_err(|error| format!("无法准备会话标题增量写入：{error}"))?;
+        for (session_id, title, updated_at) in staged.rows {
+            insert
+                .execute(params![session_id, title, updated_at])
+                .map_err(|error| format!("写入会话标题增量暂存失败：{error}"))?;
+        }
+    }
+
+    let content_changed = transaction
+        .query_row(
+            r#"
+            SELECT
+                EXISTS(
+                    SELECT 1
+                    FROM temp.thread_metadata_stage staged
+                    WHERE NOT EXISTS(
+                        SELECT 1
+                        FROM session_metadata published
+                        WHERE published.session_id = staged.session_id
+                          AND published.title = staged.title
+                          AND published.updated_at IS staged.updated_at
+                    )
+                )
+                OR EXISTS(
+                    SELECT 1
+                    FROM session_metadata published
+                    WHERE NOT EXISTS(
+                        SELECT 1
+                        FROM temp.thread_metadata_stage staged
+                        WHERE staged.session_id = published.session_id
+                    )
+                )
+            "#,
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法比较会话标题增量：{error}"))?;
+
+    if content_changed {
         transaction
             .execute(
-                "INSERT OR REPLACE INTO session_metadata(session_id, title, updated_at) VALUES (?1, ?2, ?3)",
-                params![session_id, title, updated_at],
+                r#"
+                INSERT INTO session_metadata(session_id, title, updated_at)
+                SELECT staged.session_id, staged.title, staged.updated_at
+                FROM temp.thread_metadata_stage staged
+                WHERE NOT EXISTS(
+                    SELECT 1
+                    FROM session_metadata published
+                    WHERE published.session_id = staged.session_id
+                      AND published.title = staged.title
+                      AND published.updated_at IS staged.updated_at
+                )
+                ON CONFLICT(session_id) DO UPDATE SET
+                    title = excluded.title,
+                    updated_at = excluded.updated_at
+                "#,
+                [],
             )
-            .map_err(|error| format!("写入会话标题索引失败：{error}"))?;
+            .map_err(|error| format!("写入会话标题增量失败：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                DELETE FROM session_metadata
+                WHERE NOT EXISTS(
+                    SELECT 1
+                    FROM temp.thread_metadata_stage staged
+                    WHERE staged.session_id = session_metadata.session_id
+                )
+                "#,
+                [],
+            )
+            .map_err(|error| format!("删除已确认消失的会话标题失败：{error}"))?;
     }
+
     if let Some((size, modified_ns)) = staged.signature {
         set_metadata(transaction, "state_size", &size)?;
         set_metadata(transaction, "state_modified_ns", &modified_ns)?;
@@ -10540,7 +11086,11 @@ fn apply_thread_metadata_stage(
             )
             .map_err(|error| format!("无法清理会话标题索引签名：{error}"))?;
     }
-    Ok(true)
+    Ok(if content_changed {
+        ThreadMetadataApplyOutcome::ContentChanged
+    } else {
+        ThreadMetadataApplyOutcome::SignatureOnly
+    })
 }
 
 fn publish_thread_metadata_only(
@@ -10550,17 +11100,15 @@ fn publish_thread_metadata_only(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始会话标题索引发布事务：{error}"))?;
-    if !apply_thread_metadata_stage(&transaction, ThreadMetadataStage::Updated(staged))? {
-        let revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
-        transaction
-            .commit()
-            .map_err(|error| format!("无法结束会话标题索引发布事务：{error}"))?;
-        return Ok(u64::try_from(revision).unwrap_or(0));
-    }
-    let revision = metadata_i64(&transaction, "revision")?
-        .unwrap_or(0)
-        .saturating_add(1);
-    set_metadata(&transaction, "revision", &revision.to_string())?;
+    let outcome = apply_thread_metadata_stage(&transaction, ThreadMetadataStage::Updated(staged))?;
+    let current_revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
+    let revision = if outcome == ThreadMetadataApplyOutcome::ContentChanged {
+        let next = current_revision.saturating_add(1);
+        set_metadata(&transaction, "revision", &next.to_string())?;
+        next
+    } else {
+        current_revision
+    };
     transaction
         .commit()
         .map_err(|error| format!("无法提交会话标题索引发布事务：{error}"))?;
@@ -10585,6 +11133,2040 @@ fn existing_regular_index(path: &Path) -> Result<bool, String> {
             error
         )),
     }
+}
+
+fn schema11_candidate_path(index_path: &Path) -> PathBuf {
+    let mut value = index_path.as_os_str().to_os_string();
+    value.push(SCHEMA11_CANDIDATE_SUFFIX);
+    PathBuf::from(value)
+}
+
+fn schema11_rollback_path(index_path: &Path) -> PathBuf {
+    let mut value = index_path.as_os_str().to_os_string();
+    value.push(SCHEMA11_ROLLBACK_SUFFIX);
+    PathBuf::from(value)
+}
+
+fn schema11_manifest_path(index_path: &Path) -> PathBuf {
+    let mut value = index_path.as_os_str().to_os_string();
+    value.push(SCHEMA11_MIGRATION_SUFFIX);
+    PathBuf::from(value)
+}
+
+fn schema11_file_stamp(path: &Path) -> Result<Schema11FileStamp, String> {
+    let signature = file_signature(path)?;
+    Ok(Schema11FileStamp {
+        size: signature.size,
+        modified_ns: signature.modified_ns.to_string(),
+    })
+}
+
+fn schema11_source_receipt(index_path: &Path) -> Result<Schema11SourceReceipt, String> {
+    let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(1))
+        .map_err(|error| format!("无法读取 schema 11 活动索引收据：{error}"))?;
+    quick_check_index(&connection, Some(index_path))?;
+    let schema_version = metadata_i64(&connection, "schema_version")?
+        .ok_or_else(|| "schema 11 候选迁移缺少活动索引 schema 版本".to_string())?;
+    Ok(Schema11SourceReceipt {
+        schema_version,
+        revision: metadata_text(&connection, "revision")?,
+        dashboard_revision: metadata_text(&connection, DASHBOARD_REVISION_KEY)?,
+        published_generation: metadata_i64(&connection, "published_generation")?,
+        building_generation: metadata_i64(&connection, "building_generation")?,
+        database: schema11_file_stamp(index_path)?,
+        wal: optional_index_sidecar_signature(&sqlite_sidecar_path(index_path, "-wal"))?.map(
+            |signature| Schema11FileStamp {
+                size: signature.size,
+                modified_ns: signature.modified_ns.to_string(),
+            },
+        ),
+    })
+}
+
+fn schema11_receipt_matches_current(
+    index_path: &Path,
+    expected: &Schema11SourceReceipt,
+) -> Result<bool, String> {
+    Ok(schema11_source_receipt(index_path)? == *expected)
+}
+
+fn schema11_store_manifest(
+    manifest_path: &Path,
+    manifest: &Schema11CandidateManifest,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|error| format!("无法编码 schema 11 候选迁移清单：{error}"))?;
+    atomic_file::write_atomically(manifest_path, &bytes)
+        .map_err(|error| format!("无法耐久写入 schema 11 候选迁移清单：{error}"))
+}
+
+fn schema11_load_manifest(manifest_path: &Path) -> Result<Schema11CandidateManifest, String> {
+    let bytes = fs::read(manifest_path)
+        .map_err(|error| format!("无法读取 schema 11 候选迁移清单：{error}"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("schema 11 候选迁移清单损坏，已保留活动库和候选库：{error}"))
+}
+
+fn schema11_sync_file(path: &Path) -> Result<(), String> {
+    fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| format!("无法同步 schema 11 候选文件 {}：{error}", path.display()))
+}
+
+fn schema11_sync_parent(path: &Path) -> Result<(), String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("无法同步 schema 11 候选目录 {}：{error}", parent.display()))
+}
+
+fn schema11_move_sidecar_if_present(source: &Path, destination: &Path) -> Result<(), String> {
+    if !source.exists() {
+        return Ok(());
+    }
+    if destination.exists() {
+        return Err(format!(
+            "schema 11 切换目标旁车文件已存在：{}",
+            destination.display()
+        ));
+    }
+    fs::rename(source, destination).map_err(|error| {
+        format!(
+            "无法迁移 schema 11 数据库旁车文件 {} -> {}：{error}",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+fn schema11_migration_capacity(index_path: &Path) -> Result<(), String> {
+    let database_bytes = file_signature(index_path)?.size;
+    let wal_bytes = optional_index_sidecar_signature(&sqlite_sidecar_path(index_path, "-wal"))?
+        .map(|signature| signature.size)
+        .unwrap_or(0);
+    #[cfg(test)]
+    let overridden_free = MIGRATION_AVAILABLE_BYTES_OVERRIDE.with(|value| value.replace(None));
+    #[cfg(not(test))]
+    let overridden_free = None;
+    let available = if let Some(available) = overridden_free {
+        available
+    } else {
+        available_space(index_path.parent().unwrap_or_else(|| Path::new(".")))
+            .map_err(|error| format!("无法检查 schema 11 迁移空间：{error}"))?
+    };
+    let required = database_bytes
+        .saturating_add(wal_bytes)
+        .saturating_add(database_bytes)
+        .saturating_add(SCHEMA11_MIGRATION_SPACE_RESERVE_BYTES);
+    if available < required {
+        return Err(format!(
+            "精确 token schema 11 迁移空间不足；需要约 {} MiB、可用约 {} MiB，未开始迁移并保留活动库",
+            required.div_ceil(1024 * 1024),
+            available / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
+fn schema11_copy_candidate(index_path: &Path, candidate_path: &Path) -> Result<(), String> {
+    let source = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
+        .map_err(|error| format!("无法只读打开 schema 11 迁移活动库：{error}"))?;
+    let mut destination = Connection::open(candidate_path)
+        .map_err(|error| format!("无法创建 schema 11 候选库：{error}"))?;
+    destination
+        .busy_timeout(StdDuration::from_secs(30))
+        .map_err(|error| format!("无法设置 schema 11 候选库等待时间：{error}"))?;
+    {
+        let backup = Backup::new(&source, &mut destination)
+            .map_err(|error| format!("无法创建 schema 11 SQLite 备份：{error}"))?;
+        backup
+            .run_to_completion(128, StdDuration::from_millis(2), None)
+            .map_err(|error| format!("无法完成 schema 11 SQLite 备份：{error}"))?;
+    }
+    destination
+        .execute_batch(
+            "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;",
+        )
+        .map_err(|error| format!("无法规范化 schema 11 候选库日志模式：{error}"))?;
+    drop(destination);
+    schema11_sync_file(candidate_path)
+}
+
+fn schema11_lineage(connection: &Connection) -> Result<Vec<Option<String>>, String> {
+    [
+        "revision",
+        DASHBOARD_REVISION_KEY,
+        "published_generation",
+        "building_generation",
+        "building_changed",
+        BUILDING_DASHBOARD_CHANGED_KEY,
+        BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
+        DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY,
+        DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY,
+        DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY,
+        ATTRIBUTION_PROVENANCE_EPOCH_KEY,
+        ATTRIBUTION_LEDGER_EPOCH_KEY,
+        ATTRIBUTION_LEDGER_INTEGRITY_KEY,
+    ]
+    .iter()
+    .map(|key| metadata_text(connection, key))
+    .collect()
+}
+
+fn schema11_usage_facts(
+    connection: &Connection,
+    sql: &str,
+    parameters: impl rusqlite::Params,
+    context: &str,
+) -> Result<Schema11UsageFacts, String> {
+    connection
+        .query_row(sql, parameters, |row| {
+            Ok(Schema11UsageFacts {
+                row_count: row.get(0)?,
+                total_tokens: row.get(1)?,
+                calls: row.get(2)?,
+                input_tokens: row.get(3)?,
+                cached_input_tokens: row.get(4)?,
+                output_tokens: row.get(5)?,
+            })
+        })
+        .map_err(|error| format!("无法统计 schema 11 {context}迁移事实：{error}"))
+}
+
+fn schema11_catalog_facts(connection: &Connection) -> Result<(i64, i64), String> {
+    if !table_exists_checked(connection, "session_catalog_files")? {
+        return Ok((0, 0));
+    }
+    connection
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM session_catalog_files",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| format!("无法统计 schema 11 会话目录迁移事实：{error}"))
+}
+
+fn schema11_session_metadata_facts(connection: &Connection) -> Result<(i64, i64, i64), String> {
+    if !table_exists_checked(connection, "session_metadata")? {
+        return Ok((0, 0, 0));
+    }
+    connection
+        .query_row(
+            r#"
+            SELECT COUNT(*),
+                   COALESCE(SUM(LENGTH(CAST(title AS BLOB))), 0),
+                   COALESCE(SUM(COALESCE(updated_at, 0)), 0)
+            FROM session_metadata
+            "#,
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| format!("无法统计 schema 11 会话标题迁移事实：{error}"))
+}
+
+fn schema11_legacy_generation_state(
+    connection: &Connection,
+) -> Result<LegacyGenerationState, String> {
+    let published = metadata_i64(connection, "published_generation")?
+        .ok_or_else(|| "旧索引缺少 published_generation；已停止 schema 11 自动迁移".to_string())?;
+    if published < 0 {
+        return Err("旧索引 published_generation 为负数；已停止 schema 11 自动迁移".into());
+    }
+    let building = metadata_i64(connection, "building_generation")?;
+    if building.is_some_and(|value| value <= published) {
+        return Err(
+            "旧索引 building_generation 未严格晚于 published_generation；已保留原库".into(),
+        );
+    }
+    let maximum = building.unwrap_or(published);
+    for (table, column) in [
+        ("files", "generation"),
+        ("events", "file_generation"),
+        ("file_fingerprints", "file_generation"),
+        ("file_chunks", "file_generation"),
+        ("event_enrichment_sources", "file_generation"),
+        ("dashboard_file_totals", "file_generation"),
+        ("dashboard_file_5m", "file_generation"),
+        ("dashboard_5m", "file_generation"),
+        ("dashboard_turn_candidates", "aggregate_generation"),
+        ("dashboard_turn_candidates", "source_file_generation"),
+    ] {
+        let invalid = connection
+            .query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} < 0 OR {column} > ?1)"
+                ),
+                params![maximum],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| {
+                format!("无法验证旧索引 {table}.{column} 的 generation 边界：{error}")
+            })?;
+        if invalid {
+            return Err(format!(
+                "旧索引 {table}.{column} 存在 published/building 之外的代次；已停止自动迁移并保留原库"
+            ));
+        }
+    }
+    if let Some(aggregate_generation) =
+        metadata_i64(connection, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?
+    {
+        if aggregate_generation < 0 || aggregate_generation > published {
+            return Err("旧索引 dashboard aggregate generation 超出已发布边界；已保留原库".into());
+        }
+    }
+    Ok(LegacyGenerationState {
+        published,
+        building,
+    })
+}
+
+fn schema11_digest_value(hasher: &mut Sha256, value: rusqlite::types::ValueRef<'_>) {
+    match value {
+        rusqlite::types::ValueRef::Null => hasher.update([0]),
+        rusqlite::types::ValueRef::Integer(value) => {
+            hasher.update([1]);
+            hasher.update(value.to_le_bytes());
+        }
+        rusqlite::types::ValueRef::Real(value) => {
+            hasher.update([2]);
+            hasher.update(value.to_bits().to_le_bytes());
+        }
+        rusqlite::types::ValueRef::Text(value) => {
+            hasher.update([3]);
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value);
+        }
+        rusqlite::types::ValueRef::Blob(value) => {
+            hasher.update([4]);
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value);
+        }
+    }
+}
+
+fn schema11_finish_digest(hasher: Sha256) -> String {
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn schema11_query_digest(
+    connection: &Connection,
+    sql: &str,
+    parameters: impl rusqlite::Params,
+    context: &str,
+) -> Result<String, String> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| format!("无法准备 schema 11 {context}逐行对账：{error}"))?;
+    let column_count = statement.column_count();
+    let mut rows = statement
+        .query(parameters)
+        .map_err(|error| format!("无法读取 schema 11 {context}逐行对账：{error}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"codex-token-bar-schema11-row-digest-v1");
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| format!("无法遍历 schema 11 {context}逐行对账：{error}"))?
+    {
+        hasher.update([0xff]);
+        for column in 0..column_count {
+            let value = row
+                .get_ref(column)
+                .map_err(|error| format!("无法解码 schema 11 {context}逐行对账：{error}"))?;
+            schema11_digest_value(&mut hasher, value);
+        }
+    }
+    Ok(schema11_finish_digest(hasher))
+}
+
+fn schema11_fingerprint_digest(
+    connection: &Connection,
+    sql: &str,
+    parameters: impl rusqlite::Params,
+) -> Result<String, String> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| format!("无法准备 schema 11 指纹逐行对账：{error}"))?;
+    let mut rows = statement
+        .query(parameters)
+        .map_err(|error| format!("无法读取 schema 11 指纹逐行对账：{error}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"codex-token-bar-schema11-fingerprint-digest-v1");
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| format!("无法遍历 schema 11 指纹逐行对账：{error}"))?
+    {
+        hasher.update([0xff]);
+        schema11_digest_value(
+            &mut hasher,
+            row.get_ref(0)
+                .map_err(|error| format!("无法解码 schema 11 指纹代次：{error}"))?,
+        );
+        schema11_digest_value(
+            &mut hasher,
+            row.get_ref(1)
+                .map_err(|error| format!("无法解码 schema 11 指纹路径：{error}"))?,
+        );
+        let canonical = canonicalize_legacy_fingerprint(
+            row.get_ref(2)
+                .map_err(|error| format!("无法解码 schema 11 指纹值：{error}"))?,
+        )?;
+        schema11_digest_value(&mut hasher, rusqlite::types::ValueRef::Blob(&canonical));
+    }
+    Ok(schema11_finish_digest(hasher))
+}
+
+fn schema11_migration_digests(
+    connection: &Connection,
+    schema_version: i64,
+) -> Result<Schema11MigrationDigests, String> {
+    let catalog_columns = SESSION_CATALOG_SCHEMA_COLUMNS.join(", ");
+    let session_catalog = if table_exists_checked(connection, "session_catalog_files")? {
+        schema11_query_digest(
+            connection,
+            &format!("SELECT {catalog_columns} FROM session_catalog_files ORDER BY path"),
+            [],
+            "会话目录",
+        )?
+    } else {
+        schema11_query_digest(connection, "SELECT 1 WHERE false", [], "会话目录")?
+    };
+    let session_metadata = if table_exists_checked(connection, "session_metadata")? {
+        schema11_query_digest(
+            connection,
+            "SELECT session_id, title, updated_at FROM session_metadata ORDER BY session_id",
+            [],
+            "会话标题",
+        )?
+    } else {
+        schema11_query_digest(connection, "SELECT 1 WHERE false", [], "会话标题")?
+    };
+    let attribution = schema11_query_digest(
+        connection,
+        r#"
+        SELECT provenance_epoch, source_id, bucket_start, tokens, calls,
+               input_tokens, cached_input_tokens, output_tokens
+        FROM attribution_source_buckets
+        ORDER BY provenance_epoch, source_id, bucket_start
+        "#,
+        [],
+        "归因台账",
+    )?;
+
+    if schema_version == INDEX_SCHEMA_VERSION {
+        return Ok(Schema11MigrationDigests {
+            sources: schema11_query_digest(
+                connection,
+                r#"
+                SELECT generation, path, deleted, session_id, size, modified_ns,
+                       prefix_sha256, append_ready, resume_offset,
+                       previous_total_tokens, fork_replay_started_ns,
+                       fork_replay_active, is_explicit_subagent_fork,
+                       last_skipped_fork_replay_token_ns, current_model,
+                       current_user_prompt_start, current_user_prompt_end,
+                       assistant_response_start, assistant_response_end,
+                       audit_chunk_index
+                FROM files f
+                WHERE NOT (
+                    f.generation = 0 AND f.deleted = 1
+                    AND EXISTS(SELECT 1 FROM pending_sources p
+                               WHERE p.source_id = f.source_id)
+                )
+                ORDER BY generation, path
+                "#,
+                [],
+                "来源",
+            )?,
+            events: schema11_query_digest(
+                connection,
+                r#"
+                SELECT file_generation, file_path, ordinal, timestamp, session_id,
+                       tokens, input_tokens, cached_input_tokens, output_tokens,
+                       COALESCE(reasoning_output_tokens, 0), model,
+                       user_prompt_start, user_prompt_end,
+                       assistant_response_start, assistant_response_end
+                FROM events ORDER BY file_generation, file_path, ordinal
+                "#,
+                [],
+                "事件",
+            )?,
+            fingerprints: schema11_fingerprint_digest(
+                connection,
+                "SELECT file_generation, file_path, fingerprint FROM file_fingerprints ORDER BY file_generation, file_path, fingerprint",
+                [],
+            )?,
+            chunks: schema11_query_digest(
+                connection,
+                "SELECT file_generation, file_path, chunk_index, byte_count, sha256 FROM file_chunks ORDER BY file_generation, file_path, chunk_index",
+                [],
+                "分块",
+            )?,
+            enrichment: schema11_query_digest(
+                connection,
+                "SELECT path, revision, parser_revision, completed_size, completed_prefix_sha256 FROM event_enrichment_sources ORDER BY path",
+                [],
+                "补全收据",
+            )?,
+            file_totals: schema11_query_digest(
+                connection,
+                "SELECT file_generation, file_path, session_id, total_tokens, calls, input_tokens, cached_input_tokens, output_tokens, first_timestamp, last_timestamp FROM dashboard_file_totals ORDER BY file_generation, file_path",
+                [],
+                "单文件聚合",
+            )?,
+            file_buckets: schema11_query_digest(
+                connection,
+                "SELECT file_generation, file_path, bucket_start, model_key, model, total_tokens, calls, input_tokens, cached_input_tokens, output_tokens FROM dashboard_file_5m ORDER BY file_generation, file_path, bucket_start, model_key",
+                [],
+                "单文件分桶",
+            )?,
+            global_buckets: schema11_query_digest(
+                connection,
+                "SELECT bucket_start, model_key, model, total_tokens, calls, input_tokens, cached_input_tokens, output_tokens FROM dashboard_5m ORDER BY file_generation, bucket_start, model_key",
+                [],
+                "全局分桶",
+            )?,
+            turn_candidates: schema11_query_digest(
+                connection,
+                "SELECT file_path, ordinal, source_file_generation, timestamp, session_id, total_tokens, input_tokens, cached_input_tokens, output_tokens, user_prompt_start, user_prompt_end, assistant_response_start, assistant_response_end, turn_index, session_calls FROM dashboard_turn_candidates ORDER BY aggregate_generation, file_path, ordinal",
+                [],
+                "轮次候选",
+            )?,
+            attribution,
+            session_catalog,
+            session_metadata,
+        });
+    }
+
+    let generations = schema11_legacy_generation_state(connection)?;
+    let published = generations.published;
+    let building = generations.building;
+    let selected_cte = r#"
+        WITH current_versions AS (
+            SELECT path, MAX(generation) AS generation
+            FROM files WHERE generation <= ?1 GROUP BY path
+        ), selected_versions AS (
+            SELECT path, generation FROM current_versions
+            UNION
+            SELECT path, generation FROM files
+            WHERE ?2 IS NOT NULL AND generation = ?2
+        )
+    "#;
+    let aggregate_generation =
+        metadata_i64(connection, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?.unwrap_or(published);
+    let global_cte = r#"
+        WITH current_rows AS (
+            SELECT bucket_start, model_key, model, total_tokens, calls,
+                   input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_5m WHERE file_generation = ?1
+        ), building_rows AS (
+            SELECT bucket_start, model_key, model, total_tokens, calls,
+                   input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_5m WHERE ?2 IS NOT NULL AND file_generation = ?2
+        ), logical_rows AS (
+            SELECT * FROM current_rows
+            UNION ALL SELECT * FROM building_rows
+            UNION ALL SELECT * FROM current_rows
+            WHERE ?2 IS NOT NULL AND NOT EXISTS(SELECT 1 FROM building_rows)
+        )
+    "#;
+    let turn_cte = r#"
+        WITH current_rows AS (
+            SELECT file_path, ordinal, source_file_generation, timestamp, session_id,
+                   total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                   user_prompt_start, user_prompt_end, assistant_response_start,
+                   assistant_response_end, turn_index, session_calls
+            FROM dashboard_turn_candidates WHERE aggregate_generation = ?1
+        ), building_rows AS (
+            SELECT file_path, ordinal, source_file_generation, timestamp, session_id,
+                   total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                   user_prompt_start, user_prompt_end, assistant_response_start,
+                   assistant_response_end, turn_index, session_calls
+            FROM dashboard_turn_candidates
+            WHERE ?2 IS NOT NULL AND aggregate_generation = ?2
+        ), logical_rows AS (
+            SELECT * FROM current_rows
+            UNION ALL SELECT * FROM building_rows
+            UNION ALL SELECT * FROM current_rows
+            WHERE ?2 IS NOT NULL AND NOT EXISTS(SELECT 1 FROM building_rows)
+        )
+    "#;
+    Ok(Schema11MigrationDigests {
+        sources: schema11_query_digest(
+            connection,
+            &format!(
+                "{selected_cte} SELECT f.generation, f.path, f.deleted, f.session_id, f.size, f.modified_ns, f.prefix_sha256, f.append_ready, f.resume_offset, f.previous_total_tokens, f.fork_replay_started_ns, f.fork_replay_active, f.is_explicit_subagent_fork, f.last_skipped_fork_replay_token_ns, f.current_model, f.current_user_prompt_start, f.current_user_prompt_end, f.assistant_response_start, f.assistant_response_end, f.audit_chunk_index FROM files f JOIN selected_versions v ON v.path = f.path AND v.generation = f.generation ORDER BY f.generation, f.path"
+            ),
+            params![published, building],
+            "旧来源",
+        )?,
+        events: schema11_query_digest(
+            connection,
+            &format!(
+                "{selected_cte} SELECT e.file_generation, e.file_path, e.ordinal, e.timestamp, e.session_id, e.tokens, e.input_tokens, e.cached_input_tokens, e.output_tokens, COALESCE(e.reasoning_output_tokens, 0), e.model, e.user_prompt_start, e.user_prompt_end, e.assistant_response_start, e.assistant_response_end FROM events e JOIN selected_versions v ON v.path = e.file_path AND v.generation = e.file_generation ORDER BY e.file_generation, e.file_path, e.ordinal"
+            ),
+            params![published, building],
+            "旧事件",
+        )?,
+        fingerprints: schema11_fingerprint_digest(
+            connection,
+            &format!(
+                "{selected_cte} SELECT f.file_generation, f.file_path, f.fingerprint FROM file_fingerprints f JOIN selected_versions v ON v.path = f.file_path AND v.generation = f.file_generation ORDER BY f.file_generation, f.file_path, f.fingerprint"
+            ),
+            params![published, building],
+        )?,
+        chunks: schema11_query_digest(
+            connection,
+            &format!(
+                "{selected_cte} SELECT c.file_generation, c.file_path, c.chunk_index, c.byte_count, c.sha256 FROM file_chunks c JOIN selected_versions v ON v.path = c.file_path AND v.generation = c.file_generation ORDER BY c.file_generation, c.file_path, c.chunk_index"
+            ),
+            params![published, building],
+            "旧分块",
+        )?,
+        enrichment: schema11_query_digest(
+            connection,
+            "SELECT path, revision, parser_revision, completed_size, completed_prefix_sha256 FROM event_enrichment_sources ORDER BY path",
+            [],
+            "旧补全收据",
+        )?,
+        file_totals: schema11_query_digest(
+            connection,
+            &format!(
+                "{selected_cte} SELECT t.file_generation, t.file_path, t.session_id, t.total_tokens, t.calls, t.input_tokens, t.cached_input_tokens, t.output_tokens, t.first_timestamp, t.last_timestamp FROM dashboard_file_totals t JOIN selected_versions v ON v.path = t.file_path AND v.generation = t.file_generation ORDER BY t.file_generation, t.file_path"
+            ),
+            params![published, building],
+            "旧单文件聚合",
+        )?,
+        file_buckets: schema11_query_digest(
+            connection,
+            &format!(
+                "{selected_cte} SELECT t.file_generation, t.file_path, t.bucket_start, t.model_key, t.model, t.total_tokens, t.calls, t.input_tokens, t.cached_input_tokens, t.output_tokens FROM dashboard_file_5m t JOIN selected_versions v ON v.path = t.file_path AND v.generation = t.file_generation ORDER BY t.file_generation, t.file_path, t.bucket_start, t.model_key"
+            ),
+            params![published, building],
+            "旧单文件分桶",
+        )?,
+        global_buckets: schema11_query_digest(
+            connection,
+            &format!(
+                "{global_cte} SELECT bucket_start, model_key, model, total_tokens, calls, input_tokens, cached_input_tokens, output_tokens FROM logical_rows ORDER BY bucket_start, model_key"
+            ),
+            params![aggregate_generation, building],
+            "旧全局分桶",
+        )?,
+        turn_candidates: schema11_query_digest(
+            connection,
+            &format!(
+                "{turn_cte} SELECT file_path, ordinal, source_file_generation, timestamp, session_id, total_tokens, input_tokens, cached_input_tokens, output_tokens, user_prompt_start, user_prompt_end, assistant_response_start, assistant_response_end, turn_index, session_calls FROM logical_rows ORDER BY file_path, ordinal"
+            ),
+            params![aggregate_generation, building],
+            "旧轮次候选",
+        )?,
+        attribution,
+        session_catalog,
+        session_metadata,
+    })
+}
+
+fn schema11_migration_facts(
+    connection: &Connection,
+    schema_version: i64,
+) -> Result<Schema11MigrationFacts, String> {
+    let digests = schema11_migration_digests(connection, schema_version)?;
+    let (catalog_count, catalog_size_total) = schema11_catalog_facts(connection)?;
+    let (session_metadata_count, session_metadata_title_bytes, session_metadata_updated_at_total) =
+        schema11_session_metadata_facts(connection)?;
+    let attribution_aggregate = schema11_usage_facts(
+        connection,
+        r#"
+        SELECT COUNT(*), COALESCE(SUM(tokens), 0), COALESCE(SUM(calls), 0),
+               COALESCE(SUM(input_tokens), 0),
+               COALESCE(SUM(cached_input_tokens), 0),
+               COALESCE(SUM(output_tokens), 0)
+        FROM attribution_source_buckets
+        "#,
+        [],
+        "归因台账",
+    )?;
+    if schema_version == INDEX_SCHEMA_VERSION {
+        return Ok(Schema11MigrationFacts {
+            source_count: table_row_count(connection, "sources")?,
+            event_count: table_row_count(connection, "events")?,
+            fingerprint_count: table_row_count(connection, "file_fingerprints")?,
+            chunk_count: table_row_count(connection, "file_chunks")?,
+            enrichment_count: table_row_count(connection, "event_enrichment_sources")?,
+            catalog_count,
+            catalog_size_total,
+            aggregate_total: connection
+                .query_row(
+                    "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_file_totals",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("无法统计 schema 11 文件聚合：{error}"))?,
+            aggregate_bucket_total: connection
+                .query_row(
+                    "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_file_5m",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("无法统计 schema 11 分桶聚合：{error}"))?,
+            global_aggregate: schema11_usage_facts(
+                connection,
+                r#"
+                SELECT COUNT(*), COALESCE(SUM(total_tokens), 0),
+                       COALESCE(SUM(calls), 0), COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(cached_input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0)
+                FROM dashboard_5m
+                "#,
+                [],
+                "全局分桶",
+            )?,
+            turn_aggregate: schema11_usage_facts(
+                connection,
+                r#"
+                SELECT COUNT(*), COALESCE(SUM(total_tokens), 0),
+                       COUNT(*), COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(cached_input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0)
+                FROM dashboard_turn_candidates
+                "#,
+                [],
+                "轮次候选",
+            )?,
+            attribution_aggregate,
+            session_metadata_count,
+            session_metadata_title_bytes,
+            session_metadata_updated_at_total,
+            digests,
+            lineage: schema11_lineage(connection)?,
+        });
+    }
+    if !matches!(schema_version, GITHUB_BASE_SCHEMA_VERSION | 10) {
+        return Err(format!(
+            "无法为不受支持的 schema {schema_version} 生成 schema 11 迁移对账事实"
+        ));
+    }
+    let generations = schema11_legacy_generation_state(connection)?;
+    let published = generations.published;
+    let building = generations.building;
+    let selected_cte = r#"
+        WITH current_versions AS (
+            SELECT path, MAX(generation) AS generation
+            FROM files WHERE generation <= ?1 GROUP BY path
+        ), selected_versions AS (
+            SELECT path, generation FROM current_versions
+            UNION
+            SELECT path, generation FROM files
+            WHERE ?2 IS NOT NULL AND generation = ?2
+        )
+    "#;
+    let params = params![published, building];
+    let source_count = connection
+        .query_row(
+            &format!("{selected_cte} SELECT COUNT(DISTINCT path) FROM selected_versions"),
+            params,
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("无法统计旧 schema 逻辑来源：{error}"))?;
+    let event_count = connection
+        .query_row(
+            &format!(
+                "{selected_cte} SELECT COUNT(*) FROM events e JOIN selected_versions v ON v.path = e.file_path AND v.generation = e.file_generation"
+            ),
+            params![published, building],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("无法统计旧 schema 逻辑事件：{error}"))?;
+    let fingerprint_count = connection
+        .query_row(
+            &format!(
+                "{selected_cte} SELECT COUNT(*) FROM file_fingerprints f JOIN selected_versions v ON v.path = f.file_path AND v.generation = f.file_generation"
+            ),
+            params![published, building],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("无法统计旧 schema 逻辑指纹：{error}"))?;
+    let chunk_count = connection
+        .query_row(
+            &format!(
+                "{selected_cte} SELECT COUNT(*) FROM file_chunks c JOIN selected_versions v ON v.path = c.file_path AND v.generation = c.file_generation"
+            ),
+            params![published, building],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("无法统计旧 schema 逻辑分块：{error}"))?;
+    let enrichment_count = table_row_count(connection, "event_enrichment_sources")?;
+    let aggregate_total = connection
+        .query_row(
+            &format!(
+                "{selected_cte} SELECT COALESCE(SUM(t.total_tokens), 0) FROM dashboard_file_totals t JOIN selected_versions v ON v.path = t.file_path AND v.generation = t.file_generation"
+            ),
+            params![published, building],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("无法统计旧 schema 逻辑文件聚合：{error}"))?;
+    let aggregate_bucket_total = connection
+        .query_row(
+            &format!(
+                "{selected_cte} SELECT COALESCE(SUM(t.total_tokens), 0) FROM dashboard_file_5m t JOIN selected_versions v ON v.path = t.file_path AND v.generation = t.file_generation"
+            ),
+            params![published, building],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("无法统计旧 schema 逻辑分桶聚合：{error}"))?;
+    let aggregate_generation = metadata_i64(connection, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?
+        .filter(|value| *value >= 0 && *value <= published)
+        .unwrap_or(published);
+    let global_aggregate = schema11_usage_facts(
+        connection,
+        r#"
+        WITH current_rows AS (
+            SELECT total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_5m WHERE file_generation = ?1
+        ), building_rows AS (
+            SELECT total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_5m WHERE ?2 IS NOT NULL AND file_generation = ?2
+        ), logical_rows AS (
+            SELECT * FROM current_rows
+            UNION ALL SELECT * FROM building_rows
+            UNION ALL SELECT * FROM current_rows
+            WHERE ?2 IS NOT NULL AND NOT EXISTS(SELECT 1 FROM building_rows)
+        )
+        SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(calls), 0),
+               COALESCE(SUM(input_tokens), 0),
+               COALESCE(SUM(cached_input_tokens), 0),
+               COALESCE(SUM(output_tokens), 0)
+        FROM logical_rows
+        "#,
+        params![aggregate_generation, building],
+        "旧全局分桶",
+    )?;
+    let turn_aggregate = schema11_usage_facts(
+        connection,
+        r#"
+        WITH current_rows AS (
+            SELECT total_tokens, input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_turn_candidates WHERE aggregate_generation = ?1
+        ), building_rows AS (
+            SELECT total_tokens, input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_turn_candidates
+            WHERE ?2 IS NOT NULL AND aggregate_generation = ?2
+        ), logical_rows AS (
+            SELECT * FROM current_rows
+            UNION ALL SELECT * FROM building_rows
+            UNION ALL SELECT * FROM current_rows
+            WHERE ?2 IS NOT NULL AND NOT EXISTS(SELECT 1 FROM building_rows)
+        )
+        SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COUNT(*),
+               COALESCE(SUM(input_tokens), 0),
+               COALESCE(SUM(cached_input_tokens), 0),
+               COALESCE(SUM(output_tokens), 0)
+        FROM logical_rows
+        "#,
+        params![aggregate_generation, building],
+        "旧轮次候选",
+    )?;
+    Ok(Schema11MigrationFacts {
+        source_count,
+        event_count,
+        fingerprint_count,
+        chunk_count,
+        enrichment_count,
+        catalog_count,
+        catalog_size_total,
+        aggregate_total,
+        aggregate_bucket_total,
+        global_aggregate,
+        turn_aggregate,
+        attribution_aggregate,
+        session_metadata_count,
+        session_metadata_title_bytes,
+        session_metadata_updated_at_total,
+        digests,
+        lineage: schema11_lineage(connection)?,
+    })
+}
+
+fn canonicalize_legacy_fingerprint(
+    value: rusqlite::types::ValueRef<'_>,
+) -> Result<Vec<u8>, String> {
+    let values = match value {
+        rusqlite::types::ValueRef::Blob(bytes) => {
+            if let Ok(values) = fingerprint_codec::decode(bytes) {
+                values
+            } else {
+                fingerprint_codec::decode_legacy_fixed_width(bytes)
+                    .map_err(|error| format!("旧精确 token BLOB 指纹无法转换：{error}"))?
+            }
+        }
+        rusqlite::types::ValueRef::Text(bytes) => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|error| format!("旧精确 token 文本指纹不是 UTF-8：{error}"))?;
+            fingerprint_codec::decode_legacy_text(text)
+                .map_err(|error| format!("旧精确 token 文本指纹无法转换：{error}"))?
+        }
+        _ => return Err("旧精确 token 指纹既不是 BLOB 也不是 TEXT".into()),
+    };
+    fingerprint_codec::encode(&values)
+        .map_err(|error| format!("旧精确 token 指纹无法编码为 schema 11：{error}"))
+}
+
+fn copy_schema11_fingerprints(
+    transaction: &Transaction<'_>,
+    select_sql: &str,
+    target_table: &str,
+) -> Result<(), String> {
+    let mut select = transaction
+        .prepare(select_sql)
+        .map_err(|error| format!("无法准备 schema 11 指纹迁移读取：{error}"))?;
+    let mut rows = select
+        .query([])
+        .map_err(|error| format!("无法读取 schema 11 迁移指纹：{error}"))?;
+    let insert_sql = format!("INSERT INTO {target_table}(source_id, fingerprint) VALUES (?1, ?2)");
+    let mut insert = transaction
+        .prepare(&insert_sql)
+        .map_err(|error| format!("无法准备 schema 11 指纹迁移写入：{error}"))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| format!("无法遍历 schema 11 迁移指纹：{error}"))?
+    {
+        let source_id = row
+            .get::<_, i64>(0)
+            .map_err(|error| format!("无法解码 schema 11 指纹来源：{error}"))?;
+        let encoded = canonicalize_legacy_fingerprint(
+            row.get_ref(1)
+                .map_err(|error| format!("无法读取 schema 11 旧指纹值：{error}"))?,
+        )?;
+        insert
+            .execute(params![source_id, encoded])
+            .map_err(|error| format!("无法写入 schema 11 canonical 指纹：{error}"))?;
+    }
+    Ok(())
+}
+
+fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(), String> {
+    let connection = open_index_connection(candidate_path, false, false)?;
+    let schema_version = metadata_i64(&connection, "schema_version")?
+        .ok_or_else(|| "schema 11 候选库缺少旧 schema 版本".to_string())?;
+    if schema_version == INDEX_SCHEMA_VERSION {
+        return Ok(());
+    }
+    if !matches!(schema_version, GITHUB_BASE_SCHEMA_VERSION | 10) {
+        return Err(format!(
+            "schema 11 候选迁移只接受 schema 9/10，实际为 {schema_version}"
+        ));
+    }
+    let generations = schema11_legacy_generation_state(&connection)?;
+    let legacy_alter_table = pragma_u64(&connection, "legacy_alter_table")?;
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON;")
+        .map_err(|error| format!("无法准备 schema 11 候选迁移连接：{error}"))?;
+    let migration = (|| {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("无法开始 schema 11 候选迁移事务：{error}"))?;
+        transaction
+            .execute_batch(
+                r#"
+                DROP VIEW IF EXISTS published_events;
+                DROP VIEW IF EXISTS published_files;
+                DROP INDEX IF EXISTS files_path_generation_idx;
+                DROP INDEX IF EXISTS events_timestamp_idx;
+                DROP INDEX IF EXISTS events_file_summary_idx;
+                DROP INDEX IF EXISTS events_session_idx;
+                DROP INDEX IF EXISTS events_input_tokens_idx;
+                DROP INDEX IF EXISTS dashboard_file_5m_time_idx;
+                DROP INDEX IF EXISTS dashboard_turn_candidates_order_idx;
+                DROP INDEX IF EXISTS dashboard_turn_candidates_session_idx;
+                ALTER TABLE files RENAME TO schema11_legacy_files;
+                ALTER TABLE events RENAME TO schema11_legacy_events;
+                ALTER TABLE event_enrichment_sources RENAME TO schema11_legacy_enrichment;
+                ALTER TABLE dashboard_file_totals RENAME TO schema11_legacy_file_totals;
+                ALTER TABLE dashboard_file_5m RENAME TO schema11_legacy_file_5m;
+                ALTER TABLE dashboard_5m RENAME TO schema11_legacy_dashboard_5m;
+                ALTER TABLE dashboard_turn_candidates RENAME TO schema11_legacy_turns;
+                ALTER TABLE file_fingerprints RENAME TO schema11_legacy_fingerprints;
+                ALTER TABLE file_chunks RENAME TO schema11_legacy_chunks;
+                "#,
+            )
+            .map_err(|error| format!("无法隔离 schema 11 候选旧表：{error}"))?;
+        maybe_fail_schema11_migration_for_testing(1)?;
+        initialize_index_schema(&transaction)?;
+
+        let published = generations.published;
+        let building = generations.building;
+        transaction
+            .execute_batch(
+                r#"
+                CREATE TEMP TABLE schema11_current_versions(
+                    path TEXT PRIMARY KEY,
+                    generation INTEGER NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TEMP TABLE schema11_building_versions(
+                    path TEXT PRIMARY KEY,
+                    generation INTEGER NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TEMP TABLE schema11_delta_sources(
+                    source_id INTEGER PRIMARY KEY
+                ) WITHOUT ROWID;
+                "#,
+            )
+            .map_err(|error| format!("无法创建 schema 11 候选映射表：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO schema11_current_versions(path, generation)
+                SELECT path, MAX(generation)
+                FROM schema11_legacy_files
+                WHERE generation <= ?1
+                GROUP BY path
+                "#,
+                params![published],
+            )
+            .map_err(|error| format!("无法固定 schema 11 已发布来源：{error}"))?;
+        if let Some(building) = building {
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO schema11_building_versions(path, generation)
+                    SELECT path, generation FROM schema11_legacy_files
+                    WHERE generation = ?1
+                    "#,
+                    params![building],
+                )
+                .map_err(|error| format!("无法固定 schema 11 未完成来源：{error}"))?;
+        }
+        transaction
+            .execute(
+                r#"
+                WITH paths AS (
+                    SELECT path FROM schema11_current_versions
+                    UNION SELECT path FROM schema11_building_versions
+                )
+                INSERT INTO sources(
+                    source_id, path, session_id, deleted, last_seen_generation,
+                    size, modified_ns, prefix_sha256, append_ready, resume_offset,
+                    previous_total_tokens, fork_replay_started_ns,
+                    fork_replay_active, is_explicit_subagent_fork,
+                    last_skipped_fork_replay_token_ns, current_model,
+                    current_user_prompt_start, current_user_prompt_end,
+                    assistant_response_start, assistant_response_end, audit_chunk_index
+                )
+                SELECT
+                    ROW_NUMBER() OVER (ORDER BY paths.path), paths.path,
+                    COALESCE(current.session_id, building.session_id, ''),
+                    COALESCE(current.deleted, 1), COALESCE(current.generation, 0),
+                    COALESCE(current.size, 0), COALESCE(current.modified_ns, '0'),
+                    COALESCE(current.prefix_sha256, X''),
+                    COALESCE(current.append_ready, 0), current.resume_offset,
+                    current.previous_total_tokens, current.fork_replay_started_ns,
+                    COALESCE(current.fork_replay_active, 0),
+                    COALESCE(current.is_explicit_subagent_fork, 0),
+                    current.last_skipped_fork_replay_token_ns, current.current_model,
+                    current.current_user_prompt_start, current.current_user_prompt_end,
+                    current.assistant_response_start, current.assistant_response_end,
+                    COALESCE(current.audit_chunk_index, 0)
+                FROM paths
+                LEFT JOIN schema11_current_versions cv ON cv.path = paths.path
+                LEFT JOIN schema11_legacy_files current
+                  ON current.path = cv.path AND current.generation = cv.generation
+                LEFT JOIN schema11_building_versions bv ON bv.path = paths.path
+                LEFT JOIN schema11_legacy_files building
+                  ON building.path = bv.path AND building.generation = bv.generation
+                ORDER BY paths.path
+                "#,
+                [],
+            )
+            .map_err(|error| format!("无法迁移 schema 11 稳定来源表：{error}"))?;
+
+        // An old building row is a delta only when every published event and
+        // fingerprint is present with exactly the same data. Anything that
+        // cannot be proved is retained as a full pending replacement.
+        transaction
+            .execute(
+                r#"
+                INSERT INTO schema11_delta_sources(source_id)
+                SELECT s.source_id
+                FROM sources s
+                JOIN schema11_current_versions cv ON cv.path = s.path
+                JOIN schema11_building_versions bv ON bv.path = s.path
+                JOIN schema11_legacy_files current
+                  ON current.path = cv.path AND current.generation = cv.generation
+                JOIN schema11_legacy_files building
+                  ON building.path = bv.path AND building.generation = bv.generation
+                WHERE current.deleted = 0 AND building.deleted = 0
+                  AND building.size >= current.size
+                  AND NOT EXISTS (
+                    SELECT 1 FROM schema11_legacy_events old
+                    WHERE old.file_path = s.path AND old.file_generation = cv.generation
+                      AND NOT EXISTS (
+                        SELECT 1 FROM schema11_legacy_events candidate
+                        WHERE candidate.file_path = old.file_path
+                          AND candidate.file_generation = bv.generation
+                          AND candidate.ordinal = old.ordinal
+                          AND candidate.timestamp = old.timestamp
+                          AND candidate.session_id = old.session_id
+                          AND candidate.tokens = old.tokens
+                          AND candidate.input_tokens = old.input_tokens
+                          AND candidate.cached_input_tokens = old.cached_input_tokens
+                          AND candidate.output_tokens = old.output_tokens
+                          AND candidate.reasoning_output_tokens IS old.reasoning_output_tokens
+                          AND candidate.model IS old.model
+                          AND candidate.user_prompt_start IS old.user_prompt_start
+                          AND candidate.user_prompt_end IS old.user_prompt_end
+                          AND candidate.assistant_response_start IS old.assistant_response_start
+                          AND candidate.assistant_response_end IS old.assistant_response_end
+                      )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM schema11_legacy_fingerprints old
+                    WHERE old.file_path = s.path AND old.file_generation = cv.generation
+                      AND NOT EXISTS (
+                        SELECT 1 FROM schema11_legacy_fingerprints candidate
+                        WHERE candidate.file_path = old.file_path
+                          AND candidate.file_generation = bv.generation
+                          AND candidate.fingerprint = old.fingerprint
+                      )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM schema11_legacy_chunks old
+                    WHERE old.file_path = s.path AND old.file_generation = cv.generation
+                      AND NOT EXISTS (
+                        SELECT 1 FROM schema11_legacy_chunks candidate
+                        WHERE candidate.file_path = old.file_path
+                          AND candidate.file_generation = bv.generation
+                          AND candidate.chunk_index = old.chunk_index
+                      )
+                  )
+                "#,
+                [],
+            )
+            .map_err(|error| format!("无法证明 schema 11 未完成追加来源：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO pending_sources(
+                    source_id, target_generation, mode, deleted, size, modified_ns,
+                    prefix_sha256, append_ready, resume_offset, previous_total_tokens,
+                    fork_replay_started_ns, fork_replay_active,
+                    is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
+                    current_model, current_user_prompt_start, current_user_prompt_end,
+                    assistant_response_start, assistant_response_end, audit_chunk_index
+                )
+                SELECT s.source_id, building.generation,
+                       CASE WHEN building.deleted <> 0 THEN 'tombstone'
+                            WHEN d.source_id IS NOT NULL THEN 'delta' ELSE 'full' END,
+                       building.deleted, building.size, building.modified_ns,
+                       building.prefix_sha256, building.append_ready,
+                       building.resume_offset, building.previous_total_tokens,
+                       building.fork_replay_started_ns, building.fork_replay_active,
+                       building.is_explicit_subagent_fork,
+                       building.last_skipped_fork_replay_token_ns,
+                       building.current_model, building.current_user_prompt_start,
+                       building.current_user_prompt_end,
+                       building.assistant_response_start,
+                       building.assistant_response_end, building.audit_chunk_index
+                FROM schema11_building_versions bv
+                JOIN sources s ON s.path = bv.path
+                JOIN schema11_legacy_files building
+                  ON building.path = bv.path AND building.generation = bv.generation
+                LEFT JOIN schema11_delta_sources d ON d.source_id = s.source_id
+                "#,
+                [],
+            )
+            .map_err(|error| format!("无法迁移 schema 11 pending 来源：{error}"))?;
+        maybe_fail_schema11_migration_for_testing(2)?;
+
+        transaction
+            .execute_batch(
+                r#"
+                INSERT INTO event_rows(
+                    id, source_id, ordinal, timestamp, tokens, input_tokens,
+                    cached_input_tokens, output_tokens, reasoning_output_tokens, model,
+                    user_prompt_start, user_prompt_end, assistant_response_start,
+                    assistant_response_end
+                )
+                SELECT e.id, s.source_id, e.ordinal, e.timestamp, e.tokens,
+                       e.input_tokens, e.cached_input_tokens, e.output_tokens,
+                       COALESCE(e.reasoning_output_tokens, 0), e.model,
+                       e.user_prompt_start, e.user_prompt_end,
+                       e.assistant_response_start, e.assistant_response_end
+                FROM schema11_legacy_events e
+                JOIN schema11_current_versions v
+                  ON v.path = e.file_path AND v.generation = e.file_generation
+                JOIN sources s ON s.path = e.file_path;
+
+                INSERT INTO pending_event_rows(
+                    id, source_id, ordinal, timestamp, tokens, input_tokens,
+                    cached_input_tokens, output_tokens, reasoning_output_tokens, model,
+                    user_prompt_start, user_prompt_end, assistant_response_start,
+                    assistant_response_end
+                )
+                SELECT e.id, s.source_id, e.ordinal, e.timestamp, e.tokens,
+                       e.input_tokens, e.cached_input_tokens, e.output_tokens,
+                       COALESCE(e.reasoning_output_tokens, 0), e.model,
+                       e.user_prompt_start, e.user_prompt_end,
+                       e.assistant_response_start, e.assistant_response_end
+                FROM schema11_legacy_events e
+                JOIN schema11_building_versions v
+                  ON v.path = e.file_path AND v.generation = e.file_generation
+                JOIN sources s ON s.path = e.file_path
+                JOIN pending_sources p ON p.source_id = s.source_id
+                WHERE p.mode = 'full'
+                   OR (p.mode = 'delta' AND NOT EXISTS (
+                        SELECT 1 FROM event_rows current
+                        WHERE current.source_id = s.source_id
+                          AND current.ordinal = e.ordinal
+                   ));
+                "#,
+            )
+            .map_err(|error| format!("无法迁移 schema 11 事件：{error}"))?;
+
+        copy_schema11_fingerprints(
+            &transaction,
+            r#"
+            SELECT s.source_id, f.fingerprint
+            FROM schema11_legacy_fingerprints f
+            JOIN schema11_current_versions v
+              ON v.path = f.file_path AND v.generation = f.file_generation
+            JOIN sources s ON s.path = f.file_path
+            ORDER BY s.source_id
+            "#,
+            "source_fingerprints",
+        )?;
+        copy_schema11_fingerprints(
+            &transaction,
+            r#"
+            SELECT s.source_id, f.fingerprint
+            FROM schema11_legacy_fingerprints f
+            JOIN schema11_building_versions v
+              ON v.path = f.file_path AND v.generation = f.file_generation
+            JOIN sources s ON s.path = f.file_path
+            JOIN pending_sources p ON p.source_id = s.source_id
+            WHERE p.mode = 'full'
+               OR (p.mode = 'delta' AND NOT EXISTS (
+                    SELECT 1 FROM schema11_legacy_fingerprints current
+                    JOIN schema11_current_versions cv
+                      ON cv.path = current.file_path
+                     AND cv.generation = current.file_generation
+                    WHERE current.file_path = f.file_path
+                      AND current.fingerprint = f.fingerprint
+               ))
+            ORDER BY s.source_id
+            "#,
+            "pending_fingerprints",
+        )?;
+        transaction
+            .execute_batch(
+                r#"
+                INSERT INTO source_chunks(source_id, chunk_index, byte_count, sha256)
+                SELECT s.source_id, c.chunk_index, c.byte_count, c.sha256
+                FROM schema11_legacy_chunks c
+                JOIN schema11_current_versions v
+                  ON v.path = c.file_path AND v.generation = c.file_generation
+                JOIN sources s ON s.path = c.file_path;
+                INSERT INTO pending_chunks(source_id, chunk_index, byte_count, sha256)
+                SELECT s.source_id, c.chunk_index, c.byte_count, c.sha256
+                FROM schema11_legacy_chunks c
+                JOIN schema11_building_versions v
+                  ON v.path = c.file_path AND v.generation = c.file_generation
+                JOIN sources s ON s.path = c.file_path
+                JOIN pending_sources p ON p.source_id = s.source_id
+                WHERE p.mode = 'full'
+                   OR (p.mode = 'delta' AND NOT EXISTS (
+                        SELECT 1 FROM source_chunks current
+                        WHERE current.source_id = s.source_id
+                          AND current.chunk_index = c.chunk_index
+                          AND current.byte_count = c.byte_count
+                          AND current.sha256 = c.sha256
+                   ));
+                "#,
+            )
+            .map_err(|error| format!("无法迁移 schema 11 指纹分块：{error}"))?;
+        maybe_fail_schema11_migration_for_testing(3)?;
+
+        transaction
+            .execute_batch(
+                r#"
+                INSERT INTO source_enrichment(
+                    source_id, revision, parser_revision, completed_size,
+                    completed_prefix_sha256
+                )
+                SELECT s.source_id, e.revision, e.parser_revision,
+                       e.completed_size, e.completed_prefix_sha256
+                FROM schema11_legacy_enrichment e
+                JOIN sources s ON s.path = e.path
+                WHERE NOT EXISTS(
+                    SELECT 1 FROM schema11_building_versions v
+                    WHERE v.path = e.path AND v.generation = e.file_generation
+                );
+                INSERT INTO pending_enrichment(
+                    source_id, revision, parser_revision, completed_size,
+                    completed_prefix_sha256
+                )
+                SELECT s.source_id, e.revision, e.parser_revision,
+                       e.completed_size, e.completed_prefix_sha256
+                FROM schema11_legacy_enrichment e
+                JOIN sources s ON s.path = e.path
+                JOIN schema11_building_versions v
+                  ON v.path = e.path AND v.generation = e.file_generation
+                JOIN pending_sources p ON p.source_id = s.source_id
+                WHERE p.mode <> 'tombstone';
+
+                INSERT INTO dashboard_source_totals(
+                    source_id, total_tokens, calls, input_tokens,
+                    cached_input_tokens, output_tokens, first_timestamp, last_timestamp
+                )
+                SELECT s.source_id, t.total_tokens, t.calls, t.input_tokens,
+                       t.cached_input_tokens, t.output_tokens,
+                       t.first_timestamp, t.last_timestamp
+                FROM schema11_legacy_file_totals t
+                JOIN schema11_current_versions v
+                  ON v.path = t.file_path AND v.generation = t.file_generation
+                JOIN sources s ON s.path = t.file_path;
+                INSERT INTO dashboard_source_5m(
+                    source_id, bucket_start, model_key, model, total_tokens, calls,
+                    input_tokens, cached_input_tokens, output_tokens
+                )
+                SELECT s.source_id, t.bucket_start, t.model_key, t.model,
+                       t.total_tokens, t.calls, t.input_tokens,
+                       t.cached_input_tokens, t.output_tokens
+                FROM schema11_legacy_file_5m t
+                JOIN schema11_current_versions v
+                  ON v.path = t.file_path AND v.generation = t.file_generation
+                JOIN sources s ON s.path = t.file_path;
+
+                INSERT INTO pending_dashboard_source_totals(
+                    source_id, total_tokens, calls, input_tokens,
+                    cached_input_tokens, output_tokens, first_timestamp, last_timestamp
+                )
+                SELECT s.source_id, t.total_tokens, t.calls, t.input_tokens,
+                       t.cached_input_tokens, t.output_tokens,
+                       t.first_timestamp, t.last_timestamp
+                FROM schema11_legacy_file_totals t
+                JOIN schema11_building_versions v
+                  ON v.path = t.file_path AND v.generation = t.file_generation
+                JOIN sources s ON s.path = t.file_path
+                JOIN pending_sources p ON p.source_id = s.source_id
+                WHERE p.mode = 'full';
+                INSERT INTO pending_dashboard_source_5m(
+                    source_id, bucket_start, model_key, model, total_tokens, calls,
+                    input_tokens, cached_input_tokens, output_tokens
+                )
+                SELECT s.source_id, t.bucket_start, t.model_key, t.model,
+                       t.total_tokens, t.calls, t.input_tokens,
+                       t.cached_input_tokens, t.output_tokens
+                FROM schema11_legacy_file_5m t
+                JOIN schema11_building_versions v
+                  ON v.path = t.file_path AND v.generation = t.file_generation
+                JOIN sources s ON s.path = t.file_path
+                JOIN pending_sources p ON p.source_id = s.source_id
+                WHERE p.mode = 'full';
+
+                INSERT INTO pending_dashboard_source_totals(
+                    source_id, total_tokens, calls, input_tokens,
+                    cached_input_tokens, output_tokens, first_timestamp, last_timestamp
+                )
+                SELECT source_id, SUM(tokens), COUNT(*), SUM(input_tokens),
+                       SUM(MIN(cached_input_tokens, input_tokens)), SUM(output_tokens),
+                       MIN(timestamp), MAX(timestamp)
+                FROM pending_event_rows
+                WHERE source_id IN (SELECT source_id FROM schema11_delta_sources)
+                GROUP BY source_id;
+                INSERT INTO pending_dashboard_source_5m(
+                    source_id, bucket_start, model_key, model, total_tokens, calls,
+                    input_tokens, cached_input_tokens, output_tokens
+                )
+                SELECT source_id, timestamp - (timestamp % 300), COALESCE(model, ''),
+                       MAX(model), SUM(tokens), COUNT(*), SUM(input_tokens),
+                       SUM(MIN(cached_input_tokens, input_tokens)), SUM(output_tokens)
+                FROM pending_event_rows
+                WHERE source_id IN (SELECT source_id FROM schema11_delta_sources)
+                GROUP BY source_id, timestamp - (timestamp % 300), COALESCE(model, '');
+                "#,
+            )
+            .map_err(|error| format!("无法迁移 schema 11 文件聚合：{error}"))?;
+
+        let aggregate_generation =
+            metadata_i64(&transaction, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?
+                .filter(|value| *value >= 0 && *value <= published)
+                .unwrap_or(published);
+        transaction
+            .execute(
+                r#"
+                INSERT INTO dashboard_5m_current(
+                    bucket_start, model_key, model, total_tokens, calls,
+                    input_tokens, cached_input_tokens, output_tokens
+                )
+                SELECT bucket_start, model_key, model, total_tokens, calls,
+                       input_tokens, cached_input_tokens, output_tokens
+                FROM schema11_legacy_dashboard_5m WHERE file_generation = ?1
+                "#,
+                params![aggregate_generation],
+            )
+            .map_err(|error| format!("无法迁移 schema 11 已发布全局聚合：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO dashboard_turn_candidates_current(
+                    source_id, ordinal, event_id, source_file_generation,
+                    timestamp, total_tokens, input_tokens, cached_input_tokens,
+                    output_tokens, user_prompt_start, user_prompt_end,
+                    assistant_response_start, assistant_response_end,
+                    turn_index, session_calls
+                )
+                SELECT s.source_id, t.ordinal, e.id, t.source_file_generation,
+                       t.timestamp, t.total_tokens, t.input_tokens,
+                       t.cached_input_tokens, t.output_tokens, t.user_prompt_start,
+                       t.user_prompt_end, t.assistant_response_start,
+                       t.assistant_response_end, t.turn_index, t.session_calls
+                FROM schema11_legacy_turns t
+                JOIN sources s ON s.path = t.file_path
+                JOIN event_rows e ON e.source_id = s.source_id AND e.ordinal = t.ordinal
+                WHERE t.aggregate_generation = ?1
+                "#,
+                params![aggregate_generation],
+            )
+            .map_err(|error| format!("无法迁移 schema 11 已发布轮次聚合：{error}"))?;
+        if let Some(building) = building {
+            let has_building_aggregate = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM schema11_legacy_dashboard_5m WHERE file_generation = ?1)",
+                    params![building],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| format!("无法检查 schema 11 未完成全局聚合：{error}"))?;
+            if has_building_aggregate {
+                transaction
+                    .execute(
+                        r#"
+                        INSERT INTO pending_dashboard_5m(
+                            target_generation, bucket_start, model_key, model,
+                            total_tokens, calls, input_tokens, cached_input_tokens,
+                            output_tokens
+                        )
+                        SELECT ?1, bucket_start, model_key, model, total_tokens,
+                               calls, input_tokens, cached_input_tokens, output_tokens
+                        FROM schema11_legacy_dashboard_5m WHERE file_generation = ?1
+                        "#,
+                        params![building],
+                    )
+                    .map_err(|error| format!("无法迁移 schema 11 未完成全局聚合：{error}"))?;
+                transaction
+                    .execute(
+                        r#"
+                        INSERT INTO pending_dashboard_5m_tombstones(
+                            target_generation, bucket_start, model_key
+                        )
+                        SELECT ?1, c.bucket_start, c.model_key
+                        FROM dashboard_5m_current c
+                        WHERE NOT EXISTS(
+                            SELECT 1 FROM pending_dashboard_5m p
+                            WHERE p.target_generation = ?1
+                              AND p.bucket_start = c.bucket_start
+                              AND p.model_key = c.model_key
+                        )
+                        "#,
+                        params![building],
+                    )
+                    .map_err(|error| format!("无法迁移 schema 11 全局聚合墓碑：{error}"))?;
+            }
+            let has_building_turns = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM schema11_legacy_turns WHERE aggregate_generation = ?1)",
+                    params![building],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| format!("无法检查 schema 11 未完成轮次聚合：{error}"))?;
+            if has_building_turns {
+                transaction
+                    .execute(
+                        r#"
+                        INSERT INTO pending_dashboard_turn_candidates(
+                            target_generation, source_id, ordinal, event_id,
+                            source_file_generation, timestamp, total_tokens,
+                            input_tokens, cached_input_tokens, output_tokens,
+                            user_prompt_start, user_prompt_end,
+                            assistant_response_start, assistant_response_end,
+                            turn_index, session_calls
+                        )
+                        SELECT ?1, s.source_id, t.ordinal, COALESCE(pe.id, e.id),
+                               t.source_file_generation, t.timestamp, t.total_tokens,
+                               t.input_tokens, t.cached_input_tokens, t.output_tokens,
+                               t.user_prompt_start, t.user_prompt_end,
+                               t.assistant_response_start, t.assistant_response_end,
+                               t.turn_index, t.session_calls
+                        FROM schema11_legacy_turns t
+                        JOIN sources s ON s.path = t.file_path
+                        JOIN pending_sources p ON p.source_id = s.source_id
+                        LEFT JOIN pending_event_rows pe
+                          ON pe.source_id = s.source_id AND pe.ordinal = t.ordinal
+                        LEFT JOIN event_rows e
+                          ON e.source_id = s.source_id AND e.ordinal = t.ordinal
+                        WHERE t.aggregate_generation = ?1
+                          AND p.mode <> 'tombstone'
+                          AND (
+                            (p.mode = 'full' AND pe.id IS NOT NULL)
+                            OR (p.mode = 'delta' AND COALESCE(pe.id, e.id) IS NOT NULL)
+                          )
+                        "#,
+                        params![building],
+                    )
+                    .map_err(|error| format!("无法迁移 schema 11 未完成轮次聚合：{error}"))?;
+                transaction
+                    .execute(
+                        r#"
+                        INSERT INTO pending_dashboard_turn_tombstones(
+                            target_generation, source_id, ordinal
+                        )
+                        SELECT ?1, c.source_id, c.ordinal
+                        FROM dashboard_turn_candidates_current c
+                        WHERE NOT EXISTS(
+                            SELECT 1 FROM pending_dashboard_turn_candidates p
+                            WHERE p.target_generation = ?1
+                              AND p.source_id = c.source_id AND p.ordinal = c.ordinal
+                        )
+                        "#,
+                        params![building],
+                    )
+                    .map_err(|error| format!("无法迁移 schema 11 轮次聚合墓碑：{error}"))?;
+            }
+        }
+        transaction
+            .execute(
+                r#"
+                INSERT INTO metadata(key, value) VALUES(
+                    'event_id_sequence',
+                    CAST(MAX(
+                        COALESCE((SELECT MAX(id) FROM event_rows), 0),
+                        COALESCE((SELECT MAX(id) FROM pending_event_rows), 0)
+                    ) AS TEXT)
+                ) ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                "#,
+                [],
+            )
+            .map_err(|error| format!("无法迁移 schema 11 事件序列：{error}"))?;
+        maybe_fail_schema11_migration_for_testing(4)?;
+
+        transaction
+            .execute_batch(
+                r#"
+                DROP TABLE schema11_legacy_events;
+                DROP TABLE schema11_legacy_fingerprints;
+                DROP TABLE schema11_legacy_chunks;
+                DROP TABLE schema11_legacy_enrichment;
+                DROP TABLE schema11_legacy_file_totals;
+                DROP TABLE schema11_legacy_file_5m;
+                DROP TABLE schema11_legacy_dashboard_5m;
+                DROP TABLE schema11_legacy_turns;
+                DROP TABLE schema11_legacy_files;
+                DELETE FROM metadata WHERE key = 'codex_home_physical_identity';
+                INSERT INTO metadata(key, value) VALUES ('schema_version', '11')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                "#,
+            )
+            .map_err(|error| format!("无法完成 schema 11 候选表切换：{error}"))?;
+        let foreign_key_failure = transaction
+            .query_row("PRAGMA foreign_key_check", [], |_| Ok(true))
+            .optional()
+            .map_err(|error| format!("无法检查 schema 11 候选外键：{error}"))?
+            .unwrap_or(false);
+        if foreign_key_failure {
+            return Err("schema 11 候选迁移外键检查失败".into());
+        }
+        maybe_fail_schema11_migration_for_testing(5)?;
+        transaction
+            .commit()
+            .map_err(|error| format!("无法提交 schema 11 候选迁移：{error}"))
+    })();
+    let restore = restore_identity_migration_pragmas(&connection, legacy_alter_table);
+    match (migration, restore) {
+        (Err(error), Ok(())) => return Err(error),
+        (Err(error), Err(restore_error)) => {
+            return Err(format!(
+                "{error}；同时无法恢复 SQLite 约束：{restore_error}"
+            ))
+        }
+        (Ok(()), Err(error)) => return Err(error),
+        (Ok(()), Ok(())) => {}
+    }
+    connection
+        .execute_batch("VACUUM; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")
+        .map_err(|error| format!("无法压实 schema 11 候选库：{error}"))?;
+    quick_check_index(&connection, Some(candidate_path))
+}
+
+#[cfg(test)]
+fn maybe_fail_schema11_migration_for_testing(stage: u8) -> Result<(), String> {
+    FAIL_SCHEMA11_MIGRATION_STAGE.with(|value| {
+        if value.get() == stage {
+            value.set(0);
+            Err(format!(
+                "injected schema 11 candidate migration failure at stage {stage}"
+            ))
+        } else {
+            Ok(())
+        }
+    })
+}
+
+#[cfg(not(test))]
+fn maybe_fail_schema11_migration_for_testing(_stage: u8) -> Result<(), String> {
+    Ok(())
+}
+
+fn prepare_schema11_candidate_if_needed(
+    index_path: &Path,
+    _codex_home: &Path,
+) -> Result<bool, String> {
+    let candidate_path = schema11_candidate_path(index_path);
+    let rollback_path = schema11_rollback_path(index_path);
+    let manifest_path = schema11_manifest_path(index_path);
+
+    let has_candidate = existing_regular_index(&candidate_path)?;
+    let has_rollback = existing_regular_index(&rollback_path)?;
+    if !manifest_path.exists() {
+        if has_candidate || has_rollback {
+            return Err("发现未登记的 schema 11 候选库或回滚库；为避免覆盖，已停止自动迁移".into());
+        }
+        if !existing_regular_index(index_path)? {
+            return Ok(false);
+        }
+        // Probe only the schema marker before invoking the migration receipt.
+        // A schema-11 compatible open must keep using the normal integrity
+        // receipt path; running candidate `quick_check` here would duplicate
+        // that work on every launch and would inspect the database before the
+        // read-only compatibility gate rejects future revisions.
+        let Ok(source) = sqlite::open_read_only(index_path, StdDuration::from_secs(1)) else {
+            // This is only a migration-routing probe. Let the normal read-only
+            // compatibility/integrity path classify and report any open or
+            // page error with its established non-destructive diagnostics.
+            return Ok(false);
+        };
+        let Ok(metadata_exists) = source.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
+            [],
+            |row| row.get::<_, bool>(0),
+        ) else {
+            return Ok(false);
+        };
+        let source_schema = if metadata_exists {
+            match source
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+            {
+                Ok(value) => value.and_then(|value| value.parse::<i64>().ok()),
+                Err(_) => return Ok(false),
+            }
+        } else {
+            None
+        };
+        drop(source);
+        if !matches!(source_schema, Some(GITHUB_BASE_SCHEMA_VERSION | 10)) {
+            return Ok(false);
+        }
+        let source_receipt = schema11_source_receipt(index_path)?;
+        schema11_migration_capacity(index_path)?;
+        let source_connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
+            .map_err(|error| format!("无法只读读取 schema 11 迁移基线：{error}"))?;
+        let source_facts =
+            schema11_migration_facts(&source_connection, source_receipt.schema_version)?;
+        let mut manifest = Schema11CandidateManifest {
+            manifest_version: SCHEMA11_CANDIDATE_MANIFEST_VERSION,
+            source_path: index_path.to_string_lossy().into_owned(),
+            candidate_path: candidate_path.to_string_lossy().into_owned(),
+            rollback_path: rollback_path.to_string_lossy().into_owned(),
+            source_receipt,
+            source_facts: Some(source_facts),
+            phase: Schema11CandidatePhase::Prepared,
+        };
+        schema11_store_manifest(&manifest_path, &manifest)?;
+        schema11_resume_candidate(
+            &mut manifest,
+            &manifest_path,
+            index_path,
+            &candidate_path,
+            &rollback_path,
+        )?;
+        return Ok(true);
+    }
+
+    let mut manifest = schema11_load_manifest(&manifest_path)?;
+    if manifest.manifest_version != SCHEMA11_CANDIDATE_MANIFEST_VERSION
+        || manifest.source_path != index_path.to_string_lossy()
+        || manifest.candidate_path != candidate_path.to_string_lossy()
+        || manifest.rollback_path != rollback_path.to_string_lossy()
+    {
+        return Err("schema 11 候选迁移清单与当前索引路径不匹配，已保留全部现场".into());
+    }
+    schema11_resume_candidate(
+        &mut manifest,
+        &manifest_path,
+        index_path,
+        &candidate_path,
+        &rollback_path,
+    )?;
+    Ok(true)
+}
+
+fn schema11_resume_candidate(
+    manifest: &mut Schema11CandidateManifest,
+    manifest_path: &Path,
+    index_path: &Path,
+    candidate_path: &Path,
+    rollback_path: &Path,
+) -> Result<(), String> {
+    if manifest.phase == Schema11CandidatePhase::Switched {
+        // The switched schema 11 database is allowed to accumulate a durable
+        // unfinished generation before the first successful refresh. The
+        // source facts were already checked before the atomic switch; on a
+        // later open validate structure and integrity without comparing the
+        // now-legitimate pending overlay to the pre-switch snapshot.
+        validate_schema11_storage(index_path, None)?;
+        return Ok(());
+    }
+    if manifest.phase == Schema11CandidatePhase::Switching {
+        let facts = manifest
+            .source_facts
+            .clone()
+            .ok_or_else(|| "schema 11 切换清单缺少对账事实".to_string())?;
+        schema11_finish_candidate_switch(
+            manifest,
+            manifest_path,
+            index_path,
+            candidate_path,
+            rollback_path,
+            &facts,
+        )?;
+        return Ok(());
+    }
+    if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
+        return Err(
+            "活动索引在 schema 11 候选迁移期间发生变化；候选库、回滚库和清单均已保留".into(),
+        );
+    }
+    let source_facts = if let Some(facts) = manifest.source_facts.clone() {
+        facts
+    } else {
+        let source = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
+            .map_err(|error| format!("无法读取 schema 11 候选迁移对账事实：{error}"))?;
+        let facts = schema11_migration_facts(&source, manifest.source_receipt.schema_version)?;
+        manifest.source_facts = Some(facts.clone());
+        schema11_store_manifest(manifest_path, manifest)?;
+        facts
+    };
+
+    if manifest.phase == Schema11CandidatePhase::Prepared {
+        if existing_regular_index(candidate_path)? {
+            let candidate = sqlite::open_read_only(candidate_path, StdDuration::from_secs(5))
+                .map_err(|error| format!("无法验证已有 schema 11 候选副本：{error}"))?;
+            let candidate_facts =
+                schema11_migration_facts(&candidate, manifest.source_receipt.schema_version)?;
+            if candidate_facts != source_facts {
+                return Err("已有 schema 11 候选库不是活动库的完整副本；已保留现场".into());
+            }
+        } else {
+            schema11_copy_candidate(index_path, candidate_path)?;
+        }
+        maybe_fail_schema11_migration_for_testing(6)?;
+        manifest.phase = Schema11CandidatePhase::Copied;
+        schema11_store_manifest(manifest_path, manifest)?;
+    }
+
+    if manifest.phase == Schema11CandidatePhase::Copied {
+        migrate_schema9_or10_to_schema11_candidate(candidate_path)?;
+        maybe_fail_schema11_migration_for_testing(7)?;
+        manifest.phase = Schema11CandidatePhase::Migrated;
+        schema11_store_manifest(manifest_path, manifest)?;
+    }
+
+    if manifest.phase == Schema11CandidatePhase::Migrated {
+        validate_schema11_candidate(candidate_path, &source_facts)?;
+        if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
+            return Err("活动索引在 schema 11 候选校验期间发生变化；尚未切换".into());
+        }
+        maybe_fail_schema11_migration_for_testing(8)?;
+        manifest.phase = Schema11CandidatePhase::Validated;
+        schema11_store_manifest(manifest_path, manifest)?;
+    }
+
+    if manifest.phase == Schema11CandidatePhase::Validated {
+        schema11_sync_file(candidate_path)?;
+        schema11_sync_parent(index_path)?;
+        manifest.phase = Schema11CandidatePhase::Switching;
+        schema11_store_manifest(manifest_path, manifest)?;
+        maybe_fail_schema11_migration_for_testing(9)?;
+    }
+
+    if manifest.phase == Schema11CandidatePhase::Switching {
+        schema11_finish_candidate_switch(
+            manifest,
+            manifest_path,
+            index_path,
+            candidate_path,
+            rollback_path,
+            &source_facts,
+        )?;
+    }
+    Ok(())
+}
+
+fn schema11_finish_candidate_switch(
+    manifest: &mut Schema11CandidateManifest,
+    manifest_path: &Path,
+    index_path: &Path,
+    candidate_path: &Path,
+    rollback_path: &Path,
+    facts: &Schema11MigrationFacts,
+) -> Result<(), String> {
+    if existing_regular_index(index_path)? && !existing_regular_index(rollback_path)? {
+        fs::rename(index_path, rollback_path)
+            .map_err(|error| format!("无法为 schema 11 活动库建立受管回滚副本：{error}"))?;
+        maybe_fail_schema11_migration_for_testing(10)?;
+        schema11_move_sidecar_if_present(
+            &sqlite_sidecar_path(index_path, "-wal"),
+            &sqlite_sidecar_path(rollback_path, "-wal"),
+        )?;
+        schema11_move_sidecar_if_present(
+            &sqlite_sidecar_path(index_path, "-shm"),
+            &sqlite_sidecar_path(rollback_path, "-shm"),
+        )?;
+        schema11_move_sidecar_if_present(
+            &sqlite_sidecar_path(index_path, "-journal"),
+            &sqlite_sidecar_path(rollback_path, "-journal"),
+        )?;
+        schema11_sync_parent(index_path)?;
+    }
+    if !existing_regular_index(rollback_path)? {
+        return Err("schema 11 切换缺少受管回滚数据库；已保留候选和清单".into());
+    }
+    if !existing_regular_index(index_path)? {
+        // A crash can occur after the main database rename but before its WAL
+        // and SHM siblings were moved. Complete that sidecar move before the
+        // canonical path is reused by the independent candidate database.
+        schema11_move_sidecar_if_present(
+            &sqlite_sidecar_path(index_path, "-wal"),
+            &sqlite_sidecar_path(rollback_path, "-wal"),
+        )?;
+        schema11_move_sidecar_if_present(
+            &sqlite_sidecar_path(index_path, "-shm"),
+            &sqlite_sidecar_path(rollback_path, "-shm"),
+        )?;
+        schema11_move_sidecar_if_present(
+            &sqlite_sidecar_path(index_path, "-journal"),
+            &sqlite_sidecar_path(rollback_path, "-journal"),
+        )?;
+        if !existing_regular_index(candidate_path)? {
+            return Err("schema 11 候选切换未完成；下次启动将按清单继续".into());
+        }
+        fs::rename(candidate_path, index_path)
+            .map_err(|error| format!("无法把 schema 11 候选库切换为活动库：{error}"))?;
+        schema11_sync_parent(index_path)?;
+        maybe_fail_schema11_migration_for_testing(11)?;
+    } else if existing_regular_index(candidate_path)? {
+        return Err("schema 11 候选与活动库同时存在；已停止切换并保留现场".into());
+    }
+    schema11_sync_file(index_path)?;
+    schema11_sync_parent(index_path)?;
+    validate_schema11_candidate(index_path, facts)?;
+    maybe_fail_schema11_migration_for_testing(12)?;
+    manifest.phase = Schema11CandidatePhase::Switched;
+    schema11_store_manifest(manifest_path, manifest)
+}
+
+fn validate_schema11_candidate(
+    index_path: &Path,
+    expected_facts: &Schema11MigrationFacts,
+) -> Result<(), String> {
+    validate_schema11_storage(index_path, Some(expected_facts))
+}
+
+fn validate_schema11_storage(
+    index_path: &Path,
+    expected_facts: Option<&Schema11MigrationFacts>,
+) -> Result<(), String> {
+    let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
+        .map_err(|error| format!("无法只读打开 schema 11 候选库：{error}"))?;
+    if metadata_i64(&connection, "schema_version")? != Some(INDEX_SCHEMA_VERSION) {
+        return Err("schema 11 候选库 schema 版本不是 11".into());
+    }
+    quick_check_index(&connection, Some(index_path))?;
+    let foreign_key_failure = connection
+        .query_row("PRAGMA foreign_key_check", [], |_| Ok(true))
+        .optional()
+        .map_err(|error| format!("无法执行 schema 11 候选库外键检查：{error}"))?
+        .unwrap_or(false);
+    if foreign_key_failure {
+        return Err("schema 11 候选库 foreign_key_check 未通过".into());
+    }
+    let malformed = connection
+        .query_row(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM source_fingerprints WHERE typeof(fingerprint) <> 'blob'
+                UNION ALL
+                SELECT 1 FROM pending_fingerprints WHERE typeof(fingerprint) <> 'blob'
+            )
+            "#,
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法检查 schema 11 候选指纹类型：{error}"))?;
+    if malformed {
+        return Err("schema 11 候选库仍包含非 BLOB 指纹".into());
+    }
+    let mut fingerprints = connection
+        .prepare(
+            "SELECT fingerprint FROM source_fingerprints UNION ALL SELECT fingerprint FROM pending_fingerprints",
+        )
+        .map_err(|error| format!("无法读取 schema 11 候选指纹：{error}"))?;
+    let rows = fingerprints
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .map_err(|error| format!("无法遍历 schema 11 候选指纹：{error}"))?;
+    for row in rows {
+        let value = row.map_err(|error| format!("无法解码 schema 11 候选指纹：{error}"))?;
+        fingerprint_codec::decode(&value)
+            .map_err(|error| format!("schema 11 候选指纹不是 canonical codec：{error}"))?;
+    }
+    drop(fingerprints);
+    let stale_pending = connection
+        .query_row(
+            r#"
+            SELECT EXISTS(
+                SELECT p.target_generation FROM pending_sources p
+                WHERE NOT EXISTS(SELECT 1 FROM active_building_generation b
+                                 WHERE b.generation = p.target_generation)
+                UNION ALL
+                SELECT p.target_generation FROM pending_dashboard_5m p
+                WHERE NOT EXISTS(SELECT 1 FROM active_building_generation b
+                                 WHERE b.generation = p.target_generation)
+                UNION ALL
+                SELECT p.target_generation FROM pending_dashboard_5m_tombstones p
+                WHERE NOT EXISTS(SELECT 1 FROM active_building_generation b
+                                 WHERE b.generation = p.target_generation)
+                UNION ALL
+                SELECT p.target_generation FROM pending_dashboard_turn_candidates p
+                WHERE NOT EXISTS(SELECT 1 FROM active_building_generation b
+                                 WHERE b.generation = p.target_generation)
+                UNION ALL
+                SELECT p.target_generation FROM pending_dashboard_turn_tombstones p
+                WHERE NOT EXISTS(SELECT 1 FROM active_building_generation b
+                                 WHERE b.generation = p.target_generation)
+            )
+            "#,
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法检查 schema 11 候选 pending 代次：{error}"))?;
+    if stale_pending {
+        return Err("schema 11 候选库包含未绑定唯一活动 building generation 的 pending 行".into());
+    }
+    let invalid_turn_reference = connection
+        .query_row(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM dashboard_turn_candidates_current t
+                LEFT JOIN event_rows e
+                  ON e.id = t.event_id AND e.source_id = t.source_id
+                 AND e.ordinal = t.ordinal
+                WHERE e.id IS NULL
+                UNION ALL
+                SELECT 1
+                FROM pending_dashboard_turn_candidates t
+                JOIN pending_sources p ON p.source_id = t.source_id
+                LEFT JOIN pending_event_rows pe
+                  ON pe.id = t.event_id AND pe.source_id = t.source_id
+                 AND pe.ordinal = t.ordinal
+                LEFT JOIN event_rows e
+                  ON e.id = t.event_id AND e.source_id = t.source_id
+                 AND e.ordinal = t.ordinal
+                WHERE p.mode = 'tombstone'
+                   OR (p.mode = 'full' AND pe.id IS NULL)
+                   OR (p.mode = 'delta' AND pe.id IS NULL AND e.id IS NULL)
+            )
+            "#,
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法检查 schema 11 轮次候选事件引用：{error}"))?;
+    if invalid_turn_reference {
+        return Err("schema 11 候选库轮次候选未绑定同一 source/ordinal 的稳定事件".into());
+    }
+    if let Some(expected_facts) = expected_facts {
+        let actual_facts = schema11_migration_facts(&connection, INDEX_SCHEMA_VERSION)?;
+        if actual_facts != *expected_facts {
+            return Err(format!(
+                "schema 11 候选库事件、指纹、分块、聚合或 lineage 对账失败：expected={expected_facts:?}, actual={actual_facts:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn cleanup_schema11_migration_for_testing(codex_home: &Path) -> Result<(), String> {
+    let index_path = database_path(codex_home)?;
+    cleanup_successful_schema11_migration(&index_path)
+}
+
+fn cleanup_successful_schema11_migration(index_path: &Path) -> Result<(), String> {
+    let manifest_path = schema11_manifest_path(index_path);
+    if !manifest_path.exists() {
+        return Ok(());
+    }
+    let manifest = schema11_load_manifest(&manifest_path)?;
+    if manifest.phase != Schema11CandidatePhase::Switched
+        || manifest.source_path != index_path.to_string_lossy()
+    {
+        return Ok(());
+    }
+    let candidate_path = schema11_candidate_path(index_path);
+    if existing_regular_index(&candidate_path)? {
+        // An unexpected main candidate is evidence, not garbage. Never remove
+        // it from an automatic success cleanup.
+        return Ok(());
+    }
+    for path in [
+        schema11_rollback_path(index_path),
+        sqlite_sidecar_path(&schema11_rollback_path(index_path), "-wal"),
+        sqlite_sidecar_path(&schema11_rollback_path(index_path), "-shm"),
+        sqlite_sidecar_path(&schema11_rollback_path(index_path), "-journal"),
+        sqlite_sidecar_path(&candidate_path, "-wal"),
+        sqlite_sidecar_path(&candidate_path, "-shm"),
+        sqlite_sidecar_path(&candidate_path, "-journal"),
+        sqlite_sidecar_path(&candidate_path, ".operation.lock"),
+    ] {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return Ok(()),
+            Ok(_) => fs::remove_file(&path).map_err(|error| {
+                format!(
+                    "无法清理 schema 11 已验证回滚文件 {}：{error}",
+                    path.display()
+                )
+            })?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "无法检查 schema 11 已验证回滚文件 {}：{error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    fs::remove_file(&manifest_path)
+        .map_err(|error| format!("无法清理 schema 11 迁移清单：{error}"))?;
+    schema11_sync_parent(index_path)
 }
 
 fn open_index_connection_with_recovery(
@@ -11100,6 +13682,19 @@ fn verify_no_orphaned_index_rows(connection: &mut Connection) -> Result<(), Stri
 }
 
 fn orphaned_index_rows_exist(connection: &Connection) -> Result<bool, String> {
+    // Schema 11 compatibility views intentionally hide child rows whose
+    // stable source is missing, so view-level anti-joins alone cannot detect
+    // physical orphans left by an older foreign_keys=OFF writer. Check the
+    // complete declared graph first; this is read-only and preserves every
+    // offending row for an explicit candidate repair.
+    let foreign_key_failure = connection
+        .query_row("PRAGMA foreign_key_check", [], |_| Ok(true))
+        .optional()
+        .map_err(|error| format!("无法检查精确 token 物理外键孤儿：{error}"))?
+        .unwrap_or(false);
+    if foreign_key_failure {
+        return Ok(true);
+    }
     for (label, query) in [
         (
             "事件",
@@ -11641,15 +14236,15 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
     // migration only invalidates the physical checkpoint for files whose first
     // line proves an explicit subagent fork; it never deletes token events or
     // rescans the full JSONL corpus.
-    let files_table_exists = connection
+    let files_relation_exists = connection
         .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'files'",
+            "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'files'",
             [],
             |row| row.get::<_, i64>(0),
         )
         .map_err(|error| format!("无法检查精确 token 文件表：{error}"))?
         > 0;
-    if !files_table_exists {
+    if !files_relation_exists {
         return Ok(true);
     }
     // Schema 9→10 changes only the statistics identity contract. A current
@@ -11728,6 +14323,1232 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
 }
 
 fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS sources (
+                source_id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                session_id TEXT NOT NULL,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                last_seen_generation INTEGER NOT NULL DEFAULT 0,
+                size INTEGER NOT NULL DEFAULT 0,
+                modified_ns TEXT NOT NULL DEFAULT '0',
+                prefix_sha256 BLOB NOT NULL DEFAULT X'',
+                append_ready INTEGER NOT NULL DEFAULT 0,
+                resume_offset INTEGER,
+                previous_total_tokens INTEGER,
+                fork_replay_started_ns TEXT,
+                fork_replay_active INTEGER NOT NULL DEFAULT 0,
+                is_explicit_subagent_fork INTEGER NOT NULL DEFAULT 0,
+                last_skipped_fork_replay_token_ns TEXT,
+                current_model TEXT,
+                current_user_prompt_start INTEGER,
+                current_user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER,
+                audit_chunk_index INTEGER NOT NULL DEFAULT 0
+            ) WITHOUT ROWID;
+
+            -- `sources` and the tables without a `pending_` prefix are always
+            -- the last published generation. A scan writes only the pending
+            -- layer; compatibility views expose a virtual target generation
+            -- to the existing bounded parser without hiding lastGood.
+            CREATE TABLE IF NOT EXISTS pending_sources (
+                source_id INTEGER PRIMARY KEY REFERENCES sources(source_id) ON DELETE CASCADE,
+                target_generation INTEGER NOT NULL,
+                mode TEXT NOT NULL CHECK(mode IN ('delta', 'full', 'tombstone')),
+                deleted INTEGER NOT NULL DEFAULT 0,
+                size INTEGER NOT NULL DEFAULT 0,
+                modified_ns TEXT NOT NULL DEFAULT '0',
+                prefix_sha256 BLOB NOT NULL DEFAULT X'',
+                append_ready INTEGER NOT NULL DEFAULT 0,
+                resume_offset INTEGER,
+                previous_total_tokens INTEGER,
+                fork_replay_started_ns TEXT,
+                fork_replay_active INTEGER NOT NULL DEFAULT 0,
+                is_explicit_subagent_fork INTEGER NOT NULL DEFAULT 0,
+                last_skipped_fork_replay_token_ns TEXT,
+                current_model TEXT,
+                current_user_prompt_start INTEGER,
+                current_user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER,
+                audit_chunk_index INTEGER NOT NULL DEFAULT 0
+            ) WITHOUT ROWID;
+
+            CREATE TABLE IF NOT EXISTS event_rows (
+                id INTEGER PRIMARY KEY,
+                source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                tokens INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                model TEXT,
+                user_prompt_start INTEGER,
+                user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER,
+                UNIQUE(source_id, ordinal)
+            );
+            CREATE TABLE IF NOT EXISTS pending_event_rows (
+                id INTEGER PRIMARY KEY,
+                source_id INTEGER NOT NULL REFERENCES pending_sources(source_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                tokens INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                model TEXT,
+                user_prompt_start INTEGER,
+                user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER,
+                UNIQUE(source_id, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS event_rows_timestamp_idx ON event_rows(timestamp);
+            CREATE INDEX IF NOT EXISTS event_rows_source_idx
+                ON event_rows(source_id, timestamp, tokens, ordinal);
+            CREATE INDEX IF NOT EXISTS event_rows_input_idx
+                ON event_rows(input_tokens, cached_input_tokens, timestamp, source_id, ordinal);
+            CREATE INDEX IF NOT EXISTS pending_event_rows_source_idx
+                ON pending_event_rows(source_id, timestamp, ordinal);
+
+            CREATE TABLE IF NOT EXISTS source_fingerprints (
+                source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                fingerprint BLOB NOT NULL,
+                PRIMARY KEY(source_id, fingerprint)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS pending_fingerprints (
+                source_id INTEGER NOT NULL REFERENCES pending_sources(source_id) ON DELETE CASCADE,
+                fingerprint BLOB NOT NULL,
+                PRIMARY KEY(source_id, fingerprint)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS source_chunks (
+                source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                byte_count INTEGER NOT NULL,
+                sha256 BLOB NOT NULL,
+                PRIMARY KEY(source_id, chunk_index)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS pending_chunks (
+                source_id INTEGER NOT NULL REFERENCES pending_sources(source_id) ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                byte_count INTEGER NOT NULL,
+                sha256 BLOB NOT NULL,
+                PRIMARY KEY(source_id, chunk_index)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE IF NOT EXISTS source_enrichment (
+                source_id INTEGER PRIMARY KEY REFERENCES sources(source_id) ON DELETE CASCADE,
+                revision TEXT NOT NULL,
+                parser_revision TEXT NOT NULL,
+                completed_size INTEGER NOT NULL,
+                completed_prefix_sha256 BLOB NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS pending_enrichment (
+                source_id INTEGER PRIMARY KEY REFERENCES pending_sources(source_id) ON DELETE CASCADE,
+                revision TEXT NOT NULL,
+                parser_revision TEXT NOT NULL,
+                completed_size INTEGER NOT NULL,
+                completed_prefix_sha256 BLOB NOT NULL
+            ) WITHOUT ROWID;
+
+            -- Pending file aggregates are replacements for full rebuilds and
+            -- suffix deltas for append scans. The read views merge the latter
+            -- without copying the published rows into every generation.
+            CREATE TABLE IF NOT EXISTS dashboard_source_totals (
+                source_id INTEGER PRIMARY KEY REFERENCES sources(source_id) ON DELETE CASCADE,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                first_timestamp INTEGER,
+                last_timestamp INTEGER
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS pending_dashboard_source_totals (
+                source_id INTEGER PRIMARY KEY REFERENCES pending_sources(source_id) ON DELETE CASCADE,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                first_timestamp INTEGER,
+                last_timestamp INTEGER
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS dashboard_source_5m (
+                source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                bucket_start INTEGER NOT NULL,
+                model_key TEXT NOT NULL,
+                model TEXT,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                PRIMARY KEY(source_id, bucket_start, model_key)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS pending_dashboard_source_5m (
+                source_id INTEGER NOT NULL REFERENCES pending_sources(source_id) ON DELETE CASCADE,
+                bucket_start INTEGER NOT NULL,
+                model_key TEXT NOT NULL,
+                model TEXT,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                PRIMARY KEY(source_id, bucket_start, model_key)
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS dashboard_source_5m_time_idx
+                ON dashboard_source_5m(bucket_start, source_id);
+
+            -- Global five-minute and turn projections use sparse replacement
+            -- rows plus explicit tombstones. That keeps the target generation
+            -- queryable while writes stay proportional to affected buckets.
+            CREATE TABLE IF NOT EXISTS dashboard_5m_current (
+                bucket_start INTEGER NOT NULL,
+                model_key TEXT NOT NULL,
+                model TEXT,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                PRIMARY KEY(bucket_start, model_key)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS pending_dashboard_5m (
+                target_generation INTEGER NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                model_key TEXT NOT NULL,
+                model TEXT,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                PRIMARY KEY(target_generation, bucket_start, model_key)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS pending_dashboard_5m_tombstones (
+                target_generation INTEGER NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                model_key TEXT NOT NULL,
+                PRIMARY KEY(target_generation, bucket_start, model_key)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE IF NOT EXISTS dashboard_turn_candidates_current (
+                source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                event_id INTEGER NOT NULL,
+                source_file_generation INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                user_prompt_start INTEGER,
+                user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER,
+                turn_index INTEGER NOT NULL,
+                session_calls INTEGER NOT NULL,
+                PRIMARY KEY(source_id, ordinal)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS pending_dashboard_turn_candidates (
+                target_generation INTEGER NOT NULL,
+                source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                event_id INTEGER NOT NULL,
+                source_file_generation INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                user_prompt_start INTEGER,
+                user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER,
+                turn_index INTEGER NOT NULL,
+                session_calls INTEGER NOT NULL,
+                PRIMARY KEY(target_generation, source_id, ordinal)
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS pending_dashboard_turn_tombstones (
+                target_generation INTEGER NOT NULL,
+                source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                PRIMARY KEY(target_generation, source_id, ordinal)
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS dashboard_turn_candidates_order_idx
+                ON dashboard_turn_candidates_current(timestamp, input_tokens, cached_input_tokens);
+            CREATE INDEX IF NOT EXISTS pending_dashboard_turn_candidates_order_idx
+                ON pending_dashboard_turn_candidates(
+                    target_generation, timestamp, input_tokens, cached_input_tokens
+                );
+
+            CREATE TABLE IF NOT EXISTS attribution_source_buckets (
+                provenance_epoch TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                PRIMARY KEY(provenance_epoch, source_id, bucket_start)
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS attribution_source_buckets_time_idx
+                ON attribution_source_buckets(provenance_epoch, bucket_start);
+            CREATE INDEX IF NOT EXISTS sources_session_idx ON sources(session_id, source_id);
+            CREATE INDEX IF NOT EXISTS sources_session_nocase_idx
+                ON sources(session_id COLLATE NOCASE, source_id);
+            CREATE TABLE IF NOT EXISTS session_metadata (
+                session_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                updated_at INTEGER
+            ) WITHOUT ROWID;
+
+            INSERT OR IGNORE INTO metadata(key, value) VALUES ('event_id_sequence', '0');
+
+            CREATE VIEW IF NOT EXISTS active_building_generation AS
+            SELECT CAST(building.value AS INTEGER) AS generation
+            FROM metadata building
+            JOIN metadata published ON published.key = 'published_generation'
+            WHERE building.key = 'building_generation'
+              AND CAST(building.value AS INTEGER) > CAST(published.value AS INTEGER);
+
+            CREATE VIEW IF NOT EXISTS files AS
+            SELECT
+                s.last_seen_generation AS generation, s.path, s.deleted, s.session_id,
+                s.size, s.modified_ns, s.prefix_sha256, s.append_ready, s.resume_offset,
+                s.previous_total_tokens, s.fork_replay_started_ns, s.fork_replay_active,
+                s.is_explicit_subagent_fork, s.last_skipped_fork_replay_token_ns,
+                s.current_model, s.current_user_prompt_start, s.current_user_prompt_end,
+                s.assistant_response_start, s.assistant_response_end, s.audit_chunk_index,
+                s.source_id
+            FROM sources s
+            UNION ALL
+            SELECT
+                p.target_generation, s.path, p.deleted, s.session_id,
+                p.size, p.modified_ns, p.prefix_sha256, p.append_ready, p.resume_offset,
+                p.previous_total_tokens, p.fork_replay_started_ns, p.fork_replay_active,
+                p.is_explicit_subagent_fork, p.last_skipped_fork_replay_token_ns,
+                p.current_model, p.current_user_prompt_start, p.current_user_prompt_end,
+                p.assistant_response_start, p.assistant_response_end, p.audit_chunk_index,
+                p.source_id
+            FROM pending_sources p
+            JOIN sources s ON s.source_id = p.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation;
+
+            CREATE VIEW IF NOT EXISTS events AS
+            SELECT
+                e.id, s.last_seen_generation AS file_generation, s.path AS file_path,
+                e.ordinal, e.timestamp, s.session_id, e.tokens, e.input_tokens,
+                e.cached_input_tokens, e.output_tokens, e.reasoning_output_tokens,
+                e.model, e.user_prompt_start, e.user_prompt_end,
+                e.assistant_response_start, e.assistant_response_end, e.source_id
+            FROM event_rows e JOIN sources s ON s.source_id = e.source_id
+            UNION ALL
+            SELECT
+                e.id, p.target_generation, s.path, e.ordinal, e.timestamp, s.session_id,
+                e.tokens, e.input_tokens, e.cached_input_tokens, e.output_tokens,
+                e.reasoning_output_tokens, e.model, e.user_prompt_start, e.user_prompt_end,
+                e.assistant_response_start, e.assistant_response_end, e.source_id
+            FROM event_rows e
+            JOIN pending_sources p ON p.source_id = e.source_id AND p.mode = 'delta'
+            JOIN sources s ON s.source_id = e.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation
+            UNION ALL
+            SELECT
+                e.id, p.target_generation, s.path, e.ordinal, e.timestamp, s.session_id,
+                e.tokens, e.input_tokens, e.cached_input_tokens, e.output_tokens,
+                e.reasoning_output_tokens, e.model, e.user_prompt_start, e.user_prompt_end,
+                e.assistant_response_start, e.assistant_response_end, e.source_id
+            FROM pending_event_rows e
+            JOIN pending_sources p ON p.source_id = e.source_id
+            JOIN sources s ON s.source_id = e.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation;
+
+            CREATE VIEW IF NOT EXISTS file_fingerprints AS
+            SELECT s.last_seen_generation AS file_generation,
+                   s.path AS file_path, f.fingerprint, f.source_id
+            FROM source_fingerprints f JOIN sources s ON s.source_id = f.source_id
+            UNION ALL
+            SELECT p.target_generation, s.path, f.fingerprint, f.source_id
+            FROM source_fingerprints f
+            JOIN pending_sources p ON p.source_id = f.source_id AND p.mode = 'delta'
+            JOIN sources s ON s.source_id = f.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation
+            UNION ALL
+            SELECT p.target_generation, s.path, f.fingerprint, f.source_id
+            FROM pending_fingerprints f
+            JOIN pending_sources p ON p.source_id = f.source_id
+            JOIN sources s ON s.source_id = f.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation;
+
+            CREATE VIEW IF NOT EXISTS file_chunks AS
+            SELECT s.last_seen_generation AS file_generation,
+                   s.path AS file_path, c.chunk_index, c.byte_count, c.sha256, c.source_id
+            FROM source_chunks c JOIN sources s ON s.source_id = c.source_id
+            UNION ALL
+            SELECT p.target_generation, s.path, c.chunk_index, c.byte_count, c.sha256, c.source_id
+            FROM source_chunks c
+            JOIN pending_sources p ON p.source_id = c.source_id AND p.mode = 'delta'
+            JOIN sources s ON s.source_id = c.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation
+            WHERE NOT EXISTS (
+                SELECT 1 FROM pending_chunks replacement
+                WHERE replacement.source_id = c.source_id
+                  AND replacement.chunk_index = c.chunk_index
+            )
+            UNION ALL
+            SELECT p.target_generation, s.path, c.chunk_index, c.byte_count, c.sha256, c.source_id
+            FROM pending_chunks c
+            JOIN pending_sources p ON p.source_id = c.source_id
+            JOIN sources s ON s.source_id = c.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation;
+
+            CREATE VIEW IF NOT EXISTS event_enrichment_sources AS
+            SELECT s.path, e.revision, e.parser_revision,
+                   s.last_seen_generation AS file_generation,
+                   e.completed_size, e.completed_prefix_sha256, e.source_id
+            FROM source_enrichment e JOIN sources s ON s.source_id = e.source_id
+            UNION ALL
+            SELECT s.path, e.revision, e.parser_revision, p.target_generation,
+                   e.completed_size, e.completed_prefix_sha256, e.source_id
+            FROM pending_enrichment e
+            JOIN pending_sources p ON p.source_id = e.source_id
+            JOIN sources s ON s.source_id = e.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation;
+
+            CREATE VIEW IF NOT EXISTS dashboard_file_totals AS
+            SELECT s.last_seen_generation AS file_generation,
+                   s.path AS file_path, s.session_id,
+                   t.total_tokens, t.calls, t.input_tokens, t.cached_input_tokens,
+                   t.output_tokens, t.first_timestamp, t.last_timestamp, t.source_id
+            FROM dashboard_source_totals t JOIN sources s ON s.source_id = t.source_id
+            UNION ALL
+            SELECT p.target_generation, s.path, s.session_id,
+                   t.total_tokens, t.calls, t.input_tokens, t.cached_input_tokens,
+                   t.output_tokens, t.first_timestamp, t.last_timestamp, t.source_id
+            FROM pending_dashboard_source_totals t
+            JOIN pending_sources p ON p.source_id = t.source_id AND p.mode = 'full'
+            JOIN sources s ON s.source_id = t.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation
+            UNION ALL
+            SELECT p.target_generation, s.path, s.session_id,
+                   SUM(parts.total_tokens), SUM(parts.calls), SUM(parts.input_tokens),
+                   SUM(parts.cached_input_tokens), SUM(parts.output_tokens),
+                   MIN(parts.first_timestamp), MAX(parts.last_timestamp), p.source_id
+            FROM pending_sources p
+            JOIN sources s ON s.source_id = p.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation
+            JOIN (
+                SELECT source_id, total_tokens, calls, input_tokens, cached_input_tokens,
+                       output_tokens, first_timestamp, last_timestamp
+                FROM dashboard_source_totals
+                UNION ALL
+                SELECT source_id, total_tokens, calls, input_tokens, cached_input_tokens,
+                       output_tokens, first_timestamp, last_timestamp
+                FROM pending_dashboard_source_totals
+            ) parts ON parts.source_id = p.source_id
+            WHERE p.mode = 'delta'
+            GROUP BY p.target_generation, p.source_id, s.path, s.session_id;
+
+            CREATE VIEW IF NOT EXISTS dashboard_file_5m AS
+            SELECT s.last_seen_generation AS file_generation,
+                   s.path AS file_path, b.bucket_start, b.model_key, b.model,
+                   b.total_tokens, b.calls, b.input_tokens, b.cached_input_tokens,
+                   b.output_tokens, b.source_id
+            FROM dashboard_source_5m b JOIN sources s ON s.source_id = b.source_id
+            UNION ALL
+            SELECT p.target_generation, s.path, b.bucket_start, b.model_key, b.model,
+                   b.total_tokens, b.calls, b.input_tokens, b.cached_input_tokens,
+                   b.output_tokens, b.source_id
+            FROM pending_dashboard_source_5m b
+            JOIN pending_sources p ON p.source_id = b.source_id AND p.mode = 'full'
+            JOIN sources s ON s.source_id = b.source_id
+            JOIN active_building_generation active ON active.generation = p.target_generation
+            UNION ALL
+            SELECT p.target_generation, s.path, parts.bucket_start, parts.model_key,
+                   MAX(parts.model), SUM(parts.total_tokens), SUM(parts.calls),
+                   SUM(parts.input_tokens), SUM(parts.cached_input_tokens),
+                   SUM(parts.output_tokens), p.source_id
+            FROM pending_sources p
+            JOIN sources s ON s.source_id = p.source_id
+            JOIN active_building_generation active ON active.generation = p.target_generation
+            JOIN (
+                SELECT source_id, bucket_start, model_key, model, total_tokens, calls,
+                       input_tokens, cached_input_tokens, output_tokens
+                FROM dashboard_source_5m
+                UNION ALL
+                SELECT source_id, bucket_start, model_key, model, total_tokens, calls,
+                       input_tokens, cached_input_tokens, output_tokens
+                FROM pending_dashboard_source_5m
+            ) parts ON parts.source_id = p.source_id
+            WHERE p.mode = 'delta'
+            GROUP BY p.target_generation, p.source_id, s.path,
+                     parts.bucket_start, parts.model_key;
+
+            CREATE VIEW IF NOT EXISTS dashboard_5m AS
+            SELECT
+                COALESCE((SELECT CAST(value AS INTEGER) FROM metadata
+                          WHERE key = 'published_generation'), 0) AS file_generation,
+                c.bucket_start, c.model_key, c.model, c.total_tokens, c.calls,
+                c.input_tokens, c.cached_input_tokens, c.output_tokens
+            FROM dashboard_5m_current c
+            UNION ALL
+            SELECT b.generation, c.bucket_start, c.model_key, c.model,
+                   c.total_tokens, c.calls, c.input_tokens,
+                   c.cached_input_tokens, c.output_tokens
+            FROM dashboard_5m_current c
+            JOIN active_building_generation b
+            WHERE NOT EXISTS (
+                    SELECT 1 FROM pending_dashboard_5m p
+                    WHERE p.target_generation = b.generation
+                      AND p.bucket_start = c.bucket_start AND p.model_key = c.model_key
+              )
+              AND NOT EXISTS (
+                    SELECT 1 FROM pending_dashboard_5m_tombstones t
+                    WHERE t.target_generation = b.generation
+                      AND t.bucket_start = c.bucket_start AND t.model_key = c.model_key
+              )
+            UNION ALL
+            SELECT p.target_generation, p.bucket_start, p.model_key, p.model,
+                   p.total_tokens, p.calls, p.input_tokens,
+                   p.cached_input_tokens, p.output_tokens
+            FROM pending_dashboard_5m p
+            JOIN active_building_generation b ON b.generation = p.target_generation;
+
+            CREATE VIEW IF NOT EXISTS dashboard_turn_candidates AS
+            SELECT
+                COALESCE((SELECT CAST(value AS INTEGER) FROM metadata
+                          WHERE key = 'published_generation'), 0) AS aggregate_generation,
+                c.event_id, c.source_file_generation, s.path AS file_path,
+                c.ordinal, c.timestamp,
+                s.session_id, c.total_tokens, c.input_tokens, c.cached_input_tokens,
+                c.output_tokens, c.user_prompt_start, c.user_prompt_end,
+                c.assistant_response_start, c.assistant_response_end,
+                c.turn_index, c.session_calls, c.source_id
+            FROM dashboard_turn_candidates_current c
+            JOIN sources s ON s.source_id = c.source_id
+            UNION ALL
+            SELECT b.generation, c.event_id, c.source_file_generation, s.path,
+                   c.ordinal, c.timestamp, s.session_id, c.total_tokens,
+                   c.input_tokens, c.cached_input_tokens, c.output_tokens,
+                   c.user_prompt_start, c.user_prompt_end, c.assistant_response_start,
+                   c.assistant_response_end, c.turn_index, c.session_calls, c.source_id
+            FROM dashboard_turn_candidates_current c
+            JOIN sources s ON s.source_id = c.source_id
+            JOIN active_building_generation b
+            WHERE NOT EXISTS (
+                    SELECT 1 FROM pending_dashboard_turn_candidates p
+                    WHERE p.target_generation = b.generation
+                      AND p.source_id = c.source_id AND p.ordinal = c.ordinal
+              )
+              AND NOT EXISTS (
+                    SELECT 1 FROM pending_dashboard_turn_tombstones t
+                    WHERE t.target_generation = b.generation
+                      AND t.source_id = c.source_id AND t.ordinal = c.ordinal
+              )
+            UNION ALL
+            SELECT p.target_generation, p.event_id, p.source_file_generation, s.path,
+                   p.ordinal, p.timestamp, s.session_id, p.total_tokens,
+                   p.input_tokens, p.cached_input_tokens, p.output_tokens,
+                   p.user_prompt_start, p.user_prompt_end, p.assistant_response_start,
+                   p.assistant_response_end, p.turn_index, p.session_calls, p.source_id
+            FROM pending_dashboard_turn_candidates p
+            JOIN sources s ON s.source_id = p.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation;
+
+            CREATE VIEW IF NOT EXISTS published_files AS
+            SELECT
+                s.last_seen_generation AS generation, s.path, s.deleted, s.session_id,
+                s.size, s.modified_ns, s.prefix_sha256, s.append_ready, s.resume_offset,
+                s.previous_total_tokens, s.fork_replay_started_ns, s.fork_replay_active,
+                s.is_explicit_subagent_fork, s.last_skipped_fork_replay_token_ns,
+                s.current_model, s.current_user_prompt_start, s.current_user_prompt_end,
+                s.assistant_response_start, s.assistant_response_end, s.audit_chunk_index,
+                s.source_id
+            FROM sources s
+            WHERE s.deleted = 0
+              AND s.last_seen_generation <= COALESCE(
+                    (SELECT CAST(value AS INTEGER) FROM metadata
+                     WHERE key = 'published_generation'), 0);
+            CREATE VIEW IF NOT EXISTS published_events AS
+            SELECT
+                e.id, s.last_seen_generation AS file_generation, s.path AS file_path,
+                e.ordinal, e.timestamp, s.session_id, e.tokens, e.input_tokens,
+                e.cached_input_tokens, e.output_tokens, e.reasoning_output_tokens,
+                e.model, e.user_prompt_start, e.user_prompt_end,
+                e.assistant_response_start, e.assistant_response_end, e.source_id
+            FROM event_rows e
+            JOIN sources s ON s.source_id = e.source_id
+            JOIN published_files f ON f.source_id = e.source_id;
+            "#,
+        )
+        .map_err(|error| format!("无法初始化 schema 11 精确 token 索引结构：{error}"))?;
+
+    connection
+        .execute_batch(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS pending_sources_schema11_tombstone_insert
+            AFTER INSERT ON pending_sources
+            WHEN NEW.mode = 'tombstone' BEGIN
+                DELETE FROM pending_event_rows WHERE source_id = NEW.source_id;
+                DELETE FROM pending_fingerprints WHERE source_id = NEW.source_id;
+                DELETE FROM pending_chunks WHERE source_id = NEW.source_id;
+                DELETE FROM pending_enrichment WHERE source_id = NEW.source_id;
+                DELETE FROM pending_dashboard_source_totals WHERE source_id = NEW.source_id;
+                DELETE FROM pending_dashboard_source_5m WHERE source_id = NEW.source_id;
+                DELETE FROM pending_dashboard_turn_candidates WHERE source_id = NEW.source_id;
+                DELETE FROM pending_dashboard_turn_tombstones WHERE source_id = NEW.source_id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS pending_sources_schema11_tombstone_update
+            AFTER UPDATE OF mode ON pending_sources
+            WHEN NEW.mode = 'tombstone' BEGIN
+                DELETE FROM pending_event_rows WHERE source_id = NEW.source_id;
+                DELETE FROM pending_fingerprints WHERE source_id = NEW.source_id;
+                DELETE FROM pending_chunks WHERE source_id = NEW.source_id;
+                DELETE FROM pending_enrichment WHERE source_id = NEW.source_id;
+                DELETE FROM pending_dashboard_source_totals WHERE source_id = NEW.source_id;
+                DELETE FROM pending_dashboard_source_5m WHERE source_id = NEW.source_id;
+                DELETE FROM pending_dashboard_turn_candidates WHERE source_id = NEW.source_id;
+                DELETE FROM pending_dashboard_turn_tombstones WHERE source_id = NEW.source_id;
+            END;
+
+            -- The compatibility views are used by bounded legacy helpers
+            -- while a generation is being migrated to the physical pending
+            -- tables. Reject any attempt to address the published layer
+            -- during an active build instead of silently mutating lastGood.
+            CREATE TRIGGER IF NOT EXISTS files_schema11_reject_current_delete
+            INSTEAD OF DELETE ON files
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE OLD.generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current file delete blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS events_schema11_reject_current_insert
+            INSTEAD OF INSERT ON events
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE NEW.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current event insert blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS events_schema11_reject_current_delete
+            INSTEAD OF DELETE ON events
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE OLD.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current event delete blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS file_fingerprints_schema11_reject_current_insert
+            INSTEAD OF INSERT ON file_fingerprints
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE NEW.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current fingerprint insert blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS file_fingerprints_schema11_reject_current_delete
+            INSTEAD OF DELETE ON file_fingerprints
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE OLD.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current fingerprint delete blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS file_chunks_schema11_reject_current_insert
+            INSTEAD OF INSERT ON file_chunks
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE NEW.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current chunk insert blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS file_chunks_schema11_reject_current_delete
+            INSTEAD OF DELETE ON file_chunks
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE OLD.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current chunk delete blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS event_enrichment_schema11_reject_current_insert
+            INSTEAD OF INSERT ON event_enrichment_sources
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE NEW.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current enrichment insert blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS event_enrichment_schema11_reject_current_update
+            INSTEAD OF UPDATE ON event_enrichment_sources
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE OLD.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current enrichment update blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS event_enrichment_schema11_reject_current_delete
+            INSTEAD OF DELETE ON event_enrichment_sources
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE OLD.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current enrichment delete blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS dashboard_file_totals_schema11_reject_current_insert
+            INSTEAD OF INSERT ON dashboard_file_totals
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE NEW.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current file total insert blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS dashboard_file_totals_schema11_reject_current_delete
+            INSTEAD OF DELETE ON dashboard_file_totals
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE OLD.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current file total delete blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS dashboard_file_5m_schema11_reject_current_insert
+            INSTEAD OF INSERT ON dashboard_file_5m
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE NEW.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current file bucket insert blocked during building generation');
+            END;
+            CREATE TRIGGER IF NOT EXISTS dashboard_file_5m_schema11_reject_current_delete
+            INSTEAD OF DELETE ON dashboard_file_5m
+            WHEN EXISTS(SELECT 1 FROM active_building_generation b
+                        WHERE OLD.file_generation <> b.generation) BEGIN
+                SELECT RAISE(ABORT, 'schema11 current file bucket delete blocked during building generation');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS files_schema11_insert
+            INSTEAD OF INSERT ON files BEGIN
+                SELECT CASE WHEN NEW.generation <> COALESCE(
+                    (SELECT generation FROM active_building_generation), -1)
+                    THEN RAISE(ABORT, 'schema11 file writes require the active building generation')
+                END;
+                INSERT OR IGNORE INTO sources(
+                    source_id, path, session_id, deleted, last_seen_generation
+                ) VALUES (
+                    COALESCE(NULLIF(NEW.source_id, 0),
+                        (SELECT COALESCE(MAX(source_id), 0) + 1 FROM sources)),
+                    NEW.path, COALESCE(NEW.session_id, ''), 1, 0
+                );
+                SELECT CASE WHEN COALESCE(NEW.session_id, '') <> ''
+                    AND (SELECT session_id FROM sources WHERE path = NEW.path) <> ''
+                    AND (SELECT session_id FROM sources WHERE path = NEW.path) <> NEW.session_id
+                    THEN RAISE(ABORT, 'schema11 source session id changed for one path')
+                END;
+                UPDATE sources SET session_id = COALESCE(NULLIF(session_id, ''), NEW.session_id, '')
+                WHERE path = NEW.path;
+                DELETE FROM pending_dashboard_turn_candidates
+                WHERE source_id = (SELECT source_id FROM sources WHERE path = NEW.path)
+                  AND COALESCE(NEW.deleted, 0) <> 0;
+                DELETE FROM pending_dashboard_turn_tombstones
+                WHERE source_id = (SELECT source_id FROM sources WHERE path = NEW.path)
+                  AND COALESCE(NEW.deleted, 0) <> 0;
+                -- Replacing an in-flight delta/full row with a confirmed
+                -- tombstone first removes its source-scoped pending children
+                -- through the foreign-key cascade. The source row itself is
+                -- stable and is never deleted.
+                DELETE FROM pending_sources
+                WHERE source_id = (SELECT source_id FROM sources WHERE path = NEW.path)
+                  AND COALESCE(NEW.deleted, 0) <> 0;
+                INSERT INTO pending_sources(
+                    source_id, target_generation, mode, deleted, size, modified_ns,
+                    prefix_sha256, append_ready, resume_offset, previous_total_tokens,
+                    fork_replay_started_ns, fork_replay_active,
+                    is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
+                    current_model, current_user_prompt_start, current_user_prompt_end,
+                    assistant_response_start, assistant_response_end, audit_chunk_index
+                ) VALUES (
+                    (SELECT source_id FROM sources WHERE path = NEW.path), NEW.generation,
+                    CASE WHEN COALESCE(NEW.deleted, 0) <> 0 THEN 'tombstone' ELSE 'full' END,
+                    COALESCE(NEW.deleted, 0), COALESCE(NEW.size, 0),
+                    COALESCE(NEW.modified_ns, '0'), COALESCE(NEW.prefix_sha256, X''),
+                    COALESCE(NEW.append_ready, 0), NEW.resume_offset,
+                    NEW.previous_total_tokens, NEW.fork_replay_started_ns,
+                    COALESCE(NEW.fork_replay_active, 0),
+                    COALESCE(NEW.is_explicit_subagent_fork, 0),
+                    NEW.last_skipped_fork_replay_token_ns, NEW.current_model,
+                    NEW.current_user_prompt_start, NEW.current_user_prompt_end,
+                    NEW.assistant_response_start, NEW.assistant_response_end,
+                    COALESCE(NEW.audit_chunk_index, 0)
+                ) ON CONFLICT(source_id) DO UPDATE SET
+                    target_generation = excluded.target_generation,
+                    mode = CASE
+                        WHEN excluded.deleted <> 0 THEN 'tombstone'
+                        WHEN pending_sources.mode = 'delta' THEN 'delta'
+                        ELSE 'full'
+                    END,
+                    deleted = excluded.deleted, size = excluded.size,
+                    modified_ns = excluded.modified_ns,
+                    prefix_sha256 = excluded.prefix_sha256,
+                    append_ready = excluded.append_ready,
+                    resume_offset = excluded.resume_offset,
+                    previous_total_tokens = excluded.previous_total_tokens,
+                    fork_replay_started_ns = excluded.fork_replay_started_ns,
+                    fork_replay_active = excluded.fork_replay_active,
+                    is_explicit_subagent_fork = excluded.is_explicit_subagent_fork,
+                    last_skipped_fork_replay_token_ns = excluded.last_skipped_fork_replay_token_ns,
+                    current_model = excluded.current_model,
+                    current_user_prompt_start = excluded.current_user_prompt_start,
+                    current_user_prompt_end = excluded.current_user_prompt_end,
+                    assistant_response_start = excluded.assistant_response_start,
+                    assistant_response_end = excluded.assistant_response_end,
+                    audit_chunk_index = excluded.audit_chunk_index;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS files_schema11_update_pending
+            INSTEAD OF UPDATE ON files
+            WHEN EXISTS(
+                SELECT 1 FROM metadata b, metadata p
+                WHERE b.key = 'building_generation' AND p.key = 'published_generation'
+                  AND CAST(b.value AS INTEGER) > CAST(p.value AS INTEGER)
+                  AND (OLD.generation = CAST(b.value AS INTEGER)
+                       OR OLD.generation = (SELECT last_seen_generation FROM sources
+                                            WHERE source_id = OLD.source_id))
+            ) BEGIN
+                INSERT INTO pending_sources(
+                    source_id, target_generation, mode, deleted, size, modified_ns,
+                    prefix_sha256, append_ready, resume_offset, previous_total_tokens,
+                    fork_replay_started_ns, fork_replay_active,
+                    is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
+                    current_model, current_user_prompt_start, current_user_prompt_end,
+                    assistant_response_start, assistant_response_end, audit_chunk_index
+                ) VALUES (
+                    OLD.source_id,
+                    (SELECT generation FROM active_building_generation),
+                    CASE WHEN COALESCE(NEW.deleted, 0) <> 0 THEN 'tombstone'
+                         ELSE COALESCE((SELECT mode FROM pending_sources
+                                        WHERE source_id = OLD.source_id), 'delta') END,
+                    COALESCE(NEW.deleted, 0), NEW.size, NEW.modified_ns,
+                    NEW.prefix_sha256, NEW.append_ready, NEW.resume_offset,
+                    NEW.previous_total_tokens, NEW.fork_replay_started_ns,
+                    NEW.fork_replay_active, NEW.is_explicit_subagent_fork,
+                    NEW.last_skipped_fork_replay_token_ns, NEW.current_model,
+                    NEW.current_user_prompt_start, NEW.current_user_prompt_end,
+                    NEW.assistant_response_start, NEW.assistant_response_end,
+                    NEW.audit_chunk_index
+                ) ON CONFLICT(source_id) DO UPDATE SET
+                    target_generation = excluded.target_generation,
+                    mode = excluded.mode, deleted = excluded.deleted, size = excluded.size,
+                    modified_ns = excluded.modified_ns,
+                    prefix_sha256 = excluded.prefix_sha256,
+                    append_ready = excluded.append_ready,
+                    resume_offset = excluded.resume_offset,
+                    previous_total_tokens = excluded.previous_total_tokens,
+                    fork_replay_started_ns = excluded.fork_replay_started_ns,
+                    fork_replay_active = excluded.fork_replay_active,
+                    is_explicit_subagent_fork = excluded.is_explicit_subagent_fork,
+                    last_skipped_fork_replay_token_ns = excluded.last_skipped_fork_replay_token_ns,
+                    current_model = excluded.current_model,
+                    current_user_prompt_start = excluded.current_user_prompt_start,
+                    current_user_prompt_end = excluded.current_user_prompt_end,
+                    assistant_response_start = excluded.assistant_response_start,
+                    assistant_response_end = excluded.assistant_response_end,
+                    audit_chunk_index = excluded.audit_chunk_index;
+            END;
+            CREATE TRIGGER IF NOT EXISTS files_schema11_update_current
+            INSTEAD OF UPDATE ON files
+            WHEN NOT EXISTS(
+                SELECT 1 FROM metadata b, metadata p
+                WHERE b.key = 'building_generation' AND p.key = 'published_generation'
+                  AND CAST(b.value AS INTEGER) > CAST(p.value AS INTEGER)
+            ) BEGIN
+                UPDATE sources SET
+                    path = NEW.path, session_id = NEW.session_id, deleted = NEW.deleted,
+                    last_seen_generation = NEW.generation, size = NEW.size,
+                    modified_ns = NEW.modified_ns, prefix_sha256 = NEW.prefix_sha256,
+                    append_ready = NEW.append_ready, resume_offset = NEW.resume_offset,
+                    previous_total_tokens = NEW.previous_total_tokens,
+                    fork_replay_started_ns = NEW.fork_replay_started_ns,
+                    fork_replay_active = NEW.fork_replay_active,
+                    is_explicit_subagent_fork = NEW.is_explicit_subagent_fork,
+                    last_skipped_fork_replay_token_ns = NEW.last_skipped_fork_replay_token_ns,
+                    current_model = NEW.current_model,
+                    current_user_prompt_start = NEW.current_user_prompt_start,
+                    current_user_prompt_end = NEW.current_user_prompt_end,
+                    assistant_response_start = NEW.assistant_response_start,
+                    assistant_response_end = NEW.assistant_response_end,
+                    audit_chunk_index = NEW.audit_chunk_index
+                WHERE source_id = OLD.source_id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS files_schema11_delete_pending
+            INSTEAD OF DELETE ON files
+            WHEN OLD.generation = COALESCE(
+                (SELECT target_generation FROM pending_sources
+                 WHERE source_id = OLD.source_id), -1)
+            BEGIN
+                DELETE FROM pending_sources WHERE source_id = OLD.source_id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS files_schema11_delete_current
+            INSTEAD OF DELETE ON files
+            WHEN OLD.generation = (SELECT last_seen_generation FROM sources
+                                   WHERE source_id = OLD.source_id)
+             AND NOT EXISTS(SELECT 1 FROM pending_sources WHERE source_id = OLD.source_id)
+             AND NOT EXISTS(SELECT 1 FROM active_building_generation)
+            BEGIN
+                DELETE FROM sources WHERE source_id = OLD.source_id;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS events_schema11_insert
+            INSTEAD OF INSERT ON events BEGIN
+                SELECT CASE WHEN NOT EXISTS(
+                    SELECT 1 FROM sources s WHERE s.source_id = COALESCE(
+                        NULLIF(NEW.source_id, 0),
+                        (SELECT source_id FROM sources WHERE path = NEW.file_path))
+                ) THEN RAISE(ABORT, 'schema11 event source is missing') END;
+                UPDATE metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+                WHERE key = 'event_id_sequence' AND COALESCE(NEW.id, -1) <= 0;
+                UPDATE metadata SET value = CAST(NEW.id AS TEXT)
+                WHERE key = 'event_id_sequence' AND NEW.id > CAST(value AS INTEGER);
+                INSERT INTO pending_event_rows(
+                    id, source_id, ordinal, timestamp, tokens, input_tokens,
+                    cached_input_tokens, output_tokens, reasoning_output_tokens, model,
+                    user_prompt_start, user_prompt_end, assistant_response_start,
+                    assistant_response_end
+                ) SELECT
+                    CASE WHEN COALESCE(NEW.id, -1) <= 0
+                         THEN CAST((SELECT value FROM metadata
+                                    WHERE key = 'event_id_sequence') AS INTEGER)
+                         ELSE NEW.id END,
+                    p.source_id, NEW.ordinal, NEW.timestamp, NEW.tokens, NEW.input_tokens,
+                    NEW.cached_input_tokens, NEW.output_tokens,
+                    COALESCE(NEW.reasoning_output_tokens, 0), NEW.model,
+                    NEW.user_prompt_start, NEW.user_prompt_end,
+                    NEW.assistant_response_start, NEW.assistant_response_end
+                FROM pending_sources p JOIN sources s ON s.source_id = p.source_id
+                WHERE s.path = NEW.file_path AND p.target_generation = NEW.file_generation
+                  AND p.mode <> 'tombstone';
+                INSERT INTO event_rows(
+                    id, source_id, ordinal, timestamp, tokens, input_tokens,
+                    cached_input_tokens, output_tokens, reasoning_output_tokens, model,
+                    user_prompt_start, user_prompt_end, assistant_response_start,
+                    assistant_response_end
+                ) SELECT
+                    CASE WHEN COALESCE(NEW.id, -1) <= 0
+                         THEN CAST((SELECT value FROM metadata
+                                    WHERE key = 'event_id_sequence') AS INTEGER)
+                         ELSE NEW.id END,
+                    s.source_id, NEW.ordinal, NEW.timestamp, NEW.tokens, NEW.input_tokens,
+                    NEW.cached_input_tokens, NEW.output_tokens,
+                    COALESCE(NEW.reasoning_output_tokens, 0), NEW.model,
+                    NEW.user_prompt_start, NEW.user_prompt_end,
+                    NEW.assistant_response_start, NEW.assistant_response_end
+                FROM sources s
+                WHERE s.path = NEW.file_path AND s.last_seen_generation = NEW.file_generation
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation)
+                  AND NOT EXISTS(SELECT 1 FROM pending_sources p
+                                 WHERE p.source_id = s.source_id
+                                   AND p.target_generation = NEW.file_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS events_schema11_delete
+            INSTEAD OF DELETE ON events BEGIN
+                DELETE FROM pending_event_rows
+                WHERE id = OLD.id AND EXISTS(
+                    SELECT 1 FROM pending_sources p
+                    WHERE p.source_id = OLD.source_id
+                      AND p.target_generation = OLD.file_generation
+                );
+                DELETE FROM event_rows
+                WHERE id = OLD.id
+                  AND OLD.file_generation = (SELECT last_seen_generation FROM sources
+                                             WHERE source_id = OLD.source_id)
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS file_fingerprints_schema11_insert
+            INSTEAD OF INSERT ON file_fingerprints BEGIN
+                INSERT OR IGNORE INTO pending_fingerprints(source_id, fingerprint)
+                SELECT p.source_id, NEW.fingerprint FROM pending_sources p
+                JOIN sources s ON s.source_id = p.source_id
+                WHERE s.path = NEW.file_path AND p.target_generation = NEW.file_generation
+                  AND p.mode <> 'tombstone';
+                INSERT OR IGNORE INTO source_fingerprints(source_id, fingerprint)
+                SELECT s.source_id, NEW.fingerprint FROM sources s
+                WHERE s.path = NEW.file_path AND s.last_seen_generation = NEW.file_generation
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation)
+                  AND NOT EXISTS(SELECT 1 FROM pending_sources p
+                                 WHERE p.source_id = s.source_id
+                                   AND p.target_generation = NEW.file_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS file_fingerprints_schema11_delete
+            INSTEAD OF DELETE ON file_fingerprints BEGIN
+                DELETE FROM pending_fingerprints
+                WHERE source_id = OLD.source_id AND fingerprint = OLD.fingerprint
+                  AND EXISTS(SELECT 1 FROM pending_sources p
+                             WHERE p.source_id = OLD.source_id
+                               AND p.target_generation = OLD.file_generation);
+                DELETE FROM source_fingerprints
+                WHERE source_id = OLD.source_id AND fingerprint = OLD.fingerprint
+                  AND OLD.file_generation = (SELECT last_seen_generation FROM sources
+                                             WHERE source_id = OLD.source_id)
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS file_chunks_schema11_insert
+            INSTEAD OF INSERT ON file_chunks BEGIN
+                INSERT OR REPLACE INTO pending_chunks(source_id, chunk_index, byte_count, sha256)
+                SELECT p.source_id, NEW.chunk_index, NEW.byte_count, NEW.sha256
+                FROM pending_sources p JOIN sources s ON s.source_id = p.source_id
+                WHERE s.path = NEW.file_path AND p.target_generation = NEW.file_generation
+                  AND p.mode <> 'tombstone';
+                INSERT OR REPLACE INTO source_chunks(source_id, chunk_index, byte_count, sha256)
+                SELECT s.source_id, NEW.chunk_index, NEW.byte_count, NEW.sha256
+                FROM sources s
+                WHERE s.path = NEW.file_path AND s.last_seen_generation = NEW.file_generation
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation)
+                  AND NOT EXISTS(SELECT 1 FROM pending_sources p
+                                 WHERE p.source_id = s.source_id
+                                   AND p.target_generation = NEW.file_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS file_chunks_schema11_delete
+            INSTEAD OF DELETE ON file_chunks BEGIN
+                DELETE FROM pending_chunks
+                WHERE source_id = OLD.source_id AND chunk_index = OLD.chunk_index
+                  AND EXISTS(SELECT 1 FROM pending_sources p
+                             WHERE p.source_id = OLD.source_id
+                               AND p.target_generation = OLD.file_generation);
+                DELETE FROM source_chunks
+                WHERE source_id = OLD.source_id AND chunk_index = OLD.chunk_index
+                  AND OLD.file_generation = (SELECT last_seen_generation FROM sources
+                                             WHERE source_id = OLD.source_id)
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS event_enrichment_sources_schema11_insert
+            INSTEAD OF INSERT ON event_enrichment_sources BEGIN
+                INSERT OR REPLACE INTO pending_enrichment(
+                    source_id, revision, parser_revision, completed_size,
+                    completed_prefix_sha256
+                ) SELECT p.source_id, NEW.revision, NEW.parser_revision,
+                         NEW.completed_size, NEW.completed_prefix_sha256
+                  FROM pending_sources p JOIN sources s ON s.source_id = p.source_id
+                 WHERE s.path = NEW.path AND p.target_generation = NEW.file_generation
+                   AND p.mode <> 'tombstone';
+                INSERT OR REPLACE INTO source_enrichment(
+                    source_id, revision, parser_revision, completed_size,
+                    completed_prefix_sha256
+                ) SELECT s.source_id, NEW.revision, NEW.parser_revision,
+                         NEW.completed_size, NEW.completed_prefix_sha256
+                  FROM sources s
+                 WHERE s.path = NEW.path AND s.last_seen_generation = NEW.file_generation
+                   AND NOT EXISTS(SELECT 1 FROM active_building_generation)
+                   AND NOT EXISTS(SELECT 1 FROM pending_sources p
+                                  WHERE p.source_id = s.source_id
+                                    AND p.target_generation = NEW.file_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS event_enrichment_sources_schema11_update
+            INSTEAD OF UPDATE ON event_enrichment_sources BEGIN
+                UPDATE pending_enrichment SET
+                    revision = NEW.revision, parser_revision = NEW.parser_revision,
+                    completed_size = NEW.completed_size,
+                    completed_prefix_sha256 = NEW.completed_prefix_sha256
+                WHERE source_id = OLD.source_id
+                  AND EXISTS(SELECT 1 FROM pending_sources p
+                             WHERE p.source_id = OLD.source_id
+                               AND p.target_generation = OLD.file_generation);
+                UPDATE source_enrichment SET
+                    revision = NEW.revision, parser_revision = NEW.parser_revision,
+                    completed_size = NEW.completed_size,
+                    completed_prefix_sha256 = NEW.completed_prefix_sha256
+                WHERE source_id = OLD.source_id
+                  AND OLD.file_generation = (SELECT last_seen_generation FROM sources
+                                             WHERE source_id = OLD.source_id)
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS event_enrichment_sources_schema11_delete
+            INSTEAD OF DELETE ON event_enrichment_sources BEGIN
+                DELETE FROM pending_enrichment
+                WHERE source_id = OLD.source_id
+                  AND EXISTS(SELECT 1 FROM pending_sources p
+                             WHERE p.source_id = OLD.source_id
+                               AND p.target_generation = OLD.file_generation);
+                DELETE FROM source_enrichment
+                WHERE source_id = OLD.source_id
+                  AND OLD.file_generation = (SELECT last_seen_generation FROM sources
+                                             WHERE source_id = OLD.source_id)
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS dashboard_file_totals_schema11_insert
+            INSTEAD OF INSERT ON dashboard_file_totals BEGIN
+                INSERT OR REPLACE INTO pending_dashboard_source_totals(
+                    source_id, total_tokens, calls, input_tokens, cached_input_tokens,
+                    output_tokens, first_timestamp, last_timestamp
+                ) SELECT p.source_id, NEW.total_tokens, NEW.calls, NEW.input_tokens,
+                         NEW.cached_input_tokens, NEW.output_tokens,
+                         NEW.first_timestamp, NEW.last_timestamp
+                  FROM pending_sources p JOIN sources s ON s.source_id = p.source_id
+                 WHERE s.path = NEW.file_path AND p.target_generation = NEW.file_generation
+                   AND p.mode <> 'tombstone';
+                INSERT OR REPLACE INTO dashboard_source_totals(
+                    source_id, total_tokens, calls, input_tokens, cached_input_tokens,
+                    output_tokens, first_timestamp, last_timestamp
+                ) SELECT s.source_id, NEW.total_tokens, NEW.calls, NEW.input_tokens,
+                         NEW.cached_input_tokens, NEW.output_tokens,
+                         NEW.first_timestamp, NEW.last_timestamp
+                  FROM sources s
+                 WHERE s.path = NEW.file_path AND s.last_seen_generation = NEW.file_generation
+                   AND NOT EXISTS(SELECT 1 FROM active_building_generation)
+                   AND NOT EXISTS(SELECT 1 FROM pending_sources p
+                                  WHERE p.source_id = s.source_id
+                                    AND p.target_generation = NEW.file_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS dashboard_file_totals_schema11_delete
+            INSTEAD OF DELETE ON dashboard_file_totals BEGIN
+                DELETE FROM pending_dashboard_source_totals
+                WHERE source_id = OLD.source_id
+                  AND EXISTS(SELECT 1 FROM pending_sources p
+                             WHERE p.source_id = OLD.source_id
+                               AND p.target_generation = OLD.file_generation);
+                DELETE FROM dashboard_source_totals
+                WHERE source_id = OLD.source_id
+                  AND OLD.file_generation = (SELECT last_seen_generation FROM sources
+                                             WHERE source_id = OLD.source_id)
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS dashboard_file_5m_schema11_insert
+            INSTEAD OF INSERT ON dashboard_file_5m BEGIN
+                INSERT OR REPLACE INTO pending_dashboard_source_5m(
+                    source_id, bucket_start, model_key, model, total_tokens, calls,
+                    input_tokens, cached_input_tokens, output_tokens
+                ) SELECT p.source_id, NEW.bucket_start, NEW.model_key, NEW.model,
+                         NEW.total_tokens, NEW.calls, NEW.input_tokens,
+                         NEW.cached_input_tokens, NEW.output_tokens
+                  FROM pending_sources p JOIN sources s ON s.source_id = p.source_id
+                 WHERE s.path = NEW.file_path AND p.target_generation = NEW.file_generation
+                   AND p.mode <> 'tombstone';
+                INSERT OR REPLACE INTO dashboard_source_5m(
+                    source_id, bucket_start, model_key, model, total_tokens, calls,
+                    input_tokens, cached_input_tokens, output_tokens
+                ) SELECT s.source_id, NEW.bucket_start, NEW.model_key, NEW.model,
+                         NEW.total_tokens, NEW.calls, NEW.input_tokens,
+                         NEW.cached_input_tokens, NEW.output_tokens
+                  FROM sources s
+                 WHERE s.path = NEW.file_path AND s.last_seen_generation = NEW.file_generation
+                   AND NOT EXISTS(SELECT 1 FROM active_building_generation)
+                   AND NOT EXISTS(SELECT 1 FROM pending_sources p
+                                  WHERE p.source_id = s.source_id
+                                    AND p.target_generation = NEW.file_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS dashboard_file_5m_schema11_delete
+            INSTEAD OF DELETE ON dashboard_file_5m BEGIN
+                DELETE FROM pending_dashboard_source_5m
+                WHERE source_id = OLD.source_id AND bucket_start = OLD.bucket_start
+                  AND model_key = OLD.model_key
+                  AND EXISTS(SELECT 1 FROM pending_sources p
+                             WHERE p.source_id = OLD.source_id
+                               AND p.target_generation = OLD.file_generation);
+                DELETE FROM dashboard_source_5m
+                WHERE source_id = OLD.source_id AND bucket_start = OLD.bucket_start
+                  AND model_key = OLD.model_key
+                  AND OLD.file_generation = (SELECT last_seen_generation FROM sources
+                                             WHERE source_id = OLD.source_id)
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS dashboard_5m_schema11_delete
+            INSTEAD OF DELETE ON dashboard_5m BEGIN
+                DELETE FROM pending_dashboard_5m
+                WHERE target_generation = OLD.file_generation
+                  AND bucket_start = OLD.bucket_start AND model_key = OLD.model_key;
+                INSERT OR IGNORE INTO pending_dashboard_5m_tombstones(
+                    target_generation, bucket_start, model_key
+                ) SELECT OLD.file_generation, OLD.bucket_start, OLD.model_key
+                  WHERE OLD.file_generation = COALESCE(
+                        (SELECT generation FROM active_building_generation), -1);
+                DELETE FROM dashboard_5m_current
+                WHERE bucket_start = OLD.bucket_start AND model_key = OLD.model_key
+                  AND OLD.file_generation = COALESCE(
+                        (SELECT CAST(value AS INTEGER) FROM metadata
+                         WHERE key = 'published_generation'), 0)
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS dashboard_5m_schema11_insert
+            INSTEAD OF INSERT ON dashboard_5m BEGIN
+                INSERT OR REPLACE INTO pending_dashboard_5m(
+                    target_generation, bucket_start, model_key, model, total_tokens,
+                    calls, input_tokens, cached_input_tokens, output_tokens
+                ) SELECT NEW.file_generation, NEW.bucket_start, NEW.model_key, NEW.model,
+                         NEW.total_tokens, NEW.calls, NEW.input_tokens,
+                         NEW.cached_input_tokens, NEW.output_tokens
+                  WHERE NEW.file_generation = COALESCE(
+                        (SELECT generation FROM active_building_generation), -1);
+                DELETE FROM pending_dashboard_5m_tombstones
+                WHERE target_generation = NEW.file_generation
+                  AND bucket_start = NEW.bucket_start AND model_key = NEW.model_key;
+                INSERT OR REPLACE INTO dashboard_5m_current(
+                    bucket_start, model_key, model, total_tokens, calls,
+                    input_tokens, cached_input_tokens, output_tokens
+                ) SELECT NEW.bucket_start, NEW.model_key, NEW.model, NEW.total_tokens,
+                         NEW.calls, NEW.input_tokens, NEW.cached_input_tokens,
+                         NEW.output_tokens
+                  WHERE NEW.file_generation = COALESCE(
+                        (SELECT CAST(value AS INTEGER) FROM metadata
+                         WHERE key = 'published_generation'), 0)
+                    AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS dashboard_turn_candidates_schema11_delete
+            INSTEAD OF DELETE ON dashboard_turn_candidates BEGIN
+                DELETE FROM pending_dashboard_turn_candidates
+                WHERE target_generation = OLD.aggregate_generation
+                  AND source_id = OLD.source_id AND ordinal = OLD.ordinal;
+                INSERT OR IGNORE INTO pending_dashboard_turn_tombstones(
+                    target_generation, source_id, ordinal
+                ) SELECT OLD.aggregate_generation, OLD.source_id, OLD.ordinal
+                  WHERE OLD.aggregate_generation = COALESCE(
+                        (SELECT generation FROM active_building_generation), -1);
+                DELETE FROM dashboard_turn_candidates_current
+                WHERE source_id = OLD.source_id AND ordinal = OLD.ordinal
+                  AND OLD.aggregate_generation = COALESCE(
+                        (SELECT CAST(value AS INTEGER) FROM metadata
+                         WHERE key = 'published_generation'), 0)
+                  AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+            CREATE TRIGGER IF NOT EXISTS dashboard_turn_candidates_schema11_insert
+            INSTEAD OF INSERT ON dashboard_turn_candidates BEGIN
+                INSERT OR REPLACE INTO pending_dashboard_turn_candidates(
+                    target_generation, source_id, ordinal, event_id,
+                    source_file_generation, timestamp, total_tokens, input_tokens,
+                    cached_input_tokens, output_tokens, user_prompt_start,
+                    user_prompt_end, assistant_response_start, assistant_response_end,
+                    turn_index, session_calls
+                ) SELECT NEW.aggregate_generation,
+                         COALESCE(NULLIF(NEW.source_id, 0),
+                                  (SELECT source_id FROM sources WHERE path = NEW.file_path)),
+                         NEW.ordinal, NEW.event_id, NEW.source_file_generation,
+                         NEW.timestamp, NEW.total_tokens, NEW.input_tokens,
+                         NEW.cached_input_tokens, NEW.output_tokens,
+                         NEW.user_prompt_start, NEW.user_prompt_end,
+                         NEW.assistant_response_start, NEW.assistant_response_end,
+                         NEW.turn_index, NEW.session_calls
+                  WHERE NEW.aggregate_generation = COALESCE(
+                        (SELECT generation FROM active_building_generation), -1);
+                DELETE FROM pending_dashboard_turn_tombstones
+                WHERE target_generation = NEW.aggregate_generation
+                  AND source_id = COALESCE(NULLIF(NEW.source_id, 0),
+                        (SELECT source_id FROM sources WHERE path = NEW.file_path))
+                  AND ordinal = NEW.ordinal;
+                INSERT OR REPLACE INTO dashboard_turn_candidates_current(
+                    source_id, ordinal, event_id, source_file_generation,
+                    timestamp, total_tokens, input_tokens, cached_input_tokens,
+                    output_tokens, user_prompt_start, user_prompt_end,
+                    assistant_response_start, assistant_response_end,
+                    turn_index, session_calls
+                ) SELECT
+                    COALESCE(NULLIF(NEW.source_id, 0),
+                             (SELECT source_id FROM sources WHERE path = NEW.file_path)),
+                    NEW.ordinal, NEW.event_id, NEW.source_file_generation,
+                    NEW.timestamp, NEW.total_tokens, NEW.input_tokens,
+                    NEW.cached_input_tokens, NEW.output_tokens,
+                    NEW.user_prompt_start, NEW.user_prompt_end,
+                    NEW.assistant_response_start, NEW.assistant_response_end,
+                    NEW.turn_index, NEW.session_calls
+                  WHERE NEW.aggregate_generation = COALESCE(
+                        (SELECT CAST(value AS INTEGER) FROM metadata
+                         WHERE key = 'published_generation'), 0)
+                    AND NOT EXISTS(SELECT 1 FROM active_building_generation);
+            END;
+            "#,
+        )
+        .map_err(|error| format!("无法初始化 schema 11 精确 token 兼容视图写入触发器：{error}"))
+}
+
+fn initialize_legacy_index_schema(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
             r#"
@@ -12935,39 +16756,10 @@ fn metadata_i64(connection: &Connection, key: &str) -> Result<Option<i64>, Strin
 }
 
 fn event_enrichment_source_count(connection: &Connection) -> Result<u64, String> {
-    let files_exist = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| format!("无法检查历史字段补全来源表：{error}"))?;
-    if !files_exist {
-        return Ok(0);
-    }
     connection
-        .query_row(
-            r#"
-            WITH latest AS (
-                SELECT path, MAX(generation) AS generation
-                FROM files
-                WHERE generation <= COALESCE(
-                    (SELECT CAST(value AS INTEGER) FROM metadata
-                     WHERE key = 'published_generation'),
-                    0
-                )
-                GROUP BY path
-            )
-            SELECT COUNT(*)
-            FROM latest
-            JOIN files f
-              ON f.path = latest.path
-             AND f.generation = latest.generation
-            WHERE f.deleted = 0
-            "#,
-            [],
-            |row| row.get::<_, i64>(0),
-        )
+        .query_row("SELECT COUNT(*) FROM published_files", [], |row| {
+            row.get::<_, i64>(0)
+        })
         .map(nonnegative_u64)
         .map_err(|error| format!("无法统计历史字段补全来源：{error}"))
 }
@@ -12994,51 +16786,39 @@ fn record_missing_event_enrichment_source(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始已删除历史来源补全事务：{error}"))?;
-    delete_file_version_rows(&transaction, generation, &candidate.path)?;
-    transaction
+    let staged = transaction
         .execute(
             r#"
-            INSERT INTO files(
-                generation,
-                path,
-                deleted,
-                session_id,
-                size,
-                modified_ns,
-                prefix_sha256
-            ) VALUES (?1, ?2, 1, '', 0, '0', X'')
+            INSERT INTO pending_sources(
+                source_id, target_generation, mode, deleted, size, modified_ns,
+                prefix_sha256, append_ready, resume_offset, previous_total_tokens,
+                fork_replay_started_ns, fork_replay_active,
+                is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
+                current_model, current_user_prompt_start, current_user_prompt_end,
+                assistant_response_start, assistant_response_end, audit_chunk_index
+            )
+            SELECT source_id, ?1, 'tombstone', 1, 0, '0', X'', 0,
+                   NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, 0
+            FROM sources WHERE path = ?2
+            ON CONFLICT(source_id) DO UPDATE SET
+                target_generation = excluded.target_generation,
+                mode = 'tombstone', deleted = 1, size = 0,
+                modified_ns = '0', prefix_sha256 = X'', append_ready = 0,
+                resume_offset = NULL, previous_total_tokens = NULL,
+                fork_replay_started_ns = NULL, fork_replay_active = 0,
+                is_explicit_subagent_fork = 0,
+                last_skipped_fork_replay_token_ns = NULL,
+                current_model = NULL, current_user_prompt_start = NULL,
+                current_user_prompt_end = NULL, assistant_response_start = NULL,
+                assistant_response_end = NULL, audit_chunk_index = 0
             "#,
             params![generation, &candidate.path],
         )
         .map_err(|error| format!("无法暂存已删除的历史 model/reasoning 来源：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO event_enrichment_sources(
-                path,
-                revision,
-                parser_revision,
-                file_generation,
-                completed_size,
-                completed_prefix_sha256
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(path) DO UPDATE SET
-                revision = excluded.revision,
-                parser_revision = excluded.parser_revision,
-                file_generation = excluded.file_generation,
-                completed_size = excluded.completed_size,
-                completed_prefix_sha256 = excluded.completed_prefix_sha256
-            "#,
-            params![
-                &candidate.path,
-                EVENT_ENRICHMENT_REVISION,
-                STAGED_FULL_REBUILD_PARSER_REVISION,
-                generation,
-                checked_i64(candidate.signature.size, "已删除历史字段补全来源大小")?,
-                candidate.prefix_sha256.as_slice(),
-            ],
-        )
-        .map_err(|error| format!("无法记录已删除的历史 model/reasoning 来源：{error}"))?;
+    if staged != 1 {
+        return Err("历史 model/reasoning 来源已从稳定来源目录消失，已保留上一份可信数据".into());
+    }
+    discard_schema11_tombstone_pending_children(&transaction)?;
     mark_dashboard_changed(&transaction)?;
     transaction
         .commit()
@@ -13361,13 +17141,6 @@ fn column_exists_checked(
         }
     }
     Ok(false)
-}
-
-fn first_non_empty(values: [Option<String>; 3]) -> Option<String> {
-    values.into_iter().find_map(|value| {
-        let trimmed = value?.trim().to_string();
-        (!trimmed.is_empty()).then_some(trimmed)
-    })
 }
 
 fn normalize_thread_timestamp(value: i64) -> i64 {
