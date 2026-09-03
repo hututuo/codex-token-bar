@@ -67,7 +67,8 @@ private final class FoundationAccountQuotaTimerToken: AccountQuotaTimerToken {
 @MainActor
 final class AccountQuotaStore: ObservableObject {
     private static let maximumAutomaticRefreshInterval = AccountQuotaRefreshCadence.tenMinutes.seconds
-    private static let maximumRetryDelay: TimeInterval = 60
+    private static let maximumRetryDelay: TimeInterval = 120
+    private static let silentQuotaFailureCount = 3
 
     @Published private(set) var snapshot = AccountQuotaSnapshot.empty
 
@@ -253,9 +254,9 @@ final class AccountQuotaStore: ObservableObject {
         let bindingGeneration = sourceBindingGeneration
         activeRefreshSourceID = sourceID
         quotaStatusBeforeRefresh = snapshot.status
-        snapshot.status = snapshotSourceID == sourceID && snapshot.isAvailable
-            ? "正在更新额度"
-            : "正在读取额度"
+        if snapshotSourceID != sourceID || !snapshot.isAvailable {
+            snapshot.status = "正在读取额度"
+        }
 
         let reader = quotaReader
         refreshTask = Task.detached(priority: .utility) {
@@ -279,16 +280,6 @@ final class AccountQuotaStore: ObservableObject {
 
             switch result {
             case .success(let quota):
-                let previousSnapshot = await MainActor.run {
-                    self.snapshotSourceID == sourceID ? self.snapshot : .empty
-                }
-                let historyStore = await MainActor.run { self.historyStore }
-                let historyAdjustedQuota = await historyStore?.normalizedForDisplay(quota) ?? quota
-                let adjustedQuota = QuotaMonotonicNormalizer.normalizedSnapshot(
-                    historyAdjustedQuota,
-                    after: previousSnapshot
-                )
-
                 await MainActor.run {
                     guard self.isCurrentQuotaRefresh(
                         generation: generation,
@@ -296,8 +287,8 @@ final class AccountQuotaStore: ObservableObject {
                         sourceID: sourceID
                     ) else { return }
                     let current = self.snapshot
-                    var published = self.mergingQuota(adjustedQuota, withResetStateFrom: current)
-                    let carriesEmbeddedReset = self.hasResetCreditPayload(adjustedQuota)
+                    var published = self.mergingQuota(quota, withResetStateFrom: current)
+                    let carriesEmbeddedReset = self.hasResetCreditPayload(quota)
                     if carriesEmbeddedReset {
                         self.cancelResetCreditRefresh(restoreStatus: false)
                         self.cancelResetCreditRetry(resetBackoff: true)
@@ -308,7 +299,7 @@ final class AccountQuotaStore: ObservableObject {
                     self.quotaStatusBeforeRefresh = nil
                     self.lastSuccessfulRefreshCompletedAt = Date()
                     self.cancelQuotaRetry(resetBackoff: true)
-                    published.status = adjustedQuota.status
+                    published.status = quota.status
                     self.snapshot = published
                     self.snapshotSourceID = sourceID
                     self.historyStore?.record(published)
@@ -325,6 +316,7 @@ final class AccountQuotaStore: ObservableObject {
                     self.historyStore?.resetStabilityTracking()
                     self.isRefreshing = false
                     self.activeRefreshSourceID = nil
+                    let retainedStatus = self.quotaStatusBeforeRefresh
                     self.quotaStatusBeforeRefresh = nil
                     let retainsSameSourceQuota = self.snapshotSourceID == sourceID
                         && self.snapshot.isAvailable
@@ -340,28 +332,35 @@ final class AccountQuotaStore: ObservableObject {
                     failed.resetCredits = current.resetCredits
                     failed.resetCreditStatus = current.resetCreditStatus
                     failed.resetCreditUpdatedAt = current.resetCreditUpdatedAt
-                    let occurredAt = Date()
-                    let diagnostic = AccountQuotaDiagnostic.classify(
-                        source: .accountQuota,
-                        error: error,
-                        occurredAt: occurredAt
-                    )
-                    var quotaDiagnostics = [diagnostic]
-                    if retainsSameSourceQuota {
-                        quotaDiagnostics.append(
-                            .staleCachedData(
-                                source: .accountQuota,
-                                rawCause: diagnostic.rawCause,
-                                occurredAt: occurredAt
-                            )
+                    let silentlyRetainsLastGood = retainsSameSourceQuota
+                        && self.quotaRetryBackoff.failureCount < Self.silentQuotaFailureCount
+                    if silentlyRetainsLastGood {
+                        failed.status = retainedStatus ?? current.status
+                        failed.diagnostics = current.diagnostics
+                    } else {
+                        let occurredAt = Date()
+                        let diagnostic = AccountQuotaDiagnostic.classify(
+                            source: .accountQuota,
+                            error: error,
+                            occurredAt: occurredAt
                         )
+                        var quotaDiagnostics = [diagnostic]
+                        if retainsSameSourceQuota {
+                            quotaDiagnostics.append(
+                                .staleCachedData(
+                                    source: .accountQuota,
+                                    rawCause: diagnostic.rawCause,
+                                    occurredAt: occurredAt
+                                )
+                            )
+                        }
+                        failed.diagnostics = quotaDiagnostics
+                            + current.diagnostics.filter { $0.source == .resetCredit }
+                        let retryStatus = retainsSameSourceQuota
+                            ? "；自动重试中（最长 2 分钟），当前显示上次成功额度"
+                            : "；自动重试中（最长 2 分钟）"
+                        failed.status = "额度读取失败：\(diagnostic.message)\(retryStatus)"
                     }
-                    failed.diagnostics = quotaDiagnostics
-                        + current.diagnostics.filter { $0.source == .resetCredit }
-                    let retainedStatus = retainsSameSourceQuota
-                        ? "；自动重试中（最长 1 分钟），当前显示上次成功额度"
-                        : "；自动重试中（最长 1 分钟）"
-                    failed.status = "额度读取失败：\(diagnostic.message)\(retainedStatus)"
                     self.snapshot = failed
                     if !retainsSameSourceQuota {
                         self.snapshotSourceID = nil

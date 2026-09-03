@@ -205,7 +205,7 @@ test("hidden compact quota rejects late data and refreshes once for the next act
   }
 });
 
-test("compact quota and reset channels retry independently and never schedule past one minute", async () => {
+test("compact quota and reset channels retry independently and publish recovered values", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -289,9 +289,9 @@ test("compact quota and reset channels retry independently and never schedule pa
         assert.equal(quotaReads, 2);
         assert.equal(resetReads, 2);
         assert.match(container.textContent, /重置卡已更新/);
-        assert.equal([...timeouts.values()].filter((timer) => timer.delayMs === 2_000).length, 1);
+        assert.equal([...timeouts.values()].filter((timer) => timer.delayMs === 3_000).length, 1);
 
-        await fireTimeoutsAt(2_000);
+        await fireTimeoutsAt(3_000);
         assert.equal(quotaReads, 3);
         assert.equal(resetReads, 2);
         assert.match(container.textContent, /quota-recovered\|重置卡已更新/);
@@ -299,6 +299,109 @@ test("compact quota and reset channels retry independently and never schedule pa
           [...timeouts.values()].some((timer) => timer.delayMs > 60_000),
           false,
         );
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
+test("compact quota keeps last good data through three failures and publishes the next success verbatim", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const timeouts = new Map();
+  const intervals = new Map();
+  let nextTimerId = 1;
+  window.setTimeout = (callback, delayMs) => {
+    const id = nextTimerId;
+    nextTimerId += 1;
+    timeouts.set(id, { callback, delayMs });
+    return id;
+  };
+  window.clearTimeout = (id) => timeouts.delete(id);
+  window.setInterval = (callback, delayMs) => {
+    const id = nextTimerId;
+    nextTimerId += 1;
+    intervals.set(id, { callback, delayMs });
+    return id;
+  };
+  window.clearInterval = (id) => intervals.delete(id);
+
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { emptyAccountQuotaBundle } = await load("/src/api/fallback/quotaFallback.ts");
+      const { useCompactPanelQuota } = await load("/src/surfaces/useCompactPanelQuota.ts");
+      let quotaReads = 0;
+      const good = quotaBundleWithRemaining(emptyAccountQuotaBundle, "good", 0.88);
+      const recovered = quotaBundleWithRemaining(emptyAccountQuotaBundle, "recovered", 0.98);
+      const failed = {
+        ...quotaBundleWithRemaining(emptyAccountQuotaBundle, "failed", 0.88),
+        diagnostics: [{ source: "account_quota", message: "temporary failure" }],
+      };
+      const readQuota = () => {
+        quotaReads += 1;
+        if (quotaReads === 1) return Promise.resolve(good);
+        if (quotaReads <= 5) return Promise.resolve(failed);
+        return Promise.resolve(recovered);
+      };
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+
+      function Probe() {
+        const quota = useCompactPanelQuota({
+          active: true,
+          enabled: true,
+          initialDelayMs: 0,
+          intervalMs: 60_000,
+          sourceToken: sourceToken("physical-silent-failure", 1),
+        }, readQuota, () => Promise.resolve(resetCreditBundle()));
+        return React.createElement(
+          "output",
+          null,
+          `${quota.testLabel ?? "initial"}|${quota.quota.fiveHour.remainingPercent}`,
+        );
+      }
+
+      const fireInterval = async () => {
+        const quotaInterval = [...intervals.values()].find(({ delayMs }) => delayMs === 60_000);
+        assert.ok(quotaInterval);
+        await React.act(async () => {
+          quotaInterval.callback();
+          await tick();
+          await tick();
+        });
+      };
+
+      try {
+        await React.act(async () => root.render(React.createElement(Probe)));
+        const firstTimer = [...timeouts.entries()].find(([, timer]) => timer.delayMs === 0);
+        assert.ok(firstTimer);
+        timeouts.delete(firstTimer[0]);
+        await React.act(async () => {
+          firstTimer[1].callback();
+          await tick();
+          await tick();
+        });
+        assert.equal(container.textContent, "good|0.88");
+
+        await fireInterval();
+        await fireInterval();
+        await fireInterval();
+        assert.equal(container.textContent, "good|0.88");
+
+        await fireInterval();
+        assert.equal(container.textContent, "failed|0.88");
+
+        await fireInterval();
+        assert.equal(container.textContent, "recovered|0.98");
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -427,6 +530,22 @@ function deferred() {
 
 function quotaBundle(emptyAccountQuotaBundle, testLabel) {
   return { ...emptyAccountQuotaBundle(), testLabel };
+}
+
+function quotaBundleWithRemaining(emptyAccountQuotaBundle, testLabel, remainingPercent) {
+  const bundle = quotaBundle(emptyAccountQuotaBundle, testLabel);
+  return {
+    ...bundle,
+    quota: {
+      ...bundle.quota,
+      fiveHour: {
+        ...bundle.quota.fiveHour,
+        availability: "measured",
+        remainingPercent,
+        usedPercent: 1 - remainingPercent,
+      },
+    },
+  };
 }
 
 function resetCreditBundle() {

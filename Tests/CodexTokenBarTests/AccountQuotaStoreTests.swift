@@ -124,15 +124,15 @@ final class AccountQuotaStoreTests: XCTestCase {
 
         store.refresh()
         await waitUntil("failed quota refresh") {
-            store.snapshot.status.hasPrefix("额度读取失败")
+            await reader.currentReadCount() == 2
         }
 
         XCTAssertEqual(store.snapshot.fiveHour, successfulSnapshot.fiveHour)
         XCTAssertEqual(store.snapshot.sevenDay, successfulSnapshot.sevenDay)
         XCTAssertEqual(store.snapshot.accountName, "测试用户")
-        XCTAssertTrue(store.snapshot.staleDataDisplayed)
-        XCTAssertTrue(store.snapshot.diagnostics.contains { $0.category == .staleCachedData })
-        XCTAssertTrue(store.snapshot.diagnostics.contains { $0.category == .unknown })
+        XCTAssertEqual(store.snapshot.status, successfulSnapshot.status)
+        XCTAssertFalse(store.snapshot.staleDataDisplayed)
+        XCTAssertFalse(store.snapshot.diagnostics.contains { $0.source == .accountQuota })
     }
 
     func testSuccessfulQuotaWithResetCreditFailurePublishesDiagnosticWithoutClearingQuota() async {
@@ -172,7 +172,7 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.diagnostics.first?.underlyingCategory, .authMissing)
     }
 
-    func testRefreshClampsQuotaRegressionWithinSameResetWindow() async {
+    func testRefreshPublishesSuccessfulEndpointRegressionWithinSameResetWindow() async {
         let reset = Date().addingTimeInterval(60 * 60)
         let firstSnapshot = AccountQuotaSnapshot(
             fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 80, resetsAt: reset),
@@ -208,8 +208,8 @@ final class AccountQuotaStoreTests: XCTestCase {
             store.snapshot.updatedAt == regressedSnapshot.updatedAt
         }
 
-        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 80)
-        XCTAssertEqual(store.snapshot.sevenDay?.usedPercent, 90)
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 70)
+        XCTAssertEqual(store.snapshot.sevenDay?.usedPercent, 88)
     }
 
     func testAutomaticRefreshSkipsSoonAfterSuccessfulManualRefresh() async {
@@ -517,13 +517,15 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertNotEqual(store.snapshot.accountName, "old-completion")
 
         await reader.failRequest(for: sourceAtNewPath, error: QuotaTestError())
-        await waitUntil("new-path quota failure") {
-            store.snapshot.status.hasPrefix("额度读取失败")
+        await waitUntil("new-path quota failure completes silently") {
+            await reader.currentCompletedReadCount() == 3
         }
 
         XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 42)
         XCTAssertEqual(store.snapshot.accountName, "trusted")
-        XCTAssertTrue(store.snapshot.staleDataDisplayed)
+        XCTAssertEqual(store.snapshot.status, trustedQuota.status)
+        XCTAssertFalse(store.snapshot.staleDataDisplayed)
+        XCTAssertFalse(store.snapshot.diagnostics.contains { $0.source == .accountQuota })
         XCTAssertEqual(historyStore.snapshot, trustedHistory)
 
         historyStore.reload()
@@ -778,13 +780,16 @@ private struct QuotaTestError: LocalizedError {
 private actor SuspendedQuotaReader: QuotaReading {
     private var continuations: [String: CheckedContinuation<Result<AccountQuotaSnapshot, Error>, Never>] = [:]
     private var readCount = 0
+    private var completedReadCount = 0
 
     func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
         readCount += 1
         let key = dataSource?.codexHome.path ?? "nil"
-        return await withCheckedContinuation { continuation in
+        let result = await withCheckedContinuation { continuation in
             continuations[key] = continuation
         }
+        completedReadCount += 1
+        return result
     }
 
     func hasPendingRequest(for dataSource: CodexDataSource) -> Bool {
@@ -801,6 +806,10 @@ private actor SuspendedQuotaReader: QuotaReading {
 
     func currentReadCount() -> Int {
         readCount
+    }
+
+    func currentCompletedReadCount() -> Int {
+        completedReadCount
     }
 
     func completeRequest(for dataSource: CodexDataSource, with snapshot: AccountQuotaSnapshot) {

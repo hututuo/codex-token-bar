@@ -17,16 +17,16 @@ final class AccountQuotaRefreshIsolationTests: XCTestCase {
         token.invalidate()
     }
 
-    func testPersistentBackoffStartsFastAndRemainsAtOneMinuteForever() {
+    func testPersistentBackoffUsesProgressiveQuotaScheduleAndRemainsAtTwoMinutesForever() {
         var backoff = PersistentRefreshBackoff()
         let delays = (0..<10).map { _ in
-            backoff.recordFailure(maximumDelay: 60)
+            backoff.recordFailure(maximumDelay: 120)
         }
 
-        XCTAssertEqual(delays, [1, 2, 5, 10, 30, 60, 60, 60, 60, 60])
+        XCTAssertEqual(delays, [1, 3, 5, 10, 30, 60, 120, 120, 120, 120])
 
         backoff.recordSuccess()
-        XCTAssertEqual(backoff.recordFailure(maximumDelay: 60), 1)
+        XCTAssertEqual(backoff.recordFailure(maximumDelay: 120), 1)
     }
 
     func testResetCreditStaleStateDoesNotHideHealthyMainQuota() {
@@ -78,13 +78,13 @@ final class AccountQuotaRefreshIsolationTests: XCTestCase {
         XCTAssertTrue(store.snapshot.diagnostics.contains { $0.source == .resetCredit })
 
         store.refresh()
-        await waitUntil("reset recovers while quota remains failed") {
-            store.snapshot.status.hasPrefix("额度读取失败")
+        await waitUntil("reset recovers while quota failure stays silent") {
+            store.snapshot.status == "额度已更新"
                 && store.snapshot.resetCreditsAvailableCount == 2
                 && store.snapshot.resetCreditStatus == "重置卡已更新"
         }
         XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 34)
-        XCTAssertTrue(store.snapshot.diagnostics.contains { $0.source == .accountQuota })
+        XCTAssertFalse(store.snapshot.diagnostics.contains { $0.source == .accountQuota })
         XCTAssertFalse(store.snapshot.diagnostics.contains { $0.source == .resetCredit })
     }
 
@@ -108,6 +108,46 @@ final class AccountQuotaRefreshIsolationTests: XCTestCase {
         XCTAssertFalse(store.snapshot.diagnostics.contains { $0.source == .resetCredit })
     }
 
+    func testStartedStoreKeepsLastGoodSilentForThreeFailuresThenReportsTheFourth() async {
+        let quotaReader = IsolationQuotaReader(results: [
+            .success(Self.quotaSnapshot(usedPercent: 34)),
+            .failure(IsolationQuotaError()),
+            .failure(IsolationQuotaError()),
+            .failure(IsolationQuotaError()),
+            .failure(IsolationQuotaError()),
+        ])
+        let retryScheduler = ControlledIsolationRetryScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: quotaReader,
+            timerScheduler: IsolationTimerScheduler(),
+            retryScheduler: retryScheduler,
+            observesUserDefaults: false
+        )
+
+        store.start()
+        await waitUntil("initial quota succeeds") {
+            store.snapshot.fiveHour?.usedPercent == 34
+        }
+
+        store.refresh()
+        for (index, expectedDelay) in [1.0, 3.0, 5.0].enumerated() {
+            await waitUntil("silent retry delay \(expectedDelay)") {
+                await retryScheduler.delays().count == index + 1
+            }
+            XCTAssertEqual(store.snapshot.status, "额度已更新")
+            XCTAssertFalse(store.snapshot.diagnostics.contains { $0.source == .accountQuota })
+            await retryScheduler.resumeNext()
+        }
+
+        await waitUntil("fourth failure becomes visible") {
+            await retryScheduler.delays() == [1, 3, 5, 10]
+                && store.snapshot.status.hasPrefix("额度读取失败")
+        }
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 34)
+        XCTAssertTrue(store.snapshot.staleDataDisplayed)
+        store.stop()
+    }
+
     func testStartedStoreRetriesForeverWithCappedSequenceAndStopCancelsPendingRetry() async {
         let quotaReader = AlwaysFailingIsolationQuotaReader()
         let retryScheduler = ControlledIsolationRetryScheduler()
@@ -120,7 +160,7 @@ final class AccountQuotaRefreshIsolationTests: XCTestCase {
         )
 
         store.start()
-        let expectedDelays: [TimeInterval] = [1, 2, 5, 10, 30, 60, 60]
+        let expectedDelays: [TimeInterval] = [1, 3, 5, 10, 30, 60, 120, 120]
         for index in expectedDelays.indices {
             await waitUntil("retry delay \(index)") {
                 await retryScheduler.delays() == Array(expectedDelays.prefix(index + 1))

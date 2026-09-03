@@ -1,7 +1,7 @@
 import Foundation
 
 struct PersistentRefreshBackoff: Equatable, Sendable {
-    static let defaultSteps: [TimeInterval] = [1, 2, 5, 10, 30, 60]
+    static let defaultSteps: [TimeInterval] = [1, 3, 5, 10, 30, 60, 120]
     static let backgroundSteps: [TimeInterval] = [1, 2, 5, 10, 30, 60, 120, 300, 600]
 
     private(set) var failureCount = 0

@@ -17,6 +17,8 @@ import type { ResetCreditBundle } from "../types/quota";
 import {
   MAX_QUOTA_REFRESH_DELAY_MS,
   persistentRefreshDelayMs,
+  quotaRefreshDelayMs,
+  shouldPublishQuotaRefreshResult,
 } from "../utils/persistentRefreshBackoff";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
 import { useWakeRefresh } from "../utils/useWakeRefresh";
@@ -190,7 +192,10 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
     const succeeded = next !== null && !next.diagnostics.some((diagnostic) => (
       diagnostic.source === "account_quota"
     ));
-    if (next !== null) {
+    if (next !== null && shouldPublishQuotaRefreshResult(
+      succeeded,
+      quotaFailureCount.current,
+    )) {
       setQuota((previous) => mergeCompactQuota(previous, next));
     }
     if (succeeded) {
@@ -199,7 +204,7 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
       return;
     }
 
-    const delayMs = persistentRefreshDelayMs(quotaFailureCount.current);
+    const delayMs = quotaRefreshDelayMs(quotaFailureCount.current);
     quotaFailureCount.current += 1;
     clearRetryTimer(quotaRetryTimer);
     quotaRetryTimer.current = window.setTimeout(() => {

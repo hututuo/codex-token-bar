@@ -2,7 +2,11 @@ import { useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { AccountQuotaBundle, CodexHomeSourceToken } from "../types/dashboard";
 import type { ResetCreditBundle } from "../types/quota";
-import { persistentRefreshDelayMs } from "../utils/persistentRefreshBackoff";
+import {
+  persistentRefreshDelayMs,
+  quotaRefreshDelayMs,
+  shouldPublishQuotaRefreshResult,
+} from "../utils/persistentRefreshBackoff";
 
 // The 7d model-cost row needs the authoritative reset boundary. Starting the
 // first quota read after a fixed 5s delay made an otherwise ready precise
@@ -85,10 +89,12 @@ export function useDeferredQuotaLoad({
       try {
         const quota = await source.readAccountQuota(requestSourceToken, forceRefresh);
         if (!cancelled && quota !== null) {
-          onQuota(quota);
           succeeded = !quota.diagnostics.some((diagnostic) => (
             diagnostic.source === "account_quota"
           ));
+          if (shouldPublishQuotaRefreshResult(succeeded, quotaFailureCount.current)) {
+            onQuota(quota);
+          }
         }
       } catch {
         succeeded = false;
@@ -107,7 +113,7 @@ export function useDeferredQuotaLoad({
         quotaFailureCount.current = 0;
         return;
       }
-      const delayMs = persistentRefreshDelayMs(quotaFailureCount.current);
+      const delayMs = quotaRefreshDelayMs(quotaFailureCount.current);
       quotaFailureCount.current += 1;
       retryTimer = window.setTimeout(() => {
         void loadQuota(true);
