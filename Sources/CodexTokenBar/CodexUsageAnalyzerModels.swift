@@ -263,7 +263,8 @@ extension CodexUsageAnalyzer {
         private struct PersistentExactSnapshot: Codable {
             static let legacyExactOnlyPayloadVersion = 1
             static let legacySchemaBoundPayloadVersion = 2
-            static let currentPayloadVersion = 3
+            static let legacyContentBasedPayloadVersion = 3
+            static let currentPayloadVersion = 4
 
             private typealias SnapshotCompatibility =
                 CodexUsageHistoryIndex.PersistentSnapshotCompatibility
@@ -419,6 +420,12 @@ extension CodexUsageAnalyzer {
                         && parserRevision == compatibility.parserRevision
                         && provenanceRevision == compatibility.provenanceRevision
                         && homeIdentityKey == currentHomeIdentityKey
+                case Self.legacyContentBasedPayloadVersion:
+                    let compatibility = Self.compatibility
+                    return indexSchemaVersion == "7"
+                        && parserRevision == compatibility.parserRevision
+                        && provenanceRevision == compatibility.provenanceRevision
+                        && homeIdentityKey == currentHomeIdentityKey
                 case Self.legacySchemaBoundPayloadVersion:
                     let compatibility = Self.compatibility
                     return indexSchemaVersion == "6"
@@ -437,6 +444,7 @@ extension CodexUsageAnalyzer {
                 attributionState: CodexUsageHistoryIndex.AttributionState
             ) -> DashboardFastSnapshotFreshness? {
                 let supportedVersion = payloadVersion == Self.currentPayloadVersion
+                    || payloadVersion == Self.legacyContentBasedPayloadVersion
                     || payloadVersion == Self.legacySchemaBoundPayloadVersion
                     || payloadVersion == Self.legacyExactOnlyPayloadVersion
                 guard supportedVersion else { return nil }
@@ -449,6 +457,14 @@ extension CodexUsageAnalyzer {
                           homeIdentityKey == currentHomeIdentityKey else {
                         return nil
                     }
+                } else if payloadVersion == Self.legacyContentBasedPayloadVersion {
+                    let compatibility = Self.compatibility
+                    guard indexSchemaVersion == "7",
+                          parserRevision == compatibility.parserRevision,
+                          provenanceRevision == compatibility.provenanceRevision,
+                          homeIdentityKey == currentHomeIdentityKey else {
+                        return nil
+                    }
                 } else if payloadVersion == Self.legacySchemaBoundPayloadVersion {
                     let compatibility = Self.compatibility
                     guard indexSchemaVersion == "6",
@@ -456,6 +472,12 @@ extension CodexUsageAnalyzer {
                           provenanceRevision == compatibility.provenanceRevision else {
                         return nil
                     }
+                }
+
+                // Pre-v4 payloads remain useful as same-Home last-good data,
+                // but they cannot become a current schema-11 exact receipt.
+                guard payloadVersion == Self.currentPayloadVersion else {
+                    return .staleCompatible
                 }
 
                 if signature == currentSignature {

@@ -930,10 +930,23 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         var legacyV2Object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: validData) as? [String: Any]
         )
-        XCTAssertEqual(legacyV2Object["payloadVersion"] as? Int, 3)
+        XCTAssertEqual(legacyV2Object["payloadVersion"] as? Int, 4)
         XCTAssertTrue(
             (legacyV2Object["homeIdentityKey"] as? String)?.hasPrefix("usage-path:") == true
         )
+        var legacyV3Object = legacyV2Object
+        legacyV3Object["payloadVersion"] = 3
+        legacyV3Object["indexSchemaVersion"] = "7"
+        try JSONSerialization.data(
+            withJSONObject: legacyV3Object,
+            options: [.sortedKeys]
+        ).write(to: snapshotURL, options: [.atomic])
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        let legacyV3 = try analyzer.loadFastSnapshotResult()
+        XCTAssertEqual(legacyV3.freshness, .staleCompatible)
+        XCTAssertEqual(legacyV3.snapshot.stats.totalTokens, 500)
+
         legacyV2Object["payloadVersion"] = 2
         legacyV2Object["indexSchemaVersion"] = "6"
         legacyV2Object["homeIdentityKey"] = "fs:legacy-device:legacy-file"
@@ -958,7 +971,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
         let legacyV2 = try analyzer.loadFastSnapshotResult()
-        XCTAssertEqual(legacyV2.freshness, .current)
+        XCTAssertEqual(legacyV2.freshness, .staleCompatible)
         XCTAssertEqual(legacyV2.snapshot.stats.totalTokens, 500)
         try validData.write(to: snapshotURL, options: [.atomic])
 
@@ -994,7 +1007,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
         let legacyExact = try analyzer.loadFastSnapshotResult()
-        XCTAssertEqual(legacyExact.freshness, .current)
+        XCTAssertEqual(legacyExact.freshness, .staleCompatible)
         XCTAssertEqual(legacyExact.snapshot.stats.totalTokens, 500)
 
         // A pre-lineage cache may not contain the aggregate identity. It is
@@ -4791,7 +4804,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "7"
+            "11"
         )
         for table in ["sources", "event_enrichment_sources", "session_catalog_entries"] {
             XCTAssertEqual(
@@ -4818,6 +4831,78 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 150)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 1)
+    }
+
+    func testSchema7CandidateMigrationPreservesRowsAndCleansRollbackOnlyAfterRefresh() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageSchema7Candidate")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-schema7candidate",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+
+        let databaseURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let database = SQLiteDatabaseDriver(url: databaseURL)
+        try convertCurrentSwiftIndexToSchema7(database)
+        try database.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        let databaseBytesBefore = try Data(contentsOf: databaseURL)
+        let sourceCountBefore = try scalarInt("SELECT COUNT(*) FROM sources;", in: database)
+        let eventCountBefore = try scalarInt("SELECT COUNT(*) FROM events;", in: database)
+        let fingerprintCountBefore = try scalarInt(
+            "SELECT COUNT(*) FROM source_fingerprints;",
+            in: database
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+            ) { $0.text(0) }.first,
+            "11"
+        )
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), sourceCountBefore)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), eventCountBefore)
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM source_fingerprints;", in: database),
+            fingerprintCountBefore
+        )
+        XCTAssertEqual(
+            try scalarInt(
+                "SELECT COUNT(*) FROM source_fingerprints WHERE typeof(value) = 'blob';",
+                in: database
+            ),
+            fingerprintCountBefore
+        )
+
+        let rollbackURL = URL(fileURLWithPath: databaseURL.path + ".schema11-rollback")
+        let manifestURL = URL(fileURLWithPath: databaseURL.path + ".schema11-migration.json")
+        XCTAssertEqual(try Data(contentsOf: rollbackURL), databaseBytesBefore)
+        XCTAssertTrue(manifestURL.isFileURL && FileManager.default.fileExists(atPath: manifestURL.path))
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rollbackURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manifestURL.path))
     }
 
     func testSchema6MigrationRollsBackEveryStageWithoutTouchingData() throws {
@@ -4884,7 +4969,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 try database.readRows(
                     "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                 ) { $0.text(0) }.first,
-                "7"
+                "11"
             )
         }
     }
@@ -4933,7 +5018,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "7"
+            "11"
         )
     }
 
@@ -5332,7 +5417,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "7",
+            "11",
             "the transactional identity-column migration is independent from replay repair"
         )
         XCTAssertEqual(
@@ -5474,7 +5559,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "7"
+                "11"
             )
 
             let planDetails = try database.readRows(
@@ -5798,7 +5883,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "7"
+                "11"
             )
             XCTAssertEqual(
                 try database.readRows("SELECT model FROM events LIMIT 1;") {
@@ -7507,6 +7592,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
     private func convertCurrentSwiftIndexToSchema6(
         _ database: SQLiteDatabaseDriver
     ) throws {
+        try convertCurrentSwiftFingerprintsToLegacyText(database)
         try database.execute(
             """
             ALTER TABLE sources ADD COLUMN device_id TEXT NOT NULL DEFAULT '16777233';
@@ -7523,6 +7609,54 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             UPDATE session_catalog_meta SET value = '1' WHERE key = 'schema_version';
             """
         )
+    }
+
+    private func convertCurrentSwiftIndexToSchema7(
+        _ database: SQLiteDatabaseDriver
+    ) throws {
+        try convertCurrentSwiftFingerprintsToLegacyText(database)
+        try database.execute(
+            "UPDATE schema_meta SET value = '7' WHERE key = 'schema_version';"
+        )
+    }
+
+    private func convertCurrentSwiftFingerprintsToLegacyText(
+        _ database: SQLiteDatabaseDriver
+    ) throws {
+        try database.transaction { transaction in
+            try transaction.execute("PRAGMA defer_foreign_keys=ON;")
+            try transaction.execute(
+                """
+                CREATE TABLE source_fingerprints_legacy (
+                    source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                    value TEXT NOT NULL,
+                    PRIMARY KEY(source_id, value)
+                ) WITHOUT ROWID;
+                """
+            )
+            do {
+                let insert = try transaction.prepare(
+                    "INSERT INTO source_fingerprints_legacy(source_id, value) VALUES (?, ?);"
+                )
+                try transaction.forEachRow(
+                    "SELECT source_id, value FROM source_fingerprints ORDER BY source_id, value;"
+                ) { row in
+                    let sourceID = try XCTUnwrap(row.int64(0))
+                    let encoded = try XCTUnwrap(row.data(1))
+                    let values = try UsageFingerprintCodec.decode(encoded)
+                    _ = try insert.execute([
+                        .int64(sourceID),
+                        .text(values.map(String.init).joined(separator: ":")),
+                    ])
+                }
+            }
+            try transaction.execute(
+                """
+                DROP TABLE source_fingerprints;
+                ALTER TABLE source_fingerprints_legacy RENAME TO source_fingerprints;
+                """
+            )
+        }
     }
 
     private func swiftSchemaMigrationFacts(

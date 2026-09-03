@@ -42,6 +42,30 @@ final class SQLiteDatabaseDriverTests: XCTestCase {
         XCTAssertEqual(rows[1].score ?? 0, 2.25, accuracy: 0.001)
     }
 
+    func testBlobBindingRoundTripsBinaryFingerprintBytes() throws {
+        let driver = SQLiteDatabaseDriver(url: try makeDatabaseURL())
+        try driver.execute("CREATE TABLE fingerprints (value BLOB PRIMARY KEY);")
+        let values = [
+            Data(),
+            Data([0x00, 0x01, 0x7F, 0x80, 0xFF]),
+            Data([0xFF, 0x00, 0xFE, 0x01]),
+        ]
+        for value in values {
+            try driver.execute(
+                "INSERT INTO fingerprints(value) VALUES (?);",
+                bindings: [.blob(value)]
+            )
+        }
+
+        let rows = try driver.readRows(
+            "SELECT typeof(value), value FROM fingerprints ORDER BY rowid;"
+        ) { statement in
+            (type: statement.text(0), value: statement.data(1))
+        }
+        XCTAssertEqual(rows.map(\.type), Array(repeating: "blob", count: values.count))
+        XCTAssertEqual(rows.compactMap(\.value), values)
+    }
+
     func testOrdinaryDriverPreservesExplicitSidecarURL() throws {
         let mainURL = try makeDatabaseURL()
         let walURL = URL(fileURLWithPath: mainURL.path + "-wal")

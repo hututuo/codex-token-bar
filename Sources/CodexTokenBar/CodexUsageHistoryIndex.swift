@@ -156,6 +156,48 @@ extension CodexUsageAnalyzer {
 }
 
 final class CodexUsageHistoryIndex: @unchecked Sendable {
+    private enum OpenMode {
+        case active
+        case migrationCandidate
+    }
+
+    private enum CandidateMigrationPhase: String, Codable {
+        case prepared
+        case copied
+        case migrated
+        case validated
+        case switching
+        case switched
+    }
+
+    private struct CandidateFileStamp: Codable, Equatable {
+        let size: UInt64
+        let modifiedNanoseconds: Int64
+    }
+
+    private struct CandidateSourceReceipt: Codable, Equatable {
+        let schemaVersion: String
+        let main: CandidateFileStamp
+        let wal: CandidateFileStamp?
+    }
+
+    private struct CandidateMigrationManifest: Codable {
+        static let currentVersion = 1
+
+        let manifestVersion: Int
+        let sourcePath: String
+        let candidatePath: String
+        let rollbackPath: String
+        let sourceReceipt: CandidateSourceReceipt
+        var phase: CandidateMigrationPhase
+    }
+
+    private struct CandidateMigrationFacts: Equatable {
+        let tableCounts: [Int64]
+        let aggregateTotals: [Int64]
+        let lineage: [String?]
+    }
+
     enum MigrationAssessment: Equatable {
         case compatible
         case knownMigrationRequired(stages: [String])
@@ -399,8 +441,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         case unresolved
     }
 
-    private static let schemaVersion = "7"
-    private static let inPlaceSchemaVersions: Set<String> = ["6", "7"]
+    private static let schemaVersion = "11"
+    private static let inPlaceSchemaVersions: Set<String> = ["6", "7", "11"]
     private static let forkReplayBoundaryRevision = "explicit-subagent-delayed-context-v3"
     /// Bump whenever event parsing or source-bucket identity semantics change.
     /// Existing attribution ledgers then fail closed instead of reconciling
@@ -454,7 +496,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// Leave headroom for SQLite pages, indexes, and the ready manifest so a
     /// normal multi-file batch stays below the hard ready-artifact byte cap.
     private static let stagingPlannedReadyBytes: UInt64 = 448 * 1_024 * 1_024
-    private static let stagingManifestSchemaVersion = 2
+    private static let stagingManifestSchemaVersion = 3
+    private static let legacyStagingManifestSchemaVersions: Set<Int> = [1, 2]
     private static let stagingManifestIntegrity = "sqlite-quick-check-v1"
     private static let stagingParserRevision = "token-event-v2-\(forkReplayBoundaryRevision)"
     private static let explicitSubagentFirstLineLimit = 256 * 1_024
@@ -502,10 +545,24 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private init(
         databaseURL: URL,
         fileManager: FileManager,
-        onProgress: ((PreciseIndexProgress) -> Void)? = nil
+        onProgress: ((PreciseIndexProgress) -> Void)? = nil,
+        openMode: OpenMode = .active
     ) throws {
+        let gate = Self.operationGate(for: databaseURL)
+        let migratedViaCandidate: Bool
+        if openMode == .active {
+            migratedViaCandidate = try gate.withLock {
+                try Self.prepareSchema11CandidateIfNeeded(
+                    databaseURL: databaseURL,
+                    fileManager: fileManager,
+                    onProgress: onProgress
+                )
+            }
+        } else {
+            migratedViaCandidate = false
+        }
         self.fileManager = fileManager
-        operationGate = Self.operationGate(for: databaseURL)
+        operationGate = gate
         driver = SQLiteDatabaseDriver(
             url: databaseURL,
             busyTimeoutMilliseconds: 30_000,
@@ -540,7 +597,653 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             // Fail closed and preserve the database on any error; explicit
             // recovery can inspect the original bytes instead of silently
             // deleting the user's only published index.
-            try prepareSchema(onProgress: onProgress)
+            try prepareSchema(onProgress: migratedViaCandidate ? nil : onProgress)
+        }
+    }
+
+    /// Builds schema 11 beside the active database. The source database is
+    /// opened read-only through SQLite backup, and remains untouched until a
+    /// validated candidate is switched into the canonical path.
+    private static func prepareSchema11CandidateIfNeeded(
+        databaseURL: URL,
+        fileManager: FileManager,
+        onProgress: ((PreciseIndexProgress) -> Void)?
+    ) throws -> Bool {
+        let manifestURL = candidateMigrationManifestURL(for: databaseURL)
+        if fileManager.fileExists(atPath: manifestURL.path) {
+            var manifest = try loadCandidateMigrationManifest(at: manifestURL)
+            let wasAlreadySwitched = manifest.phase == .switched
+            try resumeSchema11CandidateMigration(
+                &manifest,
+                manifestURL: manifestURL,
+                databaseURL: databaseURL,
+                fileManager: fileManager,
+                onProgress: onProgress
+            )
+            return !wasAlreadySwitched
+        }
+
+        guard fileManager.fileExists(atPath: databaseURL.path) else { return false }
+        let assessment = try assessMigration(
+            databaseURL: databaseURL,
+            fileManager: fileManager
+        )
+        guard case let .knownMigrationRequired(stages) = assessment,
+              stages.contains("schema") else {
+            return false
+        }
+        let sourceReceipt = try candidateSourceReceipt(
+            databaseURL: databaseURL,
+            fileManager: fileManager
+        )
+        guard sourceReceipt.schemaVersion == "6"
+                || sourceReceipt.schemaVersion == "7" else {
+            return false
+        }
+
+        let candidateURL = candidateDatabaseURL(for: databaseURL)
+        let rollbackURL = rollbackDatabaseURL(for: databaseURL)
+        guard !fileManager.fileExists(atPath: candidateURL.path),
+              !fileManager.fileExists(atPath: rollbackURL.path) else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "发现未登记的 schema 11 候选库或回滚库；为避免覆盖，已停止自动迁移"
+            )
+        }
+        try ensureCandidateMigrationCapacity(
+            databaseURL: databaseURL,
+            fileManager: fileManager
+        )
+        var manifest = CandidateMigrationManifest(
+            manifestVersion: CandidateMigrationManifest.currentVersion,
+            sourcePath: databaseURL.path,
+            candidatePath: candidateURL.path,
+            rollbackPath: rollbackURL.path,
+            sourceReceipt: sourceReceipt,
+            phase: .prepared
+        )
+        try storeCandidateMigrationManifest(manifest, at: manifestURL, fileManager: fileManager)
+        try resumeSchema11CandidateMigration(
+            &manifest,
+            manifestURL: manifestURL,
+            databaseURL: databaseURL,
+            fileManager: fileManager,
+            onProgress: onProgress
+        )
+        return true
+    }
+
+    private static func resumeSchema11CandidateMigration(
+        _ manifest: inout CandidateMigrationManifest,
+        manifestURL: URL,
+        databaseURL: URL,
+        fileManager: FileManager,
+        onProgress: ((PreciseIndexProgress) -> Void)?
+    ) throws {
+        guard manifest.manifestVersion == CandidateMigrationManifest.currentVersion,
+              manifest.sourcePath == databaseURL.path else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "schema 11 候选迁移清单与当前索引路径不匹配"
+            )
+        }
+        let candidateURL = URL(fileURLWithPath: manifest.candidatePath)
+        let rollbackURL = URL(fileURLWithPath: manifest.rollbackPath)
+
+        if manifest.phase == .switching || manifest.phase == .switched {
+            try finishCandidateSwitch(
+                &manifest,
+                manifestURL: manifestURL,
+                databaseURL: databaseURL,
+                candidateURL: candidateURL,
+                rollbackURL: rollbackURL,
+                fileManager: fileManager
+            )
+            return
+        }
+
+        guard try candidateSourceReceipt(
+            databaseURL: databaseURL,
+            fileManager: fileManager
+        ) == manifest.sourceReceipt else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "活动索引在候选迁移期间发生变化；候选库和活动库均已保留"
+            )
+        }
+        let sourceFacts = try candidateMigrationFacts(
+            databaseURL: databaseURL,
+            fileManager: fileManager
+        )
+
+        if manifest.phase == .prepared {
+            if fileManager.fileExists(atPath: candidateURL.path) {
+                guard try candidateMigrationFacts(
+                    databaseURL: candidateURL,
+                    fileManager: fileManager
+                ) == sourceFacts else {
+                    throw CodexUsageIndexRepairRequiredError(
+                        reason: "已有候选库不是活动库的完整 SQLite 副本；已保留现场"
+                    )
+                }
+            } else {
+                let candidate = SQLiteDatabaseDriver(
+                    url: candidateURL,
+                    busyTimeoutMilliseconds: 30_000,
+                    enableWAL: false,
+                    fileManager: fileManager
+                )
+                try candidate.withConnection { connection in
+                    try connection.restoreDatabase(from: databaseURL)
+                    // SQLite backup preserves the source journal-mode flag.
+                    // Normalize the private candidate before the read-only
+                    // compatibility probe opens it; otherwise a copied WAL
+                    // header may require a sidecar that does not yet exist.
+                    _ = try connection.readRows("PRAGMA wal_checkpoint(TRUNCATE);") {
+                        $0.text(0)
+                    }
+                    _ = try connection.readRows("PRAGMA journal_mode=DELETE;") {
+                        $0.text(0)
+                    }
+                }
+                try synchronizeFile(at: candidateURL)
+            }
+            manifest.phase = .copied
+            try storeCandidateMigrationManifest(
+                manifest,
+                at: manifestURL,
+                fileManager: fileManager
+            )
+        }
+
+        if manifest.phase == .copied {
+            do {
+                _ = try CodexUsageHistoryIndex(
+                    databaseURL: candidateURL,
+                    fileManager: fileManager,
+                    onProgress: onProgress,
+                    openMode: .migrationCandidate
+                )
+            } catch {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "schema 11 候选 DDL 转换失败：\(error.localizedDescription)"
+                )
+            }
+            do {
+                try compactMigrationCandidate(
+                    databaseURL: candidateURL,
+                    fileManager: fileManager
+                )
+            } catch {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "schema 11 候选压缩失败：\(error.localizedDescription)"
+                )
+            }
+            manifest.phase = .migrated
+            try storeCandidateMigrationManifest(
+                manifest,
+                at: manifestURL,
+                fileManager: fileManager
+            )
+        }
+
+        if manifest.phase == .migrated {
+            do {
+                try validateSchema11Candidate(
+                    databaseURL: candidateURL,
+                    expectedFacts: sourceFacts,
+                    fileManager: fileManager
+                )
+            } catch {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "schema 11 候选校验失败：\(error.localizedDescription)"
+                )
+            }
+            guard try candidateSourceReceipt(
+                databaseURL: databaseURL,
+                fileManager: fileManager
+            ) == manifest.sourceReceipt else {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "活动索引在候选校验期间发生变化；尚未切换"
+                )
+            }
+            manifest.phase = .validated
+            try storeCandidateMigrationManifest(
+                manifest,
+                at: manifestURL,
+                fileManager: fileManager
+            )
+        }
+
+        if manifest.phase == .validated {
+            try synchronizeFile(at: candidateURL)
+            try synchronizeDirectory(at: databaseURL.deletingLastPathComponent())
+            manifest.phase = .switching
+            try storeCandidateMigrationManifest(
+                manifest,
+                at: manifestURL,
+                fileManager: fileManager
+            )
+            try finishCandidateSwitch(
+                &manifest,
+                manifestURL: manifestURL,
+                databaseURL: databaseURL,
+                candidateURL: candidateURL,
+                rollbackURL: rollbackURL,
+                fileManager: fileManager
+            )
+        }
+    }
+
+    private static func finishCandidateSwitch(
+        _ manifest: inout CandidateMigrationManifest,
+        manifestURL: URL,
+        databaseURL: URL,
+        candidateURL: URL,
+        rollbackURL: URL,
+        fileManager: FileManager
+    ) throws {
+        if manifest.phase == .switched {
+            try validateSchema11Candidate(
+                databaseURL: databaseURL,
+                expectedFacts: try candidateMigrationFacts(
+                    databaseURL: rollbackURL,
+                    fileManager: fileManager
+                ),
+                fileManager: fileManager
+            )
+            return
+        }
+
+        if fileManager.fileExists(atPath: databaseURL.path),
+           !fileManager.fileExists(atPath: rollbackURL.path) {
+            try fileManager.moveItem(at: databaseURL, to: rollbackURL)
+        }
+        guard fileManager.fileExists(atPath: rollbackURL.path) else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "schema 11 切换缺少受管回滚数据库"
+            )
+        }
+        try moveDatabaseSidecarIfPresent(
+            source: URL(fileURLWithPath: databaseURL.path + "-wal"),
+            destination: URL(fileURLWithPath: rollbackURL.path + "-wal"),
+            fileManager: fileManager
+        )
+        try moveDatabaseSidecarIfPresent(
+            source: URL(fileURLWithPath: databaseURL.path + "-shm"),
+            destination: URL(fileURLWithPath: rollbackURL.path + "-shm"),
+            fileManager: fileManager
+        )
+
+        if !fileManager.fileExists(atPath: databaseURL.path),
+           fileManager.fileExists(atPath: candidateURL.path) {
+            try fileManager.moveItem(at: candidateURL, to: databaseURL)
+        }
+        guard fileManager.fileExists(atPath: databaseURL.path),
+              !fileManager.fileExists(atPath: candidateURL.path) else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "schema 11 候选切换未完成；下次启动将按清单继续"
+            )
+        }
+        try synchronizeFile(at: databaseURL)
+        try synchronizeDirectory(at: databaseURL.deletingLastPathComponent())
+        try validateSchema11Candidate(
+            databaseURL: databaseURL,
+            expectedFacts: try candidateMigrationFacts(
+                databaseURL: rollbackURL,
+                fileManager: fileManager
+            ),
+            fileManager: fileManager
+        )
+        manifest.phase = .switched
+        try storeCandidateMigrationManifest(
+            manifest,
+            at: manifestURL,
+            fileManager: fileManager
+        )
+    }
+
+    private static func compactMigrationCandidate(
+        databaseURL: URL,
+        fileManager: FileManager
+    ) throws {
+        let candidate = SQLiteDatabaseDriver(
+            url: databaseURL,
+            createsFileIfMissing: false,
+            busyTimeoutMilliseconds: 30_000,
+            enableWAL: false,
+            fileManager: fileManager
+        )
+        try candidate.withConnection { connection in
+            _ = try connection.readRows("PRAGMA wal_checkpoint(TRUNCATE);") { $0.text(0) }
+            _ = try connection.readRows("PRAGMA journal_mode=DELETE;") { $0.text(0) }
+            try connection.execute("VACUUM;")
+            try connection.execute("PRAGMA synchronous=FULL;")
+        }
+        try synchronizeFile(at: databaseURL)
+    }
+
+    private static func validateSchema11Candidate(
+        databaseURL: URL,
+        expectedFacts: CandidateMigrationFacts,
+        fileManager: FileManager
+    ) throws {
+        let driver = SQLiteDatabaseDriver(
+            url: databaseURL,
+            readOnly: true,
+            createsFileIfMissing: false,
+            busyTimeoutMilliseconds: 5_000,
+            fileManager: fileManager
+        )
+        try driver.withConnection { connection in
+            let schema = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version' LIMIT 1;"
+            ) { $0.text(0) }.first ?? nil
+            guard schema == schemaVersion else {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "候选库 schema 不是 11"
+                )
+            }
+            let quickCheck = try connection.readRows("PRAGMA quick_check;") {
+                $0.text(0) ?? ""
+            }
+            guard quickCheck == ["ok"] else {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "候选库 quick_check 未通过"
+                )
+            }
+            let foreignKeys = try connection.readRows("PRAGMA foreign_key_check;") {
+                $0.text(0) ?? "unknown"
+            }
+            guard foreignKeys.isEmpty else {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "候选库 foreign_key_check 未通过"
+                )
+            }
+            var fingerprintCount: Int64 = 0
+            try connection.forEachRow(
+                "SELECT typeof(value), value FROM source_fingerprints;"
+            ) { row in
+                guard row.text(0) == "blob", let value = row.data(1) else {
+                    throw CodexUsageIndexRepairRequiredError(
+                        reason: "候选库仍包含非 BLOB 指纹"
+                    )
+                }
+                _ = try UsageFingerprintCodec.decode(value)
+                fingerprintCount += 1
+            }
+            guard fingerprintCount == expectedFacts.tableCounts[2] else {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "候选库指纹行数对账失败"
+                )
+            }
+            guard try candidateMigrationFacts(connection: connection) == expectedFacts else {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "候选库事件、分块、聚合或 generation 对账失败"
+                )
+            }
+        }
+    }
+
+    private static func candidateMigrationFacts(
+        databaseURL: URL,
+        fileManager: FileManager
+    ) throws -> CandidateMigrationFacts {
+        let driver = SQLiteDatabaseDriver(
+            url: databaseURL,
+            readOnly: true,
+            createsFileIfMissing: false,
+            busyTimeoutMilliseconds: 5_000,
+            fileManager: fileManager
+        )
+        return try driver.withConnection { connection in
+            try candidateMigrationFacts(connection: connection)
+        }
+    }
+
+    private static func candidateMigrationFacts(
+        connection: SQLiteDatabaseConnection
+    ) throws -> CandidateMigrationFacts {
+        let tables = [
+            "sources",
+            "events",
+            "source_fingerprints",
+            "source_chunks",
+            "event_enrichment_sources",
+            "session_catalog_entries",
+            "dashboard_5m",
+            "dashboard_turn_candidates",
+        ]
+        let counts = try tables.map { table in
+            try connection.readRows("SELECT COUNT(*) FROM \(table);") {
+                $0.int64(0) ?? -1
+            }.first ?? -1
+        }
+        let aggregateTotals = try [
+            "dashboard_source_totals",
+            "dashboard_source_5m",
+        ].map { table in
+            try connection.readRows(
+                "SELECT COALESCE(SUM(total_tokens), 0) FROM \(table);"
+            ) { $0.int64(0) ?? 0 }.first ?? 0
+        }
+        let lineage = try [
+            "dashboard_aggregate_exact_generation",
+            "dashboard_aggregate_published_generation",
+            "dashboard_aggregate_settled_through",
+        ].map { key in
+            try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = ? LIMIT 1;",
+                bindings: [.text(key)]
+            ) { $0.text(0) }.first ?? nil
+        }
+        return CandidateMigrationFacts(
+            tableCounts: counts,
+            aggregateTotals: aggregateTotals,
+            lineage: lineage
+        )
+    }
+
+    private static func candidateSourceReceipt(
+        databaseURL: URL,
+        fileManager: FileManager
+    ) throws -> CandidateSourceReceipt {
+        let schema = try SQLiteDatabaseDriver(
+            url: databaseURL,
+            readOnly: true,
+            createsFileIfMissing: false,
+            busyTimeoutMilliseconds: 1_000,
+            fileManager: fileManager
+        ).readRows(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version' LIMIT 1;"
+        ) { $0.text(0) }.first ?? nil
+        guard let schema else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "活动索引缺少 schema_version"
+            )
+        }
+        return CandidateSourceReceipt(
+            schemaVersion: schema,
+            main: try candidateFileStamp(at: databaseURL, fileManager: fileManager),
+            wal: try optionalCandidateFileStamp(
+                at: URL(fileURLWithPath: databaseURL.path + "-wal"),
+                fileManager: fileManager
+            )
+        )
+    }
+
+    private static func candidateFileStamp(
+        at url: URL,
+        fileManager: FileManager
+    ) throws -> CandidateFileStamp {
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        guard let size = (attributes[.size] as? NSNumber)?.uint64Value,
+              let modifiedAt = attributes[.modificationDate] as? Date else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "无法读取候选迁移文件收据：\(url.lastPathComponent)"
+            )
+        }
+        return CandidateFileStamp(
+            size: size,
+            modifiedNanoseconds: Int64(
+                (modifiedAt.timeIntervalSince1970 * 1_000_000_000).rounded()
+            )
+        )
+    }
+
+    private static func optionalCandidateFileStamp(
+        at url: URL,
+        fileManager: FileManager
+    ) throws -> CandidateFileStamp? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return try candidateFileStamp(at: url, fileManager: fileManager)
+    }
+
+    private static func ensureCandidateMigrationCapacity(
+        databaseURL: URL,
+        fileManager: FileManager
+    ) throws {
+        let main = try candidateFileStamp(at: databaseURL, fileManager: fileManager).size
+        let wal = try optionalCandidateFileStamp(
+            at: URL(fileURLWithPath: databaseURL.path + "-wal"),
+            fileManager: fileManager
+        )?.size ?? 0
+        let available: UInt64
+        if let override = migrationTestState.consumeAvailableCapacityOverride() {
+            available = override
+        } else {
+            let values = try databaseURL.deletingLastPathComponent().resourceValues(
+                forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+            )
+            guard let raw = values.volumeAvailableCapacityForImportantUsage,
+                  raw >= 0 else {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "无法确认 schema 11 候选迁移所需磁盘空间"
+                )
+            }
+            available = UInt64(raw)
+        }
+        let activeFamily = main.addingClampingOnOverflow(wal)
+        let required = activeFamily
+            .addingClampingOnOverflow(main)
+            .addingClampingOnOverflow(512 * 1_024 * 1_024)
+        guard available >= required else {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileWriteOutOfSpaceError,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "schema 11 候选迁移空间不足；未开始迁移并保留活动索引。",
+                    NSFilePathErrorKey: databaseURL.deletingLastPathComponent().path,
+                ]
+            )
+        }
+    }
+
+    private static func loadCandidateMigrationManifest(
+        at url: URL
+    ) throws -> CandidateMigrationManifest {
+        do {
+            return try JSONDecoder().decode(
+                CandidateMigrationManifest.self,
+                from: Data(contentsOf: url)
+            )
+        } catch {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "schema 11 候选迁移清单无法解码；已保留现场"
+            )
+        }
+    }
+
+    private static func storeCandidateMigrationManifest(
+        _ manifest: CandidateMigrationManifest,
+        at url: URL,
+        fileManager: FileManager
+    ) throws {
+        try fileManager.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(manifest).write(to: url, options: [.atomic])
+        try synchronizeFile(at: url)
+        try synchronizeDirectory(at: url.deletingLastPathComponent())
+    }
+
+    private static func candidateMigrationManifestURL(for databaseURL: URL) -> URL {
+        URL(fileURLWithPath: databaseURL.path + ".schema11-migration.json")
+    }
+
+    private static func candidateDatabaseURL(for databaseURL: URL) -> URL {
+        URL(fileURLWithPath: databaseURL.path + ".schema11-candidate")
+    }
+
+    private static func rollbackDatabaseURL(for databaseURL: URL) -> URL {
+        URL(fileURLWithPath: databaseURL.path + ".schema11-rollback")
+    }
+
+    private static func moveDatabaseSidecarIfPresent(
+        source: URL,
+        destination: URL,
+        fileManager: FileManager
+    ) throws {
+        guard fileManager.fileExists(atPath: source.path) else { return }
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "候选切换发现重复 SQLite sidecar；已保留现场"
+            )
+        }
+        try fileManager.moveItem(at: source, to: destination)
+    }
+
+    private static func synchronizeFile(at url: URL) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.synchronize()
+    }
+
+    private static func synchronizeDirectory(at url: URL) throws {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { Darwin.close(descriptor) }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    /// A rollback database is eligible for cleanup only after schema 11 has
+    /// opened and one ordinary no-op/append synchronization has published.
+    /// Failure to remove any member leaves the manifest for the next
+    /// successful synchronization; it never affects the published result.
+    private static func cleanupSuccessfulSchema11Migration(
+        databaseURL: URL,
+        fileManager: FileManager
+    ) {
+        let manifestURL = candidateMigrationManifestURL(for: databaseURL)
+        guard let manifest = try? loadCandidateMigrationManifest(at: manifestURL),
+              manifest.phase == .switched,
+              manifest.sourcePath == databaseURL.path else {
+            return
+        }
+        let rollbackURL = URL(fileURLWithPath: manifest.rollbackPath)
+        let rollbackMembers = [
+            rollbackURL,
+            URL(fileURLWithPath: rollbackURL.path + "-wal"),
+            URL(fileURLWithPath: rollbackURL.path + "-shm"),
+            URL(fileURLWithPath: rollbackURL.path + "-journal"),
+        ]
+        for member in rollbackMembers where fileManager.fileExists(atPath: member.path) {
+            do {
+                try fileManager.removeItem(at: member)
+            } catch {
+                return
+            }
+        }
+        do {
+            try fileManager.removeItem(at: manifestURL)
+            try synchronizeDirectory(at: databaseURL.deletingLastPathComponent())
+        } catch {
+            // Keep any surviving manifest as a retryable cleanup receipt.
         }
     }
 
@@ -993,6 +1696,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 onProgress: onProgress
             )
         }
+        Self.cleanupSuccessfulSchema11Migration(
+            databaseURL: driver.url,
+            fileManager: fileManager
+        )
         Self.scheduleStorageMaintenance(databaseURL: driver.url)
         return result
     }
@@ -2857,7 +3564,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 """
                 CREATE TABLE IF NOT EXISTS source_fingerprints (
                     source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
-                    value TEXT NOT NULL,
+                    value BLOB NOT NULL,
                     PRIMARY KEY(source_id, value)
                 ) WITHOUT ROWID;
 
@@ -2962,15 +3669,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         bindings: [.text(Self.attributionProvenanceRevision)]
                     )
                 }
+                // The physical schema migration is complete even when model
+                // enrichment remains pending. Publish schema 11 now so the
+                // candidate can switch without parsing JSONL; the independent
+                // enrichment marker keeps the later targeted work pending.
+                try transaction.execute(
+                    """
+                    INSERT INTO schema_meta(key, value)
+                    VALUES ('schema_version', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                    """,
+                    bindings: [.text(Self.schemaVersion)]
+                )
                 if !eventEnrichmentRequiresSync {
-                    try transaction.execute(
-                        """
-                        INSERT INTO schema_meta(key, value)
-                        VALUES ('schema_version', ?)
-                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                        """,
-                        bindings: [.text(Self.schemaVersion)]
-                    )
                     try transaction.execute(
                         """
                         INSERT INTO schema_meta(key, value)
@@ -4058,6 +4769,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let lineageBefore = try migrationLineage(connection: connection)
         try ensureContentFingerprintMigrationCapacity(sourceCount: sourceCount)
         try connection.execute("PRAGMA defer_foreign_keys=ON;")
+        try migrateSourceFingerprintsToSchema11(connection)
         try dropColumns(
             [
                 "device_id",
@@ -4138,6 +4850,86 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             )
         }
         try failSchema6MigrationIfRequested(stage: 4)
+    }
+
+    private func migrateSourceFingerprintsToSchema11(
+        _ connection: SQLiteDatabaseConnection
+    ) throws {
+        try connection.execute(
+            """
+            CREATE TABLE source_fingerprints_schema11 (
+                source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                value BLOB NOT NULL,
+                PRIMARY KEY(source_id, value)
+            ) WITHOUT ROWID;
+            """
+        )
+        var convertedRows: Int64 = 0
+        do {
+            let insert = try connection.prepare(
+                "INSERT INTO source_fingerprints_schema11(source_id, value) VALUES (?, ?);"
+            )
+            try connection.forEachRow(
+                "SELECT source_id, typeof(value), value FROM source_fingerprints ORDER BY source_id, value;"
+            ) { row in
+                guard let sourceID = row.int64(0) else {
+                    throw SQLiteDatabaseError(
+                        operation: "Migrate exact usage fingerprint",
+                        code: SQLITE_CORRUPT,
+                        message: "Fingerprint source identity is missing",
+                        path: driver.url.path
+                    )
+                }
+                let values: [UInt64]
+                switch row.text(1) {
+                case "text":
+                    guard let legacy = row.text(2) else {
+                        throw UsageFingerprintCodecError.invalidLegacyText
+                    }
+                    values = try UsageFingerprintCodec.decodeLegacyText(legacy)
+                case "blob":
+                    guard let legacy = row.data(2) else {
+                        throw UsageFingerprintCodecError.truncated
+                    }
+                    if legacy.count == UsageFingerprintCodec.legacyFixedWidthByteCount {
+                        values = try UsageFingerprintCodec.decodeLegacyFixedWidth(legacy)
+                    } else {
+                        values = try UsageFingerprintCodec.decode(legacy)
+                    }
+                default:
+                    throw SQLiteDatabaseError(
+                        operation: "Migrate exact usage fingerprint",
+                        code: SQLITE_MISMATCH,
+                        message: "Fingerprint storage class is unsupported",
+                        path: driver.url.path
+                    )
+                }
+                _ = try insert.execute([
+                    .int64(sourceID),
+                    .blob(try UsageFingerprintCodec.encode(values)),
+                ])
+                convertedRows += 1
+            }
+        }
+        let migratedRows = try tableRowCount(
+            "source_fingerprints_schema11",
+            connection: connection
+        )
+        let legacyRows = try tableRowCount("source_fingerprints", connection: connection)
+        guard convertedRows == legacyRows, migratedRows == legacyRows else {
+            throw SQLiteDatabaseError(
+                operation: "Migrate exact usage fingerprints",
+                code: SQLITE_CORRUPT,
+                message: "Fingerprint row count changed during canonical conversion",
+                path: driver.url.path
+            )
+        }
+        try connection.execute(
+            """
+            DROP TABLE source_fingerprints;
+            ALTER TABLE source_fingerprints_schema11 RENAME TO source_fingerprints;
+            """
+        )
     }
 
     private func migrationLineage(
@@ -4719,10 +5511,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         readHandle: readHandle
                     ),
                     { fingerprint in
-                        let key = fingerprint.databaseKey
+                        let value = try fingerprint.databaseValue
                         return try persistentFingerprintStatement.execute([
                             .int64(existing.id),
-                            .text(key)
+                            .blob(value)
                         ]) > 0
                     },
                     { indexedEvent in
@@ -5490,7 +6282,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 );
 
                 CREATE TABLE fingerprints (
-                    value TEXT PRIMARY KEY
+                    value BLOB PRIMARY KEY
                 ) WITHOUT ROWID;
 
                 CREATE TABLE events (
@@ -5542,7 +6334,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ),
                     { fingerprint in
                         try fingerprintStatement.execute([
-                            .text(fingerprint.databaseKey)
+                            .blob(try fingerprint.databaseValue)
                         ]) > 0
                     },
                     { indexedEvent in
@@ -5789,10 +6581,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     supported: String(Self.stagingManifestSchemaVersion)
                 )
             }
-            // v0.9.1 wrote manifest v1. Its filesystem-object columns were
-            // observations only, so decode the common checkpoint contract and
-            // ignore those extra columns while resuming the artifact.
-            guard manifestSchema == 1
+            // v0.9.1 wrote v1 and fba33820 wrote v2. Their filesystem-object
+            // columns were observations only, and their text fingerprints are
+            // converted during import without reopening JSONL.
+            guard Self.legacyStagingManifestSchemaVersions.contains(manifestSchema)
                     || manifestSchema == Self.stagingManifestSchemaVersion else {
                 return nil
             }
@@ -5855,8 +6647,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 LIMIT 1;
                 """
             ) { row in
-                guard (row.int(0) == 1
-                        || row.int(0) == Self.stagingManifestSchemaVersion),
+                guard let storedManifestSchema = row.int(0),
+                      (Self.legacyStagingManifestSchemaVersions.contains(storedManifestSchema)
+                          || storedManifestSchema == Self.stagingManifestSchemaVersion),
                       row.text(1) == job.file.path,
                       row.text(2) == job.sessionID,
                       row.text(3) == expectedMigrationRevision,
@@ -6262,8 +7055,29 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 "INSERT INTO source_fingerprints(source_id, value) VALUES (?, ?);"
             )
             var importedFingerprintCount = 0
-            try stage.forEachRow("SELECT value FROM fingerprints ORDER BY value;") { row in
-                guard let value = row.text(0) else {
+            try stage.forEachRow(
+                "SELECT typeof(value), value FROM fingerprints ORDER BY value;"
+            ) { row in
+                let value: Data?
+                switch row.text(0) {
+                case "blob":
+                    if let encoded = row.data(1) {
+                        let decoded = try UsageFingerprintCodec.decode(encoded)
+                        value = try UsageFingerprintCodec.encode(decoded)
+                    } else {
+                        value = nil
+                    }
+                case "text":
+                    if let legacy = row.text(1) {
+                        let decoded = try UsageFingerprintCodec.decodeLegacyText(legacy)
+                        value = try UsageFingerprintCodec.encode(decoded)
+                    } else {
+                        value = nil
+                    }
+                default:
+                    value = nil
+                }
+                guard let value else {
                     throw SQLiteDatabaseError(
                         operation: "Import exact usage staging fingerprint",
                         code: SQLITE_CORRUPT,
@@ -6273,7 +7087,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 _ = try fingerprintStatement.execute([
                     .int64(source.id),
-                    .text(value)
+                    .blob(value)
                 ])
                 importedFingerprintCount += 1
             }
@@ -7051,8 +7865,9 @@ private final class CodexUsageHistoryIndexOperationGate: @unchecked Sendable {
 }
 
 private extension CodexUsageAnalyzer.UsageSnapshotFingerprint {
-    var databaseKey: String {
-        [
+    var databaseValue: Data {
+        get throws {
+            let signedValues = [
             totalInputTokens,
             totalCachedInputTokens,
             totalOutputTokens,
@@ -7065,8 +7880,14 @@ private extension CodexUsageAnalyzer.UsageSnapshotFingerprint {
             lastReasoningOutputTokens,
             lastTokens
         ]
-        .map(String.init)
-        .joined(separator: ":")
+            let values = try signedValues.map { value -> UInt64 in
+                guard let encoded = UInt64(exactly: value) else {
+                    throw UsageFingerprintCodecError.overflow
+                }
+                return encoded
+            }
+            return try UsageFingerprintCodec.encode(values)
+        }
     }
 }
 
