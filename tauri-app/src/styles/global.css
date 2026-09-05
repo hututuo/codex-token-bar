@@ -8585,6 +8585,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   padding-left: 1px;
 }
 
+.floating-window-shell--running-model-details-leading {
+  padding-left: calc((278px * var(--floating-scale)) + 1px);
+}
+
 .floating-panel-surface {
   --floating-primary: rgba(18, 25, 35, 0.96);
   --floating-secondary: rgba(47, 58, 72, 0.84);
@@ -9065,6 +9069,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   pointer-events: auto;
   user-select: none;
   -webkit-app-region: no-drag;
+}
+
+.floating-panel-surface[data-running-model-details-side="leading"] .floating-running-model-details {
+  right: calc(100% + calc(10px * var(--floating-scale)));
+  left: auto;
 }
 
 .floating-running-model-details > header {

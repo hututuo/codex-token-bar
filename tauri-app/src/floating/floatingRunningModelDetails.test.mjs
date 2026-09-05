@@ -195,6 +195,21 @@ test("expanded running-model card preserves the rounded base panel geometry", as
   assert.match(fillBlock, /border-radius: inherit/);
 });
 
+test("expanded running-model card can render inward at the leading edge", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const app = await readFile(new URL("./FloatingWindowApp.tsx", import.meta.url), "utf8");
+  const surface = await readFile(new URL("./FloatingPanelPreview.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
+
+  assert.match(app, /currentMonitor\(\)/);
+  assert.match(app, /runningModelDetailsPlacement/);
+  assert.match(app, /basePosition/);
+  assert.match(surface, /data-running-model-details-side/);
+  assert.match(css, /floating-window-shell--running-model-details-leading/);
+  assert.match(css, /data-running-model-details-side="leading"/);
+  assert.match(css, /right: calc\(100% \+ calc\(10px \* var\(--floating-scale\)\)\)/);
+});
+
 test("running model details card derives a softened color from the floating theme", async () => {
   await withSsrModules(async (load) => {
     const {

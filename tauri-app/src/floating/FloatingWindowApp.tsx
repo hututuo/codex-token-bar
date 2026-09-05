@@ -1,6 +1,6 @@
 import { type CSSProperties, type MouseEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { completeFloatingPagingGuide, readAppSettings, recordStartupEvent } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
@@ -44,6 +44,10 @@ import {
   floatingRunningThreadSummaryForPresentation,
 } from "./FloatingRunningThreadModelDetails";
 import { useFloatingCrowdRadar, useFloatingRadar } from "./useFloatingRadar";
+import {
+  runningModelDetailsPlacement,
+  type FloatingRunningModelDetailsPlacement,
+} from "./floatingWindowPlacement";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
@@ -73,9 +77,11 @@ export function FloatingWindowApp() {
   const [pagingGuideSaving, setPagingGuideSaving] = useState(false);
   const [pagingGuideError, setPagingGuideError] = useState<string | null>(null);
   const [runningModelDetailsExpanded, setRunningModelDetailsExpanded] = useState(false);
+  const [runningModelDetailsSide, setRunningModelDetailsSide] = useState<FloatingRunningModelDetailsPlacement>("trailing");
   const [runningModelDetailsHeight, setRunningModelDetailsHeight] = useState(
     FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT,
   );
+  const runningModelDetailsBasePositionRef = useRef<{ x: number; y: number } | null>(null);
   const settingsEventGenerationRef = useRef(0);
   const displaySettingsEventGenerationRef = useRef(0);
   const appSettingsEventGenerationRef = useRef(0);
@@ -308,25 +314,88 @@ export function FloatingWindowApp() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     const height = floatingContentHeight(presentedSettings.contentVisibility);
-    void desktopPlatform.resizeFloatingWindow(
-      Math.max(
-        FLOATING_BASE_WIDTH,
-        pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0,
-        effectiveRunningModelDetailsExpanded ? FLOATING_RUNNING_MODEL_DETAILS_WINDOW_WIDTH : 0,
-      )
-        * presentedSettings.scale,
-      Math.max(
-        height * presentedSettings.scale,
-        pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT * presentedSettings.scale : 0,
-        effectiveRunningModelDetailsExpanded
-          ? Math.max(
-              FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * presentedSettings.scale,
-              runningModelDetailsHeight + 8 * presentedSettings.scale,
-            )
-          : 0,
-      ),
+    const targetWidth = Math.max(
+      FLOATING_BASE_WIDTH,
+      pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0,
+      effectiveRunningModelDetailsExpanded ? FLOATING_RUNNING_MODEL_DETAILS_WINDOW_WIDTH : 0,
+    ) * presentedSettings.scale;
+    const targetHeight = Math.max(
+      height * presentedSettings.scale,
+      pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT * presentedSettings.scale : 0,
+      effectiveRunningModelDetailsExpanded
+        ? Math.max(
+            FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * presentedSettings.scale,
+            runningModelDetailsHeight + 8 * presentedSettings.scale,
+          )
+        : 0,
     );
+
+    const reconcileWindowGeometry = async () => {
+      const appWindow = getCurrentWindow();
+      let basePosition = runningModelDetailsBasePositionRef.current;
+      let placement: FloatingRunningModelDetailsPlacement = "trailing";
+
+      if (effectiveRunningModelDetailsExpanded) {
+        if (!basePosition) {
+          try {
+            const position = await appWindow.outerPosition();
+            basePosition = { x: position.x, y: position.y };
+          } catch {
+            basePosition = null;
+          }
+        }
+
+        if (basePosition) {
+          try {
+            const [monitor, scaleFactor] = await Promise.all([
+              currentMonitor(),
+              appWindow.scaleFactor(),
+            ]);
+            if (monitor) {
+              placement = runningModelDetailsPlacement({
+                windowLeft: basePosition.x,
+                surfaceWidth: FLOATING_BASE_WIDTH * presentedSettings.scale * scaleFactor,
+                expandedWidth: targetWidth * scaleFactor,
+                workAreaLeft: monitor.workArea.position.x,
+                workAreaRight: monitor.workArea.position.x + monitor.workArea.size.width,
+              });
+            }
+          } catch {
+            placement = "trailing";
+          }
+        }
+
+        if (cancelled) return;
+        runningModelDetailsBasePositionRef.current = basePosition;
+        setRunningModelDetailsSide((current) => current === placement ? current : placement);
+      } else {
+        placement = "trailing";
+      }
+
+      if (cancelled) return;
+      await desktopPlatform.resizeFloatingWindow(
+        targetWidth,
+        targetHeight,
+        basePosition
+          ? {
+              basePosition,
+              placement,
+              surfaceWidth: FLOATING_BASE_WIDTH * presentedSettings.scale,
+            }
+          : undefined,
+      );
+      if (!effectiveRunningModelDetailsExpanded && !cancelled) {
+        runningModelDetailsBasePositionRef.current = null;
+        setRunningModelDetailsSide("trailing");
+      }
+    };
+
+    void reconcileWindowGeometry();
+    return () => {
+      cancelled = true;
+    };
   }, [
     effectiveRunningModelDetailsExpanded,
     pagingGuidePresented,
@@ -462,7 +531,7 @@ export function FloatingWindowApp() {
 
   return (
     <main
-      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}`}
+      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}${effectiveRunningModelDetailsExpanded && runningModelDetailsSide === "leading" ? " floating-window-shell--running-model-details-leading" : ""}`}
       onMouseDownCapture={dismissRunningModelDetailsForOutsidePointer}
       style={shellStyle}
     >
@@ -475,9 +544,10 @@ export function FloatingWindowApp() {
         unreadEffect={presentedSettings.unreadEffect}
         priceModel={attributionSettings.priceModel}
         onClose={closeFloatingWindow}
-        onDragStart={startWindowDrag}
-        onOpenDashboard={openDashboardWindow}
+        onDragStart={effectiveRunningModelDetailsExpanded ? undefined : startWindowDrag}
+        onOpenDashboard={effectiveRunningModelDetailsExpanded ? undefined : openDashboardWindow}
         runningModelDetailsExpanded={effectiveRunningModelDetailsExpanded}
+        runningModelDetailsSide={runningModelDetailsSide}
         onRunningThreadsActivate={pagingGuidePresented ? undefined : () => {
           setRunningModelDetailsExpanded((expanded) => !expanded);
         }}

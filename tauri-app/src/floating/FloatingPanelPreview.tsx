@@ -49,6 +49,7 @@ import {
   floatingTodayModelUsageItems,
   type FloatingModelUsagePage,
 } from "./floatingModelUsage";
+import type { FloatingRunningModelDetailsPlacement } from "./floatingWindowPlacement";
 
 interface FloatingPanelSurfaceProps {
   settings: FloatingWindowSettings;
@@ -66,6 +67,7 @@ interface FloatingPanelSurfaceProps {
   onPreviewRowSelect?: (rowId: string) => void;
   onPageNavigation?: () => void;
   runningModelDetailsExpanded?: boolean;
+  runningModelDetailsSide?: FloatingRunningModelDetailsPlacement;
   onRunningThreadsActivate?: () => void;
   guideMode?: boolean;
   guideOverlayVisible?: boolean;
@@ -240,6 +242,7 @@ export function FloatingPanelSurface({
   onPreviewRowSelect,
   onPageNavigation,
   runningModelDetailsExpanded = false,
+  runningModelDetailsSide = "trailing",
   onRunningThreadsActivate,
   guideMode = false,
   guideOverlayVisible = false,
@@ -278,6 +281,7 @@ export function FloatingPanelSurface({
       data-guide-mode={guideMode ? "true" : undefined}
       data-guide-overlay-visible={guideOverlayVisible ? "true" : undefined}
       data-running-model-details={runningModelDetailsExpanded ? "true" : undefined}
+      data-running-model-details-side={runningModelDetailsExpanded ? runningModelDetailsSide : undefined}
       aria-label={`悬浮窗，${snapshot.unreadSummary.label}`}
       onMouseDown={previewMode ? undefined : onDragStart}
       onDoubleClick={previewMode ? undefined : onOpenDashboard}

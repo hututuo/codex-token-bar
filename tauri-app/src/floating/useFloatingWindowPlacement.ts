@@ -1,6 +1,10 @@
 import { useEffect } from "react";
 import { readAppSettings, saveFloatingPosition } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
+import {
+  consumeFloatingWindowPositionIfProgrammatic,
+  isFloatingWindowResizeProgrammatic,
+} from "../platform/floatingWindowControls";
 import { createFloatingPositionPersistence } from "./floatingPositionPersistence";
 
 const MAX_REASONABLE_COORDINATE = 20_000;
@@ -25,7 +29,11 @@ export function useFloatingWindowPlacement() {
     );
 
     void desktopPlatform.onFloatingWindowMoved((position) => {
-      if (restoringStoredPosition) return;
+      if (
+        restoringStoredPosition
+        || isFloatingWindowResizeProgrammatic()
+        || consumeFloatingWindowPositionIfProgrammatic(position)
+      ) return;
       if (isValidCoordinate(position.x) && isValidCoordinate(position.y)) {
         movementGeneration += 1;
         positionPersistence.schedule(position);

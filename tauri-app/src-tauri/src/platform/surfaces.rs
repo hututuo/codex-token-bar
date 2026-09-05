@@ -38,6 +38,11 @@ use tauri::TitleBarStyle;
 const FLOATING_WINDOW_WIDTH: f64 = 308.0;
 const FLOATING_WINDOW_MIN_HEIGHT: f64 = 88.0;
 const FLOATING_WINDOW_DEFAULT_HEIGHT: f64 = 142.0;
+// Programmatic expansion also hosts the first-run guide and the inward-facing
+// running-model card. Keep the native constraints above both temporary
+// layouts so WebView resizing cannot silently clip their content.
+const FLOATING_WINDOW_MAX_WIDTH: f64 = 620.0;
+const FLOATING_WINDOW_MAX_HEIGHT: f64 = 284.0;
 const FLOATING_WINDOW_MIN_SCALE: f64 = 0.9;
 const FLOATING_WINDOW_MAX_SCALE: f64 = 1.38;
 const FLOATING_WINDOW_VISIBILITY_CHANGED_EVENT: &str = "floating-window-visibility-changed";
@@ -2214,8 +2219,8 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         FLOATING_WINDOW_MIN_HEIGHT * FLOATING_WINDOW_MIN_SCALE,
     )
     .max_inner_size(
-        FLOATING_WINDOW_WIDTH * FLOATING_WINDOW_MAX_SCALE,
-        FLOATING_WINDOW_DEFAULT_HEIGHT * FLOATING_WINDOW_MAX_SCALE,
+        FLOATING_WINDOW_MAX_WIDTH * FLOATING_WINDOW_MAX_SCALE,
+        FLOATING_WINDOW_MAX_HEIGHT * FLOATING_WINDOW_MAX_SCALE,
     )
     .position(48.0, 86.0)
     .resizable(false)
@@ -2462,7 +2467,10 @@ mod tests {
         assert_eq!(FLOATING_WINDOW_WIDTH, 308.0);
         assert_eq!(FLOATING_WINDOW_MIN_HEIGHT, 88.0);
         assert_eq!(FLOATING_WINDOW_DEFAULT_HEIGHT, 142.0);
-        assert!(FLOATING_WINDOW_DEFAULT_HEIGHT * FLOATING_WINDOW_MAX_SCALE >= 142.0 * 1.38);
+        assert_eq!(FLOATING_WINDOW_MAX_WIDTH, 620.0);
+        assert_eq!(FLOATING_WINDOW_MAX_HEIGHT, 284.0);
+        assert!(FLOATING_WINDOW_MAX_WIDTH >= 586.0);
+        assert!(FLOATING_WINDOW_MAX_HEIGHT >= 284.0);
     }
 
     #[test]
