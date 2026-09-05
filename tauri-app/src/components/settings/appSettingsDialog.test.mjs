@@ -138,7 +138,10 @@ test("floating settings combine appearance, content, paging, and the real previe
     const changed = calls.floatingContentVisibilities.at(-1);
     assert.equal(changed.showTodayModelShare, false);
     assert.equal(changed.showTodayModelCost, false);
-    assert.deepEqual(changed.pagePairs, [["todayModelShare", "todayModelCost"]]);
+    assert.deepEqual(changed.pagePairs, [
+      ["todayModelShare", "todayModelCost"],
+      ["crowdRadar", "radar"],
+    ]);
     assert.match(panel.textContent, /撤销/);
   });
 });

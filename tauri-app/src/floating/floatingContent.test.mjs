@@ -116,7 +116,7 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 140);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 116);
 });
 
 test("adjacent running thread counts attach to the right of metrics", () => {
@@ -164,7 +164,10 @@ test("legacy floating order inserts running threads after metrics and enables it
     "rateAndBar",
     "usageStatus",
   ]);
-  assert.deepEqual(migrated.pagePairs, [["todayModelShare", "todayModelCost"]]);
+  assert.deepEqual(migrated.pagePairs, [
+    ["todayModelShare", "todayModelCost"],
+    ["crowdRadar", "radar"],
+  ]);
   assert.equal(migrated.showPageNavigationArrows, false);
 });
 
@@ -221,8 +224,7 @@ test("paged rows combine model share and cost without losing their configured de
     ["rateAndBar"],
     ["metrics"],
     ["todayModelShare", "todayModelCost"],
-    ["radar"],
-    ["crowdRadar"],
+    ["crowdRadar", "radar"],
     ["quota"],
   ]);
   const pairedRadar = replaceFloatingPagePartner(

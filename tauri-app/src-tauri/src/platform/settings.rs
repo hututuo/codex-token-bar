@@ -3172,10 +3172,13 @@ mod tests {
         );
         assert_eq!(
             sanitized.floating_window.content_visibility.page_pairs,
-            [vec![
-                "todayModelShare".to_string(),
-                "todayModelCost".to_string()
-            ]]
+            [
+                vec![
+                    "todayModelShare".to_string(),
+                    "todayModelCost".to_string()
+                ],
+                vec!["crowdRadar".to_string(), "radar".to_string()]
+            ]
         );
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.live_rate_enabled);

@@ -184,5 +184,8 @@ test("sanitizeFloatingSettings migrates legacy content order with running thread
     "rateAndBar",
     "usageStatus",
   ]);
-  assert.deepEqual(settings.contentVisibility.pagePairs, [["todayModelShare", "todayModelCost"]]);
+  assert.deepEqual(settings.contentVisibility.pagePairs, [
+    ["todayModelShare", "todayModelCost"],
+    ["crowdRadar", "radar"],
+  ]);
 });

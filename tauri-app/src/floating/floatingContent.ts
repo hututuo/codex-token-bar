@@ -28,6 +28,7 @@ export const FLOATING_PAGE_CAPABLE_GROUPS: FloatingContentGroup[] = [
 
 export const DEFAULT_FLOATING_PAGE_PAIRS: FloatingContentPagePair[] = [
   ["todayModelShare", "todayModelCost"],
+  ["crowdRadar", "radar"],
 ];
 
 export const DEFAULT_FLOATING_CONTENT_VISIBILITY: FloatingContentVisibility = {

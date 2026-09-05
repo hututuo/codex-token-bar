@@ -637,7 +637,10 @@ fn default_floating_content_order() -> Vec<String> {
 }
 
 fn default_floating_page_pairs() -> Vec<Vec<String>> {
-    vec![vec!["todayModelShare".into(), "todayModelCost".into()]]
+    vec![
+        vec!["todayModelShare".into(), "todayModelCost".into()],
+        vec!["crowdRadar".into(), "radar".into()],
+    ]
 }
 
 fn default_crowd_radar_page_count() -> u8 {

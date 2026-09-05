@@ -30,6 +30,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .radar, .crowdRadar, .quota])
         XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .radar, .crowdRadar, .quota])
         XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,runningThreads,todayModelShare,todayModelCost,radar,crowdRadar,quota")
+        XCTAssertEqual(visibility.pagePairs, [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+            FloatingPanelPagePair(first: .crowdRadar, second: .radar),
+        ])
         XCTAssertTrue(visibility.shows(.rateAndBar))
         XCTAssertTrue(visibility.shows(.usageStatus))
         XCTAssertTrue(visibility.shows(.metrics))
@@ -99,7 +103,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 panelHeight: FloatingTokenPanelMetrics.baseSize.height,
                 scale: 1
             ) ?? -1,
-            57.75,
+            69.75,
             accuracy: 0.001
         )
     }
@@ -163,9 +167,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             + FloatingTokenPanelMetrics.todayModelRowHeight
             + FloatingTokenPanelMetrics.quotaRowHeight
             + FloatingTokenPanelMetrics.radarRowHeight
-            + FloatingTokenPanelMetrics.crowdRadarRowHeight
             + FloatingTokenPanelMetrics.rowSpacing * 4
-            + FloatingTokenPanelMetrics.radarCrowdRowSpacing
 
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
@@ -183,7 +185,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 24, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarTypographyScale, 1.2, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 123.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 99.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 138, accuracy: 0.001)
     }
 
@@ -198,7 +200,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
         XCTAssertEqual(
             visibility.layoutRows.map(\.groups),
-            [[.rateAndBar], [.metrics], [.todayModelShare, .todayModelCost], [.radar], [.crowdRadar], [.quota]]
+            [[.rateAndBar], [.metrics], [.todayModelShare, .todayModelCost], [.crowdRadar, .radar], [.quota]]
         )
     }
 
@@ -846,7 +848,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
         XCTAssertEqual(
             next.layoutRows.map(\.groups),
-            [[.rateAndBar], [.metrics], [.todayModelShare, .todayModelCost], [.quota], [.radar], [.crowdRadar]]
+            [[.rateAndBar], [.metrics], [.todayModelShare, .todayModelCost], [.quota], [.crowdRadar, .radar]]
         )
     }
 
@@ -1520,8 +1522,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(
             FloatingPanelPresentationModel(snapshot: makeTokenDisplaySnapshot(), visibility: .default)
                 .rows
-                .map(\.group)
-                .contains(.radar)
+                .contains { $0.groups.contains(.radar) }
         )
         XCTAssertFalse(
             FloatingPanelPresentationModel(

@@ -147,6 +147,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     static let defaultOrderRaw = encodedOrder(defaultOrder)
     static let defaultPagePairs = [
         FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+        FloatingPanelPagePair(first: .crowdRadar, second: .radar),
     ]
     static let defaultPagePairsRaw = encodedPagePairs(defaultPagePairs)
 
