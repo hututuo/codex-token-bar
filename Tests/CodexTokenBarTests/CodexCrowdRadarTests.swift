@@ -37,6 +37,32 @@ final class CodexCrowdRadarTests: XCTestCase {
         XCTAssertEqual(snapshot.bestModel?.iq ?? 0, 119.25, accuracy: 0.001)
     }
 
+    func testCrowdRadarMapsAstraFamilyAndUsesItBeforeTheExistingGPT56LanesOnTies() {
+        let models = [
+            CodexCrowdRadarModel(model: "gpt-5.6-sol", effort: "high", graded: 45, passed: 36, passRate: 0.8, cells: 45),
+            CodexCrowdRadarModel(model: "gpt-6-astra", effort: "high", graded: 45, passed: 36, passRate: 0.8, cells: 45),
+            CodexCrowdRadarModel(model: "gpt-5.6-terra", effort: "high", graded: 45, passed: 36, passRate: 0.8, cells: 45),
+            CodexCrowdRadarModel(model: "gpt-5.6-luna", effort: "high", graded: 45, passed: 36, passRate: 0.8, cells: 45),
+        ]
+        let snapshot = CodexCrowdRadarSnapshot(
+            generatedAt: "2026-07-16T00:00:00Z",
+            taskCount: 45,
+            cellCount: 45,
+            contributorCount: 1,
+            pendingGrades: 0,
+            errorGrades: 0,
+            models: models
+        )
+
+        XCTAssertEqual(models[1].label, "Astra high")
+        XCTAssertEqual(snapshot.rankedModels.map(\.model), [
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ])
+    }
+
     func testCrowdRadarLabelsCompactDeepSeekVariants() {
         XCTAssertEqual(
             CodexCrowdRadarModel(model: "DeepSeek V4 Flash", effort: "max", graded: 1, passed: 1, passRate: 1, cells: 1).label,

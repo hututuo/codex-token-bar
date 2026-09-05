@@ -443,7 +443,7 @@ struct StatusBarModelRankingEntry: Equatable, Sendable {
 
     private static func shortModelName(_ rawValue: String) -> String? {
         let tokens = rawValue.components(separatedBy: CharacterSet.alphanumerics.inverted)
-        for family in ["Sol", "Luna", "Terra"] {
+        for family in ["Astra", "Sol", "Luna", "Terra"] {
             if tokens.contains(where: { $0.caseInsensitiveCompare(family) == .orderedSame }) {
                 return family
             }

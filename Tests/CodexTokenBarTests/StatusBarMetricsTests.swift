@@ -158,6 +158,7 @@ final class StatusBarMetricsTests: XCTestCase {
 
     func testTodayModelRankingUsesShortFamiliesAndEffortCodes() {
         let cases = [
+            ("gpt-6-astra", "max", "Astra·MAX"),
             ("gpt-5.6-sol", "max", "Sol·MAX"),
             ("GPT-5.6 Luna", "xhigh", "Luna·XH"),
             ("gpt-5.6-terra", "high", "Terra·H"),

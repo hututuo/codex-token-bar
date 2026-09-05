@@ -8,6 +8,7 @@ final class CodexRadarModelsTests: XCTestCase {
         for rawValue in ["Use Windows", "use_window", "use-window", "use windows", "use_remaining_tokens"] {
             XCTAssertEqual(CodexRadarPresentationText.action(rawValue), "速登窗口")
         }
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-6 Astra max"), "Astra max")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol max"), "Sol max")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Luna max"), "Luna max")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Terra max"), "Terra max")

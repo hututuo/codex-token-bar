@@ -60,7 +60,7 @@ struct CodexCrowdRadarModel: Equatable, Sendable, Identifiable {
 
     var id: String { "\(model)|\(effort)" }
     var label: String {
-        let family = ["Sol", "Terra", "Luna"].first { model.localizedCaseInsensitiveContains($0) } ?? model
+        let family = ["Astra", "Sol", "Terra", "Luna"].first { model.localizedCaseInsensitiveContains($0) } ?? model
         let rawLabel = "\(family) \(effort)".trimmingCharacters(in: .whitespacesAndNewlines)
         return CodexRadarPresentationText.compactModelName(rawLabel)
     }
@@ -157,11 +157,12 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
 
     private static func modelRank(_ model: String) -> Int {
         let normalized = model.lowercased()
-        if normalized.contains("gpt-5.6-sol") { return 0 }
-        if normalized.contains("gpt-5.6-terra") { return 1 }
-        if normalized.contains("gpt-5.6-luna") { return 2 }
-        if normalized.contains("gpt-5.5") { return 3 }
-        return 4
+        if normalized.contains("gpt-6-astra") { return 0 }
+        if normalized.contains("gpt-5.6-sol") { return 1 }
+        if normalized.contains("gpt-5.6-terra") { return 2 }
+        if normalized.contains("gpt-5.6-luna") { return 3 }
+        if normalized.contains("gpt-5.5") { return 4 }
+        return 5
     }
 
     private static func effortRank(_ effort: String) -> Int {
