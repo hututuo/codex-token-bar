@@ -28,7 +28,7 @@ export interface FloatingModelUsageItem {
 }
 
 export const FLOATING_MODEL_USAGE_VISIBLE_LIMIT = 4;
-export const FLOATING_MODEL_USAGE_MINIMUM_COUNT = 3;
+export const FLOATING_MODEL_USAGE_MINIMUM_COUNT = 4;
 export const DASHBOARD_PRIMARY_MODEL_KEYS = [
   "gpt-6-astra",
   "gpt-5.6-sol",
@@ -47,7 +47,7 @@ interface CombinedModelUsage {
 }
 
 // Keep this list in lockstep with the Swift compact surface. These are the
-// placeholder priority keys; only enough zero rows are added to reach three
+// placeholder priority keys; only enough zero rows are added to reach four
 // total visible models. Spark is not a default paid model because its quota is
 // independent; it is added only when the source actually reports Spark usage.
 export const FLOATING_DEFAULT_MODEL_KEYS = [

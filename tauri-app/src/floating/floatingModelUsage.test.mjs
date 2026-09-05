@@ -57,7 +57,7 @@ test("Spark stays visible in share and shows its reference price in cost", () =>
   ], "gpt56Sol"), /Spark \$0\.00（不计入总计）/);
 });
 
-test("today model usage keeps the compact placeholder set and shares one cost order", () => {
+test("today model usage keeps the compact four-model set and shares one cost order", () => {
   const rows = [
     row("gpt-5.6-luna", 2_000_000, 0, 0, 2_000_000, 1),
     row("gpt-5.6-sol", 1_000_000, 0, 1_000_000, 2_000_000, 1),
@@ -68,29 +68,42 @@ test("today model usage keeps the compact placeholder set and shares one cost or
     { label: "Sol", tokens: 2_000_000 },
     { label: "Luna", tokens: 2_000_000 },
     { label: "Astra", tokens: 0 },
+    { label: "Terra", tokens: 0 },
   ]);
-  assert.deepEqual(items.map((item) => Math.round(item.share * 100)), [50, 50, 0]);
+  assert.deepEqual(items.map((item) => Math.round(item.share * 100)), [50, 50, 0, 0]);
   assert.deepEqual(
     floatingTodayModelUsageItems(rows, "gpt56Sol", { showPlaceholders: true }).map((item) => item.key),
     items.map((item) => item.key),
   );
 });
 
-test("one used model receives only enough zero placeholders to reach three", () => {
+test("one used model receives only enough zero placeholders to reach four", () => {
   const items = floatingTodayModelUsageItems([
     row("gpt-5.4", 1_000, 0, 0, 1_000, 1),
   ], "gpt56Sol", { showPlaceholders: true });
 
-  assert.deepEqual(items.map((item) => item.label), ["5.4", "Astra", "Sol"]);
-  assert.equal(items.length, 3);
+  assert.deepEqual(items.map((item) => item.label), ["5.4", "Astra", "Sol", "Terra"]);
+  assert.equal(items.length, 4);
 });
 
 test("cold-start empty model rows remain pending until a trusted summary exists", () => {
   assert.deepEqual(floatingTodayModelUsageItems([], "gpt56Sol"), []);
   assert.equal(
     floatingTodayModelUsageItems([], "gpt56Sol", { showPlaceholders: true }).length,
-    3,
+    4,
   );
+});
+
+test("used Astra Sol Terra Luna rows sort by amount with the default order as the tie-breaker", () => {
+  const items = floatingTodayModelUsageItems([
+    row("gpt-6-astra", 100_000, 0, 0, 100_000, 1),
+    row("gpt-5.6-sol", 1_000_000, 0, 0, 1_000_000, 1),
+    row("gpt-5.6-terra", 500_000, 0, 0, 500_000, 1),
+    row("gpt-5.6-luna", 0, 0, 1_000_000, 1_000_000, 1),
+  ], "gpt56Sol");
+
+  assert.deepEqual(items.map((item) => item.label), ["Sol", "Luna", "Astra", "Terra"]);
+  assert.deepEqual(items.map((item) => floatingModelUsageValue(item, "cost")), ["$5.00", "$1.20", "$1.00", "$1.00"]);
 });
 
 test("model usage overflow explains every hidden model", () => {
