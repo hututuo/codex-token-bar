@@ -316,6 +316,7 @@ struct QuotaSelectionAttributionPresentation: Equatable {
 extension OfficialAPIPriceModel {
     var quotaEstimateShortTitle: String {
         switch self {
+        case .gpt6Astra: "Astra"
         case .gpt56Sol: "Sol"
         case .gpt56Terra: "Terra"
         case .gpt56Luna: "Luna"

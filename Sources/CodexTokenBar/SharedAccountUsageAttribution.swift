@@ -71,6 +71,8 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
             // Public Codex Radar 2026-07-30 price card:
             // https://codexradar.com/
             switch model {
+            case .gpt6Astra:
+                return APIPriceRates(inputUSDPerMillion: 10.00, cachedInputUSDPerMillion: 1.00, outputUSDPerMillion: 50.00)
             case .gpt56Sol:
                 return APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
             case .gpt56Terra:

@@ -102,6 +102,9 @@ enum ModelUsagePresentation {
         if OfficialAPIPriceModel.detected(from: normalized) == .gpt54Legacy {
             return "gpt-5.4"
         }
+        if OfficialAPIPriceModel.detected(from: normalized) == .gpt6Astra {
+            return "gpt-6-astra"
+        }
         // A bare GPT-5.6 slug does not identify the Sol/Terra/Luna lane.
         // Keep it as a distinct generic family instead of silently counting
         // it as Sol.
@@ -120,6 +123,7 @@ enum ModelUsagePresentation {
 
     static func label(for model: String?) -> String {
         switch key(for: model) {
+        case "gpt-6-astra": return "Astra"
         case "gpt-5.6-sol": return "Sol"
         case "gpt-5.6-terra": return "Terra"
         case "gpt-5.6-luna": return "Luna"
@@ -181,6 +185,7 @@ enum ModelUsagePresentation {
 
     private static func color(forKey key: String) -> Color {
         switch key {
+        case "gpt-6-astra": return Color(red: 0.83, green: 0.32, blue: 0.17)
         case "gpt-5.6-sol": return Color(red: 0.18, green: 0.42, blue: 0.98)
         case "gpt-5.6-terra": return Color(red: 0.57, green: 0.32, blue: 0.90)
         case "gpt-5.6-luna": return Color(red: 0.00, green: 0.64, blue: 0.68)

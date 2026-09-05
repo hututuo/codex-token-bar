@@ -299,9 +299,15 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             calls: 1
         )
 
+        XCTAssertEqual(OfficialAPIPriceModel.gpt6Astra.currentPriceRates.costUSD(for: breakdown), 16.4, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt56Sol.currentPriceRates.costUSD(for: breakdown), 9.2, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt56Terra.currentPriceRates.costUSD(for: breakdown), 3.68, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt56Luna.currentPriceRates.costUSD(for: breakdown), 0.368, accuracy: 0.0001)
+        XCTAssertEqual(
+            try XCTUnwrap(SharedAccountRadarPriceRevision.radar20260730.rates(for: .gpt6Astra)).costUSD(for: breakdown),
+            16.4,
+            accuracy: 0.0001
+        )
         XCTAssertEqual(
             try XCTUnwrap(SharedAccountRadarPriceRevision.radar20260730.rates(for: .gpt56Terra)).costUSD(for: breakdown),
             3.68,

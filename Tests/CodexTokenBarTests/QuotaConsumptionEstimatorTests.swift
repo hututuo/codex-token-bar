@@ -435,6 +435,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     func testOfficialAliasAndLegacyModelsUseDistinctCurrentPrices() throws {
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-6-astra"), .gpt6Astra)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt_6_astra"), .gpt6Astra)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "GPT 6 Astra"), .gpt6Astra)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.6"), .gpt56Sol)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4"), .gpt54Legacy)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4-mini"), .gpt54MiniLegacy)
@@ -458,7 +461,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(1 / OfficialAPIPriceModel.gpt56Luna.currentPriceRates.inputUSDPerMillion, 5, accuracy: 0.0001)
         XCTAssertEqual(2.5 / OfficialAPIPriceModel.gpt56Terra.currentPriceRates.inputUSDPerMillion, 1.25, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt54MiniLegacy.currentPriceRates.costUSD(for: breakdown), 1.2, accuracy: 0.0001)
-        XCTAssertEqual(OfficialAPIPriceModel.selectableCases, [.gpt56Sol, .gpt56Terra, .gpt56Luna])
+        XCTAssertEqual(OfficialAPIPriceModel.gpt6Astra.currentPriceRates.costUSD(for: breakdown), 15, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.selectableCases, [.gpt6Astra, .gpt56Sol, .gpt56Terra, .gpt56Luna])
     }
 
     func testAutoReviewPricingRulesUseUTC20260730CutoverAndRemainAppendOnly() throws {

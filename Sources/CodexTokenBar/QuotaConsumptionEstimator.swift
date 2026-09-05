@@ -296,6 +296,7 @@ private extension TokenCacheBreakdown {
 }
 
 enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
+    case gpt6Astra
     case gpt56Sol
     case gpt56Terra
     case gpt56Luna
@@ -305,6 +306,7 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     case gpt54MiniLegacy
 
     static let selectableCases: [OfficialAPIPriceModel] = [
+        .gpt6Astra,
         .gpt56Sol,
         .gpt56Terra,
         .gpt56Luna
@@ -314,6 +316,7 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
 
     var title: String {
         switch self {
+        case .gpt6Astra: "GPT-6 Astra"
         case .gpt56Sol: "GPT-5.6 Sol"
         case .gpt56Terra: "GPT-5.6 Terra"
         case .gpt56Luna: "GPT-5.6 Luna"
@@ -329,6 +332,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         // cache-write, priority/service-tier and regional multipliers remain
         // outside this estimate.
         switch self {
+        case .gpt6Astra:
+            APIPriceRates(inputUSDPerMillion: 10.00, cachedInputUSDPerMillion: 1.00, outputUSDPerMillion: 50.00)
         case .gpt56Sol:
             APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
         case .gpt56Terra:
@@ -395,6 +400,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
             return autoReviewModel
         }
         switch key {
+        case "gpt-6-astra", "gpt6-astra", "gpt6astra", "gpt 6 astra":
+            return .gpt6Astra
         case "gpt-5.6", "gpt5.6", "gpt56", "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol", "gpt-5.5", "gpt55":
             return .gpt56Sol
         case "gpt-5.6-terra", "gpt5.6-terra", "gpt56-terra", "gpt56terra":

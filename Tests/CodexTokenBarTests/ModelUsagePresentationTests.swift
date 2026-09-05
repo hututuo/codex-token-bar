@@ -34,6 +34,8 @@ final class ModelUsagePresentationTests: XCTestCase {
     }
 
     func testFloatingModelLabelsUseCompactModelNames() {
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-6-astra"), "Astra")
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt_6_astra"), "Astra")
         XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.2-codex"), "5.2")
         XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.4"), "5.4")
         XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.4-mini"), "5.4 m")
@@ -206,6 +208,28 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(item.label, "future-model")
     }
 
+    func testFloatingTodayModelUsagePricesAstraWithSharedFormula() throws {
+        let breakdown = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 500_000,
+            outputTokens: 100_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_100_000,
+            calls: 1
+        )
+        let item = try XCTUnwrap(
+            FloatingTodayModelUsagePresentation.items(
+                from: [ModelTokenBreakdown(model: "gpt-6-astra", breakdown: breakdown)],
+                fallbackModel: .gpt56Sol
+            ).first
+        )
+
+        XCTAssertEqual(item.label, "Astra")
+        XCTAssertEqual(item.costUSD ?? -1, 10.5, accuracy: 0.0001)
+        XCTAssertEqual(item.valueText(for: .cost), "$10.5")
+        XCTAssertFalse(item.usesIndependentQuota)
+    }
+
     func testFloatingTodayModelUsageShowsDefaultModelTrioAndUsesCostOrder() throws {
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.items(
@@ -213,7 +237,7 @@ final class ModelUsagePresentationTests: XCTestCase {
                 fallbackModel: .gpt56Sol,
                 showPlaceholders: true
             ).map(\.label),
-            ["Sol", "Terra", "Luna"]
+            ["Astra", "Sol", "Terra"]
         )
 
         let oneUsedModel = FloatingTodayModelUsagePresentation.items(
@@ -230,7 +254,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             showPlaceholders: true
         )
         XCTAssertEqual(oneUsedModel.count, 3)
-        XCTAssertEqual(oneUsedModel.map(\.label), ["5.4", "Sol", "Terra"])
+        XCTAssertEqual(oneUsedModel.map(\.label), ["5.4", "Astra", "Sol"])
 
         let rows = [
             rowWithBreakdown(
@@ -255,7 +279,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             showPlaceholders: true
         )
 
-        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Terra"])
+        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Astra"])
         XCTAssertEqual(items.map(\.tokens), [2_000_000, 2_000_000, 0])
         XCTAssertEqual(items.map { $0.valueText(for: .share) }, ["50%", "50%", "0%"])
         XCTAssertEqual(
@@ -356,7 +380,7 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.dashboardPrimaryItems(from: items).map(\.label),
-            ["Sol", "Terra", "Luna"]
+            ["Astra", "Sol", "Terra", "Luna"]
         )
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.dashboardSecondaryItems(from: items).map(\.label),
