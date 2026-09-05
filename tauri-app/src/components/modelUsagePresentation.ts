@@ -22,6 +22,7 @@ export interface ModelUsageSlice {
 }
 
 const FIXED_COLORS: Record<string, string> = {
+  "gpt-6-astra": "#d4512c",
   "gpt-5.6-sol": "#2e6bfa",
   "gpt-5.6-terra": "#9252e6",
   "gpt-5.6-luna": "#00a3ad",
@@ -82,6 +83,7 @@ export function modelUsageKey(model: string | null | undefined, eventStartUnix?:
   const normalized = (model ?? "").trim().toLowerCase().replaceAll("_", "-");
   if (!normalized) return "unknown";
   const compact = normalized.replace(/[^a-z0-9]/g, "");
+  if (compact === "gpt6astra") return "gpt-6-astra";
   if (compact === "gpt53codexspark") return "gpt-5.3-codex-spark";
   if (compact === "codexautoreview") {
     return detectedOfficialAPIPriceModel(model, eventStartUnix) === "gpt54Legacy"
@@ -105,6 +107,7 @@ export function modelUsageKey(model: string | null | undefined, eventStartUnix?:
 
 export function modelUsageLabel(model: string | null | undefined): string {
   switch (modelUsageKey(model)) {
+    case "gpt-6-astra": return "Astra";
     case "gpt-5.6-sol": return "Sol";
     case "gpt-5.6-terra": return "Terra";
     case "gpt-5.6-luna": return "Luna";

@@ -30,6 +30,7 @@ export interface FloatingModelUsageItem {
 export const FLOATING_MODEL_USAGE_VISIBLE_LIMIT = 4;
 export const FLOATING_MODEL_USAGE_MINIMUM_COUNT = 3;
 export const DASHBOARD_PRIMARY_MODEL_KEYS = [
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -50,6 +51,7 @@ interface CombinedModelUsage {
 // total visible models. Spark is not a default paid model because its quota is
 // independent; it is added only when the source actually reports Spark usage.
 export const FLOATING_DEFAULT_MODEL_KEYS = [
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",

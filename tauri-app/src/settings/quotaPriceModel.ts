@@ -1,4 +1,5 @@
 export type OfficialAPIPriceModel =
+  | "gpt6Astra"
   | "gpt56Sol"
   | "gpt56Terra"
   | "gpt56Luna"
@@ -86,6 +87,7 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
   value: OfficialAPIPriceModel;
   label: string;
 }> = [
+  { value: "gpt6Astra", label: "GPT-6 Astra" },
   { value: "gpt56Sol", label: "GPT-5.6 Sol" },
   { value: "gpt56Terra", label: "GPT-5.6 Terra" },
   { value: "gpt56Luna", label: "GPT-5.6 Luna" },
@@ -95,6 +97,7 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
 // priority/service-tier and regional multipliers remain outside this estimate.
 // https://developers.openai.com/api/docs/models/compare
 const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
+  gpt6Astra: { inputUSDPerMillion: 10, cachedInputUSDPerMillion: 1, outputUSDPerMillion: 50 },
   gpt56Sol: { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 },
   gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
   gpt56Luna: { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 },
@@ -108,6 +111,7 @@ const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
 // price card. Keep this separate from current OpenAI prices so both sides of
 // the attribution division use one vintage. Source: https://codexradar.com/
 const RADAR_2026_07_30_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
+  gpt6Astra: { inputUSDPerMillion: 10, cachedInputUSDPerMillion: 1, outputUSDPerMillion: 50 },
   gpt56Sol: { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 },
   gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
   gpt56Luna: { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 },
@@ -124,7 +128,8 @@ const LEGACY_PRICE_MODEL_MIGRATIONS: Record<string, OfficialAPIPriceModel> = {
 };
 
 export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPriceModel | null {
-  if (value === "gpt56Sol"
+  if (value === "gpt6Astra"
+    || value === "gpt56Sol"
     || value === "gpt56Terra"
     || value === "gpt56Luna"
     || value === "gpt53Codex"
@@ -137,7 +142,8 @@ export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPrice
 }
 
 export function isOfficialAPIPriceModel(value: unknown): value is OfficialAPIPriceModel {
-  return value === "gpt56Sol"
+  return value === "gpt6Astra"
+    || value === "gpt56Sol"
     || value === "gpt56Terra"
     || value === "gpt56Luna"
     || value === "gpt53Codex"
@@ -216,6 +222,11 @@ export function detectedOfficialAPIPriceModel(
   const autoReviewModel = effectiveModelForAlias(value, eventDate);
   if (autoReviewModel) return autoReviewModel;
   switch (key) {
+    case "gpt-6-astra":
+    case "gpt6-astra":
+    case "gpt6astra":
+    case "gpt 6 astra":
+      return "gpt6Astra";
     case "gpt-5.6":
     case "gpt5.6":
     case "gpt56":
@@ -340,6 +351,7 @@ export function modelAwareAPICostUSD(
   return {
     costUSD,
     detectedModels: ([
+      "gpt6Astra",
       "gpt56Sol",
       "gpt56Terra",
       "gpt56Luna",
@@ -356,6 +368,7 @@ export function modelAwareAPICostUSD(
 
 export function priceModelTitle(model: OfficialAPIPriceModel): string {
   switch (normalizeOfficialAPIPriceModel(model) ?? "gpt56Sol") {
+    case "gpt6Astra": return "GPT-6 Astra";
     case "gpt56Sol": return "GPT-5.6 Sol";
     case "gpt56Terra": return "GPT-5.6 Terra";
     case "gpt56Luna": return "GPT-5.6 Luna";

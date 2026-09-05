@@ -27,7 +27,12 @@ test("historical model rows are priced automatically and unknown rows use only t
   assert.equal(estimate.excludedCalls, 0);
 });
 
-test("GPT-5.6 current price cards use the official Sol, Terra and Luna rates", () => {
+test("current price cards include the official Astra, Sol, Terra and Luna rates", () => {
+  assert.deepEqual(officialAPIPrices("gpt6Astra"), {
+    inputUSDPerMillion: 10,
+    cachedInputUSDPerMillion: 1,
+    outputUSDPerMillion: 50,
+  });
   assert.deepEqual(officialAPIPrices("gpt56Sol"), {
     inputUSDPerMillion: 5,
     cachedInputUSDPerMillion: 0.5,
@@ -78,6 +83,9 @@ test("auto review switches from GPT-5.4 to Luna at the UTC boundary", () => {
 });
 
 test("official aliases and legacy models keep their own price cards", () => {
+  assert.equal(detectedOfficialAPIPriceModel("gpt-6-astra"), "gpt6Astra");
+  assert.equal(detectedOfficialAPIPriceModel("gpt_6_astra"), "gpt6Astra");
+  assert.equal(detectedOfficialAPIPriceModel("GPT 6 Astra"), "gpt6Astra");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.6"), "gpt56Sol");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.3-codex"), "gpt53Codex");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.2-codex"), "gpt52Codex");
@@ -89,6 +97,19 @@ test("official aliases and legacy models keep their own price cards", () => {
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.4-mini"), "gpt54MiniLegacy");
   assert.equal(officialAPICostUSD(1_000_000, 0, 100_000, "gpt54Legacy"), 4);
   assert.equal(officialAPICostUSD(1_000_000, 0, 100_000, "gpt54MiniLegacy"), 1.2);
+});
+
+test("Astra rows use the shared cache-aware API cost formula", () => {
+  assert.equal(
+    officialAPICostUSD(1_000_000, 500_000, 100_000, "gpt6Astra"),
+    10.5,
+  );
+  const estimate = modelAwareAPICostUSD([
+    { model: "gpt-6-astra", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 500_000, outputTokens: 100_000, calls: 1 } },
+  ], { inputTokens: 1_000_000, cachedInputTokens: 500_000, outputTokens: 100_000, calls: 1 }, "gpt56Sol");
+  assert.equal(estimate.costUSD, 10.5);
+  assert.deepEqual(estimate.detectedModels, ["gpt6Astra"]);
+  assert.equal(estimate.fallbackCalls, 0);
 });
 
 test("Spark reference price is available without entering official quota totals", () => {

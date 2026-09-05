@@ -40,6 +40,8 @@ test("bare GPT-5.6 remains an untyped model instead of becoming Sol", () => {
 });
 
 test("floating model labels use compact model names", () => {
+  assert.equal(modelUsageLabel("gpt-6-astra"), "Astra");
+  assert.equal(modelUsageLabel("gpt_6_astra"), "Astra");
   assert.equal(modelUsageLabel("gpt-5.2-codex"), "5.2");
   assert.equal(modelUsageLabel("gpt-5.4"), "5.4");
   assert.equal(modelUsageLabel("gpt-5.4-mini"), "5.4 m");

@@ -28,6 +28,19 @@ test("today model usage combines aliases and computes cache-aware per-model pric
   assert.equal(floatingModelUsageValue(items[0], "share"), "55%");
 });
 
+test("Astra is shown and priced from the same shared model rows", () => {
+  const items = floatingTodayModelUsageItems([
+    row("gpt-6-astra", 1_000_000, 500_000, 100_000, 1_100_000, 1),
+    row("gpt-5.6-sol", 1_000_000, 0, 0, 1_000_000, 1),
+  ], "gpt56Sol");
+
+  assert.deepEqual(items.map(({ label, tokens }) => ({ label, tokens })), [
+    { label: "Astra", tokens: 1_100_000 },
+    { label: "Sol", tokens: 1_000_000 },
+  ]);
+  assert.equal(floatingModelUsageValue(items[0], "cost"), "$10.5");
+});
+
 test("Spark stays visible in share and shows its reference price in cost", () => {
   const items = floatingTodayModelUsageItems([
     row("gpt-5.3-codex-spark", 800, 0, 200, 1_000, 1),
@@ -44,7 +57,7 @@ test("Spark stays visible in share and shows its reference price in cost", () =>
   ], "gpt56Sol"), /Spark \$0\.00（不计入总计）/);
 });
 
-test("today model usage keeps a default trio and shares one cost order", () => {
+test("today model usage keeps the compact placeholder set and shares one cost order", () => {
   const rows = [
     row("gpt-5.6-luna", 2_000_000, 0, 0, 2_000_000, 1),
     row("gpt-5.6-sol", 1_000_000, 0, 1_000_000, 2_000_000, 1),
@@ -54,7 +67,7 @@ test("today model usage keeps a default trio and shares one cost order", () => {
   assert.deepEqual(items.map(({ label, tokens }) => ({ label, tokens })), [
     { label: "Sol", tokens: 2_000_000 },
     { label: "Luna", tokens: 2_000_000 },
-    { label: "Terra", tokens: 0 },
+    { label: "Astra", tokens: 0 },
   ]);
   assert.deepEqual(items.map((item) => Math.round(item.share * 100)), [50, 50, 0]);
   assert.deepEqual(
@@ -68,7 +81,7 @@ test("one used model receives only enough zero placeholders to reach three", () 
     row("gpt-5.4", 1_000, 0, 0, 1_000, 1),
   ], "gpt56Sol", { showPlaceholders: true });
 
-  assert.deepEqual(items.map((item) => item.label), ["5.4", "Sol", "Terra"]);
+  assert.deepEqual(items.map((item) => item.label), ["5.4", "Astra", "Sol"]);
   assert.equal(items.length, 3);
 });
 
@@ -123,7 +136,7 @@ test("cost model pages stay balanced while never exceeding four items", () => {
   );
 });
 
-test("dashboard groups keep Sol Terra Luna expanded and wrap used secondary models", () => {
+test("dashboard groups keep Astra Sol Terra Luna expanded and wrap used secondary models", () => {
   const items = floatingTodayModelUsageItems([
     row("gpt-5.6-sol", 1_000, 0, 0, 1_000, 1),
     row("gpt-5.4", 500, 0, 0, 500, 1),
@@ -132,7 +145,7 @@ test("dashboard groups keep Sol Terra Luna expanded and wrap used secondary mode
 
   assert.deepEqual(
     dashboardPrimaryModelUsageItems(items).map((item) => item.label),
-    ["Sol", "Terra", "Luna"],
+    ["Astra", "Sol", "Terra", "Luna"],
   );
   assert.deepEqual(
     dashboardSecondaryModelUsageItems(items).map((item) => item.label),

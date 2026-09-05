@@ -72,8 +72,9 @@ test("StatsStrip renders six historical metrics with an explainable savings esti
     assert.match(html, /Sol/);
     assert.match(html, /Terra/);
     assert.match(html, /Luna/);
+    assert.match(html, /Astra/);
     assert.match(html, /主力/);
-    assert.equal((html.match(/stats-model-cost-primary-card/g) ?? []).length, 3);
+    assert.equal((html.match(/stats-model-cost-primary-card/g) ?? []).length, 4);
     assert.match(html, /\$5\.75/);
     assert.match(html, /合计/);
   });
