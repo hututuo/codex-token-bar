@@ -101,7 +101,7 @@ test("deleted old source plus a new source in the same bucket accumulates 2M + 3
     Object.keys(replacedScan.effectiveBuckets[0].sourceContributions).sort(),
     ["source-a", "source-b"],
   );
-  assert.equal(officialAPICostUSD(5_000_000, 0, 0, "gpt56Sol"), 25);
+  assert.equal(officialAPICostUSD(5_000_000, 0, 0, "gpt56Sol"), 20);
 
   const restored = merge(replacedScan.record, [point(START, [
     contribution("source-a", 2_000_000),

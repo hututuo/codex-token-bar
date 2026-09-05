@@ -38,7 +38,8 @@ enum ModelUsagePresentation {
         combinedRows(events.map {
             ModelTokenBreakdown(
                 model: displayModelKey(for: $0.model, at: $0.start),
-                breakdown: $0.breakdown
+                breakdown: $0.breakdown,
+                pricePeriods: [.init(model: $0.model, start: $0.start, breakdown: $0.breakdown)]
             )
         })
     }
@@ -56,7 +57,8 @@ enum ModelUsagePresentation {
         combinedRows(aggregatedRows.map { row in
             ModelTokenBreakdown(
                 model: displayModelKey(for: row.model, at: effectiveDate),
-                breakdown: row.breakdown
+                breakdown: row.breakdown,
+                pricePeriods: row.pricePeriods ?? [.init(model: row.model, start: effectiveDate, breakdown: row.breakdown)]
             )
         })
     }
@@ -168,17 +170,19 @@ enum ModelUsagePresentation {
     }
 
     static func combinedRows(_ rows: [ModelTokenBreakdown]) -> [ModelTokenBreakdown] {
-        var grouped: [String: (model: String?, breakdowns: [TokenCacheBreakdown])] = [:]
+        var grouped: [String: (model: String?, breakdowns: [TokenCacheBreakdown], periods: [ModelTokenPricePeriod])] = [:]
         for row in rows where row.breakdown.totalTokens > 0 {
             let modelKey = key(for: row.model)
-            var value = grouped[modelKey] ?? (row.model, [])
+            var value = grouped[modelKey] ?? (row.model, [], [])
             value.breakdowns.append(row.breakdown)
+            value.periods.append(contentsOf: row.pricingRows)
             grouped[modelKey] = value
         }
         return grouped.map { key, value in
             ModelTokenBreakdown(
                 model: key == "unknown" ? nil : value.model,
-                breakdown: value.breakdowns.combined
+                breakdown: value.breakdowns.combined,
+                pricePeriods: value.periods
             )
         }
     }

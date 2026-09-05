@@ -1486,7 +1486,8 @@ final class CodexUsageStore: ObservableObject {
             coverageKind: maxCoverage(headline.coverageKind, details.coverageKind),
             observedThrough: maxOptional(headline.observedThrough, details.observedThrough),
             settledThrough: maxOptional(headline.settledThrough, details.settledThrough),
-            exactGeneration: maxOptional(headline.exactGeneration, details.exactGeneration)
+            exactGeneration: maxOptional(headline.exactGeneration, details.exactGeneration),
+            accountingCoverage: headline.accountingCoverage ?? details.accountingCoverage
         )
     }
 
@@ -1520,7 +1521,8 @@ final class CodexUsageStore: ObservableObject {
             coverageKind: maxCoverage(headline.coverageKind, older.coverageKind),
             observedThrough: maxOptional(headline.observedThrough, older.observedThrough),
             settledThrough: maxOptional(headline.settledThrough, older.settledThrough),
-            exactGeneration: maxOptional(headline.exactGeneration, older.exactGeneration)
+            exactGeneration: maxOptional(headline.exactGeneration, older.exactGeneration),
+            accountingCoverage: headline.accountingCoverage ?? older.accountingCoverage
         )
     }
 
@@ -2044,7 +2046,8 @@ final class CodexUsageStore: ObservableObject {
             coverageKind: summary.coverageKind,
             observedThrough: summary.observedThrough ?? summary.generatedAt,
             settledThrough: summary.settledThrough ?? previous.settledThrough,
-            exactGeneration: summary.exactGeneration ?? previous.exactGeneration
+            exactGeneration: summary.exactGeneration ?? previous.exactGeneration,
+            accountingCoverage: previous.accountingCoverage
         )
     }
 

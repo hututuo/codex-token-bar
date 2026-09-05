@@ -1,3 +1,4 @@
+use super::accounting::{AccountingState, Components, Snapshot, COUNTED};
 #[cfg(test)]
 use super::TokenEvent;
 use crate::models::LocalDataWarning;
@@ -49,6 +50,9 @@ pub(super) struct ExactTokenEvent {
     pub(super) reasoning_output_tokens: u64,
     pub(super) model: Option<String>,
     pub(super) source_offsets: ExactEventSourceOffsets,
+    pub(super) token_source_offset: u64,
+    pub(super) accounting_kind: i64,
+    pub(super) reported_total_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -58,11 +62,13 @@ struct ParsedUsage {
     output_tokens: u64,
     reasoning_output_tokens: u64,
     total_tokens: u64,
+    accounting: Snapshot,
 }
 
 #[derive(Clone, Debug)]
 struct ParsedUsageLine {
     timestamp: OffsetDateTime,
+    identity_timestamp: String,
     total: Option<ParsedUsage>,
     last: Option<ParsedUsage>,
 }
@@ -127,6 +133,7 @@ pub(super) struct ExactSessionParserState {
     pub(super) current_user_prompt: Option<SourceByteRange>,
     pub(super) assistant_response: Option<SourceByteRange>,
     pub(super) current_model: Option<String>,
+    pub(super) accounting_state: Option<AccountingState>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -235,6 +242,9 @@ pub(super) fn stream_session_file_exact_from(
     let mut is_explicit_subagent_fork = initial_state.is_explicit_subagent_fork;
     let mut last_skipped_fork_replay_token_at = initial_state.last_skipped_fork_replay_token_at;
     let mut previous_total = initial_state.previous_total_tokens;
+    let mut accounting = initial_state.accounting_state.unwrap_or_else(|| {
+        if parsing_start_offset == 0 { AccountingState::fresh() } else { AccountingState::default() }
+    });
     let mut current_user_prompt = initial_state.current_user_prompt;
     let mut assistant_response = initial_state.assistant_response;
     let mut current_model = initial_state.current_model;
@@ -328,59 +338,45 @@ pub(super) fn stream_session_file_exact_from(
             continue;
         };
 
-        let total_tokens = usage_line.total.as_ref().map(|usage| usage.total_tokens);
-        let previous_high_water = previous_total;
+        let total_tokens = usage_line.total.as_ref().and_then(|u| u.accounting.reported_total);
         if let Some(total_tokens) = total_tokens {
-            previous_total = Some(
-                previous_total.map_or(total_tokens, |previous: u64| previous.max(total_tokens)),
-            );
+            previous_total = Some(previous_total.map_or(total_tokens, |p| p.max(total_tokens)));
         }
+        let signature = format!("{}|{}|{}",
+            usage_line.total.as_ref().map_or("missing", |u| u.accounting.signature.as_str()),
+            usage_line.last.as_ref().map_or("missing", |u| u.accounting.signature.as_str()),
+            usage_line.identity_timestamp);
+        let adjacent_duplicate = accounting.last_snapshot.as_ref() == Some(&signature);
         let is_new_snapshot = match usage_snapshot_fingerprint(&usage_line) {
             Some(fingerprint) => sink.insert_fingerprint(&fingerprint)?,
             None => true,
         };
+        if adjacent_duplicate { continue; }
+        let mut next_accounting = accounting.clone();
+        let measured = next_accounting.observe(
+            usage_line.last.as_ref().map(|u| &u.accounting),
+            usage_line.total.as_ref().map(|u| &u.accounting));
+        next_accounting.last_snapshot = Some(signature);
+        if !is_new_snapshot { continue; }
+        accounting = next_accounting;
         if fork_replay_active {
             last_skipped_fork_replay_token_at = Some(usage_line.timestamp);
             continue;
         }
-        if !is_new_snapshot {
-            continue;
-        }
-
-        let last_tokens = usage_line.last.as_ref().map(|usage| usage.total_tokens);
-        let delta = if last_tokens.is_some_and(|tokens| tokens > 0) {
-            last_tokens.unwrap_or_default()
-        } else if let Some(total_tokens) = total_tokens {
-            previous_high_water.map_or(total_tokens, |previous| {
-                total_tokens.saturating_sub(previous)
-            })
-        } else {
-            0
-        };
-        if delta == 0 {
-            continue;
-        }
-
+        let Some(measured) = measured else { continue; };
+        let delta = measured.tokens();
         sink.insert_event(&ExactTokenEvent {
             timestamp: usage_line.timestamp,
             session_id: session_id.to_string(),
             tokens: delta,
-            input_tokens: usage_line
-                .last
-                .as_ref()
-                .map_or(0, |usage| usage.input_tokens),
-            cached_input_tokens: usage_line
-                .last
-                .as_ref()
-                .map_or(0, |usage| usage.cached_input_tokens),
-            output_tokens: usage_line
-                .last
-                .as_ref()
-                .map_or(0, |usage| usage.output_tokens),
-            reasoning_output_tokens: usage_line
-                .last
-                .as_ref()
-                .map_or(0, |usage| usage.reasoning_output_tokens),
+            input_tokens: measured.components.input,
+            cached_input_tokens: measured.components.cached,
+            output_tokens: measured.components.output,
+            reasoning_output_tokens: measured.components.reasoning,
+            token_source_offset: line_start,
+            accounting_kind: measured.kind,
+            reported_total_tokens: usage_line.last.as_ref().and_then(|u| u.accounting.reported_total)
+                .or_else(|| usage_line.total.as_ref().and_then(|u| u.accounting.reported_total)),
             model: current_model.clone(),
             source_offsets: ExactEventSourceOffsets {
                 user_prompt: current_user_prompt,
@@ -391,7 +387,7 @@ pub(super) fn stream_session_file_exact_from(
         {
             event_count = event_count.saturating_add(1);
         }
-        assistant_response = None;
+        if measured.kind == COUNTED { assistant_response = None; }
     }
 
     let hashing_reader = reader.into_inner();
@@ -422,6 +418,7 @@ pub(super) fn stream_session_file_exact_from(
             current_user_prompt,
             assistant_response,
             current_model,
+            accounting_state: Some(accounting),
         },
         chunk_hashes,
         validation_chunk_hash,
@@ -666,6 +663,7 @@ pub(super) fn parse_session_file_full_result(
     let events = sink
         .events
         .into_iter()
+        .filter(|event| event.accounting_kind == COUNTED)
         .map(|event| {
             let (user_prompt, assistant_response) =
                 read_event_excerpts(file, event.source_offsets).unwrap_or_default();
@@ -713,6 +711,22 @@ impl ExactSessionEventSink for TestExactSessionSink {
 // 与 Swift UsageSnapshotFingerprint（CodexUsageAnalyzerModels.swift）同为 11 字段、
 // 同字段顺序：仅 reasoning 不同的两条 snapshot 两端必须一致地判为不同事件。
 fn usage_snapshot_fingerprint(usage_line: &ParsedUsageLine) -> Option<UsageSnapshotFingerprint> {
+    let full = usage_line.total.as_ref().is_some_and(|t| t.accounting.has_input_and_output
+        && t.accounting.reported_total.is_some() && !t.accounting.invalid_number)
+        && !usage_line.last.as_ref().is_some_and(|l| !l.accounting.has_input_and_output
+            || l.accounting.reported_total.is_none() || l.accounting.invalid_number);
+    if !full {
+        let identity = format!("codex-partial-snapshot-v1|{}|{}|{}",
+            usage_line.total.as_ref().map_or("missing", |u| u.accounting.signature.as_str()),
+            usage_line.last.as_ref().map_or("missing", |u| u.accounting.signature.as_str()),
+            usage_line.identity_timestamp);
+        let digest = Sha256::digest(identity.as_bytes());
+        let words = digest.chunks_exact(4).map(|bytes| u32::from_be_bytes(bytes.try_into().unwrap()) as u64).collect::<Vec<_>>();
+        // Reserved no-last/nonzero-lastTokens identity: a full numeric
+        // snapshot without last always has five trailing zero values.
+        return Some([words[0], words[1], words[2], words[3], words[4], 0,
+            words[5], words[6], words[7], 0, 1]);
+    }
     let total = usage_line.total.as_ref()?;
     let mut fingerprint = [0; 11];
     fingerprint[..5].copy_from_slice(&[
@@ -1081,19 +1095,32 @@ fn parse_usage_line(line: &str) -> Option<ParsedUsageLine> {
     }
     Some(ParsedUsageLine {
         timestamp,
+        identity_timestamp: value.get("timestamp")?.as_str()?.to_owned(),
         total,
         last,
     })
 }
 
 fn parse_usage(value: Option<&Value>) -> Option<ParsedUsage> {
-    let value = value?;
+    let value = value?.as_object()?;
+    let keys = ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"];
+    if !keys.iter().any(|k| value.contains_key(*k)) { return None; }
+    let values = keys.map(|k| value.get(k).and_then(|v| {
+        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            .filter(|n| *n <= i64::MAX as u64)
+    }));
+    let components = Components { input: values[0].unwrap_or(0), cached: values[1].unwrap_or(0),
+        output: values[2].unwrap_or(0), reasoning: values[3].unwrap_or(0) };
+    let invalid_number = keys.iter().zip(values).any(|(k, v)| value.contains_key(*k) && v.is_none());
+    let signature = keys.iter().zip(values).map(|(k, v)| v.map(|n| n.to_string())
+        .unwrap_or_else(|| if value.contains_key(*k) { "invalid" } else { "missing" }.into()))
+        .collect::<Vec<_>>().join(":");
     Some(ParsedUsage {
-        input_tokens: number_field(value, "input_tokens").unwrap_or(0),
-        cached_input_tokens: number_field(value, "cached_input_tokens").unwrap_or(0),
-        output_tokens: number_field(value, "output_tokens").unwrap_or(0),
-        reasoning_output_tokens: number_field(value, "reasoning_output_tokens").unwrap_or(0),
-        total_tokens: number_field(value, "total_tokens")?,
+        input_tokens: components.input, cached_input_tokens: components.cached,
+        output_tokens: components.output, reasoning_output_tokens: components.reasoning,
+        total_tokens: values[4].unwrap_or_else(|| if components.valid() { components.total() } else { 0 }),
+        accounting: Snapshot { components, reported_total: values[4],
+            has_input_and_output: values[0].is_some() && values[2].is_some(), invalid_number, signature },
     })
 }
 
@@ -1118,6 +1145,25 @@ fn jsonl_file_warning(message: String) -> LocalDataWarning {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn non_integer_json_spellings_match_swift_diagnostic_policy() {
+        for spelling in ["1.0", "1e3", "-0", "\"-0\"", "1.5"] {
+            let raw = format!(r#"{{"timestamp":"2026-09-05T01:00:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":{spelling},"output_tokens":1}}}}}}}}"#);
+            let line = super::parse_usage_line(&raw).unwrap();
+            let mut state = super::AccountingState::fresh();
+            let event = state.observe(line.last.as_ref().map(|u| &u.accounting), None).unwrap();
+            assert_eq!(event.kind, super::super::accounting::INVALID, "{spelling}");
+            assert_eq!(event.tokens(), 0, "{spelling}");
+        }
+    }
+    #[test]
+    fn partial_snapshot_identity_matches_swift_reserved_codec_vector() {
+        let line = super::parse_usage_line(r#"{"timestamp":"2026-09-05T01:00:00.123456Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#).unwrap();
+        let values = super::usage_snapshot_fingerprint(&line).unwrap();
+        assert_eq!(values, [3055952699,2187296764,1175716159,614398934,4030878752,0,1501025032,3640361036,3087568809,0,1]);
+        let encoded = crate::core::usage::token_count_jsonl::fingerprint_codec::encode(&values).unwrap();
+        assert_eq!(crate::core::usage::token_count_jsonl::fingerprint_codec::decode(&encoded).unwrap(), values);
+    }
     use super::{parse_payload_message_marker, parse_turn_context};
 
     #[test]

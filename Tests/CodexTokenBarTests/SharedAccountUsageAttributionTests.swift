@@ -69,6 +69,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
 
         XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.0, accuracy: 0.0001)
+        // July 30: Sol is still $5/M and Terra is already $2/M.
         XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 7.0, accuracy: 0.0001)
         XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
         XCTAssertEqual(result.fallbackModelCalls, 0)
@@ -300,7 +301,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
 
         XCTAssertEqual(OfficialAPIPriceModel.gpt6Astra.currentPriceRates.costUSD(for: breakdown), 16.4, accuracy: 0.0001)
-        XCTAssertEqual(OfficialAPIPriceModel.gpt56Sol.currentPriceRates.costUSD(for: breakdown), 9.2, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.gpt56Sol.currentPriceRates.costUSD(for: breakdown), 6.56, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt56Terra.currentPriceRates.costUSD(for: breakdown), 3.68, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt56Luna.currentPriceRates.costUSD(for: breakdown), 0.368, accuracy: 0.0001)
         XCTAssertEqual(
@@ -546,7 +547,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertEqual(missingQuota.state, .missingSevenDayQuota)
         XCTAssertEqual(missingReset.state, .missingQuotaReset)
         XCTAssertEqual(unknownPrice.state, .missingCompatiblePriceRevision)
-        XCTAssertEqual(try XCTUnwrap(unknownPrice.localCurrentOfficialCostUSD), 5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(unknownPrice.localCurrentOfficialCostUSD), 4, accuracy: 0.0001)
     }
 
     func testBrokenAttributionPersistenceFailsClosedWithoutRequestingAPreciseRescan() throws {
@@ -744,7 +745,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
         XCTAssertEqual(withoutRadar.state, .missingRadarTierBaseline)
         XCTAssertEqual(withoutRadar.breakdown.inputTokens, 2_000_000)
-        XCTAssertEqual(try XCTUnwrap(withoutRadar.localCurrentOfficialCostUSD), 10, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(withoutRadar.localCurrentOfficialCostUSD), 8, accuracy: 0.0001)
         let key = try XCTUnwrap(withoutRadar.highWatermarkKey)
         _ = store.merge(try XCTUnwrap(withoutRadar.highWatermarkCandidate), for: key)
 

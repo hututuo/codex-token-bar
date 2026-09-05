@@ -1,4 +1,5 @@
 import CryptoKit
+import CoreFoundation
 import Darwin
 import Foundation
 
@@ -187,6 +188,8 @@ extension CodexUsageAnalyzer {
         var lastSkippedForkReplayTokenAt =
             request.initialState.lastSkippedForkReplayTokenAt
         var eventCount = 0
+        var accounting = request.initialState.accountingState
+            ?? (request.parsingStartOffset == 0 ? .fresh : UsageAccountingState())
 
         let stream = try streamIndexedSessionLines(
             from: file,
@@ -261,39 +264,44 @@ extension CodexUsageAnalyzer {
                     return
                 }
 
-                let totalTokens = usageLine.total?.totalTokens
-                let previousHighWater = previousTotal
-                if let totalTokens {
-                    previousTotal = max(previousTotal ?? totalTokens, totalTokens)
-                }
+                let totalTokens = usageLine.total?.accounting.reportedTotal
+                if let totalTokens { previousTotal = max(previousTotal ?? totalTokens, totalTokens) }
+                // Full snapshots keep the existing durable fingerprint contract.
+                // Partial snapshots use a durable presence-aware identity and
+                // timestamp, so equal counts from distinct requests stay distinct.
+                let signature = (usageLine.total?.accounting.signature ?? "missing")
+                    + "|" + (usageLine.last?.accounting.signature ?? "missing")
+                    + "|" + usageLine.identityTimestamp
+                let adjacentDuplicate = accounting.lastSnapshot == signature
                 let isNewSnapshot = try usageSnapshotFingerprint(for: usageLine)
                     .map(insertFingerprint) ?? true
+                if adjacentDuplicate { return }
+                var nextAccounting = accounting
+                let measured = nextAccounting.observe(
+                    last: usageLine.last?.accounting,
+                    total: usageLine.total?.accounting
+                )
+                nextAccounting.lastSnapshot = signature
+                // A counter decrease also occurs in interleaved/replayed
+                // streams. It is not proof that an old durable fingerprint
+                // is a new request; preserve the existing replay protection.
+                guard isNewSnapshot else { return }
+                accounting = nextAccounting
                 if isSkippingForkReplay {
                     lastSkippedForkReplayTokenAt = usageLine.timestamp
                     return
                 }
-                guard isNewSnapshot else { return }
-
-                let lastTokens = usageLine.last?.totalTokens
-                let delta: Int
-                if let lastTokens, lastTokens > 0 {
-                    delta = lastTokens
-                } else if let totalTokens {
-                    delta = previousHighWater.map { max(0, totalTokens - $0) } ?? totalTokens
-                } else {
-                    delta = 0
-                }
-                guard delta > 0 else { return }
-
+                guard let measured else { return }
+                let delta = measured.tokens
                 let event = TokenEvent(
                     timestamp: usageLine.timestamp,
                     sessionID: sessionID,
                     model: currentModel,
                     tokens: delta,
-                    inputTokens: usageLine.last?.inputTokens ?? 0,
-                    cachedInputTokens: usageLine.last?.cachedInputTokens ?? 0,
-                    outputTokens: usageLine.last?.outputTokens ?? 0,
-                    reasoningOutputTokens: usageLine.last?.reasoningOutputTokens ?? 0,
+                    inputTokens: measured.components.input,
+                    cachedInputTokens: measured.components.cached,
+                    outputTokens: measured.components.output,
+                    reasoningOutputTokens: measured.components.reasoning,
                     userPrompt: "",
                     assistantResponse: ""
                 )
@@ -302,11 +310,14 @@ extension CodexUsageAnalyzer {
                         event: event,
                         sourceOffset: lineOffset,
                         userPromptOffset: currentUserPromptOffset,
-                        assistantStartOffset: assistantStartOffset
+                        assistantStartOffset: assistantStartOffset,
+                        accountingKind: measured.kind,
+                        reportedTotalTokens: usageLine.last?.accounting.reportedTotal
+                            ?? usageLine.total?.accounting.reportedTotal
                     )
                 )
                 eventCount += 1
-                assistantStartOffset = nil
+                if measured.kind == .counted { assistantStartOffset = nil }
             }
         }
 
@@ -324,7 +335,8 @@ extension CodexUsageAnalyzer {
                 lastSkippedForkReplayTokenAt: lastSkippedForkReplayTokenAt,
                 currentUserPromptOffset: currentUserPromptOffset,
                 assistantStartOffset: assistantStartOffset,
-                currentModel: currentModel
+                currentModel: currentModel,
+                accountingState: accounting
             ),
             chunkHashes: stream.chunkHashes,
             validationChunkHash: stream.validationChunkHash
@@ -778,7 +790,19 @@ extension CodexUsageAnalyzer {
     }
 
     private func usageSnapshotFingerprint(for usageLine: ParsedTokenUsageLine) -> UsageSnapshotFingerprint? {
-        guard let total = usageLine.total else { return nil }
+        guard let total = usageLine.total,
+              total.accounting.reportedTotal != nil,
+              total.accounting.hasInputAndOutput,
+              usageLine.last == nil || usageLine.last?.accounting.hasInputAndOutput == true,
+              !total.accounting.hasInvalidNumber,
+              usageLine.last?.accounting.hasInvalidNumber != true,
+              usageLine.last == nil || usageLine.last?.accounting.reportedTotal != nil else {
+            let identity = "codex-partial-snapshot-v1|"
+                + (usageLine.total?.accounting.signature ?? "missing") + "|"
+                + (usageLine.last?.accounting.signature ?? "missing") + "|"
+                + usageLine.identityTimestamp
+            return UsageSnapshotFingerprint(identityDigest: Array(SHA256.hash(data: Data(identity.utf8))))
+        }
         return UsageSnapshotFingerprint(total: total, last: usageLine.last)
     }
 
@@ -863,10 +887,11 @@ extension CodexUsageAnalyzer {
             return nil
         }
 
-        let total = parseTokenUsage(info["total_token_usage"] as? [String: Any])
-        let last = parseTokenUsage(info["last_token_usage"] as? [String: Any])
+        let negativeZeroFields = TokenUsageLexicalValidation.negativeZeroFields(in: line)
+        let total = parseTokenUsage(info["total_token_usage"] as? [String: Any], rejecting: negativeZeroFields["total_token_usage"] ?? [])
+        let last = parseTokenUsage(info["last_token_usage"] as? [String: Any], rejecting: negativeZeroFields["last_token_usage"] ?? [])
         guard total != nil || last != nil else { return nil }
-        return ParsedTokenUsageLine(timestamp: timestamp, total: total, last: last)
+        return ParsedTokenUsageLine(timestamp: timestamp, identityTimestamp: timestampString, total: total, last: last)
     }
 
     private struct ParsedTurnContext {
@@ -892,19 +917,41 @@ extension CodexUsageAnalyzer {
         )
     }
 
-    private func parseTokenUsage(_ raw: [String: Any]?) -> ParsedTokenUsage? {
-        guard let raw,
-              let totalTokens = intValue(raw["total_tokens"]) else {
-            return nil
-        }
-
-        return ParsedTokenUsage(
-            inputTokens: intValue(raw["input_tokens"]) ?? 0,
-            cachedInputTokens: intValue(raw["cached_input_tokens"]) ?? 0,
-            outputTokens: intValue(raw["output_tokens"]) ?? 0,
-            reasoningOutputTokens: intValue(raw["reasoning_output_tokens"]) ?? 0,
-            totalTokens: totalTokens
+    private func parseTokenUsage(_ raw: [String: Any]?, rejecting fields: Set<String> = []) -> ParsedTokenUsage? {
+        guard let raw else { return nil }
+        let keys = ["input_tokens", "cached_input_tokens", "output_tokens",
+                    "reasoning_output_tokens", "total_tokens"]
+        guard keys.contains(where: { raw[$0] != nil }) else { return nil }
+        let values = keys.map { fields.contains($0) ? nil : strictTokenInteger(raw[$0]) }
+        let components = UsageAccountingComponents(
+            input: values[0] ?? 0, cached: values[1] ?? 0,
+            output: values[2] ?? 0, reasoning: values[3] ?? 0
         )
+        let invalid = zip(keys, values).contains { raw[$0.0] != nil && $0.1 == nil }
+        let signature = zip(keys, values).map { key, value in
+            value.map(String.init) ?? (raw[key] == nil ? "missing" : "invalid")
+        }.joined(separator: ":")
+        return ParsedTokenUsage(
+            inputTokens: components.input, cachedInputTokens: components.cached,
+            outputTokens: components.output, reasoningOutputTokens: components.reasoning,
+            totalTokens: values[4] ?? (components.isValid ? components.total : 0),
+            accounting: UsageAccountingSnapshot(
+                components: components, reportedTotal: values[4],
+                hasInputAndOutput: values[0] != nil && values[2] != nil,
+                hasInvalidNumber: invalid, signature: signature
+            )
+        )
+    }
+
+    private func strictTokenInteger(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber {
+            guard CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  !["d", "f"].contains(String(cString: number.objCType)),
+                  let result = Int(number.stringValue), result >= 0 else { return nil }
+            return result
+        }
+        if let text = value as? String, !text.hasPrefix("-"), let result = Int(text), result >= 0 { return result }
+        return nil
     }
 
     private func intValue(_ value: Any?) -> Int? {

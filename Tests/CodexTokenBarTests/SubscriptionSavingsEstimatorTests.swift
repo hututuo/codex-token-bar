@@ -31,9 +31,9 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
         ))
 
         XCTAssertEqual(estimate.billingMonths, 7)
-        XCTAssertEqual(estimate.apiEquivalentUSD, 35.5, accuracy: 0.0001)
+        XCTAssertEqual(estimate.apiEquivalentUSD, 24.4, accuracy: 0.0001)
         XCTAssertEqual(estimate.subscriptionCostUSD, 1_400)
-        XCTAssertEqual(estimate.netSavingsUSD, -1_364.5)
+        XCTAssertEqual(estimate.netSavingsUSD, -1_375.6)
         XCTAssertEqual(
             SubscriptionSavingsPresentation(estimate: estimate).labelText,
             "累计净薅到（估）"
@@ -82,7 +82,7 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
             calendar: utcCalendar
         ))
 
-        XCTAssertEqual(estimate.apiEquivalentUSD, 7.2, accuracy: 0.0001)
+        XCTAssertEqual(estimate.apiEquivalentUSD, 6.2, accuracy: 0.0001)
         XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra])
         XCTAssertEqual(estimate.fallbackModelCalls, 1)
         XCTAssertTrue(SubscriptionSavingsPresentation(estimate: estimate).helpText.contains("未知记录"))

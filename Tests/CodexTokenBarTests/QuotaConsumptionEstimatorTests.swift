@@ -550,7 +550,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             fallbackModel: .gpt56Sol,
             rates: { $0.currentPriceRates }
         )
-        XCTAssertEqual(incomplete.costUSD, 16.75, accuracy: 0.0001)
+        XCTAssertEqual(incomplete.costUSD, 12.2, accuracy: 0.0001)
         XCTAssertEqual(incomplete.detectedModels, [])
         XCTAssertEqual(incomplete.fallbackCalls, 2)
 
@@ -606,7 +606,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 10.9, accuracy: 0.0001)
+        XCTAssertEqual(estimate.costUSD, 9.9, accuracy: 0.0001)
         XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra, .gpt56Luna, .gpt53Codex, .gpt52Codex])
         XCTAssertEqual(estimate.fallbackCalls, 0)
         XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
@@ -660,7 +660,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 5, accuracy: 0.0001)
+        XCTAssertEqual(estimate.costUSD, 4, accuracy: 0.0001)
         XCTAssertEqual(estimate.fallbackCalls, 1)
         XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
         XCTAssertEqual(estimate.excludedCalls, 1)
@@ -696,15 +696,15 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(result.state, .suspectedNonLocalUsage)
         XCTAssertTrue(result.allowsAttributionConclusion)
         XCTAssertEqual(try XCTUnwrap(result.accountDropPercent), 13, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 100, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 10, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 3, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 80, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 8, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 5, accuracy: 0.0001)
 
         let presentation = QuotaSelectionAttributionPresentation(result: result)
         XCTAssertEqual(presentation.accountText, "13%")
-        XCTAssertEqual(presentation.localText, "≈10%")
+        XCTAssertEqual(presentation.localText, "≈8%")
         XCTAssertEqual(presentation.differenceTitle, "疑似他人")
-        XCTAssertEqual(presentation.differenceText, "≈+3%")
+        XCTAssertEqual(presentation.differenceText, "≈+5%")
     }
 
     func testSelectionAttributionAutomaticallyPricesMixedModelsForCurrentAndRadarRevisions() throws {
@@ -745,7 +745,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(result.localCurrentOfficialCostUSD, 7.0, accuracy: 0.0001)
+        XCTAssertEqual(result.localCurrentOfficialCostUSD, 7.5, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.0, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 7.0, accuracy: 0.0001)
         XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
@@ -762,10 +762,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
 
         XCTAssertEqual(result.state, .localEstimateExceedsAccountDrop)
         XCTAssertTrue(result.allowsAttributionConclusion)
-        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), -5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), -3, accuracy: 0.0001)
         XCTAssertEqual(
             QuotaSelectionAttributionPresentation(result: result).differenceText,
-            "-5%"
+            "-3%"
         )
     }
 
@@ -777,7 +777,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
         XCTAssertEqual(flatResult.state, .localEstimateExceedsAccountDrop)
         XCTAssertEqual(try XCTUnwrap(flatResult.accountDropPercent), 0, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(flatResult.nonLocalDifferencePercent), -10, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(flatResult.nonLocalDifferencePercent), -8, accuracy: 0.0001)
 
         let missingSelection = attributionSelection(sevenDayDrop: 0, quotaDropObserved: false)
         let missingResult = QuotaSelectionAttributionEstimator.estimate(
@@ -836,13 +836,13 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(result.state, .missingQuotaHistory)
         XCTAssertFalse(result.allowsAttributionConclusion)
         XCTAssertNil(result.accountDropPercent)
-        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 100, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 10, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 80, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 8, accuracy: 0.0001)
         XCTAssertNil(result.nonLocalDifferencePercent)
 
         let presentation = QuotaSelectionAttributionPresentation(result: result)
         XCTAssertEqual(presentation.accountText, "--")
-        XCTAssertEqual(presentation.localText, "≈10%")
+        XCTAssertEqual(presentation.localText, "≈8%")
         XCTAssertEqual(presentation.differenceTitle, "差额")
         XCTAssertEqual(presentation.differenceText, "--")
     }
@@ -859,7 +859,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
         XCTAssertEqual(stale.state, .provisional)
         XCTAssertFalse(stale.allowsAttributionConclusion)
-        XCTAssertEqual(stale.nonLocalDifferencePercent, 3)
+        XCTAssertEqual(stale.nonLocalDifferencePercent, 5)
         XCTAssertTrue(stale.caveats.contains { $0.contains("旧数据") })
 
         let highWatermark = QuotaSelectionAttributionEstimator.estimate(
@@ -924,9 +924,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(result.state, .provisional)
         XCTAssertFalse(result.allowsAttributionConclusion)
         XCTAssertEqual(try XCTUnwrap(result.accountDropPercent), 13, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 50, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 5, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 8, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 40, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 4, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 9, accuracy: 0.0001)
         XCTAssertTrue(result.caveats.contains { $0.contains("暂算") })
         let presentation = QuotaSelectionAttributionPresentation(result: result)
         XCTAssertEqual(presentation.accountTitle, "账号暂降")
@@ -1028,9 +1028,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             attributionEvents: events
         ))
 
-        XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.costUSD, 7.0, accuracy: 0.0001)
-        XCTAssertEqual(selection.fiveHour.selectedCostUSD, 7.0, accuracy: 0.0001)
-        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 7.0, accuracy: 0.0001)
+        XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.costUSD, 7.5, accuracy: 0.0001)
+        XCTAssertEqual(selection.fiveHour.selectedCostUSD, 7.5, accuracy: 0.0001)
+        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 7.5, accuracy: 0.0001)
         XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.detectedModels, [.gpt56Sol, .gpt56Terra])
     }
 
@@ -1200,12 +1200,12 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
 
         XCTAssertEqual(selection.breakdown.inputTokens, 100_300_000)
-        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 501.5, accuracy: 0.0001)
+        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 401.2, accuracy: 0.0001)
         XCTAssertEqual(selection.sevenDay.comparisonBreakdown.inputTokens, 100_000)
         XCTAssertEqual(selection.sevenDay.comparisonStartDate, bins[3].start)
         XCTAssertEqual(selection.sevenDay.comparisonEndDate, bins[4].start)
         XCTAssertEqual(selection.sevenDay.quotaDropPercent, 72, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 0.6944444, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 0.5555556, accuracy: 0.0001)
         let presentation = QuotaConsumptionEstimatorOverlayPresentation(
             selection: selection,
             showsFiveHourQuota: false,

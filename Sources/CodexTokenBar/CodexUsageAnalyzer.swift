@@ -458,7 +458,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 coverageKind: .full,
                 observedThrough: phase.snapshot.observedThrough,
                 settledThrough: phase.snapshot.settledThrough,
-                exactGeneration: phase.snapshot.exactGeneration
+                exactGeneration: phase.snapshot.exactGeneration,
+            accountingCoverage: phase.snapshot.accountingCoverage
             )
 
             // A concurrent numeric owner may have advanced the source tree or
@@ -650,7 +651,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 observedThrough: preciseCoverageAt,
                 settledThrough: cached.settledThrough
                     ?? cached.preciseTimeSeriesGeneratedAt,
-                exactGeneration: initialAttributionState.generation
+                exactGeneration: initialAttributionState.generation,
+                accountingCoverage: try historyIndex.accountingCoverage()
             ))
         }
         trace?.mark("snapshot-cache-miss")
@@ -908,7 +910,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             coverageKind: .settled,
             observedThrough: preciseCoverageAt,
             settledThrough: settledThrough,
-            exactGeneration: synchronization.attributionGeneration
+            exactGeneration: synchronization.attributionGeneration,
+            accountingCoverage: try historyIndex.accountingCoverage()
             // Numeric time-series coverage is complete at this boundary.
             // Event-level attribution/detail readiness remains represented by
             // `attributionEventsComplete` and is intentionally independent.

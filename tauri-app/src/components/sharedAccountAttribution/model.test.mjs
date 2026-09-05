@@ -192,7 +192,7 @@ test("shared-account API values use complete historical model rows before the fa
     priceModel: "gpt56Luna",
   });
 
-  assert.equal(result.localCurrentAPIEquivalentUSD, 7);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 6);
   assert.equal(result.localComparableUSD, 7);
 });
 

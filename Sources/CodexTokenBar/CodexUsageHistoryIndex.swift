@@ -88,6 +88,8 @@ extension CodexUsageAnalyzer {
         let sourceOffset: UInt64
         let userPromptOffset: UInt64?
         let assistantStartOffset: UInt64?
+        var accountingKind: UsageAccountingKind = .counted
+        var reportedTotalTokens: Int? = nil
     }
 
     struct IndexedSessionParseResult {
@@ -110,6 +112,7 @@ extension CodexUsageAnalyzer {
         var currentUserPromptOffset: UInt64?
         var assistantStartOffset: UInt64?
         var currentModel: String?
+        var accountingState: UsageAccountingState? = nil
 
         static let empty = IndexedSessionParserState(
             previousTotalTokens: nil,
@@ -192,7 +195,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var phase: CandidateMigrationPhase
     }
 
-    private struct CandidateMigrationFacts: Equatable {
+    private struct CandidateMigrationFacts: Codable, Equatable {
         let tableCounts: [Int64]
         let aggregateTotals: [Int64]
         let lineage: [String?]
@@ -441,8 +444,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         case unresolved
     }
 
-    private static let schemaVersion = "11"
-    private static let inPlaceSchemaVersions: Set<String> = ["6", "7", "11"]
+    private static let schemaVersion = "12"
+    private static let structuralSchemaVersion = "11"
+    private static let inPlaceSchemaVersions: Set<String> = ["6", "7", "11", "12"]
     private static let forkReplayBoundaryRevision = "explicit-subagent-delayed-context-v3"
     /// Bump whenever event parsing or source-bucket identity semantics change.
     /// Existing attribution ledgers then fail closed instead of reconciling
@@ -482,7 +486,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     static var persistentSnapshotCompatibility: PersistentSnapshotCompatibility {
         PersistentSnapshotCompatibility(
             indexSchemaVersion: schemaVersion,
-            parserRevision: "token-event-v2-\(forkReplayBoundaryRevision)",
+            parserRevision: stagingParserRevision,
             provenanceRevision: attributionProvenanceRevision
         )
     }
@@ -499,7 +503,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let stagingManifestSchemaVersion = 3
     private static let legacyStagingManifestSchemaVersions: Set<Int> = [1, 2]
     private static let stagingManifestIntegrity = "sqlite-quick-check-v1"
-    private static let stagingParserRevision = "token-event-v2-\(forkReplayBoundaryRevision)"
+    private static let legacyStagingParserRevision = "token-event-v2-\(forkReplayBoundaryRevision)"
+    private static let stagingParserRevision = "token-event-v3-\(UsageAccountingState.revision)-\(forkReplayBoundaryRevision)"
     private static let explicitSubagentFirstLineLimit = 256 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
     private static let indexNamespace = "exact-usage-history-v1"
@@ -598,6 +603,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             // recovery can inspect the original bytes instead of silently
             // deleting the user's only published index.
             try prepareSchema(onProgress: migratedViaCandidate ? nil : onProgress)
+            if openMode == .active { try migrateAccounting() }
         }
     }
 
@@ -936,7 +942,22 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let schema = try connection.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version' LIMIT 1;"
             ) { $0.text(0) }.first ?? nil
-            guard schema == schemaVersion else {
+            if schema == schemaVersion {
+                let quickCheck = try connection.readRows("PRAGMA quick_check;") { $0.text(0) ?? "" }
+                let foreignKeys = try connection.readRows("PRAGMA foreign_key_check;") { $0.text(0) ?? "unknown" }
+                guard quickCheck == ["ok"], foreignKeys.isEmpty else {
+                    throw CodexUsageIndexRepairRequiredError(reason: "accounting 转换后库完整性校验失败")
+                }
+                let receipt = try connection.readRows(
+                    "SELECT value FROM schema_meta WHERE key = 'accounting_structural_receipt';"
+                ) { $0.text(0) }.first ?? nil
+                guard let receipt,
+                      try JSONDecoder().decode(CandidateMigrationFacts.self, from: Data(receipt.utf8)) == expectedFacts else {
+                    throw CodexUsageIndexRepairRequiredError(reason: "accounting 转换缺少 schema 11 校验回执")
+                }
+                return
+            }
+            guard schema == structuralSchemaVersion else {
                 throw CodexUsageIndexRepairRequiredError(
                     reason: "候选库 schema 不是 11"
                 )
@@ -1391,7 +1412,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         "SELECT DISTINCT parser_revision FROM event_enrichment_sources WHERE parser_revision <> '';"
                     ) { $0.text(0) }.compactMap { $0 }
                     if let unknown = revisions.first(where: {
-                        $0 != stagingParserRevision
+                        $0 != stagingParserRevision && $0 != legacyStagingParserRevision
                     }) {
                         return .upgradeRequired(
                             component: "模型补全 parser receipt",
@@ -2661,26 +2682,24 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         COALESCE(SUM(output_tokens), 0),
                         COALESCE(SUM(reasoning_output_tokens), 0),
                         COALESCE(SUM(total_tokens), 0),
-                        COALESCE(SUM(calls), 0)
+                        COALESCE(SUM(calls), 0), MIN(bucket_start)
                     FROM dashboard_5m
                     WHERE bucket_start >= ?
                       AND bucket_start < ?
-                    GROUP BY model
+                    GROUP BY model, \(StandardAPIPriceSchedule.sqlPartitionExpression(timestamp: "bucket_start"))
                     ORDER BY SUM(total_tokens) DESC;
                     """,
                     bindings: [.int64(Int64(start)), .int64(Int64(end))]
                 ) { row in
-                    ModelTokenBreakdown(
-                        model: row.text(0).flatMap { $0.isEmpty ? nil : $0 },
-                        breakdown: TokenCacheBreakdown(
+                    ModelPricingKey(model: row.text(0).flatMap { $0.isEmpty ? nil : $0 },
+                                    at: Date(timeIntervalSince1970: Double(row.int64(7) ?? Int64(start)))).row(TokenCacheBreakdown(
                             inputTokens: row.int(1) ?? 0,
                             cachedInputTokens: row.int(2) ?? 0,
                             outputTokens: row.int(3) ?? 0,
                             reasoningOutputTokens: row.int(4) ?? 0,
                             totalTokens: row.int(5) ?? 0,
                             calls: row.int(6) ?? 0
-                        )
-                    )
+                        ))
                 }
                 return CompactTotals(
                     totalTokens: total,
@@ -2744,7 +2763,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         SUM(reasoning_output_tokens), SUM(total_tokens), SUM(calls)
                     FROM dashboard_5m
                     WHERE bucket_start < ?
-                    GROUP BY model
+                    GROUP BY model, \(StandardAPIPriceSchedule.sqlPartitionExpression(timestamp: "bucket_start"))
                 )
                 SELECT * FROM bounded
                 ORDER BY bucket_start, model;
@@ -2946,6 +2965,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    func accountingCoverage() throws -> String {
+        try driver.withConnection { connection in
+            let legacy = try connection.readRows("SELECT value FROM schema_meta WHERE key='accounting_coverage';") { $0.text(0) }.first ?? nil
+            if legacy != "complete" { return "legacy-source-audit-required" }
+            let unresolved = try connection.readRows("SELECT EXISTS(SELECT 1 FROM events WHERE accounting_kind <> 0);") { ($0.int(0) ?? 0) != 0 }.first ?? true
+            return unresolved ? "unresolved-events" : "complete"
+        }
+    }
+
     func firstAggregatedEventAt() throws -> Date? {
         try driver.readRows(
             "SELECT MIN(first_timestamp) FROM dashboard_source_totals;"
@@ -2972,6 +3000,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 events.model
             FROM events
             JOIN sources ON sources.source_id = events.source_id
+            WHERE events.tokens > 0
             ORDER BY sources.session_id, events.timestamp, events.source_id, events.source_offset;
             """
         ) { row in
@@ -3077,6 +3106,78 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    /// Runs only after the schema-11 candidate has passed its unchanged
+    /// structural reconciliation. All semantic changes commit in the original
+    /// database transaction; no auxiliary accounting ledger or cold scan.
+    private func migrateAccounting() throws {
+        try driver.withConnection { connection in
+            let revision = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'accounting_revision';"
+            ) { $0.text(0) }.first ?? nil
+            if revision == UsageAccountingState.revision {
+                let schema = try connection.readRows("SELECT value FROM schema_meta WHERE key='schema_version';") { $0.text(0) }.first ?? nil
+                if schema != Self.schemaVersion {
+                    let columns = try connection.readRows("PRAGMA table_info(events);") { $0.text(1) }
+                    guard columns.contains("accounting_kind") else { throw CodexUsageIndexRepairRequiredError(reason: "accounting marker 与事件结构不一致") }
+                    let receipt = String(data: try JSONEncoder().encode(Self.candidateMigrationFacts(connection: connection)), encoding: .utf8)!
+                    try connection.transaction { tx in
+                        try tx.execute("UPDATE schema_meta SET value=? WHERE key='schema_version';", bindings: [.text(Self.schemaVersion)])
+                        try tx.execute("INSERT INTO schema_meta(key,value) VALUES ('accounting_structural_receipt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;", bindings: [.text(receipt)])
+                    }
+                }
+                return
+            }
+            guard revision == nil else {
+                throw CodexUsageIndexUpgradeRequiredError(component: "accounting", stored: revision!, supported: UsageAccountingState.revision)
+            }
+            let structuralFacts = try Self.candidateMigrationFacts(connection: connection)
+            let receipt = String(data: try JSONEncoder().encode(structuralFacts), encoding: .utf8)!
+            try connection.transaction { transaction in
+                for (table, column, definition) in [
+                    ("sources", "accounting_state", "TEXT"),
+                    ("events", "accounting_kind", "INTEGER NOT NULL DEFAULT 0"),
+                    ("events", "reported_total_tokens", "INTEGER"),
+                    ("events", "legacy_tokens", "INTEGER")
+                ] {
+                    let columns = try transaction.readRows("PRAGMA table_info(\(table));") { $0.text(1) }
+                    if !columns.contains(column) {
+                        try transaction.execute("ALTER TABLE \(table) ADD COLUMN \(column) \(definition);")
+                    }
+                }
+                try transaction.execute("CREATE INDEX IF NOT EXISTS events_unresolved_accounting ON events(accounting_kind) WHERE accounting_kind <> 0;")
+                let legacyCount = try transaction.readRows("SELECT COUNT(*) FROM events;") { $0.int(0) ?? 0 }.first ?? 0
+                // SQLite promotes an overflowing integer addition to REAL. The
+                // predicate bounds the addition before deriving a token total.
+                try transaction.execute("""
+                    UPDATE events SET legacy_tokens = tokens,
+                        accounting_kind = CASE WHEN input_tokens >= 0 AND output_tokens >= 0
+                            AND cached_input_tokens BETWEEN 0 AND input_tokens
+                            AND reasoning_output_tokens BETWEEN 0 AND output_tokens
+                            AND input_tokens <= 9223372036854775807 - output_tokens
+                            AND (input_tokens > 0 OR output_tokens > 0)
+                            THEN 0 ELSE 3 END;
+                    UPDATE events SET tokens = CASE WHEN accounting_kind = 0
+                        THEN input_tokens + output_tokens ELSE 0 END;
+                    UPDATE attribution_source_buckets SET total_tokens = input_tokens + output_tokens;
+                    """)
+                try transaction.execute("UPDATE event_enrichment_sources SET parser_revision = ? WHERE parser_revision = ?;",
+                                        bindings: [.text(Self.stagingParserRevision), .text(Self.legacyStagingParserRevision)])
+                try backfillAttributionLedger(connection: transaction)
+                try rebuildDashboardAggregates(connection: transaction)
+                _ = try bumpAttributionGeneration(connection: transaction)
+                for (key, value) in [
+                    ("accounting_structural_receipt", receipt),
+                    ("accounting_revision", UsageAccountingState.revision),
+                    ("accounting_coverage", legacyCount > 0 ? "legacy-source-audit-required" : "complete"),
+                    ("schema_version", Self.schemaVersion)
+                ] {
+                    try transaction.execute("INSERT INTO schema_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+                                            bindings: [.text(key), .text(value)])
+                }
+            }
+        }
+    }
+
     private func prepareSchema(
         onProgress: ((PreciseIndexProgress) -> Void)? = nil
     ) throws {
@@ -3093,7 +3194,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let numericVersion = currentVersion.flatMap(Int.init)
             let isKnownInPlaceSchema = currentVersion.map(Self.inPlaceSchemaVersions.contains) ?? true
             let shouldReportMigration = numericVersion.map {
-                $0 < Int(Self.schemaVersion)!
+                $0 < Int(Self.structuralSchemaVersion)!
             } ?? false
             if let currentVersion,
                !isKnownInPlaceSchema {
@@ -3248,7 +3349,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     try connection.transaction { transaction in
                         try migrateV2SourcesForAppend(transaction)
                         try migrateKnownEventColumns(transaction)
-                        if currentVersion != Self.schemaVersion {
+                        if currentVersion != Self.structuralSchemaVersion {
                             try migrateV7ContentFingerprints(transaction)
                         }
                     }
@@ -3689,7 +3790,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     VALUES ('schema_version', ?)
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value;
                     """,
-                    bindings: [.text(Self.schemaVersion)]
+                    bindings: [.text(currentVersion == Self.schemaVersion ? Self.schemaVersion : Self.structuralSchemaVersion)]
                 )
                 if !eventEnrichmentRequiresSync {
                     try transaction.execute(
@@ -3851,6 +3952,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 SUM(tokens),
                 COUNT(*)
             FROM events
+            WHERE tokens > 0
             GROUP BY source_id, CAST(timestamp / 300 AS INTEGER), COALESCE(model, '');
 
             INSERT INTO dashboard_source_totals(
@@ -3875,6 +3977,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             JOIN (
                 SELECT source_id, MIN(timestamp) AS first_timestamp, MAX(timestamp) AS last_timestamp
                 FROM events
+                WHERE tokens > 0
                 GROUP BY source_id
             ) e ON e.source_id = b.source_id
             GROUP BY b.source_id;
@@ -3901,7 +4004,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) AS snapshot_rank
                 FROM events e
                 JOIN sources s ON s.source_id = e.source_id
-                WHERE e.user_prompt_offset IS NOT NULL
+                WHERE e.tokens > 0 AND e.user_prompt_offset IS NOT NULL
             ), grouped AS (
                 SELECT
                     source_id,
@@ -3996,7 +4099,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) AS snapshot_rank
                 FROM events e
                 JOIN sources s ON s.source_id = e.source_id
-                WHERE e.user_prompt_offset IS NOT NULL
+                WHERE e.tokens > 0 AND e.user_prompt_offset IS NOT NULL
                   AND s.session_id IN (
                     SELECT session_id FROM dashboard_dirty_sessions
                 )
@@ -4113,7 +4216,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 SUM(tokens),
                 COUNT(*)
             FROM events
-            WHERE source_id = ? \(predicate)
+            WHERE tokens > 0 AND source_id = ? \(predicate)
             GROUP BY source_id, CAST(timestamp / 300 AS INTEGER), COALESCE(model, '');
             """,
             bindings: bindings
@@ -4148,8 +4251,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 ?, ?,
                 SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
                 SUM(reasoning_output_tokens), SUM(total_tokens), SUM(calls),
-                (SELECT MIN(timestamp) FROM events WHERE source_id = ?),
-                (SELECT MAX(timestamp) FROM events WHERE source_id = ?)
+                (SELECT MIN(timestamp) FROM events WHERE tokens > 0 AND source_id = ?),
+                (SELECT MAX(timestamp) FROM events WHERE tokens > 0 AND source_id = ?)
             FROM dashboard_source_5m
             WHERE source_id = ?
             HAVING SUM(calls) > 0;
@@ -4519,7 +4622,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     COUNT(*) AS calls
                 FROM events e
                 JOIN sources s ON s.source_id = e.source_id
-                WHERE \(sourcePredicate)
+                WHERE e.tokens > 0 AND \(sourcePredicate)
                 \(bucketPredicate)
                 GROUP BY e.source_id, CAST(e.timestamp / 300 AS INTEGER), COALESCE(e.model, '')
             )
@@ -4805,7 +4908,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             VALUES ('schema_version', ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value;
             """,
-            bindings: [.text(Self.schemaVersion)]
+            bindings: [.text(Self.structuralSchemaVersion)]
         )
         let migratedSourceCount = try tableRowCount("sources", connection: connection)
         let migratedReceiptCount = try tableRowCount(
@@ -5193,7 +5296,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 assistant_start_offset,
                 current_model,
                 audit_chunk_index,
-                session_id
+                session_id,
+                accounting_state
             FROM sources
             WHERE path = ?
             LIMIT 1;
@@ -5230,7 +5334,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 assistant_start_offset,
                 current_model,
                 audit_chunk_index,
-                session_id
+                session_id,
+                accounting_state
             FROM sources
             ORDER BY source_id;
             """
@@ -5277,7 +5382,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     assistantStartOffset: row.int64(offset + 12).flatMap {
                         $0 >= 0 ? UInt64($0) : nil
                     },
-                    currentModel: row.text(offset + 13)
+                    currentModel: row.text(offset + 13),
+                    accountingState: try UsageAccountingState.decode(row.text(offset + 16))
                 ),
                 auditChunkIndex: row.int64(offset + 14).flatMap {
                     $0 >= 0 ? UInt64($0) : nil
@@ -5503,9 +5609,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         reasoning_output_tokens,
                         model,
                         user_prompt_offset,
-                        assistant_start_offset
+                        assistant_start_offset,
+                        accounting_kind,
+                        reported_total_tokens
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """
                 )
 
@@ -5554,12 +5662,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             .date(event.timestamp),
                             .int(event.tokens),
                             .int(event.inputTokens),
-                            .int(min(event.cachedInputTokens, event.inputTokens)),
+                            .int(event.cachedInputTokens),
                             .int(event.outputTokens),
                             .int(event.reasoningOutputTokens),
                             event.model.map(SQLiteBinding.text) ?? .null,
                             userPromptOffset,
-                            assistantStartOffset
+                            assistantStartOffset,
+                            .int(indexedEvent.accountingKind.rawValue),
+                            indexedEvent.reportedTotalTokens.map(SQLiteBinding.int) ?? .null
                         ])
                     }
                 )
@@ -5903,7 +6013,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 current_user_prompt_offset = ?,
                 assistant_start_offset = ?,
                 current_model = ?,
-                audit_chunk_index = ?
+                audit_chunk_index = ?,
+                accounting_state = ?
             WHERE source_id = ?;
             """,
             bindings: [
@@ -5926,6 +6037,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 } ?? .null,
                 state.currentModel.map(SQLiteBinding.text) ?? .null,
                 .int64(try sqliteInt64(auditChunkIndex)),
+                state.accountingState.map { .text($0.encoded) } ?? .null,
                 .int64(sourceID)
             ]
         )
@@ -6288,7 +6400,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     assistant_start_offset INTEGER,
                     current_model TEXT,
                     fingerprint_count INTEGER NOT NULL,
-                    chunk_count INTEGER NOT NULL
+                    chunk_count INTEGER NOT NULL,
+                    accounting_state TEXT
                 );
 
                 CREATE TABLE fingerprints (
@@ -6305,7 +6418,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     reasoning_output_tokens INTEGER NOT NULL,
                     model TEXT,
                     user_prompt_offset INTEGER,
-                    assistant_start_offset INTEGER
+                    assistant_start_offset INTEGER,
+                    accounting_kind INTEGER NOT NULL DEFAULT 0,
+                    reported_total_tokens INTEGER
                 ) WITHOUT ROWID;
 
                 CREATE TABLE chunks (
@@ -6331,8 +6446,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         reasoning_output_tokens,
                         model,
                         user_prompt_offset,
-                        assistant_start_offset
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        assistant_start_offset,
+                        accounting_kind,
+                        reported_total_tokens
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """
                 )
                 let result = try parser(
@@ -6366,12 +6483,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             .date(event.timestamp),
                             .int(event.tokens),
                             .int(event.inputTokens),
-                            .int(min(event.cachedInputTokens, event.inputTokens)),
+                            .int(event.cachedInputTokens),
                             .int(event.outputTokens),
                             .int(event.reasoningOutputTokens),
                             event.model.map(SQLiteBinding.text) ?? .null,
                             userPromptOffset,
-                            assistantStartOffset
+                            assistantStartOffset,
+                            .int(indexedEvent.accountingKind.rawValue),
+                            indexedEvent.reportedTotalTokens.map(SQLiteBinding.int) ?? .null
                         ])
                     }
                 )
@@ -6437,8 +6556,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         assistant_start_offset,
                         current_model,
                         fingerprint_count,
-                        chunk_count
-                    ) VALUES (0, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        chunk_count,
+                        accounting_state
+                    ) VALUES (0, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     bindings: [
                         .int(Self.stagingManifestSchemaVersion),
@@ -6462,7 +6582,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         try optionalOffsetBinding(state.assistantStartOffset),
                         state.currentModel.map(SQLiteBinding.text) ?? .null,
                         .int(fingerprintCount),
-                        .int(result.chunkHashes.count)
+                        .int(result.chunkHashes.count),
+                        state.accountingState.map { .text($0.encoded) } ?? .null
                     ]
                 )
                 return StagedFullRebuild(
@@ -6612,7 +6733,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
             if let parser = header.parser,
                !parser.isEmpty,
-               parser != Self.stagingParserRevision {
+               parser != Self.stagingParserRevision,
+               parser != Self.legacyStagingParserRevision {
                 throw CodexUsageIndexUpgradeRequiredError(
                     component: "staging parser",
                     stored: parser,
@@ -6651,7 +6773,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     assistant_start_offset,
                     current_model,
                     fingerprint_count,
-                    chunk_count
+                    chunk_count,
+                    \(manifestColumns.contains("accounting_state") ? "accounting_state" : "NULL")
                 FROM manifest
                 WHERE complete = 1
                 LIMIT 1;
@@ -6663,7 +6786,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                       row.text(1) == job.file.path,
                       row.text(2) == job.sessionID,
                       row.text(3) == expectedMigrationRevision,
-                      row.text(4) == Self.stagingParserRevision,
+                      (row.text(4) == Self.stagingParserRevision || row.text(4) == Self.legacyStagingParserRevision),
                       let artifactID = row.text(5),
                       !artifactID.isEmpty,
                       let rawActualBytes = row.int64(6),
@@ -6751,7 +6874,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         assistantStartOffset: row.int64(20).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        currentModel: row.text(21)
+                        currentModel: row.text(21),
+                        accountingState: row.text(4) == Self.stagingParserRevision ? try UsageAccountingState.decode(row.text(24)) : nil
                     )
                 )
             }
@@ -6981,7 +7105,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             busyTimeoutMilliseconds: 1_000,
             fileManager: fileManager
         )
+        let stageColumns = try stage.readRows("PRAGMA table_info(events);") { $0.text(1) }
+        let legacyAccounting = staged.parserState.accountingState == nil
         let transaction = connection
+        if legacyAccounting {
+            try transaction.execute("UPDATE schema_meta SET value='legacy-source-audit-required' WHERE key='accounting_coverage';")
+        }
             if let existing = try indexedSource(
                 path: staged.job.file.path,
                 connection: transaction
@@ -7122,8 +7251,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     reasoning_output_tokens,
                     model,
                     user_prompt_offset,
-                    assistant_start_offset
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    assistant_start_offset,
+                        accounting_kind,
+                        reported_total_tokens, legacy_tokens
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """
             )
             var importedEventCount = 0
@@ -7139,7 +7270,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     reasoning_output_tokens,
                     model,
                     user_prompt_offset,
-                    assistant_start_offset
+                    assistant_start_offset,
+                    \(stageColumns.contains("accounting_kind") ? "accounting_kind" : "0"),
+                    \(stageColumns.contains("reported_total_tokens") ? "reported_total_tokens" : "NULL")
                 FROM events
                 ORDER BY source_offset;
                 """
@@ -7158,18 +7291,23 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         path: staged.databaseURL.path
                     )
                 }
+                let components = UsageAccountingComponents(input: inputTokens, cached: cachedInputTokens, output: outputTokens, reasoning: reasoningOutputTokens)
+                let legacyCounted = components.isValid && components.total > 0
                 _ = try eventStatement.execute([
                     .int64(source.id),
                     .int64(sourceOffset),
                     .double(timestamp),
-                    .int(tokens),
+                    .int(legacyAccounting ? (legacyCounted ? components.total : 0) : tokens),
                     .int(inputTokens),
                     .int(cachedInputTokens),
                     .int(outputTokens),
                     .int(reasoningOutputTokens),
                     row.text(7).map(SQLiteBinding.text) ?? .null,
                     row.int64(8).map(SQLiteBinding.int64) ?? .null,
-                    row.int64(9).map(SQLiteBinding.int64) ?? .null
+                    row.int64(9).map(SQLiteBinding.int64) ?? .null,
+                    .int(legacyAccounting ? (legacyCounted ? 0 : 3) : (row.int(10) ?? 0)),
+                    row.int(11).map(SQLiteBinding.int) ?? .null,
+                    legacyAccounting ? .int(tokens) : .null
                 ])
                 importedEventCount += 1
             }

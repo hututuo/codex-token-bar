@@ -10,7 +10,7 @@ extension CodexUsageAnalyzer {
         guard let start = calendar.date(byAdding: .day, value: -364, to: today) else { return [] }
 
         var grouped: [Date: (tokens: Int, calls: Int)] = [:]
-        for event in events where event.timestamp >= start {
+        for event in events where event.tokens > 0 && event.timestamp >= start {
             let day = calendar.startOfDay(for: event.timestamp)
             let current = grouped[day] ?? (0, 0)
             grouped[day] = (current.tokens + event.tokens, current.calls + 1)
@@ -36,7 +36,7 @@ extension CodexUsageAnalyzer {
         let start = currentBinStart.addingTimeInterval(-Double(binCount - 1) * interval)
         var grouped: [Date: (tokens: Int, calls: Int)] = [:]
 
-        for event in events where event.timestamp >= start && event.timestamp <= now {
+        for event in events where event.tokens > 0 && event.timestamp >= start && event.timestamp <= now {
             let offset = floor(event.timestamp.timeIntervalSince(start) / interval)
             let bin = start.addingTimeInterval(offset * interval)
             let current = grouped[bin] ?? (0, 0)
@@ -57,7 +57,7 @@ extension CodexUsageAnalyzer {
         guard let start = calendar.date(byAdding: .hour, value: -(hourCount - 1), to: currentHour) else { return [] }
         var grouped: [Date: (tokens: Int, calls: Int)] = [:]
 
-        for event in events where event.timestamp >= start && event.timestamp <= now {
+        for event in events where event.tokens > 0 && event.timestamp >= start && event.timestamp <= now {
             guard let hour = calendar.dateInterval(of: .hour, for: event.timestamp)?.start else { continue }
             let current = grouped[hour] ?? (0, 0)
             grouped[hour] = (current.tokens + event.tokens, current.calls + 1)
@@ -72,9 +72,9 @@ extension CodexUsageAnalyzer {
 
     func cacheUsage(from events: [TokenEvent], recentBins: [BinUsage], threadInfo: [String: ThreadInfo]) -> TokenCacheUsage {
         var total = TokenCacheAccumulator()
-        var byModel: [String: TokenCacheAccumulator] = [:]
+        var byModel: [ModelPricingKey: TokenCacheAccumulator] = [:]
         var daily: [Date: TokenCacheAccumulator] = [:]
-        var dailyByModel: [Date: [String: TokenCacheAccumulator]] = [:]
+        var dailyByModel: [Date: [ModelPricingKey: TokenCacheAccumulator]] = [:]
         var hourly: [Date: TokenCacheAccumulator] = [:]
         var recent: [Date: TokenCacheAccumulator] = [:]
         var sessions: [String: TokenCacheAccumulator] = [:]
@@ -83,14 +83,14 @@ extension CodexUsageAnalyzer {
         let recentStart = recentBins.first?.start
         let recentEnd = recentBins.last?.start.addingTimeInterval(recentInterval)
 
-        for event in events {
+        for event in events where event.tokens > 0 {
             total.add(event)
-            byModel[event.model ?? "", default: TokenCacheAccumulator()].add(event)
+            byModel[ModelPricingKey(model: event.model, at: event.timestamp), default: TokenCacheAccumulator()].add(event)
 
             let day = calendar.startOfDay(for: event.timestamp)
             daily[day, default: TokenCacheAccumulator()].add(event)
             var models = dailyByModel[day] ?? [:]
-            models[event.model ?? "", default: TokenCacheAccumulator()].add(event)
+            models[ModelPricingKey(model: event.model, at: event.timestamp), default: TokenCacheAccumulator()].add(event)
             dailyByModel[day] = models
 
             if let hour = calendar.dateInterval(of: .hour, for: event.timestamp)?.start {
@@ -123,10 +123,7 @@ extension CodexUsageAnalyzer {
                 ModelTokenBucket(
                     start: date,
                     modelBreakdowns: models.map { model, accumulator in
-                        ModelTokenBreakdown(
-                            model: model.isEmpty ? nil : model,
-                            breakdown: accumulator.breakdown
-                        )
+                        model.row(accumulator.breakdown)
                     }
                     .sorted { ($0.model ?? "") < ($1.model ?? "") }
                 )
@@ -165,7 +162,7 @@ extension CodexUsageAnalyzer {
             }
         }
 
-        let orderedEvents = events.enumerated().sorted { lhs, rhs in
+        let orderedEvents = events.enumerated().filter { $0.element.tokens > 0 }.sorted { lhs, rhs in
             if lhs.element.timestamp != rhs.element.timestamp {
                 return lhs.element.timestamp < rhs.element.timestamp
             }
@@ -202,10 +199,7 @@ extension CodexUsageAnalyzer {
         return TokenCacheUsage(
             total: total.breakdown,
             modelBreakdowns: byModel.map { model, accumulator in
-                ModelTokenBreakdown(
-                    model: model.isEmpty ? nil : model,
-                    breakdown: accumulator.breakdown
-                )
+                model.row(accumulator.breakdown)
             }
             .sorted { ($0.model ?? "") < ($1.model ?? "") },
             dailyModelBreakdowns: dailyModelBuckets,
@@ -264,7 +258,7 @@ extension CodexUsageAnalyzer {
 
     func peakSessionTokens(from events: [TokenEvent]) -> Int {
         var totals: [String: Int] = [:]
-        for event in events {
+        for event in events where event.tokens > 0 {
             totals[event.sessionID, default: 0] += event.tokens
         }
 

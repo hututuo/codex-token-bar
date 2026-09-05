@@ -20,7 +20,7 @@ test("historical model rows are priced automatically and unknown rows use only t
     { model: "future-model", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 4 } },
   ], { inputTokens: 3_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 9 }, "gpt56Luna");
 
-  assert.equal(estimate.costUSD, 7.2);
+  assert.equal(estimate.costUSD, 6.2);
   assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra"]);
   assert.equal(estimate.fallbackCalls, 4);
   assert.deepEqual(estimate.excludedModels, []);
@@ -34,9 +34,9 @@ test("current price cards include the official Astra, Sol, Terra and Luna rates"
     outputUSDPerMillion: 50,
   });
   assert.deepEqual(officialAPIPrices("gpt56Sol"), {
-    inputUSDPerMillion: 5,
-    cachedInputUSDPerMillion: 0.5,
-    outputUSDPerMillion: 30,
+    inputUSDPerMillion: 4,
+    cachedInputUSDPerMillion: 0.4,
+    outputUSDPerMillion: 20,
   });
   assert.deepEqual(officialAPIPrices("gpt56Terra"), {
     inputUSDPerMillion: 2,
@@ -122,7 +122,7 @@ test("incomplete or duplicate model rows fall back as one complete breakdown", (
   const incomplete = modelAwareAPICostUSD([
     { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 100_000, calls: 1 } },
   ], fallback, "gpt56Sol");
-  assert.equal(incomplete.costUSD, 16.75);
+  assert.equal(incomplete.costUSD, 12.2);
   assert.deepEqual(incomplete.detectedModels, []);
   assert.equal(incomplete.fallbackCalls, 2);
 
@@ -154,7 +154,7 @@ test("mixed model coverage prices Codex aliases, excludes Spark, and falls back 
     "gpt56Terra",
   );
 
-  assert.equal(estimate.costUSD, 10.9);
+  assert.equal(estimate.costUSD, 9.9);
   assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra", "gpt56Luna", "gpt53Codex", "gpt52Codex"]);
   assert.equal(estimate.fallbackCalls, 0);
   assert.deepEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"]);
@@ -201,7 +201,7 @@ test("incomplete Spark rows never leak into the unknown fallback amount", () => 
     { model: "gpt-5.3-codex-spark", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 1 } },
   ], { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 2 }, "gpt56Sol");
 
-  assert.equal(estimate.costUSD, 5);
+  assert.equal(estimate.costUSD, 4);
   assert.equal(estimate.fallbackCalls, 1);
   assert.deepEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"]);
   assert.equal(estimate.excludedCalls, 1);
@@ -218,4 +218,34 @@ test("legacy recentChartQuotaEstimateModel values migrate in place", () => {
   assert.equal(normalizeOfficialAPIPriceModel("gpt54Mini"), "gpt56Luna");
   assert.equal(readStoredQuotaPriceModel(storage), "gpt56Terra");
   assert.equal(values.get("recentChartQuotaEstimateModel"), "gpt56Terra");
+});
+
+test("GPT-5.5 stays fixed while dated Sol rows use the cutover price", () => {
+  const before = Date.parse("2026-08-20T23:59:59Z") / 1000;
+  const after = Date.parse("2026-08-21T00:00:00Z") / 1000;
+  const rows = [
+    {
+      model: "gpt-5.5",
+      eventStartUnix: after,
+      breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 1 },
+    },
+    {
+      model: "gpt-5.6-sol",
+      eventStartUnix: before,
+      breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 1 },
+    },
+    {
+      model: "gpt-5.6-sol",
+      eventStartUnix: after,
+      breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 1 },
+    },
+  ];
+  const estimate = modelAwareAPICostUSD(
+    rows,
+    { inputTokens: 3_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 3 },
+    "gpt56Sol",
+  );
+
+  assert.equal(estimate.costUSD, 14);
+  assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt55"]);
 });

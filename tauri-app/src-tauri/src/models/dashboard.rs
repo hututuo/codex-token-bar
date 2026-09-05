@@ -143,6 +143,8 @@ pub struct RecentUsagePoint {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelTokenBreakdown {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_start_unix: Option<i64>,
     pub model: Option<String>,
     pub breakdown: TokenCacheBreakdown,
 }

@@ -19,7 +19,7 @@ extension CodexUsageAnalyzer {
         private let hourlyStart: Date?
 
         private var total = TokenCacheAccumulator()
-        private var cacheByModel: [String: TokenCacheAccumulator] = [:]
+        private var cacheByModel: [ModelPricingKey: TokenCacheAccumulator] = [:]
         private var cacheByDayAndModel: [DailyModelKey: TokenCacheAccumulator] = [:]
         private var dailyUsageByDate: [Date: (tokens: Int, calls: Int)] = [:]
         private var recentUsageByStart: [Date: (tokens: Int, calls: Int)] = [:]
@@ -117,8 +117,9 @@ extension CodexUsageAnalyzer {
                 }
                 return lhs < rhs
             }) {
-                turnIndex += 1
                 let event = events[localIndex]
+                guard event.tokens > 0 else { continue }
+                turnIndex += 1
                 consume(
                     event,
                     stableID: "\(event.sessionID)-\(Int(event.timestamp.timeIntervalSince1970))-\(globalEventOffset + localIndex)",
@@ -134,9 +135,10 @@ extension CodexUsageAnalyzer {
             attributionSourceID: String? = nil,
             turnIndexInSession: Int
         ) {
+            guard event.tokens > 0 else { return }
             sessionIDsWithEvents.insert(event.sessionID)
             total.add(event)
-            cacheByModel[event.model ?? "", default: TokenCacheAccumulator()].add(event)
+            cacheByModel[ModelPricingKey(model: event.model, at: event.timestamp), default: TokenCacheAccumulator()].add(event)
             firstUsageAt = min(firstUsageAt ?? event.timestamp, event.timestamp)
 
             if let dailyStart, event.timestamp >= dailyStart {
@@ -144,7 +146,7 @@ extension CodexUsageAnalyzer {
                 let current = dailyUsageByDate[day] ?? (0, 0)
                 dailyUsageByDate[day] = (current.tokens + event.tokens, current.calls + 1)
                 cacheByDayAndModel[
-                    DailyModelKey(date: day, model: event.model),
+                    DailyModelKey(date: day, model: event.model, priceDate: StandardAPIPriceSchedule.partitionStart(at: event.timestamp)),
                     default: TokenCacheAccumulator()
                 ].add(event)
             }
@@ -234,7 +236,7 @@ extension CodexUsageAnalyzer {
             let start = row.start
             let breakdown = row.breakdown
             total.add(breakdown)
-            cacheByModel[row.model ?? "", default: TokenCacheAccumulator()].add(breakdown)
+            cacheByModel[ModelPricingKey(model: row.model, at: row.start), default: TokenCacheAccumulator()].add(breakdown)
             firstUsageAt = min(firstUsageAt ?? start, start)
 
             if let dailyStart, start >= dailyStart, start <= now {
@@ -245,7 +247,7 @@ extension CodexUsageAnalyzer {
                     current.calls + breakdown.calls
                 )
                 cacheByDayAndModel[
-                    DailyModelKey(date: day, model: row.model),
+                    DailyModelKey(date: day, model: row.model, priceDate: StandardAPIPriceSchedule.partitionStart(at: row.start)),
                     default: TokenCacheAccumulator()
                 ].add(breakdown)
             }
@@ -355,7 +357,8 @@ extension CodexUsageAnalyzer {
                     modelBreakdowns: entries.map { entry in
                         ModelTokenBreakdown(
                             model: entry.key.model,
-                            breakdown: entry.value.breakdown
+                            breakdown: entry.value.breakdown,
+                            pricePeriods: [.init(model: entry.key.model, start: entry.key.priceDate, breakdown: entry.value.breakdown)]
                         )
                     }
                     .sorted { ($0.model ?? "") < ($1.model ?? "") }
@@ -430,10 +433,7 @@ extension CodexUsageAnalyzer {
             return TokenCacheUsage(
                 total: total.breakdown,
                 modelBreakdowns: cacheByModel.map { model, accumulator in
-                    ModelTokenBreakdown(
-                        model: model.isEmpty ? nil : model,
-                        breakdown: accumulator.breakdown
-                    )
+                    model.row(accumulator.breakdown)
                 }
                 .sorted { ($0.model ?? "") < ($1.model ?? "") },
                 dailyModelBreakdowns: dailyModels,
@@ -463,6 +463,7 @@ extension CodexUsageAnalyzer {
         private struct DailyModelKey: Hashable {
             let date: Date
             let model: String?
+            let priceDate: Date
         }
     }
 }

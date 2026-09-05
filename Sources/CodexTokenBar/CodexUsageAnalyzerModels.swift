@@ -28,6 +28,27 @@ extension CodexUsageAnalyzer {
             lastTokens = last?.totalTokens ?? 0
         }
 
+        /// Reuse the existing eleven-value codec for an identity digest. The
+        /// reserved no-last/nonzero-lastTokens combination can never collide
+        /// with a numeric full snapshot (absent last always has five zeros).
+        init(identityDigest: [UInt8]) {
+            precondition(identityDigest.count == 32)
+            let words = stride(from: 0, to: 32, by: 4).map { offset in
+                identityDigest[offset..<(offset + 4)].reduce(0) { ($0 << 8) | Int($1) }
+            }
+            totalInputTokens = words[0]
+            totalCachedInputTokens = words[1]
+            totalOutputTokens = words[2]
+            totalReasoningOutputTokens = words[3]
+            totalTokens = words[4]
+            hasLastUsage = false
+            lastInputTokens = words[5]
+            lastCachedInputTokens = words[6]
+            lastOutputTokens = words[7]
+            lastReasoningOutputTokens = 0
+            lastTokens = 1
+        }
+
         init(from decoder: Decoder) throws {
             var values = try decoder.unkeyedContainer()
             totalInputTokens = try values.decode(Int.self)
@@ -152,7 +173,7 @@ extension CodexUsageAnalyzer {
 
     final class SessionEventCache: @unchecked Sendable {
         // Version 10 invalidates token events produced by the old single-counter delta logic.
-        private static let persistentCacheVersion = 10
+        private static let persistentCacheVersion = 11
         private static let legacyPersistentCacheVersion = 8
         private static let appCacheDirectoryName = "CodexTokenBarSwift"
         static let cacheNamespace = "exact-usage-history-v1"
@@ -264,7 +285,9 @@ extension CodexUsageAnalyzer {
             static let legacyExactOnlyPayloadVersion = 1
             static let legacySchemaBoundPayloadVersion = 2
             static let legacyContentBasedPayloadVersion = 3
-            static let currentPayloadVersion = 4
+            static let legacyAccountingPayloadVersion = 4
+            static let legacyParserRevision = "token-event-v2-explicit-subagent-delayed-context-v3"
+            static let currentPayloadVersion = 5
 
             private typealias SnapshotCompatibility =
                 CodexUsageHistoryIndex.PersistentSnapshotCompatibility
@@ -301,6 +324,7 @@ extension CodexUsageAnalyzer {
             let observedThrough: Date?
             let settledThrough: Date?
             let exactGeneration: Int64?
+            let accountingCoverage: String?
             /// The newest source-data modification represented by this
             /// last-good projection. This is a derived-cache hint, not an
             /// exact-index fact; old payloads legitimately omit it.
@@ -335,6 +359,7 @@ extension CodexUsageAnalyzer {
                 observedThrough = snapshot.observedThrough
                 settledThrough = snapshot.settledThrough
                 exactGeneration = snapshot.exactGeneration
+                accountingCoverage = snapshot.accountingCoverage
                 dataUpdatedAt = snapshot.dataUpdatedAt
             }
 
@@ -385,7 +410,8 @@ extension CodexUsageAnalyzer {
                     coverageKind: coverageKind ?? .full,
                     observedThrough: observedThrough,
                     settledThrough: settledThrough,
-                    exactGeneration: exactGeneration ?? signature.attributionGeneration
+                    exactGeneration: exactGeneration ?? signature.attributionGeneration,
+                    accountingCoverage: accountingCoverage
                 )
             }
 
@@ -420,16 +446,19 @@ extension CodexUsageAnalyzer {
                         && parserRevision == compatibility.parserRevision
                         && provenanceRevision == compatibility.provenanceRevision
                         && homeIdentityKey == currentHomeIdentityKey
+                case Self.legacyAccountingPayloadVersion:
+                    return indexSchemaVersion == "11" && parserRevision == Self.legacyParserRevision
+                        && homeIdentityKey == currentHomeIdentityKey
                 case Self.legacyContentBasedPayloadVersion:
                     let compatibility = Self.compatibility
                     return indexSchemaVersion == "7"
-                        && parserRevision == compatibility.parserRevision
+                        && parserRevision == Self.legacyParserRevision
                         && provenanceRevision == compatibility.provenanceRevision
                         && homeIdentityKey == currentHomeIdentityKey
                 case Self.legacySchemaBoundPayloadVersion:
                     let compatibility = Self.compatibility
                     return indexSchemaVersion == "6"
-                        && parserRevision == compatibility.parserRevision
+                        && parserRevision == Self.legacyParserRevision
                         && provenanceRevision == compatibility.provenanceRevision
                 case Self.legacyExactOnlyPayloadVersion:
                     return true
@@ -444,6 +473,7 @@ extension CodexUsageAnalyzer {
                 attributionState: CodexUsageHistoryIndex.AttributionState
             ) -> DashboardFastSnapshotFreshness? {
                 let supportedVersion = payloadVersion == Self.currentPayloadVersion
+                    || payloadVersion == Self.legacyAccountingPayloadVersion
                     || payloadVersion == Self.legacyContentBasedPayloadVersion
                     || payloadVersion == Self.legacySchemaBoundPayloadVersion
                     || payloadVersion == Self.legacyExactOnlyPayloadVersion
@@ -457,10 +487,13 @@ extension CodexUsageAnalyzer {
                           homeIdentityKey == currentHomeIdentityKey else {
                         return nil
                     }
+                } else if payloadVersion == Self.legacyAccountingPayloadVersion {
+                    guard indexSchemaVersion == "11", parserRevision == Self.legacyParserRevision,
+                          homeIdentityKey == currentHomeIdentityKey else { return nil }
                 } else if payloadVersion == Self.legacyContentBasedPayloadVersion {
                     let compatibility = Self.compatibility
                     guard indexSchemaVersion == "7",
-                          parserRevision == compatibility.parserRevision,
+                          parserRevision == Self.legacyParserRevision,
                           provenanceRevision == compatibility.provenanceRevision,
                           homeIdentityKey == currentHomeIdentityKey else {
                         return nil
@@ -468,7 +501,7 @@ extension CodexUsageAnalyzer {
                 } else if payloadVersion == Self.legacySchemaBoundPayloadVersion {
                     let compatibility = Self.compatibility
                     guard indexSchemaVersion == "6",
-                          parserRevision == compatibility.parserRevision,
+                          parserRevision == Self.legacyParserRevision,
                           provenanceRevision == compatibility.provenanceRevision else {
                         return nil
                     }
@@ -1531,10 +1564,12 @@ extension CodexUsageAnalyzer {
         let outputTokens: Int
         let reasoningOutputTokens: Int
         let totalTokens: Int
+        let accounting: UsageAccountingSnapshot
     }
 
     struct ParsedTokenUsageLine {
         let timestamp: Date
+        let identityTimestamp: String
         let total: ParsedTokenUsage?
         let last: ParsedTokenUsage?
     }
@@ -1567,6 +1602,7 @@ extension CodexUsageAnalyzer {
         var calls = 0
 
         mutating func add(_ event: TokenEvent) {
+            guard event.tokens > 0 else { return }
             inputTokens += event.inputTokens
             cachedInputTokens += min(event.cachedInputTokens, event.inputTokens)
             outputTokens += event.outputTokens

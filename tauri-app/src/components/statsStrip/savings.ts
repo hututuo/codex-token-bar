@@ -3,6 +3,7 @@ import {
   modelAwareAPICostUSD,
   priceModelTitle,
   type OfficialAPIPriceModel,
+  type DetectedOfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
 import {
   firstCompleteQuotaBucketStart,
@@ -33,7 +34,7 @@ export interface LifetimeSavingsEstimate {
   monthlyPlanUSD: number | null;
   normalizedPlanName: string;
   priceModel: OfficialAPIPriceModel;
-  detectedModels: OfficialAPIPriceModel[];
+  detectedModels: DetectedOfficialAPIPriceModel[];
   fallbackModelCalls: number;
   excludedModels: string[];
   excludedCalls: number;
@@ -54,7 +55,7 @@ export interface Recent7dSavingsEstimate {
   estimateSource?: string;
   priceModel: OfficialAPIPriceModel;
   modelBreakdowns: ModelTokenBreakdown[];
-  detectedModels: OfficialAPIPriceModel[];
+  detectedModels: DetectedOfficialAPIPriceModel[];
   fallbackModelCalls: number;
   excludedModels: string[];
   excludedCalls: number;

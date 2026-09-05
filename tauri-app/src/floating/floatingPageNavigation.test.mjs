@@ -56,7 +56,7 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.equal(dragStarts, 0);
         await React.act(async () => next.click());
         assert.equal(pageNavigations, 1);
-        assert.match(container.textContent, /Sol\$3\.25/);
+        assert.match(container.textContent, /Sol\$2\.20/);
         assert.match(container.textContent, /Luna\$0\.32/);
         assert.doesNotMatch(container.textContent, /Sol50%/);
         assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /费用/);
@@ -87,7 +87,7 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.equal(hiddenNext.classList.contains("is-glyph-hidden"), true);
         await React.act(async () => hiddenNext.click());
         assert.equal(pageNavigations, 3);
-        assert.match(container.textContent, /Sol\$3\.25/);
+        assert.match(container.textContent, /Sol\$2\.20/);
       } finally {
         await React.act(async () => root.unmount());
       }

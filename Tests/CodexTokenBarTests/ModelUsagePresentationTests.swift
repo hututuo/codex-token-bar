@@ -166,7 +166,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         let sol = try XCTUnwrap(items.first { $0.label == "Sol" })
         let spark = try XCTUnwrap(items.first { $0.label == "Spark" })
 
-        XCTAssertEqual(sol.costUSD ?? -1, 4.4, accuracy: 0.0001)
+        XCTAssertEqual(sol.costUSD ?? -1, 3.12, accuracy: 0.0001)
         XCTAssertFalse(sol.usesIndependentQuota)
         XCTAssertEqual(spark.valueText(for: .cost), "$0.44（不计入总计）")
         XCTAssertEqual(spark.referenceCostUSD ?? -1, 0.4375, accuracy: 0.0001)
@@ -305,7 +305,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Astra", "Terra"])
-        XCTAssertEqual(items.map { $0.valueText(for: .cost) }, ["$5.00", "$1.20", "$1.00", "$1.00"])
+        XCTAssertEqual(items.map { $0.valueText(for: .cost) }, ["$4.00", "$1.20", "$1.00", "$1.00"])
     }
 
     func testFloatingTodayModelCostPaginatesBeyondTheCompactFourItemPage() {

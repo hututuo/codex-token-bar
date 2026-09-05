@@ -1,3 +1,7 @@
+import {
+  standardAPIPriceQuote,
+} from "./standardAPIPriceSchedule.ts";
+
 export type OfficialAPIPriceModel =
   | "gpt6Astra"
   | "gpt56Sol"
@@ -7,6 +11,9 @@ export type OfficialAPIPriceModel =
   | "gpt52Codex"
   | "gpt54Legacy"
   | "gpt54MiniLegacy";
+
+/** A parsed usage model may include the real GPT-5.5 card. */
+export type DetectedOfficialAPIPriceModel = OfficialAPIPriceModel | "gpt55";
 
 export type QuotaPriceBasis = "current" | "radar20260730";
 
@@ -73,7 +80,10 @@ export interface ModelTokenCostRow {
 
 export interface ModelAwareAPICostEstimate {
   costUSD: number;
-  detectedModels: OfficialAPIPriceModel[];
+  /** Actual parsed models; stored fallback preference migration is separate. */
+  detectedModels: DetectedOfficialAPIPriceModel[];
+  /** Exact parsed model keys, including the distinct `gpt55` card. */
+  detectedModelKeys?: DetectedOfficialAPIPriceModel[];
   fallbackCalls: number;
   /** Models on an independent quota; retained in token/model stats but never priced. */
   excludedModels: string[];
@@ -98,13 +108,19 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
 // https://developers.openai.com/api/docs/models/compare
 const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
   gpt6Astra: { inputUSDPerMillion: 10, cachedInputUSDPerMillion: 1, outputUSDPerMillion: 50 },
-  gpt56Sol: { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 },
+  gpt56Sol: { inputUSDPerMillion: 4, cachedInputUSDPerMillion: 0.4, outputUSDPerMillion: 20 },
   gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
   gpt56Luna: { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 },
   gpt53Codex: { inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14 },
   gpt52Codex: { inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14 },
   gpt54Legacy: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
   gpt54MiniLegacy: { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 },
+};
+
+const GPT55_API_PRICES: APIPriceRates = {
+  inputUSDPerMillion: 5,
+  cachedInputUSDPerMillion: 0.5,
+  outputUSDPerMillion: 30,
 };
 
 // Codex Radar's public 2026-07-30 quota basis uses the then-published model
@@ -170,9 +186,10 @@ export function writeStoredQuotaPriceModel(model: OfficialAPIPriceModel): void {
 }
 
 export function officialAPIPrices(
-  priceModel: OfficialAPIPriceModel,
+  priceModel: OfficialAPIPriceModel | "gpt55",
   basis: QuotaPriceBasis = "current",
 ): APIPriceRates {
+  if (priceModel === "gpt55") return GPT55_API_PRICES;
   const normalized = normalizeOfficialAPIPriceModel(priceModel) ?? "gpt56Sol";
   return basis === "radar20260730"
     ? RADAR_2026_07_30_PRICES[normalized]
@@ -183,18 +200,15 @@ export function officialAPICostUSD(
   inputTokens: number,
   cachedInputTokens: number,
   outputTokens: number,
-  priceModel: OfficialAPIPriceModel,
+  priceModel: OfficialAPIPriceModel | "gpt55",
   basis: QuotaPriceBasis = "current",
 ): number {
-  const prices = officialAPIPrices(priceModel, basis);
-  const input = finiteNonnegative(inputTokens);
-  const cachedInput = Math.min(finiteNonnegative(cachedInputTokens), input);
-  const uncachedInput = Math.max(0, input - cachedInput);
-  return (
-    uncachedInput * prices.inputUSDPerMillion
-    + cachedInput * prices.cachedInputUSDPerMillion
-    + finiteNonnegative(outputTokens) * prices.outputUSDPerMillion
-  ) / 1_000_000;
+  return costUSDForRates(
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    officialAPIPrices(priceModel, basis),
+  );
 }
 
 export function independentQuotaReferenceCostUSD(
@@ -217,7 +231,7 @@ export function independentQuotaReferenceCostUSD(
 export function detectedOfficialAPIPriceModel(
   value: string | null | undefined,
   eventDate?: Date | number | string | null,
-): OfficialAPIPriceModel | null {
+): DetectedOfficialAPIPriceModel | null {
   const key = value?.trim().toLowerCase().replaceAll("_", "-");
   const autoReviewModel = effectiveModelForAlias(value, eventDate);
   if (autoReviewModel) return autoReviewModel;
@@ -234,9 +248,12 @@ export function detectedOfficialAPIPriceModel(
     case "gpt5.6-sol":
     case "gpt56-sol":
     case "gpt56sol":
-    case "gpt-5.5":
-    case "gpt55":
       return "gpt56Sol";
+    case "gpt-5.5":
+    case "gpt5.5":
+    case "gpt55":
+    case "gpt 5.5":
+      return "gpt55";
     case "gpt-5.6-terra":
     case "gpt5.6-terra":
     case "gpt56-terra":
@@ -271,7 +288,7 @@ export function detectedOfficialAPIPriceModel(
 export function modelAwareAPICostUSD(
   rows: ModelTokenCostRow[] | null | undefined,
   fallback: ModelTokenCostRow["breakdown"],
-  fallbackModel: OfficialAPIPriceModel,
+  fallbackModel: OfficialAPIPriceModel | "gpt55",
   basis: QuotaPriceBasis = "current",
 ): ModelAwareAPICostEstimate {
   if (!rows || rows.length === 0) {
@@ -327,7 +344,7 @@ export function modelAwareAPICostUSD(
       excludedCalls,
     };
   }
-  const grouped = new Map<OfficialAPIPriceModel, ModelTokenCostRow["breakdown"]>();
+  const grouped = new Map<DetectedOfficialAPIPriceModel, ModelTokenCostRow["breakdown"]>();
   const unknown = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 };
   for (const row of rows) {
     const excluded = independentQuotaModelName(row.model);
@@ -344,29 +361,87 @@ export function modelAwareAPICostUSD(
     target.calls += row.breakdown.calls;
     if (detected) grouped.set(detected, target);
   }
-  let costUSD = officialAPICostUSD(unknown.inputTokens, unknown.cachedInputTokens, unknown.outputTokens, fallbackModel, basis);
-  for (const [model, breakdown] of grouped) {
-    costUSD += officialAPICostUSD(breakdown.inputTokens, breakdown.cachedInputTokens, breakdown.outputTokens, model, basis);
+  let costUSD = 0;
+  const pricedGroups = new Map<string, {
+    rates: APIPriceRates;
+    breakdown: ModelTokenCostRow["breakdown"];
+  }>();
+  for (const row of rows) {
+    if (independentQuotaModelName(row.model)) continue;
+    const model = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix) ?? fallbackModel;
+    const datedRates = basis === "current" && row.eventStartUnix !== undefined
+      ? standardAPIPriceQuote(model, row.eventStartUnix)?.rates
+      : null;
+    const rates = datedRates ?? officialAPIPrices(model, basis);
+    const key = `${model}:${rates.inputUSDPerMillion}:${rates.cachedInputUSDPerMillion}:${rates.outputUSDPerMillion}`;
+    const priced = pricedGroups.get(key) ?? {
+      rates,
+      breakdown: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 },
+    };
+    priced.breakdown.inputTokens += row.breakdown.inputTokens;
+    priced.breakdown.cachedInputTokens += row.breakdown.cachedInputTokens;
+    priced.breakdown.outputTokens += row.breakdown.outputTokens;
+    priced.breakdown.calls += row.breakdown.calls;
+    pricedGroups.set(key, priced);
   }
+  for (const { rates, breakdown } of pricedGroups.values()) {
+    costUSD += costUSDForRates(
+      breakdown.inputTokens,
+      breakdown.cachedInputTokens,
+      breakdown.outputTokens,
+      rates,
+    );
+  }
+  const detectedModelKeys = ([
+    "gpt6Astra",
+    "gpt56Sol",
+    "gpt55",
+    "gpt56Terra",
+    "gpt56Luna",
+    "gpt53Codex",
+    "gpt52Codex",
+    "gpt54Legacy",
+    "gpt54MiniLegacy",
+  ] satisfies DetectedOfficialAPIPriceModel[]).filter((model) => grouped.has(model));
+  const detectedModels = detectedModelKeys;
   return {
     costUSD,
-    detectedModels: ([
-      "gpt6Astra",
-      "gpt56Sol",
-      "gpt56Terra",
-      "gpt56Luna",
-      "gpt53Codex",
-      "gpt52Codex",
-      "gpt54Legacy",
-      "gpt54MiniLegacy",
-    ] satisfies OfficialAPIPriceModel[]).filter((model) => grouped.has(model)),
+    detectedModels,
+    detectedModelKeys,
     fallbackCalls: unknown.calls,
     excludedModels,
     excludedCalls,
   };
 }
 
-export function priceModelTitle(model: OfficialAPIPriceModel): string {
+/**
+ * Date-stamped overload for aggregate rows whose source has one authoritative
+ * bucket timestamp. Existing rows that already carry `eventStartUnix` are
+ * left intact; invalid timestamps fall back to the current-rate estimator.
+ */
+export function modelAwareAPICostUSDAt(
+  rows: ModelTokenCostRow[] | null | undefined,
+  timestamp: Date | number | string | null | undefined,
+  fallback: ModelTokenCostRow["breakdown"],
+  fallbackModel: OfficialAPIPriceModel | "gpt55",
+  basis: QuotaPriceBasis = "current",
+): ModelAwareAPICostEstimate {
+  const eventStartUnix = eventTimestampUnix(timestamp);
+  if (eventStartUnix === null || !rows) {
+    return modelAwareAPICostUSD(rows, fallback, fallbackModel, basis);
+  }
+  return modelAwareAPICostUSD(
+    rows.map((row) => row.eventStartUnix === undefined
+      ? { ...row, eventStartUnix }
+      : row),
+    fallback,
+    fallbackModel,
+    basis,
+  );
+}
+
+export function priceModelTitle(model: DetectedOfficialAPIPriceModel): string {
+  if (model === "gpt55") return "GPT-5.5";
   switch (normalizeOfficialAPIPriceModel(model) ?? "gpt56Sol") {
     case "gpt6Astra": return "GPT-6 Astra";
     case "gpt56Sol": return "GPT-5.6 Sol";
@@ -377,6 +452,7 @@ export function priceModelTitle(model: OfficialAPIPriceModel): string {
     case "gpt54Legacy": return "GPT-5.4";
     case "gpt54MiniLegacy": return "GPT-5.4 Mini";
   }
+  return "GPT-5.6 Sol";
 }
 
 /** Canonical model names on the separate Spark quota. */
@@ -437,4 +513,20 @@ function eventTimestampUnix(value: Date | number | string | null | undefined): n
 
 function finiteNonnegative(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function costUSDForRates(
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+  prices: APIPriceRates,
+): number {
+  const input = finiteNonnegative(inputTokens);
+  const cachedInput = Math.min(finiteNonnegative(cachedInputTokens), input);
+  const uncachedInput = Math.max(0, input - cachedInput);
+  return (
+    uncachedInput * prices.inputUSDPerMillion
+    + cachedInput * prices.cachedInputUSDPerMillion
+    + finiteNonnegative(outputTokens) * prices.outputUSDPerMillion
+  ) / 1_000_000;
 }

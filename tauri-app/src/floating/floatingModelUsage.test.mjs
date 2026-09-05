@@ -23,7 +23,7 @@ test("today model usage combines aliases and computes cache-aware per-model pric
     { label: "Sol", tokens: 1_200_000 },
     { label: "Luna", tokens: 1_000_000 },
   ]);
-  assert.equal(floatingModelUsageValue(items[0], "cost"), "$6.25");
+  assert.equal(floatingModelUsageValue(items[0], "cost"), "$4.60");
   assert.equal(floatingModelUsageValue(items[1], "cost"), "$0.20");
   assert.equal(floatingModelUsageValue(items[0], "share"), "55%");
 });
@@ -103,7 +103,21 @@ test("used Astra Sol Terra Luna rows sort by amount with the default order as th
   ], "gpt56Sol");
 
   assert.deepEqual(items.map((item) => item.label), ["Sol", "Luna", "Astra", "Terra"]);
-  assert.deepEqual(items.map((item) => floatingModelUsageValue(item, "cost")), ["$5.00", "$1.20", "$1.00", "$1.00"]);
+  assert.deepEqual(items.map((item) => floatingModelUsageValue(item, "cost")), ["$4.00", "$1.20", "$1.00", "$1.00"]);
+});
+
+test("today model usage merges Sol aliases across the price cutover and sums both rates", () => {
+  const before = Date.parse("2026-08-20T23:59:59Z") / 1000;
+  const after = Date.parse("2026-08-21T00:00:00Z") / 1000;
+  const items = floatingTodayModelUsageItems([
+    row("gpt-5.6-sol", 1_000_000, 0, 0, 1_000_000, 1, before),
+    row("gpt_5.6_sol", 1_000_000, 0, 0, 1_000_000, 1, after),
+  ], "gpt56Sol");
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].label, "Sol");
+  assert.equal(items[0].tokens, 2_000_000);
+  assert.equal(floatingModelUsageValue(items[0], "cost"), "$9.00");
 });
 
 test("model usage overflow explains every hidden model", () => {

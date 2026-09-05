@@ -242,9 +242,35 @@ struct TurnCacheUsage: Codable, Identifiable {
     }
 }
 
+struct ModelTokenPricePeriod: Codable, Equatable, Sendable {
+    let model: String?
+    let start: Date?
+    let breakdown: TokenCacheBreakdown
+}
+
 struct ModelTokenBreakdown: Codable, Equatable, Sendable {
     let model: String?
     let breakdown: TokenCacheBreakdown
+    var pricePeriods: [ModelTokenPricePeriod]? = nil
+
+    var pricingRows: [ModelTokenPricePeriod] {
+        pricePeriods ?? [ModelTokenPricePeriod(model: model, start: nil, breakdown: breakdown)]
+    }
+}
+
+/// Compact price/routing epochs preserve event-time information across a
+/// lifetime or local-day aggregate. Date boundaries are UTC estimate cutovers.
+struct ModelPricingKey: Hashable {
+    let model: String?
+    let date: Date
+    init(model: String?, at date: Date) {
+        self.model = model
+        self.date = StandardAPIPriceSchedule.partitionStart(at: date)
+    }
+    func row(_ breakdown: TokenCacheBreakdown) -> ModelTokenBreakdown {
+        ModelTokenBreakdown(model: model, breakdown: breakdown,
+            pricePeriods: [ModelTokenPricePeriod(model: model, start: date, breakdown: breakdown)])
+    }
 }
 
 /// Exact per-model usage for one local calendar day. This is a compact
@@ -622,6 +648,7 @@ struct DashboardSnapshot: Codable {
     let observedThrough: Date?
     let settledThrough: Date?
     let exactGeneration: Int64?
+    let accountingCoverage: String?
 
     var hasPreciseTokenUsage: Bool {
         usagePrecision.hasPreciseTokenUsage
@@ -643,7 +670,8 @@ struct DashboardSnapshot: Codable {
         coverageKind: DashboardSnapshotCoverageKind = .full,
         observedThrough: Date? = nil,
         settledThrough: Date? = nil,
-        exactGeneration: Int64? = nil
+        exactGeneration: Int64? = nil,
+        accountingCoverage: String? = nil
     ) {
         self.stats = stats
         self.dailyUsage = dailyUsage
@@ -661,6 +689,7 @@ struct DashboardSnapshot: Codable {
         self.observedThrough = observedThrough
         self.settledThrough = settledThrough
         self.exactGeneration = exactGeneration
+        self.accountingCoverage = accountingCoverage
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -680,6 +709,7 @@ struct DashboardSnapshot: Codable {
         case observedThrough
         case settledThrough
         case exactGeneration
+        case accountingCoverage
     }
 
     init(from decoder: Decoder) throws {
@@ -703,6 +733,7 @@ struct DashboardSnapshot: Codable {
         observedThrough = try container.decodeIfPresent(Date.self, forKey: .observedThrough)
         settledThrough = try container.decodeIfPresent(Date.self, forKey: .settledThrough)
         exactGeneration = try container.decodeIfPresent(Int64.self, forKey: .exactGeneration)
+        accountingCoverage = try container.decodeIfPresent(String.self, forKey: .accountingCoverage)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -723,6 +754,7 @@ struct DashboardSnapshot: Codable {
         try container.encodeIfPresent(observedThrough, forKey: .observedThrough)
         try container.encodeIfPresent(settledThrough, forKey: .settledThrough)
         try container.encodeIfPresent(exactGeneration, forKey: .exactGeneration)
+        try container.encodeIfPresent(accountingCoverage, forKey: .accountingCoverage)
     }
 }
 

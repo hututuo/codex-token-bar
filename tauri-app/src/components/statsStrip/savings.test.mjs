@@ -58,10 +58,10 @@ test("lifetime savings subtracts monthly Pro cost from cache-aware GPT-5.6 Sol A
 
   assert.ok(estimate);
   assert.equal(estimate.billingMonths, 7);
-  assert.equal(estimate.apiEquivalentUSD, 35.5);
+  assert.equal(estimate.apiEquivalentUSD, 24.4);
   assert.equal(estimate.subscriptionCostUSD, 1_400);
-  assert.equal(estimate.netSavingsUSD, -1_364.5);
-  assert.equal(savingsPresentation(estimate).valueText, "−$1.36k");
+  assert.equal(estimate.netSavingsUSD, -1_375.6);
+  assert.equal(savingsPresentation(estimate).valueText, "−$1.38k");
   assert.equal(savingsPresentation(estimate).labelText, "累计净薅到（估）");
 });
 
@@ -88,7 +88,7 @@ test("lifetime savings uses recorded historical models before the fallback model
     now: new Date("2026-07-07T00:00:00Z"),
   });
 
-  assert.equal(estimate?.apiEquivalentUSD, 7);
+  assert.equal(estimate?.apiEquivalentUSD, 6);
   assert.match(savingsPresentation(estimate).helpText, /历史真实模型/);
 });
 
@@ -164,7 +164,7 @@ test("7d API estimate uses the reset boundary and excludes adjacent points", () 
   assert.ok(estimate);
   assert.equal(estimate.periodStartUnix, periodStartUnix);
   assert.equal(estimate.pointCount, 2);
-  assert.equal(estimate.apiEquivalentUSD, 11.5);
+  assert.equal(estimate.apiEquivalentUSD, 8.4);
   assert.equal(estimate.modelBreakdowns.length, 2);
 });
 

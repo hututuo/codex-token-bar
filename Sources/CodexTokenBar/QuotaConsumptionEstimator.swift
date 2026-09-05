@@ -149,12 +149,17 @@ enum ModelAwareAPIPriceEstimator {
         let model: String?
         let breakdown: TokenCacheBreakdown
         let detectedModel: OfficialAPIPriceModel?
+        /// A dated standard API quote is populated only by the explicit
+        /// historical-estimate overload. Existing current and Radar callers
+        /// keep using their supplied `rates` closure.
+        let historicalQuote: StandardAPIPriceQuote?
     }
 
     static func estimate(
         events: [TokenCacheAttributionEvent]?,
         fallbackBreakdown: TokenCacheBreakdown,
         fallbackModel: OfficialAPIPriceModel,
+        standardAPI: Bool = false,
         rates: (OfficialAPIPriceModel) -> APIPriceRates
     ) -> ModelAwareAPIPriceEstimate {
         guard let events, !events.isEmpty else {
@@ -172,7 +177,8 @@ enum ModelAwareAPIPriceEstimator {
                     detectedModel: OfficialAPIPriceModel.detected(
                         from: event.model,
                         at: event.start
-                    )
+                    ),
+                    historicalQuote: standardAPI ? historicalQuote(model: event.model, at: event.start, fallbackModel: fallbackModel) : nil
                 )
             },
             fallbackBreakdown: fallbackBreakdown,
@@ -185,20 +191,96 @@ enum ModelAwareAPIPriceEstimator {
         modelBreakdowns: [ModelTokenBreakdown],
         fallbackBreakdown: TokenCacheBreakdown,
         fallbackModel: OfficialAPIPriceModel,
+        standardAPI: Bool = false,
         rates: (OfficialAPIPriceModel) -> APIPriceRates
     ) -> ModelAwareAPIPriceEstimate {
         estimate(
-            rows: modelBreakdowns.map { row in
+            rows: modelBreakdowns.flatMap(\.pricingRows).map { row in
                 PricingRow(
                     model: row.model,
                     breakdown: row.breakdown,
-                    detectedModel: OfficialAPIPriceModel.detected(from: row.model)
+                    detectedModel: OfficialAPIPriceModel.detected(from: row.model, at: row.start),
+                    historicalQuote: standardAPI ? historicalQuote(model: row.model, at: row.start, fallbackModel: fallbackModel) : nil
                 )
             },
             fallbackBreakdown: fallbackBreakdown,
             fallbackModel: fallbackModel,
             rates: rates
         )
+    }
+
+    /// Estimate model rows against the dated standard API card. This overload
+    /// is intentionally explicit: rows without a date continue through the
+    /// current-rate overload above, while Radar keeps its fixed historical
+    /// `rates` closure and never enters this path.
+    static func estimate(
+        modelBreakdowns: [ModelTokenBreakdown],
+        eventDate: Date,
+        fallbackBreakdown: TokenCacheBreakdown,
+        fallbackModel: OfficialAPIPriceModel
+    ) -> ModelAwareAPIPriceEstimate {
+        estimate(
+            rows: modelBreakdowns.flatMap(\.pricingRows).map { row in
+                PricingRow(
+                    model: row.model,
+                    breakdown: row.breakdown,
+                    detectedModel: OfficialAPIPriceModel.detected(
+                        from: row.model,
+                        at: row.start ?? eventDate
+                    ),
+                    historicalQuote: historicalQuote(model: row.model, at: row.start ?? eventDate, fallbackModel: fallbackModel)
+                )
+            },
+            fallbackBreakdown: fallbackBreakdown,
+            fallbackModel: fallbackModel,
+            rates: { $0.currentPriceRates }
+        )
+    }
+
+    /// Label-compatible spelling for callers that use the schedule's
+    /// `quote(for:at:)` convention.
+    static func estimate(
+        modelBreakdowns: [ModelTokenBreakdown],
+        at eventDate: Date,
+        fallbackBreakdown: TokenCacheBreakdown,
+        fallbackModel: OfficialAPIPriceModel
+    ) -> ModelAwareAPIPriceEstimate {
+        estimate(
+            modelBreakdowns: modelBreakdowns,
+            eventDate: eventDate,
+            fallbackBreakdown: fallbackBreakdown,
+            fallbackModel: fallbackModel
+        )
+    }
+
+    /// Timestamp form for callers whose source stores Unix seconds. Invalid
+    /// timestamps deliberately retain the current-rate behavior rather than
+    /// manufacturing a historical price date.
+    static func estimate(
+        modelBreakdowns: [ModelTokenBreakdown],
+        timestamp: TimeInterval?,
+        fallbackBreakdown: TokenCacheBreakdown,
+        fallbackModel: OfficialAPIPriceModel
+    ) -> ModelAwareAPIPriceEstimate {
+        guard let timestamp, timestamp.isFinite else {
+            return estimate(
+                modelBreakdowns: modelBreakdowns,
+                fallbackBreakdown: fallbackBreakdown,
+                fallbackModel: fallbackModel,
+                rates: { $0.currentPriceRates }
+            )
+        }
+        return estimate(
+            modelBreakdowns: modelBreakdowns,
+            eventDate: Date(timeIntervalSince1970: timestamp),
+            fallbackBreakdown: fallbackBreakdown,
+            fallbackModel: fallbackModel
+        )
+    }
+
+    private static func historicalQuote(model: String?, at date: Date?, fallbackModel: OfficialAPIPriceModel) -> StandardAPIPriceQuote? {
+        let detected = OfficialAPIPriceModel.detected(from: model, at: date) ?? fallbackModel
+        return StandardAPIPriceSchedule.quote(for: detected.title, at: date)
     }
 
     private static func estimate(
@@ -252,12 +334,19 @@ enum ModelAwareAPIPriceEstimator {
                 fallbackBreakdowns.append(row.breakdown)
             }
         }
-        let knownCost = grouped.reduce(0.0) { partial, entry in
-            partial + rates(entry.key).costUSD(for: entry.value.combined)
+        let knownCost = rows.reduce(0.0) { partial, row in
+            guard let detected = row.detectedModel,
+                  OfficialAPIPriceModel.independentQuotaModelName(from: row.model) == nil else {
+                return partial
+            }
+            let rowRates = row.historicalQuote?.rates ?? rates(detected)
+            return partial + rowRates.costUSD(for: row.breakdown)
         }
         let unknownBreakdown = fallbackBreakdowns.combined
         return ModelAwareAPIPriceEstimate(
-            costUSD: knownCost + rates(fallbackModel).costUSD(for: unknownBreakdown),
+            costUSD: knownCost + rows.filter {
+                $0.detectedModel == nil && OfficialAPIPriceModel.independentQuotaModelName(from: $0.model) == nil
+            }.reduce(0.0) { $0 + ($1.historicalQuote?.rates ?? rates(fallbackModel)).costUSD(for: $1.breakdown) },
             detectedModels: OfficialAPIPriceModel.allCases.filter { grouped[$0] != nil },
             fallbackCalls: unknownBreakdown.calls,
             excludedModels: excludedModels,
@@ -298,6 +387,9 @@ private extension TokenCacheBreakdown {
 enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case gpt6Astra
     case gpt56Sol
+    /// The real GPT-5.5 model is separate from GPT-5.6 Sol. The legacy
+    /// preference value `gpt55` is still migrated to `.gpt56Sol` below.
+    case gpt55
     case gpt56Terra
     case gpt56Luna
     case gpt53Codex
@@ -318,6 +410,7 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         switch self {
         case .gpt6Astra: "GPT-6 Astra"
         case .gpt56Sol: "GPT-5.6 Sol"
+        case .gpt55: "GPT-5.5"
         case .gpt56Terra: "GPT-5.6 Terra"
         case .gpt56Luna: "GPT-5.6 Luna"
         case .gpt53Codex: "GPT-5.3 Codex"
@@ -335,6 +428,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         case .gpt6Astra:
             APIPriceRates(inputUSDPerMillion: 10.00, cachedInputUSDPerMillion: 1.00, outputUSDPerMillion: 50.00)
         case .gpt56Sol:
+            APIPriceRates(inputUSDPerMillion: 4.00, cachedInputUSDPerMillion: 0.40, outputUSDPerMillion: 20.00)
+        case .gpt55:
             APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
         case .gpt56Terra:
             APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
@@ -365,18 +460,18 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     /// GPT-5.6 family names became available. The storage key itself remains
     /// unchanged so chart, savings and shared-account estimates stay aligned.
     static func storedValue(for rawValue: String?) -> OfficialAPIPriceModel {
-        if let rawValue, let current = OfficialAPIPriceModel(rawValue: rawValue) {
-            return current
-        }
         switch rawValue {
         case "gpt55":
+            // `gpt55` was the old persisted Sol fallback. Keep that user
+            // preference stable even though actual GPT-5.5 rows now parse to
+            // the distinct `.gpt55` model below.
             return .gpt56Sol
         case "gpt54":
             return .gpt56Terra
         case "gpt54Mini":
             return .gpt56Luna
         default:
-            return .gpt56Sol
+            return OfficialAPIPriceModel(rawValue: rawValue ?? "") ?? .gpt56Sol
         }
     }
 
@@ -402,8 +497,10 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         switch key {
         case "gpt-6-astra", "gpt6-astra", "gpt6astra", "gpt 6 astra":
             return .gpt6Astra
-        case "gpt-5.6", "gpt5.6", "gpt56", "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol", "gpt-5.5", "gpt55":
+        case "gpt-5.6", "gpt5.6", "gpt56", "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol":
             return .gpt56Sol
+        case "gpt-5.5", "gpt5.5", "gpt55", "gpt 5.5":
+            return .gpt55
         case "gpt-5.6-terra", "gpt5.6-terra", "gpt56-terra", "gpt56terra":
             return .gpt56Terra
         case "gpt-5.6-luna", "gpt5.6-luna", "gpt56-luna", "gpt56luna":
@@ -436,7 +533,6 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
 
     // Source-compatible aliases for tests and integrations compiled against
     // the old enum spelling. New persisted values always use GPT-5.6 IDs.
-    static let gpt55: OfficialAPIPriceModel = .gpt56Sol
     static let gpt54: OfficialAPIPriceModel = .gpt56Terra
     static let gpt54Mini: OfficialAPIPriceModel = .gpt56Luna
 }
@@ -663,6 +759,7 @@ extension QuotaConsumptionSelection {
             events: fullAttributionEvents,
             fallbackBreakdown: breakdown,
             fallbackModel: fallbackPriceModel,
+            standardAPI: true,
             rates: { $0.currentPriceRates }
         )
     }
@@ -672,6 +769,7 @@ extension QuotaConsumptionSelection {
             events: sevenDayAttributionEvents,
             fallbackBreakdown: sevenDayAttributionBreakdown,
             fallbackModel: fallbackPriceModel,
+            standardAPI: true,
             rates: { $0.currentPriceRates }
         )
     }
@@ -791,18 +889,21 @@ extension RecentChartPreparedData {
             events: fullEvents,
             fallbackBreakdown: breakdown,
             fallbackModel: fallbackModel,
+            standardAPI: true,
             rates: { $0.currentPriceRates }
         )
         let fiveHourPrice = ModelAwareAPIPriceEstimator.estimate(
             events: fiveHourEvents,
             fallbackBreakdown: fiveHourDrop.comparisonBreakdown,
             fallbackModel: fallbackModel,
+            standardAPI: true,
             rates: { $0.currentPriceRates }
         )
         let sevenDayPrice = ModelAwareAPIPriceEstimator.estimate(
             events: sevenDayEvents,
             fallbackBreakdown: sevenDayDrop.comparisonBreakdown,
             fallbackModel: fallbackModel,
+            standardAPI: true,
             rates: { $0.currentPriceRates }
         )
 

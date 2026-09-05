@@ -116,7 +116,8 @@ enum FloatingTodayModelUsagePresentation {
             }
             return ModelTokenBreakdown(
                 model: "gpt-5.6-luna",
-                breakdown: row.breakdown
+                breakdown: row.breakdown,
+                pricePeriods: row.pricePeriods
             )
         }
         let combined = ModelUsagePresentation.combinedRows(floatingRows)
@@ -141,8 +142,7 @@ enum FloatingTodayModelUsagePresentation {
         )
         return rowsByKey.map { key, row in
             let independent = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil
-            let priceModel = OfficialAPIPriceModel.detected(from: row.model) ?? fallbackModel
-            let costUSD = independent ? nil : priceModel.currentPriceRates.costUSD(for: row.breakdown)
+            let costUSD: Double? = independent ? nil : ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: [row], fallbackBreakdown: row.breakdown, fallbackModel: fallbackModel, standardAPI: true, rates: { $0.currentPriceRates }).costUSD
             let referenceCostUSD = IndependentQuotaReferencePricing.costUSD(
                 for: row.model,
                 breakdown: row.breakdown

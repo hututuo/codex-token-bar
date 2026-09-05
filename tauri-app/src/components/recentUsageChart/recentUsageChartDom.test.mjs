@@ -350,8 +350,8 @@ test("fixed 24h selection renders shared-account attribution in the lower result
         const attribution = container.querySelector('[aria-label="选区共享账号归因"]');
         assert.ok(attribution);
         assert.match(attribution.textContent, /账号实降3%/);
-        assert.match(attribution.textContent, /本机折算≈1\.5%/);
-        assert.match(attribution.textContent, /差额\+1\.5%/);
+        assert.match(attribution.textContent, /本机折算≈1\.2%/);
+        assert.match(attribution.textContent, /差额\+1\.8%/);
 
         await React.act(async () => root.render(React.createElement(RecentUsageChart, {
           recentUsage24h: [point(0, 0.8, 0.90), point(300, 0.78, 0.88), point(600, 0.76, 0.87)],
@@ -361,7 +361,7 @@ test("fixed 24h selection renders shared-account attribution in the lower result
         })));
         const negative = container.querySelector('[aria-label="选区共享账号归因"]');
         assert.ok(negative);
-        assert.match(negative.textContent, /暂算差额-12%/);
+        assert.match(negative.textContent, /暂算差额-9%/);
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -434,7 +434,7 @@ test("fixed 24h selection keeps local conversion visible when quota history is m
         const detail = container.querySelector('[aria-label="选区本机 API 等价金额"]');
         assert.ok(detail);
         assert.match(detail.textContent, /本机同基准 \$1\.00/);
-        assert.match(detail.textContent, /当前 API \$1\.00/);
+        assert.match(detail.textContent, /当前 API \$0\.80/);
       } finally {
         await React.act(async () => root.unmount());
       }

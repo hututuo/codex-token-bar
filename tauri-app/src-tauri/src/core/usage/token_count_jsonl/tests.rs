@@ -50,7 +50,7 @@ fn future_revision_is_rejected_before_quick_check_or_schema_writes() {
     write_lines(
         &session_dir.join("rollout-future-revision.jsonl"),
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":1}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1}}}}"#,
         ],
     );
     dashboard_snapshot(&root).unwrap();
@@ -337,7 +337,7 @@ fn precise_refresh_owner_releases_flight_after_panic_and_can_retry() {
     write_lines(
         &session_dir.join("rollout-019erefresh-panic-0000-0000-summary.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     let first = Arc::new(Mutex::new(true));
@@ -381,7 +381,7 @@ fn assert_full_retry_after_completed_failure_window(failure: CompletedPreciseRef
     write_lines(
         &session_dir.join("rollout-019ecompleted-failure-window-0000-summary.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
 
@@ -481,7 +481,7 @@ fn precise_refresh_same_home_mixed_requests_share_one_sync() {
         "type": "event_msg",
         "payload": {
             "type": "token_count",
-            "info": {"last_token_usage": {"total_tokens": 120}}
+            "info": {"last_token_usage": {"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}
         }
     })
     .to_string();
@@ -538,7 +538,7 @@ fn precise_refresh_summary_promotes_to_full_without_second_sync() {
         "type": "event_msg",
         "payload": {
             "type": "token_count",
-            "info": {"last_token_usage": {"total_tokens": 120}}
+            "info": {"last_token_usage": {"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}
         }
     })
     .to_string();
@@ -594,7 +594,7 @@ fn precise_refresh_raw_and_symlink_alias_share_one_canonical_coordinator() {
     write_lines(
         &session_dir.join("rollout-019ealias-refresh-0000-summary.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
 
@@ -639,7 +639,7 @@ fn precise_refresh_full_after_promotion_cutoff_attaches_without_second_sync() {
     write_lines(
         &session_dir.join("rollout-019ecutoff-refresh-0000-summary.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
 
@@ -709,7 +709,7 @@ fn precise_refresh_different_homes_enter_sync_in_parallel() {
             "type": "event_msg",
             "payload": {
                 "type": "token_count",
-                "info": {"last_token_usage": {"total_tokens": total}}
+                "info": {"last_token_usage": {"input_tokens":total,"cached_input_tokens":0,"output_tokens":0,"total_tokens":total}}
             }
         })
         .to_string();
@@ -756,7 +756,7 @@ fn precise_refresh_owner_error_releases_flight_and_can_retry() {
     write_lines(
         &session_dir.join("rollout-019eowner-error-0000-summary.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     let first = Arc::new(Mutex::new(true));
@@ -792,7 +792,7 @@ fn usage_summary_snapshot_returns_cache_before_background_sync_scans_sources() {
     write_lines(
         &session_dir.join("rollout-019ecache-first-0000-summary.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -939,14 +939,14 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     );
 
     let initial = dashboard_snapshot(&root).unwrap();
-    assert_eq!(initial.stats.total_tokens, 150);
+    assert_eq!(initial.stats.total_tokens, 145);
     assert_eq!(initial.stats.total_calls, 2);
     assert_eq!(initial.stats.total_threads, 2);
     let initial_epoch = initial.recent_usage_24h[0]
         .source_contribution_epoch
         .clone()
         .unwrap();
-    assert_eq!(attribution_source_tokens(&initial), 150);
+    assert_eq!(attribution_source_tokens(&initial), 145);
     assert!(initial
         .recent_usage_24h
         .iter()
@@ -960,7 +960,7 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
         )],
     );
     let rebuilt = dashboard_snapshot(&root).unwrap();
-    assert_eq!(rebuilt.stats.total_tokens, 105);
+    assert_eq!(rebuilt.stats.total_tokens, 90);
     assert_eq!(rebuilt.stats.total_calls, 2);
     assert_eq!(rebuilt.stats.total_threads, 2);
     let rebuilt_epoch = rebuilt.recent_usage_24h[0]
@@ -968,7 +968,7 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
         .clone()
         .unwrap();
     assert_ne!(rebuilt_epoch, initial_epoch);
-    assert_eq!(attribution_source_tokens(&rebuilt), 105);
+    assert_eq!(attribution_source_tokens(&rebuilt), 90);
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(database).unwrap();
     assert_eq!(
@@ -979,14 +979,14 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
                 |row| { row.get::<_, i64>(0) }
             )
             .unwrap(),
-        105,
+        90,
         "rewriting a file must remove its old bucket contribution"
     );
     drop(connection);
 
     fs::remove_file(&deleted_file).unwrap();
     let after_delete = dashboard_snapshot(&root).unwrap();
-    assert_eq!(after_delete.stats.total_tokens, 75);
+    assert_eq!(after_delete.stats.total_tokens, 65);
     assert_eq!(after_delete.stats.total_calls, 1);
     assert_eq!(after_delete.stats.total_threads, 1);
     assert_eq!(
@@ -997,7 +997,7 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     );
     assert_eq!(
         attribution_source_tokens(&after_delete),
-        105,
+        90,
         "deleted sources remain in the durable sparse attribution ledger"
     );
 
@@ -1525,7 +1525,7 @@ fn missing_session_roots_keep_the_previous_published_generation() {
     write_lines(
         &session_dir.join("rollout-019emissing-root-safe.jsonl"),
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":100}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 100);
@@ -2060,7 +2060,7 @@ fn exact_index_includes_archived_sessions_outside_active_state() {
 
     let snapshot = dashboard_snapshot(&root).unwrap();
 
-    assert_eq!(snapshot.stats.total_tokens, 150);
+    assert_eq!(snapshot.stats.total_tokens, 145);
     assert_eq!(snapshot.stats.total_calls, 2);
     assert_eq!(snapshot.stats.total_threads, 2);
 
@@ -2342,9 +2342,9 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
     drop(handle);
 
     let refreshed = dashboard_snapshot(&root).unwrap();
-    assert_eq!(refreshed.stats.total_tokens, 150);
+    assert_eq!(refreshed.stats.total_tokens, 145);
     assert_eq!(refreshed.stats.total_calls, 2);
-    assert_eq!(attribution_source_tokens(&refreshed), 150);
+    assert_eq!(attribution_source_tokens(&refreshed), 145);
     assert_eq!(
         refreshed.recent_usage_24h[0]
             .source_contribution_epoch
@@ -2561,7 +2561,7 @@ fn exact_index_append_reuses_checkpoint_when_open_line_crosses_chunk_boundary() 
     std::thread::sleep(std::time::Duration::from_millis(25));
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let refreshed = dashboard_snapshot(&root).unwrap();
-    assert_eq!(refreshed.stats.total_tokens, 150);
+    assert_eq!(refreshed.stats.total_tokens, 145);
     assert_eq!(refreshed.stats.total_calls, 2);
     let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
     assert!(append_bytes > 0, "追加路径必须读取检查点后的必要范围");
@@ -2621,7 +2621,7 @@ fn exact_index_append_at_chunk_boundary_keeps_previous_tail_validation_local() {
     std::thread::sleep(std::time::Duration::from_millis(25));
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let refreshed = dashboard_snapshot(&root).unwrap();
-    assert_eq!(refreshed.stats.total_tokens, 150);
+    assert_eq!(refreshed.stats.total_tokens, 145);
     let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
     assert_eq!(full_bytes, 0);
     assert!(append_bytes >= EXACT_INDEX_CHUNK_SIZE);
@@ -2668,7 +2668,7 @@ fn exact_index_rolling_audit_falls_back_to_full_rebuild_after_middle_rewrite_and
 
     let refreshed = dashboard_snapshot(&root).unwrap();
 
-    assert_eq!(refreshed.stats.total_tokens, 151);
+    assert_eq!(refreshed.stats.total_tokens, 145);
     assert_eq!(refreshed.stats.total_calls, 2);
     let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
     assert_eq!(full_bytes, fs::metadata(&file).unwrap().len());
@@ -3251,7 +3251,7 @@ fn exact_index_invalid_staging_is_preserved_without_reparse_or_last_good_loss() 
     write_lines(
         &file,
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -3274,7 +3274,7 @@ fn exact_index_invalid_staging_is_preserved_without_reparse_or_last_good_loss() 
     writeln!(
         replacement,
         "{}",
-        r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":130}}}}"#
+        r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":130,"cached_input_tokens":0,"output_tokens":0,"total_tokens":130}}}}"#
     )
     .unwrap();
     replacement.flush().unwrap();
@@ -3580,7 +3580,7 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "11"
+        "12"
     );
     assert_eq!(
         connection
@@ -3837,7 +3837,7 @@ fn exact_index_migrates_fba33820_schema10_without_reparsing_and_keeps_append_che
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "11"
+        "12"
     );
     assert_eq!(
         connection
@@ -4042,7 +4042,7 @@ fn schema11_migration_rejects_invalid_generation_markers_without_artifacts_or_pa
     write_lines(
         &session_dir.join("rollout-schema11-invalid-generations.jsonl"),
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     dashboard_snapshot(&root).unwrap();
@@ -4143,7 +4143,7 @@ fn schema11_migration_rejects_same_count_candidate_content_corruption() {
         &source_path,
         &[
             r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":7,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":7,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -4206,7 +4206,7 @@ fn schema11_migration_preserves_stale_published_enrichment_receipt() {
         &source_path,
         &[
             r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":9,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":9,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -4280,7 +4280,7 @@ fn schema11_migration_revalidates_persisted_validated_candidate_before_switch() 
         &session_dir.join("rollout-schema11-validated-resume.jsonl"),
         &[
             r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":7,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":7,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -4360,7 +4360,7 @@ fn exact_index_schema9_migration_rolls_back_every_swap_stage_without_data_loss()
             &source_path,
             &[
                 r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
-                r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+                r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
             ],
         );
         assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -4436,7 +4436,7 @@ fn exact_index_schema11_switch_interruptions_resume_without_jsonl_reparse() {
         write_lines(
             &source_path,
             &[
-                r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+                r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
             ],
         );
         assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -4487,7 +4487,7 @@ fn exact_index_schema11_switch_interruptions_resume_without_jsonl_reparse() {
                     |row| row.get::<_, String>(0),
                 )
                 .unwrap(),
-            "11"
+            "12"
         );
         assert!(rollback_path.exists());
         assert!(manifest_path.exists());
@@ -4514,7 +4514,7 @@ fn exact_index_schema9_migration_refuses_low_space_before_writing() {
     write_lines(
         &source_path,
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -4551,7 +4551,7 @@ fn explicit_rebuild_entry_keeps_the_active_index_and_last_good_cache() {
     write_lines(
         &session_dir.join("rollout-disabled-rebuild.jsonl"),
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -4705,7 +4705,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "11"
+        "12"
     );
     assert_eq!(
         interrupted_database
@@ -4738,7 +4738,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "11"
+        "12"
     );
     assert_eq!(
         completed
@@ -4776,7 +4776,7 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
         &file,
         &[
             r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":9,"total_tokens":100}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":100}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 100);
@@ -4932,11 +4932,11 @@ fn event_enrichment_keeps_the_previous_published_generation_until_every_source_c
     let second = session_dir.join("rollout-019eenrichment-atomic-b.jsonl");
     let first_lines = [
         r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
-        r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":7,"total_tokens":100}}}}"#,
+        r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":100}}}}"#,
     ];
     let second_lines = [
         r#"{"timestamp":"2026-07-20T01:00:59Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
-        r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"reasoning_output_tokens":9,"total_tokens":50}}}}"#,
+        r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":50}}}}"#,
     ];
     write_lines(&first, &first_lines);
     write_lines(&second, &second_lines);
@@ -5067,7 +5067,7 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
     write_lines(
         &file,
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -5172,7 +5172,7 @@ fn future_index_repair_request_preserves_all_existing_storage() {
     write_lines(
         &raw_jsonl,
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     let state_db = root.join("state_5.sqlite");
@@ -5245,7 +5245,7 @@ fn exact_index_refuses_unknown_event_enrichment_revision_before_migration_writes
     write_lines(
         &session_dir.join("rollout-019efuture-enrichment.jsonl"),
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -5308,7 +5308,7 @@ fn exact_index_restores_a_missing_marker_for_the_known_session_catalog_shape() {
     write_lines(
         &session_dir.join("rollout-019eknown-unmarked-catalog.jsonl"),
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -5367,7 +5367,7 @@ fn exact_index_refuses_unmarked_unknown_session_catalog_shape_without_dropping_i
     write_lines(
         &session_dir.join("rollout-019eunmarked-future-catalog.jsonl"),
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -5427,7 +5427,7 @@ fn exact_index_refuses_future_session_catalog_without_dropping_table_or_rows() {
     write_lines(
         &session_dir.join("rollout-019efuture-catalog-0000-0000-exact.jsonl"),
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -5508,17 +5508,17 @@ fn exact_index_replay_marker_repair_targets_only_explicit_replay() {
         &file,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019etargeted-replay-0000-0000-luna","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker","agent_path":"/root/luna_worker","source":{"subagent":{"thread_spawn":{"parent_thread_id":"origin-session","agent_role":"luna_worker"}}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":120},"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120},"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
             r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:03.600Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":180},"last_token_usage":{"total_tokens":60}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":260},"last_token_usage":{"total_tokens":80}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":180,"cached_input_tokens":0,"output_tokens":0,"total_tokens":180},"last_token_usage":{"input_tokens":60,"cached_input_tokens":0,"output_tokens":0,"total_tokens":60}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":260,"cached_input_tokens":0,"output_tokens":0,"total_tokens":260},"last_token_usage":{"input_tokens":80,"cached_input_tokens":0,"output_tokens":0,"total_tokens":80}}}}"#,
         ],
     );
     write_lines(
         &unrelated_file,
         &[
-            r#"{"timestamp":"2026-06-18T01:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":25}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":25,"cached_input_tokens":0,"output_tokens":0,"total_tokens":25}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 165);
@@ -5625,7 +5625,7 @@ fn exact_index_replay_marker_repair_targets_only_explicit_replay() {
         writeln!(
             handle,
             "{}",
-            r#"{"timestamp":"2026-06-18T01:00:07Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":300},"last_token_usage":{"total_tokens":40}}}}"#
+            r#"{"timestamp":"2026-06-18T01:00:07Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300},"last_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":0,"total_tokens":40}}}}"#
         )
         .unwrap();
     }
@@ -5691,7 +5691,7 @@ fn exact_index_retries_unresolved_replay_candidate_without_persisting_marker() {
     write_lines(
         &file,
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -5835,9 +5835,9 @@ fn fork_replay_exit_grace_boundary_requires_strictly_more_than_two_seconds() {
         &at_boundary,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":500},"last_token_usage":{"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":0,"total_tokens":500},"last_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":0,"total_tokens":500}}}}"#,
             r#"{"timestamp":"2026-06-18T01:00:12Z","type":"event_msg","payload":{"type":"user_message","message":"恰在宽限边界的提问"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":620},"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":620,"cached_input_tokens":0,"output_tokens":0,"total_tokens":620},"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     let mut warnings = Vec::new();
@@ -5858,9 +5858,9 @@ fn fork_replay_exit_grace_boundary_requires_strictly_more_than_two_seconds() {
         &past_boundary,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":500},"last_token_usage":{"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":0,"total_tokens":500},"last_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":0,"total_tokens":500}}}}"#,
             r#"{"timestamp":"2026-06-18T01:00:12.001Z","type":"event_msg","payload":{"type":"user_message","message":"刚越过宽限边界的提问"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":620},"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":620,"cached_input_tokens":0,"output_tokens":0,"total_tokens":620},"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     let parsed = parse_session_file_full_result(
@@ -5965,7 +5965,7 @@ fn exact_index_cold_scan_resumes_committed_files_without_publishing_partial_tota
             .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
             .unwrap()
             .total_tokens,
-        150
+        145
     );
     assert_eq!(
         ExactUsageIndex::scan_bytes_for_testing().0,
@@ -6054,7 +6054,7 @@ fn exact_index_resumed_building_generation_survives_schema9_migration_and_append
             .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
             .unwrap()
             .total_tokens,
-        150
+        145
     );
     let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
     assert_eq!(full_bytes, 0, "恢复代次内的纯追加不得退化为整文件重扫");
@@ -6637,11 +6637,11 @@ fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggr
             .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
             .unwrap()
             .total_tokens,
-        151
+        146
     );
     let (completed_epoch, completed_attribution_tokens) = read_attribution_state();
     assert_ne!(completed_epoch, published_epoch);
-    assert_eq!(completed_attribution_tokens, 151);
+    assert_eq!(completed_attribution_tokens, 146);
     drop(interrupted);
 
     fs::remove_dir_all(root).unwrap();
@@ -7070,7 +7070,7 @@ fn exact_index_skips_an_unreadable_session_file_and_keeps_published_stats() {
             .unwrap()
             .total_tokens
     };
-    assert_eq!(total(&index), 150);
+    assert_eq!(total(&index), 145);
 
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     let mut warnings = Vec::new();
@@ -7078,7 +7078,7 @@ fn exact_index_skips_an_unreadable_session_file_and_keeps_published_stats() {
     assert!(error.contains("会话源扫描不完整"), "{error}");
     assert_eq!(
         total(&index),
-        150,
+        145,
         "跳过不可读文件必须保留其已发布统计，不得打删除墓碑"
     );
     assert!(warnings.iter().any(|warning| {
@@ -7099,7 +7099,7 @@ fn exact_index_skips_an_unreadable_session_file_and_keeps_published_stats() {
     index.sync(&root, &mut Vec::new()).unwrap();
     assert_eq!(
         total(&index),
-        200,
+        195,
         "文件恢复可读后必须自动续上，不需要人工干预"
     );
     drop(index);
@@ -7137,7 +7137,7 @@ fn exact_index_skips_an_unreadable_directory_without_tombstoning_published_files
             .unwrap()
             .total_tokens
     };
-    assert_eq!(total(&index), 150);
+    assert_eq!(total(&index), 145);
 
     fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o000)).unwrap();
     let mut warnings = Vec::new();
@@ -7145,7 +7145,7 @@ fn exact_index_skips_an_unreadable_directory_without_tombstoning_published_files
     assert!(error.contains("会话源扫描不完整"), "{error}");
     assert_eq!(
         total(&index),
-        150,
+        145,
         "不可读目录下的已发布会话不得被当作已删除打墓碑"
     );
     assert!(warnings.iter().any(|warning| {
@@ -7156,7 +7156,7 @@ fn exact_index_skips_an_unreadable_directory_without_tombstoning_published_files
 
     fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o755)).unwrap();
     index.sync(&root, &mut Vec::new()).unwrap();
-    assert_eq!(total(&index), 150);
+    assert_eq!(total(&index), 145);
     drop(index);
 
     fs::remove_dir_all(root).unwrap();
@@ -7537,8 +7537,8 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
         "turn positions must be calculated only for selected candidates, not materialized for every event"
     );
 
-    assert_eq!(data.summary.total_tokens, 300);
-    assert_eq!(data.summary.today_tokens, 300);
+    assert_eq!(data.summary.total_tokens, 295);
+    assert_eq!(data.summary.today_tokens, 295);
     assert_eq!(data.summary.today_requests, 4);
 
     let align_bin =
@@ -7625,12 +7625,12 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
     );
     assert_point(
         point_at(&data.recent_usage_24h, five_minute_11),
-        40,
+        35,
         1,
         30,
         5,
         5,
-        &[("gpt-b", 40, 1, 30, 5, 5)],
+        &[("gpt-b", 35, 1, 30, 5, 5)],
     );
     assert_point(
         point_at(&data.recent_usage_24h, five_minute_12 + 300),
@@ -7657,12 +7657,12 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
     );
     assert_point(
         point_at(&data.recent_usage_7d, hour_11),
-        40,
+        35,
         1,
         30,
         5,
         5,
-        &[("gpt-b", 40, 1, 30, 5, 5)],
+        &[("gpt-b", 35, 1, 30, 5, 5)],
     );
     assert!(point_at(&data.recent_usage_7d, hour_12)
         .source_contribution_epoch
@@ -7683,12 +7683,12 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
     );
     assert_point(
         point_at(&data.recent_usage_30d, six_hour_06),
-        40,
+        35,
         1,
         30,
         5,
         5,
-        &[("gpt-b", 40, 1, 30, 5, 5)],
+        &[("gpt-b", 35, 1, 30, 5, 5)],
     );
     assert_zero_points(&data.recent_usage_30d, &[six_hour_06, six_hour_12]);
 
@@ -7706,8 +7706,8 @@ fn skips_pure_fork_replay_even_after_thirty_seconds() {
         &file,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":100}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:05:40Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":300},"last_token_usage":{"total_tokens":200}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:05:40Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300},"last_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200}}}}"#,
         ],
     );
 
@@ -7736,10 +7736,10 @@ fn keeps_fork_replay_active_for_replayed_user_message_near_token_counts() {
         &file,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":500},"last_token_usage":{"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":0,"total_tokens":500},"last_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":0,"total_tokens":500}}}}"#,
             r#"{"timestamp":"2026-06-18T01:00:11Z","type":"event_msg","payload":{"type":"user_message","message":"父会话复制问题"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:12Z","type":"event_msg","payload":{"type":"agent_message","message":"父会话复制回答"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":620},"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":620,"cached_input_tokens":0,"output_tokens":0,"total_tokens":620},"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
 
@@ -7814,7 +7814,7 @@ fn counts_new_call_after_fork_replay_user_message() {
         &file,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
-            r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":500},"last_token_usage":{"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":0,"total_tokens":500},"last_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":0,"total_tokens":500}}}}"#,
             r#"{"timestamp":"2026-06-18T01:10:00Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
             r#"{"timestamp":"2026-06-18T01:10:30Z","type":"event_msg","payload":{"type":"agent_message","message":"新分支回答"}}"#,
             r#"{"timestamp":"2026-06-18T01:11:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":90,"cached_input_tokens":20,"output_tokens":30,"total_tokens":620},"last_token_usage":{"input_tokens":90,"cached_input_tokens":20,"output_tokens":30,"total_tokens":120}}}}"#,
@@ -7860,14 +7860,14 @@ fn counts_explicit_subagent_after_child_turn_context_and_preserves_model() {
     );
 
     let first = dashboard_snapshot(&root).unwrap();
-    assert_eq!(first.stats.total_tokens, 60);
+    assert_eq!(first.stats.total_tokens, 50);
     assert_eq!(first.stats.total_calls, 1);
     assert_eq!(first.stats.model_breakdowns.len(), 1);
     assert_eq!(
         first.stats.model_breakdowns[0].model.as_deref(),
         Some("gpt-5.6-luna")
     );
-    assert_eq!(first.stats.model_breakdowns[0].breakdown.total_tokens, 60);
+    assert_eq!(first.stats.model_breakdowns[0].breakdown.total_tokens, 50);
 
     let mut append = fs::OpenOptions::new().append(true).open(&file).unwrap();
     writeln!(
@@ -7879,14 +7879,14 @@ fn counts_explicit_subagent_after_child_turn_context_and_preserves_model() {
     append.flush().unwrap();
 
     let second = dashboard_snapshot(&root).unwrap();
-    assert_eq!(second.stats.total_tokens, 120);
+    assert_eq!(second.stats.total_tokens, 110);
     assert_eq!(second.stats.total_calls, 2);
     assert_eq!(second.stats.model_breakdowns.len(), 1);
     assert_eq!(
         second.stats.model_breakdowns[0].model.as_deref(),
         Some("gpt-5.6-luna")
     );
-    assert_eq!(second.stats.model_breakdowns[0].breakdown.total_tokens, 120);
+    assert_eq!(second.stats.model_breakdowns[0].breakdown.total_tokens, 110);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -7964,7 +7964,7 @@ fn explicit_subagent_fork_persists_replay_identity_across_incremental_append() {
             &mut warnings,
         )
         .unwrap();
-    assert_eq!(data.stats.total_tokens, 80);
+    assert_eq!(data.stats.total_tokens, 70);
     assert_eq!(data.stats.total_calls, 1);
     assert_eq!(data.stats.model_breakdowns.len(), 1);
     assert_eq!(
@@ -7987,11 +7987,11 @@ fn ordinary_fork_turn_context_does_not_end_replay() {
         &file,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019eordinary-fork-boundary-0000-0000-sol","forked_from_id":"origin-session"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":120},"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120},"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
             r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":200},"last_token_usage":{"total_tokens":80}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":80,"cached_input_tokens":0,"output_tokens":0,"total_tokens":80}}}}"#,
             r#"{"timestamp":"2026-06-18T01:00:03.600Z","type":"event_msg","payload":{"type":"user_message","message":"Actual prompt"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:03.700Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":250},"last_token_usage":{"total_tokens":50}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:03.700Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":250,"cached_input_tokens":0,"output_tokens":0,"total_tokens":250},"last_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":0,"total_tokens":50}}}}"#,
         ],
     );
 
@@ -8022,7 +8022,7 @@ fn ordinary_fork_does_not_persist_an_explicit_replay_boundary_across_incremental
         &file,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019eordinary-incremental-0000-0000-sol","forked_from_id":"origin-session"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":120},"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120},"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
 
@@ -8040,7 +8040,7 @@ fn ordinary_fork_does_not_persist_an_explicit_replay_boundary_across_incremental
     writeln!(
         append,
         "{}",
-        r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":200},"last_token_usage":{"total_tokens":80}}}}"#
+        r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200},"last_token_usage":{"input_tokens":80,"cached_input_tokens":0,"output_tokens":0,"total_tokens":80}}}}"#
     )
     .unwrap();
     append.flush().unwrap();
@@ -8063,7 +8063,7 @@ fn parent_thread_without_forked_from_id_still_counts() {
         &file,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"parent_thread_id":"parent"}}"#,
-            r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":42}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":42,"cached_input_tokens":0,"output_tokens":0,"total_tokens":42}}}}"#,
         ],
     );
 
@@ -8114,7 +8114,7 @@ fn usage_summary_counts_today_from_token_events_not_thread_updated_at() {
         &file,
         &[
             &format!(
-                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":1000}}}}}}}}"#,
+                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1000}}}}}}}}"#,
                 yesterday.format(&Rfc3339).unwrap()
             ),
             &format!(
@@ -8167,11 +8167,11 @@ fn dashboard_usage_summary_matches_dashboard_snapshot_metrics() {
         &file,
         &[
             &format!(
-                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":1000}}}}}}}}"#,
+                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1000}}}}}}}}"#,
                 yesterday.format(&Rfc3339).unwrap()
             ),
             &format!(
-                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":40}}}}}}}}"#,
+                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":0,"output_tokens":0,"total_tokens":40}}}}}}}}"#,
                 now.format(&Rfc3339).unwrap()
             ),
         ],
@@ -8198,7 +8198,7 @@ fn live_cached_usage_summary_miss_does_not_open_exact_index() {
     write_lines(
         &session_dir.join("rollout-019elive-cache-miss-0000-summary.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
 
@@ -8822,7 +8822,7 @@ fn negative_dashboard_revision_is_rejected_instead_of_clamped() {
     write_lines(
         &session_dir.join("rollout-019e-dashboard-revision-negative.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     let _ = dashboard_snapshot(&root).unwrap();
@@ -8865,7 +8865,7 @@ fn dashboard_aggregate_v1_upgrade_keeps_older_file_generations_without_jsonl_rea
         ],
     );
 
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 145);
     {
         let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
         writeln!(
@@ -8874,7 +8874,7 @@ fn dashboard_aggregate_v1_upgrade_keeps_older_file_generations_without_jsonl_rea
         )
         .unwrap();
     }
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 200);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 195);
 
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(&database).unwrap();
@@ -8908,7 +8908,7 @@ fn dashboard_aggregate_v1_upgrade_keeps_older_file_generations_without_jsonl_rea
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let upgraded = dashboard_snapshot(&root).unwrap();
     assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
-    assert_eq!(upgraded.stats.total_tokens, 200);
+    assert_eq!(upgraded.stats.total_tokens, 195);
     assert_eq!(
         upgraded
             .stats
@@ -8916,7 +8916,7 @@ fn dashboard_aggregate_v1_upgrade_keeps_older_file_generations_without_jsonl_rea
             .iter()
             .map(|row| row.breakdown.total_tokens)
             .sum::<u64>(),
-        200,
+        195,
         "global five-minute upgrade must include unchanged older file generations"
     );
     let connection = Connection::open(database).unwrap();
@@ -9011,7 +9011,7 @@ fn summary_generation_full_aggregate_repair_keeps_unchanged_files() {
             r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
         ],
     );
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 145);
 
     {
         let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
@@ -9032,14 +9032,14 @@ fn summary_generation_full_aggregate_repair_keeps_unchanged_files() {
         .dashboard_data_with_system_timezone(&root, OffsetDateTime::now_utc(), &mut warnings)
         .unwrap();
 
-    assert_eq!(data.stats.total_tokens, 200);
+    assert_eq!(data.stats.total_tokens, 195);
     assert_eq!(
         data.stats
             .model_breakdowns
             .iter()
             .map(|row| row.breakdown.total_tokens)
             .sum::<u64>(),
-        200
+        195
     );
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     drop(index);
@@ -9125,7 +9125,7 @@ fn full_generation_after_summary_copies_the_last_aggregate_generation_not_the_ne
             r#"{"timestamp":"2026-06-17T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
         ],
     );
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 145);
 
     {
         let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
@@ -9158,7 +9158,7 @@ fn full_generation_after_summary_copies_the_last_aggregate_generation_not_the_ne
         .unwrap();
     }
 
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 270);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 265);
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(database).unwrap();
     assert_eq!(
@@ -9169,7 +9169,7 @@ fn full_generation_after_summary_copies_the_last_aggregate_generation_not_the_ne
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
-        270
+        265
     );
     assert_eq!(
         connection
@@ -9212,7 +9212,7 @@ fn lightweight_summary_reuses_unchanged_file_contributions() {
     let now = OffsetDateTime::parse("2026-06-18T12:00:00Z", &Rfc3339).unwrap();
     let mut index = ExactUsageIndex::open(&root).unwrap();
     let (before, mut contributions) = index.summary_with_file_contributions(now, None).unwrap();
-    assert_eq!(before.total_tokens, 150);
+    assert_eq!(before.total_tokens, 145);
     let unchanged_path = fs::canonicalize(&unchanged)
         .unwrap()
         .to_string_lossy()
@@ -9238,7 +9238,7 @@ fn lightweight_summary_reuses_unchanged_file_contributions() {
         .unwrap();
     contributions = updated;
 
-    assert_eq!(after.total_tokens, 200);
+    assert_eq!(after.total_tokens, 195);
     assert_eq!(
         contributions
             .get(&unchanged_path)
@@ -9271,7 +9271,7 @@ fn dashboard_global_bucket_append_retains_unchanged_file_contributions() {
             r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
         ],
     );
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 145);
 
     {
         let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
@@ -9284,7 +9284,7 @@ fn dashboard_global_bucket_append_retains_unchanged_file_contributions() {
 
     reset_dashboard_aggregate_build_count_for_testing();
     let updated = dashboard_snapshot(&root).unwrap();
-    assert_eq!(updated.stats.total_tokens, 200);
+    assert_eq!(updated.stats.total_tokens, 195);
     assert_eq!(
         updated
             .stats
@@ -9292,7 +9292,7 @@ fn dashboard_global_bucket_append_retains_unchanged_file_contributions() {
             .iter()
             .map(|row| row.breakdown.total_tokens)
             .sum::<u64>(),
-        200
+        195
     );
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(database).unwrap();
@@ -9312,7 +9312,7 @@ fn dashboard_global_bucket_append_retains_unchanged_file_contributions() {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
-        200
+        195
     );
 
     drop(connection);
@@ -9384,7 +9384,7 @@ fn future_json_dashboard_cache_version_is_rejected_and_preserved() {
     write_lines(
         &session_dir.join("rollout-future-json-cache-version.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -9512,7 +9512,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
         persisted.len()
     );
     let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(json["version"], 22);
+    assert_eq!(json["version"], 23);
     assert!(json.get("snapshot").is_none());
     let persisted_text = String::from_utf8_lossy(&persisted);
     assert!(!persisted_text.contains("sourceContribution"));
@@ -9586,7 +9586,7 @@ fn v22_startup_accepts_stale_last_good_after_monotonic_index_advance_without_ope
     write_lines(
         &session_dir.join("rollout-019ev19-monotonic-startup.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     dashboard_snapshot(&root).unwrap();
@@ -9894,7 +9894,7 @@ fn legacy_dashboard_envelope_reads_v18_and_rejects_v16_v17() {
             input_tokens: 40,
             cached_input_tokens: 4,
             output_tokens: 2,
-            model_breakdowns: vec![crate::models::ModelTokenBreakdown {
+            model_breakdowns: vec![crate::models::ModelTokenBreakdown { event_start_unix: None,
                 model: Some("legacy-model".into()),
                 breakdown: Default::default(),
             }],
@@ -9963,7 +9963,7 @@ fn pre_v091_schema6_is_preserved_and_refused_without_automatic_rebuild() {
     write_lines(
         &session_dir.join("rollout-pre-v091-schema6.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     dashboard_snapshot(&root).unwrap();
@@ -10068,7 +10068,7 @@ fn v20_cache_ignores_legacy_physical_identity_and_upgrades_to_v22() {
     write_lines(
         &session_dir.join("rollout-v20-cache-upgrade.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     dashboard_snapshot(&root).unwrap();
@@ -10113,7 +10113,7 @@ fn v21_cache_is_read_as_legacy_numeric_and_upgrades_to_v22() {
     write_lines(
         &session_dir.join("rollout-v21-cache-upgrade.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     dashboard_snapshot(&root).unwrap();
@@ -10356,10 +10356,10 @@ fn v22_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
     assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
 
     let connection = Connection::open(&database).unwrap();
-    connection
-        .execute(
+        connection
+            .execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'fork_replay_boundary_revision'",
-            params![STAGED_FULL_REBUILD_PARSER_REVISION],
+            params!["explicit-subagent-delayed-context-v3"],
         )
         .unwrap();
     connection
@@ -10474,7 +10474,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v22_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":22"#));
+    assert!(aggregate_cache_text().contains(r#""version":23"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -10955,7 +10955,7 @@ fn marker_failure_warning_is_deduplicated_for_fresh_and_cached_snapshots() {
     write_lines(
         &session_dir.join("rollout-019emarker-warning-fresh-cached.jsonl"),
         &[&format!(
-            r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":42}}}}}}}}"#
+            r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":42,"cached_input_tokens":0,"output_tokens":0,"total_tokens":42}}}}}}}}"#
         )],
     );
 
@@ -11071,7 +11071,7 @@ fn compatible_exact_index_reopen_skips_migration_ddl_and_write_transactions() {
     write_lines(
         &session_dir.join("rollout-019ecompatible-reopen-0000-0000-fast.jsonl"),
         &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#,
         ],
     );
     dashboard_snapshot(&root).unwrap();

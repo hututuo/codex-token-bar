@@ -1,3 +1,4 @@
+use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
 use super::session_parser::{
@@ -54,7 +55,8 @@ use uuid::Uuid;
 
 // v0.9.1 is the only forward-migration baseline for v0.9.2. Earlier and future
 // layouts are preserved read-only and rejected instead of being deleted.
-const INDEX_SCHEMA_VERSION: i64 = 11;
+const INDEX_SCHEMA_VERSION: i64 = 11; // durable structural candidate contract
+const CURRENT_SCHEMA_VERSION: i64 = 12;
 const GITHUB_BASE_SCHEMA_VERSION: i64 = 9;
 const INDEX_INTEGRITY_RECEIPT_VERSION: u32 = 2;
 const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
@@ -63,7 +65,7 @@ const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
 // private staged databases bind the broader parser revision below.
 const EXACT_SESSION_PARSER_REVISION: &str = "explicit-subagent-delayed-context-v3";
 const FORK_REPLAY_BOUNDARY_REVISION: &str = EXACT_SESSION_PARSER_REVISION;
-pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = EXACT_SESSION_PARSER_REVISION;
+pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = "components-v1-explicit-subagent-delayed-context-v3";
 // This marker is independent from the parser/schema revisions because it
 // records completion of a one-time logical repair for legacy databases that
 // were written with foreign-key enforcement disabled. Keep it separate so a
@@ -1167,11 +1169,11 @@ fn assess_index_migration(
             supported: GITHUB_BASE_SCHEMA_VERSION.to_string(),
         });
     }
-    if schema > INDEX_SCHEMA_VERSION {
+    if schema > CURRENT_SCHEMA_VERSION {
         return Ok(MigrationAssessment::UpgradeRequired {
             component: "schema",
             stored: schema.to_string(),
-            supported: INDEX_SCHEMA_VERSION.to_string(),
+            supported: CURRENT_SCHEMA_VERSION.to_string(),
         });
     }
 
@@ -1249,7 +1251,7 @@ fn assess_index_migration(
     }
 
     let mut stages = Vec::new();
-    if schema != INDEX_SCHEMA_VERSION {
+    if schema != CURRENT_SCHEMA_VERSION {
         stages.push("schema");
     } else if !column_exists_checked(connection, "files", "current_model")?
         || !column_exists_checked(connection, "files", "is_explicit_subagent_fork")?
@@ -1524,14 +1526,14 @@ impl ExactUsageIndex {
             if has_schema_version && schema_version.is_none() {
                 return Err("精确 token 索引 schema 版本未知或损坏，已拒绝覆盖".into());
             }
-            if schema_version.is_some_and(|version| version > INDEX_SCHEMA_VERSION) {
+            if schema_version.is_some_and(|version| version > CURRENT_SCHEMA_VERSION) {
                 return Err(format!(
                     "精确 token 索引版本 {:?} 高于当前支持版本 {}，已拒绝覆盖",
-                    schema_version, INDEX_SCHEMA_VERSION
+                    schema_version, CURRENT_SCHEMA_VERSION
                 ));
             }
             if schema_version.is_some_and(|version| {
-                !(GITHUB_BASE_SCHEMA_VERSION..=INDEX_SCHEMA_VERSION).contains(&version)
+                !(GITHUB_BASE_SCHEMA_VERSION..=CURRENT_SCHEMA_VERSION).contains(&version)
             }) {
                 return Err(format!(
                     "精确 token 索引 schema {schema_version:?} 不在 v0.9.1 升级基线内；已保留原数据库并停止写入"
@@ -1637,6 +1639,7 @@ impl ExactUsageIndex {
         if (!should_report_migration || replay_migration_complete)
             && !event_enrichment_requires_sync
             && schema_version != Some(INDEX_SCHEMA_VERSION)
+            && schema_version != Some(CURRENT_SCHEMA_VERSION)
         {
             set_metadata(
                 &connection,
@@ -1720,6 +1723,7 @@ impl ExactUsageIndex {
                 metadata_i64(&connection, "revision")?.unwrap_or_else(fresh_revision_seed);
             set_metadata(&connection, DASHBOARD_REVISION_KEY, &revision.to_string())?;
         }
+        migrate_accounting(&mut connection)?;
         let migration_markers_complete = !should_report_migration
             || migration_markers_complete(&connection, replay_migration_complete)?;
         if should_report_migration && migration_markers_complete {
@@ -2648,6 +2652,11 @@ impl ExactUsageIndex {
             Ok(revision)
         })();
         if result.is_ok() {
+            let legacy = metadata_text(&self.connection,"accounting_coverage")?.as_deref() != Some("complete");
+            let unresolved = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM event_rows WHERE accounting_kind <> 0)",[],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?;
+            if legacy || unresolved {
+                warnings.push(scan_warning("当前为可确认分项的小计；旧来源覆盖或异常事件仍待核实，金额按标准 API 历史价格估算。".into()));
+            }
             if let Err(error) = cleanup_successful_schema11_migration(&cleanup_index_path) {
                 warnings.push(scan_warning(format!(
                     "schema 11 已成功刷新，但受管回滚资料暂未清理，将保留并稍后重试：{error}"
@@ -2751,7 +2760,7 @@ impl ExactUsageIndex {
             set_metadata(
                 &transaction,
                 "schema_version",
-                &INDEX_SCHEMA_VERSION.to_string(),
+                &CURRENT_SCHEMA_VERSION.to_string(),
             )?;
             transaction
                 .commit()
@@ -2991,7 +3000,7 @@ impl ExactUsageIndex {
             set_metadata(
                 &transaction,
                 "schema_version",
-                &INDEX_SCHEMA_VERSION.to_string(),
+                &CURRENT_SCHEMA_VERSION.to_string(),
             )?;
             transaction
                 .commit()
@@ -3312,14 +3321,14 @@ impl ExactUsageIndex {
                 SELECT
                     COALESCE((
                         SELECT SUM(e.tokens)
-                        FROM events e
+                        FROM (SELECT * FROM events WHERE tokens > 0) e
                         JOIN published_files f
                           ON f.generation = e.file_generation
                          AND f.path = e.file_path
                     ), 0),
                     COALESCE((
                         SELECT SUM(e.tokens)
-                        FROM events e
+                        FROM (SELECT * FROM events WHERE tokens > 0) e
                         JOIN published_files f
                           ON f.generation = e.file_generation
                          AND f.path = e.file_path
@@ -3327,7 +3336,7 @@ impl ExactUsageIndex {
                     ), 0),
                     COALESCE((
                         SELECT COUNT(*)
-                        FROM events e
+                        FROM (SELECT * FROM events WHERE tokens > 0) e
                         JOIN published_files f
                           ON f.generation = e.file_generation
                          AND f.path = e.file_path
@@ -3395,10 +3404,9 @@ impl ExactUsageIndex {
             "summary_projection mode={mode} visible_files={} recomputed_files={recomputed_files}",
             contributions.len()
         ));
-        Ok((
-            summary_from_file_contributions(&contributions),
-            contributions,
-        ))
+        let mut summary = summary_from_file_contributions(&contributions);
+        summary.today_model_breakdowns = self.model_breakdowns_from_events(start, end)?;
+        Ok((summary, contributions))
     }
 
     fn published_file_generations(&self) -> Result<HashMap<String, i64>, String> {
@@ -3449,7 +3457,7 @@ impl ExactUsageIndex {
                     COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN MIN(e.cached_input_tokens, e.input_tokens) ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.output_tokens ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM events e
+                FROM (SELECT * FROM events WHERE tokens > 0) e
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
@@ -3511,7 +3519,7 @@ impl ExactUsageIndex {
                     COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN MIN(cached_input_tokens, input_tokens) ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN output_tokens ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM events
+                FROM (SELECT * FROM events WHERE tokens > 0)
                 WHERE file_generation = ?3 AND file_path = ?4
                 GROUP BY model
                 "#,
@@ -3548,7 +3556,7 @@ impl ExactUsageIndex {
                 .today_requests
                 .saturating_add(saturating_u32(calls));
             if calls > 0 {
-                model_breakdowns.push(ModelTokenBreakdown {
+                model_breakdowns.push(ModelTokenBreakdown { event_start_unix: None,
                     model,
                     breakdown: TokenCacheBreakdown {
                         input_tokens: nonnegative_u64(input),
@@ -3590,21 +3598,21 @@ impl ExactUsageIndex {
                 COALESCE(SUM(cached_input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
                 COALESCE(SUM(total_tokens), 0),
-                COALESCE(SUM(calls), 0)
+                COALESCE(SUM(calls), 0), MIN(bucket_start)
             FROM dashboard_5m b
             WHERE b.file_generation = COALESCE(
                 (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'),
                 0
             )
               AND b.bucket_start >= ?1 AND b.bucket_start < ?2
-            GROUP BY model
+            GROUP BY model, bucket_start / 86400
             ORDER BY SUM(total_tokens) DESC
             "#,
             )
             .map_err(|error| format!("无法准备今日逐模型 token 汇总：{error}"))?;
         let rows = statement
             .query_map(params![start, end], |row| {
-                Ok(ModelTokenBreakdown {
+                Ok(ModelTokenBreakdown { event_start_unix: row.get(6)?,
                     model: row.get(0)?,
                     breakdown: TokenCacheBreakdown {
                         input_tokens: nonnegative_u64(row.get::<_, i64>(1)?),
@@ -3635,20 +3643,20 @@ impl ExactUsageIndex {
                     COALESCE(SUM(MIN(e.cached_input_tokens, e.input_tokens)), 0),
                     COALESCE(SUM(e.output_tokens), 0),
                     COALESCE(SUM(e.tokens), 0),
-                    COUNT(*)
-                FROM events e
+                    COUNT(*), MIN(e.timestamp)
+                FROM (SELECT * FROM events WHERE tokens > 0) e
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
                 WHERE e.timestamp >= ?1 AND e.timestamp < ?2
-                GROUP BY e.model
+                GROUP BY e.model, e.timestamp / 86400
                 ORDER BY SUM(e.tokens) DESC
                 "#,
             )
             .map_err(|error| format!("无法准备本地日逐模型 token 汇总：{error}"))?;
         let rows = statement
             .query_map(params![start, end], |row| {
-                Ok(ModelTokenBreakdown {
+                Ok(ModelTokenBreakdown { event_start_unix: row.get(6)?,
                     model: row.get(0)?,
                     breakdown: TokenCacheBreakdown {
                         input_tokens: nonnegative_u64(row.get::<_, i64>(1)?),
@@ -3983,7 +3991,8 @@ impl ExactUsageIndex {
                 FROM main.events e
                 JOIN published_files f
                   ON f.generation = e.file_generation
-                 AND f.path = e.file_path;
+                 AND f.path = e.file_path
+                WHERE e.tokens > 0;
 
                 CREATE TEMP VIEW published_dashboard_file_totals AS
                 SELECT t.*
@@ -4126,7 +4135,7 @@ impl ExactUsageIndex {
                 output_tokens: nonnegative_u64(output),
             };
             grouped.entry(date).or_default().add_breakdown(totals);
-            add_model_usage_breakdown(model_grouped.entry(date).or_default(), model, totals);
+            add_model_usage_breakdown(model_grouped.entry(date).or_default(), model, totals, timestamp);
         }
         Ok((0..365)
             .map(|offset| {
@@ -4225,15 +4234,15 @@ impl ExactUsageIndex {
                     COALESCE(SUM(cached_input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(total_tokens), 0),
-                    COALESCE(SUM(calls), 0)
+                    COALESCE(SUM(calls), 0), MIN(bucket_start)
                 FROM published_dashboard_file_5m
-                GROUP BY model_key
+                GROUP BY model_key, bucket_start / 86400
                 "#,
             )
             .map_err(|error| format!("无法准备逐模型精确 token 总览：{error}"))?;
         let model_rows = model_statement
             .query_map([], |row| {
-                Ok(ModelTokenBreakdown {
+                Ok(ModelTokenBreakdown { event_start_unix: row.get(6)?,
                     model: row.get(0)?,
                     breakdown: TokenCacheBreakdown {
                         input_tokens: nonnegative_u64(row.get::<_, i64>(1)?),
@@ -4340,7 +4349,7 @@ impl ExactUsageIndex {
             .query_map(params![LONG_RECENT_INTERVAL_SECONDS, start, end], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
-                    ModelTokenBreakdown {
+                    ModelTokenBreakdown { event_start_unix: None,
                         model: row.get(1)?,
                         breakdown: TokenCacheBreakdown {
                             input_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
@@ -4368,6 +4377,7 @@ impl ExactUsageIndex {
                 model_grouped.entry(bin).or_default(),
                 breakdown.model,
                 totals,
+                bin,
             );
         }
 
@@ -4824,7 +4834,7 @@ pub(super) fn peek_startup_identity(
     let connection = sqlite::open_read_only(&path, StdDuration::from_millis(100))
         .map_err(|error| format!("无法只读打开精确 token 索引 {}：{error}", path.display()))?;
     let schema_version = required_startup_metadata_i64(&connection, "schema_version")?;
-    if !(GITHUB_BASE_SCHEMA_VERSION..=INDEX_SCHEMA_VERSION).contains(&schema_version) {
+    if !(GITHUB_BASE_SCHEMA_VERSION..=CURRENT_SCHEMA_VERSION).contains(&schema_version) {
         return Err(format!(
             "精确 token 启动缓存只接受 schema {}…{}，当前为 {}",
             GITHUB_BASE_SCHEMA_VERSION, INDEX_SCHEMA_VERSION, schema_version
@@ -4910,7 +4920,7 @@ fn add_summary_file_row(
     if calls > 0 {
         contribution
             .today_model_breakdowns
-            .push(ModelTokenBreakdown {
+            .push(ModelTokenBreakdown { event_start_unix: None,
                 model,
                 breakdown: TokenCacheBreakdown {
                     input_tokens: nonnegative_u64(input),
@@ -4957,7 +4967,7 @@ fn summary_from_file_contributions(
     }
     summary.today_model_breakdowns = model_breakdowns
         .into_iter()
-        .map(|(model, breakdown)| ModelTokenBreakdown { model, breakdown })
+        .map(|(model, breakdown)| ModelTokenBreakdown { event_start_unix: None, model, breakdown })
         .collect();
     summary.today_model_breakdowns.sort_by(|left, right| {
         right
@@ -5104,8 +5114,10 @@ fn add_model_usage_breakdown(
     grouped: &mut Vec<ModelTokenBreakdown>,
     model: Option<String>,
     totals: UsageBinTotals,
+    timestamp: i64,
 ) {
-    if let Some(existing) = grouped.iter_mut().find(|item| item.model == model) {
+    let price_day = timestamp.div_euclid(86400) * 86400;
+    if let Some(existing) = grouped.iter_mut().find(|item| item.model == model && item.event_start_unix == Some(price_day)) {
         let current = UsageBinTotals {
             tokens: existing.breakdown.total_tokens,
             calls: existing.breakdown.calls,
@@ -5117,7 +5129,7 @@ fn add_model_usage_breakdown(
         combined.add_breakdown(totals);
         existing.breakdown = combined.into_breakdown();
     } else {
-        grouped.push(ModelTokenBreakdown {
+        grouped.push(ModelTokenBreakdown { event_start_unix: Some(price_day),
             model,
             breakdown: totals.into_breakdown(),
         });
@@ -5173,7 +5185,7 @@ fn usage_series_from_five_minute(
                 cached_input_tokens: breakdown.breakdown.cached_input_tokens,
                 output_tokens: breakdown.breakdown.output_tokens,
             };
-            add_model_usage_breakdown(target_breakdowns, breakdown.model.clone(), totals);
+            add_model_usage_breakdown(target_breakdowns, breakdown.model.clone(), totals, breakdown.event_start_unix.unwrap_or(bin));
         }
     }
 
@@ -5301,8 +5313,8 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
-                    assistant_response_end
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    assistant_response_end, accounting_kind, reported_total_tokens, token_source_offset
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
                 "#,
                 params![
                     self.file_generation,
@@ -5320,6 +5332,9 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
                     user_prompt_end,
                     assistant_response_start,
                     assistant_response_end,
+                    event.accounting_kind,
+                    checked_optional_i64(event.reported_total_tokens, "reported total")?,
+                    checked_i64(event.token_source_offset, "token byte offset")?,
                 ],
             )
             .map_err(|error| format!("无法写入精确 token 事件索引：{error}"))?;
@@ -5364,8 +5379,8 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
-                    assistant_response_end
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                    assistant_response_end, accounting_kind, reported_total_tokens, token_source_offset
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                 "#,
                 params![
                     checked_i64(self.ordinal, "暂存事件序号")?,
@@ -5398,6 +5413,9 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
                             .map(|range| range.end),
                         "暂存回答结束位置",
                     )?,
+                    event.accounting_kind,
+                    checked_optional_i64(event.reported_total_tokens, "reported total")?,
+                    checked_i64(event.token_source_offset, "token byte offset")?,
                 ],
             )
             .map(|_| ())
@@ -5438,6 +5456,7 @@ struct StageManifest {
     event_count: i64,
     fingerprint_count: i64,
     chunk_count: i64,
+    accounting_state: Option<String>,
 }
 
 #[cfg(test)]
@@ -5908,8 +5927,8 @@ fn build_staged_full_rebuild(
                 assistant_response_end,
                 event_count,
                 fingerprint_count,
-                chunk_count
-            ) VALUES (0, ?1, 'full', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, '', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)
+                chunk_count, accounting_state
+            ) VALUES (0, ?1, 'full', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, '', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
             "#,
             params![
                 STAGING_MANIFEST_SCHEMA_VERSION,
@@ -5955,6 +5974,7 @@ fn build_staged_full_rebuild(
                 checked_i64(event_count, "暂存事件数量")?,
                 fingerprint_count,
                 checked_i64(parsed.chunk_hashes.len() as u64, "暂存分块数量")?,
+                state.accounting_state.as_ref().map(AccountingState::encode),
             ],
         )
         .map_err(|error| format!("无法完成精确 token 单文件暂存清单：{error}"))?;
@@ -6145,7 +6165,8 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 assistant_response_end INTEGER,
                 event_count INTEGER NOT NULL,
                 fingerprint_count INTEGER NOT NULL,
-                chunk_count INTEGER NOT NULL
+                chunk_count INTEGER NOT NULL,
+                accounting_state TEXT
             ) WITHOUT ROWID;
 
             CREATE TABLE fingerprints (
@@ -6164,7 +6185,8 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 user_prompt_start INTEGER,
                 user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
-                assistant_response_end INTEGER
+                assistant_response_end INTEGER,
+                accounting_kind INTEGER NOT NULL DEFAULT 0, reported_total_tokens INTEGER, token_source_offset INTEGER
             ) WITHOUT ROWID;
 
             CREATE TABLE chunks (
@@ -6229,9 +6251,10 @@ fn validated_staged_full_rebuild(
     ) {
         return Ok(None);
     }
+    let accounting_column = if column_exists_checked(connection,"manifest","accounting_state")? { "accounting_state" } else { "NULL" };
     let manifest = connection
         .query_row(
-            r#"
+            &format!(r#"
             SELECT
                 path,
                 session_id,
@@ -6257,11 +6280,11 @@ fn validated_staged_full_rebuild(
                 assistant_response_end,
                 event_count,
                 fingerprint_count,
-                chunk_count
+                chunk_count, {accounting_column}
             FROM manifest
             WHERE complete = 1
             LIMIT 1
-            "#,
+            "#),
             [],
             |row| {
                 Ok(StageManifest {
@@ -6297,6 +6320,7 @@ fn validated_staged_full_rebuild(
                     event_count: row.get(22)?,
                     fingerprint_count: row.get(23)?,
                     chunk_count: row.get(24)?,
+                    accounting_state: row.get(25)?,
                 })
             },
         )
@@ -6355,7 +6379,7 @@ fn validated_staged_full_rebuild(
     if manifest.path != job.path
         || manifest.session_id != job.session_id
         || manifest.migration_revision != expected_migration_revision
-        || manifest.parser_revision != STAGED_FULL_REBUILD_PARSER_REVISION
+        || (manifest.parser_revision != STAGED_FULL_REBUILD_PARSER_REVISION && manifest.parser_revision != EXACT_SESSION_PARSER_REVISION)
         || manifest.target_building_generation != target_generation
         || manifest.artifact_id.trim().is_empty()
         || manifest.integrity != STAGING_MANIFEST_INTEGRITY
@@ -6515,6 +6539,7 @@ fn validated_staged_full_rebuild(
         resume_offset: nonnegative_u64(manifest.resume_offset),
         parser_state: ExactSessionParserState {
             previous_total_tokens: manifest.previous_total_tokens.map(nonnegative_u64),
+            accounting_state: if manifest.parser_revision == STAGED_FULL_REBUILD_PARSER_REVISION { AccountingState::decode(manifest.accounting_state)? } else { None },
             fork_replay_started_at,
             fork_replay_active: manifest.fork_replay_active,
             is_explicit_subagent_fork: manifest.is_explicit_subagent_fork,
@@ -6628,9 +6653,14 @@ fn import_staged_full_rebuild(
                     .map_err(|error| format!("无法导入精确 token 去重状态：{error}"))?;
             }
         }
+        let legacy_accounting = validated.parser_state.accounting_state.is_none();
+        if legacy_accounting { set_metadata(&transaction,"accounting_coverage","legacy-source-audit-required")?; }
+        let valid_components = "input_tokens>=0 AND output_tokens>=0 AND cached_input_tokens BETWEEN 0 AND input_tokens AND COALESCE(reasoning_output_tokens,0) BETWEEN 0 AND output_tokens AND input_tokens<=9223372036854775807-output_tokens AND (input_tokens>0 OR output_tokens>0)";
+        let token_expression = if legacy_accounting { format!("CASE WHEN {valid_components} THEN input_tokens+output_tokens ELSE 0 END") } else { "tokens".into() };
+        let metadata_expressions = if legacy_accounting { format!("CASE WHEN {valid_components} THEN 0 ELSE 3 END, NULL, NULL, tokens") } else { "accounting_kind, reported_total_tokens, token_source_offset, NULL".into() };
         transaction
             .execute(
-                r#"
+                &format!(r#"
                 INSERT INTO events(
                     file_generation,
                     file_path,
@@ -6646,7 +6676,7 @@ fn import_staged_full_rebuild(
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
-                    assistant_response_end
+                    assistant_response_end, accounting_kind, reported_total_tokens, token_source_offset, legacy_tokens
                 )
                 SELECT
                     ?1,
@@ -6654,7 +6684,7 @@ fn import_staged_full_rebuild(
                     ordinal,
                     timestamp,
                     ?3,
-                    tokens,
+                    {token_expression},
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
@@ -6663,10 +6693,10 @@ fn import_staged_full_rebuild(
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
-                    assistant_response_end
+                    assistant_response_end, {metadata_expressions}
                 FROM exact_stage_import.events
                 ORDER BY ordinal
-                "#,
+                "#),
                 params![generation, &validated.job.path, &validated.job.session_id],
             )
             .map_err(|error| format!("无法批量导入精确 token 暂存事件：{error}"))?;
@@ -7199,7 +7229,7 @@ fn incremental_rebuild_published_dashboard_aggregates(
                  AND t.generation = b.file_generation
                 UNION ALL
                 SELECT e.timestamp - (e.timestamp % 300)
-                FROM events e
+                FROM (SELECT * FROM events WHERE tokens > 0) e
                 JOIN files current
                   ON current.generation = e.file_generation
                  AND current.path = e.file_path
@@ -7264,7 +7294,7 @@ fn incremental_rebuild_published_dashboard_aggregates(
                 SUM(e.output_tokens),
                 MIN(e.timestamp),
                 MAX(e.timestamp)
-            FROM events e
+            FROM (SELECT * FROM events WHERE tokens > 0) e
             JOIN (
                 SELECT path, MAX(generation) AS generation
                 FROM files
@@ -7296,7 +7326,7 @@ fn incremental_rebuild_published_dashboard_aggregates(
                 SUM(e.input_tokens),
                 SUM(MIN(e.cached_input_tokens, e.input_tokens)),
                 SUM(e.output_tokens)
-            FROM events e
+            FROM (SELECT * FROM events WHERE tokens > 0) e
             JOIN (
                 SELECT path, MAX(generation) AS generation
                 FROM files
@@ -7361,7 +7391,7 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                 COALESCE(SUM(e.output_tokens), 0),
                 MIN(e.timestamp),
                 MAX(e.timestamp)
-            FROM events e
+            FROM (SELECT * FROM events WHERE tokens > 0) e
             JOIN published_files f
               ON f.generation = e.file_generation
              AND f.path = e.file_path
@@ -7390,7 +7420,7 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                 COALESCE(SUM(e.input_tokens), 0),
                 COALESCE(SUM(MIN(e.cached_input_tokens, e.input_tokens)), 0),
                 COALESCE(SUM(e.output_tokens), 0)
-            FROM events e
+            FROM (SELECT * FROM events WHERE tokens > 0) e
             JOIN published_files f
               ON f.generation = e.file_generation
              AND f.path = e.file_path
@@ -7441,7 +7471,7 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                             e.user_prompt_start, e.user_prompt_end
                         ORDER BY e.timestamp DESC, e.ordinal DESC
                     ) AS snapshot_rank
-                FROM events e
+                FROM (SELECT * FROM events WHERE tokens > 0) e
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
@@ -7569,7 +7599,7 @@ fn refresh_dashboard_file_aggregates(
                 file_generation, file_path, MAX(session_id), SUM(tokens), COUNT(*),
                 SUM(input_tokens), SUM(MIN(cached_input_tokens, input_tokens)),
                 SUM(output_tokens), MIN(timestamp), MAX(timestamp)
-            FROM events
+            FROM (SELECT * FROM events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2
             GROUP BY file_generation, file_path
             "#,
@@ -7594,7 +7624,7 @@ fn refresh_dashboard_file_aggregates(
                 SUM(input_tokens),
                 SUM(MIN(cached_input_tokens, input_tokens)),
                 SUM(output_tokens)
-            FROM events
+            FROM (SELECT * FROM events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2
             GROUP BY file_generation, file_path, timestamp - (timestamp % 300), COALESCE(model, '')
             "#,
@@ -7692,7 +7722,7 @@ fn refresh_dashboard_turn_candidates_for_changed_generations(
                             e.user_prompt_start, e.user_prompt_end
                         ORDER BY e.timestamp DESC, e.ordinal DESC
                     ) AS snapshot_rank
-                FROM events e
+                FROM (SELECT * FROM events WHERE tokens > 0) e
                 JOIN visible_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
@@ -7937,7 +7967,7 @@ fn update_dashboard_append_aggregates(
             SELECT
                 MIN(timestamp - (timestamp % 300)),
                 MAX(timestamp - (timestamp % 300))
-            FROM events
+            FROM (SELECT * FROM events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
             "#,
             params![generation, path, previous_ordinal],
@@ -7956,7 +7986,7 @@ fn update_dashboard_append_aggregates(
                 ?4, SUM(tokens), COUNT(*),
                 SUM(input_tokens), SUM(MIN(cached_input_tokens, input_tokens)),
                 SUM(output_tokens), MIN(timestamp), MAX(timestamp)
-            FROM events
+            FROM (SELECT * FROM events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
             HAVING COUNT(*) > 0
             ON CONFLICT(source_id) DO UPDATE SET
@@ -7996,7 +8026,7 @@ fn update_dashboard_append_aggregates(
                 SUM(input_tokens),
                 SUM(MIN(cached_input_tokens, input_tokens)),
                 SUM(output_tokens)
-            FROM events
+            FROM (SELECT * FROM events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
             GROUP BY timestamp - (timestamp % 300), COALESCE(model, '')
             ON CONFLICT(source_id, bucket_start, model_key) DO UPDATE SET
@@ -8035,7 +8065,7 @@ fn backfill_missing_dashboard_aggregates_for_generation(
                 e.file_generation, e.file_path, MAX(e.session_id), SUM(e.tokens), COUNT(*),
                 SUM(e.input_tokens), SUM(MIN(e.cached_input_tokens, e.input_tokens)),
                 SUM(e.output_tokens), MIN(e.timestamp), MAX(e.timestamp)
-            FROM events e
+            FROM (SELECT * FROM events WHERE tokens > 0) e
             LEFT JOIN dashboard_file_totals t
               ON t.file_generation = e.file_generation
              AND t.file_path = e.file_path
@@ -8063,7 +8093,7 @@ fn backfill_missing_dashboard_aggregates_for_generation(
                 SUM(e.input_tokens),
                 SUM(MIN(e.cached_input_tokens, e.input_tokens)),
                 SUM(e.output_tokens)
-            FROM events e
+            FROM (SELECT * FROM events WHERE tokens > 0) e
             WHERE e.file_generation = ?1
             GROUP BY e.file_generation, e.file_path,
                 e.timestamp - (e.timestamp % 300), COALESCE(e.model, '')
@@ -8208,12 +8238,12 @@ fn publish_schema11_pending_generation(
                 id, source_id, ordinal, timestamp, tokens, input_tokens,
                 cached_input_tokens, output_tokens, reasoning_output_tokens, model,
                 user_prompt_start, user_prompt_end, assistant_response_start,
-                assistant_response_end
+                assistant_response_end, accounting_kind, reported_total_tokens, token_source_offset, legacy_tokens
             )
             SELECT e.id, e.source_id, e.ordinal, e.timestamp, e.tokens, e.input_tokens,
                    e.cached_input_tokens, e.output_tokens, e.reasoning_output_tokens,
                    e.model, e.user_prompt_start, e.user_prompt_end,
-                   e.assistant_response_start, e.assistant_response_end
+                   e.assistant_response_start, e.assistant_response_end, e.accounting_kind, e.reported_total_tokens, e.token_source_offset, e.legacy_tokens
             FROM pending_event_rows e
             JOIN pending_sources p ON p.source_id = e.source_id
             WHERE p.target_generation = (
@@ -8438,7 +8468,8 @@ fn publish_schema11_pending_generation(
                                           FROM pending_sources p
                                           WHERE p.source_id = sources.source_id),
                 audit_chunk_index = (SELECT p.audit_chunk_index FROM pending_sources p
-                                     WHERE p.source_id = sources.source_id)
+                                     WHERE p.source_id = sources.source_id),
+                accounting_state = (SELECT p.accounting_state FROM pending_sources p WHERE p.source_id = sources.source_id)
             WHERE source_id IN (SELECT source_id FROM pending_sources);
 
             DELETE FROM pending_sources;
@@ -8855,7 +8886,7 @@ fn synchronize_attribution_ledger(
             COALESCE(SUM(e.input_tokens), 0),
             COALESCE(SUM(MIN(e.cached_input_tokens, e.input_tokens)), 0),
             COALESCE(SUM(e.output_tokens), 0)
-        FROM events e
+        FROM (SELECT * FROM events WHERE tokens > 0) e
         JOIN visible_files f
           ON f.generation = e.file_generation
          AND f.path = e.file_path
@@ -8871,7 +8902,7 @@ fn synchronize_attribution_ledger(
             COALESCE(SUM(input_tokens), 0),
             COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
             COALESCE(SUM(output_tokens), 0)
-        FROM events
+        FROM (SELECT * FROM events WHERE tokens > 0)
         WHERE file_generation = ?1
         GROUP BY 1, 2
         ORDER BY 1, 2
@@ -9328,7 +9359,7 @@ fn indexed_file_checkpoint(
                 current_user_prompt_end,
                 assistant_response_start,
                 assistant_response_end,
-                audit_chunk_index
+                audit_chunk_index, accounting_state
             FROM files
             WHERE path = ?1
               AND generation <= ?2
@@ -9362,6 +9393,7 @@ fn indexed_file_checkpoint(
                     size,
                     resume_offset,
                     parser_state: ExactSessionParserState {
+                        accounting_state: row.get::<_, Option<String>>(14)?.map(|v| serde_json::from_str(&v)).transpose().map_err(|e| rusqlite::Error::FromSqlConversionFailure(14, rusqlite::types::Type::Text, Box::new(e)))?,
                         previous_total_tokens,
                         fork_replay_started_at,
                         fork_replay_active,
@@ -9586,7 +9618,7 @@ fn copy_append_checkpoint_rows(
                 last_skipped_fork_replay_token_ns, current_model,
                 current_user_prompt_start, current_user_prompt_end,
                 assistant_response_start, assistant_response_end,
-                audit_chunk_index
+                audit_chunk_index, accounting_state
             )
             SELECT
                 source_id, ?1, 'delta', 0, size, modified_ns,
@@ -9596,7 +9628,7 @@ fn copy_append_checkpoint_rows(
                 last_skipped_fork_replay_token_ns, current_model,
                 current_user_prompt_start, current_user_prompt_end,
                 assistant_response_start, assistant_response_end,
-                audit_chunk_index
+                audit_chunk_index, accounting_state
             FROM sources
             WHERE last_seen_generation = ?2 AND path = ?3 AND deleted = 0
             ON CONFLICT(source_id) DO UPDATE SET
@@ -9616,7 +9648,7 @@ fn copy_append_checkpoint_rows(
                 current_user_prompt_end = excluded.current_user_prompt_end,
                 assistant_response_start = excluded.assistant_response_start,
                 assistant_response_end = excluded.assistant_response_end,
-                audit_chunk_index = excluded.audit_chunk_index
+                audit_chunk_index = excluded.audit_chunk_index, accounting_state = excluded.accounting_state
             "#,
             params![generation, checkpoint_generation, path],
         )
@@ -10058,7 +10090,7 @@ fn save_file_checkpoint(
                 current_user_prompt_end = ?13,
                 assistant_response_start = ?14,
                 assistant_response_end = ?15,
-                audit_chunk_index = ?16
+                audit_chunk_index = ?16, accounting_state = ?17
             WHERE generation = ?1 AND path = ?2
             "#,
             params![
@@ -10078,6 +10110,7 @@ fn save_file_checkpoint(
                 assistant_response_start,
                 assistant_response_end,
                 checked_i64(audit_chunk_index, "滚动审计分块序号")?,
+                state.accounting_state.as_ref().map(AccountingState::encode),
             ],
         )
         .map_err(|error| format!("无法保存会话文件追加检查点：{error}"))?;
@@ -13190,6 +13223,17 @@ fn validate_schema11_storage(
 ) -> Result<(), String> {
     let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
         .map_err(|error| format!("无法只读打开 schema 11 候选库：{error}"))?;
+    if metadata_i64(&connection, "schema_version")? == Some(CURRENT_SCHEMA_VERSION) {
+        let receipt=metadata_text(&connection,"accounting_structural_receipt")?.ok_or("Missing accounting structural receipt")?;
+        let facts: Schema11MigrationFacts=serde_json::from_str(&receipt).map_err(|e|e.to_string())?;
+        if expected_facts.is_some_and(|expected| expected != &facts) { return Err("Accounting structural receipt mismatch".into()); }
+        quick_check_index(&connection, Some(index_path))?;
+        if connection.query_row("PRAGMA foreign_key_check", [], |_| Ok(true))
+            .optional().map_err(|e| e.to_string())?.unwrap_or(false) {
+            return Err("Accounting converted index foreign key check failed".into());
+        }
+        return Ok(());
+    }
     if metadata_i64(&connection, "schema_version")? != Some(INDEX_SCHEMA_VERSION) {
         return Err("schema 11 候选库 schema 版本不是 11".into());
     }
@@ -14527,6 +14571,112 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
     Ok(!unresolved_candidate)
 }
 
+/// Accounting conversion follows the unchanged schema-11 candidate proof.
+/// DDL, checkpoints, derived totals and revision commit in the original DB.
+fn migrate_accounting(connection: &mut Connection) -> Result<(), String> {
+    if let Some(revision) = metadata_text(connection, "accounting_revision")? {
+        if revision != ACCOUNTING_REVISION {
+            return Err(format!("Unknown accounting revision {revision}; preserved index"));
+        }
+        if metadata_i64(connection, "schema_version")? != Some(CURRENT_SCHEMA_VERSION) {
+            if !column_exists_checked(connection, "event_rows", "accounting_kind")? {
+                return Err("Accounting marker does not match event structure".into());
+            }
+            let receipt = serde_json::to_string(&schema11_migration_facts(connection, INDEX_SCHEMA_VERSION)?)
+                .map_err(|e| e.to_string())?;
+            let tx = connection.transaction().map_err(|e| e.to_string())?;
+            set_metadata(&tx, "accounting_structural_receipt", &receipt)?;
+            set_metadata(&tx, "schema_version", &CURRENT_SCHEMA_VERSION.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    let receipt = serde_json::to_string(&schema11_migration_facts(connection, INDEX_SCHEMA_VERSION)?)
+        .map_err(|e| e.to_string())?;
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    for (table, column, definition) in [
+        ("sources", "accounting_state", "TEXT"),
+        ("pending_sources", "accounting_state", "TEXT"),
+        ("event_rows", "accounting_kind", "INTEGER NOT NULL DEFAULT 0"),
+        ("event_rows", "reported_total_tokens", "INTEGER"),
+        ("event_rows", "token_source_offset", "INTEGER"),
+        ("event_rows", "legacy_tokens", "INTEGER"),
+        ("pending_event_rows", "accounting_kind", "INTEGER NOT NULL DEFAULT 0"),
+        ("pending_event_rows", "reported_total_tokens", "INTEGER"),
+        ("pending_event_rows", "token_source_offset", "INTEGER"),
+        ("pending_event_rows", "legacy_tokens", "INTEGER"),
+    ] {
+        if !column_exists_checked(&tx, table, column)? {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition};"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.execute_batch("DROP VIEW files; DROP VIEW events; DROP VIEW published_files; DROP VIEW published_events;")
+        .map_err(|e| e.to_string())?;
+    initialize_index_schema(&tx)?;
+    tx.execute_batch("CREATE INDEX IF NOT EXISTS event_rows_unresolved_accounting ON event_rows(accounting_kind) WHERE accounting_kind <> 0;").map_err(|e|e.to_string())?;
+    let mut legacy_count = 0i64;
+    for table in ["event_rows", "pending_event_rows"] {
+        legacy_count += tx.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?;
+        tx.execute_batch(&format!("UPDATE {table} SET legacy_tokens=tokens,
+            accounting_kind=CASE WHEN input_tokens>=0 AND output_tokens>=0
+            AND cached_input_tokens BETWEEN 0 AND input_tokens
+            AND COALESCE(reasoning_output_tokens,0) BETWEEN 0 AND output_tokens
+            AND input_tokens<=9223372036854775807-output_tokens
+            AND (input_tokens>0 OR output_tokens>0) THEN 0 ELSE 3 END;
+            UPDATE {table} SET tokens=CASE WHEN accounting_kind=0 THEN input_tokens+output_tokens ELSE 0 END;"))
+            .map_err(|e| e.to_string())?;
+    }
+    // Existing model/reasoning coverage remains valid. Accounting gaps are
+    // exposed separately; changing this receipt must not trigger a cold scan.
+    tx.execute("UPDATE event_enrichment_sources SET parser_revision=?1 WHERE parser_revision=?2",
+        params![STAGED_FULL_REBUILD_PARSER_REVISION, EXACT_SESSION_PARSER_REVISION]).map_err(|e| e.to_string())?;
+    rebuild_published_dashboard_aggregates(&tx)?;
+    let pending = {
+        let mut stmt = tx.prepare("SELECT p.target_generation,s.path FROM pending_sources p JOIN sources s USING(source_id) WHERE p.deleted=0").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?))).map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?
+    };
+    for (generation,path) in pending { refresh_dashboard_file_aggregates(&tx,generation,&path)?; }
+    if let Some(building) = metadata_i64(&tx, "building_generation")? {
+        refresh_dashboard_turn_candidates_for_changed_generations(&tx, building, metadata_i64(&tx,"published_generation")?.unwrap_or(0))?;
+    }
+    // Preserve orphan lineage contributions, whose source bytes may no longer
+    // exist, and replace only lineages supported by currently published rows.
+    tx.execute_batch("UPDATE attribution_source_buckets SET tokens=input_tokens+output_tokens;")
+        .map_err(|e| e.to_string())?;
+    let epoch = metadata_text(&tx, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?.unwrap_or_default();
+    // Replace every currently published lineage, including ones whose only
+    // legacy events became diagnostics, so stale calls cannot survive.
+    let published_sessions = {
+        let mut stmt = tx.prepare("SELECT DISTINCT session_id FROM published_files").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?
+    };
+    for session in published_sessions {
+        tx.execute("DELETE FROM attribution_source_buckets WHERE provenance_epoch=?1 AND source_id=?2",
+            params![epoch, opaque_attribution_source_id(&session)]).map_err(|e| e.to_string())?;
+    }
+    let source_totals = {
+        let mut stmt = tx.prepare("SELECT session_id,timestamp-(timestamp%300),SUM(tokens),COUNT(*),SUM(input_tokens),SUM(cached_input_tokens),SUM(output_tokens) FROM published_events WHERE tokens>0 GROUP BY 1,2").map_err(|e| e.to_string())?;
+        let rows=stmt.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,i64>(6)?))).map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?
+    };
+    for (session,bucket,tokens,calls,input,cached,output) in source_totals {
+        tx.execute("INSERT INTO attribution_source_buckets(provenance_epoch,source_id,bucket_start,tokens,calls,input_tokens,cached_input_tokens,output_tokens) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(provenance_epoch,source_id,bucket_start) DO UPDATE SET tokens=excluded.tokens,calls=excluded.calls,input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,output_tokens=excluded.output_tokens",
+            params![epoch,opaque_attribution_source_id(&session),bucket,tokens,calls,input,cached,output]).map_err(|e|e.to_string())?;
+    }
+    set_metadata(&tx, ATTRIBUTION_LEDGER_INTEGRITY_KEY, &attribution_ledger_integrity(&tx,&epoch)?)?;
+    set_metadata(&tx,"accounting_structural_receipt",&receipt)?;
+    set_metadata(&tx,"accounting_coverage",if legacy_count>0 {"legacy-source-audit-required"} else {"complete"})?;
+    set_metadata(&tx,"accounting_revision",ACCOUNTING_REVISION)?;
+    set_metadata(&tx,"schema_version",&CURRENT_SCHEMA_VERSION.to_string())?;
+    let revision=metadata_i64(&tx,"revision")?.unwrap_or(0).saturating_add(1);
+    set_metadata(&tx,"revision",&revision.to_string())?;
+    set_metadata(&tx,DASHBOARD_REVISION_KEY,&revision.to_string())?;
+    tx.commit().map_err(|e|e.to_string())
+}
+
 fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
@@ -14552,7 +14702,8 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 current_user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
                 assistant_response_end INTEGER,
-                audit_chunk_index INTEGER NOT NULL DEFAULT 0
+                audit_chunk_index INTEGER NOT NULL DEFAULT 0,
+                accounting_state TEXT
             ) WITHOUT ROWID;
 
             -- `sources` and the tables without a `pending_` prefix are always
@@ -14579,7 +14730,8 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 current_user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
                 assistant_response_end INTEGER,
-                audit_chunk_index INTEGER NOT NULL DEFAULT 0
+                audit_chunk_index INTEGER NOT NULL DEFAULT 0,
+                accounting_state TEXT
             ) WITHOUT ROWID;
 
             CREATE TABLE IF NOT EXISTS event_rows (
@@ -14597,6 +14749,8 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
                 assistant_response_end INTEGER,
+                accounting_kind INTEGER NOT NULL DEFAULT 0,
+                reported_total_tokens INTEGER, token_source_offset INTEGER, legacy_tokens INTEGER,
                 UNIQUE(source_id, ordinal)
             );
             CREATE TABLE IF NOT EXISTS pending_event_rows (
@@ -14614,6 +14768,8 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
                 assistant_response_end INTEGER,
+                accounting_kind INTEGER NOT NULL DEFAULT 0,
+                reported_total_tokens INTEGER, token_source_offset INTEGER, legacy_tokens INTEGER,
                 UNIQUE(source_id, ordinal)
             );
             CREATE INDEX IF NOT EXISTS event_rows_timestamp_idx ON event_rows(timestamp);
@@ -14836,7 +14992,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 s.is_explicit_subagent_fork, s.last_skipped_fork_replay_token_ns,
                 s.current_model, s.current_user_prompt_start, s.current_user_prompt_end,
                 s.assistant_response_start, s.assistant_response_end, s.audit_chunk_index,
-                s.source_id
+                s.source_id, s.accounting_state
             FROM sources s
             UNION ALL
             SELECT
@@ -14846,7 +15002,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 p.is_explicit_subagent_fork, p.last_skipped_fork_replay_token_ns,
                 p.current_model, p.current_user_prompt_start, p.current_user_prompt_end,
                 p.assistant_response_start, p.assistant_response_end, p.audit_chunk_index,
-                p.source_id
+                p.source_id, p.accounting_state
             FROM pending_sources p
             JOIN sources s ON s.source_id = p.source_id
             JOIN active_building_generation b ON b.generation = p.target_generation;
@@ -14857,14 +15013,14 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 e.ordinal, e.timestamp, s.session_id, e.tokens, e.input_tokens,
                 e.cached_input_tokens, e.output_tokens, e.reasoning_output_tokens,
                 e.model, e.user_prompt_start, e.user_prompt_end,
-                e.assistant_response_start, e.assistant_response_end, e.source_id
+                e.assistant_response_start, e.assistant_response_end, e.source_id, e.accounting_kind, e.reported_total_tokens, e.token_source_offset, e.legacy_tokens
             FROM event_rows e JOIN sources s ON s.source_id = e.source_id
             UNION ALL
             SELECT
                 e.id, p.target_generation, s.path, e.ordinal, e.timestamp, s.session_id,
                 e.tokens, e.input_tokens, e.cached_input_tokens, e.output_tokens,
                 e.reasoning_output_tokens, e.model, e.user_prompt_start, e.user_prompt_end,
-                e.assistant_response_start, e.assistant_response_end, e.source_id
+                e.assistant_response_start, e.assistant_response_end, e.source_id, e.accounting_kind, e.reported_total_tokens, e.token_source_offset, e.legacy_tokens
             FROM event_rows e
             JOIN pending_sources p ON p.source_id = e.source_id AND p.mode = 'delta'
             JOIN sources s ON s.source_id = e.source_id
@@ -14874,7 +15030,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 e.id, p.target_generation, s.path, e.ordinal, e.timestamp, s.session_id,
                 e.tokens, e.input_tokens, e.cached_input_tokens, e.output_tokens,
                 e.reasoning_output_tokens, e.model, e.user_prompt_start, e.user_prompt_end,
-                e.assistant_response_start, e.assistant_response_end, e.source_id
+                e.assistant_response_start, e.assistant_response_end, e.source_id, e.accounting_kind, e.reported_total_tokens, e.token_source_offset, e.legacy_tokens
             FROM pending_event_rows e
             JOIN pending_sources p ON p.source_id = e.source_id
             JOIN sources s ON s.source_id = e.source_id
@@ -15080,7 +15236,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 s.is_explicit_subagent_fork, s.last_skipped_fork_replay_token_ns,
                 s.current_model, s.current_user_prompt_start, s.current_user_prompt_end,
                 s.assistant_response_start, s.assistant_response_end, s.audit_chunk_index,
-                s.source_id
+                s.source_id, s.accounting_state
             FROM sources s
             WHERE s.deleted = 0
               AND s.last_seen_generation <= COALESCE(
@@ -15092,10 +15248,10 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 e.ordinal, e.timestamp, s.session_id, e.tokens, e.input_tokens,
                 e.cached_input_tokens, e.output_tokens, e.reasoning_output_tokens,
                 e.model, e.user_prompt_start, e.user_prompt_end,
-                e.assistant_response_start, e.assistant_response_end, e.source_id
+                e.assistant_response_start, e.assistant_response_end, e.source_id, e.accounting_kind, e.reported_total_tokens, e.token_source_offset, e.legacy_tokens
             FROM event_rows e
             JOIN sources s ON s.source_id = e.source_id
-            JOIN published_files f ON f.source_id = e.source_id;
+            JOIN published_files f ON f.source_id = e.source_id WHERE e.tokens > 0;
             "#,
         )
         .map_err(|error| format!("无法初始化 schema 11 精确 token 索引结构：{error}"))?;
@@ -15256,7 +15412,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     fork_replay_started_ns, fork_replay_active,
                     is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
                     current_model, current_user_prompt_start, current_user_prompt_end,
-                    assistant_response_start, assistant_response_end, audit_chunk_index
+                    assistant_response_start, assistant_response_end, audit_chunk_index, accounting_state
                 ) VALUES (
                     (SELECT source_id FROM sources WHERE path = NEW.path), NEW.generation,
                     CASE WHEN COALESCE(NEW.deleted, 0) <> 0 THEN 'tombstone' ELSE 'full' END,
@@ -15269,7 +15425,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     NEW.last_skipped_fork_replay_token_ns, NEW.current_model,
                     NEW.current_user_prompt_start, NEW.current_user_prompt_end,
                     NEW.assistant_response_start, NEW.assistant_response_end,
-                    COALESCE(NEW.audit_chunk_index, 0)
+                    COALESCE(NEW.audit_chunk_index, 0), NEW.accounting_state
                 ) ON CONFLICT(source_id) DO UPDATE SET
                     target_generation = excluded.target_generation,
                     mode = CASE
@@ -15292,7 +15448,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     current_user_prompt_end = excluded.current_user_prompt_end,
                     assistant_response_start = excluded.assistant_response_start,
                     assistant_response_end = excluded.assistant_response_end,
-                    audit_chunk_index = excluded.audit_chunk_index;
+                    audit_chunk_index = excluded.audit_chunk_index, accounting_state = excluded.accounting_state;
             END;
 
             CREATE TRIGGER IF NOT EXISTS files_schema11_update_pending
@@ -15311,7 +15467,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     fork_replay_started_ns, fork_replay_active,
                     is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
                     current_model, current_user_prompt_start, current_user_prompt_end,
-                    assistant_response_start, assistant_response_end, audit_chunk_index
+                    assistant_response_start, assistant_response_end, audit_chunk_index, accounting_state
                 ) VALUES (
                     OLD.source_id,
                     (SELECT generation FROM active_building_generation),
@@ -15325,7 +15481,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     NEW.last_skipped_fork_replay_token_ns, NEW.current_model,
                     NEW.current_user_prompt_start, NEW.current_user_prompt_end,
                     NEW.assistant_response_start, NEW.assistant_response_end,
-                    NEW.audit_chunk_index
+                    NEW.audit_chunk_index, NEW.accounting_state
                 ) ON CONFLICT(source_id) DO UPDATE SET
                     target_generation = excluded.target_generation,
                     mode = excluded.mode, deleted = excluded.deleted, size = excluded.size,
@@ -15343,7 +15499,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     current_user_prompt_end = excluded.current_user_prompt_end,
                     assistant_response_start = excluded.assistant_response_start,
                     assistant_response_end = excluded.assistant_response_end,
-                    audit_chunk_index = excluded.audit_chunk_index;
+                    audit_chunk_index = excluded.audit_chunk_index, accounting_state = excluded.accounting_state;
             END;
             CREATE TRIGGER IF NOT EXISTS files_schema11_update_current
             INSTEAD OF UPDATE ON files
@@ -15367,7 +15523,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     current_user_prompt_end = NEW.current_user_prompt_end,
                     assistant_response_start = NEW.assistant_response_start,
                     assistant_response_end = NEW.assistant_response_end,
-                    audit_chunk_index = NEW.audit_chunk_index
+                    audit_chunk_index = NEW.audit_chunk_index, accounting_state = NEW.accounting_state
                 WHERE source_id = OLD.source_id;
             END;
             CREATE TRIGGER IF NOT EXISTS files_schema11_delete_pending
@@ -15403,7 +15559,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     id, source_id, ordinal, timestamp, tokens, input_tokens,
                     cached_input_tokens, output_tokens, reasoning_output_tokens, model,
                     user_prompt_start, user_prompt_end, assistant_response_start,
-                    assistant_response_end
+                    assistant_response_end, accounting_kind, reported_total_tokens, token_source_offset, legacy_tokens
                 ) SELECT
                     CASE WHEN COALESCE(NEW.id, -1) <= 0
                          THEN CAST((SELECT value FROM metadata
@@ -15413,7 +15569,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     NEW.cached_input_tokens, NEW.output_tokens,
                     COALESCE(NEW.reasoning_output_tokens, 0), NEW.model,
                     NEW.user_prompt_start, NEW.user_prompt_end,
-                    NEW.assistant_response_start, NEW.assistant_response_end
+                    NEW.assistant_response_start, NEW.assistant_response_end, COALESCE(NEW.accounting_kind, 0), NEW.reported_total_tokens, NEW.token_source_offset, NEW.legacy_tokens
                 FROM pending_sources p JOIN sources s ON s.source_id = p.source_id
                 WHERE s.path = NEW.file_path AND p.target_generation = NEW.file_generation
                   AND p.mode <> 'tombstone';
@@ -15421,7 +15577,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     id, source_id, ordinal, timestamp, tokens, input_tokens,
                     cached_input_tokens, output_tokens, reasoning_output_tokens, model,
                     user_prompt_start, user_prompt_end, assistant_response_start,
-                    assistant_response_end
+                    assistant_response_end, accounting_kind, reported_total_tokens, token_source_offset, legacy_tokens
                 ) SELECT
                     CASE WHEN COALESCE(NEW.id, -1) <= 0
                          THEN CAST((SELECT value FROM metadata
@@ -15431,7 +15587,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     NEW.cached_input_tokens, NEW.output_tokens,
                     COALESCE(NEW.reasoning_output_tokens, 0), NEW.model,
                     NEW.user_prompt_start, NEW.user_prompt_end,
-                    NEW.assistant_response_start, NEW.assistant_response_end
+                    NEW.assistant_response_start, NEW.assistant_response_end, COALESCE(NEW.accounting_kind, 0), NEW.reported_total_tokens, NEW.token_source_offset, NEW.legacy_tokens
                 FROM sources s
                 WHERE s.path = NEW.file_path AND s.last_seen_generation = NEW.file_generation
                   AND NOT EXISTS(SELECT 1 FROM active_building_generation)

@@ -25,6 +25,9 @@ use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 use uuid::Uuid;
 
+mod accounting;
+#[cfg(test)]
+mod accounting_index_tests;
 #[cfg(test)]
 mod aggregates;
 #[cfg(test)]
@@ -98,7 +101,7 @@ const UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V17: u32 = 17;
 // projection while removing filesystem-object identity from the durable
 // binding. Rebuilding this disposable cache reads the exact SQLite events
 // only; it never rescans JSONL bodies.
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 22;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 23;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 #[cfg(not(test))]
 const EXACT_STORAGE_MAINTENANCE_INTERVAL: StdDuration = StdDuration::from_secs(24 * 60 * 60);
@@ -3847,6 +3850,15 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
                 snapshot_complete: false,
                 persistent_version: DASHBOARD_AGGREGATE_CACHE_VERSION,
                 persistent_binding: Some(cache.binding),
+            })
+        }
+        22 => {
+            let cache = decode_persistent_numeric_dashboard_cache(data, 22)?;
+            let snapshot = startup_snapshot_from_persistent_numeric(&cache);
+            Some(CachedDashboardAggregate {
+                signature: cache.binding.signature.clone(), snapshot: Some(snapshot),
+                summary: cache.summary, snapshot_complete: false,
+                persistent_version: 22, persistent_binding: Some(cache.binding),
             })
         }
         LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20 => {

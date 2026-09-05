@@ -2333,6 +2333,7 @@ struct RecentUsageChart: View, Equatable {
                 modelBreakdowns: prepared.modelBreakdowns[safe: index] ?? [],
                 fallbackBreakdown: fallbackBreakdown,
                 fallbackModel: priceModel,
+                standardAPI: true,
                 rates: { $0.currentPriceRates }
             )
             return estimate.costUSD.isFinite ? max(estimate.costUSD, 0) : 0
@@ -2348,6 +2349,7 @@ struct RecentUsageChart: View, Equatable {
             modelBreakdowns: preparedData.modelBreakdowns[safe: index] ?? [],
             fallbackBreakdown: fallbackBreakdown,
             fallbackModel: selectedQuotaEstimateModel,
+            standardAPI: true,
             rates: { $0.currentPriceRates }
         )
         return estimate.costUSD.isFinite ? max(estimate.costUSD, 0) : 0

@@ -337,7 +337,7 @@ test("StatsStrip model costs default to 7d and can switch back to cumulative", a
         assert.equal(scope.length, 3);
         assert.equal(scope[0].textContent, "本7d");
         assert.equal(scope[0].getAttribute("aria-pressed"), "true");
-        assert.match(container.textContent ?? "", /\$0\.20/);
+        assert.match(container.textContent ?? "", /\$1\.00/);
 
         await React.act(async () => scope[2].dispatchEvent(new window.MouseEvent("click", { bubbles: true })));
         assert.equal(scope[2].getAttribute("aria-pressed"), "true");

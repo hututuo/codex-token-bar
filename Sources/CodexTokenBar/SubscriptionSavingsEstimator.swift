@@ -37,6 +37,7 @@ enum SubscriptionSavingsEstimator {
             modelBreakdowns: modelBreakdowns,
             fallbackBreakdown: breakdown,
             fallbackModel: priceModel,
+            standardAPI: true,
             rates: { $0.currentPriceRates }
         )
         let apiEquivalentUSD = apiPrice.costUSD
@@ -300,7 +301,8 @@ extension SubscriptionSavingsEstimator {
                 events: periodEvents,
                 fallbackBreakdown: periodBreakdown,
                 fallbackModel: fallbackModel,
-                rates: { $0.currentPriceRates }
+                standardAPI: true,
+            rates: { $0.currentPriceRates }
             )
             return SevenDayAPIValueEstimate(
                 valueUSD: price.costUSD,
@@ -351,10 +353,11 @@ extension SubscriptionSavingsEstimator {
             // when the event stream is incomplete. The remaining uncovered
             // bucket usage still uses the selected fallback model.
             modelBreakdowns: periodEvents.map {
-                ModelTokenBreakdown(model: $0.model, breakdown: $0.breakdown)
+                ModelTokenBreakdown(model: $0.model, breakdown: $0.breakdown, pricePeriods: [.init(model: $0.model, start: $0.start, breakdown: $0.breakdown)])
             },
             fallbackBreakdown: periodBreakdown,
             fallbackModel: fallbackModel,
+            standardAPI: true,
             rates: { $0.currentPriceRates }
         )
         return SevenDayAPIValueEstimate(

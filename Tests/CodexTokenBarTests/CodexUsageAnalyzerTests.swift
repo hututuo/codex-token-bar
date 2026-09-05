@@ -363,6 +363,88 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(reloaded.stats.totalCalls, 3)
     }
 
+    func testExactHistoryIndexDeduplicatesMissingTotalReplayDurablyButCountsTimestampChange() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageMissingTotalReplay")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-missing-total-replay"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let firstTimestamp = Date(timeIntervalSince1970: 1_800_000_000)
+        let secondTimestamp = firstTimestamp.addingTimeInterval(10)
+        let changedTimestamp = firstTimestamp.addingTimeInterval(20)
+        let a = lastOnlyTokenCountLine(
+            timestamp: firstTimestamp,
+            input: 100,
+            output: 10
+        )
+        let b = lastOnlyTokenCountLine(
+            timestamp: secondTimestamp,
+            input: 20,
+            output: 5
+        )
+        let c = lastOnlyTokenCountLine(
+            timestamp: changedTimestamp,
+            input: 100,
+            output: 10
+        )
+        try [a, b, a].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        var index: CodexUsageHistoryIndex? = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let synchronize: () throws -> CodexUsageHistoryIndex.SynchronizationResult = {
+            try index!.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, parsedSessionID, request, insertFingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: parsedSessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+        }
+
+        let initial = try synchronize()
+        XCTAssertEqual(initial.changedFiles, 1)
+        var firstEvents: [TokenEvent] = []
+        try index!.forEachStoredEvent { firstEvents.append($0.event) }
+        XCTAssertEqual(firstEvents.map(\.tokens), [110, 25])
+        XCTAssertEqual(firstEvents.count, 2)
+
+        // Reopen the actual durable index before appending the exact replay
+        // and the same I/O tuple with a new identity timestamp.
+        index = nil
+        let reopened = try CodexUsageHistoryIndex(codexHome: codexHome)
+        index = reopened
+        try appendLines([a, c], to: sessionFile)
+
+        let appended = try synchronize()
+        XCTAssertEqual(appended.incrementallyParsedFiles, 1)
+        var finalEvents: [TokenEvent] = []
+        try reopened.forEachStoredEvent { finalEvents.append($0.event) }
+        XCTAssertEqual(finalEvents.map(\.tokens), [110, 25, 110])
+        XCTAssertEqual(finalEvents.reduce(0) { $0 + $1.tokens }, 245)
+        XCTAssertEqual(finalEvents.count, 3)
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM source_fingerprints;", in: SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))),
+            3,
+            "A and B plus timestamp-distinct C have three durable fingerprints; replay A is ignored"
+        )
+    }
+
     func testRecentBinsKeepFiveMinuteHistoryForThirtyDays() throws {
         let codexHome = try makeCodexHome()
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
@@ -395,6 +477,93 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(bins.count, 30 * 24 * 12)
         XCTAssertEqual(bins.reduce(0) { $0 + $1.tokens }, 100)
         XCTAssertEqual(bins.reduce(0) { $0 + $1.calls }, 1)
+    }
+
+    func testDiagnosticZeroTokenEventsDoNotEnterDirectOrStreamingAggregates() throws {
+        let codexHome = try makeCodexHome()
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_785_462_000)
+        let diagnostic = TokenEvent(
+            timestamp: now.addingTimeInterval(-60),
+            sessionID: "diagnostic-event",
+            model: "gpt-5.6-sol",
+            tokens: 0,
+            inputTokens: 100,
+            cachedInputTokens: 80,
+            outputTokens: 10,
+            reasoningOutputTokens: 7,
+            userPrompt: "diagnostic prompt",
+            assistantResponse: "diagnostic response"
+        )
+        let counted = TokenEvent(
+            timestamp: now.addingTimeInterval(-30),
+            sessionID: "counted-event",
+            model: "gpt-5.6-sol",
+            tokens: 110,
+            inputTokens: 100,
+            cachedInputTokens: 80,
+            outputTokens: 10,
+            reasoningOutputTokens: 7,
+            userPrompt: "counted prompt",
+            assistantResponse: "counted response"
+        )
+        let events = [diagnostic, counted]
+
+        let daily = analyzer.dailyUsage(from: events, now: now, calendar: calendar)
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.tokens }, 110)
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.calls }, 1)
+
+        let recentBins = analyzer.recentBins(from: events, now: now)
+        XCTAssertEqual(recentBins.reduce(0) { $0 + $1.tokens }, 110)
+        XCTAssertEqual(recentBins.reduce(0) { $0 + $1.calls }, 1)
+
+        let cache = analyzer.cacheUsage(
+            from: events,
+            recentBins: recentBins,
+            threadInfo: [:]
+        )
+        XCTAssertEqual(cache.total.inputTokens, 100)
+        XCTAssertEqual(cache.total.cachedInputTokens, 80)
+        XCTAssertEqual(cache.total.outputTokens, 10)
+        XCTAssertEqual(cache.total.reasoningOutputTokens, 7)
+        XCTAssertEqual(cache.total.totalTokens, 110)
+        XCTAssertEqual(cache.total.calls, 1)
+        XCTAssertEqual(cache.sessions.count, 1)
+        XCTAssertEqual(cache.modelBreakdowns.count, 1)
+        XCTAssertEqual(cache.modelBreakdowns.first?.breakdown.calls, 1)
+
+        var streaming = CodexUsageAnalyzer.UsageAggregationBuilder(
+            calendar: calendar,
+            now: now
+        )
+        streaming.consume(sessionID: "diagnostic-stream", events: events)
+        XCTAssertEqual(streaming.totalTokens, 110)
+        XCTAssertEqual(streaming.totalCalls, 1)
+        XCTAssertEqual(streaming.totalEventCount, 1)
+        XCTAssertEqual(streaming.totalSessionCount, 1)
+
+        let streamingDaily = streaming.dailyUsage()
+        XCTAssertEqual(streamingDaily.reduce(0) { $0 + $1.tokens }, 110)
+        XCTAssertEqual(streamingDaily.reduce(0) { $0 + $1.calls }, 1)
+
+        let streamingRecentBins = streaming.recentBins()
+        XCTAssertEqual(streamingRecentBins.reduce(0) { $0 + $1.tokens }, 110)
+        XCTAssertEqual(streamingRecentBins.reduce(0) { $0 + $1.calls }, 1)
+
+        let streamingCache = streaming.cacheUsage(
+            recentBins: streamingRecentBins,
+            threadInfo: [:]
+        )
+        XCTAssertEqual(streamingCache.total.inputTokens, 100)
+        XCTAssertEqual(streamingCache.total.cachedInputTokens, 80)
+        XCTAssertEqual(streamingCache.total.outputTokens, 10)
+        XCTAssertEqual(streamingCache.total.reasoningOutputTokens, 7)
+        XCTAssertEqual(streamingCache.total.totalTokens, 110)
+        XCTAssertEqual(streamingCache.total.calls, 1)
+        XCTAssertEqual(streamingCache.sessions.count, 1)
+        XCTAssertEqual(streamingCache.turns.count, 1)
     }
 
     func testRecentBinStartsStayOnEpochFiveMinuteBoundariesAcrossRefreshTimes() throws {
@@ -930,12 +1099,13 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         var legacyV2Object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: validData) as? [String: Any]
         )
-        XCTAssertEqual(legacyV2Object["payloadVersion"] as? Int, 4)
+        XCTAssertEqual(legacyV2Object["payloadVersion"] as? Int, 5)
         XCTAssertTrue(
             (legacyV2Object["homeIdentityKey"] as? String)?.hasPrefix("usage-path:") == true
         )
         var legacyV3Object = legacyV2Object
         legacyV3Object["payloadVersion"] = 3
+        legacyV3Object["parserRevision"] = "token-event-v2-explicit-subagent-delayed-context-v3"
         legacyV3Object["indexSchemaVersion"] = "7"
         try JSONSerialization.data(
             withJSONObject: legacyV3Object,
@@ -948,6 +1118,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(legacyV3.snapshot.stats.totalTokens, 500)
 
         legacyV2Object["payloadVersion"] = 2
+        legacyV2Object["parserRevision"] = "token-event-v2-explicit-subagent-delayed-context-v3"
         legacyV2Object["indexSchemaVersion"] = "6"
         legacyV2Object["homeIdentityKey"] = "fs:legacy-device:legacy-file"
         var legacyV2Signature = try XCTUnwrap(
@@ -1686,7 +1857,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
-        XCTAssertEqual(snapshot.stats.totalTokens, 80)
+        XCTAssertEqual(snapshot.stats.totalTokens, 90)
         XCTAssertEqual(snapshot.stats.totalCalls, 1)
         XCTAssertEqual(snapshot.cacheUsage.total.inputTokens, 80)
         XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 10)
@@ -1793,7 +1964,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         _ = try synchronize()
         var firstEvents: [TokenEvent] = []
         try index.forEachStoredEvent { firstEvents.append($0.event) }
-        XCTAssertEqual(firstEvents.map(\.tokens), [60])
+        XCTAssertEqual(firstEvents.map(\.tokens), [50])
         XCTAssertEqual(firstEvents.first?.model, "gpt-5.6-luna")
 
         try appendLines([
@@ -1807,7 +1978,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         _ = try synchronize()
         var secondEvents: [TokenEvent] = []
         try index.forEachStoredEvent { secondEvents.append($0.event) }
-        XCTAssertEqual(secondEvents.map(\.tokens), [60, 60])
+        XCTAssertEqual(secondEvents.map(\.tokens), [50, 60])
         XCTAssertEqual(secondEvents.map(\.model), ["gpt-5.6-luna", "gpt-5.6-luna"])
     }
 
@@ -1889,7 +2060,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(second.incrementallyParsedFiles, 1)
         var events: [TokenEvent] = []
         try index.forEachStoredEvent { events.append($0.event) }
-        XCTAssertEqual(events.map(\.tokens), [80])
+        XCTAssertEqual(events.map(\.tokens), [70])
         XCTAssertEqual(events.first?.model, "gpt-5.6-luna")
     }
 
@@ -1931,10 +2102,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let snapshot = try analyzer.load()
 
-        XCTAssertEqual(snapshot.stats.totalTokens, 50)
+        XCTAssertEqual(snapshot.stats.totalTokens, 40)
         XCTAssertEqual(snapshot.stats.totalCalls, 1)
         XCTAssertEqual(snapshot.cacheUsage.modelBreakdowns.first?.model, "gpt-5.6-sol")
-        XCTAssertEqual(snapshot.cacheUsage.modelBreakdowns.first?.breakdown.totalTokens, 50)
+        XCTAssertEqual(snapshot.cacheUsage.modelBreakdowns.first?.breakdown.totalTokens, 40)
     }
 
     func testOrdinaryForkDoesNotPersistAnExplicitReplayBoundaryAcrossIncrementalAppend() throws {
@@ -2046,7 +2217,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try pastLines.joined(separator: "\n").appending("\n").write(to: pastFile, atomically: true, encoding: .utf8)
 
         let pastSnapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: pastBoundaryHome)).load()
-        XCTAssertEqual(pastSnapshot.stats.totalTokens, 80, "超过 2s 必须退出重放并正常计费")
+        XCTAssertEqual(pastSnapshot.stats.totalTokens, 70, "超过 2s 必须退出重放并正常计费")
         XCTAssertEqual(pastSnapshot.stats.totalCalls, 1)
     }
 
@@ -2144,7 +2315,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let first = try analyzer.load()
-        XCTAssertEqual(first.stats.totalTokens, 80)
+        XCTAssertEqual(first.stats.totalTokens, 90)
 
         try appendLines([
             try tokenCountLine(
@@ -2536,7 +2707,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
         var total = 0
         try index.forEachStoredEvent { total += $0.event.tokens }
-        XCTAssertEqual(total, 150)
+        XCTAssertEqual(total, 145)
 
         // 同一个增量事件再次出现在尾部时，持久指纹主键直接承担查重；
         // 不需要把该 source 的全部历史指纹复制到临时表。
@@ -2556,7 +2727,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(duplicateRefresh.incrementallyParsedFiles, 1)
         var deduplicatedTotal = 0
         try index.forEachStoredEvent { deduplicatedTotal += $0.event.tokens }
-        XCTAssertEqual(deduplicatedTotal, 150)
+        XCTAssertEqual(deduplicatedTotal, 145)
     }
 
     func testExactHistoryIndexAppendsWhenOpenLineCrossesChunkBoundary() throws {
@@ -2646,7 +2817,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
         var total = 0
         try index.forEachStoredEvent { total += $0.event.tokens }
-        XCTAssertEqual(total, 150)
+        XCTAssertEqual(total, 145)
     }
 
     func testExactHistoryIndexAppendAtChunkBoundaryUsesPreviousTailForValidation() throws {
@@ -2725,7 +2896,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(request.parsingStartOffset, UInt64(source.count))
         var total = 0
         try index.forEachStoredEvent { total += $0.event.tokens }
-        XCTAssertEqual(total, 150)
+        XCTAssertEqual(total, 145)
     }
 
     func testExactHistoryIndexRollingAuditRebuildsAfterMiddleRewriteAndAppend() throws {
@@ -2775,7 +2946,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         let refreshed = try analyzer.load()
 
-        XCTAssertEqual(refreshed.stats.totalTokens, 151)
+        XCTAssertEqual(refreshed.stats.totalTokens, 145)
         XCTAssertEqual(refreshed.stats.totalCalls, 2)
         XCTAssertTrue(refreshed.cacheUsage.attributionSourceMutationDetected)
         XCTAssertNotEqual(
@@ -2784,6 +2955,150 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+    }
+
+    func testExactHistoryIndexReplacesExistingDiagnosticRowsDuringSameOffsetFullRewrite() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageDiagnosticRewrite")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-diagnostic-rewrite"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let timestamps = [
+            now.addingTimeInterval(-60),
+            now.addingTimeInterval(-30),
+            now.addingTimeInterval(-10)
+        ]
+        let initialLines = [
+            try tokenCountLine(
+                timestamp: timestamps[0],
+                total: Usage(input: 1, cachedInput: 0, output: 1, reasoning: 0, total: 2),
+                last: Usage(input: 1, cachedInput: 0, output: 1, reasoning: 0, total: 2)
+            ),
+            // A reported-only zero-components snapshot is retained as a
+            // diagnostic event with tokens == 0.
+            try tokenCountLine(
+                timestamp: timestamps[1],
+                total: Usage(input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 1),
+                last: Usage(input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 1)
+            ),
+            // cached_input_tokens > input_tokens makes this an invalid
+            // diagnostic row, also retained with tokens == 0.
+            try tokenCountLine(
+                timestamp: timestamps[2],
+                total: Usage(input: 1, cachedInput: 2, output: 1, reasoning: 1, total: 2),
+                last: Usage(input: 1, cachedInput: 2, output: 1, reasoning: 1, total: 2)
+            )
+        ]
+        let initialSource = initialLines.joined(separator: "\n").appending("\n")
+        try initialSource.write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let synchronize: () throws -> CodexUsageHistoryIndex.SynchronizationResult = {
+            try index.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, parsedSessionID, request, insertFingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: parsedSessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+        }
+
+        let initial = try synchronize()
+        XCTAssertEqual(initial.changedFiles, 1)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let initialRows = try database.readRows(
+            """
+            SELECT source_offset, tokens, accounting_kind
+            FROM events
+            WHERE source_id = (SELECT source_id FROM sources WHERE path = ?)
+            ORDER BY source_offset;
+            """,
+            bindings: [.text(sessionFile.path)]
+        ) { row -> (offset: Int64, tokens: Int, kind: Int)? in
+            guard let offset = row.int64(0),
+                  let tokens = row.int(1),
+                  let kind = row.int(2) else {
+                return nil
+            }
+            return (offset, tokens, kind)
+        }.compactMap { $0 }
+        XCTAssertEqual(initialRows.map(\.tokens), [2, 0, 0])
+        XCTAssertEqual(
+            initialRows.map(\.kind),
+            [
+                UsageAccountingKind.counted.rawValue,
+                UsageAccountingKind.reportedOnly.rawValue,
+                UsageAccountingKind.invalid.rawValue
+            ]
+        )
+
+        let replacementLines = [
+            try tokenCountLine(
+                timestamp: timestamps[0],
+                total: Usage(input: 2, cachedInput: 1, output: 2, reasoning: 1, total: 4),
+                last: Usage(input: 2, cachedInput: 1, output: 2, reasoning: 1, total: 4)
+            ),
+            try tokenCountLine(
+                timestamp: timestamps[1],
+                total: Usage(input: 3, cachedInput: 1, output: 2, reasoning: 1, total: 5),
+                last: Usage(input: 1, cachedInput: 0, output: 0, reasoning: 0, total: 1)
+            ),
+            try tokenCountLine(
+                timestamp: timestamps[2],
+                total: Usage(input: 4, cachedInput: 2, output: 3, reasoning: 1, total: 7),
+                last: Usage(input: 1, cachedInput: 1, output: 1, reasoning: 0, total: 2)
+            )
+        ]
+        let replacementSource = replacementLines.joined(separator: "\n").appending("\n")
+        XCTAssertEqual(
+            initialSource.utf8.count,
+            replacementSource.utf8.count,
+            "the rewritten diagnostic rows must retain their source offsets"
+        )
+        try replacementSource.write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let rewritten = try synchronize()
+        XCTAssertEqual(rewritten.rewrittenFiles, 1)
+        let rewrittenRows = try database.readRows(
+            """
+            SELECT source_offset, tokens, accounting_kind
+            FROM events
+            WHERE source_id = (SELECT source_id FROM sources WHERE path = ?)
+            ORDER BY source_offset;
+            """,
+            bindings: [.text(sessionFile.path)]
+        ) { row -> (offset: Int64, tokens: Int, kind: Int)? in
+            guard let offset = row.int64(0),
+                  let tokens = row.int(1),
+                  let kind = row.int(2) else {
+                return nil
+            }
+            return (offset, tokens, kind)
+        }.compactMap { $0 }
+        XCTAssertEqual(rewrittenRows.map(\.offset), initialRows.map(\.offset))
+        XCTAssertEqual(rewrittenRows.map(\.tokens), [4, 1, 2])
+        XCTAssertEqual(
+            rewrittenRows.map(\.kind),
+            Array(repeating: UsageAccountingKind.counted.rawValue, count: 3)
+        )
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 3)
     }
 
     func testExactHistoryIndexColdBuildParsesMultipleFilesConcurrently() throws {
@@ -3136,6 +3451,69 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try scalarInt("SELECT manifest_schema_version FROM manifest;", in: stage),
             99
         )
+    }
+
+    func testLegacyComponentStageImportsWithoutReparseAndPreservesOldTokens() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageLegacyAccountingStage")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-legacyaccountingstage",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let interrupted = try CodexUsageHistoryIndex(codexHome: codexHome)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(
+            try interrupted.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, sessionID, request, insertFingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: sessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+        )
+        let stagingRoot = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("staging", isDirectory: true)
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: stagingRoot,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ))
+        let stagingDatabase = try XCTUnwrap(
+            enumerator.compactMap { $0 as? URL }.first {
+                $0.pathExtension == "sqlite"
+                    && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+        )
+        let stage = SQLiteDatabaseDriver(url: stagingDatabase)
+        try stage.execute("UPDATE manifest SET parser_revision = 'token-event-v2-explicit-subagent-delayed-context-v3';")
+        try stage.execute("ALTER TABLE manifest DROP COLUMN accounting_state;")
+        try stage.execute("UPDATE events SET tokens=999;")
+        try stage.execute("ALTER TABLE events DROP COLUMN accounting_kind;")
+        try stage.execute("ALTER TABLE events DROP COLUMN reported_total_tokens;")
+
+        let resumed = try CodexUsageHistoryIndex(codexHome: codexHome)
+        _ = try resumed.synchronize(files: [sessionFile], sessionID: analyzer.sessionID(from:)) { _, _, _, _, _ in
+            XCTFail("Known legacy stage must import without parsing source again")
+            throw NSError(domain: "unexpected-reparse", code: 1)
+        }
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        XCTAssertEqual(try scalarInt("SELECT SUM(tokens) FROM events;", in: database), 120)
+        XCTAssertEqual(try scalarInt("SELECT SUM(legacy_tokens) FROM events;", in: database), 999)
+        XCTAssertEqual(try scalarInt("SELECT SUM(calls) FROM dashboard_5m;", in: database), 1)
+        XCTAssertEqual(try resumed.accountingCoverage(), "legacy-source-audit-required")
     }
 
     func testInvalidCurrentStagingIsPreservedWithoutReparseOrLastGoodLoss() throws {
@@ -4893,7 +5271,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "11"
+            "12"
         )
         for table in ["sources", "event_enrichment_sources", "session_catalog_entries"] {
             XCTAssertEqual(
@@ -4917,7 +5295,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         ], to: sessionFile)
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
-        XCTAssertEqual(try analyzer.load().stats.totalTokens, 150)
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 145)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 1)
     }
@@ -4965,7 +5343,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "11"
+            "12"
         )
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), sourceCountBefore)
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), eventCountBefore)
@@ -5065,7 +5443,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 try database.readRows(
                     "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                 ) { $0.text(0) }.first,
-                "11"
+                "12"
             )
         }
     }
@@ -5114,7 +5492,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "11"
+            "12"
         )
     }
 
@@ -5513,7 +5891,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "11",
+            "12",
             "the transactional identity-column migration is independent from replay repair"
         )
         XCTAssertEqual(
@@ -5655,7 +6033,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "11"
+                "12"
             )
 
             let planDetails = try database.readRows(
@@ -5979,7 +6357,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "11"
+                "12"
             )
             XCTAssertEqual(
                 try database.readRows("SELECT model FROM events LIMIT 1;") {
@@ -6202,9 +6580,13 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             """
             DELETE FROM events
             WHERE source_id = (SELECT source_id FROM sources WHERE path = ?)
-              AND tokens = 60;
+              AND source_offset = (
+                    SELECT MIN(source_offset)
+                    FROM events
+                    WHERE source_id = (SELECT source_id FROM sources WHERE path = ?)
+              );
             """,
-            bindings: [.text(sessionFile.path)]
+            bindings: [.text(sessionFile.path), .text(sessionFile.path)]
         )
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 2)
         let beforeFingerprintCount = try scalarInt("SELECT COUNT(*) FROM source_fingerprints;", in: database)
@@ -6236,7 +6618,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let migrated = try CodexUsageHistoryIndex(codexHome: codexHome)
         var publishedEvents: [TokenEvent] = []
         try migrated.forEachStoredEvent { publishedEvents.append($0.event) }
-        XCTAssertEqual(publishedEvents.map(\.tokens), [80, 25])
+        XCTAssertEqual(publishedEvents.map(\.tokens), [100, 25])
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 2)
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM source_fingerprints;", in: database), beforeFingerprintCount)
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM source_chunks;", in: database), beforeChunkCount)
@@ -6268,7 +6650,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         var publishedBeforeAppend: [Int] = []
         try migrated.forEachStoredEvent { publishedBeforeAppend.append($0.event.tokens) }
-        XCTAssertEqual(publishedBeforeAppend, [80, 25])
+        XCTAssertEqual(publishedBeforeAppend, [100, 25])
 
         try appendLines([
             try tokenCountLine(
@@ -6280,7 +6662,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         var publishedAfterAppendBeforeSync: [Int] = []
         try migrated.forEachStoredEvent { publishedAfterAppendBeforeSync.append($0.event.tokens) }
-        XCTAssertEqual(publishedAfterAppendBeforeSync, [80, 25])
+        XCTAssertEqual(publishedAfterAppendBeforeSync, [100, 25])
 
         let finalSynchronization = try migrated.synchronize(
             files: [sessionFile, unrelatedFile],
@@ -6307,7 +6689,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 """,
                 bindings: [.text(sessionFile.path)]
             ) { $0.int(0) }.compactMap { $0 },
-            [60, 80, 40]
+            [70, 100, 50]
         )
         XCTAssertEqual(
             try database.readRows(
@@ -7644,6 +8026,26 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "info": [
                     "total_token_usage": usageObject(total),
                     "last_token_usage": usageObject(last)
+                ]
+            ]
+        ])
+    }
+
+    private func lastOnlyTokenCountLine(
+        timestamp: Date,
+        input: Int,
+        output: Int
+    ) -> String {
+        encodeLine([
+            "timestamp": iso8601String(from: timestamp),
+            "type": "event_msg",
+            "payload": [
+                "type": "token_count",
+                "info": [
+                    "last_token_usage": [
+                        "input_tokens": input,
+                        "output_tokens": output
+                    ]
                 ]
             ]
         ])

@@ -318,6 +318,7 @@ extension OfficialAPIPriceModel {
         switch self {
         case .gpt6Astra: "Astra"
         case .gpt56Sol: "Sol"
+        case .gpt55: "5.5"
         case .gpt56Terra: "Terra"
         case .gpt56Luna: "Luna"
         case .gpt53Codex: "5.3 Codex"

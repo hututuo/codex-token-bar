@@ -137,7 +137,7 @@ test("the unified scale map gives each series its explicit visual range", () => 
     recentUsage30d: [],
   });
   const plotted = plotChartPoints(data, 100, 100, "gpt56Sol");
-  assert.deepEqual(plotted.bucketCostsUSD, [5, 30, 0]);
+  assert.deepEqual(plotted.bucketCostsUSD, [4, 20, 0]);
   assert.equal(plotted.costPoints.length, 3);
   assert.equal(plotted.costPoints.filter(Boolean).length, 2);
   assert.equal(plotted.costPoints[2], null);
@@ -421,9 +421,9 @@ test("quotaConsumptionSelection keeps only the latest quota cycle after a reset"
 
   const selection = quotaConsumptionSelection(data, 0, 3, "gpt56Sol");
   assert.equal(selection?.sevenDay.quotaDropPercent, 10);
-  assert.equal(selection?.selectedCostUSD, 2);
+  assert.equal(selection?.selectedCostUSD, 1.6);
   assert.equal(selection?.sevenDay.comparisonBreakdown.inputTokens, 200_000);
-  assert.equal(selection?.sevenDay.impliedWindowBudgetUSD, 10);
+  assert.equal(selection?.sevenDay.impliedWindowBudgetUSD, 8);
   const attribution = quotaSelectionAttribution(selection, {
     status: "indistinguishable",
     priceBasis: "radar20260730",
@@ -477,7 +477,7 @@ test("latest quota cycle with one remaining point fails closed for the budget in
   });
 
   const selection = quotaConsumptionSelection(data, 0, 2, "gpt56Sol");
-  assert.equal(selection?.selectedCostUSD, 1.5);
+  assert.equal(selection?.selectedCostUSD, 1.2);
   assert.equal(selection?.sevenDay.quotaDropAvailable, false);
   assert.equal(selection?.sevenDay.quotaDropPercent, 0);
   assert.equal(selection?.sevenDay.impliedWindowBudgetUSD, null);
@@ -504,11 +504,11 @@ test("latest quota cycle suffix semantics cover 24h, 7d and 30d chart paths", ()
     const selection = quotaConsumptionSelection(data, 0, 3, "gpt56Sol");
 
     assert.ok(selection, range);
-    assert.equal(selection.selectedCostUSD, 2, range);
+    assert.equal(selection.selectedCostUSD, 1.6, range);
     assert.equal(selection.sevenDay.quotaDropPercent, 72, range);
     assert.equal(selection.sevenDay.comparisonBreakdown.inputTokens, 200_000, range);
     assert.equal(selection.sevenDay.comparisonStartUnix, 2 * bucketSeconds, range);
-    assert.equal(selection.sevenDay.impliedWindowBudgetUSD, 1.3888888888888888, range);
+    assert.equal(selection.sevenDay.impliedWindowBudgetUSD, 1.1111111111111112, range);
     assert.equal(
       quotaComparisonScopeText(selection, { fiveHour: false, sevenDay: true }),
       "7d 反推仅按同周期可比区间",
@@ -635,9 +635,9 @@ test("partial model rows fall back to complete selected tokens instead of invent
   });
 
   assert.ok(selection);
-  assert.equal(selection.selectedCostUSD, 10);
+  assert.equal(selection.selectedCostUSD, 8);
   assert.equal(attribution?.localComparableCostUSD, 10);
-  assert.equal(attribution?.localCurrentAPIEquivalentUSD, 10);
+  assert.equal(attribution?.localCurrentAPIEquivalentUSD, 8);
 });
 
 test("missing 7d snapshots keep local conversion visible but never conclude attribution", () => {
@@ -687,7 +687,7 @@ test("quotaConsumptionSelection never invents output from total minus input", ()
 
   const selection = quotaConsumptionSelection(data, 0, 0, "gpt56Sol");
   assert.equal(selection?.outputTokens, 0);
-  assert.equal(selection?.selectedCostUSD, 3);
+  assert.equal(selection?.selectedCostUSD, 2.4);
 });
 
 test("24h selection attribution compares observed account drop with Radar-priced local usage", () => {
@@ -737,7 +737,7 @@ test("24h selection attribution compares observed account drop with Radar-priced
   assert.ok(result);
   assert.equal(result.accountDropPercent, 3);
   assert.equal(result.localComparableCostUSD, 4);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 4);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 5);
   assert.equal(result.localSharePercent, 4);
   assert.equal(result.nonLocalDifferencePercent, -1);
   assert.equal(result.state, "withinTolerance");
@@ -789,7 +789,7 @@ test("24h selection attribution keeps the local Radar conversion when quota hist
   assert.equal(result.state, "missingQuotaHistory");
   assert.equal(result.accountDropPercent, null);
   assert.equal(result.localComparableCostUSD, 4);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 4);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 5);
   assert.equal(result.localSharePercent, 4);
   assert.equal(result.nonLocalDifferencePercent, null);
   assert.equal(result.allowsAttributionConclusion, false);

@@ -5,10 +5,9 @@ import {
   type ModelUsageRowLike,
 } from "../components/modelUsagePresentation.ts";
 import {
-  detectedOfficialAPIPriceModel,
   independentQuotaReferenceCostUSD,
   independentQuotaModelName,
-  officialAPICostUSD,
+  modelAwareAPICostUSD,
   type OfficialAPIPriceModel,
 } from "../settings/quotaPriceModel.ts";
 import { formatTokens } from "../utils/format.ts";
@@ -37,6 +36,7 @@ export const DASHBOARD_PRIMARY_MODEL_KEYS = [
 ] as const;
 
 interface CombinedModelUsage {
+  costUSD: number;
   model: string | null;
   eventStartUnix?: number;
   inputTokens: number;
@@ -104,6 +104,7 @@ export function floatingTodayModelUsageItems(
   for (const row of rows ?? []) {
     const key = modelUsageKey(row.model, row.eventStartUnix);
     const current = grouped.get(key) ?? {
+      costUSD: 0,
       model: row.model,
       eventStartUnix: row.eventStartUnix,
       inputTokens: 0,
@@ -112,6 +113,12 @@ export function floatingTodayModelUsageItems(
       totalTokens: 0,
       calls: 0,
     };
+    const priceRow = { model: row.model, eventStartUnix: row.eventStartUnix, breakdown: {
+      inputTokens: finiteNonnegative(row.breakdown.inputTokens),
+      cachedInputTokens: finiteNonnegative(row.breakdown.cachedInputTokens),
+      outputTokens: finiteNonnegative(row.breakdown.outputTokens), calls: finiteNonnegative(row.breakdown.calls),
+    } };
+    current.costUSD += modelAwareAPICostUSD([priceRow], priceRow.breakdown, fallbackModel).costUSD;
     current.inputTokens += finiteNonnegative(row.breakdown.inputTokens);
     current.cachedInputTokens += finiteNonnegative(row.breakdown.cachedInputTokens);
     current.outputTokens += finiteNonnegative(row.breakdown.outputTokens);
@@ -128,6 +135,7 @@ export function floatingTodayModelUsageItems(
       if (grouped.size >= FLOATING_MODEL_USAGE_MINIMUM_COUNT) break;
       if (!grouped.has(key)) {
         grouped.set(key, {
+          costUSD: 0,
           model: key,
           inputTokens: 0,
           cachedInputTokens: 0,
@@ -140,15 +148,7 @@ export function floatingTodayModelUsageItems(
   }
   return [...grouped.entries()].map(([key, row]) => {
     const usesIndependentQuota = independentQuotaModelName(row.model) !== null;
-    const priceModel = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix) ?? fallbackModel;
-    const costUSD = usesIndependentQuota
-      ? null
-      : officialAPICostUSD(
-        row.inputTokens,
-        row.cachedInputTokens,
-        row.outputTokens,
-        priceModel,
-      );
+    const costUSD = usesIndependentQuota ? null : row.costUSD;
     const referenceCostUSD = independentQuotaReferenceCostUSD(
       row.model,
       row.inputTokens,

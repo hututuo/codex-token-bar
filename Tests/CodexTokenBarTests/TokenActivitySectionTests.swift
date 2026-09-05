@@ -166,7 +166,7 @@ final class TokenActivitySectionTests: XCTestCase {
 
         let summary = try XCTUnwrap(prepared.summaries.first)
         XCTAssertTrue(summary.isModelCost)
-        XCTAssertEqual(try XCTUnwrap(summary.modelCostUSD), 5.75, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(summary.modelCostUSD), 4.2, accuracy: 0.0001)
         XCTAssertEqual(summary.modelBreakdowns.count, 2)
     }
 

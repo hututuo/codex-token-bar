@@ -73,7 +73,7 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
             switch model {
             case .gpt6Astra:
                 return APIPriceRates(inputUSDPerMillion: 10.00, cachedInputUSDPerMillion: 1.00, outputUSDPerMillion: 50.00)
-            case .gpt56Sol:
+            case .gpt56Sol, .gpt55:
                 return APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
             case .gpt56Terra:
                 return APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
@@ -2071,6 +2071,7 @@ enum SharedAccountUsageAttributionEstimator {
                 events: protectedAttributionEvents,
                 fallbackBreakdown: protectedBreakdown,
                 fallbackModel: model,
+                standardAPI: true,
                 rates: { $0.currentPriceRates }
             )
             let pendingRadarRow = radar.flatMap { tier.sevenDayRow(in: $0) }
@@ -2171,6 +2172,7 @@ enum SharedAccountUsageAttributionEstimator {
             events: protectedAttributionEvents,
             fallbackBreakdown: protectedBreakdown,
             fallbackModel: model,
+            standardAPI: true,
             rates: { $0.currentPriceRates }
         )
         let currentOfficialCost = currentOfficialEstimate.costUSD
