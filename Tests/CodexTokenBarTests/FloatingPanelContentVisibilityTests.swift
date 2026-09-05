@@ -233,6 +233,76 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
     }
 
+    func testRunningModelDetailsFlipToTheAvailableSideWithoutMovingTheBaseSurface() {
+        let surfaceSize = FloatingTokenPanelMetrics.size(
+            effectiveScale: 1,
+            visibility: .default
+        )
+        let expandedSize = FloatingTokenPanelMetrics.size(
+            effectiveScale: 1,
+            visibility: .default,
+            runningModelDetailsPresented: true,
+            runningModelDetailsRowUnits: 2
+        )
+        let screenFrame = NSRect(x: 0, y: 0, width: 1_200, height: 800)
+        let baseFrame = NSRect(
+            x: 900,
+            y: 420,
+            width: surfaceSize.width,
+            height: surfaceSize.height
+        )
+
+        let placement = FloatingTokenPanelResizePolicy.runningModelDetailsPlacement(
+            panelFrame: baseFrame,
+            surfaceSize: surfaceSize,
+            expandedSize: expandedSize,
+            screenFrame: screenFrame
+        )
+        XCTAssertEqual(placement, .leading)
+
+        let expandedFrame = FloatingTokenPanelResizePolicy.expandedFrame(
+            baseFrame: baseFrame,
+            expandedSize: expandedSize,
+            surfaceSize: surfaceSize,
+            placement: placement,
+            screenFrame: screenFrame
+        )
+        let detailsExtraWidth = expandedSize.width - surfaceSize.width
+        XCTAssertEqual(expandedFrame.minX + detailsExtraWidth, baseFrame.minX, accuracy: 0.001)
+        XCTAssertEqual(expandedFrame.maxY, baseFrame.maxY, accuracy: 0.001)
+        XCTAssertEqual(
+            FloatingTokenPanelResizePolicy.baseFrame(
+                for: expandedFrame,
+                surfaceSize: surfaceSize,
+                placement: placement
+            ),
+            baseFrame
+        )
+    }
+
+    func testRunningModelDetailsStayTrailingWhenThereIsRoom() {
+        let surfaceSize = NSSize(width: 258, height: 138)
+        let expandedSize = NSSize(width: 536, height: 150)
+        let baseFrame = NSRect(x: 120, y: 420, width: surfaceSize.width, height: surfaceSize.height)
+        let placement = FloatingTokenPanelResizePolicy.runningModelDetailsPlacement(
+            panelFrame: baseFrame,
+            surfaceSize: surfaceSize,
+            expandedSize: expandedSize,
+            screenFrame: NSRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+
+        XCTAssertEqual(placement, .trailing)
+        let expandedFrame = FloatingTokenPanelResizePolicy.expandedFrame(
+            baseFrame: baseFrame,
+            expandedSize: expandedSize,
+            surfaceSize: surfaceSize,
+            placement: placement,
+            screenFrame: NSRect(x: 0, y: 0, width: 1_200, height: 800)
+        )
+        XCTAssertEqual(expandedFrame.minX, baseFrame.minX, accuracy: 0.001)
+        XCTAssertEqual(expandedFrame.maxY, baseFrame.maxY, accuracy: 0.001)
+    }
+
     func testRunningModelDisplayRowsIncludeModelEffortAndUnresolvedCount() {
         let rows = RunningThreadModelDetailsPresentation.rows(
             from: [

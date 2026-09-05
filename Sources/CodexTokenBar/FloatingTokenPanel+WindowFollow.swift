@@ -150,10 +150,10 @@ extension FloatingTokenPanelController {
             x: targetDrivenOrigin.x + boundedSlip.x,
             y: targetDrivenOrigin.y + boundedSlip.y
         )
-        let frame = anchoredPanelFrame(
-            for: panel,
-            size: panel.frame.size,
-            topLeft: NSPoint(x: proposedOrigin.x, y: proposedOrigin.y + panel.frame.height)
+        let frame = frameForDesiredBaseOrigin(
+            proposedOrigin,
+            panel: panel,
+            size: panel.frame.size
         )
         return movePanelIfNeeded(panel, to: frame.origin, persist: true)
     }
@@ -228,7 +228,7 @@ extension FloatingTokenPanelController {
         appliedLockState = isLocked
 
         if isLocked {
-            saveLockedOrigin(panel.frame.origin)
+            saveLockedOrigin(persistedOrigin(for: panel))
             if force && lockedAnchor != nil {
                 lockTargetDescription = lockedAnchor?.targetDescription ?? screenPositionLockDescription
                 startFollowingAnchor()
@@ -249,9 +249,10 @@ extension FloatingTokenPanelController {
 
     func currentAnchor(for panel: NSPanel) -> FloatingPanelWindowAnchor? {
         if let target = targetAccessibilityWindowAtRecentExternalClick() {
+            let panelOrigin = persistedOrigin(for: panel)
             let offset = NSPoint(
-                x: panel.frame.minX - target.frame.minX,
-                y: panel.frame.minY - target.frame.minY
+                x: panelOrigin.x - target.frame.minX,
+                y: panelOrigin.y - target.frame.minY
             )
             return FloatingPanelWindowAnchor(
                 windowNumber: lastExternalClickWindowNumber,
@@ -264,9 +265,10 @@ extension FloatingTokenPanelController {
             )
         }
         guard let targetWindow = findTargetWindow(near: panel.frame) else { return nil }
+        let panelOrigin = persistedOrigin(for: panel)
         let offset = NSPoint(
-            x: panel.frame.minX - targetWindow.frame.minX,
-            y: panel.frame.minY - targetWindow.frame.minY
+            x: panelOrigin.x - targetWindow.frame.minX,
+            y: panelOrigin.y - targetWindow.frame.minY
         )
         return FloatingPanelWindowAnchor(
             windowNumber: targetWindow.windowNumber,
@@ -400,7 +402,11 @@ extension FloatingTokenPanelController {
             x: targetFrame.frame.minX + anchor.offset.x,
             y: targetFrame.frame.minY + anchor.offset.y
         )
-        let frame = anchoredPanelFrame(for: panel, size: panel.frame.size, topLeft: NSPoint(x: origin.x, y: origin.y + panel.frame.height))
+        let frame = frameForDesiredBaseOrigin(
+            origin,
+            panel: panel,
+            size: panel.frame.size
+        )
         return movePanelIfNeeded(panel, to: frame.origin, persist: true)
     }
 
@@ -463,11 +469,19 @@ extension FloatingTokenPanelController {
         }
         isProgrammaticPanelMove = true
         panel.setFrameOrigin(origin)
+        if lastRunningModelDetailsPresented && !lastPagingGuidePresented,
+           let surfaceSize = currentRunningModelDetailsSurfaceSize() {
+            runningModelDetailsBaseFrame = FloatingTokenPanelResizePolicy.baseFrame(
+                for: panel.frame,
+                surfaceSize: surfaceSize,
+                placement: runningModelDetailsPlacement
+            )
+        }
         DispatchQueue.main.async { [weak self] in
             self?.isProgrammaticPanelMove = false
         }
         if persist {
-            saveLockedOrigin(origin, throttled: true)
+            saveLockedOrigin(persistedOrigin(for: panel), throttled: true)
         }
         return true
     }

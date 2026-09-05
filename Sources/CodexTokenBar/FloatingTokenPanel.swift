@@ -192,9 +192,11 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private let runningModelDetailsSessionState = FloatingRunningModelDetailsSessionState()
     private var lastPanelScale: FloatingTokenPanelScale?
     private var lastPanelVisibility: FloatingPanelContentVisibility?
-    private var lastPagingGuidePresented = false
-    private var lastRunningModelDetailsPresented = false
+    var lastPagingGuidePresented = false
+    var lastRunningModelDetailsPresented = false
     private var lastRunningModelDetailsRowUnits = 0
+    var runningModelDetailsPlacement: FloatingRunningModelDetailsPlacement = .trailing
+    var runningModelDetailsBaseFrame: NSRect?
     var lastExternalActivePID: pid_t?
     var lastExternalClickLocation: NSPoint?
     var lastExternalClickAt: Date?
@@ -348,6 +350,8 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         appliedLockState = false
         lastRunningModelDetailsPresented = false
         runningModelDetailsSessionState.dismiss()
+        runningModelDetailsBaseFrame = nil
+        runningModelDetailsPlacement = .trailing
 
         if unregisterActive {
             Self.unregisterActiveController(self)
@@ -390,7 +394,8 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             visibility: visibility,
             pagingGuidePresented: pagingGuidePresented,
             runningModelDetailsPresented: !pagingGuidePresented && lastRunningModelDetailsPresented,
-            runningModelDetailsRowUnits: runningModelDetailsRowUnits
+            runningModelDetailsRowUnits: runningModelDetailsRowUnits,
+            runningModelDetailsPlacement: runningModelDetailsPlacement
         )
         lastPanelScale = scale
         lastPanelVisibility = visibility
@@ -546,7 +551,8 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 visibility: lastPanelVisibility,
                 pagingGuidePresented: presented,
                 runningModelDetailsPresented: !presented && lastRunningModelDetailsPresented,
-                runningModelDetailsRowUnits: lastRunningModelDetailsRowUnits
+                runningModelDetailsRowUnits: lastRunningModelDetailsRowUnits,
+                runningModelDetailsPlacement: runningModelDetailsPlacement
             )
         )
     }
@@ -555,6 +561,30 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         guard presented != lastRunningModelDetailsPresented,
               let lastPanelScale,
               let lastPanelVisibility else { return }
+
+        if presented, let panel {
+            let surfaceSize = FloatingTokenPanelMetrics.size(
+                effectiveScale: lastPanelScale.value,
+                visibility: lastPanelVisibility
+            )
+            let expandedSize = FloatingTokenPanelMetrics.size(
+                effectiveScale: lastPanelScale.value,
+                visibility: lastPanelVisibility,
+                runningModelDetailsPresented: true,
+                runningModelDetailsRowUnits: lastRunningModelDetailsRowUnits
+            )
+            runningModelDetailsBaseFrame = FloatingTokenPanelResizePolicy.baseFrame(
+                for: panel.frame,
+                surfaceSize: surfaceSize,
+                placement: runningModelDetailsPlacement
+            )
+            runningModelDetailsPlacement = FloatingTokenPanelResizePolicy.runningModelDetailsPlacement(
+                panelFrame: runningModelDetailsBaseFrame ?? panel.frame,
+                surfaceSize: surfaceSize,
+                expandedSize: expandedSize,
+                screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+            )
+        }
         lastRunningModelDetailsPresented = presented
         (panel as? FloatingTokenPanelWindow)?.suppressesBackgroundMouseActions = presented
             || lastPagingGuidePresented
@@ -564,9 +594,14 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 visibility: lastPanelVisibility,
                 pagingGuidePresented: lastPagingGuidePresented,
                 runningModelDetailsPresented: presented && !lastPagingGuidePresented,
-                runningModelDetailsRowUnits: lastRunningModelDetailsRowUnits
+                runningModelDetailsRowUnits: lastRunningModelDetailsRowUnits,
+                runningModelDetailsPlacement: runningModelDetailsPlacement
             )
         )
+        if !presented {
+            runningModelDetailsBaseFrame = nil
+            runningModelDetailsPlacement = .trailing
+        }
     }
 
     private func setRunningModelDetailsRowUnits(_ rowUnits: Int) {
@@ -583,7 +618,8 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 visibility: lastPanelVisibility,
                 pagingGuidePresented: false,
                 runningModelDetailsPresented: true,
-                runningModelDetailsRowUnits: rowUnits
+                runningModelDetailsRowUnits: rowUnits,
+                runningModelDetailsPlacement: runningModelDetailsPlacement
             )
         )
     }
@@ -599,8 +635,26 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     func updateSize(layout: FloatingTokenPanelLayout) {
         guard let panel else { return }
+        let surfaceSize = lastPanelVisibility.map {
+            FloatingTokenPanelMetrics.size(
+                effectiveScale: layout.effectiveScale,
+                visibility: $0
+            )
+        } ?? layout.size
+        if layout.runningModelDetailsPresented, runningModelDetailsBaseFrame == nil {
+            runningModelDetailsBaseFrame = FloatingTokenPanelResizePolicy.baseFrame(
+                for: panel.frame,
+                surfaceSize: surfaceSize,
+                placement: layout.runningModelDetailsPlacement
+            )
+        }
         isProgrammaticPanelMove = true
-        resizePanel(panel, layout: layout)
+        resizePanel(
+            panel,
+            layout: layout,
+            surfaceSize: surfaceSize,
+            baseFrame: runningModelDetailsBaseFrame
+        )
         if let panel = panel as? FloatingTokenPanelWindow,
            let visibility = lastPanelVisibility {
             panel.interactiveControlFrames = runningThreadControlFrames(
@@ -609,14 +663,15 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             )
             panel.runningModelDetailsPresented = lastRunningModelDetailsPresented
                 && !lastPagingGuidePresented
-            let surfaceSize = FloatingTokenPanelMetrics.size(
-                effectiveScale: layout.effectiveScale,
-                visibility: visibility
-            )
+            let detailsX = layout.runningModelDetailsPlacement == .leading
+                ? FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(
+                    by: layout.effectiveScale
+                )
+                : surfaceSize.width
+                    + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: layout.effectiveScale)
             panel.runningModelDetailsFrame = panel.runningModelDetailsPresented
                 ? NSRect(
-                    x: surfaceSize.width
-                        + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: layout.effectiveScale),
+                    x: detailsX,
                     y: 4.scaled(by: layout.effectiveScale),
                     width: FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(
                         by: layout.effectiveScale
@@ -626,8 +681,18 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 : .zero
         }
         panel.contentView?.layer?.cornerRadius = layout.cornerRadius
-        saveLockedOrigin(panel.frame.origin)
+        saveLockedOrigin(
+            persistedOrigin(
+                for: panel,
+                surfaceSize: surfaceSize,
+                detailsPresented: layout.runningModelDetailsPresented
+            )
+        )
         refreshLockedAnchorOffsetForCurrentFrame()
+        if !layout.runningModelDetailsPresented {
+            runningModelDetailsBaseFrame = nil
+            runningModelDetailsPlacement = .trailing
+        }
         DispatchQueue.main.async { [weak self] in
             self?.isProgrammaticPanelMove = false
         }
@@ -655,12 +720,76 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     func windowDidMove(_ notification: Notification) {
         guard let panel else { return }
         guard !isProgrammaticPanelMove else { return }
-        saveLockedOrigin(panel.frame.origin)
+        if lastRunningModelDetailsPresented,
+           let surfaceSize = currentRunningModelDetailsSurfaceSize() {
+            runningModelDetailsBaseFrame = FloatingTokenPanelResizePolicy.baseFrame(
+                for: panel.frame,
+                surfaceSize: surfaceSize,
+                placement: runningModelDetailsPlacement
+            )
+        }
+        saveLockedOrigin(persistedOrigin(for: panel))
         if lockedAnchor != nil {
             lockedAnchor = currentAnchor(for: panel)
             lockTargetDescription = lockedAnchor?.targetDescription
             refreshFloatingPanelLockStatus()
         }
+    }
+
+    func currentRunningModelDetailsSurfaceSize() -> NSSize? {
+        guard let lastPanelScale, let lastPanelVisibility else { return nil }
+        return FloatingTokenPanelMetrics.size(
+            effectiveScale: lastPanelScale.value,
+            visibility: lastPanelVisibility
+        )
+    }
+
+    func persistedOrigin(
+        for panel: NSPanel,
+        surfaceSize: NSSize? = nil,
+        detailsPresented: Bool? = nil
+    ) -> NSPoint {
+        let detailsPresented = detailsPresented ?? (lastRunningModelDetailsPresented && !lastPagingGuidePresented)
+        guard detailsPresented,
+              let surfaceSize = surfaceSize ?? currentRunningModelDetailsSurfaceSize()
+        else {
+            return panel.frame.origin
+        }
+        let baseFrame = FloatingTokenPanelResizePolicy.baseFrame(
+            for: panel.frame,
+            surfaceSize: surfaceSize,
+            placement: runningModelDetailsPlacement
+        )
+        return baseFrame.origin
+    }
+
+    func frameForDesiredBaseOrigin(
+        _ origin: NSPoint,
+        panel: NSPanel,
+        size: NSSize
+    ) -> NSRect {
+        guard lastRunningModelDetailsPresented && !lastPagingGuidePresented,
+              let surfaceSize = currentRunningModelDetailsSurfaceSize()
+        else {
+            return anchoredPanelFrame(
+                for: panel,
+                size: size,
+                topLeft: NSPoint(x: origin.x, y: origin.y + size.height)
+            )
+        }
+        let baseFrame = NSRect(
+            x: origin.x,
+            y: origin.y,
+            width: surfaceSize.width,
+            height: surfaceSize.height
+        )
+        return FloatingTokenPanelResizePolicy.expandedFrame(
+            baseFrame: baseFrame,
+            expandedSize: size,
+            surfaceSize: surfaceSize,
+            placement: runningModelDetailsPlacement,
+            screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        )
     }
 
     private func activeApplicationDidChange(processIdentifier: pid_t) {
@@ -846,6 +975,13 @@ struct FloatingTokenPanelView: View {
         // reserved for the explicit guide button.
         let pageNavigationAction: (() -> Void)? = nil
 
+        let runningModelDetailsSurfaceOffset = effectiveRunningModelDetailsPresented
+            && layout.runningModelDetailsPlacement == .leading
+            ? FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(by: scale)
+                + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale)
+                + FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
+            : 0
+
         return ZStack(alignment: .topLeading) {
             ZStack {
                 TokenGlassBackground(
@@ -909,6 +1045,7 @@ struct FloatingTokenPanelView: View {
             }
             .frame(width: surfaceSize.width, height: surfaceSize.height, alignment: .topLeading)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .offset(x: runningModelDetailsSurfaceOffset)
 
             if effectiveRunningModelDetailsPresented {
                 FloatingRunningThreadModelDetailsCard(
@@ -923,8 +1060,10 @@ struct FloatingTokenPanelView: View {
                     }
                 )
                 .offset(
-                    x: surfaceSize.width
-                        + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale),
+                    x: layout.runningModelDetailsPlacement == .leading
+                        ? FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
+                        : surfaceSize.width
+                            + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale),
                     y: 4.scaled(by: scale)
                 )
                 .zIndex(5)
@@ -1049,9 +1188,15 @@ func runningThreadControlFrames(
     let centerX = visibility.embedsRunningThreadsInMetricsRow
         ? surfaceSize.width - 41.scaled(by: scale)
         : surfaceSize.width / 2
+    let surfaceOffsetX = layout.runningModelDetailsPresented
+        && layout.runningModelDetailsPlacement == .leading
+        ? FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(by: scale)
+            + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale)
+            + FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
+        : 0
     return [
         NSRect(
-            x: centerX - width / 2,
+            x: surfaceOffsetX + centerX - width / 2,
             y: layout.size.height - centerFromTop - height / 2,
             width: width,
             height: height
@@ -1060,11 +1205,38 @@ func runningThreadControlFrames(
 }
 
 @MainActor
-func resizePanel(_ panel: NSPanel, layout: FloatingTokenPanelLayout) {
+func resizePanel(
+    _ panel: NSPanel,
+    layout: FloatingTokenPanelLayout,
+    surfaceSize: NSSize? = nil,
+    baseFrame: NSRect? = nil
+) {
     let previousFrame = panel.frame
-    let topLeft = NSPoint(x: previousFrame.minX, y: previousFrame.maxY)
     let targetSize = layout.size
-    let targetFrame = anchoredPanelFrame(for: panel, size: targetSize, topLeft: topLeft)
+    let targetFrame: NSRect
+    if layout.runningModelDetailsPresented,
+       let surfaceSize,
+       let baseFrame {
+        targetFrame = FloatingTokenPanelResizePolicy.expandedFrame(
+            baseFrame: baseFrame,
+            expandedSize: targetSize,
+            surfaceSize: surfaceSize,
+            placement: layout.runningModelDetailsPlacement,
+            screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        )
+    } else if let baseFrame {
+        targetFrame = anchoredPanelFrame(
+            for: panel,
+            size: targetSize,
+            topLeft: NSPoint(x: baseFrame.minX, y: baseFrame.maxY)
+        )
+    } else {
+        targetFrame = anchoredPanelFrame(
+            for: panel,
+            size: targetSize,
+            topLeft: NSPoint(x: previousFrame.minX, y: previousFrame.maxY)
+        )
+    }
     panel.contentViewController?.view.frame = NSRect(origin: .zero, size: targetSize)
     panel.contentMinSize = targetSize
     panel.contentMaxSize = targetSize

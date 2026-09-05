@@ -173,6 +173,7 @@ extension FloatingTokenPanelController {
         guard let panel, let anchor = lockedAnchor, let targetFrame = targetFrame(matching: anchor) else {
             return
         }
+        let panelOrigin = persistedOrigin(for: panel)
         lockedAnchor = FloatingPanelWindowAnchor(
             windowNumber: anchor.windowNumber,
             ownerPID: anchor.ownerPID,
@@ -180,8 +181,8 @@ extension FloatingTokenPanelController {
             windowTitle: anchor.windowTitle,
             targetDescription: anchor.targetDescription,
             offset: NSPoint(
-                x: panel.frame.minX - targetFrame.frame.minX,
-                y: panel.frame.minY - targetFrame.frame.minY
+                x: panelOrigin.x - targetFrame.frame.minX,
+                y: panelOrigin.y - targetFrame.frame.minY
             ),
             accessibilityWindow: anchor.accessibilityWindow
         )

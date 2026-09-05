@@ -311,6 +311,94 @@ enum FloatingTokenPanelMetrics {
     }
 }
 
+enum FloatingRunningModelDetailsPlacement: Equatable {
+    case trailing
+    case leading
+}
+
+enum FloatingTokenPanelResizePolicy {
+    static let screenMargin: CGFloat = 8
+
+    static func runningModelDetailsPlacement(
+        panelFrame: NSRect,
+        surfaceSize: NSSize,
+        expandedSize: NSSize,
+        screenFrame: NSRect?,
+        margin: CGFloat = screenMargin
+    ) -> FloatingRunningModelDetailsPlacement {
+        let extraWidth = max(0, expandedSize.width - surfaceSize.width)
+        guard extraWidth > 0, let screenFrame else {
+            return .trailing
+        }
+
+        let trailingAvailable = max(0, screenFrame.maxX - panelFrame.maxX)
+        let leadingAvailable = max(0, panelFrame.minX - screenFrame.minX)
+        if trailingAvailable >= extraWidth + margin {
+            return .trailing
+        }
+        if leadingAvailable >= extraWidth + margin {
+            return .leading
+        }
+        return trailingAvailable >= leadingAvailable ? .trailing : .leading
+    }
+
+    static func baseFrame(
+        for panelFrame: NSRect,
+        surfaceSize: NSSize,
+        placement: FloatingRunningModelDetailsPlacement
+    ) -> NSRect {
+        let extraWidth = max(0, panelFrame.width - surfaceSize.width)
+        let originX = placement == .leading
+            ? panelFrame.minX + extraWidth
+            : panelFrame.minX
+        return NSRect(
+            x: originX,
+            y: panelFrame.maxY - surfaceSize.height,
+            width: surfaceSize.width,
+            height: surfaceSize.height
+        )
+    }
+
+    static func expandedFrame(
+        baseFrame: NSRect,
+        expandedSize: NSSize,
+        surfaceSize: NSSize,
+        placement: FloatingRunningModelDetailsPlacement,
+        screenFrame: NSRect?,
+        margin: CGFloat = screenMargin
+    ) -> NSRect {
+        let extraWidth = max(0, expandedSize.width - surfaceSize.width)
+        let proposedX = placement == .leading
+            ? baseFrame.minX - extraWidth
+            : baseFrame.minX
+        let proposedY = baseFrame.maxY - expandedSize.height
+        let origin = clampedOrigin(
+            NSPoint(x: proposedX, y: proposedY),
+            size: expandedSize,
+            screenFrame: screenFrame,
+            margin: margin
+        )
+        return NSRect(origin: origin, size: expandedSize)
+    }
+
+    private static func clampedOrigin(
+        _ proposed: NSPoint,
+        size: NSSize,
+        screenFrame: NSRect?,
+        margin: CGFloat
+    ) -> NSPoint {
+        guard let screenFrame else { return proposed }
+        let minimumX = screenFrame.minX + margin
+        let maximumX = max(minimumX, screenFrame.maxX - size.width - margin)
+        let minimumY = screenFrame.minY + margin
+        let maximumY = max(minimumY, screenFrame.maxY - size.height - margin)
+        return NSPoint(
+            x: min(max(proposed.x, minimumX), maximumX),
+            y: min(max(proposed.y, minimumY), maximumY)
+        )
+    }
+}
+
 struct FloatingTokenPanelScale: Equatable {
     let value: CGFloat
 
@@ -323,15 +411,20 @@ struct FloatingTokenPanelLayout: Equatable {
     let effectiveScale: CGFloat
     let size: NSSize
     let cornerRadius: CGFloat
+    let runningModelDetailsPresented: Bool
+    let runningModelDetailsPlacement: FloatingRunningModelDetailsPlacement
 
     init(
         scale: FloatingTokenPanelScale,
         visibility: FloatingPanelContentVisibility,
         pagingGuidePresented: Bool = false,
         runningModelDetailsPresented: Bool = false,
-        runningModelDetailsRowUnits: Int = 0
+        runningModelDetailsRowUnits: Int = 0,
+        runningModelDetailsPlacement: FloatingRunningModelDetailsPlacement = .trailing
     ) {
         effectiveScale = scale.value
+        self.runningModelDetailsPresented = runningModelDetailsPresented
+        self.runningModelDetailsPlacement = runningModelDetailsPlacement
         size = FloatingTokenPanelMetrics.size(
             effectiveScale: scale.value,
             visibility: visibility,
