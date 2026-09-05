@@ -356,7 +356,7 @@ function statusCrowdModelRanking(crowdRadar: CodexCrowdRadarSnapshot | null): st
     return [];
   }
   return rankedCodexCrowdRadarModels(crowdRadar, 2).flatMap((row) => {
-    const family = row.model.match(/(?:^|-)(sol|luna|terra)(?:-|$)/iu)?.[1];
+    const family = row.model.match(/(?:^|-)(astra|sol|luna|terra)(?:-|$)/iu)?.[1];
     const familyLabel = family
       ? family.charAt(0).toUpperCase() + family.slice(1).toLowerCase()
       : compactModelIdentifier(row.model);

@@ -211,6 +211,25 @@ test("status model ranking compacts every supported reasoning effort", () => {
   }
 });
 
+test("status model ranking maps the Astra family", () => {
+  const crowdRadar = crowdRadarFixture();
+  crowdRadar.models = [{
+    ...crowdRadar.models[0],
+    model: "gpt-6-astra",
+    effort: "max",
+  }];
+  crowdRadar.recentModels = crowdRadar.models;
+  const result = buildStatusIndicatorPresentation({
+    crowdRadar,
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    order: ["iq"],
+    snapshot: BASE_SNAPSHOT,
+  });
+
+  assert.deepEqual(result.visibleItems[0].compactRows, ["1 Astra·MAX", "2 —"]);
+});
+
 test("today crowd ranking rejects published fallback data and trusts the freshly read realtime table", () => {
   const recentOnly = crowdRadarFixture();
   recentOnly.realtimeAvailable = false;

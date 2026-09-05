@@ -33,6 +33,22 @@ test("crowd radar picks the highest pass rate and formats model family", () => {
   assert.equal((best.passRate * 150).toFixed(1), "119.3");
 });
 
+test("crowd radar maps Astra and uses it before the existing GPT-5.6 lanes on ties", () => {
+  const rows = [
+    { model: "gpt-5.6-sol", effort: "high", graded: 45, passed: 36, passRate: 0.8, cells: 45 },
+    { model: "gpt-6-astra", effort: "high", graded: 45, passed: 36, passRate: 0.8, cells: 45 },
+    { model: "gpt-5.6-terra", effort: "high", graded: 45, passed: 36, passRate: 0.8, cells: 45 },
+    { model: "gpt-5.6-luna", effort: "high", graded: 45, passed: 36, passRate: 0.8, cells: 45 },
+  ];
+  const snapshot = { models: rows, recentModels: [], realtimeAvailable: true };
+
+  assert.equal(crowdRadarModelLabel(rows[1]), "Astra high");
+  assert.deepEqual(
+    rankedCodexCrowdRadarModels(snapshot).map((row) => row.model),
+    ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+  );
+});
+
 test("crowd radar compacts DeepSeek variants for floating and detail labels", () => {
   assert.equal(crowdRadarModelLabel({ model: "DeepSeek V4 Flash", effort: "max" }), "DS F max");
   assert.equal(crowdRadarModelLabel({ model: "DeepSeek V4 Pro", effort: "high" }), "DS P high");

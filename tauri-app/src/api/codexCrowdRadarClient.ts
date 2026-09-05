@@ -279,7 +279,7 @@ export function rankedCodexCrowdRadarModels(
 }
 
 export function crowdRadarModelLabel(row: CodexCrowdRadarModel): string {
-  const family = row.model.match(/(?:^|-)\s*(sol|terra|luna)(?:$|-)/i)?.[1] ?? row.model;
+  const family = row.model.match(/(?:^|-)\s*(astra|sol|terra|luna)(?:$|-)/i)?.[1] ?? row.model;
   return compactRadarModelName(`${family} ${row.effort}`.trim());
 }
 
@@ -605,11 +605,12 @@ function compareCrowdRadarModels(
 
 function modelRank(model: string): number {
   const normalized = model.toLocaleLowerCase();
-  if (normalized.includes("gpt-5.6-sol")) return 0;
-  if (normalized.includes("gpt-5.6-terra")) return 1;
-  if (normalized.includes("gpt-5.6-luna")) return 2;
-  if (normalized.includes("gpt-5.5")) return 3;
-  return 4;
+  if (normalized.includes("gpt-6-astra")) return 0;
+  if (normalized.includes("gpt-5.6-sol")) return 1;
+  if (normalized.includes("gpt-5.6-terra")) return 2;
+  if (normalized.includes("gpt-5.6-luna")) return 3;
+  if (normalized.includes("gpt-5.5")) return 4;
+  return 5;
 }
 
 function effortRank(effort: string): number {

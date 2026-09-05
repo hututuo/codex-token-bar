@@ -82,6 +82,7 @@ test("compact Radar presentation localizes actions and keeps model reasoning eff
   for (const rawAction of ["Use Windows", "use_window", "use-window", "use windows", "use_remaining_tokens"]) {
     assert.equal(radarActionDisplayText(rawAction), "速登窗口");
   }
+  assert.equal(compactRadarModelName("GPT-6 Astra max"), "Astra max");
   assert.equal(compactRadarModelName("GPT-5.6 Sol max"), "Sol max");
   assert.equal(compactRadarModelName("GPT-5.6 Luna max"), "Luna max");
   assert.equal(compactRadarModelName("GPT-5.6 Terra max"), "Terra max");

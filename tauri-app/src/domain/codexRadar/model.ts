@@ -782,7 +782,7 @@ export function compactRadarModelName(label: string): string {
     }
     return normalized.replace(/^DeepSeek[\s_-]*/i, "DS ").trim();
   }
-  const family = label.match(/\b(sol|luna|terra)\b/i)?.[1];
+  const family = label.match(/\b(astra|sol|luna|terra)\b/i)?.[1];
   if (family) {
     const familyName = family.charAt(0).toUpperCase() + family.slice(1).toLowerCase();
     const effort = label.match(/\b(ultra|max|xhigh|high|medium|low|minimal)\b/i)?.[1]?.toLowerCase();
