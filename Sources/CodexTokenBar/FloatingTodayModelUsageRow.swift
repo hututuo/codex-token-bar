@@ -42,7 +42,7 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
 
 enum FloatingTodayModelUsagePresentation {
     static let visibleItemLimit = 4
-    static let minimumVisibleModelCount = 3
+    static let minimumVisibleModelCount = 4
     static let dashboardPrimaryModelKeys = [
         "gpt-6-astra",
         "gpt-5.6-sol",
@@ -52,7 +52,7 @@ enum FloatingTodayModelUsagePresentation {
 
     /// Keep the compact model strip useful even when the current day only
     /// contains one model. Astra/Sol/Terra/Luna are the stable placeholder
-    /// priority list, but only enough zero rows are added to reach three total
+    /// priority list, but only enough zero rows are added to reach four total
     /// visible models. Other models are added only when the source actually
     /// reports them. Spark is intentionally not part of this default paid-model
     /// set because it has its own quota.

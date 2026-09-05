@@ -230,14 +230,14 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertFalse(item.usesIndependentQuota)
     }
 
-    func testFloatingTodayModelUsageShowsDefaultModelTrioAndUsesCostOrder() throws {
+    func testFloatingTodayModelUsageShowsDefaultModelQuartetAndUsesCostOrder() throws {
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.items(
                 from: [],
                 fallbackModel: .gpt56Sol,
                 showPlaceholders: true
             ).map(\.label),
-            ["Astra", "Sol", "Terra"]
+            ["Astra", "Sol", "Terra", "Luna"]
         )
 
         let oneUsedModel = FloatingTodayModelUsagePresentation.items(
@@ -253,8 +253,8 @@ final class ModelUsagePresentationTests: XCTestCase {
             fallbackModel: .gpt56Sol,
             showPlaceholders: true
         )
-        XCTAssertEqual(oneUsedModel.count, 3)
-        XCTAssertEqual(oneUsedModel.map(\.label), ["5.4", "Astra", "Sol"])
+        XCTAssertEqual(oneUsedModel.count, 4)
+        XCTAssertEqual(oneUsedModel.map(\.label), ["5.4", "Astra", "Sol", "Terra"])
 
         let rows = [
             rowWithBreakdown(
@@ -279,9 +279,9 @@ final class ModelUsagePresentationTests: XCTestCase {
             showPlaceholders: true
         )
 
-        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Astra"])
-        XCTAssertEqual(items.map(\.tokens), [2_000_000, 2_000_000, 0])
-        XCTAssertEqual(items.map { $0.valueText(for: .share) }, ["50%", "50%", "0%"])
+        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Astra", "Terra"])
+        XCTAssertEqual(items.map(\.tokens), [2_000_000, 2_000_000, 0, 0])
+        XCTAssertEqual(items.map { $0.valueText(for: .share) }, ["50%", "50%", "0%", "0%"])
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.items(
                 from: rows,
@@ -291,6 +291,21 @@ final class ModelUsagePresentationTests: XCTestCase {
             items.map(\.id),
             "share and cost pages must consume one stable model order"
         )
+    }
+
+    func testFloatingTodayModelUsageSortsAstraSolTerraLunaByAmountWithDefaultTieBreak() {
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: [
+                rowWithBreakdown("gpt-6-astra", inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 100_000),
+                rowWithBreakdown("gpt-5.6-sol", inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000),
+                rowWithBreakdown("gpt-5.6-terra", inputTokens: 500_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 500_000),
+                rowWithBreakdown("gpt-5.6-luna", inputTokens: 0, cachedInputTokens: 0, outputTokens: 1_000_000, totalTokens: 1_000_000),
+            ],
+            fallbackModel: .gpt56Sol
+        )
+
+        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Astra", "Terra"])
+        XCTAssertEqual(items.map { $0.valueText(for: .cost) }, ["$5.00", "$1.20", "$1.00", "$1.00"])
     }
 
     func testFloatingTodayModelCostPaginatesBeyondTheCompactFourItemPage() {
