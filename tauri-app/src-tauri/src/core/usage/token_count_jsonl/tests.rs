@@ -3819,8 +3819,8 @@ fn exact_index_migrates_fba33820_schema10_without_reparsing_and_keeps_append_che
     let mut migrated = ExactUsageIndex::open(&root).unwrap();
     assert_eq!(
         ExactUsageIndex::quick_check_count_for_testing(),
-        5,
-        "schema 10→11 must not repeat an integrity scan without a new durability boundary"
+        2,
+        "unchanged source and candidate each need one integrity scan; rename/open reuse this process proof"
     );
     assert_eq!(
         ExactUsageIndex::scan_bytes_for_testing(),
@@ -3869,6 +3869,127 @@ fn exact_index_migrates_fba33820_schema10_without_reparsing_and_keeps_append_che
     );
 
     drop(migrated);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn accounting_preparation_skips_unneeded_structural_hashes_and_rebuilds_aggregates_once() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    write_lines(
+        &root.join("sessions/rollout-accounting-preparation.jsonl"),
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"cached_input_tokens":20,"output_tokens":20,"total_tokens":100}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&index_path).unwrap();
+    connection.execute_batch(
+        "UPDATE metadata SET value='11' WHERE key='schema_version';
+         DELETE FROM metadata WHERE key IN ('accounting_revision','accounting_coverage','accounting_structural_receipt');
+         UPDATE event_rows SET tokens=999;
+         UPDATE dashboard_source_totals SET total_tokens=999;
+         UPDATE dashboard_source_5m SET total_tokens=999;
+         UPDATE dashboard_5m_current SET total_tokens=999;"
+    ).unwrap();
+    drop(connection);
+
+    ExactUsageIndex::reset_preparation_work_for_testing();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(ExactUsageIndex::preparation_work_for_testing(), (0, 1));
+    index.ensure_dashboard_aggregates(&root).unwrap();
+    assert_eq!(ExactUsageIndex::preparation_work_for_testing(), (0, 1),
+        "a full read must not repeat the accounting transaction's derived-table rebuild");
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 100);
+    drop(index);
+    let connection = Connection::open(&index_path).unwrap();
+    let event = connection.query_row("SELECT tokens,legacy_tokens FROM event_rows", [],
+        |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?))).unwrap();
+    assert_eq!(event, (100,999));
+    assert_eq!(connection.query_row("SELECT value FROM metadata WHERE key='accounting_coverage'", [],
+        |row| row.get::<_,String>(0)).unwrap(), "legacy-source-audit-required");
+    drop(connection);
+    ExactUsageIndex::reset_preparation_work_for_testing();
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert_eq!(ExactUsageIndex::preparation_work_for_testing(), (0,0));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn accounting_preparation_reuses_candidate_facts_through_semantic_conversion() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    write_lines(
+        &root.join("sessions/rollout-candidate-accounting-preparation.jsonl"),
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"cached_input_tokens":20,"output_tokens":20,"total_tokens":100}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    convert_current_index_to_fba33820_schema10(&index_path);
+    let connection = Connection::open(&index_path).unwrap();
+    connection.execute("DELETE FROM metadata WHERE key IN ('accounting_revision','accounting_coverage','accounting_structural_receipt')", []).unwrap();
+    drop(connection);
+    ExactUsageIndex::reset_preparation_work_for_testing();
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let index = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(ExactUsageIndex::preparation_work_for_testing(), (2,1),
+        "hash source and candidate once each; semantic conversion reuses the equal validated facts");
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 2);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0,0));
+    drop(index);
+    let connection = Connection::open(&index_path).unwrap();
+    assert!(connection.query_row("SELECT value FROM metadata WHERE key='accounting_structural_receipt'", [],
+        |row| row.get::<_,String>(0)).unwrap().contains("fingerprint_count"));
+    drop(connection);
+    // A later process/open has no in-memory proof. Resume still validates the
+    // durable switched manifest and retains rollback until a successful sync.
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert!(index_path.with_extension("sqlite3.schema11-rollback").exists());
+    assert!(index_path.with_extension("sqlite3.schema11-migration.json").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn accounting_preparation_preserves_a_pending_checkpoint_and_resume() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    write_lines(
+        &root.join("sessions/rollout-pending-accounting-preparation.jsonl"),
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"cached_input_tokens":20,"output_tokens":20,"total_tokens":100}}}}"#],
+    );
+    ExactUsageIndex::set_after_file_commit_hook_for_testing(|_| Err("stop after pending checkpoint".into()));
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    assert!(index.sync(&root, &mut Vec::new()).unwrap_err().contains("stop after pending checkpoint"));
+    drop(index);
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&index_path).unwrap();
+    let checkpoint = connection.query_row("SELECT target_generation,resume_offset FROM pending_sources", [],
+        |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?))).unwrap();
+    connection.execute_batch(
+        "UPDATE metadata SET value='11' WHERE key='schema_version';
+         DELETE FROM metadata WHERE key IN ('accounting_revision','accounting_coverage','accounting_structural_receipt');
+         UPDATE pending_event_rows SET tokens=999;"
+    ).unwrap();
+    drop(connection);
+    ExactUsageIndex::reset_preparation_work_for_testing();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(connection.query_row("SELECT target_generation,resume_offset FROM pending_sources", [],
+        |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?))).unwrap(), checkpoint);
+    assert_eq!(connection.query_row("SELECT tokens,legacy_tokens FROM pending_event_rows", [],
+        |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?))).unwrap(), (100,999));
+    drop(connection);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0,0));
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 100);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0, 0);
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -7208,12 +7329,13 @@ fn parses_token_count_totals_as_deltas() {
     let session_dir = root.join("sessions").join("2026").join("06").join("18");
     fs::create_dir_all(&session_dir).unwrap();
     let file = session_dir.join("rollout-019eaaaa-bbbb-cccc-dddd-eeeeffffffff.jsonl");
-    let first_timestamp = (OffsetDateTime::now_utc() - time::Duration::minutes(10))
-        .format(&Rfc3339)
-        .unwrap();
-    let second_timestamp = (OffsetDateTime::now_utc() - time::Duration::minutes(5))
-        .format(&Rfc3339)
-        .unwrap();
+    // Use one closed bucket: now-5m is still unsettled during the first
+    // 15 seconds of a 5m boundary, and two buckets can straddle midnight.
+    let closed_bucket = ExactUsageIndex::latest_eligible_aggregate_boundary(OffsetDateTime::now_utc()) - 300;
+    let first_timestamp = OffsetDateTime::from_unix_timestamp(closed_bucket + 60).unwrap()
+        .format(&Rfc3339).unwrap();
+    let second_timestamp = OffsetDateTime::from_unix_timestamp(closed_bucket + 120).unwrap()
+        .format(&Rfc3339).unwrap();
     let first_line = format!(
         r#"{{"timestamp":"{first_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"total_tokens":13}},"last_token_usage":{{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"total_tokens":13}}}}}}}}"#
     );
@@ -7352,9 +7474,9 @@ fn recent_usage_24h_series_keeps_thirty_days_of_five_minute_history() {
     let older_timestamp = (OffsetDateTime::now_utc() - time::Duration::days(2))
         .format(&Rfc3339)
         .unwrap();
-    let recent_timestamp = (OffsetDateTime::now_utc() - time::Duration::minutes(5))
-        .format(&Rfc3339)
-        .unwrap();
+    let closed_bucket = ExactUsageIndex::latest_eligible_aggregate_boundary(OffsetDateTime::now_utc()) - 300;
+    let recent_timestamp = OffsetDateTime::from_unix_timestamp(closed_bucket + 60).unwrap()
+        .format(&Rfc3339).unwrap();
     write_lines(
         &file,
         &[

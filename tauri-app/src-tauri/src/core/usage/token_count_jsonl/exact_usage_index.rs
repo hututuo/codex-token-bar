@@ -270,6 +270,50 @@ struct Schema11SourceReceipt {
     wal: Option<Schema11FileStamp>,
 }
 
+/// Proof made by this open, never deserialized from a manifest. A rename may
+/// carry it to the canonical path only while DB/WAL stamps and lineage match.
+/// Restarted migrations must make a new proof before they can reuse work.
+struct Schema11ValidatedStorage {
+    receipt: Schema11SourceReceipt,
+    facts: Option<Schema11MigrationFacts>,
+}
+
+struct IndexPreparationTrace {
+    stage: &'static str,
+    started: Instant,
+    complete: bool,
+}
+
+impl IndexPreparationTrace {
+    fn new(stage: &'static str) -> Self {
+        Self { stage, started: Instant::now(), complete: false }
+    }
+
+    fn record(&self, status: &str) {
+        startup_trace::mark_performance(format!(
+            "exact_prepare stage={} elapsed_ms={} status={status}",
+            self.stage, self.started.elapsed().as_millis(),
+        ));
+    }
+
+    fn advance(&mut self, stage: &'static str) {
+        self.record("ok");
+        self.stage = stage;
+        self.started = Instant::now();
+    }
+
+    fn finish(mut self) {
+        self.record("ok");
+        self.complete = true;
+    }
+}
+
+impl Drop for IndexPreparationTrace {
+    fn drop(&mut self) {
+        if !self.complete { self.record("error"); }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Schema11CandidateManifest {
     manifest_version: u32,
@@ -1070,6 +1114,8 @@ thread_local! {
     static FAIL_SCHEMA9_MIGRATION_STAGE: Cell<u8> = const { Cell::new(0) };
     static FAIL_SCHEMA11_MIGRATION_STAGE: Cell<u8> = const { Cell::new(0) };
     static MIGRATION_AVAILABLE_BYTES_OVERRIDE: Cell<Option<u64>> = const { Cell::new(None) };
+    static PREPARATION_FACTS_COUNT: Cell<u64> = const { Cell::new(0) };
+    static AGGREGATE_REBUILD_COUNT: Cell<u64> = const { Cell::new(0) };
 }
 #[cfg(test)]
 static FULL_SCAN_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -1251,14 +1297,16 @@ fn assess_index_migration(
     }
 
     let mut stages = Vec::new();
-    if schema != CURRENT_SCHEMA_VERSION {
-        stages.push("schema");
-    } else if !column_exists_checked(connection, "files", "current_model")?
+    if schema < INDEX_SCHEMA_VERSION
+        || !column_exists_checked(connection, "files", "current_model")?
         || !column_exists_checked(connection, "files", "is_explicit_subagent_fork")?
         || !column_exists_checked(connection, "events", "model")?
         || !column_exists_checked(connection, "events", "reasoning_output_tokens")?
     {
         stages.push("schema");
+    }
+    if schema != CURRENT_SCHEMA_VERSION {
+        stages.push("accounting");
     }
     if metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
         != Some(FORK_REPLAY_BOUNDARY_REVISION)
@@ -1340,7 +1388,9 @@ pub(super) fn maintain_exact_index_storage_for_testing(
 
 impl ExactUsageIndex {
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
+        let mut preparation = IndexPreparationTrace::new("in_process_lock");
         let operation_lock = AppOperationGuard::acquire(codex_home)?;
+        preparation.advance("file_lock");
         let path = database_path(codex_home)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
@@ -1380,8 +1430,9 @@ impl ExactUsageIndex {
         // managed manifest first: during the narrow rename window the
         // canonical path is intentionally absent, and treating that state as
         // a fresh install would create an empty replacement database.
-        let migrated_via_schema11_candidate =
-            prepare_schema11_candidate_if_needed(&path, codex_home)?;
+        preparation.advance("candidate_prepare");
+        let candidate_validation = prepare_schema11_candidate_if_needed(&path, codex_home)?;
+        preparation.advance("compatibility_probe");
         let existed_before = existing_regular_index(&path)?;
         let (migration_assessment, metadata_table_exists) = if existed_before {
             let read_only =
@@ -1412,15 +1463,22 @@ impl ExactUsageIndex {
         } else {
             (MigrationAssessment::Compatible, false)
         };
+        // Schema 11 already has the structural/catalog layout. Its component
+        // accounting conversion must not reinitialize every derived schema or
+        // write unchanged catalog markers before the semantic transaction.
         let needs_migration_work = matches!(
             &migration_assessment,
-            MigrationAssessment::KnownMigrationRequired(_)
+            MigrationAssessment::KnownMigrationRequired(stages)
+                if stages.iter().any(|stage| *stage != "accounting")
         );
+        preparation.advance("open_integrity");
         let (mut connection, recovered_corrupt_index) = open_index_connection_with_recovery(
             &path,
             existed_before,
-            !existed_before || !metadata_table_exists || migrated_via_schema11_candidate,
+            !existed_before || !metadata_table_exists || candidate_validation.is_some(),
+            candidate_validation.as_ref(),
         )?;
+        preparation.advance("schema_and_provenance");
         let raw_schema_version = metadata_text(&connection, "schema_version")?;
         let has_schema_version = raw_schema_version.is_some();
         let schema_version = raw_schema_version.and_then(|value| value.parse::<i64>().ok());
@@ -1723,7 +1781,9 @@ impl ExactUsageIndex {
                 metadata_i64(&connection, "revision")?.unwrap_or_else(fresh_revision_seed);
             set_metadata(&connection, DASHBOARD_REVISION_KEY, &revision.to_string())?;
         }
-        migrate_accounting(&mut connection)?;
+        preparation.advance("accounting_migration");
+        migrate_accounting(&mut connection, candidate_validation.as_ref())?;
+        preparation.advance("finalize_open");
         let migration_markers_complete = !should_report_migration
             || migration_markers_complete(&connection, replay_migration_complete)?;
         if should_report_migration && migration_markers_complete {
@@ -1758,6 +1818,7 @@ impl ExactUsageIndex {
                 Some(MIGRATION_STAGE_TOTAL),
             );
         }
+        preparation.finish();
         Ok(Self {
             connection,
             _operation_lock: operation_lock,
@@ -2144,6 +2205,17 @@ impl ExactUsageIndex {
     #[cfg(test)]
     pub(super) fn reset_quick_check_count_for_testing() {
         QUICK_CHECK_COUNT.store(0, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_preparation_work_for_testing() {
+        PREPARATION_FACTS_COUNT.with(|value| value.set(0));
+        AGGREGATE_REBUILD_COUNT.with(|value| value.set(0));
+    }
+
+    #[cfg(test)]
+    pub(super) fn preparation_work_for_testing() -> (u64, u64) {
+        (PREPARATION_FACTS_COUNT.with(Cell::get), AGGREGATE_REBUILD_COUNT.with(Cell::get))
     }
 
     #[cfg(test)]
@@ -7360,6 +7432,8 @@ fn mark_dashboard_changed(transaction: &Transaction<'_>) -> Result<(), String> {
 }
 
 fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Result<(), String> {
+    #[cfg(test)]
+    AGGREGATE_REBUILD_COUNT.with(|value| value.set(value.get() + 1));
     transaction
         .execute_batch(
             r#"
@@ -11197,8 +11271,13 @@ fn schema11_file_stamp(path: &Path) -> Result<Schema11FileStamp, String> {
 fn schema11_source_receipt(index_path: &Path) -> Result<Schema11SourceReceipt, String> {
     let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(1))
         .map_err(|error| format!("无法读取 schema 11 活动索引收据：{error}"))?;
+    let before = schema11_source_receipt_from_connection(index_path, &connection)?;
     quick_check_index(&connection, Some(index_path))?;
-    schema11_source_receipt_from_connection(index_path, &connection)
+    let after = schema11_source_receipt_from_connection(index_path, &connection)?;
+    if before != after {
+        return Err("活动索引在完整性检查期间发生变化；已保留原库".into());
+    }
+    Ok(after)
 }
 
 fn schema11_source_receipt_without_quick_check(
@@ -11236,6 +11315,17 @@ fn schema11_receipt_matches_current(
     expected: &Schema11SourceReceipt,
 ) -> Result<bool, String> {
     Ok(schema11_source_receipt_without_quick_check(index_path)? == *expected)
+}
+
+fn schema11_receipt_metadata_matches(
+    connection: &Connection,
+    expected: &Schema11SourceReceipt,
+) -> Result<bool, String> {
+    Ok(metadata_i64(connection, "schema_version")? == Some(expected.schema_version)
+        && metadata_text(connection, "revision")? == expected.revision
+        && metadata_text(connection, DASHBOARD_REVISION_KEY)? == expected.dashboard_revision
+        && metadata_i64(connection, "published_generation")? == expected.published_generation
+        && metadata_i64(connection, "building_generation")? == expected.building_generation)
 }
 
 fn schema11_receipt_matches_current_with_integrity(
@@ -11544,6 +11634,7 @@ fn schema11_fingerprint_digest(
     connection: &Connection,
     sql: &str,
     parameters: impl rusqlite::Params,
+    canonical_only: bool,
 ) -> Result<String, String> {
     let mut statement = connection
         .prepare(sql)
@@ -11580,10 +11671,18 @@ fn schema11_fingerprint_digest(
             );
         }
         current_source.get_or_insert((generation, path));
-        let canonical = canonicalize_legacy_fingerprint(
-            row.get_ref(2)
-                .map_err(|error| format!("无法解码 schema 11 指纹值：{error}"))?,
-        )?;
+        let value = row.get_ref(2)
+            .map_err(|error| format!("无法解码 schema 11 指纹值：{error}"))?;
+        let canonical = if canonical_only {
+            let rusqlite::types::ValueRef::Blob(bytes) = value else {
+                return Err("schema 11 候选库仍包含非 BLOB 指纹".into());
+            };
+            fingerprint_codec::decode(bytes)
+                .map_err(|error| format!("schema 11 候选指纹不是 canonical codec：{error}"))?;
+            bytes.to_vec()
+        } else {
+            canonicalize_legacy_fingerprint(value)?
+        };
         canonical_fingerprints.push(canonical);
     }
     if let Some((generation, path)) = current_source {
@@ -11694,6 +11793,7 @@ fn schema11_migration_digests(
                 connection,
                 "SELECT file_generation, file_path, fingerprint FROM file_fingerprints ORDER BY file_generation, file_path, fingerprint",
                 [],
+                true,
             )?,
             chunks: schema11_query_digest(
                 connection,
@@ -11833,6 +11933,7 @@ fn schema11_migration_digests(
                 "{selected_cte} SELECT f.file_generation, f.file_path, f.fingerprint FROM file_fingerprints f JOIN selected_versions v ON v.path = f.file_path AND v.generation = f.file_generation ORDER BY f.file_generation, f.file_path, f.fingerprint"
             ),
             params![published, building],
+            false,
         )?,
         chunks: schema11_query_digest(
             connection,
@@ -11890,7 +11991,11 @@ fn schema11_migration_facts(
     connection: &Connection,
     schema_version: i64,
 ) -> Result<Schema11MigrationFacts, String> {
+    #[cfg(test)]
+    PREPARATION_FACTS_COUNT.with(|value| value.set(value.get() + 1));
+    let preparation = IndexPreparationTrace::new("migration_digests");
     let digests = schema11_migration_digests(connection, schema_version)?;
+    preparation.finish();
     let (catalog_count, catalog_size_total) = schema11_catalog_facts(connection)?;
     let (session_metadata_count, session_metadata_title_bytes, session_metadata_updated_at_total) =
         schema11_session_metadata_facts(connection)?;
@@ -12176,6 +12281,7 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
             "schema 11 候选迁移只接受 schema 9/10，实际为 {schema_version}"
         ));
     }
+    let mut preparation = IndexPreparationTrace::new("candidate_restructure");
     let generations = schema11_legacy_generation_state(&connection)?;
     let legacy_alter_table = pragma_u64(&connection, "legacy_alter_table")?;
     connection
@@ -12212,6 +12318,7 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
             .map_err(|error| format!("无法隔离 schema 11 候选旧表：{error}"))?;
         maybe_fail_schema11_migration_for_testing(1)?;
         initialize_index_schema(&transaction)?;
+        preparation.advance("candidate_copy_sources_events");
 
         let published = generations.published;
         let building = generations.building;
@@ -12442,6 +12549,7 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
             )
             .map_err(|error| format!("无法迁移 schema 11 事件：{error}"))?;
 
+        preparation.advance("candidate_copy_fingerprints_chunks");
         copy_schema11_fingerprints(
             &transaction,
             r#"
@@ -12504,6 +12612,7 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
             )
             .map_err(|error| format!("无法迁移 schema 11 指纹分块：{error}"))?;
         maybe_fail_schema11_migration_for_testing(3)?;
+        preparation.advance("candidate_copy_derived_tables");
 
         transaction
             .execute_batch(
@@ -12789,14 +12898,9 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
                 "#,
             )
             .map_err(|error| format!("无法完成 schema 11 候选表切换：{error}"))?;
-        let foreign_key_failure = transaction
-            .query_row("PRAGMA foreign_key_check", [], |_| Ok(true))
-            .optional()
-            .map_err(|error| format!("无法检查 schema 11 候选外键：{error}"))?
-            .unwrap_or(false);
-        if foreign_key_failure {
-            return Err("schema 11 候选迁移外键检查失败".into());
-        }
+        // Full candidate validation checks foreign keys after VACUUM and
+        // before any switch. The private conversion need not scan them twice.
+        preparation.advance("candidate_commit");
         maybe_fail_schema11_migration_for_testing(5)?;
         transaction
             .commit()
@@ -12813,9 +12917,11 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
         (Ok(()), Err(error)) => return Err(error),
         (Ok(()), Ok(())) => {}
     }
+    preparation.advance("candidate_vacuum");
     connection
         .execute_batch("VACUUM; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")
         .map_err(|error| format!("无法压实 schema 11 候选库：{error}"))?;
+    preparation.finish();
     // The caller immediately advances to the Migrated phase and performs the
     // complete candidate validation, including quick_check. Repeating it here
     // scans the same private database twice without creating a new durability
@@ -12845,7 +12951,7 @@ fn maybe_fail_schema11_migration_for_testing(_stage: u8) -> Result<(), String> {
 fn prepare_schema11_candidate_if_needed(
     index_path: &Path,
     codex_home: &Path,
-) -> Result<bool, String> {
+) -> Result<Option<Schema11ValidatedStorage>, String> {
     let candidate_path = schema11_candidate_path(index_path);
     let rollback_path = schema11_rollback_path(index_path);
     let manifest_path = schema11_manifest_path(index_path);
@@ -12857,7 +12963,7 @@ fn prepare_schema11_candidate_if_needed(
             return Err("发现未登记的 schema 11 候选库或回滚库；为避免覆盖，已停止自动迁移".into());
         }
         if !existing_regular_index(index_path)? {
-            return Ok(false);
+            return Ok(None);
         }
         // Probe only the schema marker before invoking the migration receipt.
         // A schema-11 compatible open must keep using the normal integrity
@@ -12868,14 +12974,14 @@ fn prepare_schema11_candidate_if_needed(
             // This is only a migration-routing probe. Let the normal read-only
             // compatibility/integrity path classify and report any open or
             // page error with its established non-destructive diagnostics.
-            return Ok(false);
+            return Ok(None);
         };
         let Ok(metadata_exists) = source.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
             [],
             |row| row.get::<_, bool>(0),
         ) else {
-            return Ok(false);
+            return Ok(None);
         };
         let source_schema = if metadata_exists {
             match source
@@ -12887,16 +12993,18 @@ fn prepare_schema11_candidate_if_needed(
                 .optional()
             {
                 Ok(value) => value.and_then(|value| value.parse::<i64>().ok()),
-                Err(_) => return Ok(false),
+                Err(_) => return Ok(None),
             }
         } else {
             None
         };
         drop(source);
         if !matches!(source_schema, Some(GITHUB_BASE_SCHEMA_VERSION | 10)) {
-            return Ok(false);
+            return Ok(None);
         }
+        let mut preparation = IndexPreparationTrace::new("source_integrity");
         let source_receipt = schema11_source_receipt(index_path)?;
+        preparation.advance("source_facts");
         super::update_precise_dashboard_progress(
             codex_home,
             "migrating",
@@ -12914,6 +13022,7 @@ fn prepare_schema11_candidate_if_needed(
             "schema11_migration stage=source_facts elapsed_ms={}",
             source_facts_started.elapsed().as_millis()
         ));
+        preparation.finish();
         let mut manifest = Schema11CandidateManifest {
             manifest_version: SCHEMA11_CANDIDATE_MANIFEST_VERSION,
             source_path: index_path.to_string_lossy().into_owned(),
@@ -12924,15 +13033,16 @@ fn prepare_schema11_candidate_if_needed(
             phase: Schema11CandidatePhase::Prepared,
         };
         schema11_store_manifest(&manifest_path, &manifest)?;
-        schema11_resume_candidate(
+        let validation = schema11_resume_candidate(
             &mut manifest,
             &manifest_path,
             index_path,
             &candidate_path,
             &rollback_path,
             codex_home,
+            true,
         )?;
-        return Ok(true);
+        return Ok(Some(validation));
     }
 
     let mut manifest = schema11_load_manifest(&manifest_path)?;
@@ -12943,15 +13053,16 @@ fn prepare_schema11_candidate_if_needed(
     {
         return Err("schema 11 候选迁移清单与当前索引路径不匹配，已保留全部现场".into());
     }
-    schema11_resume_candidate(
+    let validation = schema11_resume_candidate(
         &mut manifest,
         &manifest_path,
         index_path,
         &candidate_path,
         &rollback_path,
         codex_home,
+        false,
     )?;
-    Ok(true)
+    Ok(Some(validation))
 }
 
 fn schema11_resume_candidate(
@@ -12961,7 +13072,8 @@ fn schema11_resume_candidate(
     candidate_path: &Path,
     rollback_path: &Path,
     codex_home: &Path,
-) -> Result<(), String> {
+    source_integrity_verified: bool,
+) -> Result<Schema11ValidatedStorage, String> {
     let resumed_from_validated = manifest.phase == Schema11CandidatePhase::Validated;
     if manifest.phase == Schema11CandidatePhase::Switched {
         // The switched schema 11 database is allowed to accumulate a durable
@@ -12976,8 +13088,7 @@ fn schema11_resume_candidate(
             0,
             None,
         );
-        validate_schema11_storage(index_path, None)?;
-        return Ok(());
+        return validate_schema11_storage(index_path, None);
     }
     if manifest.phase == Schema11CandidatePhase::Switching {
         super::update_precise_dashboard_progress(
@@ -12991,21 +13102,25 @@ fn schema11_resume_candidate(
             .source_facts
             .clone()
             .ok_or_else(|| "schema 11 切换清单缺少对账事实".to_string())?;
-        schema11_finish_candidate_switch(
+        return schema11_finish_candidate_switch(
             manifest,
             manifest_path,
             index_path,
             candidate_path,
             rollback_path,
             &facts,
-            true,
-        )?;
-        return Ok(());
+            None,
+        );
     }
     if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
         return Err(
             "活动索引在 schema 11 候选迁移期间发生变化；候选库、回滚库和清单均已保留".into(),
         );
+    }
+    if !source_integrity_verified
+        && !schema11_receipt_matches_current_with_integrity(index_path, &manifest.source_receipt)?
+    {
+        return Err("活动索引在 schema 11 恢复校验期间发生变化；已保留现场".into());
     }
     let source_facts = if let Some(facts) = manifest.source_facts.clone() {
         facts
@@ -13018,6 +13133,7 @@ fn schema11_resume_candidate(
         facts
     };
 
+    let mut validation = None;
     if manifest.phase == Schema11CandidatePhase::Prepared {
         super::update_precise_dashboard_progress(
             codex_home,
@@ -13075,12 +13191,12 @@ fn schema11_resume_candidate(
             None,
         );
         let stage_started = Instant::now();
-        validate_schema11_candidate(candidate_path, &source_facts)?;
+        validation = Some(validate_schema11_candidate(candidate_path, &source_facts)?);
         startup_trace::mark_performance(format!(
             "schema11_migration stage=validate_candidate elapsed_ms={}",
             stage_started.elapsed().as_millis()
         ));
-        if !schema11_receipt_matches_current_with_integrity(index_path, &manifest.source_receipt)? {
+        if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
             return Err("活动索引在 schema 11 候选校验期间发生变化；尚未切换".into());
         }
         maybe_fail_schema11_migration_for_testing(8)?;
@@ -13094,7 +13210,7 @@ fn schema11_resume_candidate(
             // A prior process may have stopped after persisting Validated. The
             // private candidate has crossed a process boundary since its last
             // facts check, so revalidate it before any rename can occur.
-            validate_schema11_candidate(candidate_path, &source_facts)?;
+            validation = Some(validate_schema11_candidate(candidate_path, &source_facts)?);
         }
         super::update_precise_dashboard_progress(
             codex_home,
@@ -13119,21 +13235,22 @@ fn schema11_resume_candidate(
             None,
         );
         let stage_started = Instant::now();
-        schema11_finish_candidate_switch(
+        let validated = schema11_finish_candidate_switch(
             manifest,
             manifest_path,
             index_path,
             candidate_path,
             rollback_path,
             &source_facts,
-            false,
+            validation,
         )?;
         startup_trace::mark_performance(format!(
             "schema11_migration stage=switch_candidate elapsed_ms={}",
             stage_started.elapsed().as_millis()
         ));
+        return Ok(validated);
     }
-    Ok(())
+    Err("schema 11 迁移未到达可验证阶段；已保留全部现场".into())
 }
 
 fn schema11_finish_candidate_switch(
@@ -13143,9 +13260,12 @@ fn schema11_finish_candidate_switch(
     candidate_path: &Path,
     rollback_path: &Path,
     facts: &Schema11MigrationFacts,
-    revalidate_facts_after_interruption: bool,
-) -> Result<(), String> {
+    validated: Option<Schema11ValidatedStorage>,
+) -> Result<Schema11ValidatedStorage, String> {
     if existing_regular_index(index_path)? && !existing_regular_index(rollback_path)? {
+        if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
+            return Err("活动索引在原子切换前发生变化；已保留候选库和清单".into());
+        }
         fs::rename(index_path, rollback_path)
             .map_err(|error| format!("无法为 schema 11 活动库建立受管回滚副本：{error}"))?;
         maybe_fail_schema11_migration_for_testing(10)?;
@@ -13194,35 +13314,37 @@ fn schema11_finish_candidate_switch(
     }
     schema11_sync_file(index_path)?;
     schema11_sync_parent(index_path)?;
-    if revalidate_facts_after_interruption {
-        // A resumed Switching phase may have crossed any rename/fsync boundary
-        // in a prior process, so repeat the complete deterministic facts check.
-        validate_schema11_candidate(index_path, facts)?;
+    // Only a proof produced during this locked open may cross the rename.
+    // A resumed Switching phase has no in-memory proof and revalidates fully.
+    let validation = if let Some(validated) = validated.filter(|verified| {
+        schema11_receipt_matches_current(index_path, &verified.receipt).unwrap_or(false)
+    }) {
+        startup_trace::mark_performance("exact_prepare reuse=validated_candidate_after_rename");
+        validated
     } else {
-        // In the uninterrupted path these exact candidate bytes were fully
-        // validated immediately before the atomic rename. Reopen the canonical
-        // path and recheck structure/integrity without hashing every logical
-        // row a second time.
-        validate_schema11_storage(index_path, None)?;
-    }
+        validate_schema11_candidate(index_path, facts)?
+    };
     maybe_fail_schema11_migration_for_testing(12)?;
     manifest.phase = Schema11CandidatePhase::Switched;
-    schema11_store_manifest(manifest_path, manifest)
+    schema11_store_manifest(manifest_path, manifest)?;
+    Ok(validation)
 }
 
 fn validate_schema11_candidate(
     index_path: &Path,
     expected_facts: &Schema11MigrationFacts,
-) -> Result<(), String> {
+) -> Result<Schema11ValidatedStorage, String> {
     validate_schema11_storage(index_path, Some(expected_facts))
 }
 
 fn validate_schema11_storage(
     index_path: &Path,
     expected_facts: Option<&Schema11MigrationFacts>,
-) -> Result<(), String> {
+) -> Result<Schema11ValidatedStorage, String> {
+    let preparation = IndexPreparationTrace::new("candidate_validation");
     let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
         .map_err(|error| format!("无法只读打开 schema 11 候选库：{error}"))?;
+    let storage_before = schema11_source_receipt_from_connection(index_path, &connection)?;
     if metadata_i64(&connection, "schema_version")? == Some(CURRENT_SCHEMA_VERSION) {
         let receipt=metadata_text(&connection,"accounting_structural_receipt")?.ok_or("Missing accounting structural receipt")?;
         let facts: Schema11MigrationFacts=serde_json::from_str(&receipt).map_err(|e|e.to_string())?;
@@ -13232,7 +13354,10 @@ fn validate_schema11_storage(
             .optional().map_err(|e| e.to_string())?.unwrap_or(false) {
             return Err("Accounting converted index foreign key check failed".into());
         }
-        return Ok(());
+        let receipt = schema11_source_receipt_from_connection(index_path, &connection)?;
+        if receipt != storage_before { return Err("校验期间 schema 12 索引发生变化；已保留现场".into()); }
+        preparation.finish();
+        return Ok(Schema11ValidatedStorage { receipt, facts: Some(facts) });
     }
     if metadata_i64(&connection, "schema_version")? != Some(INDEX_SCHEMA_VERSION) {
         return Err("schema 11 候选库 schema 版本不是 11".into());
@@ -13246,36 +13371,22 @@ fn validate_schema11_storage(
     if foreign_key_failure {
         return Err("schema 11 候选库 foreign_key_check 未通过".into());
     }
-    let malformed = connection
-        .query_row(
-            r#"
-            SELECT EXISTS(
-                SELECT 1 FROM source_fingerprints WHERE typeof(fingerprint) <> 'blob'
-                UNION ALL
-                SELECT 1 FROM pending_fingerprints WHERE typeof(fingerprint) <> 'blob'
+    if expected_facts.is_none() {
+        let mut fingerprints = connection
+            .prepare(
+                "SELECT fingerprint FROM source_fingerprints UNION ALL SELECT fingerprint FROM pending_fingerprints",
             )
-            "#,
-            [],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| format!("无法检查 schema 11 候选指纹类型：{error}"))?;
-    if malformed {
-        return Err("schema 11 候选库仍包含非 BLOB 指纹".into());
+            .map_err(|error| format!("无法读取 schema 11 候选指纹：{error}"))?;
+        let rows = fingerprints
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(|error| format!("无法遍历 schema 11 候选指纹：{error}"))?;
+        for row in rows {
+            let value = row.map_err(|error| format!("无法解码 schema 11 候选指纹：{error}"))?;
+            fingerprint_codec::decode(&value)
+                .map_err(|error| format!("schema 11 候选指纹不是 canonical codec：{error}"))?;
+        }
+        drop(fingerprints);
     }
-    let mut fingerprints = connection
-        .prepare(
-            "SELECT fingerprint FROM source_fingerprints UNION ALL SELECT fingerprint FROM pending_fingerprints",
-        )
-        .map_err(|error| format!("无法读取 schema 11 候选指纹：{error}"))?;
-    let rows = fingerprints
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))
-        .map_err(|error| format!("无法遍历 schema 11 候选指纹：{error}"))?;
-    for row in rows {
-        let value = row.map_err(|error| format!("无法解码 schema 11 候选指纹：{error}"))?;
-        fingerprint_codec::decode(&value)
-            .map_err(|error| format!("schema 11 候选指纹不是 canonical codec：{error}"))?;
-    }
-    drop(fingerprints);
     let stale_pending = connection
         .query_row(
             r#"
@@ -13360,7 +13471,10 @@ fn validate_schema11_storage(
             ));
         }
     }
-    Ok(())
+    let receipt = schema11_source_receipt_from_connection(index_path, &connection)?;
+    if receipt != storage_before { return Err("校验期间 schema 11 索引发生变化；已保留现场".into()); }
+    preparation.finish();
+    Ok(Schema11ValidatedStorage { receipt, facts: expected_facts.cloned() })
 }
 
 #[cfg(test)]
@@ -13422,6 +13536,7 @@ fn open_index_connection_with_recovery(
     path: &Path,
     existed_before_hint: bool,
     initialize_metadata: bool,
+    verified_candidate: Option<&Schema11ValidatedStorage>,
 ) -> Result<(ManagedIndexConnection, bool), String> {
     let gate = index_integrity_gate(path);
     let _gate_guard = gate.enter(path);
@@ -13450,6 +13565,9 @@ fn open_index_connection_with_recovery(
             .filter(|receipt| receipt_storage_matches(receipt, path, signature))
     });
 
+    let candidate_proof_matches = verified_candidate.is_some_and(|verified| {
+        schema11_receipt_matches_current(path, &verified.receipt).unwrap_or(false)
+    });
     match open_index_connection(path, false, initialize_metadata) {
         Ok(connection) if state_has_active_connection => {
             return managed_index_connection(path, connection)
@@ -13459,7 +13577,17 @@ fn open_index_connection_with_recovery(
             let receipt_is_verified = receipt
                 .as_ref()
                 .is_some_and(|receipt| receipt_connection_metadata_matches(receipt, &connection));
-            if receipt_is_verified {
+            // Connection-local pragmas (and our own journal-mode transition)
+            // cannot change logical facts. Reuse only the proof checked before
+            // that transition, with the same metadata after opening.
+            let candidate_metadata_matches = candidate_proof_matches
+                && verified_candidate.is_some_and(|verified| {
+                    schema11_receipt_metadata_matches(&connection, &verified.receipt).unwrap_or(false)
+                });
+            if receipt_is_verified || candidate_metadata_matches {
+                if candidate_metadata_matches {
+                    startup_trace::mark_performance("exact_prepare reuse=candidate_integrity_on_open");
+                }
                 return managed_index_connection(path, connection)
                     .map(|connection| (connection, false));
             }
@@ -13525,10 +13653,12 @@ fn quick_check_index_result(
     if FAIL_NEXT_QUICK_CHECK_QUERY.swap(false, Ordering::SeqCst) {
         return Err("injected transient quick_check query failure".into());
     }
+    let preparation = IndexPreparationTrace::new("quick_check");
     let result = connection
         .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
         .map_err(|error| format!("无法完成 SQLite quick_check：{error}"))?;
     if result.eq_ignore_ascii_case("ok") {
+        preparation.finish();
         Ok(None)
     } else {
         Ok(Some(result))
@@ -14573,7 +14703,35 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
 
 /// Accounting conversion follows the unchanged schema-11 candidate proof.
 /// DDL, checkpoints, derived totals and revision commit in the original DB.
-fn migrate_accounting(connection: &mut Connection) -> Result<(), String> {
+fn accounting_structural_receipt(
+    connection: &Connection,
+    validation: Option<&Schema11ValidatedStorage>,
+) -> Result<Option<String>, String> {
+    // This receipt exists only to finish a still-managed structural switch.
+    // An ordinary schema-11 open has no candidate to compare with: hashing
+    // millions of fingerprints here would not establish any new safety fact.
+    let Some(validation) = validation else { return Ok(None); };
+    let preparation = IndexPreparationTrace::new("accounting_structural_facts");
+    let reusable = validation.facts.as_ref().filter(|facts| {
+        connection.total_changes() == 0
+            && schema11_receipt_metadata_matches(connection, &validation.receipt).unwrap_or(false)
+            && schema11_lineage(connection).is_ok_and(|lineage| lineage == facts.lineage)
+    });
+    let receipt = if let Some(facts) = reusable {
+        startup_trace::mark_performance("exact_prepare reuse=accounting_structural_facts");
+        serde_json::to_string(facts).map_err(|e| e.to_string())?
+    } else {
+        serde_json::to_string(&schema11_migration_facts(connection, INDEX_SCHEMA_VERSION)?)
+            .map_err(|e| e.to_string())?
+    };
+    preparation.finish();
+    Ok(Some(receipt))
+}
+
+fn migrate_accounting(
+    connection: &mut Connection,
+    validation: Option<&Schema11ValidatedStorage>,
+) -> Result<(), String> {
     if let Some(revision) = metadata_text(connection, "accounting_revision")? {
         if revision != ACCOUNTING_REVISION {
             return Err(format!("Unknown accounting revision {revision}; preserved index"));
@@ -14582,17 +14740,18 @@ fn migrate_accounting(connection: &mut Connection) -> Result<(), String> {
             if !column_exists_checked(connection, "event_rows", "accounting_kind")? {
                 return Err("Accounting marker does not match event structure".into());
             }
-            let receipt = serde_json::to_string(&schema11_migration_facts(connection, INDEX_SCHEMA_VERSION)?)
-                .map_err(|e| e.to_string())?;
+            let receipt = accounting_structural_receipt(connection, validation)?;
             let tx = connection.transaction().map_err(|e| e.to_string())?;
-            set_metadata(&tx, "accounting_structural_receipt", &receipt)?;
+            if let Some(receipt) = receipt {
+                set_metadata(&tx, "accounting_structural_receipt", &receipt)?;
+            }
             set_metadata(&tx, "schema_version", &CURRENT_SCHEMA_VERSION.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
         return Ok(());
     }
-    let receipt = serde_json::to_string(&schema11_migration_facts(connection, INDEX_SCHEMA_VERSION)?)
-        .map_err(|e| e.to_string())?;
+    let receipt = accounting_structural_receipt(connection, validation)?;
+    let mut preparation = IndexPreparationTrace::new("accounting_schema");
     let tx = connection.transaction().map_err(|e| e.to_string())?;
     for (table, column, definition) in [
         ("sources", "accounting_state", "TEXT"),
@@ -14615,6 +14774,7 @@ fn migrate_accounting(connection: &mut Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     initialize_index_schema(&tx)?;
     tx.execute_batch("CREATE INDEX IF NOT EXISTS event_rows_unresolved_accounting ON event_rows(accounting_kind) WHERE accounting_kind <> 0;").map_err(|e|e.to_string())?;
+    preparation.advance("accounting_normalize_rows");
     let mut legacy_count = 0i64;
     for table in ["event_rows", "pending_event_rows"] {
         legacy_count += tx.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?;
@@ -14631,6 +14791,7 @@ fn migrate_accounting(connection: &mut Connection) -> Result<(), String> {
     // exposed separately; changing this receipt must not trigger a cold scan.
     tx.execute("UPDATE event_enrichment_sources SET parser_revision=?1 WHERE parser_revision=?2",
         params![STAGED_FULL_REBUILD_PARSER_REVISION, EXACT_SESSION_PARSER_REVISION]).map_err(|e| e.to_string())?;
+    preparation.advance("accounting_aggregates");
     rebuild_published_dashboard_aggregates(&tx)?;
     let pending = {
         let mut stmt = tx.prepare("SELECT p.target_generation,s.path FROM pending_sources p JOIN sources s USING(source_id) WHERE p.deleted=0").map_err(|e| e.to_string())?;
@@ -14641,6 +14802,17 @@ fn migrate_accounting(connection: &mut Connection) -> Result<(), String> {
     if let Some(building) = metadata_i64(&tx, "building_generation")? {
         refresh_dashboard_turn_candidates_for_changed_generations(&tx, building, metadata_i64(&tx,"published_generation")?.unwrap_or(0))?;
     }
+    // The projections just rebuilt in this transaction already implement the
+    // current pricing/accounting contract. Publish their version now so the
+    // first full read cannot copy/rebuild the same derived tables again.
+    let published = metadata_i64(&tx, "published_generation")?.unwrap_or(0);
+    if !dashboard_5m_projection_matches_published_files(&tx, published)? {
+        return Err("会计迁移聚合对账失败；已回滚并保留原索引".into());
+    }
+    set_metadata(&tx, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY, &DASHBOARD_AGGREGATE_SCHEMA_VERSION.to_string())?;
+    set_metadata(&tx, DASHBOARD_AGGREGATE_PRICING_REVISION_KEY, DASHBOARD_AGGREGATE_PRICING_REVISION)?;
+    set_metadata(&tx, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY, &published.to_string())?;
+    preparation.advance("accounting_attribution_ledger");
     // Preserve orphan lineage contributions, whose source bytes may no longer
     // exist, and replace only lineages supported by currently published rows.
     tx.execute_batch("UPDATE attribution_source_buckets SET tokens=input_tokens+output_tokens;")
@@ -14667,14 +14839,19 @@ fn migrate_accounting(connection: &mut Connection) -> Result<(), String> {
             params![epoch,opaque_attribution_source_id(&session),bucket,tokens,calls,input,cached,output]).map_err(|e|e.to_string())?;
     }
     set_metadata(&tx, ATTRIBUTION_LEDGER_INTEGRITY_KEY, &attribution_ledger_integrity(&tx,&epoch)?)?;
-    set_metadata(&tx,"accounting_structural_receipt",&receipt)?;
+    if let Some(receipt) = receipt {
+        set_metadata(&tx,"accounting_structural_receipt",&receipt)?;
+    }
     set_metadata(&tx,"accounting_coverage",if legacy_count>0 {"legacy-source-audit-required"} else {"complete"})?;
     set_metadata(&tx,"accounting_revision",ACCOUNTING_REVISION)?;
     set_metadata(&tx,"schema_version",&CURRENT_SCHEMA_VERSION.to_string())?;
     let revision=metadata_i64(&tx,"revision")?.unwrap_or(0).saturating_add(1);
     set_metadata(&tx,"revision",&revision.to_string())?;
     set_metadata(&tx,DASHBOARD_REVISION_KEY,&revision.to_string())?;
-    tx.commit().map_err(|e|e.to_string())
+    preparation.advance("accounting_commit");
+    tx.commit().map_err(|e|e.to_string())?;
+    preparation.finish();
+    Ok(())
 }
 
 fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
