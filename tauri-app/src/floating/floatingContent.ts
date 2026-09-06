@@ -369,7 +369,7 @@ export function floatingContentGap(
   upperGroup: FloatingContentGroup,
   lowerGroup: FloatingContentGroup,
 ): number {
-  return upperGroup === "radar" && lowerGroup === "crowdRadar" ? 0 : 2;
+  return upperGroup === "radar" && lowerGroup === "crowdRadar" ? 0 : 1.5;
 }
 
 export function floatingContentHeight(visibility: FloatingContentVisibility): number {
@@ -379,10 +379,10 @@ export function floatingContentHeight(visibility: FloatingContentVisibility): nu
   }
 
   const rowHeights = rows.map(floatingContentRowHeight);
-  // The floating surface uses border-box sizing: 6 px padding plus a 1 px
+  // The floating surface uses border-box sizing: 5 px padding plus a 1 px
   // border on both vertical edges. Keep the native window at least as tall
   // as the actual CSS box so the last row is never clipped.
-  const verticalChrome = 14;
+  const verticalChrome = 12;
   const gaps = rows.slice(1).reduce(
     (sum, row, index) => sum + floatingContentGap(rows[index].primaryGroup, row.primaryGroup),
     0,
@@ -397,7 +397,7 @@ export function firstPagedFloatingRowCenterY(visibility: FloatingContentVisibili
 export function pagedFloatingRowCenterYs(visibility: FloatingContentVisibility): number[] {
   const rows = layoutFloatingContentRows(visibility);
   const centers: number[] = [];
-  let cursor = 6;
+  let cursor = 5;
   for (const [index, row] of rows.entries()) {
     if (index > 0) {
       cursor += floatingContentGap(rows[index - 1].primaryGroup, row.primaryGroup);
@@ -415,7 +415,7 @@ export function pagedFloatingRowCenterYs(visibility: FloatingContentVisibility):
 
 export function usageStatusFloatingRowCenterY(visibility: FloatingContentVisibility): number | null {
   const rows = layoutFloatingContentRows(visibility);
-  let cursor = 6;
+  let cursor = 5;
   for (const [index, row] of rows.entries()) {
     if (index > 0) {
       cursor += floatingContentGap(rows[index - 1].primaryGroup, row.primaryGroup);
@@ -436,7 +436,7 @@ export function runningThreadsFloatingRowCenterY(visibility: FloatingContentVisi
   if (!hasRunningThreadDetailsTarget(visibility)) return null;
   const target = embedsRunningThreadsInMetricsRow(visibility) ? "metrics" : "runningThreads";
   const rows = layoutFloatingContentRows(visibility);
-  let cursor = 6;
+  let cursor = 5;
   for (const [index, row] of rows.entries()) {
     if (index > 0) {
       cursor += floatingContentGap(rows[index - 1].primaryGroup, row.primaryGroup);
@@ -451,15 +451,15 @@ export function runningThreadsFloatingRowCenterY(visibility: FloatingContentVisi
 export function floatingContentRowHeight(row: FloatingContentLayoutRow): number {
   return Math.max(...row.groups.map((group) => {
     switch (group) {
-      case "rateAndBar": return 30;
+      case "rateAndBar": return 26;
       case "usageStatus": return 20;
       case "metrics": return 13;
       case "runningThreads": return 14;
       case "todayModelShare":
-      case "todayModelCost": return 11;
+      case "todayModelCost": return 10.5;
       case "radar": return 24;
       case "crowdRadar": return 24;
-      case "quota": return 15.5;
+      case "quota": return 14;
     }
   }));
 }

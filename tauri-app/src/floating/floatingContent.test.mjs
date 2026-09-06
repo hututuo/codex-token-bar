@@ -116,7 +116,23 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 116);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 106);
+});
+
+test("model usage rows use the requested half-pixel compact track", () => {
+  assert.equal(floatingContentRowHeight({
+    id: "todayModelCost",
+    groups: ["todayModelCost"],
+    primaryGroup: "todayModelCost",
+  }), 10.5);
+});
+
+test("live rate row uses the compact shared track height", () => {
+  assert.equal(floatingContentRowHeight({
+    id: "rateAndBar",
+    groups: ["rateAndBar"],
+    primaryGroup: "rateAndBar",
+  }), 26);
 });
 
 test("adjacent running thread counts attach to the right of metrics", () => {
@@ -185,12 +201,12 @@ test("crowd radar defaults to two pages and clamps settings to one through three
 });
 
 test("paging guide pointer targets the first real paged row, including crowd radar", () => {
-  assert.equal(firstPagedFloatingRowCenterY(DEFAULT_FLOATING_CONTENT_VISIBILITY), 58.5);
+  assert.equal(firstPagedFloatingRowCenterY(DEFAULT_FLOATING_CONTENT_VISIBILITY), 52.25);
   assert.equal(firstPagedFloatingRowCenterY(sanitizeFloatingContentVisibility({
     showTodayModelShare: false,
     showTodayModelCost: false,
     pagePairs: [],
-  })), 89);
+  })), 83);
 });
 
 test("paged radar rows reserve the taller page when switching to crowd radar", () => {
@@ -304,6 +320,6 @@ test("structure editor merge split and grouped visibility preserve V01 pairs", (
 
 test("radar crowd spacing tightens without changing the crowd quota gap", () => {
   assert.equal(floatingContentGap("radar", "crowdRadar"), 0);
-  assert.equal(floatingContentGap("crowdRadar", "quota"), 2);
-  assert.equal(floatingContentGap("metrics", "radar"), 2);
+  assert.equal(floatingContentGap("crowdRadar", "quota"), 1.5);
+  assert.equal(floatingContentGap("metrics", "radar"), 1.5);
 });

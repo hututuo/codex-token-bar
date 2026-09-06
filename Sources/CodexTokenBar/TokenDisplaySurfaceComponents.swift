@@ -10,7 +10,7 @@ struct TokenQuotaMiniStrip: View {
         GeometryReader { proxy in
             let windows = [snapshot.fiveHour, snapshot.sevenDay].compactMap { $0 }
             let spacing = 4.scaled(by: displayScale)
-            let height = 16.5.scaled(by: displayScale)
+            let height = FloatingTokenPanelMetrics.quotaBarHeight.scaled(by: displayScale)
             let segmentWidth = max(56.scaled(by: displayScale), (proxy.size.width - spacing * CGFloat(max(windows.count - 1, 0))) / CGFloat(max(windows.count, 1)))
 
             HStack(spacing: spacing) {
@@ -28,7 +28,7 @@ struct TokenQuotaMiniStrip: View {
             }
             .frame(width: proxy.size.width, height: height, alignment: .center)
         }
-        .frame(height: 16.5.scaled(by: displayScale))
+        .frame(height: FloatingTokenPanelMetrics.quotaBarHeight.scaled(by: displayScale))
         .help(quotaHelpText)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("账户额度")
@@ -90,7 +90,7 @@ struct TokenQuotaMiniSegment: View {
                     .padding(.horizontal, 3.scaled(by: displayScale))
             }
         }
-        .frame(height: 16.5.scaled(by: displayScale))
+        .frame(height: FloatingTokenPanelMetrics.quotaBarHeight.scaled(by: displayScale))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
         .accessibilityValue("剩余 \(window.remainingPercent)%\(isStale ? "，旧数据" : "")，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
@@ -250,7 +250,7 @@ private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
                     .frame(width: leadingWidth, alignment: .leading)
                 Rectangle()
                     .fill(dividerColor)
-                    .frame(width: 1, height: 19.scaled(by: displayScale))
+                    .frame(width: 1, height: 18.scaled(by: displayScale))
                 trailing
                     .frame(width: leadingWidth.map { max(0, contentWidth - $0) }, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -294,7 +294,7 @@ struct TokenDisplayRadarStrip: View {
             leadingFraction: isSpeedWindow ? 0.42 : nil,
             dividerShift: radarDividerShift
         ) {
-            VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
+            VStack(alignment: .leading, spacing: 1.scaled(by: displayScale)) {
                 HStack(alignment: .firstTextBaseline, spacing: 3.scaled(by: displayScale)) {
                     Circle()
                         .fill(actionAccent)
@@ -303,7 +303,7 @@ struct TokenDisplayRadarStrip: View {
                         deadline: CodexRadarPresentationText.countdownDeadline(snapshot: snapshot)
                     )) { context in
                         Text(CodexRadarPresentationText.actionDisplay(snapshot: snapshot, now: context.date))
-                            .font(.system(size: 11.2.scaled(by: displayScale), weight: .bold))
+                            .font(.system(size: 11.0.scaled(by: displayScale), weight: .bold))
                             .foregroundStyle(actionPrimaryColor)
                     }
                     if let marker = presentation.compactMarkerText {
@@ -322,23 +322,23 @@ struct TokenDisplayRadarStrip: View {
             .lineLimit(1)
             .minimumScaleFactor(0.74)
         } trailing: {
-            VStack(alignment: .leading, spacing: 1.scaled(by: displayScale)) {
+            VStack(alignment: .leading, spacing: 0.scaled(by: displayScale)) {
                 HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
                     Circle()
                         .fill(primaryAccent)
                         .frame(width: 4.scaled(by: displayScale), height: 4.scaled(by: displayScale))
                     Text(primary?.scoreDisplayText ?? "IQ --")
-                        .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
+                        .font(.system(size: 11.5.scaled(by: displayScale), weight: .bold, design: .rounded))
                         .foregroundStyle(modelPalette.primaryColor)
                         .monospacedDigit()
                     Text(primary.map { CodexRadarPresentationText.compactModelName($0.modelDisplayName) } ?? "模型 --")
-                        .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
+                        .font(.system(size: 8.2.scaled(by: displayScale), weight: .semibold))
                         .foregroundStyle(modelPalette.primaryColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
                 }
                 Text(tokenDisplayRadarSecondaryIQText(snapshot, limit: modelLimit))
-                    .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
+                    .font(.system(size: 7.9.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(modelPalette.secondaryColor)
                     .monospacedDigit()
             }

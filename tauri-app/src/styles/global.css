@@ -8597,7 +8597,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   position: relative;
   width: min(calc((308px * var(--floating-scale)) - 2px), calc(100vw - 2px));
   min-height: calc(var(--floating-content-height) * var(--floating-scale));
-  padding: calc(6px * var(--floating-scale)) calc(10px * var(--floating-scale));
+  padding: calc(5px * var(--floating-scale)) calc(10px * var(--floating-scale));
   border: 1px solid rgba(255, 255, 255, 0.72);
   border-radius: calc(14px * var(--floating-scale));
   background: transparent;
@@ -8636,11 +8636,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-content {
   display: grid;
-  gap: calc(2px * var(--floating-scale));
+  gap: calc(1.5px * var(--floating-scale));
 }
 
 .floating-radar + .floating-crowd-radar {
-  margin-top: calc(-2px * var(--floating-scale));
+  margin-top: calc(-1.5px * var(--floating-scale));
 }
 
 .floating-page-layout-row {
@@ -8660,7 +8660,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-page-layout-row[data-floating-group="radar"] +
 .floating-page-layout-row[data-floating-group="crowdRadar"] {
-  margin-top: calc(-2px * var(--floating-scale));
+  margin-top: calc(-1.5px * var(--floating-scale));
 }
 
 .floating-page-layout-row.is-paged > .floating-page-content,
@@ -9487,7 +9487,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   position: relative;
   display: block;
   min-width: 0;
-  height: calc(30px * var(--floating-scale));
+  height: calc(26px * var(--floating-scale));
 }
 
 .floating-status-text {
@@ -9499,7 +9499,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-rate-meter .floating-status-text {
   position: absolute;
-  top: calc(5px * var(--floating-scale));
+  top: calc(3px * var(--floating-scale));
   left: 0;
   right: 0;
   height: calc(13px * var(--floating-scale));
@@ -9534,11 +9534,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-rate-meter--with-status .floating-rate-track {
-  top: calc(22px * var(--floating-scale));
+  top: calc(18.5px * var(--floating-scale));
 }
 
 .floating-rate-meter--solo .floating-rate-track {
-  top: calc(12.25px * var(--floating-scale));
+  top: calc(10.25px * var(--floating-scale));
 }
 
 .floating-rate-track i {
@@ -9634,7 +9634,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: flex;
   align-items: center;
   min-width: 0;
-  min-height: calc(11px * var(--floating-scale));
+  min-height: calc(10.5px * var(--floating-scale));
   color: var(--floating-primary);
   font-size: calc(9.7px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
@@ -9681,7 +9681,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-model-usage--cost {
-  min-height: calc(11px * var(--floating-scale));
+  min-height: calc(10.5px * var(--floating-scale));
 }
 
 .floating-model-usage--share .floating-model-usage-item {
@@ -9943,7 +9943,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   justify-content: center;
   flex: 1;
   min-width: 0;
-  min-height: calc(15.5px * var(--floating-scale));
+  min-height: calc(14px * var(--floating-scale));
   border: 0;
   border-radius: calc(5.3px * var(--floating-scale));
   background: transparent;

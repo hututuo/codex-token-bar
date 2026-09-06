@@ -1,28 +1,33 @@
 import AppKit
 
 enum FloatingTokenPanelMetrics {
-    static let baseSize = NSSize(width: 258, height: 138)
+    static let baseSize = NSSize(width: 258, height: 120)
     static let minimumControlSize = NSSize(width: 72, height: 34)
     static let baseCornerRadius: CGFloat = 14
     static let horizontalPadding: CGFloat = 10
-    static let verticalPadding: CGFloat = 6
+    static let verticalPadding: CGFloat = 5
     static let singleElementTopInset: CGFloat = 10
-    static let rowSpacing: CGFloat = 2
+    static let rowSpacing: CGFloat = 1.5
     static let radarCrowdRowSpacing: CGFloat = 0
-    static let rateRowHeight: CGFloat = 28
+    // The live-rate strip carries the largest type and the optional status
+    // line, but should not dominate the compact panel's vertical rhythm.
+    static let rateRowHeight: CGFloat = 26
     static let usageStatusRowHeight: CGFloat = 20
     static let metricRowHeight: CGFloat = 13
     static let runningThreadsRowHeight: CGFloat = 14
-    // The model cost/share strip is intentionally a compact 11pt content box;
+    // The model cost/share strip is intentionally a compact 9pt content box;
     // the text is centered inside it by the paged row container.
-    static let todayModelRowHeight: CGFloat = 11
-    static let quotaRowHeight: CGFloat = 15.5
-    static let radarRowHeight: CGFloat = 24
-    // Keep both radar rows on the same 24pt track. The crowd typography is
-    // scaled from its former 20pt track so the two-line result fills the row
-    // instead of acquiring extra vertical whitespace.
+    static let todayModelRowHeight: CGFloat = 9
+    // Keep the visible quota bar and its row on the same compact 14pt track;
+    // the surrounding panel still owns the larger click-safe surface.
+    static let quotaBarHeight: CGFloat = 14
+    static let quotaRowHeight: CGFloat = 14
+    static let radarRowHeight: CGFloat = 23
+    // Keep both radar rows on the same compact 23pt track. The crowd typography
+    // is scaled from its former 20pt track so the two-line result remains
+    // readable without restoring the old extra vertical whitespace.
     static let crowdRadarRowHeight: CGFloat = radarRowHeight
-    static let crowdRadarTypographyScale: CGFloat = radarRowHeight / 20
+    static let crowdRadarTypographyScale: CGFloat = crowdRadarRowHeight / 20
     static let metricOutset: CGFloat = 14.5
     static let metricTodayNudge: CGFloat = -4.5
     static let metricRequestsNudge: CGFloat = 8

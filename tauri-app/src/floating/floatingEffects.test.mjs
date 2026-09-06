@@ -58,8 +58,8 @@ test("crowd radar compares three compact results without a visual title or lower
   );
   assert.match(stylesSource, /\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.7fr\) minmax\(0, 1\.3fr\);/);
   assert.match(stylesSource, /\.floating-crowd-radar-trailing,\s*\.floating-radar-iq\s*{[\s\S]*?padding-left: calc\(6px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-radar \+ \.floating-crowd-radar\s*{[\s\S]*?margin-top: calc\(-2px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(4px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-radar \+ \.floating-crowd-radar\s*{[\s\S]*?margin-top: calc\(-1\.5px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(1\.5px \* var\(--floating-scale\)\);/);
 });
 
 test("floating settings expose one two or three crowd radar pages", () => {
@@ -197,14 +197,16 @@ test("floating panel keeps compact Swift proportions with complete readable text
   assert.match(previewSource, /hasStatusText \? <FloatingStatusText text=\{statusText\} \/> : null/);
   assert.match(previewSource, /rateFillStyle\(snapshot\.tokensPerSecond, scaleLimit\)/);
   assert.match(stylesSource, /\.floating-rate-track\s*{[\s\S]*?height: calc\(5\.5px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-rate-meter--with-status \.floating-rate-track\s*{[\s\S]*?top: calc\(22px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-rate-meter--solo \.floating-rate-track\s*{[\s\S]*?top: calc\(12\.25px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-meter\s*{[\s\S]*?height: calc\(26px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-meter \.floating-status-text\s*{[\s\S]*?top: calc\(3px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-meter--with-status \.floating-rate-track\s*{[\s\S]*?top: calc\(18\.5px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-meter--solo \.floating-rate-track\s*{[\s\S]*?top: calc\(10\.25px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.rate-fill\s*{[\s\S]*?transform: scaleX\(var\(--rate-fill-scale, 0\)\);/);
   assert.match(stylesSource, /\.floating-status-text em\s*{[\s\S]*?font-size: calc\(11\.3px \* var\(--floating-scale\)\);[\s\S]*?text-overflow: clip;[\s\S]*?white-space: nowrap;/);
   assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;[\s\S]*?font-size: calc\(14\.2px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-metrics\s*{[\s\S]*?font-size: calc\(10\.9px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-radar-iq\s*{[\s\S]*?gap: calc\(1px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(6px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(5px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-panel-surface > :not\(\.unread-effect\):not\(\.floating-close-button\)\s*{/);
   assert.match(stylesSource, /\.floating-close-button\s*{[\s\S]*?position: absolute;[\s\S]*?top: calc\(1px \* var\(--floating-scale\)\);[\s\S]*?right: calc\(1px \* var\(--floating-scale\)\);/);
 });
@@ -214,7 +216,7 @@ test("floating content removes horizontal rules without adding whitespace", () =
   const radar = /\.floating-radar\s*{([^}]*)}/.exec(stylesSource)?.[1] ?? "";
   const crowdRadar = [...stylesSource.matchAll(/^\.floating-crowd-radar\s*{([^}]*)}/gm)].at(-1)?.[1] ?? "";
   assert.doesNotMatch(modelUsage, /border-top/);
-  assert.match(modelUsage, /min-height: calc\(11px \* var\(--floating-scale\)\);/);
+  assert.match(modelUsage, /min-height: calc\(10\.5px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-page-layout-row\.is-paged\s*\{[\s\S]*?min-height: calc\(var\(--floating-page-row-height\) \* var\(--floating-scale\)\);/);
   assert.match(previewSource, /"--floating-page-row-height"/);
   assert.match(stylesSource, /\.floating-crowd-radar-result\s*\{[\s\S]*?grid-template-rows: auto auto;[\s\S]*?row-gap: 0;/);
@@ -222,8 +224,8 @@ test("floating content removes horizontal rules without adding whitespace", () =
   assert.doesNotMatch(crowdRadar, /border-top|padding-top/);
   assert.match(radar, /min-height: calc\(24px \* var\(--floating-scale\)\);/);
   assert.match(crowdRadar, /min-height: calc\(24px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(6px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(2px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(5px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(1\.5px \* var\(--floating-scale\)\);/);
 });
 
 test("model share distributes four compact values across the full row", () => {
@@ -234,6 +236,7 @@ test("model share distributes four compact values across the full row", () => {
 
 test("floating quota uses the Swift-style single filled segment instead of nested rails", () => {
   assert.match(previewSource, /"--quota-fill-min"/);
+  assert.match(stylesSource, /\.floating-quota-bar\s*{[\s\S]*?min-height: calc\(14px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-quota-track\s*{[\s\S]*?inset: 0;[\s\S]*?background: rgba\(255, 255, 255, 0\.78\);/);
   assert.match(stylesSource, /\.floating-quota-track::after\s*{[\s\S]*?content: none;/);
   assert.match(stylesSource, /\.floating-quota-fill\s*{[\s\S]*?width: min\(100%, max\(var\(--quota-fill, 0%\), var\(--quota-fill-min, 0px\)\)\);[\s\S]*?box-shadow: none;[\s\S]*?opacity: 0\.78;/);
