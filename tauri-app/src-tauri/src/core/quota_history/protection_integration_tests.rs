@@ -34,7 +34,7 @@ fn raw_lower_samples_survive_restart_and_maintenance_then_confirm_same_cycle() {
     database.record_for_identity_at(Some(&identity), &lower, at + 160.0).unwrap();
     let reopened = QuotaHistoryDatabase { path: database.path.clone() };
     let pending = series::sanitized_rows(raw(&reopened, &identity, &lower));
-    assert_eq!(pending.iter().map(|r| r.five_hour_used_percent).collect::<Vec<_>>(), vec![Some(12), None, None]);
+    assert_eq!(pending.iter().map(|r| r.five_hour_used_percent).collect::<Vec<_>>(), vec![Some(12), Some(8), Some(8)]);
     reopened.record_for_identity_at(Some(&identity), &lower, at + 310.0).unwrap();
     let mut connection = reopened.open().unwrap();
     maintain_if_due(&mut connection, at + 2.0 * 86400.0).unwrap();
@@ -63,7 +63,7 @@ fn equal_success_preserves_freshness_watermark_and_cached_or_late_responses_do_n
         assert!(reopened.record_for_identity_at(Some(&identity), &lower, at + offset).unwrap());
         assert!(!reopened.record_for_identity_at(Some(&identity), &lower, at + offset).unwrap());
     }
-    assert_eq!(series::sanitized_rows(raw(&reopened, &identity, &lower)).last().unwrap().five_hour_used_percent, None);
+    assert_eq!(series::sanitized_rows(raw(&reopened, &identity, &lower)).last().unwrap().five_hour_used_percent, Some(8));
     reopened.record_for_identity_at(Some(&identity), &lower, at + 331.0).unwrap();
     assert_eq!(series::sanitized_rows(raw(&reopened, &identity, &lower)).last().unwrap().five_hour_used_percent, Some(8));
     assert_eq!(raw(&reopened, &identity, &lower).len(), 5);
@@ -104,5 +104,57 @@ fn duplicate_stored_observations_cannot_make_a_false_gap_or_confirm_a_drop() {
     let projected = series::sanitized_rows(vec![baseline.clone(), baseline, lower.clone(), lower]);
     assert_eq!(projected.len(), 2);
     assert_eq!(projected[0].five_hour_used_percent, Some(12));
-    assert_eq!(projected[1].five_hour_used_percent, None);
+    assert_eq!(projected[1].five_hour_used_percent, Some(8));
+}
+
+#[test]
+fn retrospective_projection_removes_weekly_points_before_bins_and_restores_cycle() {
+    let (_directory, database, identity) = fixture("sub:retrospective");
+    let now = ((now_unix() / 300.0).floor() * 300.0) + 100.0;
+    let reset = (now + 5000.0) as i64;
+    let make = |offset: f64, seven: f64, shift: i64, five: f64| {
+        let mut bundle = input(five, reset);
+        bundle.quota.seven_day.used_percent = Some(seven);
+        bundle.quota.seven_day.resets_at_unix = Some(reset + shift);
+        (now + offset, bundle)
+    };
+    let (a, first) = make(-600.0,0.42,500_000,0.2);
+    let (b, glitch) = make(-310.0,0.01,540_674,0.0);
+    let (c, recovery) = make(-20.0,0.42,500_000,0.2);
+    for (at, bundle) in [(a,&first),(b,&glitch),(c,&recovery)] {
+        database.record_for_identity_at(Some(&identity), bundle, at).unwrap();
+    }
+    let reopened = QuotaHistoryDatabase { path: database.path.clone() };
+    let rows = raw(&reopened,&identity,&recovery);
+    assert_eq!(rows.iter().map(|r|r.seven_day_used_percent).collect::<Vec<_>>(), vec![Some(42),Some(1),Some(42)]);
+    let projected = series::sanitized_rows(rows.clone());
+    assert_eq!(projected[1].seven_day_used_percent,None);
+    assert_eq!(projected[2].seven_day_cycle_generation,Some(0));
+    let before = series::make_interval_history_at(rows.clone(),4,300,now-30.0);
+    assert_eq!(before.last().unwrap().seven_day_remaining_percent,Some(0.99));
+    let after = series::make_interval_history_at(rows,4,300,now);
+    let middle = after.iter().find(|p| { let end=p.start_unix as f64+300.0; end>b && end<c }).unwrap();
+    assert_eq!(middle.seven_day_remaining_percent,Some(0.58));
+    assert_eq!(projected[1].five_hour_used_percent, Some(0));
+    let sample_at = middle.start_unix as f64 + 300.0;
+    let expected_five = 1.0 - 0.2 * (sample_at-b)/(c-b);
+    assert!((middle.five_hour_remaining_percent.unwrap()-expected_five).abs()<0.000001);
+}
+
+#[test]
+fn jump_alone_bridges_upward_remaining_even_across_a_new_cycle() {
+    let (_directory, database, identity) = fixture("sub:bridge");
+    let now = ((now_unix() / 300.0).floor() * 300.0) + 100.0;
+    let reset = (now+5000.0) as i64;
+    let mut latest = input(0.2,reset);
+    for (offset,used,shift) in [(-600.0,0.80,500_000),(-310.0,0.01,540_000),(-20.0,0.60,540_000)] {
+        latest.quota.seven_day.used_percent=Some(used);
+        latest.quota.seven_day.resets_at_unix=Some(reset+shift);
+        database.record_for_identity_at(Some(&identity),&latest,now+offset).unwrap();
+    }
+    let history=series::make_interval_history_at(raw(&database,&identity,&latest),4,300,now);
+    let middle=history.iter().find(|p|{let end=p.start_unix as f64+300.0; end>now-310.0 && end<now-20.0}).unwrap();
+    let sample_at=middle.start_unix as f64+300.0;
+    let expected=0.2+0.2*(sample_at-(now-600.0))/580.0;
+    assert!((middle.seven_day_remaining_percent.unwrap()-expected).abs()<0.000001);
 }

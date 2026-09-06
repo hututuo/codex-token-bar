@@ -1,0 +1,1751 @@
+[
+  {
+    "name": "candidate_is_visible_immediately",
+    "plan": "plus",
+    "now": 10,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "historical_42_1_42",
+    "plan": "plus",
+    "now": 71,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50674,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 71,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "return_alone_with_stable_new_reset",
+    "plan": "unknown",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 8,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 8,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "plus_exact_10_is_kept",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 11,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "plus_above_10_rejected",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 12,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "pro_exact_2_is_kept",
+    "plan": "pro",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 3,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "pro_above_2_rejected",
+    "plan": "pro",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 4,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "unknown_plan_no_rate_rule",
+    "plan": null,
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 20,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "actual_20_second_interval",
+    "plan": "plus",
+    "now": 30,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 30,
+        "sevenUsed": 5,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "actual_180_second_interval",
+    "plan": "plus",
+    "now": 190,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 190,
+        "sevenUsed": 20,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "reset_return_alone",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 10005,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "reset_return_outside_jitter_kept",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 10006,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "unchanged_reset_at_deadline",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 3,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 190,
+        "sevenUsed": 4,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 250,
+        "sevenUsed": 5,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 310,
+        "sevenUsed": 6,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        6
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "unchanged_reset_before_deadline",
+    "plan": "plus",
+    "now": 309,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 3,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 190,
+        "sevenUsed": 4,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 250,
+        "sevenUsed": 5,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "unchanged_reset_timer_uses_last_point",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 3,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 190,
+        "sevenUsed": 4,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 250,
+        "sevenUsed": 5,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        5
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "unchanged_reset_missing_observation",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": null,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 3,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 190,
+        "sevenUsed": 4,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 250,
+        "sevenUsed": 5,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 310,
+        "sevenUsed": 6,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "unchanged_reset_gap_over_120",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 131,
+        "sevenUsed": 2,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 190,
+        "sevenUsed": 3,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 250,
+        "sevenUsed": 4,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 310,
+        "sevenUsed": 5,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "unchanged_reset_stale_at_deadline",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "return_at_exact_deadline",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 310,
+        "sevenUsed": 42,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "return_after_deadline_kept",
+    "plan": "plus",
+    "now": 311,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 311,
+        "sevenUsed": 42,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "same_low_episode_does_not_restart",
+    "plan": "plus",
+    "now": 320,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 250,
+        "sevenUsed": 2,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 311,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 320,
+        "sevenUsed": 42,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "candidate_already_in_band",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 3,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 2,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "leave_then_return_to_band",
+    "plan": null,
+    "now": 250,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 3,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 2,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 9,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 190,
+        "sevenUsed": 0,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 250,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1,
+      2,
+      3
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        4
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "ordinary_nonzero_decline",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 8,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 9,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "rate_rule_not_global",
+    "plan": "plus",
+    "now": 60,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 30,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 60,
+        "sevenUsed": 70,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "five_single_paired_spike",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 0,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 21,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [
+      1
+    ],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": [
+      [
+        0,
+        2
+      ]
+    ]
+  },
+  {
+    "name": "five_no_seven_rejection",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 43,
+        "sevenReset": 10000,
+        "fiveUsed": 0,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 44,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "five_reset_changed_by_only_10",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 0,
+        "fiveReset": 20010
+      },
+      {
+        "at": 70,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20010
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "five_already_full_card",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 0,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 0,
+        "fiveReset": 20500
+      },
+      {
+        "at": 70,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 0,
+        "fiveReset": 20500
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "five_multiple_low_points_kept",
+    "plan": "plus",
+    "now": 130,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 0,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 50000,
+        "fiveUsed": 0,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1,
+      2
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        3
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "expired_and_backward_resets_do_not_hide",
+    "plan": "plus",
+    "now": 110,
+    "samples": [
+      {
+        "at": 100,
+        "sevenUsed": 42,
+        "sevenReset": 100,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 110,
+        "sevenUsed": 30,
+        "sevenReset": 90,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "duplicate_does_not_confirm",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "late_observation_does_not_confirm",
+    "plan": "plus",
+    "now": 70,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 9,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "future_observation_not_used",
+    "plan": "plus",
+    "now": 10,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "reset_continuity_exact_120",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 2,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 250,
+        "sevenUsed": 3,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1,
+      2
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        3
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "reset_missing_cannot_reject",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": null,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": null,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": null,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 3,
+        "sevenReset": null,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 190,
+        "sevenUsed": 4,
+        "sevenReset": null,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 250,
+        "sevenUsed": 5,
+        "sevenReset": null,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 310,
+        "sevenUsed": 6,
+        "sevenReset": null,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "jump_uses_adjacent_observations",
+    "plan": "plus",
+    "now": 130,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 80,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 20,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1,
+      2
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        3
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "five_exact_120",
+    "plan": "plus",
+    "now": 130,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 0,
+        "fiveReset": 20000
+      },
+      {
+        "at": 130,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [
+      1
+    ],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": [
+      [
+        0,
+        2
+      ]
+    ]
+  },
+  {
+    "name": "five_after_120",
+    "plan": "plus",
+    "now": 131,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 0,
+        "fiveReset": 20000
+      },
+      {
+        "at": 131,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [],
+    "sevenBridges": [
+      [
+        0,
+        2
+      ]
+    ],
+    "fiveBridges": []
+  },
+  {
+    "name": "reset_change_under_900_can_be_real",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10500,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 70,
+        "sevenUsed": 2,
+        "sevenReset": 10500,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 190,
+        "sevenUsed": 4,
+        "sevenReset": 10500,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 310,
+        "sevenUsed": 6,
+        "sevenReset": 10500,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "low_values_without_new_time_do_not_settle",
+    "plan": "plus",
+    "now": 310,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "ended_candidate_not_reopened_by_normal_use",
+    "plan": "plus",
+    "now": 600,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 10000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 10,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 311,
+        "sevenUsed": 2,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      },
+      {
+        "at": 600,
+        "sevenUsed": 40,
+        "sevenReset": 50000,
+        "fiveUsed": 20,
+        "fiveReset": 20000
+      }
+    ],
+    "sevenRejected": [],
+    "fiveRejected": [],
+    "sevenBridges": [],
+    "fiveBridges": []
+  },
+  {
+    "name": "repair_does_not_bridge_unrelated_long_gap",
+    "plan": "plus",
+    "now": 6060,
+    "samples": [
+      {
+        "at": 0,
+        "sevenUsed": 42,
+        "sevenReset": 100,
+        "fiveUsed": 20,
+        "fiveReset": 100
+      },
+      {
+        "at": 6000,
+        "sevenUsed": 1,
+        "sevenReset": 50000,
+        "fiveUsed": 0,
+        "fiveReset": 100
+      },
+      {
+        "at": 6060,
+        "sevenUsed": 42,
+        "sevenReset": 100,
+        "fiveUsed": 20,
+        "fiveReset": 100
+      }
+    ],
+    "sevenRejected": [
+      1
+    ],
+    "fiveRejected": [
+      1
+    ],
+    "sevenBridges": [],
+    "fiveBridges": []
+  }
+]

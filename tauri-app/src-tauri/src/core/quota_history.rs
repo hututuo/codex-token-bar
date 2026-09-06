@@ -609,9 +609,21 @@ fn history_bundle_from_rows(
     recent_count: usize,
     fallback_identity: Option<&QuotaHistoryIdentity>,
 ) -> QuotaHistoryBundle {
-    let rows = canonicalized_cycle_rows(rows, fallback_identity);
+    let mut rows = rows;
+    if let Some(identity) = fallback_identity {
+        for row in &mut rows {
+            if row.stable_identity().is_none() {
+                row.identity_version = Some(identity.version);
+                row.home_identity = Some(identity.home_identity.clone());
+                row.stable_account_key = Some(identity.stable_account_key.clone());
+                row.identity_plan_type = Some(identity.plan_type.clone());
+                row.identity_limit_id = Some(identity.limit_id.clone());
+            }
+        }
+    }
+    let now = now_unix();
     QuotaHistoryBundle {
-        daily: make_daily_history(rows.clone())
+        daily: series::make_daily_history_at(rows.clone(), now)
             .into_iter()
             .map(|(date, history)| QuotaHistoryDailyPoint {
                 date,
@@ -619,9 +631,9 @@ fn history_bundle_from_rows(
                 seven_day_remaining_percent: history.seven_day_remaining_percent,
             })
             .collect(),
-        recent_24h: make_recent_history(rows.clone(), recent_count.max(1)),
-        recent_7d: make_interval_history(rows.clone(), 30 * 24, 60 * 60),
-        recent_30d: make_interval_history(rows, 30 * 4, 6 * 60 * 60),
+        recent_24h: series::make_interval_history_at(rows.clone(), recent_count.max(1), 300, now),
+        recent_7d: series::make_interval_history_at(rows.clone(), 30 * 24, 60 * 60, now),
+        recent_30d: series::make_interval_history_at(rows, 30 * 4, 6 * 60 * 60, now),
     }
 }
 
@@ -632,9 +644,14 @@ struct CanonicalCycleState {
     accepted_reset: Option<f64>,
 }
 
-fn canonicalized_cycle_rows(
+fn canonicalized_cycle_rows(rows: Vec<QuotaHistoryRow>, fallback_identity: Option<&QuotaHistoryIdentity>) -> Vec<QuotaHistoryRow> {
+    replay_cycle_rows(rows, fallback_identity, true)
+}
+
+fn replay_cycle_rows(
     mut rows: Vec<QuotaHistoryRow>,
     fallback_identity: Option<&QuotaHistoryIdentity>,
+    preserve_latest_target: bool,
 ) -> Vec<QuotaHistoryRow> {
     rows.sort_by(|left, right| {
         left.created_at
@@ -642,18 +659,20 @@ fn canonicalized_cycle_rows(
             .unwrap_or_else(|| left.created_at.to_bits().cmp(&right.created_at.to_bits()))
             .then_with(|| history_row_fingerprint(left).cmp(&history_row_fingerprint(right)))
     });
-    // The newest native Tauri row is the durable generation authority for the
-    // current process.  Replaying only a bounded chart window starts at a
-    // relative zero, so retain this target and apply an offset after replay;
-    // otherwise a year-old boundary rolling out of the query would rename the
-    // current cycle and falsely reset persisted attribution state.
-    let five_generation_target = rows.iter().enumerate().rev().find_map(|(index, row)| {
+    // Raw writes retain the latest durable offset. Filtered reads start from
+    // the earliest retained native target so a removed reset cannot leave a
+    // phantom generation behind. Both retain offsets across history retention.
+    let mut target_order: Vec<usize> = (0..rows.len()).collect();
+    if preserve_latest_target { target_order.reverse(); }
+    let five_generation_target = target_order.iter().find_map(|&index| {
+        let row = &rows[index];
         is_tauri_source(row.source.as_deref())
             .then_some(row.five_hour_cycle_generation)
             .flatten()
             .map(|generation| (index, generation))
     });
-    let seven_generation_target = rows.iter().enumerate().rev().find_map(|(index, row)| {
+    let seven_generation_target = target_order.iter().find_map(|&index| {
+        let row = &rows[index];
         is_tauri_source(row.source.as_deref())
             .then_some(row.seven_day_cycle_generation)
             .flatten()

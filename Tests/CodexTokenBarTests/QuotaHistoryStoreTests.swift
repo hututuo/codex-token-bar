@@ -1283,7 +1283,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertEqual(recentValues.min(), 55)
     }
 
-    func testRecentHistoryLeavesFirstLegacyDeclineUnprojectedAcrossStableAccountKeys() throws {
+    func testRecentHistoryShowsLegacyNonzeroDeclineAcrossStableAccountKeys() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1317,10 +1317,8 @@ final class QuotaHistoryStoreTests: XCTestCase {
 
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
 
-        XCTAssertNil(
-            loaded.recentBins.last?.fiveHourRemainingPercent,
-            "a first lower legacy observation is raw evidence but remains an unprojected gap"
-        )
+        XCTAssertEqual(loaded.recentBins.last?.fiveHourRemainingPercent, 29,
+            "ordinary non-zero decline is visible without waiting")
     }
 
     func testRecentHistoryLeavesLowerObservationUnprojectedAcrossResetTimestampDrift() throws {
@@ -1445,7 +1443,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertNil(loaded.hourlyBins[boundary + 2].fiveHourRemainingPercent)
     }
 
-    func testExpiredAnchorLeavesGapAndWindowsRemainIndependent() throws {
+    func testExpiredResetDoesNotHideMeasuredValueAndWindowsRemainIndependent() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -1472,11 +1470,11 @@ final class QuotaHistoryStoreTests: XCTestCase {
         })
         let carriedFive = loaded.recentBins.filter { $0.fiveHourRemainingPercent == 50 }
 
-        XCTAssertTrue(carriedFive.isEmpty)
+        XCTAssertFalse(carriedFive.isEmpty)
         XCTAssertFalse(loaded.recentBins.contains { $0.fiveHourRemainingPercent == 100 })
         XCTAssertNil(loaded.recentBins.last?.fiveHourRemainingPercent)
         XCTAssertNil(loaded.recentBins[sevenBoundary].sevenDayRemainingPercent)
-        XCTAssertNil(loaded.recentBins[sevenBoundary].fiveHourRemainingPercent)
+        XCTAssertEqual(loaded.recentBins[sevenBoundary].fiveHourRemainingPercent, 50)
         XCTAssertNil(loaded.recentBins[sevenBoundary + 1].sevenDayRemainingPercent)
     }
 
@@ -1521,7 +1519,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertEqual(loaded.recentBins.last?.sevenDayRemainingPercent, 100)
     }
 
-    func testHistorySeparatesBackwardResetConflictFromForwardNewCycle() throws {
+    func testHistoryRetrospectivelyRemovesWeeklyResetAndKeepsFiveHourObservations() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         try database.migrate()
@@ -1550,11 +1548,11 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let fiveHourValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
         let sevenDayValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
 
-        XCTAssertFalse(fiveHourValues.contains(98), "a reset-drift decline must not create a 5h full-remaining projection")
-        XCTAssertTrue(sevenDayValues.contains(99), "a forward reset advance beyond 1800 seconds confirms a new weekly cycle")
+        XCTAssertTrue(loaded.recentBins.flatMap(\.fiveHourObservations).contains { $0.remainingPercent == 98 }, "5h nonzero decline remains a real observation even if no bin edge lands on it")
+        XCTAssertFalse(sevenDayValues.contains(99), "weekly low segment is retrospectively removed after return")
         XCTAssertEqual(fiveHourValues.last, 54)
-        XCTAssertEqual(sevenDayValues.last, 99)
-        XCTAssertNil(loaded.recentBins.last?.sevenDayRemainingPercent, "the later backward reset is a pending conflict")
+        XCTAssertEqual(sevenDayValues.last, 67)
+        XCTAssertEqual(loaded.recentBins.last?.sevenDayRemainingPercent, 67, "keep the recovery point")
     }
 
     func testRecentHistoryRetainsLatestLegitimateSevenDayExhaustion() throws {
@@ -1763,13 +1761,13 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let initial = make(20, 30, 0, 0, now)
         XCTAssertTrue(try database.record(initial, createdAt: now))
         let sameCycle = try database.normalizedSnapshot(
-            make(1, 31, 1_800, 1_800, now.addingTimeInterval(60))
+            make(1, 31, 1_800, 900, now.addingTimeInterval(60))
         )
         XCTAssertEqual(sameCycle.fiveHour?.cycleID, "g0")
         XCTAssertEqual(sameCycle.sevenDay?.cycleID, "g0")
 
         let fiveOnlyReset = try database.normalizedSnapshot(
-            make(0, 32, 1_801, 1_800, now.addingTimeInterval(120))
+            make(0, 32, 1_801, 900, now.addingTimeInterval(120))
         )
         XCTAssertEqual(fiveOnlyReset.fiveHour?.cycleID, "g1")
         XCTAssertEqual(fiveOnlyReset.sevenDay?.cycleID, "g0")

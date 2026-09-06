@@ -1,185 +1,161 @@
-//! Deterministic, per-window history projection. Input rows remain raw.
-//! Local observation timestamps establish freshness, not server event time.
+//! Pure retrospective projection for one identity/plan/limit timeline.
+use std::collections::{HashMap, HashSet};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct HistoryPolicy {
     pub new_cycle_reset_delta: f64,
     pub maximum_new_cycle_used_percent: i32,
     pub reset_jitter_tolerance: f64,
-    pub correction_sample_count: u32,
-    pub correction_evidence_duration: f64,
 }
-
 impl HistoryPolicy {
-    // Independent definitions intentionally start equal. The weekly policy
-    // can later be tightened without changing the short window.
-    pub const FIVE_HOUR: Self = Self { new_cycle_reset_delta: 1800.0, maximum_new_cycle_used_percent: 100, reset_jitter_tolerance: 5.0, correction_sample_count: 3, correction_evidence_duration: 300.0 };
-    pub const SEVEN_DAY: Self = Self { new_cycle_reset_delta: 1800.0, maximum_new_cycle_used_percent: 100, reset_jitter_tolerance: 5.0, correction_sample_count: 3, correction_evidence_duration: 300.0 };
+    pub const FIVE_HOUR: Self = Self { new_cycle_reset_delta: 1800.0, maximum_new_cycle_used_percent: 100, reset_jitter_tolerance: 5.0 };
+    pub const SEVEN_DAY: Self = Self { new_cycle_reset_delta: 900.0, maximum_new_cycle_used_percent: 100, reset_jitter_tolerance: 5.0 };
 }
-
-pub(super) struct HistoryProtection {
-    policy: HistoryPolicy,
-    last_observed: Option<f64>,
-    accepted_used: Option<i32>,
-    accepted_reset: Option<f64>,
-    generation: i64,
-    lower: Option<(f64, u32)>,
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Sample {
+    pub at: f64,
+    pub five_used: Option<i32>,
+    pub five_reset: Option<f64>,
+    pub seven_used: Option<i32>,
+    pub seven_reset: Option<f64>,
 }
-
-impl Default for HistoryProtection {
-    fn default() -> Self {
-        Self { policy: HistoryPolicy::FIVE_HOUR, last_observed: None, accepted_used: None, accepted_reset: None, generation: 0, lower: None }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Reason { ReturnToBaseline, Jump, ResetReturned, ResetUnchanged }
+#[derive(Debug)]
+pub(super) struct Rejection { pub baseline: usize, pub start: usize, pub end: usize, pub reason: Reason }
+#[derive(Default)]
+pub(super) struct Projection {
+    pub five_rejected: HashSet<usize>,
+    pub seven_rejected: HashSet<usize>,
+    pub five_bridges: HashMap<usize, usize>,
+    pub seven_bridges: HashMap<usize, usize>,
+    pub events: Vec<Rejection>,
+}
+#[derive(Clone, Copy)]
+struct Candidate { baseline: usize, start: usize, last: usize, left_band: bool, reset_left: bool, reset_unchanged: bool }
+const EPSILON: f64 = 0.000_001;
+pub(super) fn valid(used: Option<i32>) -> Option<i32> { used.filter(|v| (0..=100).contains(v)) }
+fn same_reset(a: Option<f64>, b: Option<f64>) -> bool {
+    a.zip(b).is_some_and(|(a,b)| a.is_finite() && b.is_finite() && (a-b).abs() <= 5.0 + EPSILON)
+}
+impl Projection {
+    fn reject(&mut self, c: Candidate, reason: Reason, samples: &[Sample]) {
+        if c.last <= c.start { return; }
+        self.seven_rejected.extend(c.start..c.last);
+        // Preserve the existing 90-minute carry horizon before the event.
+        if samples[c.start].at - samples[c.baseline].at <= 90.0 * 60.0 + EPSILON {
+            self.seven_bridges.insert(c.baseline, c.last);
+        }
+        self.events.push(Rejection { baseline: c.baseline, start: c.start, end: c.last, reason });
+    }
+    fn settle(&mut self, c: Candidate, samples: &[Sample]) {
+        if c.reset_unchanged && samples[c.start].at + 300.0 - samples[c.last].at <= 120.0 + EPSILON {
+            self.reject(c, Reason::ResetUnchanged, samples);
+        }
     }
 }
-
-pub(super) struct Decision {
-    pub used: Option<i32>,
-    pub reset: Option<f64>,
-    pub generation: i64,
-    pub is_anchor: bool,
-    pub needs_evidence: bool,
-    pub is_correction: bool,
-}
-
-impl HistoryProtection {
-    pub(super) fn new(policy: HistoryPolicy) -> Self { Self { policy, ..Self::default() } }
-
-    pub(super) fn observe(&mut self, used: Option<i32>, reset: Option<f64>, at: f64) -> Decision {
-        if !at.is_finite() || self.last_observed.is_some_and(|last| at <= last + 0.000_001) {
-            return self.result(None, false, false, false);
+pub(super) fn project(samples: &[Sample], plan: Option<&str>, now: f64) -> Projection {
+    let mut result = Projection::default();
+    let mut candidate: Option<Candidate> = None;
+    let mut previous: Option<usize> = None;
+    let mut seen: Option<f64> = None;
+    let mut suppressed = false;
+    let mut fresh = HashSet::new();
+    let rate = match plan.map(|p| p.trim().to_ascii_lowercase()).as_deref() {
+        Some("plus") => Some(10.0), Some("pro") => Some(2.0), _ => None,
+    };
+    for (i, sample) in samples.iter().enumerate() {
+        if !sample.at.is_finite() || sample.at > now + EPSILON || seen.is_some_and(|last| sample.at <= last + EPSILON) { continue; }
+        seen = Some(sample.at);
+        fresh.insert(i);
+        if let Some(c) = candidate {
+            if sample.at > samples[c.start].at + 300.0 + EPSILON {
+                result.settle(c, samples);
+                candidate = None;
+                suppressed = valid(samples[c.last].seven_used).unwrap_or(0) <= 2;
+            }
         }
-        self.last_observed = Some(at);
-        let Some(used) = used.filter(|used| (0..=100).contains(used)) else {
-            self.lower = None;
-            return self.result(None, false, true, false);
+        let Some(used) = valid(sample.seven_used) else {
+            if let Some(c) = candidate.as_mut() { c.reset_unchanged = false; }
+            continue;
         };
-        let reset = reset.filter(|reset| reset.is_finite());
-        if self.accepted_used.is_none() {
-            self.accepted_used = Some(used);
-            self.accepted_reset = reset;
-            let expired = reset.is_some_and(|reset| at >= reset);
-            return self.result((!expired).then_some(used), reset.is_some(), expired, false);
-        }
-        if reset.zip(self.accepted_reset).is_some_and(|(current, anchor)| current - anchor > self.policy.new_cycle_reset_delta + 0.000_001) {
-            if used > self.policy.maximum_new_cycle_used_percent {
-                self.lower = None;
-                return self.result(None, false, true, false);
+        if let Some(mut c) = candidate {
+            let base = &samples[c.baseline];
+            let last = &samples[c.last];
+            let in_band = (used - base.seven_used.unwrap()).abs() <= 3;
+            let reset_same = same_reset(sample.seven_reset, base.seven_reset);
+            let reset_return = c.reset_left && reset_same;
+            let returned = c.left_band && in_band && used > last.seven_used.unwrap();
+            let jumped = rate.is_some_and(|rate| f64::from(used - last.seven_used.unwrap()) * 60.0 / (sample.at-last.at) > rate + EPSILON);
+            c.reset_unchanged = c.reset_unchanged && reset_same && sample.at-last.at <= 120.0+EPSILON;
+            if sample.seven_reset.is_some_and(f64::is_finite) && base.seven_reset.is_some_and(f64::is_finite) && !reset_same { c.reset_left = true; }
+            c.left_band |= !in_band;
+            c.last = i;
+            if returned || jumped || reset_return {
+                result.reject(c, if returned { Reason::ReturnToBaseline } else if jumped { Reason::Jump } else { Reason::ResetReturned }, samples);
+                candidate = None;
+                suppressed = used <= 2;
+            } else if sample.at >= samples[c.start].at + 300.0 - EPSILON {
+                result.settle(c, samples);
+                candidate = None;
+                suppressed = used <= 2;
+            } else { candidate = Some(c); }
+        } else {
+            if used > 2 { suppressed = false; }
+            if !suppressed {
+                if let Some(prev) = previous {
+                    if valid(samples[prev].seven_used).is_some_and(|prior| used < prior && used <= 2) {
+                        let same = same_reset(sample.seven_reset, samples[prev].seven_reset);
+                        let has_resets = sample.seven_reset.is_some_and(f64::is_finite) && samples[prev].seven_reset.is_some_and(f64::is_finite);
+                        candidate = Some(Candidate { baseline: prev, start: i, last: i,
+                            left_band: (used-samples[prev].seven_used.unwrap()).abs()>3,
+                            reset_left: has_resets && !same, reset_unchanged: same });
+                    }
+                }
             }
-            self.generation = self.generation.saturating_add(1);
-            self.accepted_reset = reset;
-            self.accepted_used = Some(used);
-            self.lower = None;
-            return self.result(Some(used), true, false, false);
         }
-        if self.accepted_reset.is_some_and(|anchor| at >= anchor)
-            || reset.zip(self.accepted_reset).is_some_and(|(current, anchor)| current < anchor - self.policy.reset_jitter_tolerance - 0.000_001)
-        {
-            self.lower = None;
-            return self.result(None, false, true, false);
-        }
-        let establishing_anchor = self.accepted_reset.is_none() && reset.is_some();
-        if establishing_anchor {
-            self.accepted_reset = reset;
-            if reset.is_some_and(|reset| at >= reset) {
-                self.lower = None;
-                return self.result(None, true, true, false);
+        previous = Some(i);
+    }
+    if let Some(c) = candidate {
+        if now >= samples[c.start].at + 300.0 - EPSILON { result.settle(c, samples); }
+    }
+    let five: Vec<usize> = samples.iter().enumerate().filter(|(i,s)| fresh.contains(i) && valid(s.five_used).is_some()).map(|(i,_)|i).collect();
+    for triple in five.windows(3) {
+        let (a,b,c) = (triple[0], triple[1], triple[2]);
+        if result.seven_rejected.contains(&b) && samples[a].five_used.unwrap()>0 && samples[b].five_used==Some(0) && samples[c].five_used.unwrap()>0
+            && samples[c].at > samples[b].at + EPSILON && samples[c].at - samples[b].at <= 120.0+EPSILON
+            && (samples[c].five_used.unwrap()-samples[a].five_used.unwrap()).abs()<=1
+            && same_reset(samples[a].five_reset,samples[b].five_reset) && same_reset(samples[a].five_reset,samples[c].five_reset) {
+            result.five_rejected.insert(b);
+            if samples[b].at - samples[a].at <= 90.0 * 60.0 + EPSILON {
+                result.five_bridges.insert(a,c);
             }
         }
-        if used >= self.accepted_used.unwrap() {
-            self.accepted_used = Some(used);
-            self.lower = None;
-            return self.result(Some(used), establishing_anchor, false, false);
-        }
-        if !reset.zip(self.accepted_reset).is_some_and(|(current, anchor)| (current - anchor).abs() <= self.policy.reset_jitter_tolerance + 0.000_001) {
-            self.lower = None;
-            return self.result(None, establishing_anchor, true, false);
-        }
-        let (first, count) = self.lower.get_or_insert((at, 0));
-        *count = count.saturating_add(1);
-        if *count >= self.policy.correction_sample_count && at - *first + 0.000_001 >= self.policy.correction_evidence_duration {
-            self.accepted_used = Some(used);
-            self.lower = None;
-            return self.result(Some(used), establishing_anchor, true, true);
-        }
-        self.result(None, establishing_anchor, true, false)
     }
-
-    fn result(&self, used: Option<i32>, is_anchor: bool, needs_evidence: bool, is_correction: bool) -> Decision {
-        Decision { used, reset: self.accepted_reset, generation: self.generation, is_anchor, needs_evidence, is_correction }
-    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn weekly_policy_can_be_tightened_without_changing_five_hour_defaults() {
-        let weekly = HistoryPolicy { maximum_new_cycle_used_percent: 30, correction_sample_count: 4, correction_evidence_duration: 600.0, ..HistoryPolicy::SEVEN_DAY };
-        let mut five = HistoryProtection::new(HistoryPolicy::FIVE_HOUR);
-        let mut seven = HistoryProtection::new(weekly);
-        five.observe(Some(90), Some(20_000.0), 0.0);
-        seven.observe(Some(90), Some(20_000.0), 0.0);
-        assert_eq!(five.observe(Some(80), Some(21_801.0), 1.0).generation, 1);
-        let rejected = seven.observe(Some(80), Some(21_801.0), 1.0);
-        assert_eq!(rejected.used, None);
-        assert_eq!(rejected.generation, 0);
-        assert_eq!(seven.observe(Some(30), Some(21_801.0), 2.0).generation, 1);
-        assert_eq!(HistoryPolicy::FIVE_HOUR.maximum_new_cycle_used_percent, 100);
-        assert_eq!(HistoryPolicy::SEVEN_DAY.maximum_new_cycle_used_percent, 100);
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Case {
+        name: String, plan: Option<String>, now: f64, samples: Vec<Sample>,
+        five_rejected: Vec<usize>, seven_rejected: Vec<usize>,
+        five_bridges: Vec<(usize,usize)>, seven_bridges: Vec<(usize,usize)>,
     }
-
     #[test]
-    fn forward_boundary_accepts_all_valid_percentages_for_each_window() {
-        for _window in ["5h", "7d"] {
-            for used in [0, 2, 50, 80, 100] {
-                let mut state = HistoryProtection::default();
-                state.observe(Some(90), Some(20_000.0), 0.0);
-                assert_eq!(state.observe(Some(used), Some(21_800.0), 1.0).generation, 0);
-                let decision = state.observe(Some(used), Some(21_801.0), 2.0);
-                assert_eq!(decision.generation, 1);
-                assert_eq!(decision.used, Some(used));
-                assert!(decision.is_anchor);
-            }
+    fn shared_retrospective_scenarios() {
+        let cases: Vec<Case> = serde_json::from_str(include_str!("../../../../../Tests/SharedFixtures/quota-retrospective-v1.json")).unwrap();
+        assert!(cases.len()>40);
+        for case in cases {
+            let p = project(&case.samples, case.plan.as_deref(), case.now);
+            assert_eq!(p.five_rejected, case.five_rejected.into_iter().collect(), "{}", case.name);
+            assert_eq!(p.seven_rejected, case.seven_rejected.into_iter().collect(), "{}", case.name);
+            assert_eq!(p.five_bridges, case.five_bridges.into_iter().collect(), "{}", case.name);
+            assert_eq!(p.seven_bridges, case.seven_bridges.into_iter().collect(), "{}", case.name);
         }
-    }
-
-    #[test]
-    fn lower_values_require_three_fresh_samples_across_five_minutes() {
-        let mut state = HistoryProtection::default();
-        state.observe(Some(12), Some(20_000.0), 0.0);
-        assert_eq!(state.observe(Some(8), Some(20_000.0), 10.0).used, None);
-        assert_eq!(state.observe(Some(8), Some(20_000.0), 10.0).used, None);
-        state.observe(Some(8), Some(20_000.0), 9.0);
-        assert_eq!(state.observe(Some(8), Some(20_000.0), 310.0).used, None);
-        let result = state.observe(Some(8), Some(20_000.0), 311.0);
-        assert_eq!(result.used, Some(8));
-        assert_eq!(result.generation, 0);
-        assert!(result.is_correction && result.needs_evidence);
-        assert_eq!(state.observe(Some(9), Some(20_000.0), 312.0).used, Some(9));
-    }
-
-    #[test]
-    fn fixed_anchor_rejects_backward_boundary_and_does_not_follow_creep() {
-        let mut state = HistoryProtection::default();
-        state.observe(Some(12), Some(20_000.0), 0.0);
-        assert_eq!(state.observe(Some(0), Some(18_000.0), 1.0).used, None);
-        for (i, reset) in [20_600.0, 21_200.0, 21_800.0].into_iter().enumerate() {
-            assert_eq!(state.observe(Some(13), Some(reset), 100.0 + i as f64 * 300.0).generation, 0);
-        }
-        assert_eq!(state.observe(Some(70), Some(21_801.0), 1000.0).generation, 1);
-    }
-
-    #[test]
-    fn recovery_missing_reset_and_expiry_do_not_fabricate_usage() {
-        let mut state = HistoryProtection::default();
-        state.observe(Some(12), Some(2000.0), 0.0);
-        assert_eq!(state.observe(Some(0), Some(2000.0), 10.0).used, None);
-        assert_eq!(state.observe(Some(13), Some(2000.0), 20.0).used, Some(13));
-        for at in [30.0, 330.0, 630.0] {
-            assert_eq!(state.observe(Some(8), None, at).used, None);
-        }
-        assert_eq!(state.observe(Some(101), Some(2000.0), 700.0).used, None);
-        assert_eq!(state.observe(Some(14), Some(2000.0), 2000.0).used, None);
-        assert_eq!(state.observe(Some(100), Some(4000.0), 2100.0).used, Some(100));
     }
 }

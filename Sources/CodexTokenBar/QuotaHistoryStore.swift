@@ -194,6 +194,11 @@ final class QuotaHistoryStore: ObservableObject {
 }
 
 private struct QuotaHistoryRow {
+    // In-memory projection only; never persisted or exposed on the wire.
+    var fiveRejected = false
+    var sevenRejected = false
+    var fiveBridgeEnd: Date?
+    var sevenBridgeEnd: Date?
     fileprivate static let legacyFiveHourMaxResetSpan: TimeInterval = 6 * 60 * 60
 
     let databaseID: Int64?
@@ -554,7 +559,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     }
 
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) throws -> AccountQuotaSnapshot {
-        let now = Date()
+        let now = quota.updatedAt ?? Date()
         guard let row = Self.row(from: quota, createdAt: now) else { return quota }
         let peerRows = loadPeerRows(for: row, cutoff: nil)
         return try withDatabase { database in
@@ -565,9 +570,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 cutoff: nil,
                 now: now
             )
-            let history = Self.sanitizedRows(
-                Self.canonicalizedCycleRows(mergedRows(localRows + peerRows))
-            )
+            let history = Self.sanitizedRows(mergedRows(localRows + peerRows), now: now)
             let annotatedRow = Self.annotatedCurrentRow(row, after: history)
             // This compatibility API may decorate cycle IDs but never filters
             // the realtime response through the historical accepted sequence.
@@ -634,22 +637,23 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     /// Replays the strict boundary rule over one stable-identity timeline. A
     /// persisted non-boundary anchor advances the accepted reset timestamp
     /// without incrementing the generation.
-    private static func canonicalizedCycleRows(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
+    private static func canonicalizedCycleRows(_ rows: [QuotaHistoryRow], preserveLatestTarget: Bool = true) -> [QuotaHistoryRow] {
         var ordered = rows.sorted {
             if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
             return ($0.databaseID ?? Int64.max) < ($1.databaseID ?? Int64.max)
         }
-        // Preserve the newest native Swift generation as the absolute offset.
-        // The loaded chart window is bounded, so replaying from zero alone
-        // would rename every surviving cycle whenever an old boundary rolled
-        // out of that window.
-        let fiveGenerationTarget = ordered.enumerated().reversed().first(where: { entry in
+        // Raw writes preserve the latest native generation. Read projections
+        // start from the earliest retained native generation instead: using a
+        // later target would retain the offset introduced by a rejected reset.
+        // Both retain a durable offset when older history is no longer present.
+        let targetOrder = preserveLatestTarget ? Array(ordered.enumerated().reversed()) : Array(ordered.enumerated())
+        let fiveGenerationTarget = targetOrder.first(where: { entry in
             entry.element.source?.caseInsensitiveCompare("swift") == .orderedSame
                 && entry.element.fiveHourCycleGeneration != nil
         }).flatMap { entry in
             entry.element.fiveHourCycleGeneration.map { (entry.offset, $0) }
         }
-        let sevenGenerationTarget = ordered.enumerated().reversed().first(where: { entry in
+        let sevenGenerationTarget = targetOrder.first(where: { entry in
             entry.element.source?.caseInsensitiveCompare("swift") == .orderedSame
                 && entry.element.sevenDayCycleGeneration != nil
         }).flatMap { entry in
@@ -754,7 +758,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         }
 
         let intervalCount = 30 * 24 * 12
-        let sorted = sanitizedRows(canonicalizedCycleRows(rows))
+        let sorted = sanitizedRows(rows.filter { $0.createdAt <= now.addingTimeInterval(0.000_001) }, now: now)
         let recentBins = makeCarriedBins(
             rows: sorted,
             start: recentStart,
@@ -797,8 +801,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return QuotaHistorySnapshot(daily: daily, recentBins: recentBins, hourlyBins: hourlyBins, latest: sorted.last?.createdAt)
     }
 
-    private static func sanitizedRows(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
-        var states: [[String]: (QuotaHistoryProtection, QuotaHistoryProtection)] = [:]
+    private static func sanitizedRows(_ rows: [QuotaHistoryRow], now: Date) -> [QuotaHistoryRow] {
+        var groups: [[String]: [QuotaHistoryRow]] = [:]
         var seenAt: [[String]: Date] = [:]
         var legacyScopes: [String: Set<[String]>] = [:]
         for row in rows {
@@ -808,20 +812,41 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 )
             }
         }
-        return rows.sorted { $0.createdAt < $1.createdAt }.compactMap { original in
+        for original in rows.sorted(by: { $0.createdAt < $1.createdAt }) {
             let row = original.reclassifyingLegacySevenDayOnlyWindow()
             let scope = row.stableAccountKey.map { account in
                 [row.homeIdentity ?? "", account, row.identityPlanType ?? "", row.identityLimitID ?? ""]
             } ?? (legacyScopes[row.historyMatchKey]?.count == 1
                 ? legacyScopes[row.historyMatchKey]!.first! : [row.historyMatchKey])
-            guard seenAt[scope] != row.createdAt else { return nil }
+            guard seenAt[scope].map({ row.createdAt.timeIntervalSince($0) > 0.000_001 }) ?? true else { continue }
             seenAt[scope] = row.createdAt
-            var (five, seven) = states[scope] ?? (QuotaHistoryProtection(policy: .fiveHour), QuotaHistoryProtection(policy: .sevenDay))
-            let f = five.observe(usedPercent: row.fiveHourUsedPercent, resetsAt: row.fiveHourResetsAt, observedAt: row.createdAt)
-            let s = seven.observe(usedPercent: row.sevenDayUsedPercent, resetsAt: row.sevenDayResetsAt, observedAt: row.createdAt)
-            states[scope] = (five, seven)
-            return row.projecting(fiveUsed: f.usedPercent, fiveReset: f.resetsAt, sevenUsed: s.usedPercent, sevenReset: s.resetsAt)
+            groups[scope, default: []].append(row)
         }
+        return groups.values.flatMap { timeline -> [QuotaHistoryRow] in
+            let samples = timeline.map { row in
+                QuotaHistoryProtection.Sample(at: row.createdAt.timeIntervalSince1970,
+                    fiveUsed: row.fiveHourUsedPercent, fiveReset: row.fiveHourResetsAt?.timeIntervalSince1970,
+                    sevenUsed: row.sevenDayUsedPercent, sevenReset: row.sevenDayResetsAt?.timeIntervalSince1970)
+            }
+            let plan = timeline.first(where: { $0.identityPlanType != nil })?.identityPlanType ?? timeline.first?.planType
+            let projection = QuotaHistoryProtection.project(samples, plan: plan, now: now.timeIntervalSince1970)
+            let filtered = timeline.enumerated().map { i, row in
+                row.projecting(
+                    fiveUsed: projection.fiveRejected.contains(i) ? nil : QuotaHistoryProtection.valid(row.fiveHourUsedPercent),
+                    fiveReset: row.fiveHourResetsAt,
+                    sevenUsed: projection.sevenRejected.contains(i) ? nil : QuotaHistoryProtection.valid(row.sevenDayUsedPercent),
+                    sevenReset: row.sevenDayResetsAt)
+            }
+            // Recompute cycles after removal, never from the rejected reset.
+            return canonicalizedCycleRows(filtered, preserveLatestTarget: false).enumerated().map { i, original in
+                var row = original
+                row.fiveRejected = projection.fiveRejected.contains(i)
+                row.sevenRejected = projection.sevenRejected.contains(i)
+                row.fiveBridgeEnd = projection.fiveBridges[i].map { timeline[$0].createdAt }
+                row.sevenBridgeEnd = projection.sevenBridges[i].map { timeline[$0].createdAt }
+                return row
+            }
+        }.sorted { $0.createdAt < $1.createdAt }
     }
 
     private static func row(from quota: AccountQuotaSnapshot, createdAt: Date) -> QuotaHistoryRow? {
@@ -896,7 +921,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         now: Date
     ) -> [QuotaHistoryRecentBucket] {
         var rowIndex = 0
-        var latestRow: QuotaHistoryRow?
+        let fiveRows = rows.filter { !$0.fiveRejected }
+        let sevenRows = rows.filter { !$0.sevenRejected }
+        var fiveIndex = 0
+        var sevenIndex = 0
+        var latestFive: QuotaHistoryRow?
+        var latestSeven: QuotaHistoryRow?
 
         return (0..<count).map { index -> QuotaHistoryRecentBucket in
             let binStart = start.addingTimeInterval(Double(index) * interval)
@@ -914,10 +944,14 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             let firstUnreadRowIndex = rowIndex
 
             while rowIndex < rows.count, rows[rowIndex].createdAt <= inclusiveUpperBound {
-                latestRow = rows[rowIndex]
                 rowIndex += 1
             }
-            let nextRow = rows[safe: rowIndex]
+            while fiveIndex < fiveRows.count, fiveRows[fiveIndex].createdAt <= inclusiveUpperBound {
+                latestFive = fiveRows[fiveIndex]; fiveIndex += 1
+            }
+            while sevenIndex < sevenRows.count, sevenRows[sevenIndex].createdAt <= inclusiveUpperBound {
+                latestSeven = sevenRows[sevenIndex]; sevenIndex += 1
+            }
             let observations = rows[firstUnreadRowIndex..<rowIndex].filter { row in
                 row.createdAt >= binStart && row.createdAt <= inclusiveUpperBound
             }
@@ -925,23 +959,25 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             return QuotaHistoryRecentBucket(
                 start: binStart,
                 fiveHourRemainingPercent: quotaRemaining(
-                    from: latestRow,
-                    to: nextRow,
+                    from: latestFive,
+                    to: fiveRows[safe: fiveIndex],
                     previousBoundary: binStart,
                     at: sampleDate,
                     maxCarryGap: maxCarryGap,
                     remaining: \.fiveHourRemainingPercent,
                     resetsAt: \.fiveHourResetsAt,
+                    bridgeEnd: \.fiveBridgeEnd,
                     sameCycle: { $0.isSameFiveHourCycle(as: $1) }
                 ),
                 sevenDayRemainingPercent: quotaRemaining(
-                    from: latestRow,
-                    to: nextRow,
+                    from: latestSeven,
+                    to: sevenRows[safe: sevenIndex],
                     previousBoundary: binStart,
                     at: sampleDate,
                     maxCarryGap: maxCarryGap,
                     remaining: \.sevenDayRemainingPercent,
                     resetsAt: \.sevenDayResetsAt,
+                    bridgeEnd: \.sevenBridgeEnd,
                     sameCycle: { $0.isSameSevenDayCycle(as: $1) }
                 ),
                 fiveHourObservations: observations.compactMap { row in
@@ -987,10 +1023,16 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         maxCarryGap: TimeInterval,
         remaining: KeyPath<QuotaHistoryRow, Double?>,
         resetsAt: KeyPath<QuotaHistoryRow, Date?>,
+        bridgeEnd: KeyPath<QuotaHistoryRow, Date?>,
         sameCycle: (QuotaHistoryRow, QuotaHistoryRow) -> Bool
     ) -> Double? {
         guard let row, let value = row[keyPath: remaining] else { return nil }
 
+        if let nextRow, row[keyPath: bridgeEnd] == nextRow.createdAt,
+           let endValue = nextRow[keyPath: remaining], date > row.createdAt, date < nextRow.createdAt {
+            let fraction = date.timeIntervalSince(row.createdAt) / nextRow.createdAt.timeIntervalSince(row.createdAt)
+            return value + (endValue - value) * fraction
+        }
         if let resetDate = row[keyPath: resetsAt], resetDate > row.createdAt {
             if date >= resetDate {
                 return nil
@@ -1384,7 +1426,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         if !additionalRows.isEmpty {
             rawRows = mergedRows(rawRows + additionalRows)
         }
-        return Self.sanitizedRows(Self.canonicalizedCycleRows(rawRows)).last
+        return Self.sanitizedRows(rawRows, now: now).last
     }
 
     private func matchingRows(

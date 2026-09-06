@@ -1,21 +1,19 @@
 import Foundation
 
-/// Separate policy values let the short window be relaxed independently of
-/// the slower weekly window. The first release intentionally uses equal values.
+/// Independent cycle metadata thresholds. Neither threshold gates visibility;
+/// 7d retrospective rejection is evaluated separately from cycle annotation.
 struct QuotaHistoryProtectionPolicy: Equatable, Sendable {
     let newCycleResetDelta: TimeInterval
     let maximumNewCycleUsedPercent: Int
     let resetJitterTolerance: TimeInterval
-    let correctionSampleCount: Int
-    let correctionEvidenceDuration: TimeInterval
 
     static let fiveHour = Self(
         newCycleResetDelta: 1_800, maximumNewCycleUsedPercent: 100,
-        resetJitterTolerance: 5, correctionSampleCount: 3, correctionEvidenceDuration: 300
+        resetJitterTolerance: 5
     )
     static let sevenDay = Self(
-        newCycleResetDelta: 1_800, maximumNewCycleUsedPercent: 100,
-        resetJitterTolerance: 5, correctionSampleCount: 3, correctionEvidenceDuration: 300
+        newCycleResetDelta: 900, maximumNewCycleUsedPercent: 100,
+        resetJitterTolerance: 5
     )
 
     static func policy(for window: QuotaHistoryWindowKind) -> Self {

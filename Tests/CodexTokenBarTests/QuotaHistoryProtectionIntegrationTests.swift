@@ -38,7 +38,7 @@ final class QuotaHistoryProtectionIntegrationTests: XCTestCase {
         let reopened = QuotaHistoryDatabase(databaseURL: url)
         let current = input(8, at: start.addingTimeInterval(310), reset: reset)
         let before = try reopened.loadSnapshot(for: current, now: start.addingTimeInterval(200))
-        XCTAssertNil(before.recentBins.last?.fiveHourRemainingPercent)
+        XCTAssertEqual(before.recentBins.last?.fiveHourRemainingPercent, 92)
         XCTAssertEqual(before.recentBins.last?.sevenDayRemainingPercent, 50)
         try reopened.record(current)
         try reopened.migrate()
@@ -70,7 +70,7 @@ final class QuotaHistoryProtectionIntegrationTests: XCTestCase {
             XCTAssertFalse(try reopened.record(lower))
         }
         let pending = try reopened.loadSnapshot(for: first, now: start.addingTimeInterval(330))
-        XCTAssertNil(pending.recentBins.last?.fiveHourRemainingPercent)
+        XCTAssertEqual(pending.recentBins.last?.fiveHourRemainingPercent, 92)
         let confirmed = input(8, at: start.addingTimeInterval(331), reset: reset)
         XCTAssertTrue(try reopened.record(confirmed))
         let accepted = try reopened.loadSnapshot(for: confirmed, now: confirmed.updatedAt!)
@@ -126,5 +126,57 @@ final class QuotaHistoryProtectionIntegrationTests: XCTestCase {
         XCTAssertEqual(values.count, 1)
         XCTAssertEqual(values[0].0, 20)
         XCTAssertNil(values[0].1)
+    }
+}
+
+extension QuotaHistoryProtectionIntegrationTests {
+    func testRetrospectiveRemovalRebuildsBinsAndCyclesWithoutDeletingRawRows() throws {
+        let url = try databaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        let reset = now.addingTimeInterval(5000)
+        func sample(_ offset: Double, _ seven: Int, _ shift: Double, _ five: Int) -> AccountQuotaSnapshot {
+            var quota = input(five, at: now.addingTimeInterval(offset), reset: reset)
+            quota.sevenDay = AccountQuotaWindow(label: "7d", usedPercent: seven, resetsAt: reset.addingTimeInterval(shift))
+            return quota
+        }
+        let first = sample(-600, 42, 500_000, 20)
+        let glitch = sample(-310, 1, 540_674, 0)
+        let recovery = sample(-20, 42, 500_000, 20)
+        try database.record(first)
+        try database.record(glitch)
+        let pending = try database.loadSnapshot(for: glitch, now: now.addingTimeInterval(-30))
+        XCTAssertEqual(pending.recentBins.last?.sevenDayRemainingPercent, 99)
+        try database.record(recovery)
+        let reopened = QuotaHistoryDatabase(databaseURL: url)
+        let after = try reopened.loadSnapshot(for: recovery, now: now)
+        let beforeRecovery = try reopened.loadSnapshot(for: recovery, now: now.addingTimeInterval(-30))
+        XCTAssertEqual(beforeRecovery.recentBins.last?.sevenDayRemainingPercent, 99, "future recovery cannot change an earlier as-of query")
+        let middle = try XCTUnwrap(after.recentBins.first { abs($0.start.addingTimeInterval(300).timeIntervalSince(now.addingTimeInterval(-300))) < 0.001 })
+        XCTAssertEqual(middle.sevenDayRemainingPercent, 58, "flat bridge crosses the removed point and the bin boundary")
+        XCTAssertEqual(try XCTUnwrap(middle.fiveHourRemainingPercent), 100 - 20 * 10 / 290, accuracy: 0.001)
+        XCTAssertTrue(after.recentBins.flatMap(\.fiveHourObservations).contains { $0.remainingPercent == 100 }, "the measured 5h spike remains; bin edges still use normal interpolation")
+        let observations = after.recentBins.flatMap(\.sevenDayObservations)
+        XCTAssertEqual(observations.map(\.remainingPercent), [58, 58])
+        XCTAssertEqual(Set(observations.compactMap(\.cycleID)), ["g0"], "rejected reset must not advance the cycle")
+        let raw = try SQLiteDatabaseDriver(url: url).readRows("SELECT seven_day_used_percent, seven_day_resets_at FROM quota_snapshots ORDER BY created_at;") { ($0.int(0), $0.double(1)) }
+        XCTAssertEqual(raw.map(\.0), [42, 1, 42])
+        XCTAssertEqual(raw[1].1, glitch.sevenDay!.resetsAt!.timeIntervalSince1970)
+    }
+
+    func testJumpAloneConnectsUpwardRemainingAcrossChangedCycle() throws {
+        let url = try databaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        let reset = now.addingTimeInterval(5000)
+        for (offset, used, shift) in [(-600.0, 80, 500_000.0), (-310.0, 1, 540_000.0), (-20.0, 60, 540_000.0)] {
+            var quota = input(20, at: now.addingTimeInterval(offset), reset: reset)
+            quota.sevenDay = AccountQuotaWindow(label: "7d", usedPercent: used, resetsAt: reset.addingTimeInterval(shift))
+            try database.record(quota)
+        }
+        let result = try database.loadSnapshot(for: input(20, at: now, reset: reset), now: now)
+        let middle = try XCTUnwrap(result.recentBins.first { abs($0.start.addingTimeInterval(300).timeIntervalSince(now.addingTimeInterval(-300))) < 0.001 })
+        XCTAssertEqual(try XCTUnwrap(middle.sevenDayRemainingPercent), 20 + 20 * 300 / 580, accuracy: 0.001)
+        XCTAssertEqual(result.recentBins.flatMap(\.sevenDayObservations).map(\.remainingPercent), [20,40])
     }
 }

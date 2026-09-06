@@ -337,7 +337,7 @@ fn existing_tauri_quota_history_is_not_overwritten_by_legacy_migration() {
 }
 
 #[test]
-fn record_preserves_same_cycle_regressions_and_marks_projection_pending() {
+fn record_preserves_and_immediately_shows_nonzero_regressions() {
     let path = temp_db_path("normalize");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() + 3_600.0;
@@ -351,7 +351,7 @@ fn record_preserves_same_cycle_regressions_and_marks_projection_pending() {
 
     let history = database.recent_five_minute_history(4).unwrap();
     let latest = history.last().unwrap();
-    assert_eq!(latest.five_hour_remaining_percent, None);
+    assert_eq!(latest.five_hour_remaining_percent, Some(0.29));
     assert_eq!(latest.seven_day_remaining_percent, Some(0.79));
 
     let identity = test_identity(&database, &first);
@@ -1046,7 +1046,7 @@ fn compatibility_normalizer_preserves_pending_regressions_and_rejects_invalid_us
 }
 
 #[test]
-fn history_marks_a_single_same_cycle_regression_pending() {
+fn history_shows_a_single_nonzero_same_cycle_regression() {
     let created_at = 1_800_000_000.0;
     let reset = created_at + 3.0 * 60.0 * 60.0;
     let previous = history_row(
@@ -1069,11 +1069,11 @@ fn history_marks_a_single_same_cycle_regression_pending() {
 
     let sanitized = super::series::sanitized_rows(vec![previous, legacy]);
 
-    assert_eq!(sanitized[1].five_hour_used_percent, None);
+    assert_eq!(sanitized[1].five_hour_used_percent, Some(71));
 }
 
 #[test]
-fn history_keeps_a_valid_usage_jump_and_marks_reversion_pending() {
+fn history_keeps_valid_usage_jump_and_nonzero_reversion() {
     let created_at = 1_800_000_000.0;
     let reset = created_at + 3.0 * 60.0 * 60.0;
     let mut previous = history_row(
@@ -1100,7 +1100,7 @@ fn history_keeps_a_valid_usage_jump_and_marks_reversion_pending() {
     let sanitized = super::series::sanitized_rows(vec![previous, spike, recovered]);
 
     assert_eq!(sanitized[1].five_hour_used_percent, Some(45));
-    assert_eq!(sanitized[2].five_hour_used_percent, None);
+    assert_eq!(sanitized[2].five_hour_used_percent, Some(12));
 }
 
 #[test]
@@ -1138,7 +1138,7 @@ fn interval_history_interpolates_between_same_cycle_samples() {
 }
 
 #[test]
-fn history_keeps_full_usage_and_marks_a_single_reversion_pending() {
+fn history_keeps_full_usage_and_nonzero_reversion() {
     let path = temp_db_path("full-spike");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() + 3_600.0;
@@ -1154,14 +1154,14 @@ fn history_keeps_full_usage_and_marks_a_single_reversion_pending() {
 
     let history = database.recent_five_minute_history(4).unwrap();
     let latest = history.last().unwrap();
-    assert_eq!(latest.five_hour_remaining_percent, None);
+    assert_eq!(latest.five_hour_remaining_percent, Some(0.85));
     assert_eq!(latest.seven_day_remaining_percent, Some(0.79));
 
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn history_keeps_full_usage_runs_and_marks_reversion_pending() {
+fn history_keeps_full_usage_runs_and_nonzero_reversion() {
     let path = temp_db_path("full-spike-run");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() + 3_600.0;
@@ -1177,8 +1177,8 @@ fn history_keeps_full_usage_runs_and_marks_reversion_pending() {
     assert!(record_at(&database, &recovered, base_at + 900.0).unwrap());
 
     let history = database.recent_five_minute_history(12).unwrap();
-    assert_eq!(history.last().unwrap().five_hour_remaining_percent, None);
-    assert_eq!(history.last().unwrap().seven_day_remaining_percent, None);
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.94));
+    assert_eq!(history.last().unwrap().seven_day_remaining_percent, Some(0.96));
 
     let _ = std::fs::remove_file(path);
 }
@@ -2087,7 +2087,7 @@ fn recent_history_does_not_merge_non_codex_limit_rows() {
 }
 
 #[test]
-fn history_marks_midcycle_reversion_pending_instead_of_suppressing_valid_jumps() {
+fn history_keeps_midcycle_nonzero_reversion_and_valid_jumps() {
     let path = temp_db_path("midcycle-spike");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let connection = database.open().unwrap();
@@ -2116,7 +2116,7 @@ fn history_marks_midcycle_reversion_pending_instead_of_suppressing_valid_jumps()
     assert!(history
         .iter()
         .any(|point| point.five_hour_remaining_percent == Some(0.55)));
-    assert_eq!(history.last().unwrap().five_hour_remaining_percent, None);
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.88));
 
     let _ = std::fs::remove_file(path);
 }
@@ -2224,12 +2224,12 @@ fn history_applies_boundary_and_backward_reset_rules_per_window() {
 
     let sanitized = super::series::sanitized_rows(vec![previous, glitch, recovered]);
 
-    assert_eq!(sanitized[1].five_hour_used_percent, None);
-    assert_eq!(sanitized[1].five_hour_resets_at, Some(stable_five_reset));
-    assert_eq!(sanitized[1].seven_day_used_percent, Some(1));
+    assert_eq!(sanitized[1].five_hour_used_percent, Some(2));
+    assert_eq!(sanitized[1].five_hour_resets_at, Some(shifted_five_reset));
+    assert_eq!(sanitized[1].seven_day_used_percent, None);
     assert_eq!(sanitized[1].seven_day_resets_at, Some(shifted_seven_reset));
     assert_eq!(sanitized[2].five_hour_used_percent, Some(46));
-    assert_eq!(sanitized[2].seven_day_used_percent, None);
+    assert_eq!(sanitized[2].seven_day_used_percent, Some(33));
 }
 
 #[test]
@@ -2431,7 +2431,7 @@ fn reset_carry_is_unknown_until_a_post_reset_sample_then_recovers() {
 }
 
 #[test]
-fn stale_reset_is_unknown_while_the_other_window_remains_independent() {
+fn stale_reset_does_not_hide_measured_values_or_affect_other_window() {
     let interval = 5 * 60;
     let now = fixed_series_now(interval);
     let current_bin_start = fixed_bin_start(interval);
@@ -2461,11 +2461,11 @@ fn stale_reset_is_unknown_while_the_other_window_remains_independent() {
         .unwrap();
 
     assert!(!five_values.contains(&Some(1.0)));
-    assert!(five_values.iter().all(Option::is_none));
+    assert!(five_values.contains(&Some(0.50)));
     assert!(history.iter().any(|point| point.seven_day_remaining_percent == Some(0.70)));
     assert!(history.last().unwrap().five_hour_remaining_percent.is_none());
     assert_eq!(history[seven_boundary].seven_day_remaining_percent, None);
-    assert_eq!(history[seven_boundary].five_hour_remaining_percent, None);
+    assert_eq!(history[seven_boundary].five_hour_remaining_percent, Some(0.50));
     assert!(history[seven_boundary + 1].seven_day_remaining_percent.is_none());
 }
 
