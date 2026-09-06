@@ -229,6 +229,13 @@ struct SessionManagementThread: Identifiable, Equatable, Sendable {
         return trimmed.isEmpty ? String(id.prefix(12)) : trimmed
     }
 
+    /// The URL Codex Desktop uses to address this thread. Keep this derived
+    /// from the canonical thread ID so it remains available even when a
+    /// rollout no longer exposes a copied link in its raw history.
+    var codexDeepLink: String {
+        "codex://threads/\(id)"
+    }
+
     var projectID: String {
         let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty
@@ -511,6 +518,12 @@ enum SessionManagementPresentation {
                     || $0.firstUserMessage.localizedCaseInsensitiveContains(needle)
                     || $0.cwd.localizedCaseInsensitiveContains(needle)
                     || $0.id.localizedCaseInsensitiveContains(needle)
+                    || $0.codexDeepLink.localizedCaseInsensitiveContains(needle)
+                    || ($0.sessionID?.localizedCaseInsensitiveContains(needle) ?? false)
+                    || $0.rolloutPath.localizedCaseInsensitiveContains(needle)
+                    || $0.model.localizedCaseInsensitiveContains(needle)
+                    || $0.source.localizedCaseInsensitiveContains(needle)
+                    || ($0.similarityReason?.localizedCaseInsensitiveContains(needle) ?? false)
             }
         }
         rows = rows.filter {

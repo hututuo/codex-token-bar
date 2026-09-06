@@ -20,6 +20,7 @@ import {
   SESSION_DISCLOSURE_PAGE_SIZE,
   buildSessionCollections,
   buildSessionProjects,
+  codexThreadDeepLink,
   eligibilityForMutation,
   filterSessionThreads,
   formatSessionBytes,
@@ -712,7 +713,7 @@ export function SessionManagementWorkspace({
                 <input
                   aria-label="搜索全部会话元数据"
                   onChange={(event) => setQuery(event.currentTarget.value)}
-                  placeholder="搜索标题、项目、ID、模型"
+                  placeholder="搜索标题、项目、ID、模型或 Codex 深链接"
                   type="search"
                   value={query}
                 />
@@ -1109,6 +1110,7 @@ function OverviewPanel({
     <div className="session-management-overview">
       <DefinitionGroup title="会话">
         <Definition label="会话 ID" value={thread.id} copyable />
+        <Definition label="Codex 深链接" value={codexThreadDeepLink(thread.id)} copyable />
         <Definition label="身份" value={thread.isSubagent ? "Subagent" : thread.forkedFromId ? "Fork 分支" : "主会话"} />
         <Definition label="状态" value={statusLabel(thread)} />
         <Definition label="模型" value={thread.model || "未知"} />

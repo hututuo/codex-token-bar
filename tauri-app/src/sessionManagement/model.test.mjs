@@ -34,10 +34,10 @@ test("session collections keep main, fork and subagent relationships separate", 
 
 test("filter searches the complete metadata set, sorts large and least-recent sessions", async () => {
   await withSsrModules(async (load) => {
-    const { filterSessionThreads } = await load("/src/sessionManagement/model.ts");
+    const { codexThreadDeepLink, filterSessionThreads } = await load("/src/sessionManagement/model.ts");
     const threads = [
       thread({ id: "new-small", title: "Alpha", fileBytes: 20_000_000, recencyAt: 1_785_283_200 }),
-      thread({ id: "old-large", title: "Beta", fileBytes: 2_000_000_000, recencyAt: 1_767_225_600 }),
+      thread({ id: "old-large", title: "Beta", model: "gpt-old-large", fileBytes: 2_000_000_000, recencyAt: 1_767_225_600 }),
       thread({ id: "agent-large", title: "Gamma", fileBytes: 3_000_000_000, isSubagent: true, recencyAt: 1_735_689_600 }),
       thread({ id: "unknown-large", title: "Unknown", fileBytes: 4_000_000_000, recencyAt: null, updatedAt: null, createdAt: null }),
     ];
@@ -56,6 +56,15 @@ test("filter searches the complete metadata set, sorts large and least-recent se
       sort: "recent",
       now: NOW,
     }).map((entry) => entry.id), ["old-large"]);
+    assert.equal(codexThreadDeepLink("old-large"), "codex://threads/old-large");
+    for (const query of ["codex://threads/old-large", "old-large", "gpt-old-large"]) {
+      assert.deepEqual(filterSessionThreads(threads, {
+        collection: "all",
+        query,
+        sort: "recent",
+        now: NOW,
+      }).map((entry) => entry.id), ["old-large"]);
+    }
     assert.deepEqual(filterSessionThreads(threads, {
       collection: "large",
       query: "",

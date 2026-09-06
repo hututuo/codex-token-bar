@@ -11,6 +11,35 @@ final class SessionManagementPresentationTests: XCTestCase {
         }
     }
 
+    func testSessionSearchMatchesCodexDeepLinkAndSessionMetadata() {
+        var thread = makeSessionManagementThread(id: "thread-deeplink")
+        thread.title = "Readable session title"
+        thread.sessionID = "session-tree-42"
+        let catalog = SessionManagementCatalog(
+            threads: [thread],
+            generatedAt: Date(),
+            codexHome: "/tmp/codex",
+            totalBytes: 1,
+            warnings: [],
+            capabilities: .readOnly
+        )
+
+        XCTAssertEqual(thread.codexDeepLink, "codex://threads/thread-deeplink")
+        for query in ["codex://threads/thread-deeplink", "session-tree-42", "Readable session title"] {
+            XCTAssertEqual(
+                SessionManagementPresentation.filteredThreads(
+                    in: catalog,
+                    collection: .all,
+                    projectID: nil,
+                    query: query,
+                    sort: .recent
+                ).map(\.id),
+                [thread.id],
+                "search should match \(query)"
+            )
+        }
+    }
+
     func testProgressiveDisclosureHasNoTotalCapAndKeepsSelectionVisible() {
         let threads = (0..<250).map {
             makeSessionManagementThread(

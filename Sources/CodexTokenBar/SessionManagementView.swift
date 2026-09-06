@@ -506,7 +506,7 @@ struct SessionManagementView: View {
         VStack(spacing: 0) {
             VStack(spacing: 9) {
                 HStack(spacing: 8) {
-                    TextField("搜索标题、正文首条、目录或 ID", text: $store.query)
+                    TextField("搜索标题、正文首条、目录、ID 或 Codex 深链接", text: $store.query)
                         .textFieldStyle(.roundedBorder)
                     Picker("排序", selection: $store.sort) {
                         ForEach(SessionManagementSort.allCases) { sort in
@@ -969,6 +969,7 @@ struct SessionManagementView: View {
                 metadataItem("来源", value: thread.source.isEmpty ? "—" : thread.source)
                 metadataItem("模型", value: thread.model.isEmpty ? "—" : thread.model)
                 metadataItem("Git 分支", value: thread.gitBranch.isEmpty ? "—" : thread.gitBranch)
+                metadataItem("Codex 深链接", value: thread.codexDeepLink)
             }
             if !thread.rolloutPath.isEmpty {
                 Text(thread.rolloutPath)

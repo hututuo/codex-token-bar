@@ -388,12 +388,18 @@ function normalizedCwd(cwd: string): string {
   return normalized || "/";
 }
 
+export function codexThreadDeepLink(threadID: string): string {
+  return `codex://threads/${threadID}`;
+}
+
 function searchableThreadText(thread: SessionManagementThread): string {
   return [
     thread.title,
     thread.preview,
     thread.cwd,
     thread.id,
+    codexThreadDeepLink(thread.id),
+    thread.sessionId ?? "",
     thread.model ?? "",
     thread.source ?? "",
     thread.similarityReason ?? "",
