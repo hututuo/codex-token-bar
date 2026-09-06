@@ -510,16 +510,31 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           </div>
         </RadarBlock>
 
-        <RadarBlock accentColor={semanticMetricColor(86)} icon="$" title="预估额度">
-          {quotaRows.slice(0, 3).map((row) => (
-            <div className={hasBothQuotaWindows ? "radar-quota-row" : "radar-quota-row radar-quota-row--single"} key={row.tier}>
-              <b>{row.tier}</b>
-              {!hasFiveHourQuota || row.fiveH === null ? null : <span>5h ${displayRadarNumber(row.fiveH, 2)}</span>}
-              {!hasSevenDayQuota || row.sevenD === null ? null : <span>7d ${displayRadarNumber(row.sevenD, 2)}</span>}
-            </div>
-          ))}
-          {snapshot?.modelIq.quotaRadar ? null : <span className="radar-muted">暂无额度雷达数据</span>}
-        </RadarBlock>
+        <div
+          aria-label="Radar 预估额度，非本级实时额度；打开折线图选择起点和终点计算本级额度"
+          className="codex-radar-quota-action"
+          onClick={() => document.getElementById("recent-usage-chart")?.scrollIntoView?.({ behavior: "smooth", block: "center" })}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              document.getElementById("recent-usage-chart")?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+            }
+          }}
+          role="button"
+          tabIndex={0}
+        >
+          <RadarBlock accentColor={semanticMetricColor(86)} icon="$" title="Radar 预估额度">
+            <span className="radar-quota-note">非本级实时额度 · 折线图选点计算本级</span>
+            {quotaRows.slice(0, 3).map((row) => (
+              <div className={hasBothQuotaWindows ? "radar-quota-row" : "radar-quota-row radar-quota-row--single"} key={row.tier}>
+                <b>{row.tier}</b>
+                {!hasFiveHourQuota || row.fiveH === null ? null : <span>5h ${displayRadarNumber(row.fiveH, 2)}</span>}
+                {!hasSevenDayQuota || row.sevenD === null ? null : <span>7d ${displayRadarNumber(row.sevenD, 2)}</span>}
+              </div>
+            ))}
+            {snapshot?.modelIq.quotaRadar ? null : <span className="radar-muted">暂无额度雷达数据</span>}
+          </RadarBlock>
+        </div>
       </div>
       {showDetails ? (
         <CodexRadarDetailOverlay

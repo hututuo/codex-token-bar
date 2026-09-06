@@ -2105,15 +2105,20 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("@AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)"))
         XCTAssertFalse(source.contains("@AppStorage(\"recentChartShow"))
         XCTAssertTrue(source.contains("@StateObject private var seriesVisibility"))
+        XCTAssertTrue(source.contains("@State private var lineVisibility = RecentChartSeriesVisibility()"))
+        XCTAssertTrue(source.contains("private func lineVisibilityBinding("))
         XCTAssertTrue(source.contains("RecentChartSeriesVisibilityStore"))
         XCTAssertTrue(source.contains("title: \"金额\""))
         XCTAssertTrue(source.contains("ChartLegend(color: AppTheme.chartCost, label: \"金额\""))
-        XCTAssertTrue(source.contains("if showTokens {\n                        ChartLegend(color: .blue"))
-        XCTAssertTrue(source.contains("if showCalls {\n                        ChartLegend(color: .orange"))
-        XCTAssertTrue(source.contains("if showCacheHitRate {\n                        ChartLegend(color: AppTheme.accentCyan"))
-        XCTAssertTrue(source.contains("if showCost {\n                        ChartLegend(color: AppTheme.chartCost"))
-        XCTAssertTrue(source.contains("if showFiveHourQuota && quotaSeriesVisibility.showsFiveHour {"))
-        XCTAssertTrue(source.contains("if showSevenDayQuota && quotaSeriesVisibility.showsSevenDay {"))
+        XCTAssertTrue(source.contains("// These are summary values, not line visibility indicators."))
+        XCTAssertFalse(source.contains("if showTokens {\n                        ChartLegend"))
+        XCTAssertFalse(source.contains("if showCalls {\n                        ChartLegend"))
+        XCTAssertFalse(source.contains("if showCacheHitRate {\n                        ChartLegend"))
+        XCTAssertFalse(source.contains("if showCost {\n                        ChartLegend"))
+        XCTAssertTrue(source.contains("if quotaSeriesVisibility.showsFiveHour {\n                        ChartLegend"))
+        XCTAssertTrue(source.contains("if quotaSeriesVisibility.showsSevenDay {\n                        ChartLegend"))
+        XCTAssertTrue(source.contains("isOn: lineVisibilityBinding(for: \\.showTokens)"))
+        XCTAssertTrue(source.contains("isOn: lineVisibilityBinding(for: \\.showSevenDayQuota)"))
         XCTAssertTrue(source.contains("static let costPointRadius: CGFloat = 1.68"))
         XCTAssertTrue(source.contains(".offset(x: -buttonWidth - 6)"))
         XCTAssertTrue(source.contains(".offset(x: buttonWidth + 6)"))
@@ -2136,6 +2141,20 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             dashboardSource[chartStart..<nextSection].contains(".equatable()"),
             "The chart owns interactive visibility state and must not sit behind an external EquatableView"
         )
+    }
+
+    func testRecentUsageChartIncludesTwoStepQuotaGuidePointingToCalculationCard() throws {
+        let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
+        let componentSource = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift", encoding: .utf8)
+
+        XCTAssertTrue(source.contains("recentChartQuotaGuideCompletedV01"))
+        XCTAssertTrue(source.contains("return .secondPoint"))
+        XCTAssertTrue(source.contains("return .calculationCard"))
+        XCTAssertTrue(source.contains("RecentChartQuotaGuide("))
+        XCTAssertTrue(componentSource.contains("① 点击折线中的第一个点，设定起点"))
+        XCTAssertTrue(componentSource.contains("② 点击第二个点，固定终点"))
+        XCTAssertTrue(componentSource.contains("额度计算卡已出现在左下方"))
+        XCTAssertTrue(componentSource.contains("return \"↙\""))
     }
 
     func testEstimateSummaryLivesBelowPlotInsteadOfInsideTheHitLayer() throws {

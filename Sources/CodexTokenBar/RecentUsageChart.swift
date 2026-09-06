@@ -1269,7 +1269,11 @@ final class RecentChartSeriesVisibilityStore: ObservableObject {
         to newValue: Bool
     ) {
         guard value[keyPath: keyPath] != newValue else { return }
-        value[keyPath: keyPath] = newValue
+        // Publish one complete snapshot. The chart keeps its render-facing
+        // state separately, so this persistence object cannot delay repainting.
+        var updated = value
+        updated[keyPath: keyPath] = newValue
+        value = updated
         schedulePersistence()
     }
 
@@ -1312,8 +1316,13 @@ struct RecentUsageChart: View, Equatable {
     private static let hoverRingLineWidth: CGFloat = 1.55
     static let costPointRadius: CGFloat = 1.68
     @AppStorage("recentChartRange") private var selectedRangeRaw = RecentChartRange.twentyFourHours.rawValue
+    @AppStorage("recentChartQuotaGuideCompletedV01") private var quotaGuideCompleted = false
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @StateObject private var seriesVisibility = RecentChartSeriesVisibilityStore()
+    // Keep the render-facing state local to this view. The store remains the
+    // persistence boundary, but a direct @State write makes line visibility
+    // update in the same SwiftUI transaction as the button tap.
+    @State private var lineVisibility = RecentChartSeriesVisibility()
     @State private var hoveredIndex: Int?
     @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
     @State private var consumptionSelectionTimeAnchor: RecentChartSelectionTimeAnchor?
@@ -1398,12 +1407,36 @@ struct RecentUsageChart: View, Equatable {
         RecentChartRange(rawValue: selectedRangeRaw) ?? .twentyFourHours
     }
 
-    private var showTokens: Bool { seriesVisibility.value.showTokens }
-    private var showCalls: Bool { seriesVisibility.value.showCalls }
-    private var showCacheHitRate: Bool { seriesVisibility.value.showCacheHitRate }
-    private var showCost: Bool { seriesVisibility.value.showCost }
-    private var showFiveHourQuota: Bool { seriesVisibility.value.showFiveHourQuota }
-    private var showSevenDayQuota: Bool { seriesVisibility.value.showSevenDayQuota }
+    private var showTokens: Bool { lineVisibility.showTokens }
+    private var showCalls: Bool { lineVisibility.showCalls }
+    private var showCacheHitRate: Bool { lineVisibility.showCacheHitRate }
+    private var showCost: Bool { lineVisibility.showCost }
+    private var showFiveHourQuota: Bool { lineVisibility.showFiveHourQuota }
+    private var showSevenDayQuota: Bool { lineVisibility.showSevenDayQuota }
+
+    private func lineVisibilityBinding(
+        for keyPath: WritableKeyPath<RecentChartSeriesVisibility, Bool>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { lineVisibility[keyPath: keyPath] },
+            set: { newValue in
+                guard lineVisibility[keyPath: keyPath] != newValue else { return }
+                lineVisibility[keyPath: keyPath] = newValue
+                seriesVisibility.set(keyPath, to: newValue)
+            }
+        )
+    }
+
+    private var quotaGuideStep: RecentChartQuotaGuideStep? {
+        guard !quotaGuideCompleted, preparedData.bins.count > 1 else { return nil }
+        if consumptionSelectionState.fixedEndIndex != nil {
+            return .calculationCard
+        }
+        if consumptionSelectionState.startIndex != nil {
+            return .secondPoint
+        }
+        return .firstPoint
+    }
 
     private var selectedRangeBinding: Binding<RecentChartRange> {
         Binding(
@@ -1474,22 +1507,15 @@ struct RecentUsageChart: View, Equatable {
                 }
 
                 HStack(spacing: 14) {
-                    if showTokens {
-                        ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
-                    }
-                    if showCalls {
-                        ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
-                    }
-                    if showCacheHitRate {
-                        ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
-                    }
-                    if showCost {
-                        ChartLegend(color: AppTheme.chartCost, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
-                    }
-                    if showFiveHourQuota && quotaSeriesVisibility.showsFiveHour {
+                    // These are summary values, not line visibility indicators.
+                    ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
+                    ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
+                    ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
+                    ChartLegend(color: AppTheme.chartCost, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
+                    if quotaSeriesVisibility.showsFiveHour {
                         ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
                     }
-                    if showSevenDayQuota && quotaSeriesVisibility.showsSevenDay {
+                    if quotaSeriesVisibility.showsSevenDay {
                         ChartLegend(color: .green, label: "7d", value: Self.percentText(visibleWindowSummary.latestSevenDayRemaining))
                     }
                 }
@@ -1498,35 +1524,35 @@ struct RecentUsageChart: View, Equatable {
                     ChartLineToggle(
                         title: "Token",
                         color: .blue,
-                        isOn: seriesVisibility.binding(for: \.showTokens)
+                        isOn: lineVisibilityBinding(for: \.showTokens)
                     )
                     ChartLineToggle(
                         title: "调用",
                         color: .orange,
-                        isOn: seriesVisibility.binding(for: \.showCalls)
+                        isOn: lineVisibilityBinding(for: \.showCalls)
                     )
                     ChartLineToggle(
                         title: "命中率",
                         color: AppTheme.accentCyan,
-                        isOn: seriesVisibility.binding(for: \.showCacheHitRate)
+                        isOn: lineVisibilityBinding(for: \.showCacheHitRate)
                     )
                     ChartLineToggle(
                         title: "金额",
                         color: AppTheme.chartCost,
-                        isOn: seriesVisibility.binding(for: \.showCost)
+                        isOn: lineVisibilityBinding(for: \.showCost)
                     )
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLineToggle(
                             title: "5h",
                             color: .purple,
-                            isOn: seriesVisibility.binding(for: \.showFiveHourQuota)
+                            isOn: lineVisibilityBinding(for: \.showFiveHourQuota)
                         )
                     }
                     if quotaSeriesVisibility.showsSevenDay {
                         ChartLineToggle(
                             title: "7d",
                             color: .green,
-                            isOn: seriesVisibility.binding(for: \.showSevenDayQuota)
+                            isOn: lineVisibilityBinding(for: \.showSevenDayQuota)
                         )
                     }
                 }
@@ -2183,6 +2209,12 @@ struct RecentUsageChart: View, Equatable {
                 consumptionSelection: consumptionSelection,
                 hoveredIndexSnapshot: liveHoverIndex
             )
+            if let quotaGuideStep {
+                RecentChartQuotaGuide(
+                    step: quotaGuideStep,
+                    onDismiss: { quotaGuideCompleted = true }
+                )
+            }
             consumptionSelectionSummary(
                 selection: consumptionSelection,
                 attribution: selectionAttribution

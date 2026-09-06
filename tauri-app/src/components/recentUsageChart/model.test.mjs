@@ -1263,3 +1263,20 @@ test("RecentUsageChart exposes click-to-estimate quota UI", async () => {
     assert.equal(source.includes(expected), true, expected);
   }
 });
+
+test("RecentUsageChart includes the two-step quota guide and calculation-card callout", async () => {
+  const source = await readFile(new URL("../RecentUsageChart.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+
+  for (const expected of [
+    "recentChartQuotaGuideCompletedV01",
+    "① 点击折线中的第一个点，设定起点",
+    "② 点击第二个点，固定终点",
+    "额度计算卡已出现在左下方",
+    "recent-chart-quota-guide",
+  ]) {
+    assert.equal(source.includes(expected), true, expected);
+  }
+  assert.match(css, /\.recent-chart-quota-guide\s*\{/);
+  assert.match(css, /\.recent-chart-quota-guide__arrow\s*\{/);
+});

@@ -11,6 +11,7 @@ struct CodexRadarStrip: View {
     let feedStaleDataDisplayed: Bool
     let onRefresh: () -> Void
     let onShowDetails: () -> Void
+    let onShowRecentUsage: () -> Void
 
     struct ColumnWidths {
         let window: CGFloat
@@ -88,7 +89,9 @@ struct CodexRadarStrip: View {
                     )
                         .frame(width: columnWidths.crowdRadar, height: 74, alignment: .leading)
                     CodexRadarDivider()
-                    CodexRadarQuotaBlock(snapshot: snapshot)
+                    CodexRadarQuotaBlock(snapshot: snapshot) {
+                        onShowRecentUsage()
+                    }
                         .frame(width: columnWidths.quota, height: 74, alignment: .leading)
                 }
             }
@@ -333,38 +336,58 @@ private struct CodexCrowdRadarBlock: View {
 
 private struct CodexRadarQuotaBlock: View {
     let snapshot: CodexRadarSnapshot?
+    let onShowRecentUsage: () -> Void
+
+    init(snapshot: CodexRadarSnapshot?, _ onShowRecentUsage: @escaping () -> Void) {
+        self.snapshot = snapshot
+        self.onShowRecentUsage = onShowRecentUsage
+    }
 
     var body: some View {
         let quotaRadar = snapshot?.modelIQ.quotaRadar
         let showsFiveHour = quotaRadar?.isWindowAvailable(.fiveHour) == true
         let showsSevenDay = quotaRadar?.isWindowAvailable(.sevenDay) == true
 
-        VStack(alignment: .leading, spacing: 6) {
-            CodexRadarBlockTitle(
-                "预估额度",
-                systemImage: "gauge.with.dots.needle.67percent",
-                accent: AppTheme.accentCyan
-            )
-            ForEach(quotaRadar?.rowsForDisplay ?? []) { row in
-                HStack(spacing: 8) {
-                    Text(row.tier)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(AppTheme.accentCyan)
-                        .frame(width: 44, alignment: .leading)
-                    if showsFiveHour, row.fiveH != nil {
-                        Text("5h \(row.fiveHourDisplayText)")
+        Button(action: onShowRecentUsage) {
+            VStack(alignment: .leading, spacing: 3) {
+                CodexRadarBlockTitle(
+                    "Radar 预估额度",
+                    systemImage: "gauge.with.dots.needle.67percent",
+                    accent: AppTheme.accentCyan
+                )
+                Text("非本级实时额度 · 折线图选点计算本级")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                ForEach(quotaRadar?.rowsForDisplay ?? []) { row in
+                    HStack(spacing: 8) {
+                        Text(row.tier)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(AppTheme.accentCyan)
+                            .frame(width: 44, alignment: .leading)
+                        if showsFiveHour, row.fiveH != nil {
+                            Text("5h \(row.fiveHourDisplayText)")
+                        }
+                        if showsSevenDay, row.sevenD != nil {
+                            Text("7d \(row.sevenDayDisplayText)")
+                        }
                     }
-                    if showsSevenDay, row.sevenD != nil {
-                        Text("7d \(row.sevenDayDisplayText)")
-                    }
+                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
             }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 10)
+        .buttonStyle(.plain)
+        .help("Radar 预估额度仅作非本级实时参考；打开折线图后选择两个点计算本级额度")
+        .accessibilityLabel("Radar 预估额度")
+        .accessibilityValue("非本级实时额度")
+        .accessibilityHint("打开折线图，选择起点和终点计算本级额度")
     }
 }
 

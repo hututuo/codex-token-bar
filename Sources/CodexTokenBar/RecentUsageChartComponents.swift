@@ -206,6 +206,80 @@ struct RecentChartSelectionInvalidationBanner: View {
     }
 }
 
+enum RecentChartQuotaGuideStep: Equatable {
+    case firstPoint
+    case secondPoint
+    case calculationCard
+}
+
+struct RecentChartQuotaGuide: View {
+    let step: RecentChartQuotaGuideStep
+    let onDismiss: () -> Void
+
+    private var title: String {
+        switch step {
+        case .firstPoint:
+            return "① 点击折线中的第一个点，设定起点"
+        case .secondPoint:
+            return "② 点击第二个点，固定终点"
+        case .calculationCard:
+            return "额度计算卡已出现在左下方"
+        }
+    }
+
+    private var detail: String {
+        switch step {
+        case .firstPoint:
+            return "移动鼠标可预览；选区会从起点延伸到当前点。"
+        case .secondPoint:
+            return "第二次点击后，左下方计算卡会把本段 API 等值消耗与额度下降比例对照，反推 5h/7d 本级额度。"
+        case .calculationCard:
+            return "查看本段消耗、5h/7d 反推额度；再次点击可重新选择。"
+        }
+    }
+
+    private var arrow: String {
+        switch step {
+        case .firstPoint, .secondPoint: return "↓"
+        case .calculationCard: return "↙"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Text(arrow)
+                .font(.system(size: 19, weight: .bold))
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
+            Button("知道了", action: onDismiss)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .font(.system(size: 10, weight: .semibold))
+                .accessibilityLabel("关闭额度计算引导")
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .frame(width: 460, alignment: .leading)
+        .background(AppTheme.accentBlue.opacity(0.08), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(AppTheme.accentBlue.opacity(0.42), lineWidth: 1.2)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("额度计算引导")
+        .accessibilityValue("\(title)。\(detail)")
+    }
+}
+
 struct RecentChartQuotaEstimateOverlay: View {
     let selection: QuotaConsumptionSelection
     let attribution: QuotaSelectionAttributionResult?

@@ -108,6 +108,7 @@ struct DashboardView: View {
     @State private var showingSetupGuide = false
     @State private var showingResetCreditDetails = false
     @State private var showingCodexRadarDetails = false
+    @State private var recentUsageScrollRequest = 0
     @State private var showingCacheHitRankingDetails = false
     @State private var showingSharedAccountAttributionDetails = false
     @State private var showingInterfaceScaleMenu = false
@@ -167,9 +168,16 @@ struct DashboardView: View {
                 )
                 let logicalWidth = proxy.size.width / max(contentScale, 0.1)
 
-                ScrollView(.vertical, showsIndicators: false) {
-                    InterfaceScaledContainer(scale: contentScale, visualWidth: proxy.size.width) {
-                        dashboardContent(logicalWidth: logicalWidth)
+                ScrollViewReader { scrollProxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        InterfaceScaledContainer(scale: contentScale, visualWidth: proxy.size.width) {
+                            dashboardContent(logicalWidth: logicalWidth)
+                        }
+                    }
+                    .onChange(of: recentUsageScrollRequest) { _, _ in
+                        withAnimation(.easeInOut(duration: 0.24)) {
+                            scrollProxy.scrollTo("recent-usage-chart", anchor: .center)
+                        }
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
@@ -1136,6 +1144,10 @@ struct DashboardView: View {
                     showingCacheHitRankingDetails = false
                     showingSharedAccountAttributionDetails = false
                     showingCodexRadarDetails = true
+                },
+                onShowRecentUsage: {
+                    showingCodexRadarDetails = false
+                    recentUsageScrollRequest &+= 1
                 }
             )
 
@@ -1175,9 +1187,9 @@ struct DashboardView: View {
                     )
                     : nil
             )
-            // RecentUsageChart owns interactive @AppStorage visibility toggles.
-            // Wrapping the whole view in EquatableView suppresses those internal
-            // updates whenever the external history arrays remain unchanged.
+            .id("recent-usage-chart")
+            // RecentUsageChart owns interactive line-visibility state. Keep the
+            // chart outside an EquatableView so a toggle can repaint immediately.
 
             CacheHitRankingSection(
                 cacheUsage: store.snapshot.cacheUsage,

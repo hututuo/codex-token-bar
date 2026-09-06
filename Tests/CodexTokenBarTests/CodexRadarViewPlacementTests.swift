@@ -185,6 +185,24 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertLessThan(crowd.lowerBound, quota.lowerBound)
     }
 
+    func testRadarQuotaCardExplainsNonLocalEstimateAndOpensRecentUsage() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let radarSource = try String(contentsOf: radarView, encoding: .utf8)
+        let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
+
+        XCTAssertTrue(radarSource.contains("Radar 预估额度"))
+        XCTAssertTrue(radarSource.contains("非本级实时额度 · 折线图选点计算本级"))
+        XCTAssertTrue(radarSource.contains("onShowRecentUsage"))
+        XCTAssertTrue(radarSource.contains("打开折线图，选择起点和终点计算本级额度"))
+        XCTAssertTrue(dashboardSource.contains("scrollProxy.scrollTo(\"recent-usage-chart\", anchor: .center)"))
+        XCTAssertTrue(dashboardSource.contains(".id(\"recent-usage-chart\")"))
+    }
+
     func testRadarDetailKeepsEnvironmentPressureAfterSummaryReplacement() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
