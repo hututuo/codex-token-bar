@@ -869,7 +869,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
     }
 
-    func testResetTimestampJitterIsDeduplicatedButUsageTransitionsAreRetained() throws {
+    func testFreshTimestampedEqualObservationsAreRetainedWithUsageTransitions() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -914,8 +914,8 @@ final class QuotaHistoryStoreTests: XCTestCase {
             ) { statement in
                 statement.int(0) ?? 0
             }.first,
-            1,
-            "reset countdown jitter alone must not create a duplicate row"
+            2,
+            "a fresh response-local timestamp remains a raw observation even when its values are equal"
         )
 
         XCTAssertTrue(try database.record(changed, createdAt: now.addingTimeInterval(5 * 60)))
@@ -925,8 +925,8 @@ final class QuotaHistoryStoreTests: XCTestCase {
                 now: now.addingTimeInterval(5 * 60),
                 age: 60 * 60
             ),
-            [1, 2],
-            "a real 99% to 98% remaining transition must keep both timestamped observations"
+            [1, 1, 2],
+            "raw equal observations and real usage transitions remain timestamped"
         )
         XCTAssertEqual(
             try driver.readRows(
@@ -934,7 +934,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
             ) { statement in
                 statement.date(0)
             }.compactMap { $0 },
-            [now, now.addingTimeInterval(5 * 60)]
+            [now, now.addingTimeInterval(60), now.addingTimeInterval(5 * 60)]
         )
     }
 
@@ -1245,7 +1245,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertEqual(rows.first?.source, "swift")
     }
 
-    func testRecentHistorySuppressesRecoveredFiveHourFullUsageSpikeAcrossMergedAccountKeys() throws {
+    func testRecentHistoryRetainsLegitimateFullUsageBeforePendingDropAcrossMergedAccountKeys() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1261,11 +1261,11 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
 
-        XCTAssertFalse(recentValues.contains(0), "recovered full-usage spike should not create a 5h quota pit")
-        XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 98)
+        XCTAssertTrue(recentValues.contains(0), "used=100 is a legitimate exhausted-quota observation")
+        XCTAssertEqual(recentValues.min(), 0)
     }
 
-    func testRecentHistoryDropsSameCycleQuotaJumpAcrossSources() throws {
+    func testRecentHistoryRetainsSameCycleIncreasingUsageAcrossSources() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1279,11 +1279,11 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
 
-        XCTAssertFalse(recentValues.contains(55), "same-cycle quota jumps from another source should not create a false 5h pit")
-        XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 88)
+        XCTAssertTrue(recentValues.contains(55), "same-cycle increases are accepted as fresh usage")
+        XCTAssertEqual(recentValues.min(), 55)
     }
 
-    func testRecentHistoryNormalizesRegressionAcrossLegacyAndStableAccountKeys() throws {
+    func testRecentHistoryLeavesFirstLegacyDeclineUnprojectedAcrossStableAccountKeys() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1317,14 +1317,13 @@ final class QuotaHistoryStoreTests: XCTestCase {
 
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
 
-        XCTAssertEqual(
+        XCTAssertNil(
             loaded.recentBins.last?.fiveHourRemainingPercent,
-            16,
-            "legacy and stable Codex keys must share one monotonic history stream"
+            "a first lower legacy observation is raw evidence but remains an unprojected gap"
         )
     }
 
-    func testRecentHistorySuppressesMidcycleSpikeAcrossResetTimestampDrift() throws {
+    func testRecentHistoryLeavesLowerObservationUnprojectedAcrossResetTimestampDrift() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1364,8 +1363,8 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
 
-        XCTAssertFalse(recentValues.contains(55), "reset timestamp jitter must not split one spike-recovery cycle")
-        XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 88)
+        XCTAssertTrue(recentValues.contains(55), "the accepted upper observation remains in the raw projection")
+        XCTAssertEqual(recentValues.min(), 55)
     }
 
     func testRecentHistoryInterpolatesAcrossMissingQuotaSamplesInSameCycle() throws {
@@ -1390,7 +1389,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertFalse(interpolatedValues.isEmpty, "quota curve should connect 80% to 78% smoothly across a sleep/no-sample gap")
     }
 
-    func testResetCrossingEmitsOneRecentPointThenStaysUnknownUntilNewSample() throws {
+    func testResetCrossingDoesNotSynthesizeFullQuotaUntilNewSample() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -1415,15 +1414,15 @@ final class QuotaHistoryStoreTests: XCTestCase {
             $0.start.addingTimeInterval(5 * 60) >= newSample
         })
 
-        XCTAssertEqual(loaded.recentBins.filter { $0.fiveHourRemainingPercent == 100 }.count, 1)
-        XCTAssertEqual(loaded.recentBins[boundary].fiveHourRemainingPercent, 100)
+        XCTAssertEqual(loaded.recentBins.filter { $0.fiveHourRemainingPercent == 100 }.count, 0)
+        XCTAssertNil(loaded.recentBins[boundary].fiveHourRemainingPercent)
         XCTAssertTrue(loaded.recentBins[(boundary + 1)..<recovered].allSatisfy {
             $0.fiveHourRemainingPercent == nil
         })
         XCTAssertEqual(loaded.recentBins[recovered].fiveHourRemainingPercent, 80)
     }
 
-    func testHourlyResetCrossingEmitsOnePointWithoutExtendingTwoHours() throws {
+    func testHourlyResetCrossingDoesNotSynthesizeFullQuotaWithoutNewSample() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -1440,13 +1439,13 @@ final class QuotaHistoryStoreTests: XCTestCase {
             $0.start.addingTimeInterval(60 * 60) == reset
         })
 
-        XCTAssertEqual(loaded.hourlyBins.filter { $0.fiveHourRemainingPercent == 100 }.count, 1)
-        XCTAssertEqual(loaded.hourlyBins[boundary].fiveHourRemainingPercent, 100)
+        XCTAssertEqual(loaded.hourlyBins.filter { $0.fiveHourRemainingPercent == 100 }.count, 0)
+        XCTAssertNil(loaded.hourlyBins[boundary].fiveHourRemainingPercent)
         XCTAssertNil(loaded.hourlyBins[boundary + 1].fiveHourRemainingPercent)
         XCTAssertNil(loaded.hourlyBins[boundary + 2].fiveHourRemainingPercent)
     }
 
-    func testStaleResetUsesNinetyMinuteCarryAndWindowsRemainIndependent() throws {
+    func testExpiredAnchorLeavesGapAndWindowsRemainIndependent() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -1473,15 +1472,15 @@ final class QuotaHistoryStoreTests: XCTestCase {
         })
         let carriedFive = loaded.recentBins.filter { $0.fiveHourRemainingPercent == 50 }
 
-        XCTAssertFalse(carriedFive.isEmpty)
+        XCTAssertTrue(carriedFive.isEmpty)
         XCTAssertFalse(loaded.recentBins.contains { $0.fiveHourRemainingPercent == 100 })
         XCTAssertNil(loaded.recentBins.last?.fiveHourRemainingPercent)
-        XCTAssertEqual(loaded.recentBins[sevenBoundary].sevenDayRemainingPercent, 100)
-        XCTAssertEqual(loaded.recentBins[sevenBoundary].fiveHourRemainingPercent, 50)
+        XCTAssertNil(loaded.recentBins[sevenBoundary].sevenDayRemainingPercent)
+        XCTAssertNil(loaded.recentBins[sevenBoundary].fiveHourRemainingPercent)
         XCTAssertNil(loaded.recentBins[sevenBoundary + 1].sevenDayRemainingPercent)
     }
 
-    func testRecentHistorySuppressesRecoveredSevenDayFullUsageSpike() throws {
+    func testRecentHistoryRetainsLegitimateSevenDayExhaustionBeforePendingDrop() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1495,8 +1494,8 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
 
-        XCTAssertFalse(recentValues.contains(0), "recovered full-usage spike should not create a 7d quota pit")
-        XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 98)
+        XCTAssertTrue(recentValues.contains(0), "used=100 is a legitimate seven-day exhaustion observation")
+        XCTAssertEqual(recentValues.min(), 0)
     }
 
     func testHistoryReclassifiesLegacySevenDayOnlyRowsWrittenIntoFiveHourColumns() throws {
@@ -1522,7 +1521,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertEqual(loaded.recentBins.last?.sevenDayRemainingPercent, 100)
     }
 
-    func testHistorySuppressesRecoveredFullRemainingJumpWhenResetTemporarilyShifts() throws {
+    func testHistorySeparatesBackwardResetConflictFromForwardNewCycle() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         try database.migrate()
@@ -1551,13 +1550,14 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let fiveHourValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
         let sevenDayValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
 
-        XCTAssertFalse(fiveHourValues.contains(98), "the recovered official reset glitch must not create a 5h full-remaining peak")
-        XCTAssertFalse(sevenDayValues.contains(99), "the recovered official reset glitch must not create a 7d full-remaining peak")
+        XCTAssertFalse(fiveHourValues.contains(98), "a reset-drift decline must not create a 5h full-remaining projection")
+        XCTAssertTrue(sevenDayValues.contains(99), "a forward reset advance beyond 1800 seconds confirms a new weekly cycle")
         XCTAssertEqual(fiveHourValues.last, 54)
-        XCTAssertEqual(sevenDayValues.last, 67)
+        XCTAssertEqual(sevenDayValues.last, 99)
+        XCTAssertNil(loaded.recentBins.last?.sevenDayRemainingPercent, "the later backward reset is a pending conflict")
     }
 
-    func testRecentHistorySuppressesLatestSevenDayFullUsageSpike() throws {
+    func testRecentHistoryRetainsLatestLegitimateSevenDayExhaustion() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1570,8 +1570,8 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
 
-        XCTAssertFalse(recentValues.contains(0), "latest full-usage spike should not leave a 7d quota pit")
-        XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 99)
+        XCTAssertTrue(recentValues.contains(0), "used=100 is a legitimate seven-day exhaustion observation")
+        XCTAssertEqual(recentValues.min(), 0)
     }
 
     func testCurrentHourlyQuotaBucketDoesNotLookPastNow() throws {
@@ -1690,7 +1690,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertLessThan(elapsed, 1.0, "stable quota histories should not spend seconds scanning future rows")
     }
 
-    func testCycleGenerationRequiresStrictResetDeltaAndFullBoundarySample() throws {
+    func testCycleGenerationRequiresStrictForwardThirtyMinuteResetDelta() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1709,9 +1709,9 @@ final class QuotaHistoryStoreTests: XCTestCase {
         }
 
         XCTAssertTrue(try database.record(make(20, 0, now), createdAt: now))
-        XCTAssertTrue(try database.record(make(0, 300, now.addingTimeInterval(60)), createdAt: now.addingTimeInterval(60)))
-        XCTAssertTrue(try database.record(make(0, 301, now.addingTimeInterval(120)), createdAt: now.addingTimeInterval(120)))
-        XCTAssertTrue(try database.record(make(1, 301, now.addingTimeInterval(180)), createdAt: now.addingTimeInterval(180)))
+        XCTAssertTrue(try database.record(make(0, 1_800, now.addingTimeInterval(60)), createdAt: now.addingTimeInterval(60)))
+        XCTAssertTrue(try database.record(make(1, 1_801, now.addingTimeInterval(120)), createdAt: now.addingTimeInterval(120)))
+        XCTAssertTrue(try database.record(make(1, 1_801, now.addingTimeInterval(180)), createdAt: now.addingTimeInterval(180)))
 
         let rows = try SQLiteDatabaseDriver(url: url).readRows(
             """
@@ -1721,7 +1721,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         ) { statement in
             (statement.int(0), statement.int(1), statement.int(2))
         }
-        XCTAssertEqual(rows.map(\.0), [20, 0, 0, 1])
+        XCTAssertEqual(rows.map(\.0), [20, 0, 1, 1])
         XCTAssertEqual(rows.map(\.1), [0, 0, 1, 1])
         XCTAssertEqual(rows.map(\.2), [1, 0, 1, 0])
     }
@@ -1763,13 +1763,13 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let initial = make(20, 30, 0, 0, now)
         XCTAssertTrue(try database.record(initial, createdAt: now))
         let sameCycle = try database.normalizedSnapshot(
-            make(1, 31, 301, 301, now.addingTimeInterval(60))
+            make(1, 31, 1_800, 1_800, now.addingTimeInterval(60))
         )
         XCTAssertEqual(sameCycle.fiveHour?.cycleID, "g0")
         XCTAssertEqual(sameCycle.sevenDay?.cycleID, "g0")
 
         let fiveOnlyReset = try database.normalizedSnapshot(
-            make(0, 32, 301, 302, now.addingTimeInterval(120))
+            make(0, 32, 1_801, 1_800, now.addingTimeInterval(120))
         )
         XCTAssertEqual(fiveOnlyReset.fiveHour?.cycleID, "g1")
         XCTAssertEqual(fiveOnlyReset.sevenDay?.cycleID, "g0")
@@ -1819,7 +1819,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
     }
 
-    func testFiveMinuteStableBandWritesFinalRawAnchorAndCompactsOnlyResetRows() throws {
+    func testFreshResetJitterRowsRemainRawAndMaintenanceDoesNotCompactThem() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1848,14 +1848,14 @@ final class QuotaHistoryStoreTests: XCTestCase {
         var anchors = try driver.readRows(
             "SELECT created_at, five_hour_reset_anchor FROM quota_snapshots ORDER BY created_at;"
         ) { ($0.date(0), $0.int(1) ?? 0) }
-        XCTAssertEqual(anchors.count, 3, "small in-band samples stay out of the history table")
+        XCTAssertEqual(anchors.count, 5, "each fresh response-local observation remains in the history table")
         XCTAssertEqual(
             try XCTUnwrap(anchors.last?.0).timeIntervalSince1970,
             finalAt.timeIntervalSince1970,
             accuracy: 0.001,
             "the final server observation keeps its original timestamp"
         )
-        XCTAssertEqual(anchors.last?.1, 1)
+        XCTAssertEqual(anchors.last?.1, 0)
 
         try driver.execute(
             "UPDATE quota_history_maintenance SET value = ? WHERE key = 'last_compacted_at';",
@@ -1866,8 +1866,8 @@ final class QuotaHistoryStoreTests: XCTestCase {
         anchors = try driver.readRows(
             "SELECT created_at, five_hour_reset_anchor FROM quota_snapshots ORDER BY created_at;"
         ) { ($0.date(0), $0.int(1) ?? 0) }
-        XCTAssertEqual(anchors.count, 2)
-        XCTAssertEqual(anchors.map(\.1), [1, 1])
+        XCTAssertEqual(anchors.count, 5)
+        XCTAssertEqual(anchors.map(\.1), [1, 0, 0, 0, 0])
         XCTAssertEqual(
             try XCTUnwrap(anchors.last?.0).timeIntervalSince1970,
             finalAt.timeIntervalSince1970,
@@ -1875,7 +1875,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
     }
 
-    func testMigrationCompacts56And59Then15SecondDriftWithoutLosingQuotaChanges() throws {
+    func testMigrationRetainsRawObservationsWithoutCompactionOrBackfill() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let observed = Date(timeIntervalSince1970: 1_900_720_000)
@@ -1929,21 +1929,21 @@ final class QuotaHistoryStoreTests: XCTestCase {
                 statement.int(3) ?? 0
             )
         }
-        XCTAssertEqual(retained.count, 4)
-        XCTAssertEqual(retained.compactMap(\.1), [20, 21, 22, 22])
+        XCTAssertEqual(retained.count, 6)
+        XCTAssertEqual(retained.compactMap(\.1), [20, 20, 21, 21, 22, 22])
         XCTAssertEqual(
             retained.compactMap(\.0).map(\.timeIntervalSince1970),
-            [0, 120, 240, 480].map { observed.addingTimeInterval($0).timeIntervalSince1970 }
+            [0, 60, 120, 180, 240, 480].map { observed.addingTimeInterval($0).timeIntervalSince1970 }
         )
         XCTAssertEqual(
             try XCTUnwrap(retained.last?.2).timeIntervalSince1970,
             reset.addingTimeInterval(14).timeIntervalSince1970,
             accuracy: 0.001
         )
-        XCTAssertEqual(retained.last?.3, 1)
+        XCTAssertEqual(retained.last?.3, 0)
     }
 
-    func testHourlyHeartbeatNoLongerCreatesQuotaHistoryRows() throws {
+    func testFreshEqualObservationWithNewCreatedAtIsPersistedAndDuplicateTimestampRejected() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1959,10 +1959,11 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
         XCTAssertTrue(try database.record(quota, createdAt: now))
         XCTAssertTrue(try database.record(quota, createdAt: now.addingTimeInterval(2 * 60 * 60)))
+        XCTAssertFalse(try database.record(quota, createdAt: now.addingTimeInterval(2 * 60 * 60)))
         let count = try SQLiteDatabaseDriver(url: url).readRows(
             "SELECT count(*) FROM quota_snapshots;"
         ) { $0.int(0) ?? 0 }.first
-        XCTAssertEqual(count, 1)
+        XCTAssertEqual(count, 2)
     }
 
     func testMaintenanceFailureRollsBackRowsAndMetadata() throws {
@@ -1992,8 +1993,8 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
         try driver.execute(
             """
-            CREATE TRIGGER fail_quota_cycle_backfill
-            BEFORE UPDATE OF five_hour_cycle_generation ON quota_snapshots
+            CREATE TRIGGER fail_quota_maintenance_update
+            BEFORE UPDATE OF value ON quota_history_maintenance
             BEGIN
                 SELECT RAISE(ABORT, 'fixture maintenance failure');
             END;

@@ -969,7 +969,7 @@ extension RecentChartPreparedData {
         // observation is present in the selected interval, do not fall back to
         // display-value arithmetic when the cycle cannot be proven: doing so
         // can combine the previous cycle's tokens with the latest cycle's drop.
-        if selectedObservations.contains(where: { $0.resetsAt != nil }) {
+        if selectedObservations.contains(where: { $0.resetsAt != nil || $0.cycleID != nil }) {
             return observedQuotaDropResolution(
                 observations: Array(selectedObservations),
                 lower: lower,
@@ -1039,7 +1039,7 @@ extension RecentChartPreparedData {
         upper: Int
     ) -> RecentChartQuotaDropResolution? {
         guard let authority = observations.last,
-              authority.resetsAt != nil else {
+              authority.resetsAt != nil || authority.cycleID != nil else {
             return nil
         }
 
@@ -1054,11 +1054,16 @@ extension RecentChartPreparedData {
         }
         cycleSuffix.reverse()
 
-        let adjacentObservations = zip(cycleSuffix, cycleSuffix.dropFirst())
+        // Legacy reset-only observations do not prove that an upward
+        // correction passed the history policy. Keep their attribution gate;
+        // cycle-identified backend projections may include accepted revisions.
+        if authority.cycleID == nil,
+           zip(cycleSuffix, cycleSuffix.dropFirst()).contains(where: {
+               $0.1.remainingPercent > $0.0.remainingPercent + 0.0001
+           }) {
+            return nil
+        }
         guard cycleSuffix.count >= 2,
-              adjacentObservations.allSatisfy({ pair in
-                  pair.1.remainingPercent <= pair.0.remainingPercent + 0.0001
-              }),
               let first = cycleSuffix.first,
               let last = cycleSuffix.last else {
             return nil
@@ -1107,7 +1112,11 @@ extension RecentChartPreparedData {
             leadingStart: leadingEdgeStart,
             trailingStart: trailingEdgeStart
         )
-        let drop = max(first.remainingPercent - last.remainingPercent, 0)
+        // An accepted same-cycle correction raises remaining quota without
+        // creating negative consumption or invalidating later observations.
+        let drop = zip(cycleSuffix, cycleSuffix.dropFirst()).reduce(0.0) {
+            $0 + max($1.0.remainingPercent - $1.1.remainingPercent, 0)
+        }
 
         return RecentChartQuotaDropResolution(
             percent: drop,

@@ -1505,10 +1505,13 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
            let cycleID {
             return stored == cycleID
         }
-        let resetMoved = abs(record.resetAt.timeIntervalSince(resetAt))
-            > QuotaHistoryCyclePolicy.newCycleResetDelta
+        let policy = QuotaHistoryProtectionPolicy.sevenDay
+        let resetMoved = resetAt.timeIntervalSince(record.resetAt)
+            > policy.newCycleResetDelta
                 + QuotaHistoryCyclePolicy.timestampComparisonTolerance
-        return !(resetMoved && accountUsedPercent == 0)
+        return !(resetMoved && accountUsedPercent.isFinite
+            && accountUsedPercent >= 0
+            && accountUsedPercent <= Double(policy.maximumNewCycleUsedPercent))
     }
 
     private static func sameCycleWithoutUsage(
@@ -1520,7 +1523,7 @@ final class UserDefaultsSharedAccountUsageSegmentStore {
            let cycleID {
             return stored == cycleID
         }
-        return QuotaHistoryCyclePolicy.isResetJitter(record.resetAt, resetAt)
+        return QuotaHistoryCyclePolicy.isResetJitter(record.resetAt, resetAt, window: .sevenDay)
     }
 
     @discardableResult
@@ -1885,7 +1888,8 @@ enum SharedAccountUsageAttributionEstimator {
             } else if QuotaHistoryCyclePolicy.startsNewCycle(
                 currentUsedPercent: sevenDayQuota.usedPercent,
                 currentResetsAt: observedResetAt,
-                acceptedResetsAt: segment.cycleResetAt
+                acceptedResetsAt: segment.cycleResetAt,
+                window: .sevenDay
             ) {
                 nil
             } else {

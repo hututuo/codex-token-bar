@@ -5,14 +5,14 @@ import Foundation
 /// publish an older rate-limit snapshot with a later log timestamp. Within the
 /// same reset window, the newest observed used percent is the trustworthy
 /// display/history value. Persisted cycle IDs are authoritative; legacy rows
-/// can start a fresh cycle only through the strict reset-delta/full-quota rule.
+/// can start a fresh cycle only through the strict forward reset-delta rule.
 enum QuotaMonotonicNormalizer {
     static func normalizedSnapshot(_ current: AccountQuotaSnapshot, after previous: AccountQuotaSnapshot?) -> AccountQuotaSnapshot {
         guard let previous, sameAccount(current, previous) else { return current }
 
         var adjusted = current
-        adjusted.fiveHour = normalizedWindow(current.fiveHour, after: previous.fiveHour)
-        adjusted.sevenDay = normalizedWindow(current.sevenDay, after: previous.sevenDay)
+        adjusted.fiveHour = normalizedWindow(current.fiveHour, after: previous.fiveHour, window: .fiveHour)
+        adjusted.sevenDay = normalizedWindow(current.sevenDay, after: previous.sevenDay, window: .sevenDay)
         return adjusted
     }
 
@@ -22,12 +22,13 @@ enum QuotaMonotonicNormalizer {
         previousUsedPercent: Int?,
         previousResetsAt: Date?,
         currentCycleID: String? = nil,
-        previousCycleID: String? = nil
+        previousCycleID: String? = nil,
+        window: QuotaHistoryWindowKind = .fiveHour
     ) -> Int? {
-        guard let currentUsedPercent else { return nil }
-        let current = clampedPercent(currentUsedPercent)
-        guard let previousUsedPercent else { return current }
-        let previous = clampedPercent(previousUsedPercent)
+        guard let currentUsedPercent, (0...100).contains(currentUsedPercent) else { return nil }
+        let current = currentUsedPercent
+        guard let previousUsedPercent, (0...100).contains(previousUsedPercent) else { return current }
+        let previous = previousUsedPercent
 
         guard current < previous else { return current }
         if startsNewCycle(
@@ -35,11 +36,9 @@ enum QuotaMonotonicNormalizer {
             currentResetsAt: currentResetsAt,
             previousResetsAt: previousResetsAt,
             currentCycleID: currentCycleID,
-            previousCycleID: previousCycleID
+            previousCycleID: previousCycleID,
+            window: window
         ) {
-            return current
-        }
-        if previous - current >= 20 {
             return current
         }
         return previous
@@ -47,7 +46,8 @@ enum QuotaMonotonicNormalizer {
 
     private static func normalizedWindow(
         _ current: AccountQuotaWindow?,
-        after previous: AccountQuotaWindow?
+        after previous: AccountQuotaWindow?,
+        window: QuotaHistoryWindowKind
     ) -> AccountQuotaWindow? {
         guard let current else { return nil }
         let used = normalizedUsedPercent(
@@ -56,7 +56,8 @@ enum QuotaMonotonicNormalizer {
             previousUsedPercent: previous?.usedPercent,
             previousResetsAt: previous?.resetsAt,
             currentCycleID: current.cycleID,
-            previousCycleID: previous?.cycleID
+            previousCycleID: previous?.cycleID,
+            window: window
         ) ?? current.usedPercent
 
         guard used != current.usedPercent else { return current }
@@ -96,7 +97,8 @@ enum QuotaMonotonicNormalizer {
         currentResetsAt: Date?,
         previousResetsAt: Date?,
         currentCycleID: String?,
-        previousCycleID: String?
+        previousCycleID: String?,
+        window: QuotaHistoryWindowKind
     ) -> Bool {
         let currentID = nonempty(currentCycleID)
         let previousID = nonempty(previousCycleID)
@@ -108,7 +110,8 @@ enum QuotaMonotonicNormalizer {
         return QuotaHistoryCyclePolicy.startsNewCycle(
             currentUsedPercent: currentUsedPercent,
             currentResetsAt: currentResetsAt,
-            acceptedResetsAt: previousResetsAt
+            acceptedResetsAt: previousResetsAt,
+            window: window
         )
     }
 

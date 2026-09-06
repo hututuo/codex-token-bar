@@ -926,7 +926,7 @@ function quotaBundleWithHistory(quotaHistory24h) {
   };
 }
 
-test("quotaConsumptionSelection ignores isolated full-usage quota spikes", () => {
+test("quotaConsumptionSelection trusts backend exhaustion and same-cycle revisions", () => {
   const data = prepareRecentChartData("24h", {
     recentUsage24h: [
       point(0, { inputTokens: 100_000, tokens: 100_000, calls: 1, fiveHourRemainingPercent: 1, sevenDayRemainingPercent: 1 }),
@@ -940,11 +940,11 @@ test("quotaConsumptionSelection ignores isolated full-usage quota spikes", () =>
 
   const selection = quotaConsumptionSelection(data, 0, 3, "gpt55");
 
-  assert.equal(selection?.fiveHour.quotaDropPercent, 2);
-  assert.equal(selection?.sevenDay.quotaDropPercent, 2);
+  assert.equal(selection?.fiveHour.quotaDropPercent, 101);
+  assert.equal(selection?.sevenDay.quotaDropPercent, 101);
 });
 
-test("quotaConsumptionSelection ignores isolated full remaining spikes before reset", () => {
+test("quotaConsumptionSelection does not subtract same-cycle revisions as negative use", () => {
   const data = prepareRecentChartData("24h", {
     recentUsage24h: [
       point(0, { inputTokens: 100_000, tokens: 100_000, calls: 1, fiveHourRemainingPercent: 0.8, sevenDayRemainingPercent: 0.7 }),
@@ -957,8 +957,8 @@ test("quotaConsumptionSelection ignores isolated full remaining spikes before re
 
   const selection = quotaConsumptionSelection(data, 0, 2, "gpt55");
 
-  assert.equal(selection?.fiveHour.quotaDropPercent, 2);
-  assert.equal(selection?.sevenDay.quotaDropPercent, 1);
+  assert.equal(selection?.fiveHour.quotaDropPercent, 22);
+  assert.equal(selection?.sevenDay.quotaDropPercent, 31);
 });
 
 test("recent chart gives the 24h viewport a 30-day horizontal history canvas", () => {

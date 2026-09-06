@@ -2,21 +2,39 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaHistoryCyclePolicyTests: XCTestCase {
-    func testNewCycleRequiresStrictlyMoreThanFiveMinutesAndFullQuota() {
+    func testNewCycleAcceptsAnyValidUsedAfterStrictThirtyMinuteResetAdvance() {
         let anchor = Date(timeIntervalSince1970: 1_800_000_000)
+        for used in [0, 1, 80, 100] {
+            XCTAssertFalse(QuotaHistoryCyclePolicy.startsNewCycle(
+                currentUsedPercent: used,
+                currentResetsAt: anchor.addingTimeInterval(1_800),
+                acceptedResetsAt: anchor
+            ))
+            XCTAssertTrue(QuotaHistoryCyclePolicy.startsNewCycle(
+                currentUsedPercent: used,
+                currentResetsAt: anchor.addingTimeInterval(1_801),
+                acceptedResetsAt: anchor
+            ))
+        }
+
         XCTAssertFalse(QuotaHistoryCyclePolicy.startsNewCycle(
-            currentUsedPercent: 0,
-            currentResetsAt: anchor.addingTimeInterval(300),
+            currentUsedPercent: nil,
+            currentResetsAt: anchor.addingTimeInterval(1_801),
             acceptedResetsAt: anchor
         ))
-        XCTAssertTrue(QuotaHistoryCyclePolicy.startsNewCycle(
-            currentUsedPercent: 0,
-            currentResetsAt: anchor.addingTimeInterval(301),
+        XCTAssertFalse(QuotaHistoryCyclePolicy.startsNewCycle(
+            currentUsedPercent: -1,
+            currentResetsAt: anchor.addingTimeInterval(1_801),
+            acceptedResetsAt: anchor
+        ))
+        XCTAssertFalse(QuotaHistoryCyclePolicy.startsNewCycle(
+            currentUsedPercent: 101,
+            currentResetsAt: anchor.addingTimeInterval(1_801),
             acceptedResetsAt: anchor
         ))
         XCTAssertFalse(QuotaHistoryCyclePolicy.startsNewCycle(
             currentUsedPercent: 1,
-            currentResetsAt: anchor.addingTimeInterval(301),
+            currentResetsAt: anchor.addingTimeInterval(-1_801),
             acceptedResetsAt: anchor
         ))
     }
@@ -25,12 +43,12 @@ final class QuotaHistoryCyclePolicyTests: XCTestCase {
         let anchor = Date(timeIntervalSince1970: 1_800_000_000)
         XCTAssertFalse(QuotaHistoryCyclePolicy.startsNewCycle(
             currentUsedPercent: 0,
-            currentResetsAt: anchor.addingTimeInterval(300 + 0.000_000_5),
+            currentResetsAt: anchor.addingTimeInterval(1_800 + 0.000_000_5),
             acceptedResetsAt: anchor
         ))
         XCTAssertTrue(QuotaHistoryCyclePolicy.startsNewCycle(
             currentUsedPercent: 0,
-            currentResetsAt: anchor.addingTimeInterval(300 + 0.000_002),
+            currentResetsAt: anchor.addingTimeInterval(1_800 + 0.000_002),
             acceptedResetsAt: anchor
         ))
         XCTAssertTrue(QuotaHistoryCyclePolicy.isResetJitter(
@@ -41,46 +59,30 @@ final class QuotaHistoryCyclePolicyTests: XCTestCase {
             anchor,
             anchor.addingTimeInterval(5 + 0.000_002)
         ))
-
-        var candidate = QuotaResetStabilityCandidate(
-            observedAt: anchor,
-            resetsAt: anchor.addingTimeInterval(10_000)
-        )
-        XCTAssertTrue(candidate.observe(
-            observedAt: anchor.addingTimeInterval(300 - 0.000_000_5),
-            resetsAt: anchor.addingTimeInterval(10_005 + 0.000_000_5)
-        ))
     }
 
-    func testOneToTwoSecondOscillationStabilizesAfterFiveMinutes() {
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
-        var candidate = QuotaResetStabilityCandidate(observedAt: start, resetsAt: reset)
-        for minute in 1..<5 {
-            XCTAssertFalse(candidate.observe(
-                observedAt: start.addingTimeInterval(Double(minute * 60)),
-                resetsAt: reset.addingTimeInterval(Double(minute % 2 + 1))
-            ))
-        }
-        XCTAssertTrue(candidate.observe(
-            observedAt: start.addingTimeInterval(5 * 60),
-            resetsAt: reset.addingTimeInterval(1)
+    func testResetJitterBandIsSymmetricAndDoesNotCreateACycle() {
+        let anchor = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertTrue(QuotaHistoryCyclePolicy.isResetJitter(
+            anchor,
+            anchor.addingTimeInterval(5 + 0.000_000_5)
         ))
-    }
-
-    func testWholeBandMayBeExactlyFiveSecondsButCannotAccumulatePastIt() {
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
-        var exact = QuotaResetStabilityCandidate(observedAt: start, resetsAt: reset)
-        XCTAssertFalse(exact.observe(observedAt: start.addingTimeInterval(60), resetsAt: reset.addingTimeInterval(5)))
-        XCTAssertTrue(exact.observe(observedAt: start.addingTimeInterval(300), resetsAt: reset.addingTimeInterval(2)))
-
-        var drifting = QuotaResetStabilityCandidate(observedAt: start, resetsAt: reset)
-        for minute in 1...5 {
-            XCTAssertFalse(drifting.observe(
-                observedAt: start.addingTimeInterval(Double(minute * 60)),
-                resetsAt: reset.addingTimeInterval(Double(minute * 4))
-            ))
-        }
+        XCTAssertTrue(QuotaHistoryCyclePolicy.isResetJitter(
+            anchor,
+            anchor.addingTimeInterval(-5 - 0.000_000_5)
+        ))
+        XCTAssertFalse(QuotaHistoryCyclePolicy.isResetJitter(
+            anchor,
+            anchor.addingTimeInterval(5 + 0.000_002)
+        ))
+        XCTAssertFalse(QuotaHistoryCyclePolicy.isResetJitter(
+            anchor,
+            anchor.addingTimeInterval(-5 - 0.000_002)
+        ))
+        XCTAssertFalse(QuotaHistoryCyclePolicy.startsNewCycle(
+            currentUsedPercent: 100,
+            currentResetsAt: anchor.addingTimeInterval(5),
+            acceptedResetsAt: anchor
+        ))
     }
 }

@@ -54,7 +54,7 @@ final class QuotaMonotonicNormalizerTests: XCTestCase {
         XCTAssertEqual(adjusted, 84)
     }
 
-    func testSameCycleLargeDropIsAcceptedAsRecoveredSpike() {
+    func testSameCycleLargeDropStaysClampedWithoutTimelineEvidence() {
         let reset = Date(timeIntervalSince1970: 10_000)
         let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
             currentUsedPercent: 62,
@@ -63,10 +63,10 @@ final class QuotaMonotonicNormalizerTests: XCTestCase {
             previousResetsAt: reset
         )
 
-        XCTAssertEqual(adjusted, 62)
+        XCTAssertEqual(adjusted, 84)
     }
 
-    func testResetTimestampDriftWithinGraceStillRejectsSmallRegression() {
+    func testForwardResetBeforeNewCycleStillClampsRegression() {
         let reset = Date(timeIntervalSince1970: 10_000)
         let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
             currentUsedPercent: 71,
@@ -91,16 +91,23 @@ final class QuotaMonotonicNormalizerTests: XCTestCase {
         XCTAssertEqual(adjusted, 0)
     }
 
-    func testResetDriftCannotStartLegacyCycleUnlessCurrentQuotaIsFull() {
+    func testForwardResetMustExceedThirtyMinutesForPairwiseCycle() {
         let reset = Date(timeIntervalSince1970: 10_000)
-        let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
+        let exactBoundary = QuotaMonotonicNormalizer.normalizedUsedPercent(
             currentUsedPercent: 1,
-            currentResetsAt: reset.addingTimeInterval(301),
+            currentResetsAt: reset.addingTimeInterval(1_800),
             previousUsedPercent: 10,
             previousResetsAt: reset
         )
+        XCTAssertEqual(exactBoundary, 10)
 
-        XCTAssertEqual(adjusted, 10)
+        let nextCycle = QuotaMonotonicNormalizer.normalizedUsedPercent(
+            currentUsedPercent: 1,
+            currentResetsAt: reset.addingTimeInterval(1_801),
+            previousUsedPercent: 10,
+            previousResetsAt: reset
+        )
+        XCTAssertEqual(nextCycle, 1)
     }
 
     func testAuthoritativeCycleIDAllowsImmediatePostResetUsage() {
@@ -201,7 +208,7 @@ final class QuotaMonotonicNormalizerTests: XCTestCase {
         XCTAssertEqual(adjusted.sevenDay?.usedPercent, 10)
     }
 
-    func testRecoveredFullUsageSpikeCanReturnToFreshLowerReadingWithinSameReset() {
+    func testLowerReadingAfterFullUsageStaysClampedWithoutCycleEvidence() {
         let reset = Date(timeIntervalSince1970: 10_000)
         let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
             currentUsedPercent: 2,
@@ -210,7 +217,19 @@ final class QuotaMonotonicNormalizerTests: XCTestCase {
             previousResetsAt: reset
         )
 
-        XCTAssertEqual(adjusted, 2)
+        XCTAssertEqual(adjusted, 100)
+    }
+
+    func testInvalidCurrentUsedPercentIsUnavailableInsteadOfClamped() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        for invalid in [-1, 101] {
+            XCTAssertNil(QuotaMonotonicNormalizer.normalizedUsedPercent(
+                currentUsedPercent: invalid,
+                currentResetsAt: reset,
+                previousUsedPercent: 10,
+                previousResetsAt: reset
+            ))
+        }
     }
 
     func testDifferentResetWindowIsNotStitchedToPreviousCycle() {

@@ -337,31 +337,45 @@ fn existing_tauri_quota_history_is_not_overwritten_by_legacy_migration() {
 }
 
 #[test]
-fn record_normalizes_same_reset_window_regressions() {
+fn record_preserves_same_cycle_regressions_and_marks_projection_pending() {
     let path = temp_db_path("normalize");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() + 3_600.0;
+    let first_at = now_unix() - 600.0;
+    let second_at = first_at + 300.0;
+    let first = bundle("tester", 0.84, reset as i64, 0.20, (reset + 500_000.0) as i64);
+    let second = bundle("tester", 0.71, reset as i64, 0.21, (reset + 500_000.0) as i64);
 
-    database
-        .record(&bundle("tester", 0.84, reset as i64, 0.20, (reset + 500_000.0) as i64))
-        .unwrap();
-    database
-        .record(&bundle("tester", 0.71, reset as i64, 0.21, (reset + 500_000.0) as i64))
-        .unwrap();
+    assert!(record_at(&database, &first, first_at).unwrap());
+    assert!(record_at(&database, &second, second_at).unwrap());
 
     let history = database.recent_five_minute_history(4).unwrap();
     let latest = history.last().unwrap();
-    assert_eq!(latest.five_hour_remaining_percent, Some(0.16));
+    assert_eq!(latest.five_hour_remaining_percent, None);
     assert_eq!(latest.seven_day_remaining_percent, Some(0.79));
+
+    let identity = test_identity(&database, &first);
+    let raw = database
+        .rows_for_identity(
+            Some(&identity),
+            &second,
+            60.0 * 60.0,
+        )
+        .unwrap()
+        .into_iter()
+        .filter_map(|row| row.five_hour_used_percent)
+        .collect::<Vec<_>>();
+    assert_eq!(raw, vec![84, 71]);
 
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn reset_timestamp_jitter_is_deduplicated_but_usage_transitions_are_retained() {
+fn reset_timestamp_jitter_is_retained_with_each_newer_observation() {
     let path = temp_db_path("reset-jitter-write");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() as i64 + 3_600;
+    let base_at = now_unix() - 30.0;
     let identity = QuotaHistoryIdentity::from_canonical_parts(
         Path::new("/fixture/reset-jitter"),
         Some("sub:reset-jitter"),
@@ -395,10 +409,10 @@ fn reset_timestamp_jitter_is_deduplicated_but_usage_transitions_are_retained() {
     );
 
     assert!(database
-        .record_for_identity(Some(&identity), &first)
+        .record_for_identity_at(Some(&identity), &first, base_at)
         .unwrap());
     assert!(database
-        .record_for_identity(Some(&identity), &jittered)
+        .record_for_identity_at(Some(&identity), &jittered, base_at + 1.0)
         .unwrap());
     let connection = database.open().unwrap();
     let count: i64 = connection
@@ -408,11 +422,11 @@ fn reset_timestamp_jitter_is_deduplicated_but_usage_transitions_are_retained() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(count, 1, "reset countdown jitter must not create a duplicate row");
+    assert_eq!(count, 2, "each newer response timestamp remains raw evidence");
     drop(connection);
 
     assert!(database
-        .record_for_identity(Some(&identity), &changed)
+        .record_for_identity_at(Some(&identity), &changed, base_at + 2.0)
         .unwrap());
     let used = database
         .rows_for_identity(Some(&identity), &changed, 60.0 * 60.0)
@@ -422,15 +436,15 @@ fn reset_timestamp_jitter_is_deduplicated_but_usage_transitions_are_retained() {
         .collect::<Vec<_>>();
     assert_eq!(
         used,
-        vec![1, 2],
-        "a real 99% to 98% remaining transition must retain both observations"
+        vec![1, 1, 2],
+        "a real transition and its preceding reset jitter retain every observation"
     );
 
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn stable_cycle_generation_uses_strict_reset_and_zero_usage_rules() {
+fn cycle_generation_starts_on_strict_forward_boundary_for_any_valid_usage() {
     let path = temp_db_path("stable-cycle-rules");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let identity = QuotaHistoryIdentity::from_canonical_parts(
@@ -464,15 +478,13 @@ fn stable_cycle_generation_uses_strict_reset_and_zero_usage_rules() {
     };
 
     write(&database, base_now, 0.0, base_reset);
-    // Exactly 300 seconds is an accepted same-cycle reset, even with 0%
-    // usage.  The sample is retained as a non-anchor observation because the
-    // reset timestamp moved by more than the five-second write grace.
-    write(&database, base_now + 300.0, 0.0, base_reset + 300);
-    // A >300-second reset with non-zero usage cannot start a new generation.
-    write(&database, base_now + 301.0, 0.01, base_reset + 301);
-    // Once the zero-usage observation is stable for five minutes, 301+
-    // seconds crosses into generation 1.  The seven-day window stays at 0.
-    write(&database, base_now + 302.0, 0.0, base_reset + 302);
+    // A forward movement at exactly 1800 seconds remains in the current
+    // generation because the boundary is strict.
+    write(&database, base_now + 300.0, 0.50, base_reset + 1_800);
+    // The rule is independent of usage: any valid percentage starts the next
+    // generation once resetAt moves strictly beyond the accepted anchor.
+    write(&database, base_now + 301.0, 0.01, base_reset + 1_801);
+    write(&database, base_now + 302.0, 0.0, base_reset + 1_802);
 
     let connection = database.open().unwrap();
     let rows = connection
@@ -495,9 +507,10 @@ fn stable_cycle_generation_uses_strict_reset_and_zero_usage_rules() {
     assert_eq!(rows[0].1, Some(0));
     assert_eq!(rows[0].2, Some(1));
     assert_eq!(rows[1].1, Some(0));
-    assert_eq!(rows[2].1, Some(0));
+    assert_eq!(rows[2].1, Some(1));
+    assert_eq!(rows[2].2, Some(1));
     assert_eq!(rows[3].1, Some(1));
-    assert_eq!(rows[3].2, Some(1));
+    assert_eq!(rows[3].2, Some(0));
     assert!(rows.iter().all(|row| row.3 == Some(0)));
 
     let _ = std::fs::remove_file(path);
@@ -516,9 +529,17 @@ fn reset_thresholds_tolerate_only_submicrosecond_storage_residue() {
         Some(anchor),
         None,
     ));
-    assert!(!same_cycle_for_window(
+    assert!(same_cycle_for_window(
         Some(0),
         Some(anchor + 300.0 + 0.000_002),
+        None,
+        Some(20),
+        Some(anchor),
+        None,
+    ));
+    assert!(!same_cycle_for_window(
+        Some(0),
+        Some(anchor + 1_800.0 + 0.000_002),
         None,
         Some(20),
         Some(anchor),
@@ -546,7 +567,7 @@ fn cycle_id_is_identity_scoped_without_raw_identity_components() {
 }
 
 #[test]
-fn reset_write_grace_is_five_seconds_without_hourly_heartbeat() {
+fn newer_observations_are_retained_even_when_only_reset_jitter_changes() {
     let path = temp_db_path("five-second-grace");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let identity = QuotaHistoryIdentity::from_canonical_parts(
@@ -577,7 +598,7 @@ fn reset_write_grace_is_five_seconds_without_hourly_heartbeat() {
     let count: i64 = connection
         .query_row("SELECT count(*) FROM quota_snapshots;", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 2, "there is no hourly heartbeat row");
+    assert_eq!(count, 3, "each newer response timestamp is retained");
     let used: Vec<i32> = connection
         .prepare("SELECT five_hour_used_percent FROM quota_snapshots ORDER BY created_at, id;")
         .unwrap()
@@ -585,12 +606,12 @@ fn reset_write_grace_is_five_seconds_without_hourly_heartbeat() {
         .unwrap()
         .collect::<SqlResult<Vec<_>>>()
         .unwrap();
-    assert_eq!(used, vec![20, 20]);
+    assert_eq!(used, vec![20, 20, 20]);
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn stable_candidate_accepts_small_jitter_but_restarts_on_slow_drift() {
+fn stable_jitter_does_not_move_the_accepted_anchor_or_generation() {
     let path = temp_db_path("candidate-band");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let identity = QuotaHistoryIdentity::from_canonical_parts(
@@ -632,15 +653,14 @@ fn stable_candidate_accepts_small_jitter_but_restarts_on_slow_drift() {
         .unwrap()
         .collect::<SqlResult<Vec<_>>>()
         .unwrap();
-    // The +3s sample is within the accepted anchor's write grace and is not
-    // persisted.  The +6s sample starts a candidate band; the final +7s
-    // observation confirms it after five minutes and is the raw anchor.
-    assert_eq!(anchors, vec![Some(1), Some(0), Some(1)]);
+    // Reset jitter is retained as raw evidence, but it cannot move the
+    // accepted anchor or create a generation without a qualifying boundary.
+    assert_eq!(anchors, vec![Some(1), Some(0), Some(0), Some(0)]);
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn stable_nonfull_reset_drift_over_five_minutes_becomes_same_cycle_anchor() {
+fn nonboundary_reset_drift_does_not_move_the_accepted_anchor() {
     let path = temp_db_path("candidate-over-300-nonfull");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let identity = QuotaHistoryIdentity::from_canonical_parts(
@@ -686,14 +706,14 @@ fn stable_nonfull_reset_drift_over_five_minutes_becomes_same_cycle_anchor() {
         .unwrap();
     assert_eq!(rows.len(), 3);
     assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), vec![Some(0), Some(0), Some(0)]);
-    assert_eq!(rows.iter().map(|row| row.1).collect::<Vec<_>>(), vec![Some(1), Some(0), Some(1)]);
+    assert_eq!(rows.iter().map(|row| row.1).collect::<Vec<_>>(), vec![Some(1), Some(0), Some(0)]);
     assert_eq!(rows[2].2, Some((reset + 302) as f64));
 
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn maintenance_restarts_stable_band_after_out_of_band_drift_and_is_idempotent() {
+fn maintenance_preserves_raw_observations_and_is_idempotent() {
     let path = temp_db_path("maintenance-stable-suffix");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let identity = QuotaHistoryIdentity::from_canonical_parts(
@@ -746,10 +766,12 @@ fn maintenance_restarts_stable_band_after_out_of_band_drift_and_is_idempotent() 
         .unwrap()
         .collect::<SqlResult<Vec<_>>>()
         .unwrap();
-    assert_eq!(first_pass.len(), 2);
-    assert_eq!(first_pass.iter().map(|row| row.1).collect::<Vec<_>>(), vec![1, 1]);
-    assert_eq!(first_pass[1].0, base_now + 540.0);
-    assert_eq!(first_pass[1].2, base_reset + 99.0);
+    assert_eq!(first_pass.len(), 7);
+    assert_eq!(first_pass.iter().map(|row| row.1).collect::<Vec<_>>(), vec![0; 7]);
+    assert_eq!(first_pass[0].0, base_now);
+    assert_eq!(first_pass[0].2, base_reset);
+    assert_eq!(first_pass[6].0, base_now + 540.0);
+    assert_eq!(first_pass[6].2, base_reset + 99.0);
     let metadata = maintenance_metadata(&connection).unwrap();
     assert_eq!(metadata.0, QUOTA_HISTORY_POLICY_VERSION);
     drop(connection);
@@ -767,13 +789,13 @@ fn maintenance_restarts_stable_band_after_out_of_band_drift_and_is_idempotent() 
     let second_count: i64 = connection
         .query_row("SELECT count(*) FROM quota_snapshots;", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(second_count, 2);
+    assert_eq!(second_count, 7);
 
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn migration_compacts_56_59_then_15_second_drift_without_losing_quota_changes() {
+fn maintenance_keeps_every_raw_transition_and_observation_time() {
     let path = temp_db_path("maintenance-real-drift-fixture");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let identity = QuotaHistoryIdentity::from_canonical_parts(
@@ -834,14 +856,16 @@ fn migration_compacts_56_59_then_15_second_drift_without_losing_quota_changes() 
             .collect::<Vec<_>>(),
         vec![
             (observed, 20),
+            (observed + 60.0, 20),
             (observed + 120.0, 21),
+            (observed + 180.0, 21),
             (observed + 240.0, 22),
             (observed + 480.0, 22),
         ],
-        "every quota transition keeps its original value and observation time"
+        "every raw observation keeps its original value and observation time"
     );
     assert_eq!(retained.last().map(|row| row.2), Some(reset + 14.0));
-    assert_eq!(retained.last().map(|row| row.3), Some(1));
+    assert_eq!(retained.last().map(|row| row.3), Some(0));
 
     let _ = std::fs::remove_file(path);
 }
@@ -898,7 +922,7 @@ fn maintenance_replay_advances_a_persisted_same_cycle_anchor() {
 }
 
 #[test]
-fn maintenance_failure_rolls_back_rows_and_does_not_advance_metadata() {
+fn maintenance_metadata_failure_rolls_back_without_changing_rows() {
     let path = temp_db_path("maintenance-rollback");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let identity = QuotaHistoryIdentity::from_canonical_parts(
@@ -923,10 +947,11 @@ fn maintenance_failure_rolls_back_rows_and_does_not_advance_metadata() {
     connection
         .execute_batch(
             r#"
-            CREATE TRIGGER fail_quota_cycle_backfill
-            BEFORE UPDATE OF five_hour_cycle_generation ON quota_snapshots
+            CREATE TRIGGER fail_quota_maintenance_metadata
+            BEFORE UPDATE OF value ON quota_history_maintenance
+            WHEN NEW.key = 'policy_version'
             BEGIN
-                SELECT RAISE(ABORT, 'fixture maintenance failure');
+                SELECT RAISE(ABORT, 'fixture maintenance metadata failure');
             END;
             "#,
         )
@@ -1002,7 +1027,7 @@ fn freelist_reclamation_is_threshold_gated() {
 }
 
 #[test]
-fn normalizer_matches_swift_reset_grace_and_recovered_spike_rules() {
+fn compatibility_normalizer_preserves_pending_regressions_and_rejects_invalid_usage() {
     let reset = 1_800_000_000.0;
 
     assert_eq!(
@@ -1011,17 +1036,17 @@ fn normalizer_matches_swift_reset_grace_and_recovered_spike_rules() {
     );
     assert_eq!(
         normalized_used_percent(Some(62), Some(reset + 90.0), Some(84), Some(reset)),
-        Some(62)
+        Some(84)
     );
     assert_eq!(
         normalized_used_percent(Some(71), Some(reset + 121.0), Some(84), Some(reset)),
         Some(84)
     );
-    assert_eq!(normalized_used_percent(Some(110), None, None, None), Some(100));
+    assert_eq!(normalized_used_percent(Some(110), None, None, None), None);
 }
 
 #[test]
-fn history_normalizes_regression_across_legacy_and_canonical_keys() {
+fn history_marks_a_single_same_cycle_regression_pending() {
     let created_at = 1_800_000_000.0;
     let reset = created_at + 3.0 * 60.0 * 60.0;
     let previous = history_row(
@@ -1044,11 +1069,11 @@ fn history_normalizes_regression_across_legacy_and_canonical_keys() {
 
     let sanitized = super::series::sanitized_rows(vec![previous, legacy]);
 
-    assert_eq!(sanitized[1].five_hour_used_percent, Some(84));
+    assert_eq!(sanitized[1].five_hour_used_percent, None);
 }
 
 #[test]
-fn history_suppresses_midcycle_spike_across_reset_timestamp_drift() {
+fn history_keeps_a_valid_usage_jump_and_marks_reversion_pending() {
     let created_at = 1_800_000_000.0;
     let reset = created_at + 3.0 * 60.0 * 60.0;
     let mut previous = history_row(
@@ -1074,8 +1099,8 @@ fn history_suppresses_midcycle_spike_across_reset_timestamp_drift() {
 
     let sanitized = super::series::sanitized_rows(vec![previous, spike, recovered]);
 
-    assert_eq!(sanitized[1].five_hour_used_percent, Some(10));
-    assert_eq!(sanitized[2].five_hour_used_percent, Some(12));
+    assert_eq!(sanitized[1].five_hour_used_percent, Some(45));
+    assert_eq!(sanitized[2].five_hour_used_percent, None);
 }
 
 #[test]
@@ -1113,57 +1138,47 @@ fn interval_history_interpolates_between_same_cycle_samples() {
 }
 
 #[test]
-fn history_recovers_from_isolated_full_usage_spike() {
+fn history_keeps_full_usage_and_marks_a_single_reversion_pending() {
     let path = temp_db_path("full-spike");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() + 3_600.0;
+    let base_at = now_unix() - 900.0;
+    let identity_bundle = bundle("tester", 0.00, reset as i64, 0.20, (reset + 500_000.0) as i64);
 
-    database
-        .record(&bundle("tester", 0.00, reset as i64, 0.20, (reset + 500_000.0) as i64))
-        .unwrap();
-    database
-        .record(&bundle("tester", 1.00, reset as i64, 0.20, (reset + 500_000.0) as i64))
-        .unwrap();
-    database
-        .record(&bundle("tester", 0.15, reset as i64, 0.21, (reset + 500_000.0) as i64))
-        .unwrap();
+    let first = identity_bundle.clone();
+    let spike = bundle("tester", 1.00, reset as i64, 0.20, (reset + 500_000.0) as i64);
+    let recovered = bundle("tester", 0.15, reset as i64, 0.21, (reset + 500_000.0) as i64);
+    assert!(record_at(&database, &first, base_at).unwrap());
+    assert!(record_at(&database, &spike, base_at + 300.0).unwrap());
+    assert!(record_at(&database, &recovered, base_at + 600.0).unwrap());
 
     let history = database.recent_five_minute_history(4).unwrap();
     let latest = history.last().unwrap();
-    assert_eq!(latest.five_hour_remaining_percent, Some(0.85));
+    assert_eq!(latest.five_hour_remaining_percent, None);
     assert_eq!(latest.seven_day_remaining_percent, Some(0.79));
 
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn history_suppresses_recovered_full_usage_spike_runs() {
+fn history_keeps_full_usage_runs_and_marks_reversion_pending() {
     let path = temp_db_path("full-spike-run");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() + 3_600.0;
+    let base_at = now_unix() - 1_200.0;
 
-    database
-        .record(&bundle("tester", 0.02, reset as i64, 0.03, (reset + 500_000.0) as i64))
-        .unwrap();
-    database
-        .record(&bundle("tester", 1.00, reset as i64, 1.00, (reset + 500_000.0) as i64))
-        .unwrap();
-    database
-        .record(&bundle("tester", 1.00, reset as i64, 1.00, (reset + 500_000.0) as i64))
-        .unwrap();
-    database
-        .record(&bundle("tester", 0.06, reset as i64, 0.04, (reset + 500_000.0) as i64))
-        .unwrap();
+    let first = bundle("tester", 0.02, reset as i64, 0.03, (reset + 500_000.0) as i64);
+    let spike = bundle("tester", 1.00, reset as i64, 1.00, (reset + 500_000.0) as i64);
+    let second_spike = bundle("tester", 1.00, reset as i64, 1.00, (reset + 500_000.0) as i64);
+    let recovered = bundle("tester", 0.06, reset as i64, 0.04, (reset + 500_000.0) as i64);
+    assert!(record_at(&database, &first, base_at).unwrap());
+    assert!(record_at(&database, &spike, base_at + 300.0).unwrap());
+    assert!(record_at(&database, &second_spike, base_at + 600.0).unwrap());
+    assert!(record_at(&database, &recovered, base_at + 900.0).unwrap());
 
     let history = database.recent_five_minute_history(12).unwrap();
-    assert!(history
-        .iter()
-        .all(|point| point.five_hour_remaining_percent != Some(0.0)));
-    assert!(history
-        .iter()
-        .all(|point| point.seven_day_remaining_percent != Some(0.0)));
-    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.94));
-    assert_eq!(history.last().unwrap().seven_day_remaining_percent, Some(0.96));
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, None);
+    assert_eq!(history.last().unwrap().seven_day_remaining_percent, None);
 
     let _ = std::fs::remove_file(path);
 }
@@ -1320,7 +1335,7 @@ fn tauri_history_merges_swift_peer_rows_and_keeps_local_same_time_authority() {
 }
 
 #[test]
-fn merged_cycle_replay_uses_one_generation_and_the_latest_stable_anchor() {
+fn merged_cycle_replay_preserves_generation_scope_and_strict_boundaries() {
     let identity = QuotaHistoryIdentity::from_canonical_parts(
         Path::new("/fixture/merged-cycle-replay"),
         Some("sub:merged-cycle-replay"),
@@ -1363,19 +1378,19 @@ fn merged_cycle_replay_uses_one_generation_and_the_latest_stable_anchor() {
         rows.iter()
             .map(|row| row.five_hour_cycle_generation)
             .collect::<Vec<_>>(),
-        vec![Some(2), Some(2), Some(2), Some(3)],
-        "peer/local counters must be replayed consistently while the latest local generation remains stable"
+        vec![Some(3), Some(3), Some(3), Some(3)],
+        "peer/local counters must be replayed consistently while a sub-1800s drift remains one cycle"
     );
-    assert_eq!(rows[1].five_hour_reset_anchor, Some(1));
+    assert_eq!(rows[1].five_hour_reset_anchor, Some(0));
     assert_eq!(rows[2].five_hour_reset_anchor, Some(0));
-    assert_eq!(rows[3].five_hour_reset_anchor, Some(1));
+    assert_eq!(rows[3].five_hour_reset_anchor, Some(0));
     assert_eq!(
         quota_cycle_id_for_identity(
             &rows[2].stable_identity().unwrap(),
             "5h",
             rows[2].five_hour_cycle_generation,
         ),
-        quota_cycle_id_for_identity(&identity, "5h", Some(2)),
+        quota_cycle_id_for_identity(&identity, "5h", Some(3)),
     );
     let suffix = canonicalized_cycle_rows(
         vec![stable_anchor, within_latest_anchor, strict_boundary],
@@ -2072,7 +2087,7 @@ fn recent_history_does_not_merge_non_codex_limit_rows() {
 }
 
 #[test]
-fn history_suppresses_recovered_midcycle_usage_spike() {
+fn history_marks_midcycle_reversion_pending_instead_of_suppressing_valid_jumps() {
     let path = temp_db_path("midcycle-spike");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let connection = database.open().unwrap();
@@ -2100,8 +2115,8 @@ fn history_suppresses_recovered_midcycle_usage_spike() {
     let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
-        .all(|point| point.five_hour_remaining_percent != Some(0.55)));
-    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.88));
+        .any(|point| point.five_hour_remaining_percent == Some(0.55)));
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, None);
 
     let _ = std::fs::remove_file(path);
 }
@@ -2177,7 +2192,7 @@ fn history_reclassifies_legacy_seven_day_only_rows_written_into_five_hour_column
 }
 
 #[test]
-fn history_suppresses_recovered_full_remaining_jump_even_when_reset_temporarily_shifts() {
+fn history_applies_boundary_and_backward_reset_rules_per_window() {
     let created_at = 1_800_000_000.0;
     let stable_five_reset = created_at + 4.0 * 60.0 * 60.0;
     let shifted_five_reset = stable_five_reset - 2.0 * 60.0 * 60.0;
@@ -2209,12 +2224,12 @@ fn history_suppresses_recovered_full_remaining_jump_even_when_reset_temporarily_
 
     let sanitized = super::series::sanitized_rows(vec![previous, glitch, recovered]);
 
-    assert_eq!(sanitized[1].five_hour_used_percent, Some(45));
+    assert_eq!(sanitized[1].five_hour_used_percent, None);
     assert_eq!(sanitized[1].five_hour_resets_at, Some(stable_five_reset));
-    assert_eq!(sanitized[1].seven_day_used_percent, Some(32));
-    assert_eq!(sanitized[1].seven_day_resets_at, Some(stable_seven_reset));
+    assert_eq!(sanitized[1].seven_day_used_percent, Some(1));
+    assert_eq!(sanitized[1].seven_day_resets_at, Some(shifted_seven_reset));
     assert_eq!(sanitized[2].five_hour_used_percent, Some(46));
-    assert_eq!(sanitized[2].seven_day_used_percent, Some(33));
+    assert_eq!(sanitized[2].seven_day_used_percent, None);
 }
 
 #[test]
@@ -2268,7 +2283,7 @@ fn overlay_history_matches_points_by_start_unix_not_position() {
 }
 
 #[test]
-fn reset_crossing_synthesizes_one_full_point_for_five_minute_and_hourly_axes() {
+fn reset_crossing_leaves_a_gap_until_a_post_reset_observation() {
     for interval in [5 * 60, 60 * 60] {
         let now = fixed_series_now(interval);
         let current_bin_start = fixed_bin_start(interval);
@@ -2298,8 +2313,8 @@ fn reset_crossing_synthesizes_one_full_point_for_five_minute_and_hourly_axes() {
             })
             .unwrap();
 
-        assert_eq!(five_values.iter().filter(|value| **value == Some(1.0)).count(), 1);
-        assert_eq!(five_values[reset_index], Some(1.0));
+        assert_eq!(five_values.iter().filter(|value| **value == Some(1.0)).count(), 0);
+        assert_eq!(five_values[reset_index], None);
         assert!(five_values.iter().skip(reset_index + 1).all(Option::is_none));
     }
 }
@@ -2347,7 +2362,7 @@ fn current_partial_bin_does_not_predict_reset_or_consume_future_row() {
             interval,
             reset + interval as f64 / 8.0,
         );
-        assert_eq!(crossed.last().unwrap().five_hour_remaining_percent, Some(1.0));
+        assert_eq!(crossed.last().unwrap().five_hour_remaining_percent, None);
 
         let next_bin = super::series::make_interval_history_at(
             vec![old_row],
@@ -2360,7 +2375,7 @@ fn current_partial_bin_does_not_predict_reset_or_consume_future_row() {
                 .iter()
                 .filter(|point| point.five_hour_remaining_percent == Some(1.0))
                 .count(),
-            1
+            0
         );
         assert!(next_bin.last().unwrap().five_hour_remaining_percent.is_none());
     }
@@ -2408,7 +2423,7 @@ fn reset_carry_is_unknown_until_a_post_reset_sample_then_recovers() {
         .position(|point| point.start_unix as f64 + interval as f64 >= new_row.created_at)
         .unwrap();
 
-    assert_eq!(history[boundary].five_hour_remaining_percent, Some(1.0));
+    assert_eq!(history[boundary].five_hour_remaining_percent, None);
     assert!(history[(boundary + 1)..recovered]
         .iter()
         .all(|point| point.five_hour_remaining_percent.is_none()));
@@ -2416,7 +2431,7 @@ fn reset_carry_is_unknown_until_a_post_reset_sample_then_recovers() {
 }
 
 #[test]
-fn stale_reset_uses_bounded_carry_and_windows_reset_independently() {
+fn stale_reset_is_unknown_while_the_other_window_remains_independent() {
     let interval = 5 * 60;
     let now = fixed_series_now(interval);
     let current_bin_start = fixed_bin_start(interval);
@@ -2446,15 +2461,16 @@ fn stale_reset_uses_bounded_carry_and_windows_reset_independently() {
         .unwrap();
 
     assert!(!five_values.contains(&Some(1.0)));
-    assert!(five_values.contains(&Some(0.50)));
+    assert!(five_values.iter().all(Option::is_none));
+    assert!(history.iter().any(|point| point.seven_day_remaining_percent == Some(0.70)));
     assert!(history.last().unwrap().five_hour_remaining_percent.is_none());
-    assert_eq!(history[seven_boundary].seven_day_remaining_percent, Some(1.0));
-    assert_eq!(history[seven_boundary].five_hour_remaining_percent, Some(0.50));
+    assert_eq!(history[seven_boundary].seven_day_remaining_percent, None);
+    assert_eq!(history[seven_boundary].five_hour_remaining_percent, None);
     assert!(history[seven_boundary + 1].seven_day_remaining_percent.is_none());
 }
 
 #[test]
-fn six_hour_axis_does_not_expand_reset_boundary_into_continuous_full_quota() {
+fn six_hour_axis_leaves_reset_boundary_unknown_without_a_new_sample() {
     let interval = 6 * 60 * 60;
     let now = fixed_series_now(interval);
     let current_bin_start = fixed_bin_start(interval);
@@ -2477,7 +2493,7 @@ fn six_hour_axis_does_not_expand_reset_boundary_into_continuous_full_quota() {
             .iter()
             .filter(|point| point.five_hour_remaining_percent == Some(1.0))
             .count(),
-        1
+        0
     );
     assert!(history
         .iter()
@@ -2491,13 +2507,12 @@ fn daily_history_groups_quota_samples_by_local_day() {
     let path = temp_db_path("daily");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() + 3_600.0;
+    let first_at = now_unix() - 120.0;
 
-    database
-        .record(&bundle("tester", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64))
-        .unwrap();
-    database
-        .record(&bundle("tester", 0.30, reset as i64, 0.50, (reset + 500_000.0) as i64))
-        .unwrap();
+    let first = bundle("tester", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64);
+    let second = bundle("tester", 0.30, reset as i64, 0.50, (reset + 500_000.0) as i64);
+    assert!(record_at(&database, &first, first_at).unwrap());
+    assert!(record_at(&database, &second, first_at + 60.0).unwrap());
 
     let local_offset = crate::core::localtime::local_offset();
     let today = format_date(OffsetDateTime::now_utc().to_offset(local_offset).date());
@@ -2804,7 +2819,7 @@ fn bundle(
     bundle_with_plan(name, "Pro", five_used, five_reset, seven_used, seven_reset)
 }
 
-fn bundle_with_plan(
+pub(super) fn bundle_with_plan(
     name: &str,
     plan_label: &str,
     five_used: f64,
@@ -2813,7 +2828,7 @@ fn bundle_with_plan(
     seven_reset: i64,
 ) -> AccountQuotaBundle {
     AccountQuotaBundle {
-        updated_at: "2026-07-31T00:00:00Z".into(),
+        updated_at: OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap(),
         attribution_identity: None,
         account: AccountInfo {
             display_name: name.into(),
@@ -2852,6 +2867,32 @@ fn bundle_with_plan(
         warnings: Vec::new(),
         diagnostics: Vec::new(),
     }
+}
+
+fn test_identity(
+    database: &QuotaHistoryDatabase,
+    bundle: &AccountQuotaBundle,
+) -> QuotaHistoryIdentity {
+    let stable_account_key = format!("sub:test:{}", bundle.account.display_name);
+    QuotaHistoryIdentity::from_bundle(
+        database
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("/fixture/test-home")),
+        Some(&stable_account_key),
+        bundle,
+        Some("codex"),
+    )
+    .expect("test quota bundle must have a stable history identity")
+}
+
+fn record_at(
+    database: &QuotaHistoryDatabase,
+    bundle: &AccountQuotaBundle,
+    at: f64,
+) -> SqlResult<bool> {
+    let identity = test_identity(database, bundle);
+    database.record_for_identity_at(Some(&identity), bundle, at)
 }
 
 #[allow(clippy::too_many_arguments)]

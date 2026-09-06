@@ -1397,12 +1397,9 @@ function quotaDropResolution(
     currentCycleStart -= 1;
   }
   const currentCycleSamples = availableSamples.slice(currentCycleStart);
-  const sanitizedSamples = currentCycleSamples.filter((sample, index) => {
-    const previous = index > 0 ? currentCycleSamples[index - 1].value : null;
-    const next = index + 1 < currentCycleSamples.length ? currentCycleSamples[index + 1].value : null;
-    return !isZeroRemainingSpike(sample.value, previous, next)
-      && !isFullRemainingSpike(sample.value, previous, next);
-  });
+  // The backend history projection owns anomaly/cycle decisions. In
+  // particular, valid exhausted or newly refilled samples are not UI spikes.
+  const sanitizedSamples = currentCycleSamples;
   if (sanitizedSamples.length < 2) {
     return { percent: null, comparisonStartOffset: sanitizedSamples[0]?.index ?? null };
   }
@@ -1413,18 +1410,6 @@ function quotaDropResolution(
     }, 0),
     comparisonStartOffset: sanitizedSamples[0].index,
   };
-}
-
-function isZeroRemainingSpike(value: number, previous: number | null, next: number | null): boolean {
-  return value <= 1 && previous !== null && previous >= 95 && (next === null || next >= 95);
-}
-
-function isFullRemainingSpike(value: number, previous: number | null, next: number | null): boolean {
-  return value >= 99
-    && previous !== null
-    && next !== null
-    && previous <= 95
-    && next <= previous + 1;
 }
 
 function quotaPercentValue(value: number): number {
