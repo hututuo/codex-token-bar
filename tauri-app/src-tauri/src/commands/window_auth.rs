@@ -124,7 +124,7 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
         return matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL);
     }
 
-    if command == "complete_floating_paging_guide" {
+    if matches!(command, "complete_floating_paging_guide" | "read_floating_pointer_state") {
         return label == FLOATING_WINDOW_LABEL;
     }
 
@@ -142,6 +142,14 @@ fn is_app_surface_label(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floating_pointer_state_is_restricted_to_the_floating_surface() {
+        assert!(allows_window_label("read_floating_pointer_state", "floating"));
+        for label in ["main", "status", "unknown"] {
+            assert!(!allows_window_label("read_floating_pointer_state", label));
+        }
+    }
 
     #[test]
     fn main_window_only_commands_reject_surface_labels() {

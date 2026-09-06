@@ -1,4 +1,5 @@
-import { type CSSProperties, type MouseEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useFloatingEdgeDock } from "./useFloatingEdgeDock";
+import { type CSSProperties, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { completeFloatingPagingGuide, readAppSettings, recordStartupEvent } from "../api/client";
@@ -263,6 +264,43 @@ export function FloatingWindowApp() {
   const effectiveRunningModelDetailsExpanded = runningModelDetailsExpanded
     && !pagingGuidePresented
     && contentHasRunningThreadDetailsTarget;
+  const edgeDock = useFloatingEdgeDock(
+    settingsLoaded,
+    pagingGuidePresented || effectiveRunningModelDetailsExpanded || !surfaceLifecycle.active,
+  );
+  const dock = edgeDock.presentation;
+  const dockAnchor = dock.anchor;
+  const dockShellRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const shell = dockShellRef.current;
+    if (!dockAnchor || !shell || typeof shell.animate !== "function"
+      || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const { frame, lip, scaleFactor } = dockAnchor;
+    // Only initial attachment uses a keyframe. Reversing an in-flight hover
+    // transition keeps the browser's current interpolated transform instead.
+    const animation = shell.animate([
+      { transform: `translate(${(lip.x - frame.x) / scaleFactor}px, ${(lip.y - frame.y) / scaleFactor}px) scale(${lip.width / frame.width}, ${lip.height / frame.height})` },
+      { transform: "none" },
+    ], { duration: 380, easing: "cubic-bezier(.16, 1.12, .25, 1)" });
+    return () => animation.cancel();
+  }, [dockAnchor]);
+  const dockScale = dockAnchor?.scaleFactor ?? 1;
+  const dockWidth = (dockAnchor?.frame.width ?? 1) / dockScale;
+  const dockHeight = (dockAnchor?.frame.height ?? 1) / dockScale;
+  const dockStyle = dockAnchor ? {
+    "--dock-width": `${dockWidth}px`,
+    "--dock-height": `${dockHeight}px`,
+    "--dock-lip-width": `${dockAnchor.lip.width / dockScale}px`,
+    "--dock-lip-height": `${dockAnchor.lip.height / dockScale}px`,
+    "--dock-lip-x": `${(dockAnchor.lip.x - dockAnchor.frame.x) / dockScale}px`,
+    "--dock-lip-y": `${(dockAnchor.lip.y - dockAnchor.frame.y) / dockScale}px`,
+    "--dock-lip-scale-x": dockAnchor.lip.width / dockAnchor.frame.width,
+    "--dock-lip-scale-y": dockAnchor.lip.height / dockAnchor.frame.height,
+    "--dock-content-scale-x": Math.max(0.8, (dockWidth - 10) / dockWidth),
+    "--dock-content-scale-y": Math.max(0.8, (dockHeight - 10) / dockHeight),
+    "--dock-travel-x": `${dockAnchor.edge === "left" ? -dockWidth : dockAnchor.edge === "right" ? dockWidth : 0}px`,
+    "--dock-travel-y": `${dockAnchor.edge === "top" ? -dockHeight : dockAnchor.edge === "bottom" ? dockHeight : 0}px`,
+  } as CSSProperties : undefined;
   const presentedRunningThreads = floatingRunningThreadSummaryForPresentation(
     runningThreads,
     pagingGuidePresented,
@@ -421,7 +459,7 @@ export function FloatingWindowApp() {
       event.preventDefault();
       return;
     }
-    void desktopPlatform.startFloatingWindowDrag();
+    edgeDock.startDrag();
   }
 
   function dismissRunningModelDetailsForOutsidePointer(event: MouseEvent<HTMLElement>) {
@@ -530,6 +568,17 @@ export function FloatingWindowApp() {
   ) * guideScale;
 
   return (
+    <div className="floating-edge-host"
+      data-edge={dockAnchor?.edge ?? "free"}
+      data-collapsed={dock.collapsed}
+      data-compact={dock.compact}
+      data-motion={dock.motion}
+      onMouseEnter={() => edgeDock.hover(true)}
+      onMouseLeave={() => edgeDock.hover(false)}
+      style={dockStyle}
+    >
+    <div ref={dockShellRef} className="floating-edge-shell" aria-hidden="true" />
+    <div className="floating-edge-content" inert={dock.collapsed} aria-hidden={dock.collapsed || undefined}>
     <main
       className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}${effectiveRunningModelDetailsExpanded && runningModelDetailsSide === "leading" ? " floating-window-shell--running-model-details-leading" : ""}`}
       onMouseDownCapture={dismissRunningModelDetailsForOutsidePointer}
@@ -541,7 +590,7 @@ export function FloatingWindowApp() {
         radarSnapshot={radarSnapshot}
         crowdRadarSnapshot={crowdRadarSnapshot}
         runningThreads={presentedRunningThreads}
-        unreadEffect={presentedSettings.unreadEffect}
+        unreadEffect={dock.collapsed ? "off" : presentedSettings.unreadEffect}
         priceModel={attributionSettings.priceModel}
         onClose={closeFloatingWindow}
         onDragStart={effectiveRunningModelDetailsExpanded ? undefined : startWindowDrag}
@@ -583,6 +632,10 @@ export function FloatingWindowApp() {
         ) : null}
       />
     </main>
+    </div>
+    {dock.compact ? <button className="floating-edge-reveal" onClick={edgeDock.reveal}
+      aria-label="展开边缘悬浮窗" type="button" /> : null}
+    </div>
   );
 }
 

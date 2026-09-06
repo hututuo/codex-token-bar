@@ -1,3 +1,4 @@
+import { onFloatingSettledPosition } from "../platform/floatingGeometryLifecycle";
 import { useEffect } from "react";
 import { readAppSettings, saveFloatingPosition } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
@@ -27,6 +28,11 @@ export function useFloatingWindowPlacement() {
         savedAt: Date.now(),
       }),
     );
+
+    const unlistenSettled = onFloatingSettledPosition((position) => {
+      movementGeneration += 1;
+      positionPersistence.schedule(position);
+    });
 
     void desktopPlatform.onFloatingWindowMoved((position) => {
       if (
@@ -67,6 +73,7 @@ export function useFloatingWindowPlacement() {
       disposed = true;
       positionPersistence.flush();
       unlisten?.();
+      unlistenSettled();
     };
   }, []);
 }

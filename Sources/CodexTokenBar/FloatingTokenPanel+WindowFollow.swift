@@ -225,6 +225,7 @@ extension FloatingTokenPanelController {
             }
             return
         }
+        if isLocked { edgeDock.detach() }
         appliedLockState = isLocked
 
         if isLocked {

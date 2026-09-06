@@ -1,3 +1,4 @@
+import { floatingGeometryLifecycle, isFloatingGeometryTransient, runFloatingGeometryChange } from "./floatingGeometryLifecycle";
 import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -33,7 +34,9 @@ export async function resizeFloatingWindow(
     return false;
   }
 
+  const dockLifecycle = floatingGeometryLifecycle();
   try {
+    await dockLifecycle?.beforeResize();
     const appWindow = getCurrentWindow();
     programmaticResizeUntil = Date.now() + 1_000;
     let targetPosition: DesktopPosition | null = null;
@@ -51,16 +54,18 @@ export async function resizeFloatingWindow(
       };
     }
 
-    await appWindow.setSize(new LogicalSize(width, height));
-    if (targetPosition) {
-      markFloatingWindowPositionProgrammatic(targetPosition);
-      try {
-        await appWindow.setPosition(new PhysicalPosition(targetPosition.x, targetPosition.y));
-      } catch (error) {
-        programmaticPosition = null;
-        throw error;
+    await runFloatingGeometryChange(async () => {
+      await appWindow.setSize(new LogicalSize(width, height));
+      if (targetPosition) {
+        markFloatingWindowPositionProgrammatic(targetPosition);
+        try {
+          await appWindow.setPosition(new PhysicalPosition(targetPosition.x, targetPosition.y));
+        } catch (error) {
+          programmaticPosition = null;
+          throw error;
+        }
       }
-    }
+    });
     programmaticResizeUntil = Date.now() + 250;
     clearPlatformFailure("resize-floating-window");
     return true;
@@ -69,6 +74,8 @@ export async function resizeFloatingWindow(
     programmaticPosition = null;
     warnPlatformFailure("resize-floating-window", error);
     return false;
+  } finally {
+    dockLifecycle?.afterResize();
   }
 }
 
@@ -88,7 +95,7 @@ export function consumeFloatingWindowPositionIfProgrammatic(position: DesktopPos
 }
 
 export function isFloatingWindowResizeProgrammatic(): boolean {
-  return Date.now() < programmaticResizeUntil;
+  return isFloatingGeometryTransient() || Date.now() < programmaticResizeUntil;
 }
 
 export async function startFloatingWindowDrag(): Promise<boolean> {

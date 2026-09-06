@@ -36,14 +36,16 @@ use tauri::TitleBarStyle;
 // Keep the native viewport aligned with the frontend floating surface. The
 // Radar IQ type is compacted to preserve single-line rows at this width.
 const FLOATING_WINDOW_WIDTH: f64 = 308.0;
-const FLOATING_WINDOW_MIN_HEIGHT: f64 = 88.0;
+// The frameless window is not user-resizable. Its programmatic input region
+// must be able to shrink to the edge-dock handle; normal content size remains
+// owned by the frontend layout, independently of this native minimum.
+const FLOATING_WINDOW_DOCK_HANDLE_SIZE: f64 = 6.0;
 const FLOATING_WINDOW_DEFAULT_HEIGHT: f64 = 142.0;
 // Programmatic expansion also hosts the first-run guide and the inward-facing
 // running-model card. Keep the native constraints above both temporary
 // layouts so WebView resizing cannot silently clip their content.
 const FLOATING_WINDOW_MAX_WIDTH: f64 = 620.0;
 const FLOATING_WINDOW_MAX_HEIGHT: f64 = 284.0;
-const FLOATING_WINDOW_MIN_SCALE: f64 = 0.9;
 const FLOATING_WINDOW_MAX_SCALE: f64 = 1.38;
 const FLOATING_WINDOW_VISIBILITY_CHANGED_EVENT: &str = "floating-window-visibility-changed";
 const DASHBOARD_WINDOW_WIDTH: f64 = 1180.0;
@@ -2215,8 +2217,8 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     let builder = builder
     .inner_size(FLOATING_WINDOW_WIDTH, FLOATING_WINDOW_DEFAULT_HEIGHT)
     .min_inner_size(
-        FLOATING_WINDOW_WIDTH * FLOATING_WINDOW_MIN_SCALE,
-        FLOATING_WINDOW_MIN_HEIGHT * FLOATING_WINDOW_MIN_SCALE,
+        FLOATING_WINDOW_DOCK_HANDLE_SIZE,
+        FLOATING_WINDOW_DOCK_HANDLE_SIZE,
     )
     .max_inner_size(
         FLOATING_WINDOW_MAX_WIDTH * FLOATING_WINDOW_MAX_SCALE,
@@ -2465,7 +2467,7 @@ mod tests {
     #[test]
     fn floating_window_dimensions_keep_compact_swift_proportions_without_clipping_default_content() {
         assert_eq!(FLOATING_WINDOW_WIDTH, 308.0);
-        assert_eq!(FLOATING_WINDOW_MIN_HEIGHT, 88.0);
+        assert_eq!(FLOATING_WINDOW_DOCK_HANDLE_SIZE, 6.0);
         assert_eq!(FLOATING_WINDOW_DEFAULT_HEIGHT, 142.0);
         assert_eq!(FLOATING_WINDOW_MAX_WIDTH, 620.0);
         assert_eq!(FLOATING_WINDOW_MAX_HEIGHT, 284.0);

@@ -93,6 +93,9 @@ final class FloatingTokenPanelWindow: NSPanel {
     var runningModelDetailsFrame = NSRect.zero
     var onOpenDashboard: (() -> Void)?
     var onDismissRunningModelDetails: (() -> Void)?
+    var onDragBegan: (() -> Void)?
+    var onDragEnded: (() -> Void)?
+    var onInteractionEnded: (() -> Void)?
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -118,6 +121,7 @@ final class FloatingTokenPanelWindow: NSPanel {
     }
 
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseUp || event.type == .rightMouseUp { onInteractionEnded?() }
         guard event.type == .leftMouseDown else {
             super.sendEvent(event)
             return
@@ -138,7 +142,9 @@ final class FloatingTokenPanelWindow: NSPanel {
         case .openDashboard:
             onOpenDashboard?()
         case .dragPanel:
+            onDragBegan?()
             performDrag(with: event)
+            onDragEnded?()
         case .passThrough:
             super.sendEvent(event)
         }
@@ -185,6 +191,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private static let panelIdentifier = NSUserInterfaceItemIdentifier("CodexTokenBarFloatingTokenPanel")
 
     var panel: NSPanel?
+    let edgeDock = FloatingEdgeDockController()
     private var onClose: (() -> Void)?
     private var onToggleLock: (() -> Void)?
     private var onOpenDashboard: (() -> Void)?
@@ -341,6 +348,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         eventSourceLifecycle.deactivate()
         invalidateExternalAccessibilityResolution()
         stopFollowingAnchor()
+        edgeDock.dispose()
         let existingPanel = panel
         panel = nil
         onClose = nil
@@ -411,6 +419,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     radar: radar,
                     taskCompletionMonitor: taskCompletionMonitor,
                     layout: layout,
+                    edgeDockPresentation: edgeDock.presentation,
                     visibility: visibility,
                     isLocked: isLocked,
                     lockTargetDescription: lockTargetDescription,
@@ -467,6 +476,14 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             panel.contentView?.layer?.masksToBounds = true
             position(panel)
             self.panel = panel
+            edgeDock.bind(panel: panel, enabled: { [weak self] in
+                guard let self else { return false }
+                return self.isPresented && !self.appliedLockState
+                    && !self.lastPagingGuidePresented && !self.lastRunningModelDetailsPresented
+            }, persist: { [weak self] origin in self?.saveLockedOrigin(origin) })
+            panel.onDragBegan = { [weak self] in self?.edgeDock.beginDrag() }
+            panel.onDragEnded = { [weak self] in self?.edgeDock.endDrag() }
+            panel.onInteractionEnded = { [weak self] in self?.edgeDock.interactionEnded() }
         }
         Self.closeStrayPanels(except: panel)
 
@@ -490,6 +507,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 radar: radar,
                 taskCompletionMonitor: taskCompletionMonitor,
                 layout: layout,
+                edgeDockPresentation: edgeDock.presentation,
                 visibility: visibility,
                 isLocked: isLocked,
                 lockTargetDescription: lockTargetDescription,
@@ -519,6 +537,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         panel?.orderFrontRegardless()
         isPresented = true
         eventSourceLifecycle.activate()
+        edgeDock.snapIfNearEdge()
     }
 
     private func shouldPresentPagingGuide(
@@ -635,6 +654,11 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     func updateSize(layout: FloatingTokenPanelLayout) {
         guard let panel else { return }
+        if let fullFrame = edgeDock.expandedFrame, fullFrame.size == layout.size,
+           !layout.runningModelDetailsPresented, !lastPagingGuidePresented, !appliedLockState {
+            return
+        }
+        edgeDock.prepareForResize()
         let surfaceSize = lastPanelVisibility.map {
             FloatingTokenPanelMetrics.size(
                 effectiveScale: layout.effectiveScale,
@@ -695,6 +719,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
         DispatchQueue.main.async { [weak self] in
             self?.isProgrammaticPanelMove = false
+            self?.edgeDock.resumeAfterResize()
         }
     }
 
@@ -703,6 +728,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     func windowWillClose(_ notification: Notification) {
+        edgeDock.dispose()
         if let closingPanel = notification.object as? NSPanel,
            closingPanel.identifier == Self.panelIdentifier,
            closingPanel === panel {
@@ -719,7 +745,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     func windowDidMove(_ notification: Notification) {
         guard let panel else { return }
-        guard !isProgrammaticPanelMove else { return }
+        guard !isProgrammaticPanelMove, !edgeDock.isApplyingGeometry else { return }
         if lastRunningModelDetailsPresented,
            let surfaceSize = currentRunningModelDetailsSurfaceSize() {
             runningModelDetailsBaseFrame = FloatingTokenPanelResizePolicy.baseFrame(
@@ -749,6 +775,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         surfaceSize: NSSize? = nil,
         detailsPresented: Bool? = nil
     ) -> NSPoint {
+        if let dockedFrame = edgeDock.expandedFrame { return dockedFrame.origin }
         let detailsPresented = detailsPresented ?? (lastRunningModelDetailsPresented && !lastPagingGuidePresented)
         guard detailsPresented,
               let surfaceSize = surfaceSize ?? currentRunningModelDetailsSurfaceSize()
@@ -808,6 +835,7 @@ struct FloatingTokenPanelView: View {
     @ObservedObject var radar: CodexRadarStore
     @ObservedObject var taskCompletionMonitor: TaskCompletionMonitor
     let layout: FloatingTokenPanelLayout
+    @ObservedObject var edgeDockPresentation: FloatingEdgeDockPresentation
     let visibility: FloatingPanelContentVisibility
     let isLocked: Bool
     var lockTargetDescription: String?
@@ -840,7 +868,7 @@ struct FloatingTokenPanelView: View {
         let isPreviewingUnreadEffect = unreadCount == 0
             && unreadEffect != .off
             && floatingPanelUnreadPreviewUntil > Date.timeIntervalSinceReferenceDate
-        let shouldShowUnreadEffect = unreadEffect != .off && (unreadCount > 0 || isPreviewingUnreadEffect)
+        let shouldShowUnreadEffect = !edgeDockPresentation.collapsed && unreadEffect != .off && (unreadCount > 0 || isPreviewingUnreadEffect)
         let scale = layout.effectiveScale
         let appearance = FloatingPanelAppearance(
             startHex: floatingPanelGradientStartHex,
@@ -1135,6 +1163,7 @@ struct FloatingTokenPanelView: View {
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .contentShape(Rectangle())
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
+        .modifier(FloatingEdgeDockModifier(presentation: edgeDockPresentation, size: size))
     }
 
     private func advancePagingGuide(pages: [FloatingPanelGuidePage]) {

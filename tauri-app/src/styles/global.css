@@ -12490,3 +12490,81 @@ details.session-management-banner {
     bottom: 0;
   }
 }
+
+/* Docking animates two compositor layers inside a stationary native window.
+   After collapse, the native input region is resized to the six-point handle. */
+.floating-edge-host {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  isolation: isolate;
+}
+.floating-edge-content {
+  width: var(--dock-width, 100vw);
+  height: var(--dock-height, 100vh);
+  transform-origin: center;
+  transition: transform 380ms cubic-bezier(.16, 1.12, .25, 1), opacity 160ms ease-out;
+}
+.floating-edge-content > .floating-window-shell {
+  width: 100%;
+  height: 100%;
+}
+.floating-edge-shell {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: var(--dock-width, 100vw);
+  height: var(--dock-height, 100vh);
+  transform-origin: top left;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 380ms cubic-bezier(.16, 1.12, .25, 1), opacity 200ms ease-out, border-radius 300ms ease;
+}
+.floating-edge-host:not([data-edge="free"]) .floating-edge-shell { opacity: 1; }
+.floating-edge-host[data-edge="left"] .floating-edge-shell { border-radius: 0 22px 22px 0; }
+.floating-edge-host[data-edge="right"] .floating-edge-shell { border-radius: 22px 0 0 22px; }
+.floating-edge-host[data-edge="top"] .floating-edge-shell { border-radius: 0 0 22px 22px; }
+.floating-edge-host[data-edge="bottom"] .floating-edge-shell { border-radius: 22px 22px 0 0; }
+.floating-edge-host:not([data-edge="free"]) .floating-edge-content {
+  transform: scale(var(--dock-content-scale-x), var(--dock-content-scale-y));
+}
+.floating-edge-host[data-collapsed="true"] .floating-edge-content {
+  transform: translate(var(--dock-travel-x), var(--dock-travel-y)) scale(.84);
+  opacity: 0;
+  pointer-events: none;
+}
+.floating-edge-host[data-collapsed="true"] .floating-edge-shell {
+  transform: translate(var(--dock-lip-x), var(--dock-lip-y)) scale(var(--dock-lip-scale-x), var(--dock-lip-scale-y));
+}
+.floating-edge-host[data-motion="collapse"] :is(.floating-edge-content, .floating-edge-shell) {
+  transition: transform 300ms cubic-bezier(.65, 0, .35, 1), opacity 150ms ease-in, border-radius 300ms ease;
+}
+.floating-edge-host[data-motion="none"] :is(.floating-edge-content, .floating-edge-shell) { transition: none; }
+.floating-edge-host[data-compact="true"] .floating-edge-shell {
+  width: var(--dock-lip-width);
+  height: var(--dock-lip-height);
+  transform: none;
+}
+.floating-edge-host[data-compact="true"][data-edge="left"] .floating-edge-shell { border-radius: 0 3px 3px 0; }
+.floating-edge-host[data-compact="true"][data-edge="right"] .floating-edge-shell { border-radius: 3px 0 0 3px; }
+.floating-edge-host[data-compact="true"][data-edge="top"] .floating-edge-shell { border-radius: 0 0 3px 3px; }
+.floating-edge-host[data-compact="true"][data-edge="bottom"] .floating-edge-shell { border-radius: 3px 3px 0 0; }
+.floating-edge-reveal {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.floating-edge-reveal:focus-visible { outline: 2px solid #9ac4ff; outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) {
+  .floating-edge-host :is(.floating-edge-content, .floating-edge-shell) { transition: none !important; }
+}
