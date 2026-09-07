@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fadeBeforeNativeDockReveal, waitForDockViewport, waitForDockPaint } from "./floatingDockPaintHandoff.ts";
+import { waitForDockViewport, waitForDockPaint } from "./floatingDockPaintHandoff.ts";
 
 function browser(t) {
   const prior = { window: globalThis.window, requestAnimationFrame: globalThis.requestAnimationFrame, cancelAnimationFrame: globalThis.cancelAnimationFrame };
@@ -30,23 +30,4 @@ test("paint gate keeps the mask through the first resized layout frame", async (
   const gate = waitForDockPaint().then(() => { ready = true; });
   b.paint(); await drain(); assert.equal(ready, false);
   b.paint(); await gate; assert.equal(ready, true);
-});
-
-test("old narrow surface stays transparent until the native handoff is released", async (t) => {
-  const b = browser(t); const animations = [];
-  const host = { isConnected: true, animate(keyframes, options) {
-    const animation = { keyframes, options, finished: Promise.resolve(), cancelled: 0, cancel() { this.cancelled++; } };
-    animations.push(animation); return animation;
-  } };
-  const gate = fadeBeforeNativeDockReveal(host, false); await drain();
-  assert.equal(animations.length, 1);
-  assert.equal(animations[0].keyframes.at(-1).opacity, 0);
-  assert.equal(animations[0].options.fill, "forwards");
-  b.paint(); const release = await gate;
-  assert.equal(animations[0].cancelled, 0);
-  release(); release();
-  assert.equal(animations[0].cancelled, 1);
-  assert.equal(animations.length, 2);
-  assert.equal(animations[1].keyframes[0].opacity, 0);
-  assert.equal(animations[1].keyframes.at(-1).opacity, 1);
 });

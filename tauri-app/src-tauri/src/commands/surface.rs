@@ -122,19 +122,39 @@ impl FloatingDockFrame {
 /// Commit position and size together so a right/bottom handle never paints at
 /// the previous full window's origin between two separate native API calls.
 #[tauri::command]
-pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: FloatingDockFrame) -> Result<(), String> {
+pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: FloatingDockFrame, viewport: Option<FloatingDockFrame>) -> Result<bool, String> {
     require_window_label(&window, "set_floating_dock_frame")?;
     let frame = frame.validate()?;
+    let viewport = viewport.map(|value| value.validate()).transpose()?;
+    if let Some(viewport) = viewport { dock_viewport_offset(frame, viewport)?; }
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let native = window.clone();
-    window.run_on_main_thread(move || { let _ = sender.send(apply_floating_dock_frame(&native, frame)); })
-        .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    window.with_webview(move |webview| {
+        let result = apply_floating_dock_frame(&native, frame, viewport, webview.inner()).map(|_| viewport.is_some());
+        let _ = sender.send(result);
+    }).map_err(|error| error.to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    window.run_on_main_thread(move || {
+        let _ = sender.send(apply_floating_dock_frame(&native, frame).map(|_| false));
+    }).map_err(|error| error.to_string())?;
     receiver.await.map_err(|_| "Floating frame update was cancelled".to_string())?
 }
 
+// Physical offsets of an unchanged full viewport inside the clipped window.
+// AppKit views use a bottom-left origin, unlike the public dock coordinates.
+fn dock_viewport_offset(frame: FloatingDockFrame, viewport: FloatingDockFrame) -> Result<(f64, f64), String> {
+    if frame.x < viewport.x - 1.0 || frame.y < viewport.y - 1.0
+        || frame.x + frame.width > viewport.x + viewport.width + 1.0
+        || frame.y + frame.height > viewport.y + viewport.height + 1.0 {
+        return Err("Dock clip must be contained in its viewport".into());
+    }
+    Ok((viewport.x - frame.x, frame.y + frame.height - viewport.y - viewport.height))
+}
+
 #[cfg(target_os = "macos")]
-fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockFrame) -> Result<(), String> {
-    use objc2_app_kit::NSWindow;
+fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockFrame, viewport: Option<FloatingDockFrame>, webview: *mut std::ffi::c_void) -> Result<(), String> {
+    use objc2_app_kit::{NSWindow, NSView, NSAutoresizingMaskOptions};
     use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
     let _mtm = MainThreadMarker::new().ok_or("Floating frame update requires the main thread")?;
     let raw = window.ns_window().map_err(|error| error.to_string())?;
@@ -152,7 +172,21 @@ fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockF
         NSPoint::new(frame.x / scale, primary_height - (frame.y + frame.height) / scale),
         NSSize::new(frame.width / scale, frame.height / scale),
     );
-    native.setFrame_display(rect, true);
+    if webview.is_null() { return Err("Floating native webview is unavailable".into()); }
+    let view = unsafe { &*webview.cast::<NSView>() };
+    // Disable the WKWebView's own autoresizing before NSWindow resizes its
+    // content view. Its viewport/backing store remains full-sized throughout;
+    // only the native clip and the view origin change in this main-thread call.
+    view.setAutoresizingMask(NSAutoresizingMaskOptions::empty());
+    native.setFrame_display(rect, false);
+    let viewport = viewport.unwrap_or(frame);
+    let (x, y) = dock_viewport_offset(frame, viewport)?;
+    view.setFrame(NSRect::new(NSPoint::new(x / scale, y / scale),
+        NSSize::new(viewport.width / scale, viewport.height / scale)));
+    if frame.width == viewport.width && frame.height == viewport.height {
+        view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+    }
+    native.displayIfNeeded();
     Ok(())
 }
 
@@ -174,7 +208,21 @@ fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockF
 
 #[cfg(test)]
 mod dock_frame_tests {
-    use super::FloatingDockFrame;
+    use super::{FloatingDockFrame, dock_viewport_offset};
+    #[test]
+    fn clipping_preserves_global_viewport_coordinates_on_every_edge() {
+        let full = FloatingDockFrame { x: -800.0, y: 200.0, width: 600.0, height: 240.0 };
+        let clips = [
+            (FloatingDockFrame { width: 24.0, ..full }, (0.0, 0.0)),
+            (FloatingDockFrame { x: -224.0, width: 24.0, ..full }, (-576.0, 0.0)),
+            (FloatingDockFrame { x: -592.0, width: 184.0, height: 24.0, ..full }, (-208.0, -216.0)),
+            (FloatingDockFrame { x: -592.0, y: 416.0, width: 184.0, height: 24.0 }, (-208.0, 0.0)),
+        ];
+        for (clip, expected) in clips { assert_eq!(dock_viewport_offset(clip, full).unwrap(), expected); }
+        assert_eq!(dock_viewport_offset(full, full).unwrap(), (0.0, 0.0));
+        assert!(dock_viewport_offset(FloatingDockFrame { x: -900.0, ..full }, full).is_err());
+    }
+
     #[test]
     fn accepts_negative_display_coordinates_and_rejects_invalid_native_bounds() {
         let valid = FloatingDockFrame { x: -1600.0, y: 240.0, width: 24.0, height: 212.0 };

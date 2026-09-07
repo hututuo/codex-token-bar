@@ -10,7 +10,7 @@ import {
   runFloatingGeometryChange,
 } from "../platform/floatingGeometryLifecycle";
 import { isFloatingWindowResizeProgrammatic, startFloatingWindowDrag } from "../platform/floatingWindowControls";
-import { fadeBeforeNativeDockReveal, waitForDockViewport, waitForDockPaint } from "./floatingDockPaintHandoff";
+import { waitForDockViewport, waitForDockPaint } from "./floatingDockPaintHandoff";
 import { createFloatingEdgeDockController, FREE_DOCK_PRESENTATION, type DockPresentation } from "./floatingEdgeDock";
 
 export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
@@ -23,6 +23,7 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
     if (!enabled || !isDesktopRuntimeAvailable()) return;
     let disposed = false;
     const appWindow = getCurrentWindow();
+    let pinnedViewport = false;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
     const dock = createFloatingEdgeDockController({
       async geometry() {
@@ -42,7 +43,13 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
         // Boundary writes remain transient and never enter normal placement
         // persistence; animation frames never cross this native API boundary.
         const size = { width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) };
-        await invoke("set_floating_dock_frame", { frame: { x: Math.round(rect.x), y: Math.round(rect.y), ...size } });
+        const anchor = dock.state().anchor;
+        const matches = (target: typeof rect) => ["x", "y", "width", "height"].every(key =>
+          Math.abs(rect[key as keyof typeof rect] - target[key as keyof typeof rect]) < 1);
+        const viewport = anchor && (matches(anchor.frame) || matches(anchor.lip)) ? anchor.frame : null;
+        pinnedViewport = await invoke<boolean>("set_floating_dock_frame", {
+          frame: { x: Math.round(rect.x), y: Math.round(rect.y), ...size }, viewport,
+        });
         const actual = await appWindow.outerSize();
         if (Math.abs(actual.width - size.width) > 2 || Math.abs(actual.height - size.height) > 2) {
           throw new Error("Native floating window constraints rejected the requested dock size");
@@ -51,10 +58,10 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
       persist: publishFloatingSettledPosition,
       present(value) { if (!disposed) flushSync(() => setPresentation(value)); },
       reducedMotion: () => reduced.matches,
-      beforeNativeReveal: () => fadeBeforeNativeDockReveal(document.querySelector<HTMLElement>(".floating-edge-host"), reduced.matches),
       async prepareCompact(anchor) {
-        await waitForDockViewport(anchor.lip.width / anchor.scaleFactor, anchor.lip.height / anchor.scaleFactor);
-        await waitForDockPaint();
+        const viewport = pinnedViewport ? anchor.frame : anchor.lip;
+        await waitForDockViewport(viewport.width / anchor.scaleFactor, viewport.height / anchor.scaleFactor);
+        if (!pinnedViewport) await waitForDockPaint();
       },
       async prepareReveal() {
         const anchor = dock.state().anchor;
@@ -63,7 +70,9 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
         // starting its transition, without introducing a hover-delay timer.
         const shell = document.querySelector(".floating-edge-shell");
         if (shell) void getComputedStyle(shell).transform;
-        await waitForDockPaint();
+        // A pinned WKWebView keeps its viewport and painted coordinates, so
+        // the existing collapsed frame can start expanding immediately.
+        if (!pinnedViewport) await waitForDockPaint();
       },
       startDrag: startFloatingWindowDrag,
       report: (error) => warnPlatformFailure("floating-edge-dock", error),

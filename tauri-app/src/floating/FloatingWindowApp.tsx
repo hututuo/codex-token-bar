@@ -580,6 +580,7 @@ export function FloatingWindowApp() {
       onMouseLeave={() => edgeDock.hover(false)}
       style={dockStyle}
     >
+    {dockAnchor ? <div className="floating-edge-base" aria-hidden="true" /> : null}
     <div ref={dockShellRef} className="floating-edge-shell" aria-hidden="true" />
     <div className="floating-edge-content" inert={dock.collapsed} aria-hidden={dock.collapsed || undefined}>
     <main

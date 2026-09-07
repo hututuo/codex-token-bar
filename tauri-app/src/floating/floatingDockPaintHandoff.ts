@@ -1,30 +1,3 @@
-/** Protect the native resize boundary from WebKit's previous narrow backing
- * surface. This is a short visible fade, not a delayed-hover debounce. */
-export async function fadeBeforeNativeDockReveal(host: HTMLElement | null, reducedMotion: boolean): Promise<() => void> {
-  if (!host || typeof host.animate !== "function") return () => {};
-  const outgoing = host.animate([{ opacity: 1 }, { opacity: 0 }], {
-    duration: reducedMotion ? 0 : 40, easing: "ease-out", fill: "forwards",
-  });
-  try { await outgoing.finished; } catch { outgoing.cancel(); return () => {}; }
-  // Animation completion runs before paint. Let its transparent final frame
-  // reach the compositor before moving the native window's origin.
-  await new Promise<void>((resolve) => {
-    let frame = 0;
-    const fallback = window.setTimeout(() => { cancelAnimationFrame(frame); resolve(); }, 50);
-    frame = requestAnimationFrame(() => { window.clearTimeout(fallback); resolve(); });
-  });
-  let restored = false;
-  return () => {
-    if (restored) return;
-    restored = true;
-    outgoing.cancel();
-    if (host.isConnected && !reducedMotion) {
-      const incoming = host.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 80, easing: "ease-out" });
-      void incoming.finished.catch(() => {});
-    }
-  };
-}
-
 /** Native setFrame completing does not imply WebKit has resized its viewport. */
 export async function waitForDockViewport(width: number, height: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {

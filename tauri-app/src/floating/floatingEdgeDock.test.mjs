@@ -51,7 +51,6 @@ function fixture(options = {}) {
     present: (state) => states.push(state), reducedMotion: () => reducedMotion,
     startDrag: async () => true,
     prepareReveal: async () => { prepared.push({ ...dock.state() }); await options.prepareReveal?.(); },
-    beforeNativeReveal: options.beforeNativeReveal,
     prepareCompact: options.prepareCompact,
     report: (error) => errors.push(error),
     timer: (callback, delay) => { const id = ++next; timers.set(id, { at: now + delay, callback }); return id; },
@@ -232,48 +231,39 @@ test("duplicate pointer exits cannot restart an in-flight collapse", async () =>
 });
 
 
-test("native expansion waits for the old rail to fade, then waits for the new viewport", async () => {
-  let conceal, viewport;
-  let restores = 0;
-  const f = fixture({
-    beforeNativeReveal: () => new Promise((resolve) => { conceal = () => resolve(() => { restores++; }); }),
-    prepareReveal: () => new Promise((resolve) => { viewport = resolve; }),
-  });
+test("native expansion keeps quota visible until the shell is ready to grow", async () => {
+  let viewport;
+  const f = fixture({ prepareReveal: () => new Promise(resolve => { viewport = resolve; }) });
   f.dock.initialize(); await f.advance(1200);
-  const count = f.frames.length;
   f.pointer({ x: 2, y: 210, leftButtonDown: false }); f.dock.hover(true); await drain();
   f.dock.hover(true); await drain();
-  assert.equal(f.frames.length, count);
-  conceal(); await drain();
   assert.equal(f.frames.at(-1).width, 300);
   assert.equal(f.dock.state().collapsed, true);
-  assert.equal(restores, 0);
+  assert.equal(f.dock.state().railReady, true);
   viewport(); await drain();
   assert.equal(f.dock.state().collapsed, false);
-  assert.equal(restores, 1);
+  assert.equal(f.dock.state().railReady, false);
+  assert.equal(f.dock.state().motion, "expand");
 });
 
-test("cancelled paint handoff cannot resize a suspended dock and always restores visibility", async () => {
-  let conceal; let restores = 0;
-  const f = fixture({ beforeNativeReveal: () => new Promise((resolve) => { conceal = () => resolve(() => { restores++; }); }) });
+test("cancelled viewport preparation cannot revive a suspended dock", async () => {
+  let viewport;
+  const f = fixture({ prepareReveal: () => new Promise(resolve => { viewport = resolve; }) });
   f.dock.initialize(); await f.advance(1200);
   f.dock.hover(true); await drain();
   await f.dock.suspend(true);
   const count = f.frames.length;
-  conceal(); await drain();
+  viewport(); await drain();
   assert.equal(f.dock.state().anchor, null);
   assert.equal(f.frames.length, count);
-  assert.equal(restores, 1);
 });
 
-test("failed viewport handoff restores a usable full window instead of an invisible handle", async () => {
-  let restores = 0;
-  const f = fixture({ beforeNativeReveal: async () => () => { restores++; }, prepareReveal: async () => { throw new Error("viewport timeout"); } });
+test("failed viewport preparation restores a usable full window", async () => {
+  const f = fixture({ prepareReveal: async () => { throw new Error("viewport timeout"); } });
   f.dock.initialize(); await f.advance(1200);
   f.dock.hover(true); await drain(); await drain();
   assert.equal(f.frames.at(-1).width, 300);
   assert.equal(f.dock.state().anchor, null);
-  assert.equal(restores, 1);
   assert.equal(f.errors.length, 1);
 });
 

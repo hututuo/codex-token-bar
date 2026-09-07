@@ -69,7 +69,6 @@ export interface DockPorts {
   reducedMotion(): boolean;
   prepareCompact?(anchor: DockAnchor): void | Promise<void>;
   prepareReveal?(): void | Promise<void>;
-  beforeNativeReveal?(): Promise<() => void>;
   startDrag(): Promise<boolean>;
   report(error: unknown): void;
   timer?(callback: () => void, delay: number): ReturnType<typeof setTimeout>;
@@ -195,7 +194,6 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     if (disposed || !state.anchor || resizing > 0 || revealing) return;
     revealing = true;
     const token = cancel();
-    let restorePaint: (() => void) | undefined;
     try {
       if (state.compact) {
         const live = await ports.geometry();
@@ -205,10 +203,8 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
           await recoverDisplayGeometry();
           return;
         }
-        // WebKit may display its old narrow backing surface at the newly moved
-        // window origin. Fade that surface out before any native resize occurs.
-        restorePaint = await ports.beforeNativeReveal?.();
-        if (!current(token) || !state.anchor) return;
+        // Keep the existing rail visible while restoring the native clip. The
+        // shell starts growing before only its quota contents fade away.
         await frame(state.anchor.frame, token);
         if (!current(token)) return;
         publish({ ...state, compact: false, motion: "none" });
@@ -224,7 +220,6 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
       }
       throw error;
     } finally {
-      restorePaint?.();
       revealing = false;
     }
   }

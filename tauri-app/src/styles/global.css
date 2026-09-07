@@ -12519,7 +12519,7 @@ details.session-management-banner {
   background: #000;
   opacity: 0;
   pointer-events: none;
-  transition: transform 260ms cubic-bezier(.25, .46, .3, 1), opacity 130ms ease-out, border-radius 150ms ease;
+  transition: transform 260ms cubic-bezier(.25, .46, .3, 1), border-radius 150ms ease;
 }
 .floating-edge-host:not([data-edge="free"]) .floating-edge-shell { opacity: 1; }
 .floating-edge-host[data-edge="left"] .floating-edge-shell { border-radius: 0 22px 22px 0; }
@@ -12555,14 +12555,13 @@ details.session-management-banner {
 .floating-edge-host[data-collapsed="true"][data-edge="right"] .floating-edge-shell { border-radius: 3px 0 0 3px; }
 .floating-edge-host[data-collapsed="true"][data-edge="top"] .floating-edge-shell { border-radius: 0 0 3px 3px; }
 .floating-edge-host[data-collapsed="true"][data-edge="bottom"] .floating-edge-shell { border-radius: 3px 3px 0 0; }
-.floating-edge-reveal {
+.floating-edge-base, .floating-edge-reveal {
   position: absolute;
   top: 0; left: 0;
   width: var(--dock-lip-width);
   height: var(--dock-lip-height);
-  opacity: 0;
+  opacity: 1;
   pointer-events: none;
-  transition: opacity 80ms ease-out;
   min-width: 0;
   min-height: 0;
   margin: 0;
@@ -12572,18 +12571,25 @@ details.session-management-banner {
   background: transparent;
   cursor: pointer;
 }
-.floating-edge-host[data-edge="right"] .floating-edge-reveal { left: auto; right: 0; }
-.floating-edge-host:is([data-edge="top"], [data-edge="bottom"]) .floating-edge-reveal { left: 50%; transform: translateX(-50%); }
-.floating-edge-host[data-edge="bottom"] .floating-edge-reveal { top: auto; bottom: 0; }
+.floating-edge-host[data-edge="right"] :is(.floating-edge-base, .floating-edge-reveal) { left: auto; right: 0; }
+.floating-edge-host:is([data-edge="top"], [data-edge="bottom"]) :is(.floating-edge-base, .floating-edge-reveal) { left: 50%; transform: translateX(-50%); }
+.floating-edge-host[data-edge="bottom"] :is(.floating-edge-base, .floating-edge-reveal) { top: auto; bottom: 0; }
 .floating-edge-host[data-collapsed="true"] .floating-edge-reveal { pointer-events: auto; }
-/* Show the quota only once, after the compact native viewport has painted. */
-.floating-edge-host[data-collapsed="true"][data-rail-ready="true"] .floating-edge-reveal {
+/* The unscaled black base never fades, including across native clip changes.
+   Only text/tracks fade, after the growing shell already covers this region. */
+.floating-edge-base { background: #000; }
+.floating-edge-host[data-edge="left"] .floating-edge-base { border-radius: 0 3px 3px 0; }
+.floating-edge-host[data-edge="right"] .floating-edge-base { border-radius: 3px 0 0 3px; }
+.floating-edge-host[data-edge="top"] .floating-edge-base { border-radius: 0 0 3px 3px; }
+.floating-edge-host[data-edge="bottom"] .floating-edge-base { border-radius: 3px 3px 0 0; }
+.floating-edge-reveal .floating-edge-quota { opacity: 0; transition: opacity 80ms ease-out 40ms; }
+.floating-edge-host[data-collapsed="true"][data-rail-ready="true"] .floating-edge-quota {
   opacity: 1; transition: opacity 120ms ease-in-out;
 }
-.floating-edge-reveal[aria-hidden="true"] { opacity: 0; pointer-events: none; }
+.floating-edge-reveal[aria-hidden="true"] { pointer-events: none; }
 .floating-edge-reveal:focus-visible { outline: 2px solid #9ac4ff; outline-offset: -2px; }
 @media (prefers-reduced-motion: reduce) {
-  .floating-edge-host :is(.floating-edge-content, .floating-edge-shell, .floating-edge-reveal) { transition: none !important; }
+  .floating-edge-host :is(.floating-edge-content, .floating-edge-shell, .floating-edge-reveal, .floating-edge-quota) { transition: none !important; }
 }
 
 
