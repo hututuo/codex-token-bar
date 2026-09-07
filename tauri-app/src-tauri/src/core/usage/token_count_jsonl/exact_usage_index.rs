@@ -4531,8 +4531,12 @@ impl ExactUsageIndex {
             .unwrap_or_default();
         let first_edge = edge_starts.first().copied().unwrap_or(0);
         let last_edge = edge_starts.get(1).copied().unwrap_or(0);
-        let first_end = if edge_starts.is_empty() { 0 } else { first_edge + 300 };
-        let last_end = if edge_starts.is_empty() { 0 } else { last_edge + 300 };
+        // Guard-band reads do not widen either the emitted minute buckets or
+        // the accounting exclusion. Adjacent rows are discarded below.
+        let first_start = if edge_starts.is_empty() { 0 } else { first_edge - 180 };
+        let last_start = if edge_starts.is_empty() { 0 } else { last_edge - 180 };
+        let first_end = if edge_starts.is_empty() { 0 } else { first_edge + 300 + 180 };
+        let last_end = if edge_starts.is_empty() { 0 } else { last_edge + 300 + 180 };
         let mut minute_statement = self.connection.prepare(
             r#"
             SELECT timestamp / 60 * 60, model,
@@ -4544,7 +4548,7 @@ impl ExactUsageIndex {
             GROUP BY 1, model ORDER BY 1, model
             "#,
         ).map_err(|error| format!("无法准备周期分钟明细：{error}"))?;
-        let minute_rows = minute_statement.query_map(params![first_edge, first_end, last_edge, last_end], |row| {
+        let minute_rows = minute_statement.query_map(params![first_start, first_end, last_start, last_end], |row| {
             Ok(ModelTokenBreakdown {
                 event_start_unix: Some(row.get(0)?),
                 model: row.get(1)?,
@@ -4561,6 +4565,7 @@ impl ExactUsageIndex {
         for row in minute_rows {
             let row = row.map_err(|error| format!("无法解码周期分钟明细：{error}"))?;
             let bucket = align_usage_bin(row.event_start_unix.unwrap_or(0), 300);
+            if !edge_starts.contains(&bucket) { continue; }
             minutes_by_bucket.entry(bucket).or_default().push(row);
         }
         for point in &mut recent {

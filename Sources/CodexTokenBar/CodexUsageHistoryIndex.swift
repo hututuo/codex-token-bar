@@ -2665,7 +2665,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 guard !requested.isEmpty else { return ledger }
                 let predicate = requested.map { _ in "(e.timestamp >= ? AND e.timestamp < ?)" }.joined(separator: " OR ")
-                let minuteBindings: [SQLiteBinding] = requested.flatMap { [.int64($0), .int64($0 + 300)] }
+                // Read a three-minute guard band, but attach detail only to
+                // the two requested buckets. The accounting cutoff is unchanged.
+                let minuteBindings: [SQLiteBinding] = requested.flatMap { [.int64($0 - 180), .int64($0 + 300 + 180)] }
                 let minuteRows = try connection.readRows(
                     """
                     SELECT e.source_id, s.session_id,
@@ -2700,6 +2702,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     let lineage = attributionLineage(sessionID: sessionID, sourceID: sourceID)
                     let bucketStart = Date(timeIntervalSince1970:
                         floor(minute.start.timeIntervalSince1970 / 300) * 300)
+                    guard requested.contains(Int64(bucketStart.timeIntervalSince1970)) else { continue }
                     let id = TokenCacheAttributionEvent.sourceBucket(
                         provenanceEpoch: provenanceEpoch, sourceID: lineage.key,
                         start: bucketStart, model: model, breakdown: .empty
