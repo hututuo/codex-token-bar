@@ -26,11 +26,26 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(slices.reduce(0) { $0 + $1.tokens }, 100)
     }
 
-    func testBareGPT56DoesNotPretendToBeSol() {
+    func testBareGPT56AndFutureVariantsPreserveRawNames() {
         let slices = ModelUsagePresentation.slices(from: [row("gpt-5.6", tokens: 100, calls: 1)])
 
-        XCTAssertEqual(slices.map(\.label), ["5.6（未分型）"])
-        XCTAssertEqual(ModelUsagePresentation.key(for: "gpt-5.6"), "gpt-5.6-generic")
+        XCTAssertEqual(slices.map(\.label), ["gpt-5.6"])
+        XCTAssertEqual(ModelUsagePresentation.key(for: "gpt-5.6"), "gpt-5.6")
+        XCTAssertEqual(ModelUsagePresentation.key(for: "gpt5.6"), "gpt5.6")
+        XCTAssertEqual(ModelUsagePresentation.label(for: "GPT-5.6-Nova"), "GPT-5.6-Nova")
+        XCTAssertEqual(ModelUsagePresentation.key(for: "GPT-5.6-Nova"), "GPT-5.6-Nova")
+    }
+
+    func testKnownGPT55AliasesCanonicalizeWithoutAContainsGuess() {
+        let rows = [
+            row("gpt-5.5", tokens: 300, calls: 1),
+            row("gpt55", tokens: 200, calls: 1),
+        ]
+
+        XCTAssertEqual(ModelUsagePresentation.key(for: "gpt-5.5"), "gpt-5.5")
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt55"), "5.5")
+        XCTAssertEqual(ModelUsagePresentation.slices(from: rows).map(\.tokens), [500])
+        XCTAssertEqual(ModelUsagePresentation.slices(from: rows).map(\.label), ["5.5"])
     }
 
     func testFloatingModelLabelsUseCompactModelNames() {
@@ -107,7 +122,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         )
     }
 
-    func testFloatingAutoReviewUsesLunaSlotWithoutTakingAnExtraModelSlot() throws {
+    func testDashboardKeepsAutoReviewSeparateAndFloatingCanMergeItsLunaSlot() throws {
         let luna = rowWithBreakdown(
             "gpt-5.6-luna",
             inputTokens: 500_000,
@@ -123,14 +138,142 @@ final class ModelUsagePresentationTests: XCTestCase {
             totalTokens: 300_000
         )
 
-        let items = FloatingTodayModelUsagePresentation.items(
+        let dashboardItems = FloatingTodayModelUsagePresentation.items(
             from: [luna, autoReview],
             fallbackModel: .gpt56Sol
         )
 
-        XCTAssertEqual(items.map(\.label), ["Luna"])
-        XCTAssertEqual(items.first?.tokens, 800_000)
-        XCTAssertEqual(items.first?.costUSD ?? -1, 0.16, accuracy: 0.0001)
+        XCTAssertEqual(dashboardItems.map(\.label), ["Luna", "Auto Review（Luna）"])
+        XCTAssertEqual(dashboardItems.map(\.tokens), [500_000, 300_000])
+
+        let floatingItems = FloatingTodayModelUsagePresentation.items(
+            from: [luna, autoReview],
+            fallbackModel: .gpt56Sol,
+            mergeAutoReview: true
+        )
+
+        XCTAssertEqual(floatingItems.map(\.label), ["Luna"])
+        XCTAssertEqual(floatingItems.first?.tokens, 800_000)
+        XCTAssertEqual(floatingItems.first?.costUSD ?? -1, 0.16, accuracy: 0.0001)
+    }
+
+    func testFloatingAutoReviewUsesDatedUnderlyingTargetsAndPreservesPricingRows() throws {
+        let cutover = try XCTUnwrap(CodexAutoReviewPricingPolicy.rules.last?.effectiveFrom)
+        let legacyPeriod = ModelTokenPricePeriod(
+            model: "codex-auto-review",
+            start: cutover.addingTimeInterval(-1),
+            breakdown: rowWithBreakdown(
+                "codex-auto-review@5.4",
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 100
+            ).breakdown
+        )
+        let lunaPeriod = ModelTokenPricePeriod(
+            model: "codex-auto-review",
+            start: cutover,
+            breakdown: rowWithBreakdown(
+                "codex-auto-review@luna",
+                inputTokens: 200,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 200
+            ).breakdown
+        )
+        let rows = [
+            ModelTokenBreakdown(
+                model: "codex-auto-review@5.4",
+                breakdown: legacyPeriod.breakdown,
+                pricePeriods: [legacyPeriod]
+            ),
+            ModelTokenBreakdown(
+                model: "codex-auto-review@luna",
+                breakdown: lunaPeriod.breakdown,
+                pricePeriods: [lunaPeriod]
+            ),
+        ]
+
+        let floatingRows = FloatingTodayModelUsagePresentation.rowsForFloatingWindow(
+            from: rows,
+            mergeAutoReview: true
+        )
+
+        XCTAssertEqual(floatingRows.map(\.model), ["gpt-5.4", "gpt-5.6-luna"])
+        XCTAssertEqual(floatingRows[0].pricingRows, [legacyPeriod])
+        XCTAssertEqual(floatingRows[1].pricingRows, [lunaPeriod])
+    }
+
+    func testRawAutoReviewAggregateSplitsMixedHistoricalPeriodsForMainAndFloating() throws {
+        let cutover = try XCTUnwrap(CodexAutoReviewPricingPolicy.rules.last?.effectiveFrom)
+        let legacyBreakdown = rowWithBreakdown(
+            "codex-auto-review",
+            inputTokens: 100,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 100
+        ).breakdown
+        let lunaBreakdown = rowWithBreakdown(
+            "codex-auto-review",
+            inputTokens: 300,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 300
+        ).breakdown
+        let legacyPeriod = ModelTokenPricePeriod(
+            model: "codex-auto-review",
+            start: cutover.addingTimeInterval(-1),
+            breakdown: legacyBreakdown
+        )
+        let lunaPeriod = ModelTokenPricePeriod(
+            model: "codex-auto-review",
+            start: cutover,
+            breakdown: lunaBreakdown
+        )
+        let raw = ModelTokenBreakdown(
+            model: "codex-auto-review",
+            breakdown: [legacyBreakdown, lunaBreakdown].combined,
+            pricePeriods: [legacyPeriod, lunaPeriod]
+        )
+
+        let mainRows = ModelUsagePresentation.combinedRows([raw])
+        let mainRowsByModel = Dictionary(uniqueKeysWithValues: mainRows.map { ($0.model ?? "", $0) })
+        XCTAssertEqual(
+            Set(mainRowsByModel.keys),
+            Set(["codex-auto-review@5.4", "codex-auto-review@luna"])
+        )
+        XCTAssertEqual(mainRowsByModel["codex-auto-review@5.4"]?.pricingRows, [legacyPeriod])
+        XCTAssertEqual(mainRowsByModel["codex-auto-review@luna"]?.pricingRows, [lunaPeriod])
+        XCTAssertEqual(
+            ModelUsagePresentation.slices(from: [raw]).map(\.label),
+            ["Auto Review（Luna）", "Auto Review（5.4）"]
+        )
+
+        let floatingRows = FloatingTodayModelUsagePresentation.rowsForFloatingWindow(
+            from: [raw],
+            mergeAutoReview: true
+        )
+        let floatingRowsByModel = Dictionary(uniqueKeysWithValues: floatingRows.map { ($0.model ?? "", $0) })
+        XCTAssertEqual(
+            Set(floatingRowsByModel.keys),
+            Set(["gpt-5.4", "gpt-5.6-luna"])
+        )
+        XCTAssertEqual(floatingRowsByModel["gpt-5.4"]?.pricingRows, [legacyPeriod])
+        XCTAssertEqual(floatingRowsByModel["gpt-5.6-luna"]?.pricingRows, [lunaPeriod])
+
+        let rawWithoutPeriods = rowWithBreakdown(
+            "codex-auto-review",
+            inputTokens: 50,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 50
+        )
+        let floatingWithoutPeriods = FloatingTodayModelUsagePresentation.rowsForFloatingWindow(
+            from: [rawWithoutPeriods],
+            mergeAutoReview: true
+        )
+        XCTAssertEqual(floatingWithoutPeriods.first?.model, "gpt-5.6-luna")
+        XCTAssertEqual(floatingWithoutPeriods.first?.pricingRows.first?.model, "codex-auto-review")
     }
 
     func testFloatingTodayModelUsagePricesDetectedModelsWithCacheAndExcludesSpark() throws {
@@ -188,7 +331,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(items.reduce(0) { $0 + $1.share }, 1, accuracy: 0.0001)
     }
 
-    func testFloatingTodayModelUsageUsesFallbackOnlyForUnknownModel() throws {
+    func testFloatingTodayModelUsageKeepsUnknownModelUnpriced() throws {
         let breakdown = TokenCacheBreakdown(
             inputTokens: 1_000_000,
             cachedInputTokens: 0,
@@ -204,8 +347,25 @@ final class ModelUsagePresentationTests: XCTestCase {
             ).first
         )
 
-        XCTAssertEqual(item.costUSD ?? -1, 0.2, accuracy: 0.0001)
+        XCTAssertNil(item.costUSD)
+        XCTAssertEqual(item.valueText(for: .cost), "价格未知")
         XCTAssertEqual(item.label, "future-model")
+
+        let zeroCallBreakdown = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 0
+        )
+        let zeroCallItem = try XCTUnwrap(
+            FloatingTodayModelUsagePresentation.items(
+                from: [ModelTokenBreakdown(model: "future-model", breakdown: zeroCallBreakdown)],
+                fallbackModel: .gpt56Luna
+            ).first
+        )
+        XCTAssertEqual(zeroCallItem.valueText(for: .cost), "价格未知")
     }
 
     func testFloatingTodayModelUsagePricesAstraWithSharedFormula() throws {

@@ -5,6 +5,7 @@ import {
   modelUsageCompactText,
   modelUsageLabel,
   modelUsageSlices,
+  modelUsageKey,
 } from "./modelUsagePresentation.ts";
 
 test("model usage presentation combines aliases and reports token shares", () => {
@@ -36,7 +37,7 @@ test("unknown and custom models remain visible with stable colors", () => {
 test("bare GPT-5.6 remains an untyped model instead of becoming Sol", () => {
   const slices = modelUsageSlices([row("gpt-5.6", 100, 1)]);
 
-  assert.deepEqual(slices.map((slice) => slice.label), ["5.6（未分型）"]);
+  assert.deepEqual(slices.map((slice) => slice.label), ["gpt-5.6"]);
 });
 
 test("floating model labels use compact model names", () => {
@@ -47,7 +48,7 @@ test("floating model labels use compact model names", () => {
   assert.equal(modelUsageLabel("gpt-5.4-mini"), "5.4 m");
 });
 
-test("auto review uses the current Luna profile without merging real GPT-5.3", () => {
+test("dashboard keeps auto review distinct from normal model usage", () => {
   const slices = modelUsageSlices([
     row("codex-auto-review", 600, 2),
     row("gpt-5.4", 100, 1),
@@ -55,7 +56,7 @@ test("auto review uses the current Luna profile without merging real GPT-5.3", (
   ]);
 
   assert.deepEqual(slices.map(({ label, tokens }) => ({ label, tokens })), [
-    { label: "Luna", tokens: 600 },
+    { label: "Auto Review（Luna）", tokens: 600 },
     { label: "5.3", tokens: 300 },
     { label: "5.4", tokens: 100 },
   ]);
@@ -68,8 +69,25 @@ test("historical and current auto-review points remain separate by timestamp", (
   ]);
 
   assert.deepEqual(slices.map(({ label, tokens }) => ({ label, tokens })), [
-    { label: "Luna", tokens: 600 },
-    { label: "5.4", tokens: 400 },
+    { label: "Auto Review（Luna）", tokens: 600 },
+    { label: "Auto Review（5.4）", tokens: 400 },
+  ]);
+});
+
+test("future model names retain source spelling and never become Sol by prefix", () => {
+  for (const model of ["gpt-5.6-newlane", "gpt-5.4-next", "GPT-7-Nova", "custom_Model_V2"]) {
+    assert.equal(modelUsageKey(model), model);
+    assert.equal(modelUsageLabel(model), model);
+  }
+});
+
+test("explicit supported model aliases share a dashboard item", () => {
+  const slices = modelUsageSlices([
+    row("gpt56luna", 50, 1), row("gpt-5.6-luna", 100, 1),
+    row("gpt5.6-sol", 30, 1), row("gpt-5.6-sol", 20, 1),
+  ]);
+  assert.deepEqual(slices.map(({ label, tokens }) => ({ label, tokens })), [
+    { label: "Luna", tokens: 150 }, { label: "Sol", tokens: 50 },
   ]);
 });
 

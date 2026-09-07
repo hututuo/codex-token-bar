@@ -13,18 +13,20 @@ import {
   readStoredQuotaPriceModel,
 } from "./quotaPriceModel.ts";
 
-test("historical model rows are priced automatically and unknown rows use only the fallback", () => {
+test("historical model rows price known cards while explicit unknown rows remain unpriced", () => {
   const estimate = modelAwareAPICostUSD([
     { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 2 } },
     { model: "gpt-5.6-terra", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 3 } },
     { model: "future-model", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 4 } },
   ], { inputTokens: 3_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 9 }, "gpt56Luna");
 
-  assert.equal(estimate.costUSD, 6.2);
+  assert.equal(estimate.costUSD, 6);
   assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra"]);
-  assert.equal(estimate.fallbackCalls, 4);
+  assert.equal(estimate.fallbackCalls, 0);
   assert.deepEqual(estimate.excludedModels, []);
   assert.equal(estimate.excludedCalls, 0);
+  assert.deepEqual(estimate.unpricedModels, ["future-model"]);
+  assert.equal(estimate.unpricedCalls, 4);
 });
 
 test("current price cards include the official Astra, Sol, Terra and Luna rates", () => {
@@ -86,7 +88,10 @@ test("official aliases and legacy models keep their own price cards", () => {
   assert.equal(detectedOfficialAPIPriceModel("gpt-6-astra"), "gpt6Astra");
   assert.equal(detectedOfficialAPIPriceModel("gpt_6_astra"), "gpt6Astra");
   assert.equal(detectedOfficialAPIPriceModel("GPT 6 Astra"), "gpt6Astra");
-  assert.equal(detectedOfficialAPIPriceModel("gpt-5.6"), "gpt56Sol");
+  assert.equal(detectedOfficialAPIPriceModel("gpt-5.6"), null);
+  assert.equal(detectedOfficialAPIPriceModel("gpt5.6"), null);
+  assert.equal(detectedOfficialAPIPriceModel("gpt56"), null);
+  assert.equal(detectedOfficialAPIPriceModel("gpt-5.6-sol"), "gpt56Sol");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.3-codex"), "gpt53Codex");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.2-codex"), "gpt52Codex");
   assert.equal(detectedOfficialAPIPriceModel("codex-auto-review"), "gpt56Luna");
@@ -133,6 +138,16 @@ test("incomplete or duplicate model rows fall back as one complete breakdown", (
   assert.equal(duplicate.costUSD, 6.7);
   assert.deepEqual(duplicate.detectedModels, []);
   assert.equal(duplicate.fallbackCalls, 2);
+
+  const partialKnownAndUnknown = modelAwareAPICostUSD([
+    { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 100_000, calls: 1 } },
+    { model: "future-model", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 100_000, calls: 2 } },
+  ], { inputTokens: 3_000_000, cachedInputTokens: 0, outputTokens: 300_000, calls: 4 }, "gpt56Sol");
+  assert.equal(partialKnownAndUnknown.costUSD, 12);
+  assert.deepEqual(partialKnownAndUnknown.detectedModels, []);
+  assert.equal(partialKnownAndUnknown.fallbackCalls, 2);
+  assert.deepEqual(partialKnownAndUnknown.unpricedModels, ["future-model"]);
+  assert.equal(partialKnownAndUnknown.unpricedCalls, 2);
 });
 
 test("mixed model coverage prices Codex aliases, excludes Spark, and falls back only unknown rows", () => {
@@ -159,6 +174,8 @@ test("mixed model coverage prices Codex aliases, excludes Spark, and falls back 
   assert.equal(estimate.fallbackCalls, 0);
   assert.deepEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"]);
   assert.equal(estimate.excludedCalls, 1);
+  assert.deepEqual(estimate.unpricedModels, []);
+  assert.equal(estimate.unpricedCalls, 0);
 });
 
 test("mixed historical and current auto-review rows use their event timestamps", () => {
@@ -194,6 +211,8 @@ test("Spark-only rows keep calls but produce an explicit zero API amount", () =>
   assert.equal(estimate.fallbackCalls, 0);
   assert.deepEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"]);
   assert.equal(estimate.excludedCalls, 3);
+  assert.deepEqual(estimate.unpricedModels, []);
+  assert.equal(estimate.unpricedCalls, 0);
 });
 
 test("incomplete Spark rows never leak into the unknown fallback amount", () => {
@@ -205,6 +224,8 @@ test("incomplete Spark rows never leak into the unknown fallback amount", () => 
   assert.equal(estimate.fallbackCalls, 1);
   assert.deepEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"]);
   assert.equal(estimate.excludedCalls, 1);
+  assert.deepEqual(estimate.unpricedModels, []);
+  assert.equal(estimate.unpricedCalls, 0);
 });
 
 test("legacy recentChartQuotaEstimateModel values migrate in place", () => {

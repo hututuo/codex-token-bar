@@ -7,6 +7,7 @@ import {
   floatingModelUsageMoneyText,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
+  hasUnknownModelPrices,
 } from "../../floating/floatingModelUsage.ts";
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
 
@@ -69,12 +70,12 @@ export function summarizeRange(
         value: "所选日期模型明细待读取",
       };
     }
-    const items = floatingTodayModelUsageItems(combineModelRows(selectedDays), fallbackModel);
+    const items = floatingTodayModelUsageItems(combineModelRows(selectedDays), fallbackModel, { mergeAutoReview: false });
     const total = items.reduce((sum, item) => sum + (item.costUSD ?? 0), 0);
     return {
       hint: `${rangeStart} - ${rangeEnd}`,
       value: [
-        `模型费用 ${floatingModelUsageMoneyText(total)}`,
+        `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${floatingModelUsageMoneyText(total)}`,
         ...items.map((item) => `${item.label} ${floatingModelUsageValue(item, "cost")}`),
       ].join(" · "),
     };

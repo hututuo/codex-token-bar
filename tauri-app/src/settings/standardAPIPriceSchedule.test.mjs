@@ -50,6 +50,14 @@ test("No date is not silently treated as current, and promotions are not applied
   assert.equal(standardAPIPriceQuote("codex-auto-review", "2026-08-21T00:00:00Z"), null);
 });
 
+test("Bare GPT-5.6 aliases remain untyped until a card is explicit", () => {
+  assert.equal(canonicalStandardAPIModelKey("gpt-5.6"), null);
+  assert.equal(canonicalStandardAPIModelKey("gpt5.6"), null);
+  assert.equal(canonicalStandardAPIModelKey("gpt56"), null);
+  assert.equal(canonicalStandardAPIModelKey("gpt-5.6-sol"), "gpt-5.6-sol");
+  assert.equal(standardAPIPriceQuote("gpt-5.6", "2026-08-21T00:00:00Z"), null);
+});
+
 test("Astra and existing legacy cards retain their stored standard prices", () => {
   assert.deepEqual(standardAPIPriceQuote("gpt-6-astra", "2025-01-01T00:00:00Z").rates, {
     inputUSDPerMillion: 10,

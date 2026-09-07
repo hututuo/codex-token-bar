@@ -31,9 +31,6 @@ export function canonicalStandardAPIModelKey(value: string | null | undefined): 
     case "gpt6-astra":
     case "gpt6astra":
       return "gpt-6-astra";
-    case "gpt-5.6":
-    case "gpt5.6":
-    case "gpt56":
     case "gpt-5.6-sol":
     case "gpt5.6-sol":
     case "gpt56-sol":

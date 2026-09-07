@@ -3,8 +3,11 @@ import SwiftUI
 struct SharedAccountUsageAttributionPresentation: Equatable {
     let result: SharedAccountUsageAttributionResult
 
+    var hasUnknownPrices: Bool { !result.unpricedModels.isEmpty }
+
     var iconName: String {
-        switch result.state {
+        if hasUnknownPrices { return "questionmark.circle" }
+        return switch result.state {
         case .withinTolerance: "checkmark.circle"
         case .suspectedNonLocalUsage: "person.2.fill"
         case .localEstimateExceedsAccountDrop: "exclamationmark.triangle"
@@ -18,6 +21,7 @@ struct SharedAccountUsageAttributionPresentation: Equatable {
     }
 
     var accentRole: SemanticAccentRole {
+        if hasUnknownPrices { return .blue }
         if result.usedHighWatermark { return .amber }
         return switch result.state {
         case .withinTolerance: .green
@@ -33,6 +37,7 @@ struct SharedAccountUsageAttributionPresentation: Equatable {
     }
 
     var stateTitle: String {
+        if hasUnknownPrices { return "部分模型价格未知" }
         switch result.state {
         case .disabled: return "共享归因已关闭"
         case .preciseUsagePending: return "精确 token 待读取"
@@ -64,6 +69,7 @@ struct SharedAccountUsageAttributionPresentation: Equatable {
     }
 
     var summaryLine: String {
+        if hasUnknownPrices { return "部分模型价格未知，暂不判断共享差额" }
         guard let account = result.accountUsedPercent,
               let local = result.localSharePercent,
               let difference = result.nonLocalDifferencePercent else {
@@ -88,6 +94,9 @@ struct SharedAccountUsageAttributionPresentation: Equatable {
     }
 
     var modelLine: String {
+        if hasUnknownPrices {
+            return "\(result.unpricedModels.joined(separator: "/")) 价格未知，未计入金额"
+        }
         let detected = result.detectedModels.map(\.quotaEstimateShortTitle)
         let excludedText = !result.excludedModels.isEmpty
             ? "\(result.excludedModels.joined(separator: "/")) \(result.excludedCalls) 次独立额度，不参与 API 等值"
@@ -374,7 +383,7 @@ struct SharedAccountUsageAttributionDetailView: View {
                 HStack(spacing: 12) {
                     sourceValue("Radar \(result.tier.title) 7 天总额", result.radarSevenDayTotalUSD.map(SharedAccountUsageAttributionPresentation.money) ?? "--")
                     sourceValue("归因价格", result.priceRevision.title)
-                    sourceValue("当前 API 等值", result.localCurrentOfficialCostUSD.map(SharedAccountUsageAttributionPresentation.money) ?? "--")
+                    sourceValue(result.unpricedModels.isEmpty ? "当前 API 等值" : "已知价格小计", result.localCurrentOfficialCostUSD.map(SharedAccountUsageAttributionPresentation.money) ?? "--")
                     Link(destination: URL(string: "https://codexradar.com")!) {
                         Label("Codex 雷达", systemImage: "arrow.up.right")
                             .font(.system(size: 9.5, weight: .semibold))

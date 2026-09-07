@@ -240,7 +240,7 @@ struct TokenHeatmap: View {
                 return "\(summary.title)，模型明细待读取"
             }
             let detail = modelCostAccessibilityText(summary.modelBreakdowns)
-            return "\(summary.title)，模型费用 \(cost.quotaEstimatorMoneyText)，\(detail)"
+            return "\(summary.title)，\(summary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(cost.quotaEstimatorMoneyText)，\(detail)"
         }
         return "\(summary.title)，\(summary.tokens.abbreviatedTokens) token，\(summary.calls) 次调用，平均 \(summary.average.abbreviatedTokens)"
     }
@@ -256,7 +256,7 @@ struct TokenHeatmap: View {
             guard let cost = rangeSummary.modelCostUSD else {
                 return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，模型明细待读取"
             }
-            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，模型费用 \(cost.quotaEstimatorMoneyText)，\(modelCostAccessibilityText(rangeSummary.modelBreakdowns))"
+            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，\(rangeSummary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(cost.quotaEstimatorMoneyText)，\(modelCostAccessibilityText(rangeSummary.modelBreakdowns))"
         }
         if !rangeSummary.modelBreakdowns.isEmpty {
             let models = ModelUsagePresentation.compactText(from: rangeSummary.modelBreakdowns) ?? "暂无模型明细"
@@ -467,12 +467,13 @@ struct TokenHeatmap: View {
             let hasMissingModelDetail = mode == .modelCost && days.contains { day in
                 day.tokens > 0 && modelBucketsByDay[calendar.startOfDay(for: day.date)] == nil
             }
-            let cost = mode == .modelCost && !hasMissingModelDetail
+            let costItems = mode == .modelCost && !hasMissingModelDetail
                 ? FloatingTodayModelUsagePresentation.items(
                     from: rows,
                     fallbackModel: fallbackModel
-                ).compactMap(\.costUSD).reduce(0, +)
-                : nil
+                ) : []
+            let cost = mode == .modelCost && !hasMissingModelDetail
+                ? costItems.compactMap(\.costUSD).reduce(0, +) : nil
             return HeatmapRangeSummary(
                 title: title,
                 dayCount: days.count,
@@ -482,7 +483,8 @@ struct TokenHeatmap: View {
                 quotaAverageRemainingPercent: nil,
                 modelBreakdowns: rows,
                 modelCostUSD: cost,
-                isModelCost: mode == .modelCost
+                isModelCost: mode == .modelCost,
+                hasUnknownPrices: costItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
             )
         }
 

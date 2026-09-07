@@ -88,6 +88,9 @@ export interface ModelAwareAPICostEstimate {
   /** Models on an independent quota; retained in token/model stats but never priced. */
   excludedModels: string[];
   excludedCalls: number;
+  /** Explicit model names with no recognized API card; omitted from dollars. */
+  unpricedModels: string[];
+  unpricedCalls: number;
 }
 
 export const QUOTA_PRICE_MODEL_STORAGE_KEY = "recentChartQuotaEstimateModel";
@@ -232,7 +235,7 @@ export function detectedOfficialAPIPriceModel(
   value: string | null | undefined,
   eventDate?: Date | number | string | null,
 ): DetectedOfficialAPIPriceModel | null {
-  const key = value?.trim().toLowerCase().replaceAll("_", "-");
+  const key = value?.trim().toLowerCase().replaceAll("_", "-").replaceAll(" ", "-");
   const autoReviewModel = effectiveModelForAlias(value, eventDate);
   if (autoReviewModel) return autoReviewModel;
   switch (key) {
@@ -241,9 +244,6 @@ export function detectedOfficialAPIPriceModel(
     case "gpt6astra":
     case "gpt 6 astra":
       return "gpt6Astra";
-    case "gpt-5.6":
-    case "gpt5.6":
-    case "gpt56":
     case "gpt-5.6-sol":
     case "gpt5.6-sol":
     case "gpt56-sol":
@@ -298,6 +298,8 @@ export function modelAwareAPICostUSD(
       fallbackCalls: fallback.calls,
       excludedModels: [],
       excludedCalls: 0,
+      unpricedModels: [],
+      unpricedCalls: 0,
     };
   }
   const covered = rows.reduce((total, row) => ({
@@ -320,6 +322,19 @@ export function modelAwareAPICostUSD(
       calls: total.calls + finiteNonnegative(row.breakdown.calls),
     };
   }, { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 });
+  const unpricedModels: string[] = [];
+  let unpricedCalls = 0;
+  const unpricedBreakdown = rows.reduce((total, row) => {
+    if (!isExplicitUnknownModel(row.model, row.eventStartUnix)) return total;
+    if (!unpricedModels.includes(row.model)) unpricedModels.push(row.model);
+    unpricedCalls += finiteNonnegative(row.breakdown.calls);
+    return {
+      inputTokens: total.inputTokens + finiteNonnegative(row.breakdown.inputTokens),
+      cachedInputTokens: total.cachedInputTokens + finiteNonnegative(row.breakdown.cachedInputTokens),
+      outputTokens: total.outputTokens + finiteNonnegative(row.breakdown.outputTokens),
+      calls: total.calls + finiteNonnegative(row.breakdown.calls),
+    };
+  }, { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 });
   const expected = {
     inputTokens: finiteNonnegative(fallback.inputTokens),
     cachedInputTokens: finiteNonnegative(fallback.cachedInputTokens),
@@ -332,16 +347,18 @@ export function modelAwareAPICostUSD(
     || covered.calls !== expected.calls) {
     return {
       costUSD: officialAPICostUSD(
-        Math.max(expected.inputTokens - excludedBreakdown.inputTokens, 0),
-        Math.max(expected.cachedInputTokens - excludedBreakdown.cachedInputTokens, 0),
-        Math.max(expected.outputTokens - excludedBreakdown.outputTokens, 0),
+        Math.max(expected.inputTokens - excludedBreakdown.inputTokens - unpricedBreakdown.inputTokens, 0),
+        Math.max(expected.cachedInputTokens - excludedBreakdown.cachedInputTokens - unpricedBreakdown.cachedInputTokens, 0),
+        Math.max(expected.outputTokens - excludedBreakdown.outputTokens - unpricedBreakdown.outputTokens, 0),
         fallbackModel,
         basis,
       ),
       detectedModels: [],
-      fallbackCalls: Math.max(expected.calls - excludedBreakdown.calls, 0),
+      fallbackCalls: Math.max(expected.calls - excludedBreakdown.calls - unpricedBreakdown.calls, 0),
       excludedModels,
       excludedCalls,
+      unpricedModels,
+      unpricedCalls,
     };
   }
   const grouped = new Map<DetectedOfficialAPIPriceModel, ModelTokenCostRow["breakdown"]>();
@@ -352,6 +369,7 @@ export function modelAwareAPICostUSD(
       continue;
     }
     const detected = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix);
+    if (!detected && isExplicitUnknownModel(row.model, row.eventStartUnix)) continue;
     const target = detected
       ? grouped.get(detected) ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 }
       : unknown;
@@ -368,7 +386,9 @@ export function modelAwareAPICostUSD(
   }>();
   for (const row of rows) {
     if (independentQuotaModelName(row.model)) continue;
-    const model = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix) ?? fallbackModel;
+    const detected = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix);
+    if (!detected && isExplicitUnknownModel(row.model, row.eventStartUnix)) continue;
+    const model = detected ?? fallbackModel;
     const datedRates = basis === "current" && row.eventStartUnix !== undefined
       ? standardAPIPriceQuote(model, row.eventStartUnix)?.rates
       : null;
@@ -411,6 +431,8 @@ export function modelAwareAPICostUSD(
     fallbackCalls: unknown.calls,
     excludedModels,
     excludedCalls,
+    unpricedModels,
+    unpricedCalls,
   };
 }
 
@@ -513,6 +535,16 @@ function eventTimestampUnix(value: Date | number | string | null | undefined): n
 
 function finiteNonnegative(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function isExplicitUnknownModel(
+  value: string | null | undefined,
+  eventDate?: Date | number | string | null,
+): value is string {
+  return typeof value === "string"
+    && value.trim().length > 0
+    && independentQuotaModelName(value) === null
+    && detectedOfficialAPIPriceModel(value, eventDate) === null;
 }
 
 function costUSDForRates(

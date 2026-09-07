@@ -141,7 +141,11 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
         currentFiveHourQuotaPresent: Bool = true,
         currentSevenDayQuotaPresent: Bool = true
     ) {
-        costText = selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText
+        let fullPrice = selection.fullCurrentAPIPriceEstimate
+        let fullCostText = fullPrice.costUSD.quotaEstimatorMoneyText
+        costText = fullPrice.unpricedModels.isEmpty && fullPrice.unpricedCalls == 0
+            ? fullCostText
+            : "已知价小计 \(fullCostText)"
         timeRangeText = selection.quotaEstimatorTimeRangeText
         durationText = selection.quotaEstimatorDurationText
         cacheHitText = "命中 \(selection.breakdown.cacheHitRate.percentString)"
@@ -335,14 +339,20 @@ extension ModelAwareAPIPriceEstimate {
         let excluded = excludedModels.isEmpty
             ? nil
             : "\(excludedModels.joined(separator: "/")) \(excludedCalls) 次独立额度，不参与 API 等值"
+        let unpriced = unpricedModels.isEmpty
+            ? nil
+            : "未知价格模型 \(unpricedModels.joined(separator: "/")) \(unpricedCalls) 次调用未计入 API 等值"
         guard !detected.isEmpty else {
+            if let unpriced { return unpriced + (excluded.map { " · \($0)" } ?? "") }
             return excluded ?? "未知回退 \(fallbackModel.quotaEstimateShortTitle)"
         }
         let automatic = "自动 · \(detected.joined(separator: "/"))"
         let fallbackText = fallbackCalls > 0
             ? " + 未知→\(fallbackModel.quotaEstimateShortTitle)"
             : ""
-        return automatic + fallbackText + (excluded.map { " · \($0)" } ?? "")
+        return automatic + fallbackText
+            + (unpriced.map { " · \($0)" } ?? "")
+            + (excluded.map { " · \($0)" } ?? "")
     }
 }
 
@@ -353,7 +363,9 @@ extension QuotaSelectionAttributionResult {
             detectedModels: detectedModels,
             fallbackCalls: fallbackModelCalls,
             excludedModels: excludedModels,
-            excludedCalls: excludedCalls
+            excludedCalls: excludedCalls,
+            unpricedModels: unpricedModels,
+            unpricedCalls: unpricedCalls
         ).pricingModelText(fallbackModel: model)
     }
 }

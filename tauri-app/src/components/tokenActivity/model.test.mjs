@@ -6,6 +6,24 @@ import { buildHeatmapDays, modelCostCellBackground } from "./heatmap.ts";
 import { summarizeRange } from "./rangeSummary.ts";
 import { modelCostProjectionAvailable, modelCostRowsAvailable } from "./modelCostAvailability.ts";
 
+test("model cost heatmap labels unknown prices as a subtotal and retains Review detail", () => {
+  const day = {
+    date: "2026-08-30", tokens: 3_000_000, calls: 3, cacheHitRate: 0,
+    fiveHourRemainingPercent: null, sevenDayRemainingPercent: null,
+    modelBreakdowns: ["gpt-5.6-luna", "codex-auto-review", "GPT-5.6-NewLane"].map((model) => ({
+      model,
+      breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+    })),
+  };
+  const summary = hoverSummary(day, "modelCost", "gpt56Sol");
+  assert.match(summary, /已知价格小计 \$0\.40/);
+  assert.match(summary, /Auto Review（Luna） \$0\.20/);
+  assert.match(summary, /GPT-5\.6-NewLane 价格未知/);
+  const range = summarizeRange([day], day.date, day.date, "modelCost", "gpt56Sol");
+  assert.match(range.value, /已知价格小计 \$0\.40/);
+  assert.match(range.value, /GPT-5\.6-NewLane 价格未知/);
+});
+
 test("buildCalendarDays keeps a 365-day window ending at the latest activity date", () => {
   const days = [
     {

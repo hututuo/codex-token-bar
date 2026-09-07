@@ -438,7 +438,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-6-astra"), .gpt6Astra)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt_6_astra"), .gpt6Astra)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "GPT 6 Astra"), .gpt6Astra)
-        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.6"), .gpt56Sol)
+        XCTAssertNil(OfficialAPIPriceModel.detected(from: "gpt-5.6"))
+        XCTAssertNil(OfficialAPIPriceModel.detected(from: "gpt5.6"))
+        XCTAssertNil(OfficialAPIPriceModel.detected(from: "gpt56"))
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.6-sol"), .gpt56Sol)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4"), .gpt54Legacy)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4-mini"), .gpt54MiniLegacy)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex-auto-review"), .gpt56Luna)
@@ -553,6 +556,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(incomplete.costUSD, 12.2, accuracy: 0.0001)
         XCTAssertEqual(incomplete.detectedModels, [])
         XCTAssertEqual(incomplete.fallbackCalls, 2)
+        XCTAssertEqual(incomplete.unpricedModels, [])
+        XCTAssertEqual(incomplete.unpricedCalls, 0)
 
         let duplicate = ModelAwareAPIPriceEstimator.estimate(
             modelBreakdowns: [
@@ -566,9 +571,53 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(duplicate.costUSD, 6.7, accuracy: 0.0001)
         XCTAssertEqual(duplicate.detectedModels, [])
         XCTAssertEqual(duplicate.fallbackCalls, 2)
+        XCTAssertEqual(duplicate.unpricedModels, [])
+        XCTAssertEqual(duplicate.unpricedCalls, 0)
+
+        let partialKnownAndUnknown = ModelAwareAPIPriceEstimator.estimate(
+            modelBreakdowns: [
+                ModelTokenBreakdown(
+                    model: "gpt-5.6-sol",
+                    breakdown: TokenCacheBreakdown(
+                        inputTokens: 1_000_000,
+                        cachedInputTokens: 0,
+                        outputTokens: 100_000,
+                        reasoningOutputTokens: 0,
+                        totalTokens: 1_100_000,
+                        calls: 1
+                    )
+                ),
+                ModelTokenBreakdown(
+                    model: "future-model",
+                    breakdown: TokenCacheBreakdown(
+                        inputTokens: 1_000_000,
+                        cachedInputTokens: 0,
+                        outputTokens: 100_000,
+                        reasoningOutputTokens: 0,
+                        totalTokens: 1_100_000,
+                        calls: 2
+                    )
+                ),
+            ],
+            fallbackBreakdown: TokenCacheBreakdown(
+                inputTokens: 3_000_000,
+                cachedInputTokens: 0,
+                outputTokens: 300_000,
+                reasoningOutputTokens: 0,
+                totalTokens: 3_300_000,
+                calls: 4
+            ),
+            fallbackModel: .gpt56Sol,
+            rates: { $0.currentPriceRates }
+        )
+        XCTAssertEqual(partialKnownAndUnknown.costUSD, 12, accuracy: 0.0001)
+        XCTAssertEqual(partialKnownAndUnknown.detectedModels, [])
+        XCTAssertEqual(partialKnownAndUnknown.fallbackCalls, 2)
+        XCTAssertEqual(partialKnownAndUnknown.unpricedModels, ["future-model"])
+        XCTAssertEqual(partialKnownAndUnknown.unpricedCalls, 2)
     }
 
-    func testMixedModelCoveragePricesCodexAliasesExcludesSparkAndKeepsUnknownFallback() {
+    func testMixedModelCoveragePricesCodexAliasesExcludesSparkAndReportsUnknownPricing() {
         let rows = [
             ("gpt-5.6-sol", 1_000_000),
             ("gpt-5.6-luna", 1_000_000),
@@ -577,6 +626,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             ("gpt-5.2-codex", 1_000_000),
             ("gpt-5.3-codex-spark", 1_000_000),
             ("codex-auto-review", 1_000_000),
+            ("future-model", 1_000_000),
         ].map { model, tokens in
             ModelTokenBreakdown(
                 model: model,
@@ -591,12 +641,12 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             )
         }
         let fallback = TokenCacheBreakdown(
-            inputTokens: 7_000_000,
+            inputTokens: 8_000_000,
             cachedInputTokens: 0,
             outputTokens: 0,
             reasoningOutputTokens: 0,
-            totalTokens: 7_000_000,
-            calls: 7
+            totalTokens: 8_000_000,
+            calls: 8
         )
 
         let estimate = ModelAwareAPIPriceEstimator.estimate(
@@ -611,6 +661,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(estimate.fallbackCalls, 0)
         XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
         XCTAssertEqual(estimate.excludedCalls, 1)
+        XCTAssertEqual(estimate.unpricedModels, ["future-model"])
+        XCTAssertEqual(estimate.unpricedCalls, 1)
     }
 
     func testSparkOnlyEstimateIsZeroButRetainsIndependentQuotaMetadata() {
@@ -634,6 +686,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(estimate.fallbackCalls, 0)
         XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
         XCTAssertEqual(estimate.excludedCalls, 3)
+        XCTAssertEqual(estimate.unpricedModels, [])
+        XCTAssertEqual(estimate.unpricedCalls, 0)
     }
 
     func testIncompleteSparkRowsNeverLeakIntoUnknownFallbackAmount() {
@@ -664,6 +718,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(estimate.fallbackCalls, 1)
         XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
         XCTAssertEqual(estimate.excludedCalls, 1)
+        XCTAssertEqual(estimate.unpricedModels, [])
+        XCTAssertEqual(estimate.unpricedCalls, 0)
     }
 
     func testEstimateIsUnavailableWhenQuotaDidNotDrop() {
@@ -751,6 +807,41 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
         XCTAssertEqual(result.fallbackModelCalls, 0)
         XCTAssertEqual(result.pricingModelText, "自动 · Sol/Terra")
+    }
+
+    func testSelectionAttributionBlocksExactConclusionWhenNamedModelPriceIsUnknown() {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let unknown = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let event = TokenCacheAttributionEvent(
+            id: "unknown-price",
+            start: start,
+            model: "future-model",
+            breakdown: unknown
+        )
+        let selection = attributionSelection(
+            sevenDayDrop: 10,
+            quotaDropObserved: true,
+            sevenDayComparisonBreakdown: unknown,
+            sevenDayAttributionEvents: [event]
+        )
+        let result = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(for: selection, radarTotalUSD: 100)
+        )
+
+        XCTAssertEqual(result.localCurrentOfficialCostUSD, 0, accuracy: 0.0001)
+        XCTAssertEqual(result.unpricedModels, ["future-model"])
+        XCTAssertEqual(result.unpricedCalls, 1)
+        XCTAssertFalse(result.allowsAttributionConclusion)
+        XCTAssertTrue(result.caveats.contains { $0.contains("未知价格模型") })
+        XCTAssertTrue(result.pricingModelText.contains("未计入 API 等值"))
     }
 
     func testSelectionAttributionPreservesNegativeDifference() throws {
@@ -2239,6 +2330,17 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(
             estimate.pricingModelText(fallbackModel: .gpt56Luna),
             "自动 · Sol/Terra"
+        )
+        let unknown = ModelAwareAPIPriceEstimate(
+            costUSD: 7,
+            detectedModels: [.gpt56Sol],
+            fallbackCalls: 0,
+            unpricedModels: ["future-model"],
+            unpricedCalls: 2
+        )
+        XCTAssertEqual(
+            unknown.pricingModelText(fallbackModel: .gpt56Luna),
+            "自动 · Sol · 未知价格模型 future-model 2 次调用未计入 API 等值"
         )
     }
 

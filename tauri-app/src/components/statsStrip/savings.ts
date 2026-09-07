@@ -38,6 +38,9 @@ export interface LifetimeSavingsEstimate {
   fallbackModelCalls: number;
   excludedModels: string[];
   excludedCalls: number;
+  /** Explicit model names with no recognized API card; omitted from dollars. */
+  unpricedModels: string[];
+  unpricedCalls: number;
   firstUsageAt: Date;
 }
 
@@ -59,6 +62,9 @@ export interface Recent7dSavingsEstimate {
   fallbackModelCalls: number;
   excludedModels: string[];
   excludedCalls: number;
+  /** Explicit model names with no recognized API card; omitted from dollars. */
+  unpricedModels: string[];
+  unpricedCalls: number;
   periodStartUnix: number;
   resetAtUnix: number;
   pointCount: number;
@@ -111,11 +117,14 @@ export function estimateLifetimeSavings({
   const apiEquivalentUSD = automaticPrice.costUSD;
   const monthlyPlanUSD = monthlyPlanPriceUSD(planLabel);
   const subscriptionCostUSD = monthlyPlanUSD === null ? null : monthlyPlanUSD * billingMonths;
+  const hasUnpricedUsage = automaticPrice.unpricedModels.length > 0 || automaticPrice.unpricedCalls > 0;
 
   return {
     apiEquivalentUSD,
     subscriptionCostUSD,
-    netSavingsUSD: subscriptionCostUSD === null ? null : apiEquivalentUSD - subscriptionCostUSD,
+    // `costUSD` is only the known-price subtotal when named model cards are
+    // missing; do not turn it into an exact net-savings claim.
+    netSavingsUSD: subscriptionCostUSD === null || hasUnpricedUsage ? null : apiEquivalentUSD - subscriptionCostUSD,
     billingMonths,
     monthlyPlanUSD,
     normalizedPlanName: planLabel.trim().toUpperCase() || "套餐未知",
@@ -124,6 +133,8 @@ export function estimateLifetimeSavings({
     fallbackModelCalls: automaticPrice.fallbackCalls,
     excludedModels: automaticPrice.excludedModels,
     excludedCalls: automaticPrice.excludedCalls,
+    unpricedModels: automaticPrice.unpricedModels,
+    unpricedCalls: automaticPrice.unpricedCalls,
     firstUsageAt: first,
   };
 }
@@ -243,6 +254,8 @@ export function estimateRecent7dAPICost({
     fallbackModelCalls: automaticPrice.fallbackCalls,
     excludedModels: automaticPrice.excludedModels,
     excludedCalls: automaticPrice.excludedCalls,
+    unpricedModels: automaticPrice.unpricedModels,
+    unpricedCalls: automaticPrice.unpricedCalls,
     periodStartUnix,
     resetAtUnix,
     pointCount: usagePoints.length,
@@ -381,11 +394,17 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
   const hasOnlyExcludedModels = estimate.detectedModels.length === 0
     && estimate.fallbackModelCalls === 0
     && estimate.excludedModels.length > 0;
+  const hasUnpricedUsage = estimate.unpricedModels.length > 0 || estimate.unpricedCalls > 0;
   const priceBasis = hasOnlyExcludedModels
     ? `${estimate.excludedModels.join("、")} ${estimate.excludedCalls} 次调用属于独立额度，不参与 API 等值`
+    : hasUnpricedUsage && estimate.detectedModels.length === 0 && estimate.fallbackModelCalls === 0
+    ? "未知价格模型未计入 API 等值"
     : estimate.detectedModels.length > 0
     ? `按历史真实模型 ${modelTitle} 当前 API 单价自动估算${estimate.fallbackModelCalls > 0 ? `，另有 ${estimate.fallbackModelCalls} 次未知记录按 ${priceModelTitle(estimate.priceModel)} 回退` : ""}`
     : `缺少逐模型历史，按未知模型回退 ${modelTitle} 当前 API 单价估算`;
+  const unpricedNote = hasUnpricedUsage
+    ? `；未知价格模型 ${estimate.unpricedModels.join("、")} ${estimate.unpricedCalls} 次调用未计入 API 等值`
+    : "";
   const excludedNote = !hasOnlyExcludedModels && estimate.excludedModels.length > 0
     ? `；${estimate.excludedModels.join("、")} ${estimate.excludedCalls} 次调用属于独立额度，不参与 API 等值`
     : "";
@@ -393,14 +412,18 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
     return {
       valueText: compactMoney(estimate.netSavingsUSD),
       labelText: "累计净薅到（估）",
-      helpText: `${priceBasis}${excludedNote}：API 等值 ${fullMoney(estimate.apiEquivalentUSD)} − ${estimate.normalizedPlanName} ${estimate.billingMonths} 个月套餐成本 ${fullMoney(estimate.subscriptionCostUSD)}（${fullMoney(estimate.monthlyPlanUSD)}/月）= ${fullMoney(estimate.netSavingsUSD)}。历史套餐或模型变化未计入。`,
+      helpText: `${priceBasis}${unpricedNote}${excludedNote}：API 等值 ${fullMoney(estimate.apiEquivalentUSD)} − ${estimate.normalizedPlanName} ${estimate.billingMonths} 个月套餐成本 ${fullMoney(estimate.subscriptionCostUSD)}（${fullMoney(estimate.monthlyPlanUSD)}/月）= ${fullMoney(estimate.netSavingsUSD)}。历史套餐或模型变化未计入。`,
     };
   }
 
   return {
     valueText: compactMoney(estimate.apiEquivalentUSD),
-    labelText: "API 等值（估）",
-    helpText: `${priceBasis}${excludedNote}，API 等值为 ${fullMoney(estimate.apiEquivalentUSD)}；${estimate.normalizedPlanName} 没有公开固定月费，暂不计算净节省。`,
+    labelText: hasUnpricedUsage ? "API 已知价小计（估）" : "API 等值（估）",
+    helpText: hasUnpricedUsage
+      ? `${priceBasis}${unpricedNote}${excludedNote}，已知价格 API 小计为 ${fullMoney(estimate.apiEquivalentUSD)}；${estimate.subscriptionCostUSD !== null && estimate.monthlyPlanUSD !== null
+        ? `${estimate.normalizedPlanName} 套餐成本为 ${fullMoney(estimate.subscriptionCostUSD)}（${fullMoney(estimate.monthlyPlanUSD)}/月）`
+        : `${estimate.normalizedPlanName} 没有公开固定月费`}, 暂不计算净节省。`
+      : `${priceBasis}${excludedNote}，API 等值为 ${fullMoney(estimate.apiEquivalentUSD)}；${estimate.normalizedPlanName} 没有公开固定月费，暂不计算净节省。`,
   };
 }
 

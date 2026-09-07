@@ -1026,7 +1026,8 @@ function RecentChartQuotaEstimateOverlay({
   showsSevenDayQuota: boolean;
   onClose: () => void;
 }) {
-  const showsBudgetRatio = showsFiveHourQuota
+  const pricesIncomplete = (selection.unpricedModels?.length ?? 0) > 0;
+  const showsBudgetRatio = !pricesIncomplete && showsFiveHourQuota
     && showsSevenDayQuota
     && currentFiveHourQuotaPresent
     && currentSevenDayQuotaPresent;
@@ -1039,7 +1040,7 @@ function RecentChartQuotaEstimateOverlay({
     <div className="chart-quota-estimate-card" role="dialog" aria-label="额度估算">
       <div className="quota-estimate-main">
         <div className="quota-estimate-row">
-          <span>本段消耗</span>
+          <span>{pricesIncomplete ? "已知价格小计" : "本段消耗"}</span>
           <strong>{moneyText(selection.selectedCostUSD)}</strong>
           <b>{quotaSelectionDurationText(selection)}</b>
           <em>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</em>
@@ -1053,7 +1054,8 @@ function RecentChartQuotaEstimateOverlay({
         ) : null}
         <div className="quota-estimate-row">
           <span>反推总额度</span>
-          {showsFiveHourQuota ? (
+          {pricesIncomplete ? <em>部分模型价格未知，暂不反推</em> : null}
+          {showsFiveHourQuota && !pricesIncomplete ? (
             <QuotaEstimateChip
               className="quota-chip--five"
               estimate={selection.fiveHour}
@@ -1061,7 +1063,7 @@ function RecentChartQuotaEstimateOverlay({
               title="5h"
             />
           ) : null}
-          {showsSevenDayQuota ? (
+          {showsSevenDayQuota && !pricesIncomplete ? (
             <QuotaEstimateChip
               className="quota-chip--seven"
               estimate={selection.sevenDay}
@@ -1091,6 +1093,12 @@ function RecentChartQuotaEstimateOverlay({
 }
 
 function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelectionAttributionResult }) {
+  if ((attribution.unpricedModels?.length ?? 0) > 0) {
+    return <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="未知价格说明">
+      <span>已知价格小计 {moneyText(attribution.localCurrentAPIEquivalentUSD)}</span>
+      <em>{attribution.unpricedModels.join("、")} 价格未知，暂不判断共享差额</em>
+    </div>;
+  }
   const accountTitle = attribution.accountDropPercent === null ? "账号下降" : "账号实降";
   const differenceTitle = attribution.state === "suspectedNonLocalUsage"
     ? "疑似他人"

@@ -1,6 +1,7 @@
 import {
   modelUsageColor,
   modelUsageKey,
+  floatingModelUsageKey,
   modelUsageLabel,
   type ModelUsageRowLike,
 } from "../components/modelUsagePresentation.ts";
@@ -37,6 +38,7 @@ export const DASHBOARD_PRIMARY_MODEL_KEYS = [
 
 interface CombinedModelUsage {
   costUSD: number;
+  priceUnknown: boolean;
   model: string | null;
   eventStartUnix?: number;
   inputTokens: number;
@@ -98,13 +100,16 @@ const FLOATING_DEFAULT_MODEL_ORDER: ReadonlyMap<string, number> = new Map(
 export function floatingTodayModelUsageItems(
   rows: ModelUsageRowLike[] | null | undefined,
   fallbackModel: OfficialAPIPriceModel,
-  options: { showPlaceholders?: boolean } = {},
+  options: { showPlaceholders?: boolean; mergeAutoReview?: boolean } = {},
 ): FloatingModelUsageItem[] {
   const grouped = new Map<string, CombinedModelUsage>();
   for (const row of rows ?? []) {
-    const key = modelUsageKey(row.model, row.eventStartUnix);
+    const key = options.mergeAutoReview === false
+      ? modelUsageKey(row.model, row.eventStartUnix)
+      : floatingModelUsageKey(row.model, row.eventStartUnix);
     const current = grouped.get(key) ?? {
       costUSD: 0,
+      priceUnknown: false,
       model: row.model,
       eventStartUnix: row.eventStartUnix,
       inputTokens: 0,
@@ -118,7 +123,9 @@ export function floatingTodayModelUsageItems(
       cachedInputTokens: finiteNonnegative(row.breakdown.cachedInputTokens),
       outputTokens: finiteNonnegative(row.breakdown.outputTokens), calls: finiteNonnegative(row.breakdown.calls),
     } };
-    current.costUSD += modelAwareAPICostUSD([priceRow], priceRow.breakdown, fallbackModel).costUSD;
+    const price = modelAwareAPICostUSD([priceRow], priceRow.breakdown, fallbackModel);
+    current.costUSD += price.costUSD;
+    current.priceUnknown ||= price.unpricedModels.length > 0;
     current.inputTokens += finiteNonnegative(row.breakdown.inputTokens);
     current.cachedInputTokens += finiteNonnegative(row.breakdown.cachedInputTokens);
     current.outputTokens += finiteNonnegative(row.breakdown.outputTokens);
@@ -136,6 +143,7 @@ export function floatingTodayModelUsageItems(
       if (!grouped.has(key)) {
         grouped.set(key, {
           costUSD: 0,
+          priceUnknown: false,
           model: key,
           inputTokens: 0,
           cachedInputTokens: 0,
@@ -148,7 +156,7 @@ export function floatingTodayModelUsageItems(
   }
   return [...grouped.entries()].map(([key, row]) => {
     const usesIndependentQuota = independentQuotaModelName(row.model) !== null;
-    const costUSD = usesIndependentQuota ? null : row.costUSD;
+    const costUSD = usesIndependentQuota || row.priceUnknown ? null : row.costUSD;
     const referenceCostUSD = independentQuotaReferenceCostUSD(
       row.model,
       row.inputTokens,
@@ -235,7 +243,11 @@ export function floatingModelUsageValue(
       : floatingModelUsageMoneyText(item.referenceCostUSD);
     return `${referenceCost}（不计入总计）`;
   }
-  return floatingModelUsageMoneyText(item.costUSD ?? 0);
+  return item.costUSD === null ? "价格未知" : floatingModelUsageMoneyText(item.costUSD);
+}
+
+export function hasUnknownModelPrices(items: FloatingModelUsageItem[]): boolean {
+  return items.some((item) => !item.usesIndependentQuota && item.costUSD === null);
 }
 
 export function floatingModelUsageAccessibilityText(

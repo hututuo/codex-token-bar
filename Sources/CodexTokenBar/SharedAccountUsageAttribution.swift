@@ -1670,6 +1670,10 @@ struct SharedAccountUsageAttributionResult: Equatable {
     let fallbackModelCalls: Int
     let excludedModels: [String]
     let excludedCalls: Int
+    /// Explicit model names with no recognized API card; their dollars are
+    /// omitted from the comparable totals below.
+    let unpricedModels: [String]
+    let unpricedCalls: Int
     let priceRevision: SharedAccountRadarPriceRevision
     let cycleStart: Date?
     let cycleEnd: Date?
@@ -1705,7 +1709,10 @@ struct SharedAccountUsageAttributionResult: Equatable {
     let usedHighWatermark: Bool
 
     var hasComputedAttribution: Bool {
-        localSharePercent != nil && nonLocalDifferencePercent != nil
+        localSharePercent != nil
+            && nonLocalDifferencePercent != nil
+            && unpricedModels.isEmpty
+            && unpricedCalls == 0
     }
 
     var usesSegmentBaseline: Bool {
@@ -1717,7 +1724,8 @@ struct SharedAccountUsageAttributionResult: Equatable {
     }
 
     var hasFinalAttributionConclusion: Bool {
-        switch state {
+        guard unpricedModels.isEmpty, unpricedCalls == 0 else { return false }
+        return switch state {
         case .withinTolerance, .suspectedNonLocalUsage, .localEstimateExceedsAccountDrop:
             true
         default:
@@ -2109,6 +2117,8 @@ enum SharedAccountUsageAttributionEstimator {
                     fallbackModelCalls: pendingComparableCost.fallbackCalls,
                     excludedModels: pendingComparableCost.excludedModels,
                     excludedCalls: pendingComparableCost.excludedCalls,
+                    unpricedModels: pendingComparableCost.unpricedModels,
+                    unpricedCalls: pendingComparableCost.unpricedCalls,
                     priceRevision: priceRevision,
                     cycleStart: cycleStart,
                     cycleEnd: resetAt,
@@ -2165,7 +2175,9 @@ enum SharedAccountUsageAttributionEstimator {
                 localHistoryAmbiguous: localHistoryAmbiguous,
                 highWatermarkKey: highWatermarkKey,
                 highWatermarkCandidate: rawCandidate,
-                usedHighWatermark: shouldUseHighWatermark
+                usedHighWatermark: shouldUseHighWatermark,
+                unpricedModels: pendingCurrentCost.unpricedModels,
+                unpricedCalls: pendingCurrentCost.unpricedCalls
             )
         }
         let accountUsed = max(
@@ -2206,7 +2218,9 @@ enum SharedAccountUsageAttributionEstimator {
                 localHistoryAmbiguous: localHistoryAmbiguous,
                 highWatermarkKey: highWatermarkKey,
                 highWatermarkCandidate: rawCandidate,
-                usedHighWatermark: shouldUseHighWatermark
+                usedHighWatermark: shouldUseHighWatermark,
+                unpricedModels: currentOfficialEstimate.unpricedModels,
+                unpricedCalls: currentOfficialEstimate.unpricedCalls
             )
         }
 
@@ -2236,7 +2250,9 @@ enum SharedAccountUsageAttributionEstimator {
                 localHistoryAmbiguous: localHistoryAmbiguous,
                 highWatermarkKey: highWatermarkKey,
                 highWatermarkCandidate: rawCandidate,
-                usedHighWatermark: shouldUseHighWatermark
+                usedHighWatermark: shouldUseHighWatermark,
+                unpricedModels: currentOfficialEstimate.unpricedModels,
+                unpricedCalls: currentOfficialEstimate.unpricedCalls
             )
         }
 
@@ -2284,6 +2300,8 @@ enum SharedAccountUsageAttributionEstimator {
             fallbackModelCalls: localComparableEstimate.fallbackCalls,
             excludedModels: localComparableEstimate.excludedModels,
             excludedCalls: localComparableEstimate.excludedCalls,
+            unpricedModels: localComparableEstimate.unpricedModels,
+            unpricedCalls: localComparableEstimate.unpricedCalls,
             priceRevision: priceRevision,
             cycleStart: cycleStart,
             cycleEnd: resetAt,
@@ -2378,7 +2396,9 @@ enum SharedAccountUsageAttributionEstimator {
         localHistoryAmbiguous: Bool = false,
         highWatermarkKey: SharedAccountUsageHighWatermarkKey? = nil,
         highWatermarkCandidate: SharedAccountUsageHighWatermarkRecord? = nil,
-        usedHighWatermark: Bool = false
+        usedHighWatermark: Bool = false,
+        unpricedModels: [String] = [],
+        unpricedCalls: Int = 0
     ) -> SharedAccountUsageAttributionResult {
         SharedAccountUsageAttributionResult(
             state: state,
@@ -2388,6 +2408,8 @@ enum SharedAccountUsageAttributionEstimator {
             fallbackModelCalls: breakdown.calls,
             excludedModels: [],
             excludedCalls: 0,
+            unpricedModels: unpricedModels,
+            unpricedCalls: unpricedCalls,
             priceRevision: priceRevision,
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,

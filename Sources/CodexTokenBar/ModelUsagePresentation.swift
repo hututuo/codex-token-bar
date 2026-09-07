@@ -12,6 +12,62 @@ struct ModelUsageSlice: Identifiable, Equatable {
 enum ModelUsagePresentation {
     private static let autoReviewDisplayPrefix = "codex-auto-review@"
 
+    /// Presentation aliases are deliberately narrower than the pricing
+    /// detector.  A bare `gpt-5.6` value identifies a family, not Sol, so it
+    /// must remain an unknown/raw label until a source supplies the lane.
+    private static let knownModelAliases: [String: String] = [
+        "gpt-6-astra": "gpt-6-astra",
+        "gpt6-astra": "gpt-6-astra",
+        "gpt6astra": "gpt-6-astra",
+        "gpt 6 astra": "gpt-6-astra",
+
+        "gpt-5.6-sol": "gpt-5.6-sol",
+        "gpt5.6-sol": "gpt-5.6-sol",
+        "gpt56-sol": "gpt-5.6-sol",
+        "gpt56sol": "gpt-5.6-sol",
+        "gpt 5.6 sol": "gpt-5.6-sol",
+
+        "gpt-5.5": "gpt-5.5",
+        "gpt5.5": "gpt-5.5",
+        "gpt55": "gpt-5.5",
+        "gpt 5.5": "gpt-5.5",
+
+        "gpt-5.6-terra": "gpt-5.6-terra",
+        "gpt5.6-terra": "gpt-5.6-terra",
+        "gpt56-terra": "gpt-5.6-terra",
+        "gpt56terra": "gpt-5.6-terra",
+        "gpt 5.6 terra": "gpt-5.6-terra",
+
+        "gpt-5.6-luna": "gpt-5.6-luna",
+        "gpt5.6-luna": "gpt-5.6-luna",
+        "gpt56-luna": "gpt-5.6-luna",
+        "gpt56luna": "gpt-5.6-luna",
+        "gpt 5.6 luna": "gpt-5.6-luna",
+
+        "gpt-5.3-codex": "gpt-5.3-codex",
+        "gpt5.3-codex": "gpt-5.3-codex",
+        "gpt53-codex": "gpt-5.3-codex",
+        "gpt53codex": "gpt-5.3-codex",
+        "gpt 5.3 codex": "gpt-5.3-codex",
+
+        "gpt-5.2-codex": "gpt-5.2-codex",
+        "gpt5.2-codex": "gpt-5.2-codex",
+        "gpt52-codex": "gpt-5.2-codex",
+        "gpt52codex": "gpt-5.2-codex",
+        "gpt 5.2 codex": "gpt-5.2-codex",
+
+        "gpt-5.4": "gpt-5.4",
+        "gpt54": "gpt-5.4",
+        "gpt 5.4": "gpt-5.4",
+
+        "gpt-5.4-mini": "gpt-5.4-mini",
+        "gpt54mini": "gpt-5.4-mini",
+        "gpt 5.4 mini": "gpt-5.4-mini",
+
+        // This synthetic key is retained for old presentation snapshots.
+        "gpt-5.6-generic": "gpt-5.6-generic",
+    ]
+
     static func slices(from rows: [ModelTokenBreakdown]) -> [ModelUsageSlice] {
         let combined = combinedRows(rows)
         let total = combined.reduce(0) { $0 + $1.breakdown.totalTokens }
@@ -55,8 +111,12 @@ enum ModelUsagePresentation {
         at effectiveDate: Date
     ) -> [ModelTokenBreakdown] {
         combinedRows(aggregatedRows.map { row in
-            ModelTokenBreakdown(
-                model: displayModelKey(for: row.model, at: effectiveDate),
+            let hasDatedPricingRows = row.pricePeriods != nil
+                && row.pricingRows.contains { $0.start != nil }
+            return ModelTokenBreakdown(
+                model: hasDatedPricingRows
+                    ? row.model
+                    : displayModelKey(for: row.model, at: effectiveDate),
                 breakdown: row.breakdown,
                 pricePeriods: row.pricePeriods ?? [.init(model: row.model, start: effectiveDate, breakdown: row.breakdown)]
             )
@@ -78,7 +138,8 @@ enum ModelUsagePresentation {
     }
 
     static func key(for model: String?) -> String {
-        let normalized = (model ?? "")
+        let source = (model ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = source
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .replacingOccurrences(of: "_", with: "-")
@@ -92,35 +153,10 @@ enum ModelUsagePresentation {
         if OfficialAPIPriceModel.independentQuotaModelName(from: normalized) != nil {
             return "gpt-5.3-codex-spark"
         }
-        if OfficialAPIPriceModel.detected(from: normalized) == .gpt53Codex {
-            return "gpt-5.3-codex"
-        }
-        if OfficialAPIPriceModel.detected(from: normalized) == .gpt52Codex {
-            return "gpt-5.2-codex"
-        }
-        if OfficialAPIPriceModel.detected(from: normalized) == .gpt54MiniLegacy {
-            return "gpt-5.4-mini"
-        }
-        if OfficialAPIPriceModel.detected(from: normalized) == .gpt54Legacy {
-            return "gpt-5.4"
-        }
-        if OfficialAPIPriceModel.detected(from: normalized) == .gpt6Astra {
-            return "gpt-6-astra"
-        }
-        // A bare GPT-5.6 slug does not identify the Sol/Terra/Luna lane.
-        // Keep it as a distinct generic family instead of silently counting
-        // it as Sol.
-        if normalized == "gpt-5.6" || normalized == "gpt-5.6-generic" {
-            return "gpt-5.6-generic"
-        }
-        if normalized.contains("gpt-5.6") {
-            if normalized.contains("luna") { return "gpt-5.6-luna" }
-            if normalized.contains("terra") { return "gpt-5.6-terra" }
-            return "gpt-5.6-sol"
-        }
-        if normalized.contains("gpt-5.4-mini") { return "gpt-5.4-mini" }
-        if normalized.contains("gpt-5.4") { return "gpt-5.4" }
-        return normalized
+        // Keep this list explicit.  In particular, `gpt-5.6`, `gpt5.6` and
+        // `gpt56` intentionally fall through so their original spelling is
+        // visible instead of being guessed as Sol.
+        return knownModelAliases[normalized] ?? source
     }
 
     static func label(for model: String?) -> String {
@@ -129,6 +165,7 @@ enum ModelUsagePresentation {
         case "gpt-5.6-sol": return "Sol"
         case "gpt-5.6-terra": return "Terra"
         case "gpt-5.6-luna": return "Luna"
+        case "gpt-5.5": return "5.5"
         case "gpt-5.6-generic": return "5.6（未分型）"
         case "codex-auto-review": return "Auto Review（Luna）"
         case "gpt-5.4-mini": return "5.4 m"
@@ -169,9 +206,72 @@ enum ModelUsagePresentation {
             || CodexAutoReviewPricingPolicy.isAutoReviewAlias(normalized)
     }
 
+    /// Returns the billable presentation key used by the compact floating
+    /// surface.  Main/dashboard rows retain their dated Auto Review display
+    /// keys; callers opt into this mapping only when they need one slot per
+    /// underlying model.
+    static func autoReviewUnderlyingModelKey(for model: String?) -> String? {
+        guard isAutoReviewModelKey(model) else { return nil }
+        let displayKey = key(for: model)
+        guard displayKey.hasPrefix(autoReviewDisplayPrefix) else {
+            return canonicalPresentationKey(for: CodexAutoReviewPricingPolicy.currentRule.targetModel)
+        }
+
+        let suffix = String(displayKey.dropFirst(autoReviewDisplayPrefix.count))
+        switch suffix {
+        case "luna": return "gpt-5.6-luna"
+        case "5.4": return "gpt-5.4"
+        default:
+            let targetKey = displayTargetKey(for: suffix)
+            return targetKey == suffix ? nil : targetKey
+        }
+    }
+
+    /// Expands a raw Auto Review aggregate into one display row per dated
+    /// pricing period. Event rows already carry `codex-auto-review@5.4` or
+    /// `codex-auto-review@luna`; those synthetic display keys pass through
+    /// unchanged. Keeping the original period model/start is required by the
+    /// historical estimator after the display row is later merged into a
+    /// floating underlying model.
+    static func rowsWithDatedAutoReviewTargets(from rows: [ModelTokenBreakdown]) -> [ModelTokenBreakdown] {
+        rows.flatMap { row in
+            if row.pricePeriods == nil, key(for: row.model).hasPrefix(autoReviewDisplayPrefix),
+               let target = autoReviewUnderlyingModelKey(for: row.model) {
+                return [ModelTokenBreakdown(model: row.model, breakdown: row.breakdown,
+                    pricePeriods: [.init(model: target, start: nil, breakdown: row.breakdown)])]
+            }
+            guard key(for: row.model) == "codex-auto-review", row.pricePeriods != nil else {
+                return [row]
+            }
+            let periods = row.pricingRows
+            guard periods.contains(where: { $0.start != nil }),
+                  periods.map(\.breakdown).combined == row.breakdown else {
+                return [row]
+            }
+
+            return periods.map { period in
+                let sourceModel = period.model ?? row.model
+                let sourceKey = key(for: sourceModel)
+                let displayModel: String?
+                if sourceKey.hasPrefix(autoReviewDisplayPrefix) {
+                    displayModel = sourceKey
+                } else if sourceKey == "codex-auto-review", let start = period.start {
+                    displayModel = displayModelKey(for: sourceModel, at: start)
+                } else {
+                    displayModel = sourceModel
+                }
+                return ModelTokenBreakdown(
+                    model: displayModel,
+                    breakdown: period.breakdown,
+                    pricePeriods: [period]
+                )
+            }
+        }
+    }
+
     static func combinedRows(_ rows: [ModelTokenBreakdown]) -> [ModelTokenBreakdown] {
         var grouped: [String: (model: String?, breakdowns: [TokenCacheBreakdown], periods: [ModelTokenPricePeriod])] = [:]
-        for row in rows where row.breakdown.totalTokens > 0 {
+        for row in rowsWithDatedAutoReviewTargets(from: rows) where row.breakdown.totalTokens > 0 {
             let modelKey = key(for: row.model)
             var value = grouped[modelKey] ?? (row.model, [], [])
             value.breakdowns.append(row.breakdown)
@@ -193,6 +293,7 @@ enum ModelUsagePresentation {
         case "gpt-5.6-sol": return Color(red: 0.18, green: 0.42, blue: 0.98)
         case "gpt-5.6-terra": return Color(red: 0.57, green: 0.32, blue: 0.90)
         case "gpt-5.6-luna": return Color(red: 0.00, green: 0.64, blue: 0.68)
+        case "gpt-5.5": return Color(red: 0.66, green: 0.46, blue: 0.16)
         case "gpt-5.6-generic": return Color(red: 0.48, green: 0.53, blue: 0.62)
         case "gpt-5.4": return Color(red: 0.95, green: 0.56, blue: 0.08)
         case "gpt-5.4-mini": return Color(red: 0.18, green: 0.70, blue: 0.36)
@@ -216,6 +317,10 @@ enum ModelUsagePresentation {
     }
 
     private static func displayModelKey(for model: String?, at date: Date) -> String? {
+        let modelKey = key(for: model)
+        if modelKey.hasPrefix(autoReviewDisplayPrefix) {
+            return modelKey
+        }
         guard CodexAutoReviewPricingPolicy.isAutoReviewAlias(model) else {
             return model
         }
@@ -236,6 +341,7 @@ enum ModelUsagePresentation {
         switch displayTargetKey(for: suffix) {
         case "gpt-5.6-luna": return "Luna"
         case "gpt-5.4": return "5.4"
+        case "gpt-5.5": return "5.5"
         case "gpt-5.6-sol": return "Sol"
         case "gpt-5.6-terra": return "Terra"
         case "gpt-5.3-codex": return "5.3"
@@ -261,8 +367,26 @@ enum ModelUsagePresentation {
             return "gpt-5.2-codex"
         case OfficialAPIPriceModel.gpt54MiniLegacy.rawValue:
             return "gpt-5.4-mini"
+        case "gpt54legacy":
+            return "gpt-5.4"
+        case "gpt54minilegacy":
+            return "gpt-5.4-mini"
         default:
-            return suffix
+            return knownModelAliases[suffix] ?? suffix
+        }
+    }
+
+    private static func canonicalPresentationKey(for model: OfficialAPIPriceModel) -> String {
+        switch model {
+        case .gpt6Astra: return "gpt-6-astra"
+        case .gpt56Sol: return "gpt-5.6-sol"
+        case .gpt55: return "gpt-5.5"
+        case .gpt56Terra: return "gpt-5.6-terra"
+        case .gpt56Luna: return "gpt-5.6-luna"
+        case .gpt53Codex: return "gpt-5.3-codex"
+        case .gpt52Codex: return "gpt-5.2-codex"
+        case .gpt54Legacy: return "gpt-5.4"
+        case .gpt54MiniLegacy: return "gpt-5.4-mini"
         }
     }
 }

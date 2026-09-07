@@ -5,6 +5,34 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Window } from "happy-dom";
 import { withSsrModules } from "../../test/ssrHarness.mjs";
 
+test("dashboard renders Review separately and a known-price subtotal for a future model", async () => {
+  await withSsrModules(async (load) => {
+    const { StatsStrip } = await load("/src/components/StatsStrip.tsx");
+    const startUnix = Date.parse("2026-08-30T00:00:00Z") / 1000;
+    const modelBreakdowns = ["gpt-5.6-luna", "codex-auto-review", "GPT-5.6-NewLane"].map((model) => ({
+      model, eventStartUnix: startUnix,
+      breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+    }));
+    const html = renderToStaticMarkup(React.createElement(StatsStrip, {
+      stats: {
+        totalTokens: 3_000_000, peakDayTokens: 3_000_000, peakThreadTokens: 3_000_000,
+        currentStreakDays: 1, longestStreakDays: 1, totalCalls: 3, totalThreads: 1,
+        totalInputTokens: 3_000_000, totalCachedInputTokens: 0, totalOutputTokens: 0,
+        firstUsageAt: "2026-08-30T00:00:00Z", modelBreakdowns,
+      },
+      recentUsageFiveMinute: [{
+        startUnix, tokens: 3_000_000, calls: 3, inputTokens: 3_000_000,
+        cachedInputTokens: 0, outputTokens: 0, modelBreakdowns,
+      }],
+      sevenDayResetAtUnix: startUnix + 86400, preciseDataFresh: true, planLabel: "Pro",
+    }));
+    assert.match(html, /Auto Review（Luna）/);
+    assert.match(html, /GPT-5\.6-NewLane/);
+    assert.match(html, /价格未知/);
+    assert.match(html, /已知价格小计[^<]*\$0\.40/);
+  });
+});
+
 test("StatsStrip renders six historical metrics with an explainable savings estimate", async () => {
   await withSsrModules(async (load) => {
     const { StatsStrip } = await load("/src/components/StatsStrip.tsx");

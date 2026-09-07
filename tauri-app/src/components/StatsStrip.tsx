@@ -18,6 +18,7 @@ import {
   floatingModelUsageMoneyText,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
+  hasUnknownModelPrices,
 } from "../floating/floatingModelUsage";
 import { modelCostRowsAvailable } from "./tokenActivity/modelCostAvailability";
 
@@ -111,10 +112,11 @@ function StatsStripView({
     : expectedModelTokens <= 0 || modelCostRows.length > 0;
   const modelCostItems = useMemo(() => (
     modelCostDataAvailable && modelDetailAvailable
-      ? floatingTodayModelUsageItems(modelCostRows, priceModel)
+      ? floatingTodayModelUsageItems(modelCostRows, priceModel, { mergeAutoReview: false })
       : []
   ), [modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel]);
   const modelCostTotal = modelCostItems.reduce((total, item) => total + (item.costUSD ?? 0), 0);
+  const modelPricesIncomplete = hasUnknownModelPrices(modelCostItems);
   const selectedModelDisplayState = modelCostScope === "sevenDay"
     ? sevenDayModelDisplayState
     : modelCostScope === "today"
@@ -207,8 +209,9 @@ function StatsStripView({
             {modelCostDataAvailable && modelDetailAvailable && modelCostItems.length > 0 ? (
               <span className="stats-model-cost-total-wrap">
                 <strong className="stats-model-cost-total">
-                  合计 {floatingModelUsageMoneyText(modelCostTotal)}
+                  {modelPricesIncomplete ? "已知价格小计" : "合计"} {floatingModelUsageMoneyText(modelCostTotal)}
                 </strong>
+                {modelPricesIncomplete ? <small className="stats-model-cost-reference">部分模型价格未知，未计入金额</small> : null}
                 {independentReferenceSummary ? (
                   <small className="stats-model-cost-reference">
                     {independentReferenceSummary}

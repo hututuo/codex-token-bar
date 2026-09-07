@@ -92,6 +92,30 @@ test("lifetime savings uses recorded historical models before the fallback model
   assert.match(savingsPresentation(estimate).helpText, /历史真实模型/);
 });
 
+test("named unknown prices remain a known subtotal and suppress exact net savings", () => {
+  const estimate = estimateLifetimeSavings({
+    breakdown: { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 2_000_000, calls: 2 },
+    modelBreakdowns: [
+      { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } },
+      { model: "future-model", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } },
+    ],
+    firstUsageAt: "2026-07-01T00:00:00Z",
+    planLabel: "Plus",
+    priceModel: "gpt56Luna",
+    now: new Date("2026-07-07T00:00:00Z"),
+  });
+
+  assert.equal(estimate?.apiEquivalentUSD, 4);
+  assert.equal(estimate?.subscriptionCostUSD, 20);
+  assert.equal(estimate?.netSavingsUSD, null);
+  assert.deepEqual(estimate?.unpricedModels, ["future-model"]);
+  assert.equal(estimate?.unpricedCalls, 1);
+  const presentation = savingsPresentation(estimate);
+  assert.equal(presentation.labelText, "API 已知价小计（估）");
+  assert.match(presentation.helpText, /未知价格模型/);
+  assert.match(presentation.helpText, /暂不计算净节省/);
+});
+
 test("lifetime breakdown comes from full aggregate stats and clamps malformed cached input", () => {
   const combined = lifetimeBreakdownFromStats({
     totalTokens: 165,
@@ -211,6 +235,20 @@ test("7d API estimate applies the auto-review timestamp rule per five-minute poi
     Date.parse("2026-07-29T23:55:00Z") / 1000,
     Date.parse("2026-07-30T00:05:00Z") / 1000,
   ]);
+});
+
+test("7d API estimate carries unknown model provenance into the known subtotal", () => {
+  const resetAtUnix = 1_800_000_000;
+  const estimate = estimateRecent7dAPICost({
+    resetAtUnix,
+    priceModel: "gpt56Luna",
+    points: [recentPoint(resetAtUnix - 5 * 60, { model: "future-model" })],
+  });
+
+  assert.ok(estimate);
+  assert.equal(estimate.apiEquivalentUSD, 0);
+  assert.deepEqual(estimate.unpricedModels, ["future-model"]);
+  assert.equal(estimate.unpricedCalls, 2);
 });
 
 test("7d model scope stays pending when reset or model coverage is missing", () => {

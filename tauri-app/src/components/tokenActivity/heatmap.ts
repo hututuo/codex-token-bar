@@ -6,6 +6,7 @@ import {
   floatingModelUsageMoneyText,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
+  hasUnknownModelPrices,
 } from "../../floating/floatingModelUsage.ts";
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
 
@@ -77,7 +78,7 @@ export function modelCostCellBackground(
   modelCostDataAvailable = true,
 ): string {
   if (!modelCostDataAvailable) return "var(--heatmap-empty)";
-  const items = floatingTodayModelUsageItems(dayModelRows(day), fallbackModel);
+  const items = floatingTodayModelUsageItems(dayModelRows(day), fallbackModel, { mergeAutoReview: false });
   const paid = items.filter((item) => (item.costUSD ?? 0) > 0);
   if (paid.length === 0) {
     const independent = items.find((item) => item.usesIndependentQuota);
@@ -131,7 +132,7 @@ export function modelCostUSD(
   if (day.tokens > 0 && (!day.modelBreakdowns || day.modelBreakdowns.length === 0)) {
     return null;
   }
-  return floatingTodayModelUsageItems(dayModelRows(day), fallbackModel)
+  return floatingTodayModelUsageItems(dayModelRows(day), fallbackModel, { mergeAutoReview: false })
     .reduce((total, item) => total + (item.costUSD ?? 0), 0);
 }
 
@@ -142,10 +143,10 @@ export function modelCostSummaryText(
 ): string {
   const cost = modelCostUSD(day, fallbackModel, modelCostDataAvailable);
   if (cost === null) return "模型明细待读取";
-  const items = floatingTodayModelUsageItems(dayModelRows(day), fallbackModel);
+  const items = floatingTodayModelUsageItems(dayModelRows(day), fallbackModel, { mergeAutoReview: false });
   if (items.length === 0) return "模型费用 $0.00 · 暂无模型用量";
   return [
-    `模型费用 ${floatingModelUsageMoneyText(cost)}`,
+    `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${floatingModelUsageMoneyText(cost)}`,
     ...items.map((item) => `${item.label} ${floatingModelUsageValue(item, "cost")}`),
   ].join(" · ");
 }

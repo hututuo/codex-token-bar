@@ -10,6 +10,7 @@ import {
   floatingModelUsagePageSizes,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
+  hasUnknownModelPrices,
 } from "./floatingModelUsage.ts";
 
 test("today model usage combines aliases and computes cache-aware per-model prices", () => {
@@ -183,3 +184,39 @@ test("dashboard groups keep Astra Sol Terra Luna expanded and wrap used secondar
 function row(model, inputTokens, cachedInputTokens, outputTokens, totalTokens, calls, eventStartUnix) {
   return { model, eventStartUnix, breakdown: { inputTokens, cachedInputTokens, outputTokens, totalTokens, calls } };
 }
+
+test("floating merges Review but dashboard separates it without changing totals or dated prices", () => {
+  const before = Date.parse("2026-07-29T12:00:00Z") / 1000;
+  const after = Date.parse("2026-07-31T12:00:00Z") / 1000;
+  const rows = [
+    row("codex-auto-review", 1_000_000, 0, 0, 1_000_000, 1, before),
+    row("gpt-5.4", 1_000_000, 0, 0, 1_000_000, 1, before),
+    row("codex-auto-review", 1_000_000, 0, 0, 1_000_000, 1, after),
+    row("gpt-5.6-luna", 1_000_000, 0, 0, 1_000_000, 1, after),
+  ];
+  const floating = floatingTodayModelUsageItems(rows, "gpt56Sol");
+  const dashboard = floatingTodayModelUsageItems(rows, "gpt56Sol", { mergeAutoReview: false });
+  assert.deepEqual(floating.map((item) => [item.label, item.tokens, item.costUSD]), [
+    ["5.4", 2_000_000, 5], ["Luna", 2_000_000, 0.4],
+  ]);
+  assert.equal(dashboard.length, 4);
+  assert.ok(dashboard.some((item) => item.label === "Auto Review（Luna）" && item.tokens === 1_000_000));
+  assert.ok(dashboard.some((item) => item.label === "Auto Review（5.4）" && item.costUSD === 2.5));
+  assert.equal(dashboard.reduce((sum, item) => sum + item.tokens, 0), 4_000_000);
+  assert.ok(Math.abs(dashboard.reduce((sum, item) => sum + item.costUSD, 0) - 5.4) < 1e-10);
+});
+
+test("unpriced future models retain names and token shares without showing a zero or fallback price", () => {
+  const items = floatingTodayModelUsageItems([
+    row("GPT-5.6-NewLane", 1_000_000, 0, 0, 1_000_000, 1),
+    row("gpt-6-astra", 1_000_000, 0, 0, 1_000_000, 1),
+  ], "gpt56Sol");
+  const unknown = items.find((item) => item.label === "GPT-5.6-NewLane");
+  assert.ok(unknown);
+  assert.equal(unknown.costUSD, null);
+  assert.equal(unknown.tokens, 1_000_000);
+  assert.equal(unknown.share, 0.5);
+  assert.equal(floatingModelUsageValue(unknown, "cost"), "价格未知");
+  assert.equal(hasUnknownModelPrices(items), true);
+  assert.equal(items.reduce((sum, item) => sum + (item.costUSD ?? 0), 0), 10);
+});

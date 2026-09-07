@@ -70,6 +70,9 @@ export interface SharedAccountAttributionResult {
   localCurrentAPIEquivalentUSD: number | null;
   excludedModels: string[];
   excludedCalls: number;
+  /** Explicit model names with no recognized API card; omitted from dollars. */
+  unpricedModels: string[];
+  unpricedCalls: number;
   scannedLocalCurrentAPIEquivalentUSD: number | null;
   scannedLocalRadar20260730EquivalentUSD: number | null;
   historyChangedLowConfidence: boolean;
@@ -300,6 +303,8 @@ export function estimateSharedAccountAttribution({
     localCurrentAPIEquivalentUSD,
     excludedModels: localCurrentEstimate.excludedModels,
     excludedCalls: localCurrentEstimate.excludedCalls,
+    unpricedModels: localCurrentEstimate.unpricedModels,
+    unpricedCalls: localCurrentEstimate.unpricedCalls,
     scannedLocalCurrentAPIEquivalentUSD,
     scannedLocalRadar20260730EquivalentUSD,
     historyChangedLowConfidence,
@@ -491,6 +496,8 @@ function emptyResult(
     localCurrentAPIEquivalentUSD: null,
     excludedModels: [],
     excludedCalls: 0,
+    unpricedModels: [],
+    unpricedCalls: 0,
     scannedLocalCurrentAPIEquivalentUSD: null,
     scannedLocalRadar20260730EquivalentUSD: null,
     historyChangedLowConfidence: false,

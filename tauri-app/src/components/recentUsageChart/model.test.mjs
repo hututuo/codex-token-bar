@@ -822,6 +822,47 @@ test("Spark-only selected range keeps breakdown and calls while reporting indepe
   assert.equal(selection.sevenDay.excludedCalls, 2);
 });
 
+test("named unknown model prices remain visible as a subtotal and block exact attribution", () => {
+  const unknownPoints = [0, 300].map((startUnix) => point(startUnix, {
+    inputTokens: 1_000_000,
+    tokens: 1_000_000,
+    calls: 1,
+    modelBreakdowns: [{
+      model: "future-model",
+      breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+    }],
+  }));
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: unknownPoints,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const selection = quotaConsumptionSelection(data, 0, 1, "gpt56Sol");
+
+  assert.ok(selection);
+  assert.equal(selection.selectedCostUSD, 0);
+  assert.deepEqual(selection.unpricedModels, ["future-model"]);
+  assert.equal(selection.unpricedCalls, 2);
+  assert.deepEqual(selection.sevenDay.unpricedModels, ["future-model"]);
+  assert.equal(selection.sevenDay.unpricedCalls, 2);
+  const attribution = quotaSelectionAttribution(selection, {
+    status: "indistinguishable",
+    priceBasis: "radar20260730",
+    radarPlanTotalUSD: 100,
+    quotaUpdatedAtUnix: 600,
+    quotaDataStale: false,
+    radarDataStale: false,
+    usagePendingQuotaRefresh: false,
+    historyChangedLowConfidence: false,
+    cycleStartUnix: null,
+    cycleEndUnix: null,
+    segmentStartUnix: null,
+  });
+  assert.equal(attribution?.allowsAttributionConclusion, false);
+  assert.deepEqual(attribution?.unpricedModels, ["future-model"]);
+  assert.equal(attribution?.unpricedCalls, 2);
+});
+
 test("quotaConsumptionSelection keeps a flat zero-quota range summary", () => {
   const data = prepareRecentChartData("24h", {
     recentUsage24h: [

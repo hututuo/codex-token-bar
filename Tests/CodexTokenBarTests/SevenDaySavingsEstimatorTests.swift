@@ -96,6 +96,31 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         )
     }
 
+    func testMeasuredSevenDayCarriesUnknownPriceProvenanceIntoPresentation() throws {
+        let resetAt = now.addingTimeInterval(24 * 60 * 60)
+        let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
+        let unknown = TokenCacheAttributionEvent(
+            id: "unknown-price",
+            start: cycleStart.addingTimeInterval(5 * 60),
+            model: "future-model",
+            breakdown: breakdown(input: 1_000_000, calls: 0)
+        )
+
+        let estimate = SubscriptionSavingsEstimator.sevenDayAPIValue(
+            cacheUsage: usage(events: [unknown], complete: true),
+            quotaSnapshot: quota(resetAt: resetAt),
+            fallbackModel: .gpt56Sol,
+            now: now
+        )
+
+        XCTAssertEqual(try XCTUnwrap(estimate.valueUSD), 0, accuracy: 0.000001)
+        XCTAssertEqual(estimate.unpricedModels, ["future-model"])
+        XCTAssertEqual(estimate.unpricedCalls, 0)
+        let presentation = SevenDayAPIValuePresentation(estimate: estimate)
+        XCTAssertTrue(presentation.labelText.contains("已知价小计"))
+        XCTAssertTrue(presentation.helpText.contains("未知价格模型"))
+    }
+
     func testUnalignedSevenDayDropsBothMixedEdgeBucketsWithOneMinuteMargin() {
         let resetAt = now.addingTimeInterval(24 * 60 * 60 + 120)
         let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)

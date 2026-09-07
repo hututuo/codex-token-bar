@@ -322,6 +322,7 @@ struct RecentChartQuotaEstimateOverlay: View {
             currentFiveHourQuotaPresent: currentFiveHourQuotaPresent,
             currentSevenDayQuotaPresent: currentSevenDayQuotaPresent
         )
+        let hasUnknownPrices = !selection.fullCurrentAPIPriceEstimate.unpricedModels.isEmpty
 
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .top, spacing: 8) {
@@ -348,10 +349,15 @@ struct RecentChartQuotaEstimateOverlay: View {
                         Text(presentation.estimateTitle)
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
-                        if showsFiveHourQuota {
+                        if hasUnknownPrices {
+                            Text("部分模型价格未知，暂不反推")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        if showsFiveHourQuota && !hasUnknownPrices {
                             QuotaEstimateChip(presentation: presentation.fiveHourChip, color: .purple)
                         }
-                        if showsSevenDayQuota {
+                        if showsSevenDayQuota && !hasUnknownPrices {
                             QuotaEstimateChip(presentation: presentation.sevenDayChip, color: .green)
                         }
                     }
@@ -365,7 +371,7 @@ struct RecentChartQuotaEstimateOverlay: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    if presentation.showsBudgetRatio {
+                    if presentation.showsBudgetRatio && !hasUnknownPrices {
                         HStack(spacing: 6) {
                             Text(presentation.ratioTitle)
                                 .font(.system(size: 10, weight: .semibold))
@@ -715,7 +721,7 @@ struct QuotaConsumptionSelectionDetailView: View {
                     compactValue("请求", "\(covered.calls)")
                     Divider().frame(height: 30)
                     compactValue(
-                        "当前 API 等值",
+                        selection.sevenDayCurrentAPIPriceEstimate.unpricedModels.isEmpty ? "当前 API 等值" : "已知价格小计",
                         snapshot.attribution.map {
                             QuotaSelectionAttributionPresentation.money(
                                 $0.localCurrentOfficialCostUSD

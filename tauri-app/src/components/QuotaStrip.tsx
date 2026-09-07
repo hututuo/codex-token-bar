@@ -250,7 +250,8 @@ function SharedAccountAttributionDetail({
   onClose: () => void;
   sourceUrl: string;
 }) {
-  const hasLocalCalculation = attribution.localSharePercent !== null
+  const pricesIncomplete = (attribution.unpricedModels?.length ?? 0) > 0;
+  const hasLocalCalculation = !pricesIncomplete && attribution.localSharePercent !== null
     && attribution.localComparableUSD !== null
     && attribution.radarPlanTotalUSD !== null;
   const hasResidualCalculation = hasLocalCalculation
@@ -306,7 +307,7 @@ function SharedAccountAttributionDetail({
 
             <dl className="shared-attribution-details">
               <div>
-                <dt>当前 API 等值</dt>
+                <dt>{pricesIncomplete ? "已知价格小计" : "当前 API 等值"}</dt>
                 <dd>{money(attribution.localCurrentAPIEquivalentUSD)} · {priceModelTitle(attribution.priceModel)}</dd>
               </div>
               {attribution.excludedModels.length > 0 ? (
@@ -1800,6 +1801,7 @@ function compactAttributionText(attribution: SharedAccountAttributionResult): st
 }
 
 function attributionStatusTitle(attribution: SharedAccountAttributionResult): string {
+  if ((attribution.unpricedModels?.length ?? 0) > 0) return "部分模型价格未知";
   if (attribution.status === "nativeHistoryUnsafe") return "本机历史来源正在重新确认";
   if (attribution.status === "persistenceRebaseline") return "损坏记录已隔离并等待新基线";
   if (attribution.quotaDataStale || attribution.radarDataStale) return "旧数据 · 等待刷新";
@@ -1831,6 +1833,9 @@ function attributionStatusTitle(attribution: SharedAccountAttributionResult): st
 }
 
 function attributionStatusDescription(attribution: SharedAccountAttributionResult): string {
+  if ((attribution.unpricedModels?.length ?? 0) > 0) {
+    return `${attribution.unpricedModels.join("、")} 未计入金额，暂不判断共享差额。`;
+  }
   switch (attribution.status) {
     case "disabled":
       return "可在“监控与额度”重新开启；关闭期间不会计算、读取或写入归因数据。";

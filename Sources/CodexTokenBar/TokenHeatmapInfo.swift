@@ -13,6 +13,7 @@ struct HeatmapUsageSummary {
     let isModelShare: Bool
     let modelCostUSD: Double?
     let isModelCost: Bool
+    let hasUnknownPrices: Bool
 
     init(
         title: String,
@@ -26,7 +27,8 @@ struct HeatmapUsageSummary {
         modelBreakdowns: [ModelTokenBreakdown] = [],
         isModelShare: Bool = false,
         modelCostUSD: Double? = nil,
-        isModelCost: Bool = false
+        isModelCost: Bool = false,
+        hasUnknownPrices: Bool = false
     ) {
         self.title = title
         self.tokens = tokens
@@ -40,6 +42,7 @@ struct HeatmapUsageSummary {
         self.isModelShare = isModelShare
         self.modelCostUSD = modelCostUSD
         self.isModelCost = isModelCost
+        self.hasUnknownPrices = hasUnknownPrices
     }
 
     var average: Int {
@@ -57,6 +60,7 @@ struct HeatmapRangeSummary {
     let modelBreakdowns: [ModelTokenBreakdown]
     let modelCostUSD: Double?
     let isModelCost: Bool
+    let hasUnknownPrices: Bool
 
     init(
         title: String,
@@ -67,7 +71,8 @@ struct HeatmapRangeSummary {
         quotaAverageRemainingPercent: Double?,
         modelBreakdowns: [ModelTokenBreakdown] = [],
         modelCostUSD: Double? = nil,
-        isModelCost: Bool = false
+        isModelCost: Bool = false,
+        hasUnknownPrices: Bool = false
     ) {
         self.title = title
         self.dayCount = dayCount
@@ -78,6 +83,7 @@ struct HeatmapRangeSummary {
         self.modelBreakdowns = modelBreakdowns
         self.modelCostUSD = modelCostUSD
         self.isModelCost = isModelCost
+        self.hasUnknownPrices = hasUnknownPrices
     }
 
     var average: Int {
@@ -156,7 +162,7 @@ struct HeatmapHoverInfo: View {
                         .foregroundStyle(.secondary)
                 } else if summary.isModelCost {
                     if let cost = summary.modelCostUSD {
-                        Text(cost.quotaEstimatorMoneyText)
+                        Text("\(summary.hasUnknownPrices ? "已知价格小计 " : "")\(cost.quotaEstimatorMoneyText)")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(ModelUsagePresentation.dominantColor(from: summary.modelBreakdowns) ?? .secondary)
                         ModelCostInlineSummary(
@@ -236,7 +242,7 @@ struct HeatmapHoverInfo: View {
                         .foregroundStyle(.secondary)
                 } else if rangeSummary.isModelCost {
                     if let cost = rangeSummary.modelCostUSD {
-                        Text(cost.quotaEstimatorMoneyText)
+                        Text("\(rangeSummary.hasUnknownPrices ? "已知价格小计 " : "")\(cost.quotaEstimatorMoneyText)")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(ModelUsagePresentation.dominantColor(from: rangeSummary.modelBreakdowns) ?? .secondary)
                         ModelCostInlineSummary(

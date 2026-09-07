@@ -13,7 +13,15 @@ struct SubscriptionSavingsEstimate: Equatable {
     let fallbackModelCalls: Int
     let excludedModels: [String]
     let excludedCalls: Int
+    /// Explicit model names whose API price is unknown; their dollars are
+    /// intentionally omitted from `apiEquivalentUSD`.
+    let unpricedModels: [String]
+    let unpricedCalls: Int
     let firstUsageAt: Date
+
+    var hasUnpricedUsage: Bool {
+        !unpricedModels.isEmpty || unpricedCalls > 0
+    }
 }
 
 enum SubscriptionSavingsEstimator {
@@ -44,7 +52,11 @@ enum SubscriptionSavingsEstimator {
         let normalizedPlanName = normalizedPlanName(planLabel)
         let monthlyPlanUSD = monthlyPlanPriceUSD(planLabel)
         let subscriptionCostUSD = monthlyPlanUSD.map { $0 * Double(billingMonths) }
-        let netSavingsUSD = subscriptionCostUSD.map { apiEquivalentUSD - $0 }
+        // `costUSD` is a known-price subtotal when named model cards are
+        // missing. It must not be presented as an exact net saving.
+        let netSavingsUSD = apiPrice.unpricedModels.isEmpty && apiPrice.unpricedCalls == 0
+            ? subscriptionCostUSD.map { apiEquivalentUSD - $0 }
+            : nil
 
         return SubscriptionSavingsEstimate(
             apiEquivalentUSD: apiEquivalentUSD,
@@ -58,6 +70,8 @@ enum SubscriptionSavingsEstimator {
             fallbackModelCalls: apiPrice.fallbackCalls,
             excludedModels: apiPrice.excludedModels,
             excludedCalls: apiPrice.excludedCalls,
+            unpricedModels: apiPrice.unpricedModels,
+            unpricedCalls: apiPrice.unpricedCalls,
             firstUsageAt: firstUsageAt
         )
     }
@@ -122,14 +136,28 @@ struct SubscriptionSavingsPresentation: Equatable {
             helpText = "\(Self.pricingDescription(estimate))：API 等值 \(Self.fullMoney(estimate.apiEquivalentUSD)) − \(estimate.normalizedPlanName) \(estimate.billingMonths) 个月套餐成本 \(Self.fullMoney(subscriptionCostUSD))（\(Self.fullMoney(monthlyPlanUSD))/月）= \(Self.fullMoney(netSavingsUSD))。历史套餐变化未计入。"
         } else {
             valueText = Self.compactMoney(estimate.apiEquivalentUSD)
-            labelText = "API 等值（估）"
-            helpText = "\(Self.pricingDescription(estimate))为 \(Self.fullMoney(estimate.apiEquivalentUSD))；\(estimate.normalizedPlanName) 没有公开固定月费，暂不计算净节省。"
+            labelText = estimate.hasUnpricedUsage ? "API 已知价小计（估）" : "API 等值（估）"
+            let planDescription = if estimate.hasUnpricedUsage {
+                if let subscriptionCostUSD = estimate.subscriptionCostUSD,
+                   let monthlyPlanUSD = estimate.monthlyPlanUSD {
+                    "\(estimate.normalizedPlanName) 套餐成本为 \(Self.fullMoney(subscriptionCostUSD))（\(Self.fullMoney(monthlyPlanUSD))/月），因部分模型价格未知，暂不计算净节省"
+                } else {
+                    "因部分模型价格未知，暂不计算净节省"
+                }
+            } else {
+                "\(estimate.normalizedPlanName) 没有公开固定月费，暂不计算净节省"
+            }
+            helpText = "\(Self.pricingDescription(estimate))为 \(Self.fullMoney(estimate.apiEquivalentUSD))；\(planDescription)。"
         }
     }
 
     private static func pricingDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
         let models = estimate.detectedModels.map(\.quotaEstimateShortTitle)
         guard !models.isEmpty else {
+            if estimate.hasUnpricedUsage {
+                return unpricedDescription(estimate)
+                    + excludedDescription(estimate)
+            }
             if estimate.fallbackModelCalls == 0, !estimate.excludedModels.isEmpty {
                 return standaloneExcludedDescription(estimate)
             }
@@ -140,7 +168,8 @@ struct SubscriptionSavingsPresentation: Equatable {
         let fallback = estimate.fallbackModelCalls > 0
             ? "，另有 \(estimate.fallbackModelCalls) 次未知记录按 \(estimate.priceModel.quotaEstimateShortTitle) 回退"
             : ""
-        return automatic + fallback + excludedDescription(estimate)
+        let unpriced = estimate.hasUnpricedUsage ? "；\(unpricedDescription(estimate))" : ""
+        return automatic + fallback + unpriced + excludedDescription(estimate)
     }
 
     private static func excludedDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
@@ -150,6 +179,11 @@ struct SubscriptionSavingsPresentation: Equatable {
 
     private static func standaloneExcludedDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
         "\(estimate.excludedModels.joined(separator: "/")) \(estimate.excludedCalls) 次调用属于独立额度，不参与 API 等值"
+    }
+
+    private static func unpricedDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
+        guard estimate.hasUnpricedUsage else { return "" }
+        return "未知价格模型 \(estimate.unpricedModels.joined(separator: "/")) \(estimate.unpricedCalls) 次调用未计入 API 等值"
     }
 
     static func compactMoney(_ value: Double) -> String {
@@ -190,6 +224,14 @@ struct SevenDayAPIValueEstimate: Equatable, Sendable {
     let fallbackModelCalls: Int
     let excludedModels: [String]
     let excludedCalls: Int
+    /// Explicit model names whose API price is unknown; their dollars are
+    /// intentionally omitted from `valueUSD`.
+    let unpricedModels: [String]
+    let unpricedCalls: Int
+
+    var hasUnpricedUsage: Bool {
+        !unpricedModels.isEmpty || unpricedCalls > 0
+    }
 
     var isAvailable: Bool { valueUSD != nil }
 
@@ -203,7 +245,9 @@ struct SevenDayAPIValueEstimate: Equatable, Sendable {
             detectedModels: [],
             fallbackModelCalls: 0,
             excludedModels: [],
-            excludedCalls: 0
+            excludedCalls: 0,
+            unpricedModels: [],
+            unpricedCalls: 0
         )
     }
 }
@@ -222,11 +266,13 @@ struct SevenDayAPIValuePresentation: Equatable {
             helpText = reason
         case .measured:
             valueText = estimate.valueUSD.map(SubscriptionSavingsPresentation.compactMoney) ?? "待读取"
-            labelText = label
+            labelText = estimate.hasUnpricedUsage ? "本7d API 已知价小计（估）" : label
             helpText = Self.helpText(for: estimate, quality: "已完成逐事件读取，按历史真实模型的当前 API 单价估算")
         case .estimated(let source):
             valueText = estimate.valueUSD.map(SubscriptionSavingsPresentation.compactMoney) ?? "待读取"
-            labelText = "本7d API 等值（估算，精确计算中）"
+            labelText = estimate.hasUnpricedUsage
+                ? "本7d API 已知价小计（估算，精确计算中）"
+                : "本7d API 等值（估算，精确计算中）"
             helpText = Self.helpText(
                 for: estimate,
                 quality: "正在精准计算中，先按同周期 " + source + " 快速估算；结果仍可能随精确读取变化"
@@ -245,7 +291,9 @@ struct SevenDayAPIValuePresentation: Equatable {
         }
         text += "：\(quality)"
         if let valueUSD = estimate.valueUSD {
-            text += "，API 等值 \(SubscriptionSavingsPresentation.fullMoney(valueUSD))"
+            text += estimate.hasUnpricedUsage
+                ? "，已知价格 API 小计 \(SubscriptionSavingsPresentation.fullMoney(valueUSD))"
+                : "，API 等值 \(SubscriptionSavingsPresentation.fullMoney(valueUSD))"
         }
         if estimate.boundaryBreakdown.hasUsage {
             text += "；边缘桶独立统计 \(estimate.boundaryBreakdown.totalTokens.abbreviatedTokens) Token"
@@ -258,6 +306,9 @@ struct SevenDayAPIValuePresentation: Equatable {
         }
         if !estimate.excludedModels.isEmpty {
             text += "；\(estimate.excludedModels.joined(separator: "/")) \(estimate.excludedCalls) 次调用属于独立额度，不参与 API 等值"
+        }
+        if estimate.hasUnpricedUsage {
+            text += "；未知价格模型 \(estimate.unpricedModels.joined(separator: "/")) \(estimate.unpricedCalls) 次调用未计入 API 等值，以上为已知价格小计"
         }
         return text
     }
@@ -313,7 +364,9 @@ extension SubscriptionSavingsEstimator {
                 detectedModels: price.detectedModels,
                 fallbackModelCalls: price.fallbackCalls,
                 excludedModels: price.excludedModels,
-                excludedCalls: price.excludedCalls
+                excludedCalls: price.excludedCalls,
+                unpricedModels: price.unpricedModels,
+                unpricedCalls: price.unpricedCalls
             )
         }
 
@@ -338,7 +391,9 @@ extension SubscriptionSavingsEstimator {
                 detectedModels: [],
                 fallbackModelCalls: 0,
                 excludedModels: [],
-                excludedCalls: 0
+                excludedCalls: 0,
+                unpricedModels: [],
+                unpricedCalls: 0
             )
         }
 
@@ -369,7 +424,9 @@ extension SubscriptionSavingsEstimator {
             detectedModels: price.detectedModels,
             fallbackModelCalls: price.fallbackCalls,
             excludedModels: price.excludedModels,
-            excludedCalls: price.excludedCalls
+            excludedCalls: price.excludedCalls,
+            unpricedModels: price.unpricedModels,
+            unpricedCalls: price.unpricedCalls
         )
     }
 

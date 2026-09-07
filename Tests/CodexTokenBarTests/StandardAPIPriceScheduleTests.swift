@@ -92,6 +92,9 @@ final class StandardAPIPriceScheduleTests: XCTestCase {
 
     func testMissingDateDoesNotSilentlyUseCurrentAndUnknownAliasesAreUnpriced() {
         XCTAssertNil(StandardAPIPriceSchedule.quote(for: "gpt-5.6-sol", at: nil))
+        XCTAssertNil(StandardAPIPriceSchedule.quote(for: "gpt-5.6", at: date("2026-08-21T00:00:00Z")))
+        XCTAssertNil(StandardAPIPriceSchedule.quote(for: "gpt5.6", at: date("2026-08-21T00:00:00Z")))
+        XCTAssertNil(StandardAPIPriceSchedule.quote(for: "gpt56", at: date("2026-08-21T00:00:00Z")))
         XCTAssertNil(StandardAPIPriceSchedule.quote(for: "codex-auto-review", at: date("2026-08-21T00:00:00Z")))
         XCTAssertNil(StandardAPIPriceSchedule.quote(for: "gpt-5.3-codex-spark", at: date("2026-08-21T00:00:00Z")))
         XCTAssertNil(StandardAPIPriceSchedule.currentQuote(for: "unknown-model"))

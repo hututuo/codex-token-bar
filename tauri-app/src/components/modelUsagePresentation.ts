@@ -80,29 +80,40 @@ export function dominantModelColor(rows: ModelUsageRowLike[] | null | undefined)
 }
 
 export function modelUsageKey(model: string | null | undefined, eventStartUnix?: number): string {
-  const normalized = (model ?? "").trim().toLowerCase().replaceAll("_", "-");
+  const original = (model ?? "").trim();
+  const normalized = original.toLowerCase().replaceAll("_", "-");
   if (!normalized) return "unknown";
+  if (normalized.startsWith("codex-auto-review@")) return normalized;
   const compact = normalized.replace(/[^a-z0-9]/g, "");
   if (compact === "gpt6astra") return "gpt-6-astra";
   if (compact === "gpt53codexspark") return "gpt-5.3-codex-spark";
   if (compact === "codexautoreview") {
     return detectedOfficialAPIPriceModel(model, eventStartUnix) === "gpt54Legacy"
-      ? "gpt-5.4"
-      : "gpt-5.6-luna";
+      ? "codex-auto-review@5.4"
+      : "codex-auto-review@luna";
   }
   if (compact === "gpt53codex") return "gpt-5.3-codex";
   if (compact === "gpt52codex") return "gpt-5.2-codex";
-  // A bare GPT-5.6 slug does not identify the Sol/Terra/Luna lane. Keep it
-  // visible as a generic model instead of silently attributing it to Sol.
-  if (normalized === "gpt-5.6" || normalized === "gpt-5.6-generic") return "gpt-5.6-generic";
-  if (normalized.includes("gpt-5.6")) {
-    if (normalized.includes("luna")) return "gpt-5.6-luna";
-    if (normalized.includes("terra")) return "gpt-5.6-terra";
-    return "gpt-5.6-sol";
+  // Only explicit, known aliases may collapse. Future model IDs retain their
+  // source spelling; sharing a family prefix is not proof of a model identity.
+  switch (detectedOfficialAPIPriceModel(model)) {
+    case "gpt56Sol":
+      return ["gpt-5.6", "gpt5.6", "gpt56"].includes(normalized) ? original : "gpt-5.6-sol";
+    case "gpt56Terra": return "gpt-5.6-terra";
+    case "gpt56Luna": return "gpt-5.6-luna";
+    case "gpt55": return "gpt-5.5";
+    case "gpt54Legacy": return "gpt-5.4";
+    case "gpt54MiniLegacy": return "gpt-5.4-mini";
   }
-  if (normalized.includes("gpt-5.4-mini")) return "gpt-5.4-mini";
-  if (normalized.includes("gpt-5.4")) return "gpt-5.4";
-  return normalized;
+  return original;
+}
+
+/** The compact surface groups Review with its dated underlying model only. */
+export function floatingModelUsageKey(model: string | null | undefined, eventStartUnix?: number): string {
+  const key = modelUsageKey(model, eventStartUnix);
+  if (key === "codex-auto-review@luna") return "gpt-5.6-luna";
+  if (key === "codex-auto-review@5.4") return "gpt-5.4";
+  return key;
 }
 
 export function modelUsageLabel(model: string | null | undefined): string {
@@ -112,6 +123,9 @@ export function modelUsageLabel(model: string | null | undefined): string {
     case "gpt-5.6-terra": return "Terra";
     case "gpt-5.6-luna": return "Luna";
     case "gpt-5.6-generic": return "5.6（未分型）";
+    case "codex-auto-review@luna": return "Auto Review（Luna）";
+    case "codex-auto-review@5.4": return "Auto Review（5.4）";
+    case "gpt-5.5": return "5.5";
     case "gpt-5.4-mini": return "5.4 m";
     case "gpt-5.4": return "5.4";
     case "gpt-5.3-codex": return "5.3";
@@ -123,7 +137,7 @@ export function modelUsageLabel(model: string | null | undefined): string {
 }
 
 export function modelUsageColor(keyOrModel: string | null | undefined): string {
-  const key = modelUsageKey(keyOrModel);
+  const key = floatingModelUsageKey(keyOrModel);
   const fixed = FIXED_COLORS[key];
   if (fixed) return fixed;
   let hash = 0x811c9dc5;

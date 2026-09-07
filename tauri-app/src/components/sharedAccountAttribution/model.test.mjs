@@ -196,6 +196,26 @@ test("shared-account API values use complete historical model rows before the fa
   assert.equal(result.localComparableUSD, 7);
 });
 
+test("shared-account API values preserve named unknown price provenance, including zero-call rows", () => {
+  const mixedBucket = bucket(0, 2_000_000, {
+    calls: 1,
+    modelTrackingComplete: true,
+    modelBreakdowns: [
+      { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } },
+      { model: "future-model", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 0 } },
+    ],
+  });
+  const result = estimate({
+    buckets: [mixedBucket],
+    scannedBuckets: [mixedBucket],
+    priceModel: "gpt56Luna",
+  });
+
+  assert.equal(result.localCurrentAPIEquivalentUSD, 4);
+  assert.deepEqual(result.unpricedModels, ["future-model"]);
+  assert.equal(result.unpricedCalls, 0);
+});
+
 test("shared-account Spark usage keeps tokens/calls but is excluded from local dollars", () => {
   const sparkBucket = bucket(0, 2_000_000, {
     calls: 2,

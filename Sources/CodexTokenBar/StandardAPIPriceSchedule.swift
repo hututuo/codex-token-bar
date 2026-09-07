@@ -52,8 +52,7 @@ enum StandardAPIPriceSchedule {
         switch key {
         case "gpt-6-astra", "gpt6-astra", "gpt6astra":
             return "gpt-6-astra"
-        case "gpt-5.6", "gpt5.6", "gpt56", "gpt-5.6-sol", "gpt5.6-sol",
-             "gpt56-sol", "gpt56sol":
+        case "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol":
             return "gpt-5.6-sol"
         case "gpt-5.5", "gpt5.5", "gpt55":
             return "gpt-5.5"

@@ -1,6 +1,7 @@
 import type { RecentUsagePoint } from "../../types/dashboard";
 import {
   modelAwareAPICostUSD,
+  type ModelAwareAPICostEstimate,
   type ModelTokenCostRow,
   type OfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
@@ -210,6 +211,9 @@ export interface QuotaConsumptionEstimate {
   confidence: QuotaConsumptionConfidence;
   excludedModels: string[];
   excludedCalls: number;
+  /** Explicit model names with no recognized API card; omitted from dollars. */
+  unpricedModels: string[];
+  unpricedCalls: number;
 }
 
 export interface QuotaConsumptionSelection {
@@ -230,6 +234,9 @@ export interface QuotaConsumptionSelection {
   sevenDayModelBreakdowns: ModelTokenCostRow[];
   excludedModels: string[];
   excludedCalls: number;
+  /** Explicit model names with no recognized API card; omitted from dollars. */
+  unpricedModels: string[];
+  unpricedCalls: number;
   fiveHour: QuotaConsumptionEstimate;
   sevenDay: QuotaConsumptionEstimate;
   sevenDayToFiveHourBudgetRatio: number | null;
@@ -254,6 +261,9 @@ export interface QuotaSelectionAttributionResult {
   localCurrentAPIEquivalentUSD: number;
   excludedModels: string[];
   excludedCalls: number;
+  /** Explicit model names with no recognized API card; omitted from dollars. */
+  unpricedModels: string[];
+  unpricedCalls: number;
   radarSevenDayTotalUSD: number | null;
   allowsAttributionConclusion: boolean;
 }
@@ -960,6 +970,7 @@ export function quotaConsumptionSelection(
     fiveHourBoundaryBreakdown,
     fiveHourComparisonPoints,
     data.bucketSeconds,
+    selectedEstimate,
   );
   const sevenDay = quotaConsumptionEstimate(
     breakdown,
@@ -971,6 +982,7 @@ export function quotaConsumptionSelection(
     sevenDayBoundaryBreakdown,
     sevenDayComparisonPoints,
     data.bucketSeconds,
+    selectedEstimate,
   );
   const ratio = fiveHour.impliedWindowBudgetUSD && sevenDay.impliedWindowBudgetUSD
     ? sevenDay.impliedWindowBudgetUSD / fiveHour.impliedWindowBudgetUSD
@@ -994,6 +1006,8 @@ export function quotaConsumptionSelection(
     sevenDayModelBreakdowns,
     excludedModels: selectedEstimate.excludedModels,
     excludedCalls: selectedEstimate.excludedCalls,
+    unpricedModels: selectedEstimate.unpricedModels,
+    unpricedCalls: selectedEstimate.unpricedCalls,
     fiveHour,
     sevenDay,
     sevenDayToFiveHourBudgetRatio: ratio,
@@ -1228,6 +1242,7 @@ function quotaConsumptionEstimate(
   boundaryBreakdown: QuotaConsumptionBoundaryBreakdown,
   comparisonPoints: RecentUsagePoint[],
   bucketSeconds: number,
+  selectedEstimate: ReturnType<typeof modelAwareAPICostUSD>,
 ): QuotaConsumptionEstimate {
   const drop = Math.max(resolution.percent ?? 0, 0);
   const hasTokenUsage = comparisonBreakdown.totalTokens > 0
@@ -1263,6 +1278,8 @@ function quotaConsumptionEstimate(
     confidence,
     excludedModels: comparisonEstimate.excludedModels,
     excludedCalls: comparisonEstimate.excludedCalls,
+    unpricedModels: mergePriceModelNames(selectedEstimate, comparisonEstimate),
+    unpricedCalls: Math.max(selectedEstimate.unpricedCalls, comparisonEstimate.unpricedCalls),
   };
 }
 
@@ -1294,8 +1311,20 @@ export function quotaSelectionAttribution(
         comparisonBreakdown,
         selection.priceModel,
         context.priceBasis,
-      );
+  );
   const localComparableCostUSD = localComparableEstimate?.costUSD ?? null;
+  const provenanceSources: Array<Pick<ModelAwareAPICostEstimate, "unpricedModels" | "unpricedCalls">> = [
+    localCurrentAPIEquivalent,
+    ...(localComparableEstimate ? [localComparableEstimate] : []),
+    context,
+    selection.sevenDay,
+  ];
+  const unpricedModels = mergePriceModelNames(...provenanceSources);
+  const unpricedCalls = Math.max(...provenanceSources.map((source) => (
+    typeof source.unpricedCalls === "number" && Number.isFinite(source.unpricedCalls)
+      ? source.unpricedCalls
+      : 0
+  )));
   const radarSevenDayTotalUSD = context.radarPlanTotalUSD !== null
     && Number.isFinite(context.radarPlanTotalUSD)
     && context.radarPlanTotalUSD > 0
@@ -1324,6 +1353,8 @@ export function quotaSelectionAttribution(
     && !context.radarDataStale
     && !context.usagePendingQuotaRefresh
     && !context.historyChangedLowConfidence
+    && unpricedModels.length === 0
+    && unpricedCalls === 0
     && selection.sevenDay.comparisonStartUnix === selection.startUnix
     && (context.cycleStartUnix === null || selection.startUnix >= context.cycleStartUnix)
     && (context.cycleEndUnix === null || selection.endUnix <= context.cycleEndUnix)
@@ -1352,9 +1383,24 @@ export function quotaSelectionAttribution(
     localCurrentAPIEquivalentUSD: localCurrentAPIEquivalent.costUSD,
     excludedModels: localCurrentAPIEquivalent.excludedModels,
     excludedCalls: localCurrentAPIEquivalent.excludedCalls,
+    unpricedModels,
+    unpricedCalls,
     radarSevenDayTotalUSD,
     allowsAttributionConclusion,
   };
+}
+
+function mergePriceModelNames(
+  ...sources: Array<Pick<ModelAwareAPICostEstimate, "unpricedModels" | "unpricedCalls">>
+): string[] {
+  const names: string[] = [];
+  for (const source of sources) {
+    const models = Array.isArray(source.unpricedModels) ? source.unpricedModels : [];
+    for (const name of models) {
+      if (!names.includes(name)) names.push(name);
+    }
+  }
+  return names;
 }
 
 interface QuotaDropResolution {

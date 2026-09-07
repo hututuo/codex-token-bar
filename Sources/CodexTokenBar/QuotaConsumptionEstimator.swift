@@ -60,19 +60,27 @@ struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
     /// Models on an independent quota; retained in token/model stats but never priced.
     let excludedModels: [String]
     let excludedCalls: Int
+    /// Explicit model names with no recognized API card; their dollar
+    /// contribution is intentionally omitted from this estimate.
+    let unpricedModels: [String]
+    let unpricedCalls: Int
 
     init(
         costUSD: Double,
         detectedModels: [OfficialAPIPriceModel],
         fallbackCalls: Int,
         excludedModels: [String] = [],
-        excludedCalls: Int = 0
+        excludedCalls: Int = 0,
+        unpricedModels: [String] = [],
+        unpricedCalls: Int = 0
     ) {
         self.costUSD = costUSD
         self.detectedModels = detectedModels
         self.fallbackCalls = fallbackCalls
         self.excludedModels = excludedModels
         self.excludedCalls = excludedCalls
+        self.unpricedModels = unpricedModels
+        self.unpricedCalls = unpricedCalls
     }
 }
 
@@ -309,29 +317,53 @@ enum ModelAwareAPIPriceEstimator {
         let excludedCalls = independentRows.reduce(0) { total, row in
             total + max(row.1.calls, 0)
         }
+        let explicitlyUnpricedRows = rows.compactMap { row -> (String, TokenCacheBreakdown)? in
+            guard row.detectedModel == nil,
+                  OfficialAPIPriceModel.independentQuotaModelName(from: row.model) == nil,
+                  let model = row.model,
+                  !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            return (model, row.breakdown)
+        }
+        let unpricedBreakdown = explicitlyUnpricedRows.map(\.1).combined
+        let unpricedModels = explicitlyUnpricedRows.reduce(into: [String]()) { names, row in
+            if !names.contains(row.0) { names.append(row.0) }
+        }
+        let unpricedCalls = explicitlyUnpricedRows.reduce(0) { total, row in
+            total + max(row.1.calls, 0)
+        }
         let coveredBreakdown = rows.map(\.breakdown).combined
         guard coveredBreakdown.inputTokens == fallbackBreakdown.inputTokens,
               coveredBreakdown.cachedInputTokens == fallbackBreakdown.cachedInputTokens,
               coveredBreakdown.outputTokens == fallbackBreakdown.outputTokens,
               coveredBreakdown.calls == fallbackBreakdown.calls else {
             return fallback(
-                breakdown: fallbackBreakdown.subtracting(excludedBreakdown),
+                breakdown: fallbackBreakdown
+                    .subtracting(excludedBreakdown)
+                    .subtracting(unpricedBreakdown),
                 model: fallbackModel,
                 rates: rates,
                 excludedModels: excludedModels,
-                excludedCalls: excludedCalls
+                excludedCalls: excludedCalls,
+                unpricedModels: unpricedModels,
+                unpricedCalls: unpricedCalls
             )
         }
         var grouped: [OfficialAPIPriceModel: [TokenCacheBreakdown]] = [:]
-        var fallbackBreakdowns: [TokenCacheBreakdown] = []
+        var fallbackRows: [PricingRow] = []
         for row in rows {
             if OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil {
                 // Collected above so incomplete model rows can also fail closed
                 // without charging this independent quota to the fallback.
             } else if let detected = row.detectedModel {
                 grouped[detected, default: []].append(row.breakdown)
+            } else if !(row.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+                // Collected before the coverage guard so complete and partial
+                // model projections use the same explicit unknown metadata.
+                continue
             } else {
-                fallbackBreakdowns.append(row.breakdown)
+                fallbackRows.append(row)
             }
         }
         let knownCost = rows.reduce(0.0) { partial, row in
@@ -342,15 +374,18 @@ enum ModelAwareAPIPriceEstimator {
             let rowRates = row.historicalQuote?.rates ?? rates(detected)
             return partial + rowRates.costUSD(for: row.breakdown)
         }
-        let unknownBreakdown = fallbackBreakdowns.combined
+        let unknownBreakdown = fallbackRows.map(\.breakdown).combined
         return ModelAwareAPIPriceEstimate(
-            costUSD: knownCost + rows.filter {
-                $0.detectedModel == nil && OfficialAPIPriceModel.independentQuotaModelName(from: $0.model) == nil
-            }.reduce(0.0) { $0 + ($1.historicalQuote?.rates ?? rates(fallbackModel)).costUSD(for: $1.breakdown) },
+            costUSD: knownCost + fallbackRows.reduce(0.0) { partial, row in
+                let rowRates = row.historicalQuote?.rates ?? rates(fallbackModel)
+                return partial + rowRates.costUSD(for: row.breakdown)
+            },
             detectedModels: OfficialAPIPriceModel.allCases.filter { grouped[$0] != nil },
             fallbackCalls: unknownBreakdown.calls,
             excludedModels: excludedModels,
-            excludedCalls: excludedCalls
+            excludedCalls: excludedCalls,
+            unpricedModels: unpricedModels,
+            unpricedCalls: unpricedCalls
         )
     }
 
@@ -359,14 +394,18 @@ enum ModelAwareAPIPriceEstimator {
         model: OfficialAPIPriceModel,
         rates: (OfficialAPIPriceModel) -> APIPriceRates,
         excludedModels: [String] = [],
-        excludedCalls: Int = 0
+        excludedCalls: Int = 0,
+        unpricedModels: [String] = [],
+        unpricedCalls: Int = 0
     ) -> ModelAwareAPIPriceEstimate {
         ModelAwareAPIPriceEstimate(
             costUSD: rates(model).costUSD(for: breakdown),
             detectedModels: [],
             fallbackCalls: breakdown.calls,
             excludedModels: excludedModels,
-            excludedCalls: excludedCalls
+            excludedCalls: excludedCalls,
+            unpricedModels: unpricedModels,
+            unpricedCalls: unpricedCalls
         )
     }
 }
@@ -488,6 +527,7 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
         if let autoReviewModel = CodexAutoReviewPricingPolicy.effectiveModel(
             for: rawValue,
             at: eventDate
@@ -497,7 +537,7 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         switch key {
         case "gpt-6-astra", "gpt6-astra", "gpt6astra", "gpt 6 astra":
             return .gpt6Astra
-        case "gpt-5.6", "gpt5.6", "gpt56", "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol":
+        case "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol":
             return .gpt56Sol
         case "gpt-5.5", "gpt5.5", "gpt55", "gpt 5.5":
             return .gpt55

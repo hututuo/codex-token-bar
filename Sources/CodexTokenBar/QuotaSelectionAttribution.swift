@@ -21,6 +21,8 @@ struct QuotaSelectionAttributionContext: Equatable {
     let localHistoryAmbiguous: Bool
     let usedHighWatermark: Bool
     let hasFinalAttributionConclusion: Bool
+    let unpricedModels: [String]
+    let unpricedCalls: Int
 
     init(
         sourceState: SharedAccountUsageAttributionState,
@@ -42,7 +44,9 @@ struct QuotaSelectionAttributionContext: Equatable {
         usagePendingQuotaRefresh: Bool,
         localHistoryAmbiguous: Bool,
         usedHighWatermark: Bool,
-        hasFinalAttributionConclusion: Bool
+        hasFinalAttributionConclusion: Bool,
+        unpricedModels: [String] = [],
+        unpricedCalls: Int = 0
     ) {
         self.sourceState = sourceState
         self.tier = tier
@@ -64,6 +68,8 @@ struct QuotaSelectionAttributionContext: Equatable {
         self.localHistoryAmbiguous = localHistoryAmbiguous
         self.usedHighWatermark = usedHighWatermark
         self.hasFinalAttributionConclusion = hasFinalAttributionConclusion
+        self.unpricedModels = unpricedModels
+        self.unpricedCalls = unpricedCalls
     }
 
     init(result: SharedAccountUsageAttributionResult) {
@@ -87,6 +93,8 @@ struct QuotaSelectionAttributionContext: Equatable {
         localHistoryAmbiguous = result.localHistoryAmbiguous
         usedHighWatermark = result.usedHighWatermark
         hasFinalAttributionConclusion = result.hasFinalAttributionConclusion
+        unpricedModels = result.unpricedModels
+        unpricedCalls = result.unpricedCalls
     }
 }
 
@@ -109,6 +117,9 @@ struct QuotaSelectionAttributionResult: Equatable {
     let fallbackModelCalls: Int
     let excludedModels: [String]
     let excludedCalls: Int
+    /// Explicit model names with no recognized API card; omitted from dollars.
+    let unpricedModels: [String]
+    let unpricedCalls: Int
     let priceRevision: SharedAccountRadarPriceRevision
     let accountDropBasis: QuotaConsumptionDropBasis
     let accountDropPercent: Double?
@@ -207,7 +218,18 @@ enum QuotaSelectionAttributionEstimator {
             selection: selection,
             context: context
         )
-        let allowsConclusion = caveats.isEmpty
+        var pricingCaveats = caveats
+        if !comparableEstimate.unpricedModels.isEmpty || comparableEstimate.unpricedCalls > 0 {
+            pricingCaveats.append(
+                "未知价格模型 \(comparableEstimate.unpricedModels.joined(separator: "/")) \(comparableEstimate.unpricedCalls) 次调用未计入 API 等值。"
+            )
+        }
+        if !context.unpricedModels.isEmpty || context.unpricedCalls > 0 {
+            pricingCaveats.append(
+                "共享账号结果含未知价格模型 \(context.unpricedModels.joined(separator: "/")) \(context.unpricedCalls) 次调用，当前仅显示已知价格小计。"
+            )
+        }
+        let allowsConclusion = pricingCaveats.isEmpty
         let state: QuotaSelectionAttributionState
         if !allowsConclusion {
             state = .provisional
@@ -227,6 +249,8 @@ enum QuotaSelectionAttributionEstimator {
             fallbackModelCalls: comparableEstimate.fallbackCalls,
             excludedModels: comparableEstimate.excludedModels,
             excludedCalls: comparableEstimate.excludedCalls,
+            unpricedModels: comparableEstimate.unpricedModels,
+            unpricedCalls: comparableEstimate.unpricedCalls,
             priceRevision: context.priceRevision,
             accountDropBasis: selection.sevenDay.quotaDropBasis,
             accountDropPercent: accountDrop,
@@ -236,7 +260,7 @@ enum QuotaSelectionAttributionEstimator {
             localSharePercent: localShare,
             nonLocalDifferencePercent: difference,
             allowsAttributionConclusion: allowsConclusion,
-            caveats: caveats,
+            caveats: deduplicated(pricingCaveats),
             radarBasis: context.radarBasis,
             radarDate: context.radarDate,
             radarPricingBasisDate: context.radarPricingBasisDate,
@@ -349,6 +373,8 @@ enum QuotaSelectionAttributionEstimator {
             fallbackModelCalls: (comparableEstimate ?? currentOfficialEstimate).fallbackCalls,
             excludedModels: (comparableEstimate ?? currentOfficialEstimate).excludedModels,
             excludedCalls: (comparableEstimate ?? currentOfficialEstimate).excludedCalls,
+            unpricedModels: (comparableEstimate ?? currentOfficialEstimate).unpricedModels,
+            unpricedCalls: (comparableEstimate ?? currentOfficialEstimate).unpricedCalls,
             priceRevision: context.priceRevision,
             accountDropBasis: accountDropBasis,
             accountDropPercent: accountDrop,

@@ -35,7 +35,8 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
                 let referenceCost = referenceCostUSD?.quotaEstimatorMoneyText ?? "—"
                 return "\(referenceCost)（不计入总计）"
             }
-            return (costUSD ?? 0).quotaEstimatorMoneyText
+            guard let costUSD else { return "价格未知" }
+            return costUSD.quotaEstimatorMoneyText
         }
     }
 }
@@ -102,24 +103,38 @@ enum FloatingTodayModelUsagePresentation {
         ),
     ]
 
-    static func items(
+    static func rowsForFloatingWindow(
         from rows: [ModelTokenBreakdown],
-        fallbackModel: OfficialAPIPriceModel,
-        showPlaceholders: Bool = false
-    ) -> [FloatingTodayModelUsageItem] {
-        // The floating strip intentionally spends one slot on Luna. Auto-review
-        // is a backend alias, so it follows the current Luna route here instead
-        // of taking a separate slot from the compact surface.
-        let floatingRows = rows.map { row in
-            guard ModelUsagePresentation.isAutoReviewModelKey(row.model) else {
+        mergeAutoReview: Bool
+    ) -> [ModelTokenBreakdown] {
+        let presentationRows = ModelUsagePresentation.rowsWithDatedAutoReviewTargets(from: rows)
+        guard mergeAutoReview else { return presentationRows }
+        return presentationRows.map { row in
+            guard let targetKey = ModelUsagePresentation.autoReviewUnderlyingModelKey(for: row.model) else {
                 return row
             }
             return ModelTokenBreakdown(
-                model: "gpt-5.6-luna",
+                model: targetKey,
                 breakdown: row.breakdown,
-                pricePeriods: row.pricePeriods
+                pricePeriods: row.pricingRows
             )
         }
+    }
+
+    static func items(
+        from rows: [ModelTokenBreakdown],
+        fallbackModel: OfficialAPIPriceModel,
+        showPlaceholders: Bool = false,
+        mergeAutoReview: Bool = false
+    ) -> [FloatingTodayModelUsageItem] {
+        // The dashboard keeps dated Auto Review rows visible. The compact
+        // floating window opts into merging them into their underlying model
+        // so a dated 5.4/Luna route consumes the same model slot as its normal
+        // row while retaining each input's pricing periods.
+        let floatingRows = rowsForFloatingWindow(
+            from: rows,
+            mergeAutoReview: mergeAutoReview
+        )
         let combined = ModelUsagePresentation.combinedRows(floatingRows)
         let total = combined.reduce(0) { $0 + $1.breakdown.totalTokens }
         guard total > 0 || showPlaceholders else { return [] }
@@ -142,7 +157,19 @@ enum FloatingTodayModelUsagePresentation {
         )
         return rowsByKey.map { key, row in
             let independent = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil
-            let costUSD: Double? = independent ? nil : ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: [row], fallbackBreakdown: row.breakdown, fallbackModel: fallbackModel, standardAPI: true, rates: { $0.currentPriceRates }).costUSD
+            let costUSD: Double?
+            if independent {
+                costUSD = nil
+            } else {
+                let estimate = ModelAwareAPIPriceEstimator.estimate(
+                    modelBreakdowns: [row],
+                    fallbackBreakdown: row.breakdown,
+                    fallbackModel: fallbackModel,
+                    standardAPI: true,
+                    rates: { $0.currentPriceRates }
+                )
+                costUSD = estimate.unpricedModels.isEmpty ? estimate.costUSD : nil
+            }
             let referenceCostUSD = IndependentQuotaReferencePricing.costUSD(
                 for: row.model,
                 breakdown: row.breakdown
@@ -233,12 +260,14 @@ enum FloatingTodayModelUsagePresentation {
         page: FloatingTodayModelUsagePage,
         rows: [ModelTokenBreakdown],
         fallbackModel: OfficialAPIPriceModel,
-        showPlaceholders: Bool = false
+        showPlaceholders: Bool = false,
+        mergeAutoReview: Bool = false
     ) -> String {
         let items = items(
             from: rows,
             fallbackModel: fallbackModel,
-            showPlaceholders: showPlaceholders
+            showPlaceholders: showPlaceholders,
+            mergeAutoReview: mergeAutoReview
         )
         guard !items.isEmpty else { return "今日模型待读取" }
         let detail = items.map { "\($0.label) \($0.valueText(for: page))" }
@@ -324,7 +353,8 @@ struct FloatingTodayModelUsageRow: View {
         let allItems = FloatingTodayModelUsagePresentation.items(
             from: displayRows,
             fallbackModel: fallbackModel,
-            showPlaceholders: showPlaceholders
+            showPlaceholders: showPlaceholders,
+            mergeAutoReview: true
         )
         let items = FloatingTodayModelUsagePresentation.pageItems(
             for: page,
@@ -383,7 +413,8 @@ struct FloatingTodayModelUsageRow: View {
                 page: page,
                 rows: displayRows,
                 fallbackModel: fallbackModel,
-                showPlaceholders: showPlaceholders
+                showPlaceholders: showPlaceholders,
+                mergeAutoReview: true
             ) + (usesGuideDemo ? "（示例，仅用于引导展示）" : "")
         )
     }

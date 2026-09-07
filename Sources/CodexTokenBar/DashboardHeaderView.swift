@@ -1281,6 +1281,7 @@ struct DashboardModelCostRow: View {
         // conditional and every card section below.
         let visibleItems = items
         let visibleTotalCost = visibleItems.compactMap(\.costUSD).reduce(0, +)
+        let hasUnknownPrices = visibleItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
         let visibleReferenceEntries = visibleItems.compactMap { item -> String? in
             guard let referenceCostUSD = item.referenceCostUSD else { return nil }
             return "\(item.label) 参考 \(referenceCostUSD.quotaEstimatorMoneyText)"
@@ -1324,11 +1325,16 @@ struct DashboardModelCostRow: View {
 
                 if selectedAvailable, modelDetailAvailable, !visibleItems.isEmpty {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("合计 \(visibleTotalCost.quotaEstimatorMoneyText)")
+                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") \(visibleTotalCost.quotaEstimatorMoneyText)")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(AppTheme.accentBlue)
                             .monospacedDigit()
                             .fixedSize()
+                        if hasUnknownPrices {
+                            Text("部分模型价格未知，未计入金额")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
                         if let visibleReferenceCostSummary {
                             Text(visibleReferenceCostSummary)
                                 .font(.system(size: 9, weight: .medium))

@@ -82,10 +82,53 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
             calendar: utcCalendar
         ))
 
-        XCTAssertEqual(estimate.apiEquivalentUSD, 6.2, accuracy: 0.0001)
+        XCTAssertEqual(estimate.apiEquivalentUSD, 6.0, accuracy: 0.0001)
         XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra])
-        XCTAssertEqual(estimate.fallbackModelCalls, 1)
-        XCTAssertTrue(SubscriptionSavingsPresentation(estimate: estimate).helpText.contains("未知记录"))
+        XCTAssertEqual(estimate.fallbackModelCalls, 0)
+        XCTAssertEqual(estimate.unpricedModels, ["future-model"])
+        XCTAssertEqual(estimate.unpricedCalls, 1)
+        XCTAssertTrue(SubscriptionSavingsPresentation(estimate: estimate).helpText.contains("未知价格模型"))
+    }
+
+    func testNamedUnknownPriceSuppressesExactNetSavingsButShowsKnownSubtotal() throws {
+        let first = Date(timeIntervalSince1970: 1_767_225_600)
+        let now = Date(timeIntervalSince1970: 1_767_312_000)
+        let known = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let unknown = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let estimate = try XCTUnwrap(SubscriptionSavingsEstimator.estimate(
+            breakdown: [known, unknown].combined,
+            modelBreakdowns: [
+                ModelTokenBreakdown(model: "gpt-5.6-sol", breakdown: known),
+                ModelTokenBreakdown(model: "future-model", breakdown: unknown),
+            ],
+            firstUsageAt: first,
+            planLabel: "Plus",
+            priceModel: .gpt56Luna,
+            now: now,
+            calendar: utcCalendar
+        ))
+
+        XCTAssertEqual(estimate.apiEquivalentUSD, 4, accuracy: 0.0001)
+        XCTAssertEqual(estimate.subscriptionCostUSD, 20)
+        XCTAssertNil(estimate.netSavingsUSD)
+        let presentation = SubscriptionSavingsPresentation(estimate: estimate)
+        XCTAssertEqual(presentation.labelText, "API 已知价小计（估）")
+        XCTAssertTrue(presentation.helpText.contains("暂不计算净节省"))
+        XCTAssertTrue(presentation.helpText.contains("1 次调用未计入 API 等值"))
     }
 
     func testSparkLifetimeValueIsZeroButIndependentQuotaCallsRemainVisible() throws {
