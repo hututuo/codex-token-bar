@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveFloatingDetailsDrawer } from "./floatingWindowPlacement.ts";
+import { floatingDockShellMetrics, resolveFloatingDetailsDrawer } from "./floatingWindowPlacement.ts";
+
+test("the taller black shell preserves the card aspect and aligns its corner centers", () => {
+  for (const scale of [.84, 1, 1.38]) {
+    const width = 258 * scale;
+    const mainHeight = 120 * scale;
+    const metrics = floatingDockShellMetrics({ width, mainHeight, scale });
+    assert.ok(Math.abs(metrics.height - mainHeight - 12 * scale) < 1e-9);
+    const visibleWidth = (width - 2) * metrics.contentScale;
+    const visibleHeight = mainHeight * metrics.contentScale;
+    assert.ok(Math.abs(visibleWidth / visibleHeight - (width - 2) / mainHeight) < 1e-9);
+    const insetX = (width - visibleWidth) / 2;
+    const insetY = (metrics.height - visibleHeight) / 2;
+    assert.ok(insetY >= 6 * scale);
+    assert.ok(Math.abs(metrics.radiusX - insetX - (metrics.radiusY - insetY)) < 1e-9);
+    assert.ok(Math.abs(metrics.contentOffsetY + metrics.paddingY * metrics.contentScale - insetY) < 1e-9);
+  }
+});
 
 const workArea = { x: 0, y: 24, width: 1200, height: 776 };
 test("right-edge details grow below without widening or moving the main card", () => {

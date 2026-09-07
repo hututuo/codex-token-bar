@@ -8651,6 +8651,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   width: 100vw;
   height: 100vh;
   place-items: start center;
+  padding: var(--floating-shell-padding-y, 0px) 0;
   overflow: hidden;
   background: transparent;
 }
@@ -8662,7 +8663,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-window-shell--running-model-details {
   place-items: start center;
   position: relative;
-  padding: 0;
+  padding: var(--floating-shell-padding-y, 0px) 0;
   background: #000;
   border-radius: calc(18px * var(--floating-scale));
 }
@@ -12546,16 +12547,22 @@ details.session-management-banner {
   transition: transform 260ms cubic-bezier(.25, .46, .3, 1), border-radius 150ms ease;
 }
 .floating-edge-host:not([data-edge="free"]) .floating-edge-shell { opacity: 1; }
-.floating-edge-host[data-edge="left"] .floating-edge-shell { border-radius: 0 22px 22px 0; }
+.floating-edge-host[data-edge="left"] .floating-edge-shell {
+  border-radius: 0 var(--dock-radius-x, 22px) var(--dock-radius-x, 22px) 0 / 0 var(--dock-radius-y, 22px) var(--dock-radius-y, 22px) 0;
+}
 .floating-edge-host[data-edge="right"] .floating-edge-shell {
-  left: auto; right: 0; transform-origin: top right; border-radius: 22px 0 0 22px;
+  left: auto; right: 0; transform-origin: top right;
+  border-radius: var(--dock-radius-x, 22px) 0 0 var(--dock-radius-x, 22px) / var(--dock-radius-y, 22px) 0 0 var(--dock-radius-y, 22px);
 }
 .floating-edge-host:is([data-edge="top"], [data-edge="bottom"]) .floating-edge-shell {
   left: 50%; transform: translateX(-50%); transform-origin: top center;
 }
-.floating-edge-host[data-edge="top"] .floating-edge-shell { border-radius: 0 0 22px 22px; }
+.floating-edge-host[data-edge="top"] .floating-edge-shell {
+  border-radius: 0 0 var(--dock-radius-x, 22px) var(--dock-radius-x, 22px) / 0 0 var(--dock-radius-y, 22px) var(--dock-radius-y, 22px);
+}
 .floating-edge-host[data-edge="bottom"] .floating-edge-shell {
-  top: auto; bottom: 0; transform-origin: bottom center; border-radius: 22px 22px 0 0;
+  top: auto; bottom: 0; transform-origin: bottom center;
+  border-radius: var(--dock-radius-x, 22px) var(--dock-radius-x, 22px) 0 0 / var(--dock-radius-y, 22px) var(--dock-radius-y, 22px) 0 0;
 }
 .floating-edge-host:not([data-edge="free"]) .floating-edge-content {
   transform-origin: var(--dock-content-origin, center top);

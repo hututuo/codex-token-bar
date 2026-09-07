@@ -194,7 +194,7 @@ test("expanded running-model card preserves the rounded base panel geometry", as
   assert.ok(shellBlock);
   assert.ok(surfaceBlock);
   assert.ok(fillBlock);
-  assert.match(shellBlock, /padding: 0/);
+  assert.match(shellBlock, /padding: var\(--floating-shell-padding-y, 0px\) 0/);
   assert.match(shellBlock, /background: #000/);
   assert.match(surfaceBlock, /width: min\(calc\(\(308px \* var\(--floating-scale\)\) - 2px\), calc\(100vw - 2px\)\)/);
   assert.match(fillBlock, /border-radius: inherit/);

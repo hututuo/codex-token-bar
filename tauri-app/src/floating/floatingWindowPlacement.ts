@@ -1,5 +1,19 @@
 import type { DockRect } from "./floatingEdgeDock";
 
+export function floatingDockShellMetrics({ width, mainHeight, scale }: {
+  width: number; mainHeight: number; scale: number;
+}) {
+  const paddingY = 6 * scale;
+  const height = mainHeight + 2 * paddingY;
+  const contentScale = Math.max(0.8, (width - 10) / width);
+  const insetX = (width - (width - 2) * contentScale) / 2;
+  const insetY = (height - mainHeight * contentScale) / 2;
+  const innerRadius = 14 * scale * contentScale;
+  return { height, paddingY, contentScale,
+    contentOffsetY: height * (1 - contentScale) / 2,
+    radiusX: innerRadius + insetX, radiusY: innerRadius + insetY };
+}
+
 export type FloatingRunningModelDetailsPlacement = "above" | "below";
 export interface FloatingDetailsDrawerLayout {
   placement: FloatingRunningModelDetailsPlacement;

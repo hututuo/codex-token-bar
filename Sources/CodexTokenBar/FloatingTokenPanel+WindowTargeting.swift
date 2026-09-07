@@ -196,7 +196,7 @@ extension FloatingTokenPanelController {
         } else {
             UserDefaults.standard.removeObject(forKey: lockTargetDescriptionKey)
         }
-        guard let hostingController = panel?.contentViewController as? NSHostingController<FloatingTokenPanelView> else {
+        guard let hostingController = panel?.contentViewController as? FloatingPanelHostingController<FloatingTokenPanelView> else {
             return
         }
         hostingController.rootView = hostingController.rootView.withLockTarget(lockTargetDescription)

@@ -65,38 +65,38 @@ enum FloatingRunningModelDetailsDismissalPolicy {
 
 @MainActor
 final class FloatingRunningModelDetailsSessionState: ObservableObject {
-    @Published private(set) var isPresented = false
-    @Published private(set) var drawerLayout: FloatingTokenPanelLayout?
+    private struct Presentation: Equatable {
+        var isPresented = false
+        var layout: FloatingTokenPanelLayout?
+    }
+    @Published private var presentation = Presentation()
+    var requestPresentation: ((Bool) -> Void)?
+    var isPresented: Bool { presentation.isPresented }
+    var drawerLayout: FloatingTokenPanelLayout? { presentation.layout }
 
-    func updateLayout(_ value: FloatingTokenPanelLayout?) {
-        guard drawerLayout != value else { return }
-        if value == nil {
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { drawerLayout = nil }
-        } else {
-            withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.22)) {
-                drawerLayout = value
-            }
-        }
+    func updateLayout(_ layout: FloatingTokenPanelLayout?) {
+        commit(Presentation(isPresented: layout != nil, layout: layout))
     }
 
     func toggle() {
-        if isPresented { dismiss(); return }
-        withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.22)) {
-            isPresented.toggle()
-        }
+        if let requestPresentation { requestPresentation(!isPresented) }
+        else { commit(Presentation(isPresented: !isPresented, layout: nil)) }
     }
 
     func dismiss() {
         guard isPresented else { return }
-        // Geometry closes atomically with the native window. Animating this
-        // layout would interpolate the main card after its window already moved.
+        if let requestPresentation { requestPresentation(false) }
+        else { commit(Presentation()) }
+    }
+
+    private func commit(_ next: Presentation) {
+        guard presentation != next else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
-        withTransaction(transaction) { isPresented = false }
+        withTransaction(transaction) { presentation = next }
     }
 }
+
 
 enum FloatingPanelMouseDownAction: Equatable {
     case passThrough
@@ -382,7 +382,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         isPresented = false
         appliedLockState = false
         lastRunningModelDetailsPresented = false
-        runningModelDetailsSessionState.dismiss()
+        runningModelDetailsSessionState.updateLayout(nil)
         runningModelDetailsBaseFrame = nil
         runningModelDetailsPlacement = .below
 
@@ -434,9 +434,12 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         lastPanelVisibility = visibility
         lastPagingGuidePresented = pagingGuidePresented
         lastRunningModelDetailsRowUnits = runningModelDetailsRowUnits
+        runningModelDetailsSessionState.requestPresentation = { [weak self] presented in
+            self?.setRunningModelDetailsPresented(presented)
+        }
 
         if panel == nil {
-            let hostingController = NSHostingController(
+            let hostingController = FloatingPanelHostingController(
                 rootView: FloatingTokenPanelView(
                     store: store,
                     monitor: monitor,
@@ -524,7 +527,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             }
         }
 
-        if let hostingController = panel?.contentViewController as? NSHostingController<FloatingTokenPanelView> {
+        if let hostingController = panel?.contentViewController as? FloatingPanelHostingController<FloatingTokenPanelView> {
             hostingController.rootView = FloatingTokenPanelView(
                 store: store,
                 monitor: monitor,
@@ -673,7 +676,6 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     func dismissRunningModelDetails() {
-        runningModelDetailsSessionState.dismiss()
         setRunningModelDetailsPresented(false)
     }
 
@@ -708,6 +710,11 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             )
         }
         isProgrammaticPanelMove = true
+        // Before growing, publish the final direction and size together. The
+        // hosted main card remains anchored to the same edge of the old bounds.
+        if layout.runningModelDetailsPresented {
+            runningModelDetailsSessionState.updateLayout(layout)
+        }
         resizePanel(
             panel,
             layout: layout,
@@ -726,7 +733,11 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 ? runningModelDetailsCardFrame(layout: layout, surfaceSize: surfaceSize)
                 : .zero
         }
-        runningModelDetailsSessionState.updateLayout(layout.runningModelDetailsPresented ? layout : nil)
+        // While shrinking, keep the old anchored layout until the native clip
+        // has reached the main card, then retire the drawer in one publication.
+        if !layout.runningModelDetailsPresented {
+            runningModelDetailsSessionState.updateLayout(nil)
+        }
         edgeDock.resumeAfterResize()
         panel.contentView?.layer?.cornerRadius = edgeDock.isAttached ? 0 : layout.cornerRadius
 
@@ -1319,8 +1330,8 @@ func resizePanel(
     panel.contentMinSize = targetSize
     panel.contentMaxSize = targetSize
     panel.setFrame(targetFrame, display: false, animate: false)
-    panel.contentView?.layoutSubtreeIfNeeded()
-    panel.displayIfNeeded()
+    panel.contentView?.needsLayout = true
+    panel.contentView?.needsDisplay = true
 }
 
 @MainActor

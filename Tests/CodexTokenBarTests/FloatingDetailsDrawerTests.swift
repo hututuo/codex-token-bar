@@ -5,6 +5,75 @@ import SwiftUI
 
 final class FloatingDetailsDrawerTests: XCTestCase {
     @MainActor
+    func testDetailRequestsDoNotPublishAnUnresolvedDirection() {
+        let state = FloatingRunningModelDetailsSessionState()
+        var requests: [Bool] = []
+        state.requestPresentation = { requests.append($0) }
+        state.toggle()
+        XCTAssertEqual(requests, [true])
+        XCTAssertFalse(state.isPresented)
+        XCTAssertNil(state.drawerLayout)
+        let layout = FloatingTokenPanelLayout(scale: FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1),
+            visibility: .default, runningModelDetailsPresented: true, runningModelDetailsRowUnits: 3,
+            runningModelDetailsPlacement: .above)
+        state.updateLayout(layout)
+        XCTAssertTrue(state.isPresented)
+        XCTAssertEqual(state.drawerLayout?.runningModelDetailsPlacement, .above)
+        state.dismiss()
+        XCTAssertEqual(requests, [true, false])
+        XCTAssertTrue(state.isPresented) // The controller has not committed the close frame yet.
+        state.updateLayout(nil)
+        XCTAssertFalse(state.isPresented)
+        XCTAssertNil(state.drawerLayout)
+    }
+
+    @MainActor
+    func testRepeatedDrawerCyclesKeepManualWindowConstraintsAndMainPosition() async throws {
+        let scale = FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1)
+        let normal = FloatingTokenPanelLayout(scale: scale, visibility: .default)
+        for placement in [FloatingRunningModelDetailsPlacement.below, .above] {
+            let expanded = FloatingTokenPanelLayout(scale: scale, visibility: .default,
+                runningModelDetailsPresented: true, runningModelDetailsRowUnits: 3,
+                runningModelDetailsPlacement: placement)
+            let state = FloatingRunningModelDetailsSessionState()
+            let dock = FloatingEdgeDockPresentation()
+            let marker = NSView(frame: .zero)
+            let base = NSRect(x: 80, y: 300, width: normal.size.width, height: normal.size.height)
+            let panel = NSPanel(contentRect: base, styleMask: [.borderless], backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            defer { panel.contentViewController = nil; panel.close() }
+            let host = FloatingPanelHostingController(rootView: DrawerHostProbe(state: state, dock: dock, marker: marker,
+                normal: normal, expanded: expanded, close: {}))
+            XCTAssertTrue(host.hostingController.sizingOptions.isEmpty)
+            panel.contentViewController = host
+            resizePanel(panel, layout: normal, surfaceSize: normal.size, baseFrame: base)
+            dock.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
+            state.requestPresentation = { presented in
+                if presented { state.updateLayout(expanded) }
+                resizePanel(panel, layout: presented ? expanded : normal, surfaceSize: normal.size, baseFrame: base)
+                if !presented { state.updateLayout(nil) }
+                dock.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
+            }
+            for _ in 0..<4 { host.view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(10)) }
+            let original = panel.convertToScreen(marker.convert(marker.bounds, to: nil))
+            for cycle in 0..<10 {
+                for presented in [true, false] {
+                    state.toggle()
+                    for sample in 0..<5 {
+                        host.view.layoutSubtreeIfNeeded()
+                        let actual = panel.convertToScreen(marker.convert(marker.bounds, to: nil))
+                        XCTAssertEqual(actual.minY, original.minY, accuracy: 0.5, "\(placement) cycle \(cycle) opened \(presented) sample \(sample)")
+                        XCTAssertEqual(actual.height, original.height, accuracy: 0.5)
+                        XCTAssertEqual(panel.contentMinSize, presented ? expanded.size : normal.size)
+                        XCTAssertEqual(panel.contentMaxSize, presented ? expanded.size : normal.size)
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor
     func testPreparingAlreadyOpenDockDoesNotPublishAnExpansionAnimation() {
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 100, width: 258, height: 120),
             styleMask: [.borderless], backing: .buffered, defer: false)
@@ -32,7 +101,7 @@ final class FloatingDetailsDrawerTests: XCTestCase {
                 styleMask: [.borderless], backing: .buffered, defer: false)
             panel.isReleasedWhenClosed = false
             defer { panel.contentViewController = nil; panel.close() }
-            let host = NSHostingController(rootView: DrawerHostProbe(state: state, dock: dock, marker: marker,
+            let host = FloatingPanelHostingController(rootView: DrawerHostProbe(state: state, dock: dock, marker: marker,
                 normal: normal, expanded: normal, close: {}))
             panel.contentViewController = host
             host.view.frame = NSRect(origin: .zero, size: normal.size)
@@ -64,7 +133,7 @@ final class FloatingDetailsDrawerTests: XCTestCase {
         panel.isReleasedWhenClosed = false
         defer { panel.contentViewController = nil; panel.close() }
         state.toggle(); state.updateLayout(expanded)
-        let host = NSHostingController(rootView: DrawerHostProbe(state: state, dock: dock, marker: marker,
+        let host = FloatingPanelHostingController(rootView: DrawerHostProbe(state: state, dock: dock, marker: marker,
             normal: normal, expanded: expanded, close: {
                 resizePanel(panel, layout: normal, surfaceSize: normal.size, baseFrame: base)
                 state.updateLayout(nil)
@@ -202,13 +271,17 @@ private struct DrawerHostProbe: View {
     let close: () -> Void
     var body: some View {
         let size = state.drawerLayout?.size ?? (state.isPresented ? expanded.size : normal.size)
+        let above = state.drawerLayout?.runningModelDetailsPlacement == .above
         ZStack(alignment: .topLeading) {
             DrawerMarker(view: marker).frame(width: normal.size.width, height: normal.size.height)
+                .offset(y: above ? size.height - normal.size.height : 0)
             if state.isPresented { Color.black.frame(width: normal.size.width, height: 100).offset(y: normal.size.height + 8) }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .modifier(FloatingEdgeDockModifier(presentation: dock, size: size, surfaceSize: normal.size, detailsAbove: false, quota: .empty, quotaColorStyle: .default))
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .modifier(FloatingEdgeDockModifier(presentation: dock, size: size, surfaceSize: normal.size, detailsAbove: above, quota: .empty, quotaColorStyle: .default))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: above ? .bottomLeading : .topLeading)
+        .animation(nil, value: size)
+        .animation(nil, value: state.isPresented)
         .onChange(of: state.isPresented) { _, presented in if !presented { close() } }
     }
 }

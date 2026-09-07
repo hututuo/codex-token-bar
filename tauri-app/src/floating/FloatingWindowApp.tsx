@@ -46,6 +46,7 @@ import {
 } from "./FloatingRunningThreadModelDetails";
 import { useFloatingCrowdRadar, useFloatingRadar } from "./useFloatingRadar";
 import {
+  floatingDockShellMetrics,
   resolveFloatingDetailsDrawer,
   type FloatingRunningModelDetailsPlacement,
 } from "./floatingWindowPlacement";
@@ -361,8 +362,10 @@ export function FloatingWindowApp() {
   useEffect(() => {
     let cancelled = false;
     const scale = presentedSettings.scale;
-    const surfaceHeight = floatingContentHeight(presentedSettings.contentVisibility) * scale;
     const targetWidth = Math.max(FLOATING_BASE_WIDTH, pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0) * scale;
+    const mainHeight = floatingContentHeight(presentedSettings.contentVisibility) * scale;
+    const surfaceHeight = pagingGuidePresented ? mainHeight
+      : floatingDockShellMetrics({ width: targetWidth, mainHeight, scale }).height;
 
     const reconcileWindowGeometry = async () => {
       const appWindow = getCurrentWindow();
@@ -497,8 +500,7 @@ export function FloatingWindowApp() {
   }
 
   const mainCardHeight = floatingContentHeight(presentedSettings.contentVisibility) * presentedSettings.scale;
-  const dockContentScale = Math.max(0.8, (dockWidth - 10) / dockWidth);
-  const dockContentInsetY = mainCardHeight * (1 - dockContentScale) / 2;
+  const dockShellMetrics = floatingDockShellMetrics({ width: dockWidth, mainHeight: mainCardHeight, scale: presentedSettings.scale });
   const dockStyle = dockAnchor ? {
     "--dock-width": `${dockWidth}px`,
     "--dock-height": `${dockHeight}px`,
@@ -508,8 +510,10 @@ export function FloatingWindowApp() {
     "--dock-lip-y": `${(dockAnchor.lip.y - dockAnchor.frame.y) / dockScale}px`,
     "--dock-lip-scale-x": dockAnchor.lip.width / dockAnchor.frame.width,
     "--dock-lip-scale-y": dockAnchor.lip.height / dockAnchor.frame.height,
-    "--dock-content-scale": dockContentScale,
-    "--dock-content-offset-y": `${runningModelDetailsSide === "above" ? -dockContentInsetY : dockContentInsetY}px`,
+    "--dock-content-scale": dockShellMetrics.contentScale,
+    "--dock-content-offset-y": `${runningModelDetailsSide === "above" ? -dockShellMetrics.contentOffsetY : dockShellMetrics.contentOffsetY}px`,
+    "--dock-radius-x": `${dockShellMetrics.radiusX}px`,
+    "--dock-radius-y": `${dockShellMetrics.radiusY}px`,
     "--dock-content-origin": runningModelDetailsSide === "above" ? "center bottom" : "center top",
     "--dock-travel-x": `${dockAnchor.edge === "left" ? -dockWidth : dockAnchor.edge === "right" ? dockWidth : 0}px`,
     "--dock-travel-y": `${dockAnchor.edge === "top" ? -dockHeight : dockAnchor.edge === "bottom" ? dockHeight : 0}px`,
@@ -517,6 +521,7 @@ export function FloatingWindowApp() {
   const { style: appearanceStyle } = floatingPanelAppearance(presentedSettings);
   const shellStyle = {
     ...appearanceStyle,
+    "--floating-shell-padding-y": `${pagingGuidePresented ? 0 : 6 * presentedSettings.scale}px`,
     "--floating-drawer-height": `${drawerMetrics.height}px`,
     "--floating-drawer-offset": `${drawerMetrics.offset}px`,
   } as CSSProperties;
