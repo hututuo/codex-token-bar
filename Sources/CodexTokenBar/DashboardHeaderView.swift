@@ -374,7 +374,7 @@ struct HeaderView: View {
     private var headerPrecisionLabel: String {
         switch snapshot.usagePrecision {
         case .precise:
-            return snapshot.accountingCoverage == "complete" ? "精确统计" : "已确认小计"
+            return "精确统计"
         case .metadataOnly:
             return "元数据"
         }
@@ -383,7 +383,7 @@ struct HeaderView: View {
     private var headerPrecisionColor: Color {
         switch snapshot.usagePrecision {
         case .precise:
-            return snapshot.accountingCoverage == "complete" ? AppTheme.accentGreen : .orange
+            return AppTheme.accentGreen
         case .metadataOnly:
             return .secondary
         }
@@ -559,7 +559,7 @@ struct HeaderView: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 HStack(spacing: 4) {
                                     Text(headerPrecisionLabel)
-                                        .help(snapshot.accountingCoverage == "complete" ? "按输入与输出分项统计" : "仅统计可确认的分项。旧来源覆盖或异常事件仍待核实，金额按标准 API 历史价格估算。")
+                                        .help("按输入与输出分项统计")
                                         .foregroundStyle(headerPrecisionColor)
                                     Text(freshnessPresentation.text)
                                         .foregroundStyle(freshnessPresentation.needsAttention ? AppTheme.accentRed : .secondary)

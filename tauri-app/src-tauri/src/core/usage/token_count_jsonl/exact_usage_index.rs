@@ -2724,11 +2724,8 @@ impl ExactUsageIndex {
             Ok(revision)
         })();
         if result.is_ok() {
-            let legacy = metadata_text(&self.connection,"accounting_coverage")?.as_deref() != Some("complete");
-            let unresolved = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM event_rows WHERE accounting_kind <> 0)",[],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?;
-            if legacy || unresolved {
-                warnings.push(scan_warning("当前为可确认分项的小计；旧来源覆盖或异常事件仍待核实，金额按标准 API 历史价格估算。".into()));
-            }
+            // Excluded accounting rows are handled by the numeric policy, not a
+            // permanent refresh warning. Actual scan/migration failures remain visible.
             if let Err(error) = cleanup_successful_schema11_migration(&cleanup_index_path) {
                 warnings.push(scan_warning(format!(
                     "schema 11 已成功刷新，但受管回滚资料暂未清理，将保留并稍后重试：{error}"
