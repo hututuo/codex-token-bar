@@ -304,20 +304,6 @@ export function FloatingWindowApp() {
   const dockScale = dockAnchor?.scaleFactor ?? 1;
   const dockWidth = (dockAnchor?.frame.width ?? 1) / dockScale;
   const dockHeight = (dockAnchor?.frame.height ?? 1) / dockScale;
-  const dockStyle = dockAnchor ? {
-    "--dock-width": `${dockWidth}px`,
-    "--dock-height": `${dockHeight}px`,
-    "--dock-lip-width": `${dockAnchor.lip.width / dockScale}px`,
-    "--dock-lip-height": `${dockAnchor.lip.height / dockScale}px`,
-    "--dock-lip-x": `${(dockAnchor.lip.x - dockAnchor.frame.x) / dockScale}px`,
-    "--dock-lip-y": `${(dockAnchor.lip.y - dockAnchor.frame.y) / dockScale}px`,
-    "--dock-lip-scale-x": dockAnchor.lip.width / dockAnchor.frame.width,
-    "--dock-lip-scale-y": dockAnchor.lip.height / dockAnchor.frame.height,
-    "--dock-content-scale-x": Math.max(0.8, (dockWidth - 10) / dockWidth),
-    "--dock-content-scale-y": Math.max(0.8, (dockHeight - 10) / dockHeight),
-    "--dock-travel-x": `${dockAnchor.edge === "left" ? -dockWidth : dockAnchor.edge === "right" ? dockWidth : 0}px`,
-    "--dock-travel-y": `${dockAnchor.edge === "top" ? -dockHeight : dockAnchor.edge === "bottom" ? dockHeight : 0}px`,
-  } as CSSProperties : undefined;
   const presentedRunningThreads = floatingRunningThreadSummaryForPresentation(
     runningThreads,
     pagingGuidePresented,
@@ -510,6 +496,23 @@ export function FloatingWindowApp() {
     void completePagingGuide();
   }
 
+  const mainCardHeight = floatingContentHeight(presentedSettings.contentVisibility) * presentedSettings.scale;
+  const dockStyle = dockAnchor ? {
+    "--dock-width": `${dockWidth}px`,
+    "--dock-height": `${dockHeight}px`,
+    "--dock-lip-width": `${dockAnchor.lip.width / dockScale}px`,
+    "--dock-lip-height": `${dockAnchor.lip.height / dockScale}px`,
+    "--dock-lip-x": `${(dockAnchor.lip.x - dockAnchor.frame.x) / dockScale}px`,
+    "--dock-lip-y": `${(dockAnchor.lip.y - dockAnchor.frame.y) / dockScale}px`,
+    "--dock-lip-scale-x": dockAnchor.lip.width / dockAnchor.frame.width,
+    "--dock-lip-scale-y": dockAnchor.lip.height / dockAnchor.frame.height,
+    "--dock-content-scale-x": Math.max(0.8, (dockWidth - 10) / dockWidth),
+    "--dock-content-scale-y": Math.max(0.8, (mainCardHeight - 10) / mainCardHeight),
+    "--dock-content-offset-y": runningModelDetailsSide === "above" ? "-5px" : "5px",
+    "--dock-content-origin": runningModelDetailsSide === "above" ? "center bottom" : "center top",
+    "--dock-travel-x": `${dockAnchor.edge === "left" ? -dockWidth : dockAnchor.edge === "right" ? dockWidth : 0}px`,
+    "--dock-travel-y": `${dockAnchor.edge === "top" ? -dockHeight : dockAnchor.edge === "bottom" ? dockHeight : 0}px`,
+  } as CSSProperties : undefined;
   const { style: appearanceStyle } = floatingPanelAppearance(presentedSettings);
   const shellStyle = {
     ...appearanceStyle,

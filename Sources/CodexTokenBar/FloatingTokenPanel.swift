@@ -689,7 +689,6 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 baseFrame: base, expandedHeight: layout.size.height,
                 screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame, scale: layout.effectiveScale)
         }
-        runningModelDetailsSessionState.updateLayout(layout.runningModelDetailsPresented ? layout : nil)
         if let fullFrame = edgeDock.expandedFrame, fullFrame.size == layout.size,
            !layout.runningModelDetailsPresented, !lastPagingGuidePresented, !appliedLockState {
             return
@@ -727,6 +726,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 ? runningModelDetailsCardFrame(layout: layout, surfaceSize: surfaceSize)
                 : .zero
         }
+        runningModelDetailsSessionState.updateLayout(layout.runningModelDetailsPresented ? layout : nil)
         edgeDock.resumeAfterResize()
         panel.contentView?.layer?.cornerRadius = edgeDock.isAttached ? 0 : layout.cornerRadius
 
@@ -983,7 +983,7 @@ struct FloatingTokenPanelView: View {
             runningModelDetailsRowUnits: displaySnapshot.runningThreads.runningModelDetailsRowUnits
         )
         let drawerLayout = runningModelDetailsSessionState.drawerLayout
-        let size = effectiveRunningModelDetailsPresented ? drawerLayout?.size ?? measuredSize : measuredSize
+        let size = drawerLayout?.size ?? measuredSize
         let detailsPlacement = drawerLayout?.runningModelDetailsPlacement ?? .below
         let surfaceSize = FloatingTokenPanelMetrics.size(
             effectiveScale: scale,
@@ -1033,7 +1033,7 @@ struct FloatingTokenPanelView: View {
         // reserved for the explicit guide button.
         let pageNavigationAction: (() -> Void)? = nil
 
-        let runningModelDetailsSurfaceOffsetY = effectiveRunningModelDetailsPresented && detailsPlacement == .above
+        let runningModelDetailsSurfaceOffsetY = detailsPlacement == .above
             ? size.height - surfaceSize.height : 0
         let detailsInset = FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
         let detailsHeight = max(0, size.height - surfaceSize.height
@@ -1196,7 +1196,8 @@ struct FloatingTokenPanelView: View {
         }
         .contentShape(Rectangle())
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
-        .modifier(FloatingEdgeDockModifier(presentation: edgeDockPresentation, size: size, quota: liveDisplaySnapshot.quota, quotaColorStyle: quotaColorStyle))
+        .modifier(FloatingEdgeDockModifier(presentation: edgeDockPresentation, size: size, surfaceSize: surfaceSize, detailsAbove: detailsPlacement == .above, quota: liveDisplaySnapshot.quota, quotaColorStyle: quotaColorStyle))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: detailsPlacement == .above ? .bottomLeading : .topLeading)
     }
 
     private func advancePagingGuide(pages: [FloatingPanelGuidePage]) {

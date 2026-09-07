@@ -12558,7 +12558,8 @@ details.session-management-banner {
   top: auto; bottom: 0; transform-origin: bottom center; border-radius: 22px 22px 0 0;
 }
 .floating-edge-host:not([data-edge="free"]) .floating-edge-content {
-  transform: scale(var(--dock-content-scale-x), var(--dock-content-scale-y));
+  transform-origin: var(--dock-content-origin, center top);
+  transform: translateY(var(--dock-content-offset-y, 5px)) scale(var(--dock-content-scale-x), var(--dock-content-scale-y));
 }
 .floating-edge-host[data-collapsed="true"] .floating-edge-content {
   transform: translate(var(--dock-travel-x), var(--dock-travel-y)) scale(.84);

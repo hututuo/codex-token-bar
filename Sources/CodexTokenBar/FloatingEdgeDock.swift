@@ -65,6 +65,8 @@ final class FloatingEdgeDockPresentation: ObservableObject {
 struct FloatingEdgeDockModifier: ViewModifier {
     @ObservedObject var presentation: FloatingEdgeDockPresentation
     let size: NSSize
+    let surfaceSize: NSSize
+    let detailsAbove: Bool
     let quota: AccountQuotaSnapshot
     let quotaColorStyle: FloatingQuotaColorStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -93,9 +95,11 @@ struct FloatingEdgeDockModifier: ViewModifier {
                     .allowsHitTesting(false)
             }
             content
-                .frame(width: size.width, height: size.height)
+                .frame(width: size.width, height: size.height, alignment: .topLeading)
                 .scaleEffect(x: anchor == nil ? 1 : collapsed ? 0.84 : max(0.8, (size.width - 10) / size.width),
-                             y: anchor == nil ? 1 : collapsed ? 0.84 : max(0.8, (size.height - 10) / size.height))
+                             y: anchor == nil ? 1 : collapsed ? 0.84 : max(0.8, (surfaceSize.height - 10) / surfaceSize.height),
+                             anchor: detailsAbove ? .bottom : .top)
+                .offset(y: anchor != nil && !collapsed ? (detailsAbove ? -5 : 5) : 0)
                 .offset(travel)
                 .opacity(collapsed ? 0 : 1)
                 .allowsHitTesting(!collapsed)
