@@ -61,4 +61,17 @@ final class QuotaPeriodMinuteBoundaryTests: XCTestCase {
             XCTAssertEqual(result.boundary.leading, event.breakdown)
         }
     }
+    func testObservedQuotaSelectsOnlyItsTwoEdgesAndClearsOnSourceChange() {
+        let context = QuotaPeriodBoundaryContext()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertTrue(context.bucketStarts(home: "a", now: now).isEmpty)
+        context.set(resetAt: now.addingTimeInterval(604_888), home: "a")
+        XCTAssertEqual(context.bucketStarts(home: "a", now: now), [now, now.addingTimeInterval(604_800)])
+        XCTAssertTrue(context.bucketStarts(home: "b", now: now).isEmpty)
+        context.set(resetAt: nil, home: "a")
+        XCTAssertTrue(context.bucketStarts(home: "a", now: now).isEmpty)
+        context.set(resetAt: now.addingTimeInterval(604_800), home: "a")
+        XCTAssertTrue(context.bucketStarts(home: "a", now: now).isEmpty)
+    }
+
 }

@@ -2899,6 +2899,7 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
             utc_offset_seconds: canonical_signature.utc_offset_seconds,
             index_revision: index_identity.dashboard_revision,
             aggregate_boundary_unix: canonical_signature.aggregate_boundary_unix,
+            quota_reset_at: canonical_signature.quota_reset_at,
         };
         if let Some(snapshot) = cached_dashboard_startup_snapshot(
             &raw_signature,
@@ -3084,6 +3085,9 @@ struct DashboardScanSignature {
     /// time axis forever when no token event changed the exact generation.
     #[serde(default)]
     aggregate_boundary_unix: i64,
+    /// A newly observed/reset quota invalidates only the disposable projection.
+    #[serde(default)]
+    quota_reset_at: Option<i64>,
 }
 
 fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> DashboardScanSignature {
@@ -3096,6 +3100,7 @@ fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> Dashboar
         utc_offset_seconds: local_offset.whole_seconds(),
         index_revision,
         aggregate_boundary_unix: ExactUsageIndex::latest_eligible_aggregate_boundary(now_utc),
+        quota_reset_at: crate::core::quota::cached_seven_day_reset_at(codex_home),
     }
 }
 
@@ -3426,6 +3431,7 @@ fn dashboard_scan_signature_at(
         utc_offset_seconds: local_offset.whole_seconds(),
         index_revision,
         aggregate_boundary_unix: ExactUsageIndex::latest_eligible_aggregate_boundary(now_utc),
+        quota_reset_at: crate::core::quota::cached_seven_day_reset_at(codex_home),
     }
 }
 

@@ -118,6 +118,7 @@ extension CodexUsageAnalyzer {
         /// Optional keeps older persisted snapshots readable as last-good,
         /// while preventing them from being treated as a current full cache.
         var aggregateIdentity: CodexUsageHistoryIndex.DashboardAggregateIdentity?
+        var minuteBoundaryBuckets: [Date]?
 
         init(
             localDate: String,
@@ -127,7 +128,8 @@ extension CodexUsageAnalyzer {
             attributionProvenanceEpoch: String,
             attributionGeneration: Int64,
             aggregateBoundary: Int64?,
-            aggregateIdentity: CodexUsageHistoryIndex.DashboardAggregateIdentity? = nil
+            aggregateIdentity: CodexUsageHistoryIndex.DashboardAggregateIdentity? = nil,
+            minuteBoundaryBuckets: [Date]? = nil
         ) {
             self.localDate = localDate
             self.utcOffsetSeconds = utcOffsetSeconds
@@ -137,6 +139,7 @@ extension CodexUsageAnalyzer {
             self.attributionGeneration = attributionGeneration
             self.aggregateBoundary = aggregateBoundary
             self.aggregateIdentity = aggregateIdentity
+            self.minuteBoundaryBuckets = minuteBoundaryBuckets
         }
 
         func withAttributionState(
@@ -151,7 +154,8 @@ extension CodexUsageAnalyzer {
                 attributionProvenanceEpoch: provenanceEpoch,
                 attributionGeneration: generation,
                 aggregateBoundary: aggregateBoundary,
-                aggregateIdentity: aggregateIdentity
+                aggregateIdentity: aggregateIdentity,
+                minuteBoundaryBuckets: minuteBoundaryBuckets
             )
         }
 
@@ -166,8 +170,14 @@ extension CodexUsageAnalyzer {
                 attributionProvenanceEpoch: attributionProvenanceEpoch,
                 attributionGeneration: attributionGeneration,
                 aggregateBoundary: aggregateBoundary,
-                aggregateIdentity: identity
+                aggregateIdentity: identity,
+                minuteBoundaryBuckets: minuteBoundaryBuckets
             )
+        }
+        func withMinuteBoundaryBuckets(_ buckets: [Date]) -> SessionTreeSignature {
+            var copy = self
+            copy.minuteBoundaryBuckets = buckets
+            return copy
         }
     }
 

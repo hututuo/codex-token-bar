@@ -7647,7 +7647,11 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
     let mut warnings = Vec::new();
     index.sync(&root, &mut warnings).unwrap();
     let data = index
-        .dashboard_data(&root, now, UtcOffset::UTC, &mut warnings)
+        .dashboard_data_for_quota_period_for_testing(
+            &root, now,
+            OffsetDateTime::parse("2026-06-25T12:02:28Z", &Rfc3339).unwrap().unix_timestamp(),
+            &mut warnings,
+        )
         .unwrap();
     let temp_objects = index.dashboard_temp_object_types_for_testing().unwrap();
     assert_eq!(
@@ -7743,6 +7747,11 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
     assert_eq!(minutes[0].breakdown.total_tokens, 120);
     assert_eq!(minutes[1].breakdown.total_tokens, 80);
     assert!(data.recent_usage_7d.iter().all(|point| point.minute_model_breakdowns.is_none()));
+    assert_eq!(data.recent_usage_24h.iter().filter(|point| point.minute_model_breakdowns.is_some()).count(), 1);
+    assert!(point_at(&data.recent_usage_24h, five_minute_12 + 300).minute_model_breakdowns.is_none());
+    assert!(point_at(&data.recent_usage_24h, five_minute_11).minute_model_breakdowns.is_none());
+    let without_quota = index.dashboard_data(&root, now, UtcOffset::UTC, &mut warnings).unwrap();
+    assert!(without_quota.recent_usage_24h.iter().all(|point| point.minute_model_breakdowns.is_none()));
     // Older JSON carries no minute detail and still decodes without a migration.
     let mut old_json = serde_json::to_value(five_minute_12_point).unwrap();
     old_json.as_object_mut().unwrap().remove("minuteModelBreakdowns");

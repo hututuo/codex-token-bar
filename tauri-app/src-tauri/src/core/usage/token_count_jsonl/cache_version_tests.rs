@@ -10,6 +10,7 @@ fn dashboard_aggregate_version_thirteen_is_rejected_by_the_current_cache_schema(
             utc_offset_seconds: 8 * 60 * 60,
             index_revision: 0,
             aggregate_boundary_unix: 0,
+            quota_reset_at: None,
         },
         snapshot: None,
         summary: TokenUsageSummary::default(),

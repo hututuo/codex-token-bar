@@ -165,6 +165,12 @@ final class AccountQuotaStore: ObservableObject {
         let bindingChanged = oldPath != newPath
         currentDataSource = dataSource
         guard identityChanged || bindingChanged else { return false }
+        if let oldPath { QuotaPeriodBoundaryContext.shared.set(resetAt: nil, home: oldPath) }
+        if let newPath {
+            QuotaPeriodBoundaryContext.shared.set(
+                resetAt: identityChanged ? nil : snapshot.sevenDay?.resetsAt, home: newPath
+            )
+        }
 
         cancelQuotaRefresh(restoreStatus: true)
         cancelResetCreditRefresh(restoreStatus: true)
@@ -307,6 +313,9 @@ final class AccountQuotaStore: ObservableObject {
                     self.cancelQuotaRetry(resetBackoff: true)
                     published.status = quota.status
                     self.snapshot = published
+                    if let home = self.currentDataSourcePath {
+                        QuotaPeriodBoundaryContext.shared.set(resetAt: published.sevenDay?.resetsAt, home: home)
+                    }
                     self.snapshotSourceID = sourceID
                     self.historyStore?.record(published)
                 }

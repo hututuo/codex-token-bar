@@ -3923,6 +3923,7 @@ impl ExactUsageIndex {
             now_utc,
             local_offset,
             LocalDayMode::Fixed(local_offset),
+            crate::core::quota::cached_seven_day_reset_at(codex_home),
             warnings,
         )
     }
@@ -3941,8 +3942,18 @@ impl ExactUsageIndex {
             now_utc,
             localtime::local_offset_at(now_utc.unix_timestamp()),
             LocalDayMode::System,
+            crate::core::quota::cached_seven_day_reset_at(codex_home),
             warnings,
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn dashboard_data_for_quota_period_for_testing(
+        &self, codex_home: &Path, now: OffsetDateTime, reset_at: i64,
+        warnings: &mut Vec<LocalDataWarning>,
+    ) -> Result<ExactDashboardData, String> {
+        self.dashboard_data_at(codex_home, now, UtcOffset::UTC,
+            LocalDayMode::Fixed(UtcOffset::UTC), Some(reset_at), warnings)
     }
 
     fn dashboard_data_at(
@@ -3951,6 +3962,7 @@ impl ExactUsageIndex {
         now_utc: OffsetDateTime,
         local_offset: UtcOffset,
         local_day_mode: LocalDayMode,
+        quota_reset_at: Option<i64>,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<ExactDashboardData, String> {
         let dashboard_started = Instant::now();
@@ -3978,7 +3990,7 @@ impl ExactUsageIndex {
 
         let usage_series_started = Instant::now();
         let (recent_usage_24h, recent_usage_7d, recent_usage_30d) =
-            self.usage_series_bundle(now_utc, local_offset, settled_through)?;
+            self.usage_series_bundle(now_utc, local_offset, settled_through, quota_reset_at)?;
         let usage_series_ms = usage_series_started.elapsed().as_millis();
 
         let cache_ranking_started = Instant::now();
@@ -4365,6 +4377,7 @@ impl ExactUsageIndex {
         now_utc: OffsetDateTime,
         local_offset: UtcOffset,
         settled_through: i64,
+        quota_reset_at: Option<i64>,
     ) -> Result<
         (
             Vec<RecentUsagePoint>,
@@ -4510,20 +4523,28 @@ impl ExactUsageIndex {
             LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
             &grouped, &model_grouped, Some(&provenance_epoch), &source_grouped,
         );
-        // Enrich only the current-cycle horizon from the same published WAL
-        // snapshot. No historical aggregate or schema needs to be rewritten.
-        let minute_start = start.max(end.saturating_sub(8 * 24 * 60 * 60));
+        // Two bounded range reads only. No minute projection is produced for
+        // interior buckets, historical buckets, or an unknown/expired quota.
+        let edge_starts: Vec<i64> = quota_reset_at
+            .filter(|reset| *reset > now_utc.unix_timestamp() && reset.rem_euclid(300) != 0)
+            .map(|reset| vec![align_usage_bin(reset - 604_800, 300), align_usage_bin(reset, 300)])
+            .unwrap_or_default();
+        let first_edge = edge_starts.first().copied().unwrap_or(0);
+        let last_edge = edge_starts.get(1).copied().unwrap_or(0);
+        let first_end = if edge_starts.is_empty() { 0 } else { first_edge + 300 };
+        let last_end = if edge_starts.is_empty() { 0 } else { last_edge + 300 };
         let mut minute_statement = self.connection.prepare(
             r#"
             SELECT timestamp / 60 * 60, model,
                    SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
                    SUM(tokens), COUNT(*)
             FROM published_events
-            WHERE timestamp >= ?1 AND timestamp < ?2
+            WHERE (timestamp >= ?1 AND timestamp < ?2)
+               OR (timestamp >= ?3 AND timestamp < ?4)
             GROUP BY 1, model ORDER BY 1, model
             "#,
         ).map_err(|error| format!("无法准备周期分钟明细：{error}"))?;
-        let minute_rows = minute_statement.query_map(params![minute_start, end], |row| {
+        let minute_rows = minute_statement.query_map(params![first_edge, first_end, last_edge, last_end], |row| {
             Ok(ModelTokenBreakdown {
                 event_start_unix: Some(row.get(0)?),
                 model: row.get(1)?,

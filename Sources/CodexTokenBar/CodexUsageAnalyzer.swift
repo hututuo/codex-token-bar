@@ -355,7 +355,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         )
         let signature = sourceSignature.withAggregateIdentity(
             try historyIndex.dashboardAggregateIdentity()
-        )
+        ).withMinuteBoundaryBuckets(QuotaPeriodBoundaryContext.shared.bucketStarts(
+            home: dataSource.codexHome.standardizedFileURL.path
+        ))
         if let inMemory = Self.sessionEventCache.snapshot(
             for: dataSource.codexHome.path,
             signature: signature
@@ -590,7 +592,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             )
         let signature = sourceSignature.withAggregateIdentity(
             try historyIndex.dashboardAggregateIdentity()
-        )
+        ).withMinuteBoundaryBuckets(QuotaPeriodBoundaryContext.shared.bucketStarts(
+            home: dataSource.codexHome.standardizedFileURL.path
+        ))
         // `preciseCoverageAt` is the time this owner observed/published the
         // index, not the time the source data changed. Keep the two concepts
         // separate so a successful check cannot masquerade as new usage.
@@ -755,7 +759,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 durableAttributionEvents = try historyIndex.attributionSourceBuckets(
                     provenanceEpoch: synchronization.provenanceEpoch,
                     from: attributionStart,
-                    before: attributionEnd
+                    before: attributionEnd,
+                    minuteBucketStarts: signature.minuteBoundaryBuckets ?? []
                 )
                 trace?.mark("attributionLedger.loaded", metadata: [
                     "count": String(durableAttributionEvents.count),
@@ -926,7 +931,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         )
         let synchronizedSignature = synchronizedSourceSignature.withAggregateIdentity(
             try historyIndex.dashboardAggregateIdentity()
-        )
+        ).withMinuteBoundaryBuckets(signature.minuteBoundaryBuckets ?? [])
         trace?.mark("numericPhase.persist.begin")
         Self.sessionEventCache.storeNumericSnapshot(
             numericSnapshot,

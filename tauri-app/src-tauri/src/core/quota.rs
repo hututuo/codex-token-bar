@@ -538,6 +538,12 @@ fn cached_quota_result_after_inflight(
     cached_quota_result_with_policy(scope, force_refresh, true, success_freshness)
 }
 
+/// Read-only handoff to usage projection; never starts a quota/network request.
+pub(crate) fn cached_seven_day_reset_at(codex_home: &Path) -> Option<i64> {
+    cached_successful_quota(&observed_quota_cache_scope(codex_home))
+        .ok().flatten().and_then(|bundle| bundle.quota.seven_day.resets_at_unix)
+}
+
 fn cached_successful_quota(scope: &QuotaCacheScope) -> Result<Option<AccountQuotaBundle>, String> {
     let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let guard = cache.lock().map_err(|error| error.to_string())?;

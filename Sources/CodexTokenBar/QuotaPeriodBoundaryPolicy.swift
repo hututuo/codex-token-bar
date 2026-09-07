@@ -227,3 +227,29 @@ extension QuotaPeriodBoundaryPolicy {
         abs(date.timeIntervalSince(bucketStart)) < 0.001
     }
 }
+
+/// In-memory handoff from the quota owner to background usage reads. This does
+/// not persist minute rows or guess a boundary before quota has been observed.
+final class QuotaPeriodBoundaryContext: @unchecked Sendable {
+    static let shared = QuotaPeriodBoundaryContext()
+    private let lock = NSLock()
+    private var resets: [String: Date] = [:]
+
+    func set(resetAt: Date?, home: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        resets[home] = resetAt
+    }
+
+    func bucketStarts(home: String, now: Date = Date()) -> [Date] {
+        lock.lock()
+        let reset = resets[home]
+        lock.unlock()
+        guard let reset, reset > now, reset.timeIntervalSince1970.isFinite else { return [] }
+        return [reset.addingTimeInterval(-604_800), reset].compactMap { boundary in
+            let bucket = floor(boundary.timeIntervalSince1970 / 300) * 300
+            return abs(boundary.timeIntervalSince1970 - bucket) < 0.001
+                ? nil : Date(timeIntervalSince1970: bucket)
+        }
+    }
+}

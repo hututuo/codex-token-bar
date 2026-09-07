@@ -4172,6 +4172,58 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
+    func testAttributionMinuteDetailIsLimitedToRequestedBoundaryBuckets() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerCompactLedger")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-4ccc-8ddd-000000000001"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970 / 300) * 300)
+        let lines = try (0..<3).map { offset in try tokenCountLine(
+            timestamp: now.addingTimeInterval(Double(-60 - offset * 300)),
+            total: Usage(input: (offset + 1) * 100, cachedInput: 10, output: 20, reasoning: 0, total: (offset + 1) * 100 + 20),
+            last: Usage(input: (offset + 1) * 100, cachedInput: 10, output: 20, reasoning: 0, total: (offset + 1) * 100 + 20)
+        ) }
+        try (lines.joined(separator: "\n") + "\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let first = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+
+        let coarse = try index.attributionSourceBuckets(
+            provenanceEpoch: first.provenanceEpoch, from: now.addingTimeInterval(-1_200), before: now
+        )
+        XCTAssertEqual(coarse.count, 3)
+        XCTAssertTrue(coarse.allSatisfy { $0.minuteBuckets == nil })
+        let refined = try index.attributionSourceBuckets(
+            provenanceEpoch: first.provenanceEpoch, from: now.addingTimeInterval(-1_200), before: now,
+            minuteBucketStarts: [now.addingTimeInterval(-900), now.addingTimeInterval(-300)]
+        )
+        XCTAssertEqual(refined.filter { $0.minuteBuckets != nil }.count, 2)
+        XCTAssertNil(refined.first { $0.start == now.addingTimeInterval(-600) }?.minuteBuckets)
+        XCTAssertEqual(refined.map(\.breakdown).combined, coarse.map(\.breakdown).combined)
+    }
+
     func testCompactSynchronizationPersistsSourceBucketsBeforeSourceDeletion() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerCompactLedger")
@@ -4211,7 +4263,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let current = try index.attributionSourceBuckets(
             provenanceEpoch: first.provenanceEpoch,
-            from: now.addingTimeInterval(-3_600), before: now.addingTimeInterval(300)
+            from: now.addingTimeInterval(-3_600), before: now.addingTimeInterval(300),
+            minuteBucketStarts: [now.addingTimeInterval(-60)]
         )
         let minutes = try XCTUnwrap(current.first?.minuteBuckets)
         XCTAssertEqual(minutes.map(\.breakdown).combined.totalTokens, 120)

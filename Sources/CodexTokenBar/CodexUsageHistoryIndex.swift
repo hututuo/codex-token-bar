@@ -2589,7 +2589,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     func attributionSourceBuckets(
         provenanceEpoch: String,
         from start: Date,
-        before end: Date
+        before end: Date,
+        minuteBucketStarts: [Date] = []
     ) throws -> [TokenCacheAttributionEvent] {
         try driver.withConnection { connection in
             try configure(connection)
@@ -2655,11 +2656,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         }
                 .compactMap { $0 }
 
-                // This is a disposable enrichment of the current cycle, not a
-                // schema migration or historical ledger rewrite. Only attach a
-                // raw-source minute projection when it exactly reconciles with
-                // the durable five-minute contribution (including every component).
-                let minuteStart = max(start, end.addingTimeInterval(-8 * 24 * 60 * 60))
+                // Only the two caller-selected quota edge buckets may carry
+                // minute detail. Interior/history rows remain five-minute only.
+                let requested = Array(Set(minuteBucketStarts.map {
+                    Int64(floor($0.timeIntervalSince1970 / 300) * 300)
+                })).sorted().prefix(2).filter {
+                    Double($0) >= start.timeIntervalSince1970 && Double($0) < end.timeIntervalSince1970
+                }
+                guard !requested.isEmpty else { return ledger }
+                let predicate = requested.map { _ in "(e.timestamp >= ? AND e.timestamp < ?)" }.joined(separator: " OR ")
+                let minuteBindings: [SQLiteBinding] = requested.flatMap { [.int64($0), .int64($0 + 300)] }
                 let minuteRows = try connection.readRows(
                     """
                     SELECT e.source_id, s.session_id,
@@ -2669,14 +2675,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                            SUM(e.output_tokens), SUM(e.reasoning_output_tokens),
                            SUM(e.tokens), COUNT(*)
                     FROM events e JOIN sources s ON s.source_id = e.source_id
-                    WHERE e.tokens > 0 AND e.timestamp >= ? AND e.timestamp < ?
+                    WHERE e.tokens > 0 AND (\(predicate))
                     GROUP BY e.source_id, CAST(e.timestamp / 60 AS INTEGER), COALESCE(e.model, '')
                     ORDER BY 3, e.source_id, 4;
                     """,
-                    bindings: [
-                        .int64(Int64(floor(minuteStart.timeIntervalSince1970 / 300) * 300)),
-                        .int64(Int64(end.timeIntervalSince1970)),
-                    ]
+                    bindings: minuteBindings
                 ) { row -> (Int64, String, TokenCacheBucket, String?) in
                     let bucket = TokenCacheBucket(
                         start: Date(timeIntervalSince1970: TimeInterval(row.int64(2) ?? 0)),
