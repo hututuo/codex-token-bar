@@ -364,6 +364,48 @@ test("late resolved healthy listener after unmount unlistens without scheduling"
   });
 });
 
+test("progress reaches terminal state after the UI refresh has settled", async () => {
+  await withMountedDashboard(async ({ React, container, load, render, window }) => {
+    const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
+    let phase = "preparing";
+    const timers = new Map();
+    let nextTimer = 0;
+    const originalSet = window.setInterval.bind(window);
+    const originalClear = window.clearInterval.bind(window);
+    window.setInterval = (callback, delay, ...args) => {
+      if (delay !== 250) return originalSet(callback, delay, ...args);
+      const id = --nextTimer;
+      timers.set(id, callback);
+      return id;
+    };
+    window.clearInterval = (id) => {
+      if (!timers.delete(id)) originalClear(id);
+    };
+    const source = dashboardSource({
+      fallbackPlatformCapabilities,
+      getCodexHome: () => Promise.resolve(sourceEnvelope("physical-a", 1)),
+      readDashboardSnapshot: () => Promise.resolve(snapshot(emptyDashboardSnapshot, "cached")),
+    });
+    source.readPreciseDashboardProgress = async () => ({
+      phase, message: "索引结构已就绪，准备扫描精确历史",
+      completed: 0, total: null, fraction: null, startedAt: "", updatedAt: "",
+    });
+    await render(source, {
+      subscribeToSourceChanges: () => Promise.resolve({ ok: true, unlisten() {} }),
+    });
+    await waitForAct(React, () => JSON.parse(container.textContent).progress === "preparing");
+    await React.act(tick);
+    assert.ok(timers.size > 0, "pending native progress must keep polling after UI requests finish");
+    phase = "idle";
+    await React.act(async () => {
+      for (const callback of [...timers.values()]) await callback();
+      await tick();
+    });
+    assert.equal(JSON.parse(container.textContent).progress, "idle");
+    assert.equal(timers.size, 0, "terminal progress must stop polling");
+  });
+});
+
 async function withMountedDashboard(run) {
   const window = new Window({ url: "http://localhost/" });
   const restore = installDomGlobals(window);
@@ -381,6 +423,7 @@ async function withMountedDashboard(run) {
         function Probe() {
           const result = useDashboardData({ ...options, source, liveRateEnabled: false });
           return React.createElement("output", null, JSON.stringify({
+            progress: result.preciseProgress?.phase ?? null,
             physical: result.providerSourceKey.split(":").at(-1),
             generatedAt: result.state.dashboard?.generatedAt ?? null,
           }));

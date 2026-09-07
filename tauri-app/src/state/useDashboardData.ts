@@ -1248,6 +1248,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     sourceToken,
   });
 
+  const preciseProgressPending = preciseProgress !== null
+    && !["idle", "complete", "failed"].includes(preciseProgress.phase);
   useEffect(() => {
     const readProgress = source.readPreciseDashboardProgress;
     if (!readProgress || sourceToken === null) {
@@ -1264,8 +1266,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     void poll();
     // refreshTaskCount is only the soft UI budget. The native precise owner
     // deliberately continues beyond that budget for large histories, so keep
-    // polling until the actual single-flight settles.
-    const active = state.loading || refreshTaskCount > 0 || preciseRequestInFlight;
+    // polling until the actual single-flight settles. Background summary work
+    // can also outlive all UI waiters; an observed pending phase needs a final poll.
+    const active = state.loading || refreshTaskCount > 0 || preciseRequestInFlight
+      || preciseProgressPending;
     if (!active) {
       return () => {
         cancelled = true;
@@ -1278,7 +1282,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [preciseRequestInFlight, refreshTaskCount, source, sourceToken, state.loading]);
+  }, [preciseProgressPending, preciseRequestInFlight, refreshTaskCount, source, sourceToken, state.loading]);
 
   return {
     state,

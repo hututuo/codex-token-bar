@@ -1361,6 +1361,7 @@ pub(super) fn maintain_exact_index_storage_if_due(
     codex_home: &Path,
     now_unix: i64,
 ) -> Result<ExactStorageMaintenanceOutcome, String> {
+    let _progress = super::PreciseProgressSuppression::enter();
     let mut index = ExactUsageIndex::open(codex_home)?;
     index.maintain_storage_if_due(now_unix, ExactStorageMaintenancePolicy::default(), None)
 }
@@ -1372,6 +1373,7 @@ pub(super) fn maintain_exact_index_storage_for_testing(
     minimum_check_interval_seconds: i64,
     available_bytes: u64,
 ) -> Result<ExactStorageMaintenanceOutcome, String> {
+    let _progress = super::PreciseProgressSuppression::enter();
     let mut index = ExactUsageIndex::open(codex_home)?;
     index.maintain_storage_if_due(
         now_unix,

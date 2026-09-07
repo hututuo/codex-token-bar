@@ -11556,9 +11556,17 @@ fn exact_index_storage_maintenance_reclaims_free_pages_and_refreshes_receipt() {
     drop(connection);
     let bytes_before = fs::metadata(&index_path).unwrap().len();
 
+    finish_precise_dashboard_progress(&root, true, "精确统计已完成");
+    let progress_before = serde_json::to_value(precise_dashboard_progress(&root)).unwrap();
+    let assert_progress_unchanged = || {
+        assert_eq!(serde_json::to_value(precise_dashboard_progress(&root)).unwrap(), progress_before);
+    };
+    super::exact_usage_index::maintain_exact_index_storage_if_due(&root, 0).unwrap();
+    assert_progress_unchanged();
     let first_check = 1_787_840_000;
     let insufficient =
         maintain_exact_index_storage_for_testing(&root, first_check, 60 * 60, 0).unwrap();
+    assert_progress_unchanged();
     assert!(matches!(
         insufficient,
         ExactStorageMaintenanceOutcome::InsufficientSpace { .. }
@@ -11568,6 +11576,8 @@ fn exact_index_storage_maintenance_reclaims_free_pages_and_refreshes_receipt() {
         ExactStorageMaintenanceOutcome::NotDue
     ));
 
+    assert_progress_unchanged();
+
     let outcome = maintain_exact_index_storage_for_testing(
         &root,
         first_check + 60 * 60 + 1,
@@ -11575,6 +11585,7 @@ fn exact_index_storage_maintenance_reclaims_free_pages_and_refreshes_receipt() {
         u64::MAX,
     )
     .unwrap();
+    assert_progress_unchanged();
     let ExactStorageMaintenanceOutcome::Compacted {
         before_bytes,
         after_bytes,
