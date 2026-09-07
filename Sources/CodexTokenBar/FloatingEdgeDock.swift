@@ -81,6 +81,8 @@ struct FloatingEdgeDockModifier: ViewModifier {
         let shellSize = collapsed ? lip.size : size
         let shellOffset = collapsed && !compact
             ? CGSize(width: lip.minX - full.minX, height: full.maxY - lip.maxY) : .zero
+        let contentScale = max(0.8, (surfaceSize.width - 10) / surfaceSize.width)
+        let contentInsetY = surfaceSize.height * (1 - contentScale) / 2
         let travel = CGSize(
             width: collapsed ? (anchor?.edge == .left ? -size.width : anchor?.edge == .right ? size.width : 0) : 0,
             height: collapsed ? (anchor?.edge == .top ? -size.height : anchor?.edge == .bottom ? size.height : 0) : 0
@@ -96,10 +98,9 @@ struct FloatingEdgeDockModifier: ViewModifier {
             }
             content
                 .frame(width: size.width, height: size.height, alignment: .topLeading)
-                .scaleEffect(x: anchor == nil ? 1 : collapsed ? 0.84 : max(0.8, (size.width - 10) / size.width),
-                             y: anchor == nil ? 1 : collapsed ? 0.84 : max(0.8, (surfaceSize.height - 10) / surfaceSize.height),
+                .scaleEffect(anchor == nil ? 1 : contentScale,
                              anchor: detailsAbove ? .bottom : .top)
-                .offset(y: anchor != nil && !collapsed ? (detailsAbove ? -5 : 5) : 0)
+                .offset(y: anchor == nil ? 0 : (detailsAbove ? -contentInsetY : contentInsetY))
                 .offset(travel)
                 .opacity(collapsed ? 0 : 1)
                 .allowsHitTesting(!collapsed)

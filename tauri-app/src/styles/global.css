@@ -12559,10 +12559,13 @@ details.session-management-banner {
 }
 .floating-edge-host:not([data-edge="free"]) .floating-edge-content {
   transform-origin: var(--dock-content-origin, center top);
-  transform: translateY(var(--dock-content-offset-y, 5px)) scale(var(--dock-content-scale-x), var(--dock-content-scale-y));
+  --dock-active-travel-x: 0px;
+  --dock-active-travel-y: 0px;
+  transform: translate(var(--dock-active-travel-x), calc(var(--dock-content-offset-y, 0px) + var(--dock-active-travel-y))) scale(var(--dock-content-scale));
 }
 .floating-edge-host[data-collapsed="true"] .floating-edge-content {
-  transform: translate(var(--dock-travel-x), var(--dock-travel-y)) scale(.84);
+  --dock-active-travel-x: var(--dock-travel-x);
+  --dock-active-travel-y: var(--dock-travel-y);
   opacity: 0;
   pointer-events: none;
 }

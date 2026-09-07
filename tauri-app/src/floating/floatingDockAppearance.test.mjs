@@ -3,6 +3,29 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Window } from "happy-dom";
 
+for (const edge of ["left", "right"]) {
+  for (const side of ["below", "above"]) {
+    test(`${edge}/${side}: content uses one scale and only horizontal travel`, () => {
+      const window = new Window();
+      const doc = window.document;
+      const style = doc.createElement("style");
+      style.textContent = readFileSync(new URL("../styles/global.css", import.meta.url), "utf8");
+      doc.head.append(style);
+      const inset = side === "above" ? "-2.4px" : "2.4px";
+      const travel = edge === "left" ? "-258px" : "258px";
+      doc.body.innerHTML = `<div class="floating-edge-host" data-edge="${edge}" data-collapsed="false" style="--dock-content-scale:.96;--dock-content-offset-y:${inset};--dock-content-origin:center ${side === "above" ? "bottom" : "top"};--dock-travel-x:${travel};--dock-travel-y:0px"><div class="floating-edge-content"></div></div>`;
+      const host = doc.querySelector(".floating-edge-host");
+      const content = doc.querySelector(".floating-edge-content");
+      const expanded = window.getComputedStyle(content).transform;
+      host.dataset.collapsed = "true";
+      const collapsed = window.getComputedStyle(content).transform;
+      assert.equal(expanded, `translate(0px, calc(${inset} + 0px)) scale(.96)`);
+      assert.equal(collapsed, `translate(${travel}, calc(${inset} + 0px)) scale(.96)`);
+      window.happyDOM.abort();
+    });
+  }
+}
+
 for (const edge of ["left", "right", "top", "bottom"]) {
   test(`${edge}: black rail stays opaque while only quota contents crossfade`, () => {
     const window = new Window();

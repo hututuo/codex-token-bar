@@ -497,6 +497,8 @@ export function FloatingWindowApp() {
   }
 
   const mainCardHeight = floatingContentHeight(presentedSettings.contentVisibility) * presentedSettings.scale;
+  const dockContentScale = Math.max(0.8, (dockWidth - 10) / dockWidth);
+  const dockContentInsetY = mainCardHeight * (1 - dockContentScale) / 2;
   const dockStyle = dockAnchor ? {
     "--dock-width": `${dockWidth}px`,
     "--dock-height": `${dockHeight}px`,
@@ -506,9 +508,8 @@ export function FloatingWindowApp() {
     "--dock-lip-y": `${(dockAnchor.lip.y - dockAnchor.frame.y) / dockScale}px`,
     "--dock-lip-scale-x": dockAnchor.lip.width / dockAnchor.frame.width,
     "--dock-lip-scale-y": dockAnchor.lip.height / dockAnchor.frame.height,
-    "--dock-content-scale-x": Math.max(0.8, (dockWidth - 10) / dockWidth),
-    "--dock-content-scale-y": Math.max(0.8, (mainCardHeight - 10) / mainCardHeight),
-    "--dock-content-offset-y": runningModelDetailsSide === "above" ? "-5px" : "5px",
+    "--dock-content-scale": dockContentScale,
+    "--dock-content-offset-y": `${runningModelDetailsSide === "above" ? -dockContentInsetY : dockContentInsetY}px`,
     "--dock-content-origin": runningModelDetailsSide === "above" ? "center bottom" : "center top",
     "--dock-travel-x": `${dockAnchor.edge === "left" ? -dockWidth : dockAnchor.edge === "right" ? dockWidth : 0}px`,
     "--dock-travel-y": `${dockAnchor.edge === "top" ? -dockHeight : dockAnchor.edge === "bottom" ? dockHeight : 0}px`,

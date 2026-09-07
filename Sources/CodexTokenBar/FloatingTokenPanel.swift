@@ -1121,7 +1121,9 @@ struct FloatingTokenPanelView: View {
                     y: detailsPlacement == .above ? detailsInset
                         : surfaceSize.height + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale)
                 )
-                .transition(.opacity.animation(reduceMotion ? nil : .easeOut(duration: 0.12).delay(0.1)))
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(reduceMotion ? nil : .easeOut(duration: 0.12).delay(0.1)),
+                    removal: .identity))
                 .zIndex(5)
             }
 
@@ -1198,6 +1200,10 @@ struct FloatingTokenPanelView: View {
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
         .modifier(FloatingEdgeDockModifier(presentation: edgeDockPresentation, size: size, surfaceSize: surfaceSize, detailsAbove: detailsPlacement == .above, quota: liveDisplaySnapshot.quota, quotaColorStyle: quotaColorStyle))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: detailsPlacement == .above ? .bottomLeading : .topLeading)
+        // A native resize commits at once. Never interpolate the hosted layout
+        // from the obsolete drawer height after that commit.
+        .animation(nil, value: size)
+        .animation(nil, value: effectiveRunningModelDetailsPresented)
     }
 
     private func advancePagingGuide(pages: [FloatingPanelGuidePage]) {

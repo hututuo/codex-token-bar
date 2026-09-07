@@ -1,8 +1,92 @@
 import AppKit
 import XCTest
+import SwiftUI
 @testable import CodexTokenBar
 
 final class FloatingDetailsDrawerTests: XCTestCase {
+    @MainActor
+    func testPreparingAlreadyOpenDockDoesNotPublishAnExpansionAnimation() {
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 100, width: 258, height: 120),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        let dock = FloatingEdgeDockController(pointerLocation: { NSPoint(x: 100, y: 150) }, pressedMouseButtons: { 0 })
+        dock.bind(panel: panel, enabled: { true }, persist: { _ in })
+        dock.presentation.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
+        var publications = 0
+        let subscription = dock.presentation.objectWillChange.sink { publications += 1 }
+        dock.holdOpen(true)
+        dock.prepareForResize()
+        XCTAssertEqual(publications, 0)
+        subscription.cancel(); dock.dispose(); panel.close()
+    }
+
+    @MainActor
+    func testSideDockContentsTranslateWithoutChangingHeightOrVerticalPosition() async throws {
+        let scale = FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1)
+        let normal = FloatingTokenPanelLayout(scale: scale, visibility: .default)
+        for edge in [FloatingDockEdge.left, .right] {
+            let state = FloatingRunningModelDetailsSessionState()
+            let dock = FloatingEdgeDockPresentation()
+            let marker = NSView(frame: .zero)
+            let panel = NSPanel(contentRect: NSRect(x: 100, y: 300, width: normal.size.width, height: normal.size.height),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            defer { panel.contentViewController = nil; panel.close() }
+            let host = NSHostingController(rootView: DrawerHostProbe(state: state, dock: dock, marker: marker,
+                normal: normal, expanded: normal, close: {}))
+            panel.contentViewController = host
+            host.view.frame = NSRect(origin: .zero, size: normal.size)
+            dock.anchor = FloatingEdgeDockAnchor(edge: edge, expandedFrame: panel.frame)
+            for _ in 0..<4 { host.view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+            let expandedFrame = marker.convert(marker.bounds, to: nil)
+            dock.collapsed = true
+            for _ in 0..<4 { host.view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+            let collapsedFrame = marker.convert(marker.bounds, to: nil)
+            XCTAssertEqual(collapsedFrame.minY, expandedFrame.minY, accuracy: 0.001)
+            XCTAssertEqual(collapsedFrame.height, expandedFrame.height, accuracy: 0.001)
+            XCTAssertEqual(collapsedFrame.width, expandedFrame.width, accuracy: 0.001)
+            XCTAssertEqual(abs(collapsedFrame.minX - expandedFrame.minX), normal.size.width, accuracy: 0.001)
+            XCTAssertEqual(expandedFrame.width / expandedFrame.height, normal.size.width / normal.size.height, accuracy: 0.001)
+        }
+    }
+
+    @MainActor
+    func testHiddenHostKeepsMainCardScreenPositionWhileClosing() async throws {
+        let scale = FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1)
+        let normal = FloatingTokenPanelLayout(scale: scale, visibility: .default)
+        let expanded = FloatingTokenPanelLayout(scale: scale, visibility: .default,
+            runningModelDetailsPresented: true, runningModelDetailsRowUnits: 3)
+        let state = FloatingRunningModelDetailsSessionState()
+        let dock = FloatingEdgeDockPresentation()
+        let marker = NSView(frame: .zero)
+        let base = NSRect(x: 80, y: 300, width: normal.size.width, height: normal.size.height)
+        let panel = NSPanel(contentRect: base, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        defer { panel.contentViewController = nil; panel.close() }
+        state.toggle(); state.updateLayout(expanded)
+        let host = NSHostingController(rootView: DrawerHostProbe(state: state, dock: dock, marker: marker,
+            normal: normal, expanded: expanded, close: {
+                resizePanel(panel, layout: normal, surfaceSize: normal.size, baseFrame: base)
+                state.updateLayout(nil)
+                dock.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
+            }))
+        panel.contentViewController = host
+        resizePanel(panel, layout: expanded, surfaceSize: normal.size, baseFrame: base)
+        dock.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
+        for _ in 0..<10 { host.view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        func markerScreenFrame() -> NSRect { panel.convertToScreen(marker.convert(marker.bounds, to: nil)) }
+        let before = markerScreenFrame()
+        XCTAssertEqual(before.width / before.height, normal.size.width / normal.size.height, accuracy: 0.001)
+        state.dismiss()
+        var frames: [NSRect] = []
+        for _ in 0..<20 {
+            host.view.layoutSubtreeIfNeeded()
+            frames.append(markerScreenFrame())
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        XCTAssertTrue(frames.allSatisfy { abs($0.minY - before.minY) < 1 && abs($0.maxY - before.maxY) < 1 })
+    }
+
     @MainActor
     func testClosingDrawerRestoresExactScreenEdgeWithoutOrdinaryWindowMargin() throws {
         let screen = try XCTUnwrap(NSScreen.main?.visibleFrame)
@@ -101,5 +185,30 @@ final class FloatingDetailsDrawerTests: XCTestCase {
         XCTAssertEqual(dock.expandedFrame, original)
         XCTAssertTrue(saved.isEmpty)
         dock.dispose(); panel.close()
+    }
+}
+
+private struct DrawerMarker: NSViewRepresentable {
+    let view: NSView
+    func makeNSView(context: Context) -> NSView { view }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+private struct DrawerHostProbe: View {
+    @ObservedObject var state: FloatingRunningModelDetailsSessionState
+    @ObservedObject var dock: FloatingEdgeDockPresentation
+    let marker: NSView
+    let normal: FloatingTokenPanelLayout
+    let expanded: FloatingTokenPanelLayout
+    let close: () -> Void
+    var body: some View {
+        let size = state.drawerLayout?.size ?? (state.isPresented ? expanded.size : normal.size)
+        ZStack(alignment: .topLeading) {
+            DrawerMarker(view: marker).frame(width: normal.size.width, height: normal.size.height)
+            if state.isPresented { Color.black.frame(width: normal.size.width, height: 100).offset(y: normal.size.height + 8) }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .modifier(FloatingEdgeDockModifier(presentation: dock, size: size, surfaceSize: normal.size, detailsAbove: false, quota: .empty, quotaColorStyle: .default))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onChange(of: state.isPresented) { _, presented in if !presented { close() } }
     }
 }

@@ -195,6 +195,9 @@ final class FloatingEdgeDockController {
     func reveal() {
         guard let anchor = presentation.anchor else { return }
         cancelPending()
+        // Resizing an already-open drawer must not publish a redundant spring
+        // transaction that animates the following hosting-view geometry change.
+        guard presentation.collapsed || presentation.compactWindow else { return }
         let wasCompact = presentation.compactWindow
         if wasCompact {
             // Expand the input window once, then animate within its fixed frame.
