@@ -322,7 +322,7 @@ export function DashboardHeader({
             <strong>{runningThreadHeaderText(runningThreads)}</strong>
           </span>
           <span className={`dash-head__freshness${freshnessStage ? ` is-${freshnessStage}` : ""}`}>
-            <small>{activeProgress?.phaseLabel ?? (fullPrecisionPending ? "等待精确统计" : "本地统计")}</small>
+            <small>{activeProgress?.phaseLabel ?? (fullPrecisionPending ? "等待精确统计" : "精确统计")}</small>
             <strong>
               <i aria-hidden="true" className="precise-progress-dot" />
               {activeProgress

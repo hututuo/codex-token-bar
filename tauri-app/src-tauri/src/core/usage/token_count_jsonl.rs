@@ -113,10 +113,27 @@ const PRECISE_REFRESH_COMPLETED_OWNER_WINDOW: StdDuration = StdDuration::from_se
 const PRECISE_SCAN_ESTIMATE_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
 thread_local! {
+    static PRECISE_PROGRESS_SUPPRESSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     // Refresh ownership is scoped to the normalized Home path. Source facts
     // and the coordinator's revision fence decide whether work may publish.
     static ACTIVE_PRECISE_PROGRESS_KEY: std::cell::RefCell<Option<PreciseProgressKey>> =
         const { std::cell::RefCell::new(None) };
+}
+
+// Storage maintenance shares index-opening code with refreshes, but does not
+// own dashboard progress. Scope suppression to its thread, including failures.
+struct PreciseProgressSuppression(bool);
+
+impl PreciseProgressSuppression {
+    fn enter() -> Self {
+        Self(PRECISE_PROGRESS_SUPPRESSED.with(|slot| slot.replace(true)))
+    }
+}
+
+impl Drop for PreciseProgressSuppression {
+    fn drop(&mut self) {
+        PRECISE_PROGRESS_SUPPRESSED.with(|slot| slot.set(self.0));
+    }
 }
 
 fn precise_progress_now() -> String {
@@ -204,6 +221,9 @@ fn update_precise_dashboard_progress_for_key(
     completed: u64,
     total: Option<u64>,
 ) {
+    if PRECISE_PROGRESS_SUPPRESSED.with(|slot| slot.get()) {
+        return;
+    }
     let mut states = PRECISE_INDEX_PROGRESS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
