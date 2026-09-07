@@ -4,6 +4,7 @@ enum FloatingTokenPanelMetrics {
     static let baseSize = NSSize(width: 258, height: 120)
     static let minimumControlSize = NSSize(width: 72, height: 34)
     static let baseCornerRadius: CGFloat = 14
+    static let shellPadding: CGFloat = 6
     static let horizontalPadding: CGFloat = 10
     static let verticalPadding: CGFloat = 5
     static let singleElementTopInset: CGFloat = 10
@@ -43,7 +44,7 @@ enum FloatingTokenPanelMetrics {
     static let pagingGuideHeight: CGFloat = 240
     static let runningModelDetailsGap: CGFloat = 8
     static let runningModelDetailsWidth: CGFloat = 260
-    static let runningModelDetailsTrailingInset: CGFloat = 4
+    static let runningModelDetailsTrailingInset: CGFloat = 0
     static let runningModelDetailsMinimumHeight: CGFloat = 96
     static let runningModelDetailsBaseHeight: CGFloat = 84
     static let runningModelDetailsRowHeight: CGFloat = 27
@@ -283,7 +284,7 @@ enum FloatingTokenPanelMetrics {
         runningModelDetailsRowUnits: Int = 0
     ) -> NSSize {
         let rows = visibility.layoutRows
-        guard !rows.isEmpty else { return minimumControlSize }
+        guard !rows.isEmpty else { return NSSize(width: minimumControlSize.width, height: minimumControlSize.height + 2 * shellPadding) }
 
         let contentWidth = rows.flatMap(\.groups).map(rowWidth(for:)).max() ?? 0
         let normalWidth = max(minimumControlSize.width, horizontalPadding * 2 + contentWidth)
@@ -292,7 +293,7 @@ enum FloatingTokenPanelMetrics {
         let computedHeight = max(minimumControlSize.height, verticalPadding * 2 + topInset + contentHeight(visibility: visibility))
         let normalHeight = visibility == .default ? baseSize.height : computedHeight
         let height = max(
-            normalHeight + (runningModelDetailsPresented
+            normalHeight + 2 * shellPadding + (runningModelDetailsPresented
                 ? runningModelDetailsGap + runningModelDetailsHeight(rowCount: runningModelDetailsRowUnits) + runningModelDetailsTrailingInset
                 : 0),
             pagingGuidePresented ? pagingGuideHeight : 0

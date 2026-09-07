@@ -134,7 +134,7 @@ struct FloatingRunningThreadModelDetailsCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7.scaled(by: scale)) {
+        VStack(alignment: .leading, spacing: 8.scaled(by: scale)) {
             HStack(alignment: .center, spacing: 6.scaled(by: scale)) {
                 Text("运行模型详情")
                     .font(.system(size: 11.2.scaled(by: scale), weight: .bold))
@@ -193,13 +193,13 @@ struct FloatingRunningThreadModelDetailsCard: View {
         .frame(width: width, height: height, alignment: .topLeading)
         .background(
             appearance.runningModelDetailsBackgroundColor,
-            in: RoundedRectangle(cornerRadius: 12.scaled(by: scale), style: .continuous)
+            in: RoundedRectangle(cornerRadius: FloatingTokenPanelMetrics.baseCornerRadius.scaled(by: scale), style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 12.scaled(by: scale), style: .continuous)
+            RoundedRectangle(cornerRadius: FloatingTokenPanelMetrics.baseCornerRadius.scaled(by: scale), style: .continuous)
                 .stroke(Color.white.opacity(0.92), lineWidth: 1.scaled(by: scale))
         }
-        .contentShape(RoundedRectangle(cornerRadius: 12.scaled(by: scale), style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: FloatingTokenPanelMetrics.baseCornerRadius.scaled(by: scale), style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(isDemo ? "运行模型详情示例" : "运行模型详情")
     }

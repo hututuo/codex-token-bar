@@ -387,7 +387,7 @@ export function FloatingWindowApp() {
         } : { x: base.x, y: base.y, width: base.width, height: base.height + 332 * scale * factor };
         const drawer = resolveFloatingDetailsDrawer({ base, workArea,
           detailsHeight: Math.min(320 * scale, Math.max(FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * scale, runningModelDetailsHeight)) * factor,
-          gap: 8 * scale * factor, inset: 4 * scale * factor, minimumDetailsHeight: 96 * scale * factor,
+          gap: 8 * scale * factor, inset: 0, minimumDetailsHeight: 96 * scale * factor,
         });
         placement = drawer.placement;
         targetHeight = drawer.frame.height / factor;
@@ -511,10 +511,11 @@ export function FloatingWindowApp() {
     "--dock-lip-scale-x": dockAnchor.lip.width / dockAnchor.frame.width,
     "--dock-lip-scale-y": dockAnchor.lip.height / dockAnchor.frame.height,
     "--dock-content-scale": dockShellMetrics.contentScale,
-    "--dock-content-offset-y": `${runningModelDetailsSide === "above" ? -dockShellMetrics.contentOffsetY : dockShellMetrics.contentOffsetY}px`,
+    "--dock-content-offset-y": `${dockShellMetrics.contentOffsetY}px`,
+    "--dock-base-height": `${dockShellMetrics.height}px`,
     "--dock-radius-x": `${dockShellMetrics.radiusX}px`,
     "--dock-radius-y": `${dockShellMetrics.radiusY}px`,
-    "--dock-content-origin": runningModelDetailsSide === "above" ? "center bottom" : "center top",
+    "--dock-content-origin": "center top",
     "--dock-travel-x": `${dockAnchor.edge === "left" ? -dockWidth : dockAnchor.edge === "right" ? dockWidth : 0}px`,
     "--dock-travel-y": `${dockAnchor.edge === "top" ? -dockHeight : dockAnchor.edge === "bottom" ? dockHeight : 0}px`,
   } as CSSProperties : undefined;
@@ -522,7 +523,8 @@ export function FloatingWindowApp() {
   const shellStyle = {
     ...appearanceStyle,
     "--floating-shell-padding-y": `${pagingGuidePresented ? 0 : 6 * presentedSettings.scale}px`,
-    "--floating-drawer-height": `${drawerMetrics.height}px`,
+    "--floating-drawer-height": `${drawerMetrics.height / (dockAnchor ? dockShellMetrics.contentScale : 1)}px`,
+    "--floating-drawer-gap": `${8 * presentedSettings.scale / (dockAnchor ? dockShellMetrics.contentScale : 1)}px`,
     "--floating-drawer-offset": `${drawerMetrics.offset}px`,
   } as CSSProperties;
   const guideScale = presentedSettings.scale;

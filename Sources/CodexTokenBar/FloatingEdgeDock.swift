@@ -67,6 +67,8 @@ struct FloatingEdgeDockModifier: ViewModifier {
     let size: NSSize
     let surfaceSize: NSSize
     let detailsAbove: Bool
+    var cardCornerRadius: CGFloat = 14
+    var shellPadding: CGFloat = 0
     let quota: AccountQuotaSnapshot
     let quotaColorStyle: FloatingQuotaColorStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -82,14 +84,17 @@ struct FloatingEdgeDockModifier: ViewModifier {
         let shellOffset = collapsed && !compact
             ? CGSize(width: lip.minX - full.minX, height: full.maxY - lip.maxY) : .zero
         let contentScale = max(0.8, (surfaceSize.width - 10) / surfaceSize.width)
-        let contentInsetY = surfaceSize.height * (1 - contentScale) / 2
+        let baseHeight = surfaceSize.height + 2 * shellPadding
+        let contentInsetY = (baseHeight - surfaceSize.height * contentScale) / 2
         let travel = CGSize(
             width: collapsed ? (anchor?.edge == .left ? -size.width : anchor?.edge == .right ? size.width : 0) : 0,
             height: collapsed ? (anchor?.edge == .top ? -size.height : anchor?.edge == .bottom ? size.height : 0) : 0
         )
         return ZStack(alignment: .topLeading) {
             if let anchor {
-                dockShape(edge: anchor.edge, radius: collapsed ? 3 : 22)
+                FloatingDockShellShape(edge: anchor.edge,
+                    radiusX: collapsed ? 3 : cardCornerRadius * contentScale + (surfaceSize.width * (1 - contentScale) / 2),
+                    radiusY: collapsed ? 3 : cardCornerRadius * contentScale + contentInsetY)
                     .fill(.black)
                     .frame(width: shellSize.width, height: shellSize.height)
                     .offset(shellOffset)
@@ -97,10 +102,10 @@ struct FloatingEdgeDockModifier: ViewModifier {
                     .allowsHitTesting(false)
             }
             content
-                .frame(width: size.width, height: size.height, alignment: .topLeading)
+                .frame(width: size.width, height: surfaceSize.height + (size.height - baseHeight) / (anchor == nil ? 1 : contentScale), alignment: .topLeading)
                 .scaleEffect(anchor == nil ? 1 : contentScale,
-                             anchor: detailsAbove ? .bottom : .top)
-                .offset(y: anchor == nil ? 0 : (detailsAbove ? -contentInsetY : contentInsetY))
+                             anchor: .top)
+                .offset(y: anchor == nil ? shellPadding : contentInsetY)
                 .offset(travel)
                 .opacity(collapsed ? 0 : 1)
                 .allowsHitTesting(!collapsed)
@@ -132,14 +137,29 @@ struct FloatingEdgeDockModifier: ViewModifier {
         }
     }
 
-    private func dockShape(edge: FloatingDockEdge, radius: CGFloat) -> UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: edge == .left || edge == .top ? 0 : radius,
-            bottomLeadingRadius: edge == .left || edge == .bottom ? 0 : radius,
-            bottomTrailingRadius: edge == .right || edge == .bottom ? 0 : radius,
-            topTrailingRadius: edge == .right || edge == .top ? 0 : radius,
+
+}
+
+/// Elliptical outer corners share the inner card's corner centers even when
+/// horizontal and vertical shell padding differ.
+struct FloatingDockShellShape: Shape {
+    let edge: FloatingDockEdge
+    let radiusX: CGFloat
+    let radiusY: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let rx = min(radiusX, rect.width / 2)
+        let ry = min(radiusY, rect.height / 2)
+        guard rx > 0, ry > 0 else { return Path(rect) }
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: edge == .left || edge == .top ? 0 : rx,
+            bottomLeadingRadius: edge == .left || edge == .bottom ? 0 : rx,
+            bottomTrailingRadius: edge == .right || edge == .bottom ? 0 : rx,
+            topTrailingRadius: edge == .right || edge == .top ? 0 : rx,
             style: .continuous
         )
+        return shape.path(in: CGRect(x: 0, y: 0, width: rect.width, height: rect.height * rx / ry))
+            .applying(CGAffineTransform(scaleX: 1, y: ry / rx))
     }
 }
 

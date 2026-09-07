@@ -8673,10 +8673,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   place-items: end center;
 }
 .floating-window-shell--running-model-details .floating-running-model-details {
-  left: calc(4px * var(--floating-scale));
+  left: -1px;
   right: auto;
-  top: calc(100% + 8px * var(--floating-scale));
-  width: calc(100% - 8px * var(--floating-scale));
+  top: calc(100% + 1px + var(--floating-drawer-gap, 8px));
+  width: calc(100% + 2px);
+  border-radius: calc(14px * var(--floating-scale));
   height: var(--floating-drawer-height);
   min-height: 0;
   grid-template-rows: auto auto minmax(0, 1fr);
@@ -8685,7 +8686,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 .floating-window-shell--running-model-details-above .floating-running-model-details {
   top: auto;
-  bottom: calc(100% + 8px * var(--floating-scale));
+  bottom: calc(100% + 1px + var(--floating-drawer-gap, 8px));
 }
 .floating-window-shell--running-model-details .floating-running-model-table { overflow-y: auto; overscroll-behavior: contain; align-content: start; }
 .floating-running-model-close-hint { color: #596576; font-size: calc(8px * var(--floating-scale)); line-height: 1.35; }
@@ -9163,7 +9164,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   min-height: calc(88px * var(--floating-scale));
   box-sizing: border-box;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: calc(7px * var(--floating-scale));
+  gap: calc(8px * var(--floating-scale));
   padding: calc(10px * var(--floating-scale));
   border: 1px solid rgba(255, 255, 255, 0.92);
   border-radius: calc(12px * var(--floating-scale));
@@ -12529,7 +12530,7 @@ details.session-management-banner {
 }
 /* The live viewport changes before the asynchronous dock anchor refresh. */
 .floating-edge-host[data-collapsed="false"] > .floating-edge-content {
-  height: 100vh;
+  height: calc(var(--dock-base-height, 100vh) + (100vh - var(--dock-base-height, 100vh)) / var(--dock-content-scale, 1));
 }
 .floating-edge-content > .floating-window-shell {
   width: 100%;

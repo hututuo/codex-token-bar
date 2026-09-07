@@ -187,7 +187,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 23, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarTypographyScale, 1.15, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 91, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 120, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 132, accuracy: 0.001)
     }
 
     func testDefaultMetricsEmbedMainAndSubagentCountsOnTheRight() {
@@ -1305,9 +1305,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             + FloatingTokenPanelMetrics.singleElementTopInset
             + FloatingTokenPanelMetrics.radarRowHeight
 
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: rateOnlyWithoutUsageStatus).height, rateOnlyHeight, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: statusOnlyWithUsageStatus).height, statusOnlyHeight, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: radarOnlyWithoutUsageStatus).height, radarOnlyHeight, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: rateOnlyWithoutUsageStatus).height, rateOnlyHeight + 12, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: statusOnlyWithUsageStatus).height, statusOnlyHeight + 12, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: radarOnlyWithoutUsageStatus).height, radarOnlyHeight + 12, accuracy: 0.001)
         XCTAssertFalse(rateOnlyWithoutUsageStatus.needsTopControlInset)
         XCTAssertFalse(statusOnlyWithUsageStatus.needsTopControlInset)
         XCTAssertTrue(radarOnlyWithoutUsageStatus.needsTopControlInset)

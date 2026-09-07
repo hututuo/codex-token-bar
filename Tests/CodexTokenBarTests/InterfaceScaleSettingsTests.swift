@@ -10,8 +10,8 @@ final class InterfaceScaleSettingsTests: XCTestCase {
         XCTAssertEqual(scale.value, 1.3, accuracy: 0.001)
         XCTAssertEqual(layout.effectiveScale, 1.3, accuracy: 0.001)
         XCTAssertEqual(layout.size.width, 336, accuracy: 0.001)
-        // The compact model row keeps the default panel on a 120pt base height.
-        XCTAssertEqual(layout.size.height, 156, accuracy: 0.001)
+        // The 120pt card has 6pt of shell padding above and below.
+        XCTAssertEqual(layout.size.height, 172, accuracy: 0.001)
         XCTAssertEqual(layout.cornerRadius, 18.2, accuracy: 0.001)
     }
 

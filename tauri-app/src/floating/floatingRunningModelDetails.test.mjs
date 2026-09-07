@@ -212,7 +212,7 @@ test("expanded running-model card can render above the main card", async () => {
   assert.match(surface, /data-running-model-details-side/);
   assert.match(css, /floating-window-shell--running-model-details-above/);
   assert.match(css, /overflow-y: auto/);
-  assert.match(css, /bottom: calc\(100% \+ 8px \* var\(--floating-scale\)\)/);
+  assert.match(css, /bottom: calc\(100% \+ 1px \+ var\(--floating-drawer-gap, 8px\)\)/);
 });
 
 test("running model details card derives a softened color from the floating theme", async () => {

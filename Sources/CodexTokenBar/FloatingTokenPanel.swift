@@ -996,11 +996,13 @@ struct FloatingTokenPanelView: View {
         let drawerLayout = runningModelDetailsSessionState.drawerLayout
         let size = drawerLayout?.size ?? measuredSize
         let detailsPlacement = drawerLayout?.runningModelDetailsPlacement ?? .below
-        let surfaceSize = FloatingTokenPanelMetrics.size(
+        let baseShellSize = FloatingTokenPanelMetrics.size(
             effectiveScale: scale,
             visibility: visibility,
             pagingGuidePresented: false
         )
+        let shellPadding = FloatingTokenPanelMetrics.shellPadding * scale
+        let surfaceSize = NSSize(width: baseShellSize.width, height: baseShellSize.height - 2 * shellPadding)
         let cornerRadius = FloatingTokenPanelMetrics.baseCornerRadius * scale
         let immediatelyAppliedArrowGlyphs = pagingGuideRevision < currentPagingGuideRevision
             ? immediatePagingGuideCompletion?.showsArrowGlyphs
@@ -1044,11 +1046,14 @@ struct FloatingTokenPanelView: View {
         // reserved for the explicit guide button.
         let pageNavigationAction: (() -> Void)? = nil
 
-        let runningModelDetailsSurfaceOffsetY = detailsPlacement == .above
-            ? size.height - surfaceSize.height : 0
+        let dockScale = edgeDockPresentation.anchor == nil ? 1
+            : max(0.8, (surfaceSize.width - 10) / surfaceSize.width)
+        let drawerExtra = (size.height - baseShellSize.height) / dockScale
+        let contentSize = NSSize(width: size.width, height: surfaceSize.height + drawerExtra)
+        let runningModelDetailsSurfaceOffsetY = detailsPlacement == .above ? drawerExtra : 0
         let detailsInset = FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
-        let detailsHeight = max(0, size.height - surfaceSize.height
-            - FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale) - detailsInset)
+        let detailsGap = FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale) / dockScale
+        let detailsHeight = max(0, drawerExtra - detailsGap)
 
         return ZStack(alignment: .topLeading) {
             ZStack {
@@ -1130,7 +1135,7 @@ struct FloatingTokenPanelView: View {
                 .offset(
                     x: detailsInset,
                     y: detailsPlacement == .above ? detailsInset
-                        : surfaceSize.height + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale)
+                        : surfaceSize.height + detailsGap
                 )
                 .transition(.asymmetric(
                     insertion: .opacity.animation(reduceMotion ? nil : .easeOut(duration: 0.12).delay(0.1)),
@@ -1201,7 +1206,7 @@ struct FloatingTokenPanelView: View {
         .environment(\.tokenDisplayStandaloneUsageStatusTextPalette, standaloneUsageStatusTextPalette)
         .environment(\.tokenDisplayRadarActionTextPalette, radarActionTextPalette)
         .environment(\.tokenDisplayRadarModelTextPalette, radarModelTextPalette)
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .frame(width: contentSize.width, height: contentSize.height, alignment: .topLeading)
         .background {
             if effectiveRunningModelDetailsPresented {
                 RoundedRectangle(cornerRadius: 18.scaled(by: scale), style: .continuous).fill(.black)
@@ -1209,7 +1214,7 @@ struct FloatingTokenPanelView: View {
         }
         .contentShape(Rectangle())
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
-        .modifier(FloatingEdgeDockModifier(presentation: edgeDockPresentation, size: size, surfaceSize: surfaceSize, detailsAbove: detailsPlacement == .above, quota: liveDisplaySnapshot.quota, quotaColorStyle: quotaColorStyle))
+        .modifier(FloatingEdgeDockModifier(presentation: edgeDockPresentation, size: size, surfaceSize: surfaceSize, detailsAbove: detailsPlacement == .above, cardCornerRadius: cornerRadius, shellPadding: shellPadding, quota: liveDisplaySnapshot.quota, quotaColorStyle: quotaColorStyle))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: detailsPlacement == .above ? .bottomLeading : .topLeading)
         // A native resize commits at once. Never interpolate the hosted layout
         // from the obsolete drawer height after that commit.
@@ -1258,7 +1263,7 @@ func runningThreadControlFrames(
     )
     guard let centerFromTop = FloatingTokenPanelMetrics.runningThreadsRowCenterY(
         visibility: visibility,
-        panelHeight: surfaceSize.height,
+        panelHeight: surfaceSize.height - 2 * FloatingTokenPanelMetrics.shellPadding * scale,
         scale: scale
     ) else { return [] }
     let width = visibility.embedsRunningThreadsInMetricsRow
@@ -1273,7 +1278,7 @@ func runningThreadControlFrames(
     return [
         NSRect(
             x: centerX - width / 2,
-            y: layout.size.height - surfaceOffsetY - centerFromTop - height / 2,
+            y: layout.size.height - surfaceOffsetY - FloatingTokenPanelMetrics.shellPadding * scale - centerFromTop - height / 2,
             width: width,
             height: height
         )
@@ -1285,7 +1290,9 @@ func runningModelDetailsCardFrame(layout: FloatingTokenPanelLayout, surfaceSize:
     let gap = FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: layout.effectiveScale)
     let height = max(0, layout.size.height - surfaceSize.height - gap - inset)
     return NSRect(x: inset,
-                  y: layout.runningModelDetailsPlacement == .above ? surfaceSize.height + gap : inset,
+                  y: layout.runningModelDetailsPlacement == .above
+                    ? surfaceSize.height + gap - FloatingTokenPanelMetrics.shellPadding * layout.effectiveScale
+                    : FloatingTokenPanelMetrics.shellPadding * layout.effectiveScale,
                   width: max(0, surfaceSize.width - 2 * inset), height: height)
 }
 

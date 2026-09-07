@@ -5,6 +5,44 @@ import SwiftUI
 
 final class FloatingDetailsDrawerTests: XCTestCase {
     @MainActor
+    func testRenderedCardsShareWidthGapAndOuterMargins() async throws {
+        for placement in [FloatingRunningModelDetailsPlacement.below, .above] {
+            let scale = FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1)
+            let normal = FloatingTokenPanelLayout(scale: scale, visibility: .default)
+            let expanded = FloatingTokenPanelLayout(scale: scale, visibility: .default,
+                runningModelDetailsPresented: true, runningModelDetailsRowUnits: 3,
+                runningModelDetailsPlacement: placement)
+            let state = FloatingRunningModelDetailsSessionState()
+            state.updateLayout(expanded)
+            let dock = FloatingEdgeDockPresentation()
+            let marker = NSView(frame: .zero), detail = NSView(frame: .zero)
+            let panel = NSPanel(contentRect: NSRect(origin: .zero, size: expanded.size),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            defer { panel.contentViewController = nil; panel.close() }
+            dock.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
+            let host = FloatingPanelHostingController(rootView: DrawerHostProbe(state: state, dock: dock,
+                marker: marker, normal: normal, expanded: expanded, close: {}, detailMarker: detail))
+            panel.contentViewController = host
+            resizePanel(panel, layout: expanded, surfaceSize: normal.size,
+                baseFrame: NSRect(origin: .zero, size: normal.size))
+            dock.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
+            for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+            let mainFrame = marker.convert(marker.bounds, to: nil)
+            let detailFrame = detail.convert(detail.bounds, to: nil)
+            XCTAssertEqual(mainFrame.width, detailFrame.width, accuracy: 0.01)
+            XCTAssertEqual(mainFrame.minX, detailFrame.minX, accuracy: 0.01)
+            let bottom = min(mainFrame.minY, detailFrame.minY)
+            let top = max(mainFrame.maxY, detailFrame.maxY)
+            // NSHostingView rounds individual placements to device pixels.
+            XCTAssertEqual(bottom, expanded.size.height - top, accuracy: 0.5)
+            XCTAssertGreaterThan(bottom, 8)
+            XCTAssertEqual(max(mainFrame.minY, detailFrame.minY) - min(mainFrame.maxY, detailFrame.maxY), 8, accuracy: 0.5)
+            XCTAssertEqual(mainFrame.width / mainFrame.height, 258.0 / 120, accuracy: 0.001)
+        }
+    }
+
+    @MainActor
     func testDetailRequestsDoNotPublishAnUnresolvedDirection() {
         let state = FloatingRunningModelDetailsSessionState()
         var requests: [Bool] = []
@@ -115,7 +153,7 @@ final class FloatingDetailsDrawerTests: XCTestCase {
             XCTAssertEqual(collapsedFrame.height, expandedFrame.height, accuracy: 0.001)
             XCTAssertEqual(collapsedFrame.width, expandedFrame.width, accuracy: 0.001)
             XCTAssertEqual(abs(collapsedFrame.minX - expandedFrame.minX), normal.size.width, accuracy: 0.001)
-            XCTAssertEqual(expandedFrame.width / expandedFrame.height, normal.size.width / normal.size.height, accuracy: 0.001)
+            XCTAssertEqual(expandedFrame.width / expandedFrame.height, normal.size.width / (normal.size.height - 12), accuracy: 0.001)
         }
     }
 
@@ -145,7 +183,7 @@ final class FloatingDetailsDrawerTests: XCTestCase {
         for _ in 0..<10 { host.view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
         func markerScreenFrame() -> NSRect { panel.convertToScreen(marker.convert(marker.bounds, to: nil)) }
         let before = markerScreenFrame()
-        XCTAssertEqual(before.width / before.height, normal.size.width / normal.size.height, accuracy: 0.001)
+        XCTAssertEqual(before.width / before.height, normal.size.width / (normal.size.height - 12), accuracy: 0.001)
         state.dismiss()
         var frames: [NSRect] = []
         for _ in 0..<20 {
@@ -269,16 +307,25 @@ private struct DrawerHostProbe: View {
     let normal: FloatingTokenPanelLayout
     let expanded: FloatingTokenPanelLayout
     let close: () -> Void
+    var detailMarker: NSView? = nil
     var body: some View {
         let size = state.drawerLayout?.size ?? (state.isPresented ? expanded.size : normal.size)
         let above = state.drawerLayout?.runningModelDetailsPlacement == .above
+        let factor = dock.anchor == nil ? 1 : max(0.8, (normal.size.width - 10) / normal.size.width)
+        let padding = 6 * normal.effectiveScale
+        let surface = NSSize(width: normal.size.width, height: normal.size.height - 2 * padding)
+        let contentHeight = surface.height + (size.height - normal.size.height) / factor
         ZStack(alignment: .topLeading) {
-            DrawerMarker(view: marker).frame(width: normal.size.width, height: normal.size.height)
-                .offset(y: above ? size.height - normal.size.height : 0)
-            if state.isPresented { Color.black.frame(width: normal.size.width, height: 100).offset(y: normal.size.height + 8) }
+            DrawerMarker(view: marker).frame(width: surface.width, height: surface.height)
+                .offset(y: above ? contentHeight - surface.height : 0)
+            if state.isPresented, let detailMarker {
+                DrawerMarker(view: detailMarker)
+                    .frame(width: surface.width, height: max(0, contentHeight - surface.height - 8 * normal.effectiveScale / factor))
+                    .offset(y: above ? 0 : surface.height + 8 * normal.effectiveScale / factor)
+            }
         }
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .modifier(FloatingEdgeDockModifier(presentation: dock, size: size, surfaceSize: normal.size, detailsAbove: above, quota: .empty, quotaColorStyle: .default))
+        .frame(width: size.width, height: contentHeight, alignment: .topLeading)
+        .modifier(FloatingEdgeDockModifier(presentation: dock, size: size, surfaceSize: surface, detailsAbove: above, shellPadding: padding, quota: .empty, quotaColorStyle: .default))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: above ? .bottomLeading : .topLeading)
         .animation(nil, value: size)
         .animation(nil, value: state.isPresented)
