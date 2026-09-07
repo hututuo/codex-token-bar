@@ -11,9 +11,9 @@ for (const edge of ["left", "right"]) {
       const style = doc.createElement("style");
       style.textContent = readFileSync(new URL("../styles/global.css", import.meta.url), "utf8");
       doc.head.append(style);
-      const inset = side === "above" ? "-2.4px" : "2.4px";
+      const inset = "2.4px";
       const travel = edge === "left" ? "-258px" : "258px";
-      doc.body.innerHTML = `<div class="floating-edge-host" data-edge="${edge}" data-collapsed="false" style="--dock-content-scale:.96;--dock-content-offset-y:${inset};--dock-content-origin:center ${side === "above" ? "bottom" : "top"};--dock-travel-x:${travel};--dock-travel-y:0px"><div class="floating-edge-content"></div></div>`;
+      doc.body.innerHTML = `<div class="floating-edge-host" data-edge="${edge}" data-collapsed="false" style="--dock-content-scale:.96;--dock-content-offset-y:${inset};--dock-content-origin:center top;--dock-travel-x:${travel};--dock-travel-y:0px"><div class="floating-edge-content"></div></div>`;
       const host = doc.querySelector(".floating-edge-host");
       const content = doc.querySelector(".floating-edge-content");
       const expanded = window.getComputedStyle(content).transform;
@@ -68,7 +68,9 @@ for (const side of ["below", "above"]) {
     shell.classList.remove("floating-window-shell--running-model-details");
     assert.equal(alignment(), opened);
     assert.equal(alignment(), side === "above" ? "end center" : "start center");
-    assert.equal(window.getComputedStyle(doc.querySelector(".floating-edge-content")).height, `${window.innerHeight}px`);
+    // Happy DOM cannot evaluate calc division. Check the viewport rule here;
+    // actual above/below dimensions are verified with the offscreen WebKit probe.
+    assert.match(style.textContent, /\.floating-edge-host\[data-collapsed="false"\] > \.floating-edge-content\s*\{\s*height: calc\(var\(--dock-base-height, 100vh\) \+ \(100vh - var\(--dock-base-height, 100vh\)\) \/ var\(--dock-content-scale, 1\)\);/);
     window.happyDOM.abort();
   });
 }

@@ -63,3 +63,23 @@ git fetch runs/20260907-main-consolidation/branches-before-consolidation.bundle 
 验证结果及最终 main 指针记录在本地 `verification.json`。Swift 专项 330 项、前端专项 117 项通过；前端 TypeScript/Vite 构建通过（仍有既有分块大小和静态/动态导入警告）。Swift 全套执行 1,434 项，0 失败、4 项跳过：两个 live auto-resume、一个 live Crowd Radar API、一个本机完整历史扫描，均因显式启用环境变量未设置而跳过。
 
 运行界面、安装、Windows 构建、远端推送、tag 和发布均不作为本轮通过项。
+
+
+## 下午：悬浮窗与统计进度分支收束
+
+用户授权提交剩余源码、合并本地分支，并替换双端进行交互测试。主工作区没有待提交源码；另一个工作区只有本地 node_modules 符号链接，已在本地 exclude 中排除，不进入版本控制。
+
+main 先快进到 `7371332791e6893861bdcbc77bb4c8e1b44ca2a6`，再合并 `fix/dock-dashboard-reopen-20260907`，合并提交为 `bd297513`，没有冲突。此次保留了 Swift 上下约 5 点留白，以及精确统计标签和后台进度所有权修复。以下分支 tip 全部已进入 main 祖先链，使用安全的 `git branch -d` 收束引用：
+
+| 分支 | 原 tip |
+|---|---|
+| `codex/continuous-dock-paint-20260907` | `090fc5575e6dc308658d83b253666c8abaf4280d` |
+| `codex/floating-edge-dock-20260907` | `de113d11f99fe22143700496386b83f623c1b708` |
+| `codex/vertical-details-drawer-20260907` | `7371332791e6893861bdcbc77bb4c8e1b44ca2a6` |
+| `fix/dock-dashboard-reopen-20260907` | `edc04fdf3daf78e7f8ccd173cc04fdc1154cf20e` |
+
+仅移除了已合入的分支引用；原有工作区文件保留，另一工作区切到原提交的 detached HEAD。恢复分支可用表中 tip 重新创建。详细清单在 `runs/20260907-floating-edge-dock/consolidated-main-branches.json`。
+
+全量验证：Swift 执行 1,462 项，0 失败、4 项环境依赖测试跳过；前端最终 1,024 项全部通过。Rust 初次全量 1,046 通过、3 失败、5 忽略；三项失败均为 live-rate 缓存测试使用仅含 total_tokens 的旧样例，补齐输入/输出明细后，该模块 49 项全部通过。未修改生产记账策略。前端另修正独立雷达拖动测试的显式布局样例，并将 Happy DOM 不支持的 calc 除法高度断言交给生产 CSS 的离屏 WebKit 几何核验；上下展开、卡片宽度和留白实测通过。
+
+双端构建成功。本地替换的最终 main、源文件哈希、二进制哈希、PID、签名与回退位置见 `runs/20260907-floating-edge-dock/consolidated-main-activation.json`。真实交互交给用户测试；Windows 未运行，本轮不推送、打 tag 或发布。

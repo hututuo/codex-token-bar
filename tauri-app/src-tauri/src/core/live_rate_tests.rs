@@ -1749,6 +1749,7 @@ where
 }
 
 fn write_token_session(root: &Path, yesterday_tokens: u64, today_tokens: u64) {
+    // Cache lifecycle fixtures need a complete billable breakdown under the accounting policy.
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
     let now = OffsetDateTime::now_utc();
@@ -1757,13 +1758,13 @@ fn write_token_session(root: &Path, yesterday_tokens: u64, today_tokens: u64) {
     let mut output = fs::File::create(file).unwrap();
     writeln!(
         output,
-        r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":{yesterday_tokens}}}}}}}}}"#,
+        r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":{yesterday_tokens},"cached_input_tokens":0,"output_tokens":0,"total_tokens":{yesterday_tokens}}}}}}}}}"#,
         yesterday.format(&Rfc3339).unwrap()
     )
     .unwrap();
     writeln!(
         output,
-        r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":{today_tokens}}}}}}}}}"#,
+        r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":{today_tokens},"cached_input_tokens":0,"output_tokens":0,"total_tokens":{today_tokens}}}}}}}}}"#,
         now.format(&Rfc3339).unwrap()
     )
     .unwrap();
@@ -1780,7 +1781,7 @@ fn append_token_count_to_first_session(root: &Path, today_tokens: u64) {
     let mut output = fs::OpenOptions::new().append(true).open(file).unwrap();
     writeln!(
         output,
-        r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":{today_tokens}}}}}}}}}"#,
+        r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":{today_tokens},"cached_input_tokens":0,"output_tokens":0,"total_tokens":{today_tokens}}}}}}}}}"#,
         now.format(&Rfc3339).unwrap()
     )
     .unwrap();

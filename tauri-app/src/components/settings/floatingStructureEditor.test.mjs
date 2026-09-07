@@ -136,7 +136,11 @@ test("row dragging commits an optimistic order and keeps an item-sized target pr
           settings: DEFAULT_FLOATING_SETTINGS,
           snapshot: snapshotFixture(),
           runningThreads: runningThreadsFixture(),
-          visibility: DEFAULT_FLOATING_SETTINGS.contentVisibility,
+          visibility: {
+            ...DEFAULT_FLOATING_SETTINGS.contentVisibility,
+            // This scenario needs two separate source/target rows; defaults pair them.
+            pagePairs: [["todayModelShare", "todayModelCost"]],
+          },
           onChange: (visibility) => { latestVisibility = visibility; },
         })));
 
@@ -236,7 +240,11 @@ test("page dragging shows an item-sized left or right slot and commits that page
           settings: DEFAULT_FLOATING_SETTINGS,
           snapshot: snapshotFixture(),
           runningThreads: runningThreadsFixture(),
-          visibility: DEFAULT_FLOATING_SETTINGS.contentVisibility,
+          visibility: {
+            ...DEFAULT_FLOATING_SETTINGS.contentVisibility,
+            // This scenario needs two separate source/target rows; defaults pair them.
+            pagePairs: [["todayModelShare", "todayModelCost"]],
+          },
           onChange: (visibility) => {
             latestVisibility = visibility;
           },
