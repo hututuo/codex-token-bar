@@ -3,13 +3,12 @@ import Foundation
 /// Defines the bucket-safe range used when a quota period starts or ends in
 /// the middle of a five-minute aggregate. The aggregate does not retain
 /// event-level timestamps, so a mixed edge bucket cannot be split faithfully.
-/// We leave a one-minute margin for the comparable interior, while the edge
-/// bucket totals remain available through `QuotaPeriodBoundaryBreakdown`.
+/// Every complete bucket belongs to the interior; only mixed edge bucket
+/// totals remain separate through `QuotaPeriodBoundaryBreakdown`.
 /// Exact five-minute boundaries remain inclusive at the start and exclusive at
 /// the end.
 enum QuotaPeriodBoundaryPolicy {
     static let bucketDuration: TimeInterval = 5 * 60
-    static let safetyMargin: TimeInterval = 60
 
     static func firstCompleteBucketStart(after boundary: Date) -> Date {
         let timestamp = boundary.timeIntervalSince1970
@@ -19,7 +18,7 @@ enum QuotaPeriodBoundaryPolicy {
         }
         return Date(
             timeIntervalSince1970: ceil(
-                (timestamp + safetyMargin) / bucketDuration
+                timestamp / bucketDuration
             ) * bucketDuration
         )
     }
@@ -32,7 +31,7 @@ enum QuotaPeriodBoundaryPolicy {
         }
         return Date(
             timeIntervalSince1970: floor(
-                (timestamp - safetyMargin) / bucketDuration
+                timestamp / bucketDuration
             ) * bucketDuration
         )
     }

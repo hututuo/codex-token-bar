@@ -121,15 +121,15 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         XCTAssertTrue(presentation.helpText.contains("未知价格模型"))
     }
 
-    func testUnalignedSevenDayDropsBothMixedEdgeBucketsWithOneMinuteMargin() {
-        let resetAt = now.addingTimeInterval(24 * 60 * 60 + 120)
+    func testUnalignedSevenDayKeepsFirstCompleteBucketAndSeparatesMixedEdges() {
+        let resetAt = Date(timeIntervalSince1970: floor(now.timeIntervalSince1970 / 300) * 300 + 86_400 + 268)
         let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
         let lowerMixedBucket = Date(
             timeIntervalSince1970: floor(cycleStart.timeIntervalSince1970 / 300) * 300
         )
         let firstSafeBucket = Date(
             timeIntervalSince1970: ceil(
-                (cycleStart.timeIntervalSince1970 + 60) / 300
+                cycleStart.timeIntervalSince1970 / 300
             ) * 300
         )
         let upperMixedBucket = Date(

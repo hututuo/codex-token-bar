@@ -1,5 +1,4 @@
 export const QUOTA_PERIOD_BUCKET_SECONDS = 5 * 60;
-export const QUOTA_PERIOD_SAFETY_MARGIN_SECONDS = 60;
 
 /**
  * Returns the first complete bucket that is safe to include after a
@@ -15,7 +14,7 @@ export function firstCompleteQuotaBucketStart(
   const bucketStart = Math.floor(boundaryUnix / bucketSeconds) * bucketSeconds;
   if (Math.abs(boundaryUnix - bucketStart) <= 1e-6) return bucketStart;
   return Math.ceil(
-    (boundaryUnix + QUOTA_PERIOD_SAFETY_MARGIN_SECONDS) / bucketSeconds,
+    boundaryUnix / bucketSeconds,
   ) * bucketSeconds;
 }
 
@@ -33,6 +32,6 @@ export function lastCompleteQuotaBucketEnd(
   const bucketStart = Math.floor(boundaryUnix / bucketSeconds) * bucketSeconds;
   if (Math.abs(boundaryUnix - bucketStart) <= 1e-6) return bucketStart;
   return Math.floor(
-    (boundaryUnix - QUOTA_PERIOD_SAFETY_MARGIN_SECONDS) / bucketSeconds,
+    boundaryUnix / bucketSeconds,
   ) * bucketSeconds;
 }

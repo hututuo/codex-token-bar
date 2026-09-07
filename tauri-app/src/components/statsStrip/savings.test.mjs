@@ -192,11 +192,11 @@ test("7d API estimate uses the reset boundary and excludes adjacent points", () 
   assert.equal(estimate.modelBreakdowns.length, 2);
 });
 
-test("7d API estimate drops both mixed edge buckets and leaves a one-minute margin", () => {
-  const resetAtUnix = 1_800_000_120;
+test("7d API estimate includes the complete bucket immediately after a late reset", () => {
+  const resetAtUnix = 1_800_000_268;
   const rawPeriodStartUnix = resetAtUnix - 7 * 24 * 60 * 60;
   const lowerMixedBucket = Math.floor(rawPeriodStartUnix / 300) * 300;
-  const safeInteriorBucket = firstCompleteQuotaBucketStart(rawPeriodStartUnix);
+  const safeInteriorBucket = lowerMixedBucket + 300;
   const upperMixedBucket = Math.floor(resetAtUnix / 300) * 300;
   const estimate = estimateRecent7dAPICost({
     resetAtUnix,
