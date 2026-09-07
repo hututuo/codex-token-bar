@@ -1,9 +1,36 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
 final class FloatingEdgeDockTests: XCTestCase {
     private let area = NSRect(x: 0, y: 24, width: 1200, height: 800)
+
+    func testShellCornersRemainRoundedThroughoutRetractionOnEveryEdge() {
+        for edge in FloatingDockEdge.allCases {
+            let anchor = FloatingEdgeDockAnchor(edge: edge,
+                expandedFrame: NSRect(x: 0, y: 0, width: 300, height: 120))
+            let lip = anchor.collapsedFrame.size
+            for progress in stride(from: CGFloat(0), through: 1, by: 0.1) {
+                var shell = FloatingDockShellShape(edge: edge, radiusX: 18, radiusY: 16)
+                let start = shell.animatableData
+                let end = FloatingDockShellShape(edge: edge, radiusX: 3, radiusY: 3).animatableData
+                var delta = end - start
+                delta.scale(by: Double(progress))
+                shell.animatableData = start + delta
+                XCTAssertEqual(shell.radiusX, 18 - 15 * progress, accuracy: 0.0001)
+                XCTAssertEqual(shell.radiusY, 16 - 13 * progress, accuracy: 0.0001)
+                let rect = CGRect(x: 0, y: 0,
+                    width: 300 + (lip.width - 300) * progress,
+                    height: 120 + (lip.height - 120) * progress)
+                let path = shell.path(in: rect)
+                let outerCorner = CGPoint(x: edge == .right ? 0.1 : rect.maxX - 0.1,
+                                          y: edge == .bottom ? 0.1 : rect.maxY - 0.1)
+                XCTAssertFalse(path.contains(outerCorner), "\(edge) at \(progress)")
+                XCTAssertTrue(path.contains(CGPoint(x: rect.midX, y: rect.midY)))
+            }
+        }
+    }
 
     func testAllEdgesSnapAndLeaveOnlyTwelvePointQuotaHandle() throws {
         for (edge, frame) in [

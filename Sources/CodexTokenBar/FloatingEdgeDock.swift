@@ -114,6 +114,7 @@ struct FloatingEdgeDockModifier: ViewModifier {
                 Button { presentation.onReveal?() } label: {
                     FloatingEdgeQuotaStrip(snapshot: quota, vertical: anchor?.edge == .left || anchor?.edge == .right, colorStyle: quotaColorStyle)
                         .frame(width: lip.width, height: lip.height)
+                        .clipShape(FloatingDockShellShape(edge: anchor?.edge ?? .left, radiusX: 3, radiusY: 3))
                 }
                 .buttonStyle(.plain)
                 .offset(x: compact ? 0 : lip.minX - full.minX, y: compact ? 0 : full.maxY - lip.maxY)
@@ -144,8 +145,18 @@ struct FloatingEdgeDockModifier: ViewModifier {
 /// horizontal and vertical shell padding differ.
 struct FloatingDockShellShape: Shape {
     let edge: FloatingDockEdge
-    let radiusX: CGFloat
-    let radiusY: CGFloat
+    var radiusX: CGFloat
+    var radiusY: CGFloat
+
+    // Keep the corners in the same animation as the shell's shrinking frame.
+    // EmptyAnimatableData would switch immediately to the tiny handle radius.
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(radiusX, radiusY) }
+        set {
+            radiusX = newValue.first
+            radiusY = newValue.second
+        }
+    }
 
     func path(in rect: CGRect) -> Path {
         let rx = min(radiusX, rect.width / 2)
