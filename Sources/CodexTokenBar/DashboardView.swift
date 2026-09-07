@@ -394,7 +394,6 @@ struct DashboardView: View {
                 }
             }
             runtime.setDashboardOpenAction(dashboardOpenAction)
-            DashboardReopenCoordinator.shared.install(dashboardOpenAction)
             applyDisplaySurfaceDefaultsIfNeeded()
             runtime.acquireConsumer(
                 runtimeConsumerID,

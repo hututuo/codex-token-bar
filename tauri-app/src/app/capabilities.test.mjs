@@ -7,7 +7,7 @@ const CAPABILITIES_DIR = new URL("../../src-tauri/capabilities/", import.meta.ur
 
 test("Tauri capabilities expose no direct frontend updater or restart permission", async () => {
   const permissions = await permissionsByWindow();
-  for (const surface of ["main", "floating", "status"]) {
+  for (const surface of ["main", "floating", "status", "floating-guide-card", "floating-guide-cursor"]) {
     assert.ok(permissions[surface], `${surface} capability is present`);
     assert.equal(permissions[surface].has("updater:default"), false, surface);
     assert.equal(permissions[surface].has("process:allow-restart"), false, surface);
@@ -16,7 +16,7 @@ test("Tauri capabilities expose no direct frontend updater or restart permission
 
 test("every WebView can satisfy notification plugin initialization without notification ownership", async () => {
   const permissions = await permissionsByWindow();
-  for (const surface of ["main", "floating", "status"]) {
+  for (const surface of ["main", "floating", "status", "floating-guide-card", "floating-guide-cursor"]) {
     const notificationPermissions = [...permissions[surface]]
       .filter((permission) => permission.startsWith("notification:"))
       .sort();
@@ -30,6 +30,14 @@ test("every WebView can satisfy notification plugin initialization without notif
 
 test("Tauri capabilities give floating and status only surface-safe frontend APIs", async () => {
   const permissions = await permissionsByWindow();
+
+  for (const surface of ["floating-guide-card", "floating-guide-cursor"]) {
+    assert.deepEqual([...permissions[surface]].sort(), [
+      "core:event:allow-listen",
+      "core:event:allow-unlisten",
+      "notification:allow-is-permission-granted",
+    ]);
+  }
 
   assert.notDeepEqual([...permissions.main].sort(), [...permissions.floating].sort());
   assert.notDeepEqual([...permissions.main].sort(), [...permissions.status].sort());
@@ -87,7 +95,7 @@ async function permissionsByWindow() {
 
   assert.deepEqual(
     Object.keys(byWindow).sort(),
-    ["floating", "main", "status"],
+    ["floating", "floating-guide-card", "floating-guide-cursor", "main", "status"],
     `capability files: ${files.map((file) => path.basename(file)).join(", ")}`,
   );
   return byWindow;

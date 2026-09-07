@@ -65,7 +65,7 @@ test("Codex Radar summary and crowd reads cannot publish or reschedule after unm
 
 test("Codex Radar quota summary explains its scope and points to the recent chart", () => {
   assert.match(source, /Radar 预估额度/);
-  assert.match(source, /非本级实时额度 · 折线图选点计算本级/);
+  assert.match(source, /本额度非本地测算结果。如需本地测算，请在下方折线图中框选区间。/);
   assert.match(source, /recent-usage-chart/);
-  assert.match(source, /选择起点和终点计算本级额度/);
+  assert.match(source, /在下方折线图中框选区间/);
 });

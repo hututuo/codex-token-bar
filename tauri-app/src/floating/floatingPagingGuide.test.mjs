@@ -177,12 +177,12 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   ]);
 
   assert.match(windowSource, /CURRENT_FLOATING_PAGING_GUIDE_REVISION/);
-  assert.match(windowSource, /pagingGuidePages\.includes\("runningModels"\)/);
+  assert.match(windowSource, /pagingGuidePages\.includes\("paging"\)/);
   assert.match(windowSource, /floatingSettingsCompletingPagingGuide\([\s\S]*?completedRevision,/);
   assert.match(windowSource, /flushSync\(\(\) => \{\s*setSettings\(immediatelyAppliedSettings\);\s*setPagingGuideDismissed\(true\);/s);
   assert.match(
     windowSource,
-    /const saved = await completeFloatingPagingGuide\(\s*pagingGuideShowsArrowGlyphs,\s*completedRevision,\s*\);/s,
+    /const saved = await completeFloatingPagingGuide\(\s*arrowChoice,\s*completedRevision,\s*\);/s,
   );
   assert.match(windowSource, /const \[pagingGuideDismissed, setPagingGuideDismissed\] = useState\(false\);/);
   assert.match(windowSource, /const pagingGuidePresented = shouldPresentFloatingPagingGuide\(/);

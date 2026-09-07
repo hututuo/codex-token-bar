@@ -2341,12 +2341,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn quota_initialize_rpc_error_returns_immediately_as_app_server_unavailable() {
+        // Emit diagnostics before the terminal response: the client may immediately
+        // terminate the child after reading that response.
         let mut command = Command::new("sh");
         command.arg("-c").arg(
             r#"
 IFS= read -r _
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"fixture initialize failure"}}'
 printf 'initialize-stderr-marker\n' >&2
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"fixture initialize failure"}}'
 "#,
         );
         let started = Instant::now();

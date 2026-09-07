@@ -92,7 +92,7 @@ test("sanitizeFloatingSettings defaults missing token rate full scale to Swift-s
   assert.equal(settings.tokenRateFullScale, 200);
   assert.equal(DEFAULT_FLOATING_SETTINGS.pagingGuideRevision, 0);
   assert.equal(settings.pagingGuideRevision, 0);
-  assert.equal(CURRENT_FLOATING_PAGING_GUIDE_REVISION, 5);
+  assert.equal(CURRENT_FLOATING_PAGING_GUIDE_REVISION, 6);
   assert.equal(FLOATING_PAGING_LEARNED_REVISION, 4);
 });
 
@@ -151,17 +151,17 @@ test("floating guide pages migrate learned users to only the new running-model p
     pagingGuideRevision: 0,
     hasPagedRows: true,
     hasRunningThreadDetailsTarget: true,
-  }), ["paging", "runningModels"]);
+  }), ["paging", "runningModels", "edgeDock"]);
   assert.deepEqual(floatingGuidePages({
     pagingGuideRevision: 4,
     hasPagedRows: true,
     hasRunningThreadDetailsTarget: true,
-  }), ["runningModels"]);
+  }), ["runningModels", "edgeDock"]);
   assert.deepEqual(floatingGuidePages({
     pagingGuideRevision: 0,
     hasPagedRows: false,
     hasRunningThreadDetailsTarget: true,
-  }), ["runningModels"]);
+  }), ["runningModels", "edgeDock"]);
 });
 
 test("sanitizeFloatingSettings migrates legacy content order with running threads visible after metrics", () => {
@@ -188,4 +188,13 @@ test("sanitizeFloatingSettings migrates legacy content order with running thread
     ["todayModelShare", "todayModelCost"],
     ["crowdRadar", "radar"],
   ]);
+});
+
+ test("edge dock upgrade only adds its page and completed or future revisions stay dismissed", () => {
+  for (const hasRunningThreadDetailsTarget of [true, false]) {
+    assert.deepEqual(floatingGuidePages({ pagingGuideRevision: 5, hasPagedRows: true, hasRunningThreadDetailsTarget }), ["edgeDock"]);
+    for (const pagingGuideRevision of [6, 7]) {
+      assert.deepEqual(floatingGuidePages({ pagingGuideRevision, hasPagedRows: true, hasRunningThreadDetailsTarget }), []);
+    }
+  }
 });

@@ -124,7 +124,7 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
         return matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL);
     }
 
-    if matches!(command, "complete_floating_paging_guide" | "read_floating_pointer_state" | "set_floating_dock_frame") {
+    if matches!(command, "complete_floating_paging_guide" | "read_floating_pointer_state" | "set_floating_dock_frame" | "prepare_floating_guide_overlay" | "floating_guide_overlay_ready" | "update_floating_guide_overlay") {
         return label == FLOATING_WINDOW_LABEL;
     }
 

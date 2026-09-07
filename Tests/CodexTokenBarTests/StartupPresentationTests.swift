@@ -4,6 +4,15 @@ import XCTest
 
 final class StartupPresentationTests: XCTestCase {
     @MainActor
+    func testInitialWindowIsRequestedOnlyOnce() {
+        let coordinator = DashboardReopenCoordinator()
+        var count = 0
+        coordinator.ensureInitialWindow { count += 1 }
+        coordinator.ensureInitialWindow { count += 1 }
+        XCTAssertEqual(count, 1)
+    }
+
+    @MainActor
     func testClosingLastDashboardWindowKeepsMenuBarAppRunning() {
         let delegate = CodexTokenBarApplicationDelegate()
 

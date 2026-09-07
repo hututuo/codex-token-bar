@@ -20,6 +20,7 @@
     "core:window:allow-title",
     "core:window:allow-outer-position",
     "core:window:allow-scale-factor",
-    "core:window:allow-current-monitor"
+    "core:window:allow-current-monitor",
+    "core:window:allow-primary-monitor"
   ]
 }

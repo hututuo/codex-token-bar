@@ -117,6 +117,7 @@ final class FloatingTokenPanelWindow: NSPanel {
     var onDragBegan: (() -> Void)?
     var onDragEnded: (() -> Void)?
     var onInteractionEnded: (() -> Void)?
+    var onGuideInteraction: (() -> Void)?
 
     override var canBecomeKey: Bool { runningModelDetailsPresented }
     override var canBecomeMain: Bool { false }
@@ -142,6 +143,10 @@ final class FloatingTokenPanelWindow: NSPanel {
     }
 
     override func sendEvent(_ event: NSEvent) {
+        if let onGuideInteraction, event.type == .leftMouseDown || event.type == .rightMouseDown || (event.type == .keyDown && event.keyCode == 53) {
+            onGuideInteraction()
+            return
+        }
         if event.type == .keyDown, event.keyCode == 53, runningModelDetailsPresented {
             onDismissRunningModelDetails?()
             return
@@ -217,6 +222,8 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     var panel: NSPanel?
     let edgeDock = FloatingEdgeDockController()
+    var realWindowGuide: FloatingRealWindowGuide?
+    private var realGuideRequested = false
     private var onClose: (() -> Void)?
     private var onToggleLock: (() -> Void)?
     private var onOpenDashboard: (() -> Void)?
@@ -370,6 +377,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     private func closePanel(destroy: Bool, unregisterActive: Bool) {
+        realWindowGuide?.finish(markComplete: false, notify: false)
+        realWindowGuide = nil
+        realGuideRequested = false
         eventSourceLifecycle.deactivate()
         invalidateExternalAccessibilityResolution()
         stopFollowingAnchor()
@@ -418,6 +428,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         self.onClose = onClose
         self.onToggleLock = onToggleLock
         self.onOpenDashboard = onOpenDashboard
+        if realWindowGuide != nil { return }
         let pagingGuidePresented = shouldPresentPagingGuide(visibility: visibility)
         let runningModelDetailsRowUnits = taskCompletionMonitor
             .runningThreadSummary
@@ -455,6 +466,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     runningModelDetailsSessionState: runningModelDetailsSessionState,
                     onPagingGuidePresentationChanged: { [weak self] presented in
                         self?.setPagingGuidePresented(presented)
+                    },
+                    onRealGuidePresentationChanged: { [weak self] presented in
+                        self?.setRealGuidePresented(presented)
                     },
                     onRunningModelDetailsPresentationChanged: { [weak self] presented in
                         self?.setRunningModelDetailsPresented(presented)
@@ -506,7 +520,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             self.panel = panel
             edgeDock.bind(panel: panel, enabled: { [weak self] in
                 guard let self else { return false }
-                return self.isPresented && !self.appliedLockState
+                return self.isPresented && (!self.appliedLockState || self.edgeDock.isGuiding)
                     && !self.lastPagingGuidePresented
             }, persist: { [weak self] origin in self?.saveLockedOrigin(origin) })
             panel.onDragBegan = { [weak self] in self?.edgeDock.beginDrag() }
@@ -544,6 +558,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 onPagingGuidePresentationChanged: { [weak self] presented in
                     self?.setPagingGuidePresented(presented)
                 },
+                onRealGuidePresentationChanged: { [weak self] presented in
+                    self?.setRealGuidePresented(presented)
+                },
                 onRunningModelDetailsPresentationChanged: { [weak self] presented in
                     self?.setRunningModelDetailsPresented(presented)
                 },
@@ -568,21 +585,42 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         edgeDock.snapIfNearEdge()
     }
 
-    private func shouldPresentPagingGuide(
-        visibility: FloatingPanelContentVisibility
-    ) -> Bool {
+    private func shouldPresentPagingGuide(visibility: FloatingPanelContentVisibility) -> Bool {
         let revision = FloatingPanelContentVisibility.currentPagingGuideRevision
+        let pages = FloatingPanelPagingGuideState.pages(
+            completedRevision: UserDefaults.standard.integer(forKey: FloatingPanelContentVisibility.pagingGuideRevisionKey),
+            hasPagedRows: visibility.layoutRows.contains(where: \.isPaged),
+            hasRunningThreadDetailsTarget: visibility.hasRunningThreadDetailsTarget)
         return pagingGuideSessionState.completion(for: revision) == nil
-            && FloatingPanelPagingGuideState.shouldPresent(
-                setupGuideCompleted: UserDefaults.standard.bool(
-                    forKey: FloatingPanelPagingGuideState.setupGuideCompletedKey
-                ),
-                completedRevision: UserDefaults.standard.integer(
-                    forKey: FloatingPanelContentVisibility.pagingGuideRevisionKey
-                ),
-                hasPagedRows: visibility.layoutRows.contains(where: \.isPaged),
-                hasRunningThreadDetailsTarget: visibility.hasRunningThreadDetailsTarget
-            )
+            && UserDefaults.standard.bool(forKey: FloatingPanelPagingGuideState.setupGuideCompletedKey)
+            && pages.first != nil && pages.first != .edgeDock
+    }
+
+    private func setRealGuidePresented(_ presented: Bool) {
+        realGuideRequested = presented
+        guard presented else {
+            realWindowGuide?.finish(markComplete: false, notify: false)
+            realWindowGuide = nil
+            return
+        }
+        guard realWindowGuide == nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, self.realGuideRequested, self.realWindowGuide == nil, let panel = self.panel else { return }
+            self.stopFollowingAnchor()
+            self.realWindowGuide = FloatingRealWindowGuide(panel: panel, dock: self.edgeDock) { [weak self] markComplete in
+                guard let self else { return }
+                self.realWindowGuide = nil
+                self.realGuideRequested = false
+                let revision = FloatingPanelContentVisibility.currentPagingGuideRevision
+                let arrows = UserDefaults.standard.bool(forKey: FloatingPanelContentVisibility.pageNavigationArrowsKey)
+                self.pagingGuideSessionState.complete(revision: revision, showsArrowGlyphs: arrows)
+                if markComplete {
+                    UserDefaults.standard.set(revision, forKey: FloatingPanelContentVisibility.pagingGuideRevisionKey)
+                }
+                self.updateLockState(self.appliedLockState, force: true)
+            }
+            self.realWindowGuide?.start()
+        }
     }
 
     private func setPagingGuidePresented(_ presented: Bool) {
@@ -686,7 +724,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     func updateSize(layout: FloatingTokenPanelLayout) {
-        guard let panel else { return }
+        guard realWindowGuide == nil, let panel else { return }
         var layout = layout
         if layout.runningModelDetailsPresented, !layout.runningModelDetailsPlacement.isHorizontal, let base = runningModelDetailsBaseFrame {
             layout.size.height = FloatingTokenPanelResizePolicy.constrainedHeight(
@@ -766,6 +804,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     func windowWillClose(_ notification: Notification) {
+        realWindowGuide?.finish(markComplete: false, notify: false)
+        realWindowGuide = nil
+        realGuideRequested = false
         edgeDock.dispose()
         if let closingPanel = notification.object as? NSPanel,
            closingPanel.identifier == Self.panelIdentifier,
@@ -783,7 +824,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     func windowDidMove(_ notification: Notification) {
         guard let panel else { return }
-        guard !isProgrammaticPanelMove, !edgeDock.isApplyingGeometry else { return }
+        guard realWindowGuide == nil, !isProgrammaticPanelMove, !edgeDock.isApplyingGeometry else { return }
         if lastRunningModelDetailsPresented,
            let surfaceSize = currentRunningModelDetailsSurfaceSize() {
             runningModelDetailsBaseFrame = FloatingTokenPanelResizePolicy.baseFrame(
@@ -881,6 +922,7 @@ struct FloatingTokenPanelView: View {
     @ObservedObject var pagingGuideSessionState: FloatingPanelPagingGuideSessionState
     @ObservedObject var runningModelDetailsSessionState: FloatingRunningModelDetailsSessionState
     let onPagingGuidePresentationChanged: (Bool) -> Void
+    var onRealGuidePresentationChanged: (Bool) -> Void = { _ in }
     let onRunningModelDetailsPresentationChanged: (Bool) -> Void
     let onRunningModelDetailsRowUnitsChanged: (Int) -> Void
     let onToggleLock: () -> Void
@@ -972,6 +1014,8 @@ struct FloatingTokenPanelView: View {
         let activePagingGuidePage = pagingGuidePages.indices.contains(safePagingGuidePageIndex)
             ? pagingGuidePages[safePagingGuidePageIndex]
             : .runningModels
+        let realGuidePresented = pagingGuidePresented && activePagingGuidePage == .edgeDock
+        let overlayGuidePresented = pagingGuidePresented && !realGuidePresented
         let presentedRunningThreads = FloatingPanelPagingGuideState.runningThreadSummary(
             live: liveRunningThreads,
             guidePresented: pagingGuidePresented,
@@ -991,7 +1035,7 @@ struct FloatingTokenPanelView: View {
         let measuredSize = FloatingTokenPanelMetrics.size(
             effectiveScale: scale,
             visibility: visibility,
-            pagingGuidePresented: pagingGuidePresented,
+            pagingGuidePresented: overlayGuidePresented,
             runningModelDetailsPresented: effectiveRunningModelDetailsPresented,
             runningModelDetailsRowUnits: displaySnapshot.runningThreads.runningModelDetailsRowUnits
         )
@@ -1011,7 +1055,7 @@ struct FloatingTokenPanelView: View {
             : nil
         var presentedVisibility = visibility
         presentedVisibility.showPageNavigationArrows = pagingGuidePresented
-            ? pagingGuideShowsArrowGlyphs
+            ? (pagingGuidePages.contains(.paging) ? pagingGuideShowsArrowGlyphs : persistedPageNavigationArrows)
             : (immediatelyAppliedArrowGlyphs ?? persistedPageNavigationArrows)
         let pagingGuideTargetYs = Array(FloatingTokenPanelMetrics.pagedRowCenterYs(
             visibility: visibility,
@@ -1147,7 +1191,7 @@ struct FloatingTokenPanelView: View {
                 .zIndex(5)
             }
 
-            if pagingGuidePresented {
+            if overlayGuidePresented {
                 FloatingPanelPagingGuide(
                     page: activePagingGuidePage,
                     isLastPage: safePagingGuidePageIndex == pagingGuidePages.count - 1,
@@ -1178,7 +1222,8 @@ struct FloatingTokenPanelView: View {
             }
         }
         .onAppear {
-            onPagingGuidePresentationChanged(pagingGuidePresented)
+            onPagingGuidePresentationChanged(overlayGuidePresented)
+            onRealGuidePresentationChanged(realGuidePresented)
             onRunningModelDetailsPresentationChanged(effectiveRunningModelDetailsPresented)
             onRunningModelDetailsRowUnitsChanged(
                 displaySnapshot.runningThreads.runningModelDetailsRowUnits
@@ -1189,7 +1234,12 @@ struct FloatingTokenPanelView: View {
                 runningModelDetailsSessionState.dismiss()
                 pagingGuidePageIndex = 0
             }
+        }
+        .onChange(of: overlayGuidePresented) { _, presented in
             onPagingGuidePresentationChanged(presented)
+        }
+        .onChange(of: realGuidePresented) { _, presented in
+            onRealGuidePresentationChanged(presented)
         }
         .onChange(of: effectiveRunningModelDetailsPresented) { _, presented in
             onRunningModelDetailsPresentationChanged(presented)
@@ -1235,15 +1285,15 @@ struct FloatingTokenPanelView: View {
     }
 
     private func completePagingGuide(pages: [FloatingPanelGuidePage]) {
-        let revision = pages.contains(.runningModels)
-            ? FloatingPanelContentVisibility.currentPagingGuideRevision
-            : FloatingPanelPagingGuideState.pagingLearnedRevision
+        let revision = FloatingPanelContentVisibility.currentPagingGuideRevision
+        let arrowChoice = pages.contains(.paging)
+            ? pagingGuideShowsArrowGlyphs : persistedPageNavigationArrows
         onPagingGuidePresentationChanged(false)
         pagingGuideSessionState.complete(
             revision: revision,
-            showsArrowGlyphs: pagingGuideShowsArrowGlyphs
+            showsArrowGlyphs: arrowChoice
         )
-        persistedPageNavigationArrows = pagingGuideShowsArrowGlyphs
+        persistedPageNavigationArrows = arrowChoice
         pagingGuideRevision = revision
         pagingGuidePageIndex = 0
     }

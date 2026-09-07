@@ -21,9 +21,9 @@ export const FLOATING_PAGING_GUIDE_WIDTH = 620;
 export const FLOATING_PAGING_GUIDE_HEIGHT = 284;
 export const FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT = 96;
 export const FLOATING_PAGING_LEARNED_REVISION = 4;
-export const CURRENT_FLOATING_PAGING_GUIDE_REVISION = 5;
+export const CURRENT_FLOATING_PAGING_GUIDE_REVISION = 6;
 
-export type FloatingGuidePage = "paging" | "runningModels";
+export type FloatingGuidePage = "paging" | "runningModels" | "edgeDock";
 
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   opacity: 0.92,
@@ -63,7 +63,8 @@ export function floatingGuidePages({
   if (pagingGuideRevision < FLOATING_PAGING_LEARNED_REVISION && hasPagedRows) {
     pages.push("paging");
   }
-  if (hasRunningThreadDetailsTarget) pages.push("runningModels");
+  if (pagingGuideRevision < 5 && hasRunningThreadDetailsTarget) pages.push("runningModels");
+  pages.push("edgeDock");
   return pages;
 }
 

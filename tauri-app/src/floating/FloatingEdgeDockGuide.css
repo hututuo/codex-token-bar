@@ -1,0 +1,70 @@
+.floating-running-model-guide-modes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(5px * var(--floating-scale));
+  margin-top: calc(1px * var(--floating-scale));
+}
+
+.floating-running-model-guide-mode {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: calc(26px * var(--floating-scale)) auto;
+  gap: calc(2px * var(--floating-scale));
+  justify-items: center;
+  color: #596576;
+  font-size: calc(7px * var(--floating-scale));
+  font-weight: var(--weight-bold);
+  line-height: 1;
+}
+
+.floating-running-model-guide-mode-visual {
+  position: relative;
+  display: block;
+  width: calc(72px * var(--floating-scale));
+  height: calc(26px * var(--floating-scale));
+  box-sizing: border-box;
+  border: 1px solid rgba(20, 92, 177, 0.2);
+  border-radius: calc(5px * var(--floating-scale));
+  background: rgba(219, 235, 249, 0.42);
+}
+
+.floating-running-model-guide-mode-visual::before,
+.floating-running-model-guide-mode-visual::after {
+  position: absolute;
+  content: "";
+}
+
+.floating-running-model-guide-mode-visual::before {
+  top: calc(6px * var(--floating-scale));
+  bottom: calc(6px * var(--floating-scale));
+  left: calc(8px * var(--floating-scale));
+  width: calc(29px * var(--floating-scale));
+  border: 1px solid rgba(20, 92, 177, 0.5);
+  border-radius: calc(4px * var(--floating-scale));
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.floating-running-model-guide-mode-visual::after {
+  top: calc(6px * var(--floating-scale));
+  right: calc(6px * var(--floating-scale));
+  bottom: calc(6px * var(--floating-scale));
+  width: calc(23px * var(--floating-scale));
+  border: 1px solid rgba(112, 200, 189, 0.56);
+  border-radius: calc(4px * var(--floating-scale));
+  background: rgba(240, 253, 251, 0.88);
+}
+
+.floating-running-model-guide-mode--attached .floating-running-model-guide-mode-visual {
+  background: linear-gradient(90deg, rgba(219, 235, 249, 0.42) 0 74%, rgba(169, 216, 245, 0.72) 74% 100%);
+}
+
+.floating-running-model-guide-mode--attached .floating-running-model-guide-mode-visual::before {
+  left: calc(5px * var(--floating-scale));
+  width: calc(26px * var(--floating-scale));
+}
+
+.floating-running-model-guide-mode--attached .floating-running-model-guide-mode-visual::after {
+  right: calc(2px * var(--floating-scale));
+  width: calc(18px * var(--floating-scale));
+  border-radius: calc(3px * var(--floating-scale)) 0 0 calc(3px * var(--floating-scale));
+}

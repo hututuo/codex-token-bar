@@ -511,7 +511,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         </RadarBlock>
 
         <div
-          aria-label="Radar 预估额度，非本级实时额度；打开折线图选择起点和终点计算本级额度"
+          aria-label="Radar 预估额度。本额度非本地测算结果。如需本地测算，请在下方折线图中框选区间。"
           className="codex-radar-quota-action"
           onClick={() => document.getElementById("recent-usage-chart")?.scrollIntoView?.({ behavior: "smooth", block: "center" })}
           onKeyDown={(event) => {
@@ -524,7 +524,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           tabIndex={0}
         >
           <RadarBlock accentColor={semanticMetricColor(86)} icon="$" title="Radar 预估额度">
-            <span className="radar-quota-note">非本级实时额度 · 折线图选点计算本级</span>
+            <span className="radar-quota-note">本额度非本地测算结果。如需本地测算，请在下方折线图中框选区间。</span>
             {quotaRows.slice(0, 3).map((row) => (
               <div className={hasBothQuotaWindows ? "radar-quota-row" : "radar-quota-row radar-quota-row--single"} key={row.tier}>
                 <b>{row.tier}</b>

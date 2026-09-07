@@ -85,13 +85,14 @@ static FAIL_NEXT_PRECISE_REFRESH_SPAWN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 // v0.9.1 wrote V20. V21 removes filesystem-object identity from the durable
 // binding while retaining the canonical Home path, index lineage and
-// attribution-safety contract. V22 is the current JSON cache envelope; V18
+// attribution-safety contract. V23 is the current JSON cache envelope; V18
 // remains the oldest supported read format and neither legacy format is written
 // again. This version is deliberately independent from the SQLite aggregate
 // schema stored inside the exact index.
 const LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
 const LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20: u32 = 20;
 const LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21: u32 = 21;
+const LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V22: u32 = 22;
 #[cfg(test)]
 const UNSUPPORTED_DASHBOARD_AGGREGATE_CACHE_V16: u32 = 16;
 #[cfg(test)]
@@ -3489,6 +3490,7 @@ fn cached_dashboard_startup_snapshot(
             if matches!(
                 cached.persistent_version,
                 DASHBOARD_AGGREGATE_CACHE_VERSION
+                    | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V22
                     | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21
                     | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20
                     | 0
@@ -3524,7 +3526,8 @@ fn cached_numeric_revision_for_startup() -> Option<u64> {
             guard.aggregate.as_ref().and_then(|cached| {
                 matches!(
                     cached.persistent_version,
-                    0 | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21
+                    0 | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V22
+                        | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V21
                         | LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20
                         | DASHBOARD_AGGREGATE_CACHE_VERSION
                 )
@@ -3878,13 +3881,13 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
                 persistent_binding: Some(cache.binding),
             })
         }
-        22 => {
-            let cache = decode_persistent_numeric_dashboard_cache(data, 22)?;
+        LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V22 => {
+            let cache = decode_persistent_numeric_dashboard_cache(data, LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V22)?;
             let snapshot = startup_snapshot_from_persistent_numeric(&cache);
             Some(CachedDashboardAggregate {
                 signature: cache.binding.signature.clone(), snapshot: Some(snapshot),
                 summary: cache.summary, snapshot_complete: false,
-                persistent_version: 22, persistent_binding: Some(cache.binding),
+                persistent_version: LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V22, persistent_binding: Some(cache.binding),
             })
         }
         LEGACY_NUMERIC_DASHBOARD_AGGREGATE_CACHE_V20 => {

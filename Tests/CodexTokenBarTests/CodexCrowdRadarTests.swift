@@ -2,6 +2,30 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexCrowdRadarTests: XCTestCase {
+    func testGrowingPublicResponseBudget() throws {
+        let body = Data(repeating: 32, count: 9 * 1024 * 1024)
+        XCTAssertEqual(try LiveCodexCrowdRadarReader.validateResponseBody(body).count, body.count)
+        XCTAssertThrowsError(try LiveCodexCrowdRadarReader.validateResponseBody(Data(repeating: 32, count: 32 * 1024 * 1024 + 1)))
+        XCTAssertThrowsError(try LiveCodexCrowdRadarReader.validateResponseBody(Data()))
+    }
+
+    func testOnlineVolunteerCountFallsBackToTable() throws {
+        let snapshot = try CodexCrowdRadarParser.decode(tableObject: ["online_volunteers": 2], leaderboardObject: [
+            "points": [["model": "gpt-6-astra", "effort": "max", "graded": 50, "passed": 40, "pass_rate": 0.8]]
+        ])
+        XCTAssertEqual(snapshot.contributorCount, 2)
+    }
+
+    func testPublishedModelCountDoesNotHidePointsWhenTableUnavailable() throws {
+        let snapshot = try CodexCrowdRadarParser.decode(tableObject: nil, leaderboardObject: [
+            "models": 64,
+            "points": [["model": "gpt-6-astra", "effort": "max", "graded": 50, "passed": 40, "pass_rate": 0.8]]
+        ])
+        XCTAssertEqual(snapshot.recentModels.count, 1)
+        XCTAssertEqual(snapshot.recentModels.first?.model, "gpt-6-astra")
+        XCTAssertEqual(snapshot.recentModels.first?.scoreSamples, 50)
+    }
+
     func testLiveReaderKeepsPerSourceBudgetsAndCancellationGuard() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

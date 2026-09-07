@@ -1,0 +1,17 @@
+/* The document canvas must be transparent as well as the body. */
+html.floating-guide-document,
+html.floating-guide-document body,
+html.floating-guide-document #root { margin:0; min-width:0; overflow:hidden; background:transparent; }
+html.floating-guide-document .boot-shell { visibility:hidden; background:transparent; }
+body.floating-guide-overlay-body { margin:0; overflow:hidden; background:transparent !important; min-width:0; }
+.floating-guide-overlay-body #root { min-width:0; background:transparent; }
+.real-guide-callout { box-sizing:border-box; width:286px; height:100px; padding:11px; border:1px solid #a7c5e4; border-radius:12px; background:#e3f0ff; color:#183b5b; font-family:-apple-system,BlinkMacSystemFont,sans-serif; display:flex; flex-direction:column; gap:6px; text-align:left; }
+.real-guide-callout header { display:flex; justify-content:space-between; align-items:center; color:#5c7a96; font-size:9px; }
+.real-guide-callout header button { padding:0; border:0; background:transparent; font-size:10px; color:#2764a0; cursor:pointer; }
+.real-guide-callout > strong { font-size:13px; line-height:1.2; font-weight:600; }
+.real-guide-callout footer { display:flex; align-items:flex-end; gap:5px; justify-content:space-between; font-size:10px; line-height:1.35; color:#55718b; }
+.real-guide-callout footer button { flex-shrink:0; border:1px solid #95b5d5; border-radius:5px; background:#f6faff; color:#315f8b; padding:3px 7px; font-size:10px; cursor:pointer; }
+.real-guide-cursor { position:relative; width:54px; height:65px; pointer-events:none; }
+.real-guide-cursor svg { position:absolute; left:18px; top:26px; filter:drop-shadow(0 0 1px white); }
+.real-guide-cursor b { position:absolute; left:5px; top:1px; padding:2px 5px; background:#1f64ad; color:white; font:600 9px -apple-system,sans-serif; border-radius:9px; }
+.real-guide-cursor-halo { position:absolute; left:5px; top:13px; width:26px; height:26px; box-sizing:border-box; border:1px solid #3f87ca; background:#297ad526; border-radius:50%; }

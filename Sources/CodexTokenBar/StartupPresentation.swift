@@ -1,12 +1,20 @@
 import AppKit
 import Foundation
 import ServiceManagement
+import SwiftUI
 
 @MainActor
 final class DashboardReopenCoordinator {
     static let shared = DashboardReopenCoordinator()
 
     private var reopenAction: (() -> Void)?
+    private var initialWindowRequested = false
+
+    func ensureInitialWindow(_ action: () -> Void) {
+        guard !initialWindowRequested else { return }
+        initialWindowRequested = true
+        action()
+    }
 
     func install(_ action: @escaping () -> Void) {
         reopenAction = action
@@ -118,6 +126,36 @@ enum StartupPresentation {
         NSApp.windows.filter { window in
             !(window is NSPanel)
                 && window.contentViewController != nil
+        }
+    }
+}
+
+/// Lives in the scene graph even when no dashboard window has been created.
+struct DashboardWindowCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        let _ = registerWindowActions()
+        CommandGroup(after: .newItem) {
+            Button("打开主界面") {
+                StartupPresentation.showDashboardWindow {
+                    openWindow(id: "dashboard")
+                }
+            }
+        }
+    }
+
+    private func registerWindowActions() {
+        let action = openWindow
+        DispatchQueue.main.async {
+            DashboardReopenCoordinator.shared.install {
+                StartupPresentation.showDashboardWindow {
+                    action(id: "dashboard")
+                }
+            }
+            DashboardReopenCoordinator.shared.ensureInitialWindow {
+                action(id: "dashboard")
+            }
         }
     }
 }

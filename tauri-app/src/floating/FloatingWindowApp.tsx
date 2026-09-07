@@ -1,3 +1,6 @@
+import { useRealFloatingGuide } from "./useRealFloatingGuide";
+import { isFloatingGeometryRehearsal } from "../platform/floatingGeometryLifecycle";
+import "./FloatingEdgeDockGuide.css";
 import { FloatingEdgeQuotaStrip } from "./FloatingPanelPreview";
 import { useFloatingEdgeDock } from "./useFloatingEdgeDock";
 import { type CSSProperties, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -26,7 +29,6 @@ import {
 import {
   CURRENT_FLOATING_PAGING_GUIDE_REVISION,
   FLOATING_BASE_WIDTH,
-  FLOATING_PAGING_LEARNED_REVISION,
   FLOATING_PAGING_GUIDE_HEIGHT,
   FLOATING_PAGING_GUIDE_WIDTH,
   FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT,
@@ -263,14 +265,17 @@ export function FloatingWindowApp() {
     Math.max(0, pagingGuidePages.length - 1),
   );
   const activePagingGuidePage = pagingGuidePages[safePagingGuidePageIndex] ?? "runningModels";
+  const realGuidePresented = pagingGuidePresented && activePagingGuidePage === "edgeDock";
+  const overlayGuidePresented = pagingGuidePresented && !realGuidePresented;
   const effectiveRunningModelDetailsExpanded = runningModelDetailsExpanded
     && !pagingGuidePresented
     && contentHasRunningThreadDetailsTarget;
   const edgeDock = useFloatingEdgeDock(
     settingsLoaded,
-    pagingGuidePresented || !surfaceLifecycle.active,
+    overlayGuidePresented || !surfaceLifecycle.active,
     effectiveRunningModelDetailsExpanded,
   );
+  const realGuide = useRealFloatingGuide(realGuidePresented && surfaceLifecycle.active, edgeDock.controller, completePagingGuide, () => setPagingGuideDismissed(true));
   const dock = edgeDock.presentation;
   const dockAnchor = dock.anchor;
   const dockShellRef = useRef<HTMLDivElement | null>(null);
@@ -310,11 +315,12 @@ export function FloatingWindowApp() {
     pagingGuidePresented,
     activePagingGuidePage,
   );
+  const guideIncludesPaging = pagingGuidePages.includes("paging");
   const presentedSettings = useMemo(
-    () => pagingGuidePresented
+    () => pagingGuidePresented && guideIncludesPaging
       ? floatingSettingsWithPagingGuideChoice(settings, pagingGuideShowsArrowGlyphs)
       : settings,
-    [pagingGuidePresented, pagingGuideShowsArrowGlyphs, settings],
+    [pagingGuidePresented, guideIncludesPaging, pagingGuideShowsArrowGlyphs, settings],
   );
 
   useEffect(() => {
@@ -362,17 +368,18 @@ export function FloatingWindowApp() {
   useEffect(() => {
     let cancelled = false;
     const scale = presentedSettings.scale;
-    const baseWidth = Math.max(FLOATING_BASE_WIDTH, pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0) * scale;
+    const baseWidth = Math.max(FLOATING_BASE_WIDTH, overlayGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0) * scale;
     const mainHeight = floatingContentHeight(presentedSettings.contentVisibility) * scale;
-    const surfaceHeight = pagingGuidePresented ? mainHeight
+    const surfaceHeight = overlayGuidePresented ? mainHeight
       : floatingDockShellMetrics({ width: baseWidth, mainHeight, scale }).height;
 
     const reconcileWindowGeometry = async () => {
+      if (isFloatingGeometryRehearsal()) return;
       const appWindow = getCurrentWindow();
       let basePosition = runningModelDetailsBasePositionRef.current;
       let targetPosition = basePosition ?? undefined;
       let targetWidth = baseWidth;
-      let targetHeight = Math.max(surfaceHeight, pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT * scale : 0);
+      let targetHeight = Math.max(surfaceHeight, overlayGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT * scale : 0);
       let placement: FloatingRunningModelDetailsPlacement = "below";
       let nextMetrics = { height: FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * scale, offset: 0 };
       if (effectiveRunningModelDetailsExpanded) {
@@ -414,7 +421,7 @@ export function FloatingWindowApp() {
     return () => { cancelled = true; };
   }, [
     effectiveRunningModelDetailsExpanded,
-    pagingGuidePresented,
+    overlayGuidePresented,
     presentedSettings.contentVisibility,
     presentedSettings.scale,
     runningModelDetailsHeight,
@@ -455,13 +462,13 @@ export function FloatingWindowApp() {
     if (!pagingGuidePresented || pagingGuideSaving) {
       return;
     }
-    const completedRevision = pagingGuidePages.includes("runningModels")
-      ? CURRENT_FLOATING_PAGING_GUIDE_REVISION
-      : FLOATING_PAGING_LEARNED_REVISION;
+    const completedRevision = CURRENT_FLOATING_PAGING_GUIDE_REVISION;
+    const arrowChoice = pagingGuidePages.includes("paging")
+      ? pagingGuideShowsArrowGlyphs : settings.contentVisibility.showPageNavigationArrows;
     const previousSettings = settings;
     const immediatelyAppliedSettings = floatingSettingsCompletingPagingGuide(
       previousSettings,
-      pagingGuideShowsArrowGlyphs,
+      arrowChoice,
       completedRevision,
     );
     flushSync(() => {
@@ -472,7 +479,7 @@ export function FloatingWindowApp() {
     });
     try {
       const saved = await completeFloatingPagingGuide(
-        pagingGuideShowsArrowGlyphs,
+        arrowChoice,
         completedRevision,
       );
       const next = sanitizeFloatingSettings(saved.floatingWindow);
@@ -526,7 +533,7 @@ export function FloatingWindowApp() {
   const { style: appearanceStyle } = floatingPanelAppearance(presentedSettings);
   const shellStyle = {
     ...appearanceStyle,
-    "--floating-shell-padding-y": `${pagingGuidePresented ? 0 : 6 * presentedSettings.scale}px`,
+    "--floating-shell-padding-y": `${overlayGuidePresented ? 0 : 6 * presentedSettings.scale}px`,
     "--floating-drawer-height": `${drawerMetrics.height / (dockAnchor ? dockShellMetrics.contentScale : 1)}px`,
     "--floating-drawer-gap": `${8 * presentedSettings.scale / (dockAnchor ? dockShellMetrics.contentScale : 1)}px`,
     "--floating-drawer-offset": `${drawerMetrics.offset}px`,
@@ -571,6 +578,7 @@ export function FloatingWindowApp() {
 
   return (
     <div className="floating-edge-host"
+      onMouseDownCapture={realGuidePresented ? event => { event.preventDefault(); event.stopPropagation(); realGuide.finish(); } : undefined}
       data-edge={dockAnchor?.edge ?? "free"}
       data-collapsed={dock.collapsed}
       data-compact={dock.compact}
@@ -584,7 +592,7 @@ export function FloatingWindowApp() {
     <div ref={dockShellRef} className="floating-edge-shell" aria-hidden="true" />
     <div className="floating-edge-content" inert={dock.collapsed} aria-hidden={dock.collapsed || undefined}>
     <main
-      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""} floating-window-shell--running-model-details-${runningModelDetailsSide}`}
+      className={`floating-window-shell${overlayGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""} floating-window-shell--running-model-details-${runningModelDetailsSide}`}
       onMouseDownCapture={dismissRunningModelDetailsForOutsidePointer}
       style={shellStyle}
     >
@@ -605,8 +613,8 @@ export function FloatingWindowApp() {
           setRunningModelDetailsExpanded((expanded) => !expanded);
         }}
         guideMode={pagingGuidePresented && activePagingGuidePage === "paging"}
-        guideOverlayVisible={pagingGuidePresented}
-        overlay={pagingGuidePresented ? (
+        guideOverlayVisible={overlayGuidePresented}
+        overlay={overlayGuidePresented ? (
           <FloatingPagingGuide
             page={activePagingGuidePage}
             isLastPage={safePagingGuidePageIndex === pagingGuidePages.length - 1}

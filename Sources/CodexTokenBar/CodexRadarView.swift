@@ -355,11 +355,10 @@ private struct CodexRadarQuotaBlock: View {
                     systemImage: "gauge.with.dots.needle.67percent",
                     accent: AppTheme.accentCyan
                 )
-                Text("非本级实时额度 · 折线图选点计算本级")
+                Text("本额度非本地测算结果。如需本地测算，请在下方折线图中框选区间。")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .fixedSize(horizontal: false, vertical: true)
                 ForEach(quotaRadar?.rowsForDisplay ?? []) { row in
                     HStack(spacing: 8) {
                         Text(row.tier)
@@ -384,9 +383,9 @@ private struct CodexRadarQuotaBlock: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Radar 预估额度仅作非本级实时参考；打开折线图后选择两个点计算本级额度")
+        .help("本额度非本地测算结果。如需本地测算，请在下方折线图中框选区间。")
         .accessibilityLabel("Radar 预估额度")
-        .accessibilityValue("非本级实时额度")
+        .accessibilityValue("非本地测算结果")
         .accessibilityHint("打开折线图，选择起点和终点计算本级额度")
     }
 }

@@ -3,6 +3,23 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AccountingIndexMigrationTests: XCTestCase {
+    func testUnknownAccountingRevisionIsRejectedBeforeLegacyPreparation() throws {
+        for schema in ["6", "11", "12"] {
+            let fixture = try makeFixture()
+            let database = SQLiteDatabaseDriver(url: fixture.databaseURL)
+            try seedLegacyEvents(in: database)
+            try database.execute("UPDATE schema_meta SET value = ? WHERE key = 'schema_version';", bindings: [.text(schema)])
+            try database.execute("INSERT INTO schema_meta(key,value) VALUES ('accounting_revision','future-accounting');")
+            let before = try preMigrationEventSnapshots(in: database)
+            XCTAssertThrowsError(try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: fixture.databaseURL)) { error in
+                XCTAssertTrue(error is CodexUsageIndexUpgradeRequiredError)
+            }
+            XCTAssertEqual(try schemaValue("schema_version", in: database), schema)
+            XCTAssertEqual(try schemaValue("accounting_revision", in: database), "future-accounting")
+            XCTAssertEqual(try preMigrationEventSnapshots(in: database), before)
+        }
+    }
+
     func testSchema11AccountingMigrationPreservesLegacyValuesAndCountsOnlyValidEvents() throws {
         let fixture = try makeFixture()
         let database = SQLiteDatabaseDriver(url: fixture.databaseURL)

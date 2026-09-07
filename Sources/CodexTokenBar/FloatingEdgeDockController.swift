@@ -20,6 +20,10 @@ final class FloatingEdgeDockController {
     private var resumeAfterLayout = false
     private var resizingAnchor: FloatingEdgeDockAnchor?
     private var heldOpen = false
+    private(set) var isGuiding = false
+    private var guidePointer: NSPoint?
+    private var effectivePointer: NSPoint { guidePointer ?? pointerLocation() }
+    private var effectiveButtons: Int { isGuiding ? 0 : pressedMouseButtons() }
     private var undockedCornerRadius: CGFloat = 14
     private var observers: [NSObjectProtocol] = []
     private(set) var isApplyingGeometry = false
@@ -76,6 +80,8 @@ final class FloatingEdgeDockController {
         enabled = { false }
         persist = { _ in }
         dragging = false
+        isGuiding = false
+        guidePointer = nil
         heldOpen = false
         resizingAnchor = nil
         menuDepth = 0
@@ -95,6 +101,26 @@ final class FloatingEdgeDockController {
         presentation.anchor = nil
         panel?.contentView?.layer?.cornerRadius = undockedCornerRadius
         return true
+    }
+
+    func beginGuide(pointer: NSPoint) {
+        isGuiding = true
+        guidePointer = pointer
+        heldOpen = false
+        detach()
+    }
+
+    func guideHover(at point: NSPoint) {
+        guard isGuiding else { return }
+        guidePointer = point
+        if let panel { applyHover(panel.frame.contains(point)) }
+    }
+
+    func endGuide() {
+        cancelPending()
+        dragging = false
+        guidePointer = nil
+        isGuiding = false
     }
 
     func holdOpen(_ value: Bool) {
@@ -139,7 +165,7 @@ final class FloatingEdgeDockController {
         guard dragging else { return }
         // performDrag(with:) can return before the OS-owned mouse gesture ends.
         // Keep the old dock detached until release, then inspect the final frame.
-        if pressedMouseButtons() & 1 != 0 {
+        if effectiveButtons & 1 != 0 {
             dragCompletion?.cancel()
             let completion = DispatchWorkItem { [weak self] in
                 MainActor.assumeIsolated { self?.endDrag() }
@@ -172,15 +198,20 @@ final class FloatingEdgeDockController {
         presentation.compactWindow = false
         presentation.collapsed = false
         withAnimation(motion(expanding: true)) { presentation.anchor = anchor }
-        persist(anchor.expandedFrame.origin)
+        if !isGuiding { persist(anchor.expandedFrame.origin) }
         scheduleCollapseIfOutside()
     }
 
     func hoverChanged(_ inside: Bool) {
+        guard !isGuiding else { return }
+        applyHover(inside)
+    }
+
+    private func applyHover(_ inside: Bool) {
         guard isAttached, !isApplyingGeometry, let panel else { return }
         // AppKit can deliver stale enter/exit events as a tracking area resizes.
         // They must neither reveal an off-pointer panel nor restart its collapse.
-        guard inside == panel.frame.contains(pointerLocation()) else { return }
+        guard inside == panel.frame.contains(effectivePointer) else { return }
         if inside {
             if presentation.collapsed {
                 reveal()
@@ -217,15 +248,15 @@ final class FloatingEdgeDockController {
 
     private func scheduleCollapseIfOutside() {
         guard isAttached, !heldOpen, !dragging, menuDepth == 0, !presentation.compactWindow, !presentation.collapsed,
-              let panel, !panel.frame.contains(pointerLocation()) else { return }
+              let panel, !panel.frame.contains(effectivePointer) else { return }
         schedule(after: 0.45) { [weak self] in self?.collapse() }
     }
 
     private func collapse() {
         guard enabled(), !heldOpen, !dragging, menuDepth == 0, !presentation.collapsed,
               let panel, let anchor = presentation.anchor,
-              !panel.frame.contains(pointerLocation()) else { return }
-        if pressedMouseButtons() != 0 {
+              !panel.frame.contains(effectivePointer) else { return }
+        if effectiveButtons != 0 {
             schedule(after: 0.10) { [weak self] in self?.collapse() }
             return
         }
@@ -279,12 +310,19 @@ final class FloatingEdgeDockController {
             Self.intersectionArea(anchor.expandedFrame, $0.visibleFrame) < Self.intersectionArea(anchor.expandedFrame, $1.visibleFrame)
         }) else { return }
         let area = screen.visibleFrame
-        var frame = anchor.expandedFrame
-        frame.origin.x = min(max(frame.minX, area.minX), area.maxX - frame.width)
-        frame.origin.y = min(max(frame.minY, area.minY), area.maxY - frame.height)
+        let frame = Self.restoredFrame(anchor.expandedFrame, in: area)
         setFrame(frame)
         persist(panel.frame.origin)
         snapIfNearEdge()
+    }
+
+    static func restoredFrame(_ original: NSRect, in area: NSRect) -> NSRect {
+        var frame = original
+        frame.size.width = min(frame.width, area.width)
+        frame.size.height = min(frame.height, area.height)
+        frame.origin.x = min(max(frame.minX, area.minX), area.maxX - frame.width)
+        frame.origin.y = min(max(frame.minY, area.minY), area.maxY - frame.height)
+        return frame
     }
 
     private static func intersectionArea(_ a: NSRect, _ b: NSRect) -> CGFloat {

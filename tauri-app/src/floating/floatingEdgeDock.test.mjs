@@ -339,3 +339,31 @@ test("a free-window drawer reaching the edge does not acquire a new dock", async
   assert.equal(f.dock.state().anchor, null);
   assert.equal(f.frames.length, 0);
 });
+
+test("real-window rehearsal reuses docking, isolates the real pointer, and never saves demo positions", async () => {
+  const f = fixture();
+  f.pointer({ x: 900, y: 600, leftButtonDown: true });
+  await f.dock.beginGuide({ x: 100, y: 180 });
+  await f.dock.guideBeginDrag();
+  await f.dock.guideEndDrag();
+  assert.equal(f.dock.state().anchor.edge, "left");
+  assert.equal(f.reads(), 0);
+  assert.equal(f.saved.length, 0);
+  f.dock.guideHover({ x: 500, y: 500 });
+  await f.advance(900);
+  assert.equal(f.dock.state().compact, true);
+  f.dock.hover(true);
+  await f.advance(100);
+  assert.equal(f.dock.state().compact, true, "real mouse events must not advance the rehearsal");
+  f.dock.guideHover({ x: 6, y: 200 });
+  await f.advance(200);
+  assert.equal(f.dock.state().collapsed, false);
+  await f.dock.guideBeginDrag();
+  f.geometry(geometry({ x: 250, y: 180, width: 300, height: 120 }));
+  await f.dock.guideEndDrag();
+  assert.equal(f.dock.state().anchor, null);
+  assert.equal(f.saved.length, 0);
+  f.dock.endGuide();
+  assert.equal(f.dock.isGuiding(), false);
+  assert.deepEqual(f.errors, []);
+});

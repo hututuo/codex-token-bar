@@ -112,6 +112,7 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOp
 
   return {
     presentation,
+    controller,
     expandedFrame: () => controller.current?.state().anchor?.frame,
     hover: (inside: boolean) => controller.current?.hover(inside),
     reveal: () => { void controller.current?.reveal().catch((error) => warnPlatformFailure("floating-edge-dock", error)); },

@@ -1,3 +1,4 @@
+import { FloatingGuideOverlayApp } from "../floating/FloatingGuideOverlayApp";
 import { useMemo } from "react";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
 import { desktopPlatform } from "../platform/desktop";
@@ -6,6 +7,10 @@ import { DashboardApp } from "./DashboardApp";
 
 export function App() {
   const surface = useMemo(getSurfaceMode, []);
+  const guide = new URLSearchParams(window.location.search).get("surface");
+  if (guide === "floating-guide-card" || guide === "floating-guide-cursor") {
+    return <FloatingGuideOverlayApp cursor={guide === "floating-guide-cursor"} />;
+  }
   if (surface === "floating") {
     return <FloatingWindowApp />;
   }

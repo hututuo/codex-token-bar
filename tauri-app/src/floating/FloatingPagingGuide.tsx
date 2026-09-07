@@ -46,6 +46,8 @@ export function FloatingPagingGuide({
   onArrowVisibilityChange,
   onAdvance,
 }: FloatingPagingGuideProps) {
+  if (page === "edgeDock") return null;
+
   if (page === "runningModels") {
     return (
       <div className="floating-paging-guide floating-paging-guide--running-models" role="dialog" aria-label="运行模型详情引导">
@@ -81,7 +83,17 @@ export function FloatingPagingGuide({
           onDoubleClick={(event) => event.stopPropagation()}
         >
           <strong>点击“主 / 子”查看模型</strong>
-          <p>右侧按主线程分组显示模型和思考强度；悬停主线程可查看会话标题</p>
+          <p>按主线程分组显示模型和思考强度；悬停主线程可查看会话标题</p>
+          <div className="floating-running-model-guide-modes" aria-label="普通侧向与贴边纵向展开示意">
+            <span className="floating-running-model-guide-mode">
+              <i className="floating-running-model-guide-mode-visual" aria-hidden="true" />
+              <span>普通：侧向展开</span>
+            </span>
+            <span className="floating-running-model-guide-mode floating-running-model-guide-mode--attached">
+              <i className="floating-running-model-guide-mode-visual" aria-hidden="true" />
+              <span>贴边：纵向展开</span>
+            </span>
+          </div>
           <GuideAdvanceButton isLastPage={isLastPage} saving={saving} onAdvance={onAdvance} />
           {error ? <small role="alert">{error}</small> : null}
         </section>

@@ -79,7 +79,8 @@ extension FloatingTokenPanelController {
     }
 
     private var externalEventState: (isPresented: Bool, isLocked: Bool) {
-        externalEventStateProvider?() ?? (isPresented: isPresented, isLocked: appliedLockState)
+        if realWindowGuide != nil { return (false, false) }
+        return externalEventStateProvider?() ?? (isPresented: isPresented, isLocked: appliedLockState)
     }
 
     private var shouldInspectExternalMouseWindow: Bool {
@@ -215,7 +216,7 @@ extension FloatingTokenPanelController {
     }
 
     func updateLockState(_ isLocked: Bool, force: Bool = false) {
-        guard let panel else { return }
+        guard realWindowGuide == nil, let panel else { return }
         panel.isMovableByWindowBackground = false
         (panel as? FloatingTokenPanelWindow)?.allowsBackgroundDrag = !isLocked
 
@@ -394,6 +395,7 @@ extension FloatingTokenPanelController {
 
     @discardableResult
     func followAnchorIfNeeded() -> Bool {
+        guard realWindowGuide == nil else { return false }
         guard let panel, let anchor = lockedAnchor else { return false }
         if activeLockedTargetDrag != nil {
             return followLockedTargetDrag(at: NSEvent.mouseLocation)

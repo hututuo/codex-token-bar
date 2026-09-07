@@ -9,6 +9,10 @@ if (startupSurface === "status") {
   document.documentElement.classList.add("status-document");
 }
 
+if (startupSurface === "floating-guide-card" || startupSurface === "floating-guide-cursor") {
+  document.documentElement.classList.add("floating-guide-document");
+}
+
 void recordStartupEvent(`${startupSurface} entry script`);
 
 function showRuntimeError(error: unknown) {

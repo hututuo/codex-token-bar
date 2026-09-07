@@ -77,9 +77,10 @@ enum CodexCrowdRadarParser {
             ) ?? 0,
             contributorCount: firstCollectionCount(
                 leaderboard,
-                aliases: [
-                    "contributors", "volunteers", "contributorRows", "contributorCount", "volunteerCount"
-                ]
+                aliases: ["contributors", "volunteers", "contributorRows", "contributorCount", "volunteerCount", "onlineVolunteers"]
+            ) ?? firstCollectionCount(
+                table,
+                aliases: ["contributors", "volunteers", "contributorRows", "contributorCount", "volunteerCount", "onlineVolunteers"]
             ) ?? 0,
             pendingGrades: firstInteger(
                 leaderboard,
@@ -96,10 +97,10 @@ enum CodexCrowdRadarParser {
     }
 
     private static func parseModels(_ leaderboard: JSONObject?) -> [CodexCrowdRadarModel] {
-        let container = value(
-            in: leaderboard,
-            aliases: ["models", "points", "rankings", "modelStats", "modelSummaries", "rows"]
-        )
+        // Published snapshots use `models` for a count and `points` for rows.
+        let container = ["models", "points", "rankings", "modelStats", "modelSummaries", "rows"]
+            .compactMap { value(in: leaderboard, aliases: [$0]) }
+            .first { $0 is [Any] || object($0) != nil }
         if let rows = container as? [Any] {
             return rows.compactMap { parseModel($0, fallbackKey: "") }
         }

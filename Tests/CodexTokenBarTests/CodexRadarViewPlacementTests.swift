@@ -196,7 +196,7 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
 
         XCTAssertTrue(radarSource.contains("Radar 预估额度"))
-        XCTAssertTrue(radarSource.contains("非本级实时额度 · 折线图选点计算本级"))
+        XCTAssertTrue(radarSource.contains("本额度非本地测算结果。如需本地测算，请在下方折线图中框选区间。"))
         XCTAssertTrue(radarSource.contains("onShowRecentUsage"))
         XCTAssertTrue(radarSource.contains("打开折线图，选择起点和终点计算本级额度"))
         XCTAssertTrue(dashboardSource.contains("scrollProxy.scrollTo(\"recent-usage-chart\", anchor: .center)"))

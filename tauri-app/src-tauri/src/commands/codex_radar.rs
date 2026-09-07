@@ -30,7 +30,9 @@ const CODEX_RADAR_COUNTDOWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(2);
 const CODEX_CROWD_RADAR_TIMEOUT: Duration = Duration::from_secs(18);
 const CODEX_CROWD_RADAR_PRIMARY_TIMEOUT: Duration = Duration::from_secs(12);
 const CODEX_CROWD_RADAR_LEGACY_TIMEOUT: Duration = Duration::from_secs(6);
-const CODEX_CROWD_RADAR_MAX_BYTES: u64 = 8 * 1024 * 1024;
+// The live table exceeded 8 MiB in September 2026; retain a bounded
+// decompressed budget with room for additional model/task cells.
+const CODEX_CROWD_RADAR_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const CODEX_CROWD_RADAR_MAX_ATTEMPTS: usize = 3;
 // Multiple Tauri windows mount their own JS runtime. Keep the network
 // coordinator in Rust so startup cannot fan out one request per window.
@@ -1121,6 +1123,20 @@ mod tests {
     }
 
     #[test]
+    fn crowd_radar_accepts_gzip_table_larger_than_the_old_eight_mib_limit() {
+        let body = serde_json::to_string(&json!({
+            "cells": {}, "padding": "x".repeat(9 * 1024 * 1024)
+        })).expect("json");
+        let (endpoint, server) = spawn_gzip_http_response(&body);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(10)).no_gzip().build().expect("client");
+        let fetched = fetch_public_json(&client, &endpoint, "table", Duration::from_secs(10))
+            .expect("growing public table must remain readable");
+        assert_eq!(fetched.value["padding"].as_str().unwrap().len(), 9 * 1024 * 1024);
+        server.join().expect("server");
+    }
+
+    #[test]
     fn crowd_radar_prefers_responsive_site_sources_and_keeps_legacy_api_fallbacks() {
         assert_eq!(
             CODEX_CROWD_RADAR_TABLE_ENDPOINT,
@@ -1340,11 +1356,11 @@ mod tests {
             let _ = stream.write_all(
                 b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n",
             );
-            // 每块 64 KiB、共 9 MiB，越过 8 MiB 上限；客户端应中途放弃，
+            // 每块 64 KiB，流量超过当前上限；客户端应中途放弃，
             // 写端出现断管属预期，忽略错误退出即可。
             let chunk = vec![b'a'; 64 * 1024];
             let header = format!("{:x}\r\n", chunk.len());
-            for _ in 0..144 {
+            for _ in 0..(CODEX_CROWD_RADAR_MAX_BYTES / (64 * 1024) + 16) {
                 if stream.write_all(header.as_bytes()).is_err()
                     || stream.write_all(&chunk).is_err()
                     || stream.write_all(b"\r\n").is_err()

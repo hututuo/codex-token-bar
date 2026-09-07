@@ -110,7 +110,7 @@ pub struct FloatingDockFrame {
 }
 
 impl FloatingDockFrame {
-    fn validate(self) -> Result<Self, String> {
+    pub(super) fn validate(self) -> Result<Self, String> {
         if [self.x, self.y, self.width, self.height].iter().any(|v| !v.is_finite() || v.abs() > i32::MAX as f64)
             || self.width < 1.0 || self.height < 1.0 {
             return Err("Invalid floating dock frame".into());
@@ -153,7 +153,7 @@ fn dock_viewport_offset(frame: FloatingDockFrame, viewport: FloatingDockFrame) -
 }
 
 #[cfg(target_os = "macos")]
-fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockFrame, viewport: Option<FloatingDockFrame>, webview: *mut std::ffi::c_void) -> Result<(), String> {
+pub(super) fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockFrame, viewport: Option<FloatingDockFrame>, webview: *mut std::ffi::c_void) -> Result<(), String> {
     use objc2_app_kit::{NSWindow, NSView, NSAutoresizingMaskOptions};
     use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
     let _mtm = MainThreadMarker::new().ok_or("Floating frame update requires the main thread")?;
@@ -191,7 +191,7 @@ fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockF
 }
 
 #[cfg(windows)]
-fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockFrame) -> Result<(), String> {
+pub(super) fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockFrame) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
     let handle = window.hwnd().map_err(|error| error.to_string())?;
     let success = unsafe { SetWindowPos(handle.0, std::ptr::null_mut(), frame.x.round() as i32, frame.y.round() as i32,
@@ -201,7 +201,7 @@ fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockF
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
-fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockFrame) -> Result<(), String> {
+pub(super) fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockFrame) -> Result<(), String> {
     window.set_size(tauri::PhysicalSize::new(frame.width.round() as u32, frame.height.round() as u32)).map_err(|e| e.to_string())?;
     window.set_position(tauri::PhysicalPosition::new(frame.x.round() as i32, frame.y.round() as i32)).map_err(|e| e.to_string())
 }

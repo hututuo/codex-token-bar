@@ -47,7 +47,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     }
 
     func testGuideMigrationKeepsPagingLearningAndAddsRunningModelDetailsPage() {
-        XCTAssertEqual(FloatingPanelContentVisibility.currentPagingGuideRevision, 5)
+        XCTAssertEqual(FloatingPanelContentVisibility.currentPagingGuideRevision, 6)
         XCTAssertEqual(FloatingPanelPagingGuideState.pagingLearnedRevision, 4)
         XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
             setupGuideCompleted: false,
@@ -67,7 +67,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             hasPagedRows: true,
             hasRunningThreadDetailsTarget: true
         ))
-        XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
+        XCTAssertTrue(FloatingPanelPagingGuideState.shouldPresent(
             setupGuideCompleted: true,
             completedRevision: 0,
             hasPagedRows: false,
@@ -79,7 +79,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 hasPagedRows: true,
                 hasRunningThreadDetailsTarget: true
             ),
-            [.paging, .runningModels]
+            [.paging, .runningModels, .edgeDock]
         )
         XCTAssertEqual(
             FloatingPanelPagingGuideState.pages(
@@ -87,7 +87,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 hasPagedRows: true,
                 hasRunningThreadDetailsTarget: true
             ),
-            [.runningModels]
+            [.runningModels, .edgeDock]
         )
         XCTAssertEqual(
             FloatingPanelPagingGuideState.pages(
@@ -95,7 +95,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 hasPagedRows: false,
                 hasRunningThreadDetailsTarget: true
             ),
-            [.runningModels]
+            [.runningModels, .edgeDock]
         )
         XCTAssertEqual(
             FloatingTokenPanelMetrics.firstPagedRowCenterY(
@@ -106,6 +106,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             61,
             accuracy: 0.001
         )
+    }
+
+    func testEdgeDockUpgradeOnlyShowsNewPage() {
+        for hasTarget in [false, true] {
+            XCTAssertEqual(FloatingPanelPagingGuideState.pages(completedRevision: 5, hasPagedRows: true, hasRunningThreadDetailsTarget: hasTarget), [.edgeDock])
+            for revision in [6, 7] {
+                XCTAssertEqual(FloatingPanelPagingGuideState.pages(completedRevision: revision, hasPagedRows: true, hasRunningThreadDetailsTarget: hasTarget), [])
+            }
+        }
     }
 
     @MainActor

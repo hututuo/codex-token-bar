@@ -176,7 +176,8 @@ protocol CodexCrowdRadarReading: Sendable {
 }
 
 struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
-    private static let maxResponseBytes = 8 * 1024 * 1024
+    // The growing live table exceeded 8 MiB in September 2026.
+    private static let maxResponseBytes = 32 * 1024 * 1024
     private static let sourceAttemptLimit = 3
     private static let retryDelays: [TimeInterval] = [0.25, 0.75]
 
@@ -294,8 +295,12 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
         guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
             throw CodexRadarReaderError.invalidResponse
         }
+        return try Self.validateResponseBody(data)
+    }
+
+    static func validateResponseBody(_ data: Data) throws -> Data {
         guard !data.isEmpty else { throw CodexRadarReaderError.emptyPayload }
-        guard data.count <= Self.maxResponseBytes else { throw CodexRadarReaderError.invalidResponse }
+        guard data.count <= maxResponseBytes else { throw CodexRadarReaderError.invalidResponse }
         return data
     }
 }

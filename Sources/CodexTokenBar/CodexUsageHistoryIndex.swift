@@ -171,6 +171,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         case validated
         case switching
         case switched
+        /// The active database has already passed the candidate validation;
+        /// only the rollback/candidate residue remains to be retired. Keeping
+        /// this as a durable phase makes residue cleanup restartable without
+        /// asking `finishCandidateSwitch` to reopen a rollback that may have
+        /// been removed by a previous cleanup attempt.
+        case retiring
     }
 
     private struct CandidateFileStamp: Codable, Equatable {
@@ -193,6 +199,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let rollbackPath: String
         let sourceReceipt: CandidateSourceReceipt
         var phase: CandidateMigrationPhase
+        /// Facts captured while the candidate was switched. This is optional
+        /// for manifests written by older builds; those can be upgraded from
+        /// the rollback database or the accounting structural receipt.
+        var switchedFacts: CandidateMigrationFacts?
     }
 
     private struct CandidateMigrationFacts: Codable, Equatable {
@@ -615,6 +625,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         fileManager: FileManager,
         onProgress: ((PreciseIndexProgress) -> Void)?
     ) throws -> Bool {
+        // Reject future contracts before resuming or switching any candidate.
+        if case let .upgradeRequired(component, stored, supported) = try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
+            throw CodexUsageIndexUpgradeRequiredError(component: component, stored: stored, supported: supported)
+        }
         let manifestURL = candidateMigrationManifestURL(for: databaseURL)
         if fileManager.fileExists(atPath: manifestURL.path) {
             var manifest = try loadCandidateMigrationManifest(at: manifestURL)
@@ -665,7 +679,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             candidatePath: candidateURL.path,
             rollbackPath: rollbackURL.path,
             sourceReceipt: sourceReceipt,
-            phase: .prepared
+            phase: .prepared,
+            switchedFacts: nil
         )
         try storeCandidateMigrationManifest(manifest, at: manifestURL, fileManager: fileManager)
         try resumeSchema11CandidateMigration(
@@ -693,6 +708,39 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         let candidateURL = URL(fileURLWithPath: manifest.candidatePath)
         let rollbackURL = URL(fileURLWithPath: manifest.rollbackPath)
+
+        if manifest.phase == .retiring {
+            // Retirement may remove the rollback only after the active copy is
+            // still present and validates against durable switch facts. A
+            // phase marker alone is not enough: if active is lost or damaged,
+            // preserve the rollback and surface repair-required.
+            try validateCandidateMigrationRetirement(
+                manifest,
+                databaseURL: databaseURL,
+                rollbackURL: rollbackURL,
+                fileManager: fileManager
+            )
+            do {
+                try retireCandidateMigration(
+                    manifest,
+                    manifestURL: manifestURL,
+                    databaseURL: databaseURL,
+                    candidateURL: candidateURL,
+                    rollbackURL: rollbackURL,
+                    fileManager: fileManager
+                )
+            } catch {
+                // Retirement is post-publish housekeeping. A transient delete
+                // or directory-sync failure must leave the active index
+                // usable; the durable retiring phase makes the next launch
+                // retry the same exact residue set. An unexpected candidate
+                // main database remains a repair boundary and is surfaced.
+                guard !fileManager.fileExists(atPath: candidateURL.path) else {
+                    throw error
+                }
+            }
+            return
+        }
 
         if manifest.phase == .switching || manifest.phase == .switched {
             try finishCandidateSwitch(
@@ -847,14 +895,42 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         fileManager: FileManager
     ) throws {
         if manifest.phase == .switched {
-            try validateSchema11Candidate(
-                databaseURL: databaseURL,
-                expectedFacts: try candidateMigrationFacts(
+            let expectedFacts: CandidateMigrationFacts
+            if let switchedFacts = manifest.switchedFacts {
+                expectedFacts = switchedFacts
+            } else if fileManager.fileExists(atPath: rollbackURL.path) {
+                // Manifests written before switchedFacts was introduced still
+                // carry the original rollback as a durable source of truth.
+                expectedFacts = try candidateMigrationFacts(
                     databaseURL: rollbackURL,
                     fileManager: fileManager
-                ),
+                )
+            } else if let receiptFacts = try candidateMigrationFactsFromAccountingReceipt(
+                databaseURL: databaseURL,
+                fileManager: fileManager
+            ) {
+                // A previous cleanup may have removed rollback before it was
+                // interrupted while deleting the manifest. The accounting
+                // receipt is the post-switch durable copy of the same facts.
+                expectedFacts = receiptFacts
+            } else {
+                throw CodexUsageIndexRepairRequiredError(
+                    reason: "schema 11 switched 清单缺少回滚库和结构校验回执；已保留现场"
+                )
+            }
+            try validateSchema11Candidate(
+                databaseURL: databaseURL,
+                expectedFacts: expectedFacts,
                 fileManager: fileManager
             )
+            if manifest.switchedFacts == nil {
+                manifest.switchedFacts = expectedFacts
+                try storeCandidateMigrationManifest(
+                    manifest,
+                    at: manifestURL,
+                    fileManager: fileManager
+                )
+            }
             return
         }
 
@@ -890,14 +966,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         try synchronizeFile(at: databaseURL)
         try synchronizeDirectory(at: databaseURL.deletingLastPathComponent())
-        try validateSchema11Candidate(
-            databaseURL: databaseURL,
-            expectedFacts: try candidateMigrationFacts(
-                databaseURL: rollbackURL,
-                fileManager: fileManager
-            ),
+        let switchedFacts = try candidateMigrationFacts(
+            databaseURL: rollbackURL,
             fileManager: fileManager
         )
+        try validateSchema11Candidate(
+            databaseURL: databaseURL,
+            expectedFacts: switchedFacts,
+            fileManager: fileManager
+        )
+        manifest.switchedFacts = switchedFacts
         manifest.phase = .switched
         try storeCandidateMigrationManifest(
             manifest,
@@ -1060,6 +1138,33 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             aggregateTotals: aggregateTotals,
             lineage: lineage
         )
+    }
+
+    private static func candidateMigrationFactsFromAccountingReceipt(
+        databaseURL: URL,
+        fileManager: FileManager
+    ) throws -> CandidateMigrationFacts? {
+        let driver = SQLiteDatabaseDriver(
+            url: databaseURL,
+            readOnly: true,
+            createsFileIfMissing: false,
+            busyTimeoutMilliseconds: 5_000,
+            fileManager: fileManager
+        )
+        let rawReceipt = try driver.readRows(
+            "SELECT value FROM schema_meta WHERE key = 'accounting_structural_receipt' LIMIT 1;"
+        ) { $0.text(0) }.first ?? nil
+        guard let rawReceipt else { return nil }
+        do {
+            return try JSONDecoder().decode(
+                CandidateMigrationFacts.self,
+                from: Data(rawReceipt.utf8)
+            )
+        } catch {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "schema 11 switched 清单的结构校验回执无法解码；已保留现场"
+            )
+        }
     }
 
     private static func candidateSourceReceipt(
@@ -1232,27 +1337,34 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
-    /// A rollback database is eligible for cleanup only after schema 11 has
-    /// opened and one ordinary no-op/append synchronization has published.
-    /// Failure to remove any member leaves the manifest for the next
-    /// successful synchronization; it never affects the published result.
-    private static func cleanupSuccessfulSchema11Migration(
+    private static func retireCandidateMigration(
+        _ manifest: CandidateMigrationManifest,
+        manifestURL: URL,
         databaseURL: URL,
+        candidateURL: URL,
+        rollbackURL: URL,
         fileManager: FileManager
-    ) {
-        let manifestURL = candidateMigrationManifestURL(for: databaseURL)
-        guard let manifest = try? loadCandidateMigrationManifest(at: manifestURL),
-              manifest.phase == .switched,
-              manifest.sourcePath == databaseURL.path else {
-            return
+    ) throws {
+        guard manifest.sourcePath == databaseURL.path else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "schema 11 清理清单与当前索引路径不匹配"
+            )
         }
-        let candidateURL = URL(fileURLWithPath: manifest.candidatePath)
-        // A surviving candidate main database is ambiguous recovery state, not
-        // disposable residue. Preserve the complete migration family until a
-        // later repair can classify it instead of deleting around it.
-        guard !fileManager.fileExists(atPath: candidateURL.path) else { return }
-        let rollbackURL = URL(fileURLWithPath: manifest.rollbackPath)
-        let successfulMigrationResidue = [
+        // A candidate main database is not residue: it may be the only
+        // recoverable copy after an interrupted switch. Never delete it from
+        // a best-effort retirement path.
+        guard !fileManager.fileExists(atPath: candidateURL.path) else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "schema 11 清理仍发现候选数据库；已保留现场"
+            )
+        }
+        try validateCandidateMigrationRetirement(
+            manifest,
+            databaseURL: databaseURL,
+            rollbackURL: rollbackURL,
+            fileManager: fileManager
+        )
+        let residue = [
             rollbackURL,
             URL(fileURLWithPath: rollbackURL.path + "-wal"),
             URL(fileURLWithPath: rollbackURL.path + "-shm"),
@@ -1262,20 +1374,149 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             URL(fileURLWithPath: candidateURL.path + "-journal"),
             candidateURL.appendingPathExtension("operation.lock"),
         ]
-        for member in successfulMigrationResidue
-            where fileManager.fileExists(atPath: member.path) {
+        for member in residue where fileManager.fileExists(atPath: member.path) {
+            try fileManager.removeItem(at: member)
+        }
+        if fileManager.fileExists(atPath: manifestURL.path) {
+            try fileManager.removeItem(at: manifestURL)
+        }
+        try synchronizeDirectory(at: databaseURL.deletingLastPathComponent())
+    }
+
+    private static func validateCandidateMigrationRetirement(
+        _ manifest: CandidateMigrationManifest,
+        databaseURL: URL,
+        rollbackURL: URL,
+        fileManager: FileManager
+    ) throws {
+        guard fileManager.fileExists(atPath: databaseURL.path) else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "schema 11 清理缺少已发布活动库；已保留回滚库"
+            )
+        }
+        let expectedFacts: CandidateMigrationFacts
+        if let switchedFacts = manifest.switchedFacts {
+            expectedFacts = switchedFacts
+        } else if fileManager.fileExists(atPath: rollbackURL.path) {
+            expectedFacts = try candidateMigrationFacts(
+                databaseURL: rollbackURL,
+                fileManager: fileManager
+            )
+        } else if let receiptFacts = try candidateMigrationFactsFromAccountingReceipt(
+            databaseURL: databaseURL,
+            fileManager: fileManager
+        ) {
+            expectedFacts = receiptFacts
+        } else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "schema 11 清理缺少结构校验事实；已保留现场"
+            )
+        }
+        try validateSchema11Candidate(
+            databaseURL: databaseURL,
+            expectedFacts: expectedFacts,
+            fileManager: fileManager
+        )
+    }
+
+    /// A rollback database is eligible for cleanup only after schema 11 has
+    /// opened and one ordinary no-op/append synchronization has published.
+    /// Retirement is recorded before removing any member. Failure to remove
+    /// residue leaves a retryable `.retiring` manifest and never affects the
+    /// published result.
+    private static func cleanupSuccessfulSchema11Migration(
+        databaseURL: URL,
+        fileManager: FileManager
+    ) {
+        let manifestURL = candidateMigrationManifestURL(for: databaseURL)
+        guard var manifest = try? loadCandidateMigrationManifest(at: manifestURL),
+              manifest.sourcePath == databaseURL.path else {
+            return
+        }
+        let candidateURL = URL(fileURLWithPath: manifest.candidatePath)
+        let rollbackURL = URL(fileURLWithPath: manifest.rollbackPath)
+
+        if manifest.phase == .retiring {
             do {
-                try fileManager.removeItem(at: member)
+                try retireCandidateMigration(
+                    manifest,
+                    manifestURL: manifestURL,
+                    databaseURL: databaseURL,
+                    candidateURL: candidateURL,
+                    rollbackURL: rollbackURL,
+                    fileManager: fileManager
+                )
             } catch {
+                // The active index has already been published. Keep the
+                // durable phase for a later retry; a surviving candidate main
+                // remains a repair-required boundary handled on the next open.
+            }
+            return
+        }
+
+        guard manifest.phase == .switched,
+              !fileManager.fileExists(atPath: candidateURL.path) else {
+            return
+        }
+
+        // Before retiring an older manifest, establish the same durable facts
+        // used by the switch path. This also repairs v1 manifests left behind
+        // by the old rollback-first cleanup order.
+        let switchedFacts: CandidateMigrationFacts
+        do {
+            if let facts = manifest.switchedFacts {
+                switchedFacts = facts
+            } else if fileManager.fileExists(atPath: rollbackURL.path) {
+                switchedFacts = try candidateMigrationFacts(
+                    databaseURL: rollbackURL,
+                    fileManager: fileManager
+                )
+            } else if let facts = try candidateMigrationFactsFromAccountingReceipt(
+                databaseURL: databaseURL,
+                fileManager: fileManager
+            ) {
+                switchedFacts = facts
+            } else {
                 return
             }
-        }
-        do {
-            try fileManager.removeItem(at: manifestURL)
-            try synchronizeDirectory(at: databaseURL.deletingLastPathComponent())
+            try validateSchema11Candidate(
+                databaseURL: databaseURL,
+                expectedFacts: switchedFacts,
+                fileManager: fileManager
+            )
+            if manifest.switchedFacts == nil {
+                manifest.switchedFacts = switchedFacts
+                try storeCandidateMigrationManifest(
+                    manifest,
+                    at: manifestURL,
+                    fileManager: fileManager
+                )
+            }
+            manifest.phase = .retiring
+            try storeCandidateMigrationManifest(
+                manifest,
+                at: manifestURL,
+                fileManager: fileManager
+            )
         } catch {
-            // Keep any surviving manifest as a retryable cleanup receipt.
+            // Preserve all migration evidence when validation or receipt
+            // upgrade cannot be proved.
+            return
         }
+
+        // Test-only interruption models a process exit after the durable phase
+        // write and before the first residue deletion.
+        if migrationTestState.consumeRetirementFailure() {
+            return
+        }
+        try? retireCandidateMigration(
+            manifest,
+            manifestURL: manifestURL,
+            databaseURL: databaseURL,
+            candidateURL: candidateURL,
+            rollbackURL: rollbackURL,
+            fileManager: fileManager
+        )
     }
 
     private static func assessMigration(
@@ -1319,6 +1560,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     component: "主 schema",
                     stored: rawSchema,
                     supported: schemaVersion
+                )
+            }
+            if let accounting = try meta("accounting_revision"),
+               accounting != UsageAccountingState.revision {
+                return .upgradeRequired(
+                    component: "accounting",
+                    stored: accounting,
+                    supported: UsageAccountingState.revision
                 )
             }
             if let replay = try meta("fork_replay_boundary_revision"),
@@ -1674,6 +1923,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     static func failSchema6MigrationForTesting(at stage: Int) {
         migrationTestState.armFailure(at: stage)
+    }
+
+    /// Interrupt cleanup after its durable `.retiring` marker is written.
+    /// The next index open must resume retirement without reopening rollback.
+    static func failNextSchemaMigrationRetirementForTesting() {
+        migrationTestState.armRetirementFailure()
     }
 
     static func overrideSchema6MigrationAvailableCapacityForTesting(_ bytes: UInt64) {
@@ -6399,6 +6654,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: SessionParser
     ) throws -> StagedFullRebuild {
         let existingStages = stagingDatabaseURLs(for: job.file)
+        let primaryStage = stagingDatabaseURL(for: job.file)
+        var blockingStages: [URL] = []
         for existingStage in existingStages {
             if let reusable = try reusableStage(
                 at: existingStage,
@@ -6406,8 +6663,25 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ) {
                 return reusable
             }
+            if try isKnownCurrentIncompleteStage(
+                at: existingStage,
+                for: job
+            ) {
+                if existingStage.resolvingSymlinksInPath()
+                    == primaryStage.resolvingSymlinksInPath() {
+                    // The primary name is reserved for the next build. Move
+                    // the known, intact but unpublished artifact aside so it
+                    // remains evidence while a fresh private stage is built.
+                    try quarantineIncompleteStage(at: existingStage, for: job)
+                }
+                // A candidate-named incomplete artifact has already been
+                // isolated by this path. Preserve it and let the new primary
+                // stage proceed; unknown or damaged candidates still block.
+                continue
+            }
+            blockingStages.append(existingStage)
         }
-        guard existingStages.isEmpty else {
+        guard blockingStages.isEmpty else {
             throw CodexUsageIndexRepairRequiredError(
                 reason: "暂存恢复校验失败；已保留暂存文件和上一代统计，未重新解析源文件"
             )
@@ -6725,6 +6999,152 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             )
             return staged
         }
+    }
+
+    /// Returns true only for an intact current-format stage whose transaction
+    /// committed its rows but whose publish marker is still `complete = 0`.
+    /// This narrow classification is the proof boundary for quarantine: an
+    /// unknown, legacy, or damaged artifact returns false and remains a
+    /// repair-required blocker.
+    private func isKnownCurrentIncompleteStage(
+        at databaseURL: URL,
+        for job: FullRebuildJob
+    ) throws -> Bool {
+        guard fileManager.fileExists(atPath: databaseURL.path) else {
+            return false
+        }
+        do {
+            let stage = SQLiteDatabaseDriver(
+                url: databaseURL,
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 1_000,
+                fileManager: fileManager
+            )
+            let manifestExists = try stage.readRows(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'manifest');"
+            ) { ($0.int(0) ?? 0) != 0 }.first ?? false
+            guard manifestExists else { return false }
+            let columns = Set(try stage.readRows(
+                "PRAGMA table_info(manifest);"
+            ) { $0.text(1) ?? "" })
+            let requiredColumns: Set<String> = [
+                "complete",
+                "manifest_schema_version",
+                "canonical_path",
+                "session_id",
+                "migration_revision",
+                "parser_revision",
+                "artifact_id",
+                "actual_bytes",
+                "integrity",
+                "event_count",
+                "fingerprint_count",
+                "chunk_count",
+            ]
+            guard columns.isSuperset(of: requiredColumns) else {
+                return false
+            }
+            let expectedMigrationRevision = job.reason == .eventEnrichment
+                ? Self.eventEnrichmentRevision
+                : "exact-source-rebuild-v1"
+            let rows = try stage.readRows(
+                """
+                SELECT
+                    complete,
+                    manifest_schema_version,
+                    canonical_path,
+                    session_id,
+                    migration_revision,
+                    parser_revision,
+                    artifact_id,
+                    actual_bytes,
+                    integrity,
+                    event_count,
+                    fingerprint_count,
+                    chunk_count
+                FROM manifest;
+                """
+            ) { row in
+                (
+                    complete: row.int(0),
+                    schema: row.int(1),
+                    path: row.text(2),
+                    sessionID: row.text(3),
+                    migration: row.text(4),
+                    parser: row.text(5),
+                    artifactID: row.text(6),
+                    actualBytes: row.int64(7),
+                    integrity: row.text(8),
+                    eventCount: row.int(9),
+                    fingerprintCount: row.int(10),
+                    chunkCount: row.int(11)
+                )
+            }
+            guard rows.count == 1,
+                  let row = rows.first,
+                  row.complete == 0,
+                  row.schema == Self.stagingManifestSchemaVersion,
+                  row.path == job.file.path,
+                  row.sessionID == job.sessionID,
+                  row.migration == expectedMigrationRevision,
+                  row.parser == Self.stagingParserRevision,
+                  let artifactID = row.artifactID,
+                  !artifactID.isEmpty,
+                  row.actualBytes == 0,
+                  row.integrity == "",
+                  let eventCount = row.eventCount,
+                  eventCount >= 0,
+                  let fingerprintCount = row.fingerprintCount,
+                  fingerprintCount >= 0,
+                  let chunkCount = row.chunkCount,
+                  chunkCount >= 0 else {
+                return false
+            }
+            let quickCheck = try stage.readRows("PRAGMA quick_check;") {
+                $0.text(0) ?? ""
+            }
+            guard quickCheck == ["ok"] else { return false }
+            let storedEventCount = try stage.readRows(
+                "SELECT COUNT(*) FROM events;"
+            ) { $0.int(0) ?? -1 }.first ?? -1
+            let storedFingerprintCount = try stage.readRows(
+                "SELECT COUNT(*) FROM fingerprints;"
+            ) { $0.int(0) ?? -1 }.first ?? -1
+            let storedChunkCount = try stage.readRows(
+                "SELECT COUNT(*) FROM chunks;"
+            ) { $0.int(0) ?? -1 }.first ?? -1
+            return storedEventCount == eventCount
+                && storedFingerprintCount == fingerprintCount
+                && storedChunkCount == chunkCount
+        } catch {
+            // Any inability to classify is evidence preservation territory.
+            return false
+        }
+    }
+
+    private func quarantineIncompleteStage(
+        at databaseURL: URL,
+        for job: FullRebuildJob
+    ) throws {
+        let digest = stagingDatabaseDigest(for: job.file)
+        let destination = stagingDirectoryURL.appendingPathComponent(
+            "\(digest).candidate-\(UUID().uuidString).sqlite"
+        )
+        // Stages are created with DELETE journaling and WAL disabled. A
+        // surviving sidecar means the private transaction may still be
+        // incomplete; preserve it for repair instead of splitting the family
+        // across two names.
+        let sidecars = ["-wal", "-shm", "-journal"].map {
+            URL(fileURLWithPath: databaseURL.path + $0)
+        }
+        guard sidecars.allSatisfy({ !fileManager.fileExists(atPath: $0.path) }) else {
+            throw CodexUsageIndexRepairRequiredError(
+                reason: "未完成暂存仍有 SQLite sidecar；已保留现场"
+            )
+        }
+        try fileManager.moveItem(at: databaseURL, to: destination)
+        try Self.synchronizeDirectory(at: stagingDirectoryURL)
     }
 
     private func reusableStage(
@@ -7905,6 +8325,7 @@ private final class CodexUsageHistoryMigrationTestState: @unchecked Sendable {
     private let lock = NSLock()
     private var failureStage: Int?
     private var availableCapacityOverride: UInt64?
+    private var shouldInterruptRetirement = false
 
     func armFailure(at stage: Int) {
         lock.lock()
@@ -7931,6 +8352,20 @@ private final class CodexUsageHistoryMigrationTestState: @unchecked Sendable {
         defer { lock.unlock() }
         let value = availableCapacityOverride
         availableCapacityOverride = nil
+        return value
+    }
+
+    func armRetirementFailure() {
+        lock.lock()
+        shouldInterruptRetirement = true
+        lock.unlock()
+    }
+
+    func consumeRetirementFailure() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = shouldInterruptRetirement
+        shouldInterruptRetirement = false
         return value
     }
 }

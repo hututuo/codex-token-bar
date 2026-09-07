@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "floating-guide",
+  "description": "Temporary local onboarding overlays can receive guide state and request replay or completion.",
+  "windows": [
+    "floating-guide-card",
+    "floating-guide-cursor"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "notification:allow-is-permission-granted"
+  ]
+}

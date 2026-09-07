@@ -3414,13 +3414,11 @@ button.quota-side-card:hover {
 }
 
 .radar-quota-note {
-  overflow: hidden;
   color: var(--muted);
   font-size: 9px;
   font-weight: var(--weight-medium);
-  line-height: 1.05;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.2;
+  white-space: normal;
 }
 
 .codex-radar-block:first-child {

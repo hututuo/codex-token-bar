@@ -83,6 +83,10 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
   let frameTail = Promise.resolve();
   let nativeDepth = 0;
   let suspended = false;
+  let guiding = false;
+  let guidePointer: { x: number; y: number; leftButtonDown: boolean } | null = null;
+  const readPointer = () => guidePointer ? Promise.resolve(guidePointer) : ports.pointer();
+  const persist = (point: { x: number; y: number }) => { if (!guiding) ports.persist(point); };
   let resizing = 0;
   let dragging = false;
   let dragDeadline = 0;
@@ -149,14 +153,14 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     const geometry = await ports.geometry();
     if (!current(token) || blocked()) return;
     const anchor = resolveDockAnchor(geometry);
-    if (!anchor) { ports.persist(geometry.frame); return; }
+    if (!anchor) { persist(geometry.frame); return; }
     // A verified pointer read prevents hiding during an OS-owned mouse drag.
-    const pointer = await ports.pointer();
+    const pointer = await readPointer();
     if (!current(token) || blocked() || pointer.leftButtonDown) return;
     await frame(anchor.frame, token);
     if (!current(token)) return;
     publish({ anchor, collapsed: false, compact: false, railReady: false, motion: "expand" });
-    ports.persist(anchor.frame);
+    persist(anchor.frame);
     pointerInside = containsDockPoint(anchor.frame, pointer);
     if (!pointerInside) scheduleHide();
   }
@@ -167,7 +171,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
   async function collapse() {
     if (blocked() || heldOpen || !state.anchor || pointerInside) return;
     const token = cancel();
-    const pointer = await ports.pointer();
+    const pointer = await readPointer();
     if (!current(token) || blocked() || containsDockPoint(state.anchor.frame, pointer)) return;
     if (pointer.leftButtonDown) { later(80, collapse); return; }
     publish({ ...state, collapsed: true, railReady: false, motion: ports.reducedMotion() ? "none" : "collapse" });
@@ -227,6 +231,9 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     }
   }
   function hover(inside: boolean) {
+    if (!guiding) applyHover(inside);
+  }
+  function applyHover(inside: boolean) {
     pointerInside = inside;
     if (blocked() || nativeDepth > 0 || !state.anchor) return;
     if (inside) {
@@ -238,7 +245,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     if (disposed || !dragging) return;
     const token = generation;
     try {
-      const pointer = await ports.pointer();
+      const pointer = await readPointer();
       if (!current(token) || !dragging) return;
       if (!pointer.leftButtonDown) {
         dragging = false;
@@ -284,11 +291,27 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     await frame(restored, token);
     if (!current(token)) return;
     publish({ ...FREE_DOCK_PRESENTATION });
-    ports.persist(restored);
+    persist(restored);
     if (!blocked()) later(120, settle);
   }
   return {
     state: () => state,
+    isGuiding: () => guiding,
+    async beginGuide(point: { x: number; y: number }) {
+      guiding = true; guidePointer = { ...point, leftButtonDown: false };
+      heldOpen = false; suspended = false;
+      await detach();
+    },
+    guideHover(point: { x: number; y: number }) {
+      if (!guiding) return;
+      guidePointer = { ...point, leftButtonDown: false };
+      const area = state.anchor ? (state.compact ? state.anchor.lip : state.anchor.frame) : null;
+      applyHover(area ? containsDockPoint(area, point) : false);
+    },
+    async guideBeginDrag() { dragging = true; await detach(); },
+    async guideEndDrag() { dragging = false; await settle(); },
+    async guideDetach() { await detach(); },
+    endGuide() { cancel(); guiding = false; guidePointer = null; dragging = false; },
     initialize() { later(350, settle); },
     hover,
     reveal,
@@ -330,7 +353,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
       else if (!blocked()) later(100, settle);
     },
     moved() {
-      if (dragging) return;
+      if (dragging || guiding) return;
       if (state.anchor) {
         // Display/work-area changes are resolved from live geometry instead of
         // persisting an off-screen handle as the user's normal window position.

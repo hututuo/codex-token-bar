@@ -497,3 +497,15 @@ test("crowd radar tie order ignores cumulative graded totals", () => {
     ["gpt-5.6-sol", "gpt-5.6-terra"],
   );
 });
+
+test("published numeric model count does not hide fallback points", () => {
+  const snapshot = normalizeCodexCrowdRadarPayload({
+    table: null,
+    leaderboard: { models: 64, points: [
+      { model: "gpt-6-astra", effort: "max", graded: 50, passed: 40, pass_rate: 0.8 },
+    ] },
+  });
+  assert.equal(snapshot.recentModels.length, 1);
+  assert.equal(snapshot.recentModels[0].model, "gpt-6-astra");
+  assert.equal(snapshot.recentModels[0].scoreSamples, 50);
+});

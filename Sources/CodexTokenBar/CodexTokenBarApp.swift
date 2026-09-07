@@ -82,6 +82,7 @@ struct CodexTokenBarApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1240, height: 1000)
         .commands {
+            DashboardWindowCommands()
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesMenuItem(updater: updaterController.updater)
 

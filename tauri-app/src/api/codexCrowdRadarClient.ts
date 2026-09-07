@@ -295,14 +295,10 @@ export function pagedCodexCrowdRadarModels(
 }
 
 function parseModels(leaderboard: Record<string, unknown> | null): CodexCrowdRadarModel[] {
-  const container = valueFor(leaderboard, [
-    "models",
-    "points",
-    "rankings",
-    "modelStats",
-    "modelSummaries",
-    "rows",
-  ]);
+  // Published snapshots use `models` for a count and `points` for rows.
+  const container = ["models", "points", "rankings", "modelStats", "modelSummaries", "rows"]
+    .map((key) => valueFor(leaderboard, [key]))
+    .find((value) => Array.isArray(value) || asRecord(value) !== null);
   if (Array.isArray(container)) {
     return container.flatMap((row) => {
       const parsed = parseModel(row, "");

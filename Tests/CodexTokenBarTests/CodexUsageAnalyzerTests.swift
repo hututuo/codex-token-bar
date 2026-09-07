@@ -3632,6 +3632,107 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(tokensBefore, 120)
     }
 
+    func testIncompleteCurrentStageIsQuarantinedAndRebuiltWithoutBlocking() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageIncompleteStageRecovery")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-4ccc-8ddd-incompletestage"
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: sessionID,
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let parseCount = ThreadSafeCounter()
+        let parser: CodexUsageHistoryIndex.SessionParser = {
+            file, parsedSessionID, request, insertFingerprint, emit in
+            parseCount.increment()
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+
+        let interrupted = try CodexUsageHistoryIndex(codexHome: codexHome)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(
+            try interrupted.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:),
+                parser: parser
+            )
+        )
+
+        let stagingRoot = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("staging", isDirectory: true)
+        func stagingDatabases() throws -> [URL] {
+            let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+                at: stagingRoot,
+                includingPropertiesForKeys: [.isRegularFileKey]
+            ))
+            return enumerator.compactMap { $0 as? URL }.filter {
+                $0.pathExtension == "sqlite"
+                    && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+        }
+        let incompleteStage = try XCTUnwrap(stagingDatabases().first)
+        let stage = SQLiteDatabaseDriver(url: incompleteStage)
+        try stage.execute(
+            "UPDATE manifest SET complete = 0, actual_bytes = 0, integrity = '';"
+        )
+        let interruptedBytes = try Data(contentsOf: incompleteStage)
+
+        let resumed = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let rebuilt = try resumed.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:),
+            parser: parser
+        )
+        XCTAssertEqual(rebuilt.changedFiles, 1)
+        XCTAssertEqual(parseCount.value, 2, "the incomplete artifact is preserved while the source is rebuilt")
+
+        let quarantined = try stagingDatabases().filter {
+            $0.lastPathComponent.contains(".candidate-")
+        }
+        XCTAssertEqual(quarantined.count, 1)
+        XCTAssertEqual(try Data(contentsOf: quarantined[0]), interruptedBytes)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        XCTAssertEqual(try scalarInt("SELECT SUM(tokens) FROM events;", in: database), 120)
+
+        // A later source rewrite must ignore the already isolated, known
+        // incomplete artifact while still preserving it for forensics.
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: sessionID,
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 130
+        )
+        let rewritten = try resumed.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:),
+            parser: parser
+        )
+        XCTAssertEqual(rewritten.changedFiles, 1)
+        XCTAssertEqual(parseCount.value, 3)
+        XCTAssertEqual(try scalarInt("SELECT SUM(tokens) FROM events;", in: database), 130)
+        XCTAssertEqual(
+            try stagingDatabases().filter { $0.lastPathComponent.contains(".candidate-") }.count,
+            1
+        )
+    }
+
     func testFutureEventEnrichmentReceiptFailsClosedBeforeSchemaWrites() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageFutureReceipt")
@@ -5428,6 +5529,25 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: rollbackURL), databaseBytesBefore)
         XCTAssertTrue(manifestURL.isFileURL && FileManager.default.fileExists(atPath: manifestURL.path))
 
+        // Recreate the old rollback-first cleanup window: the manifest has
+        // no switchedFacts extension and rollback has already disappeared.
+        var legacyManifest = try XCTUnwrap(
+            try JSONSerialization.jsonObject(
+                with: Data(contentsOf: manifestURL)
+            ) as? [String: Any]
+        )
+        legacyManifest.removeValue(forKey: "switchedFacts")
+        try JSONSerialization.data(
+            withJSONObject: legacyManifest,
+            options: [.sortedKeys]
+        ).write(to: manifestURL, options: [.atomic])
+        try FileManager.default.removeItem(at: rollbackURL)
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+        XCTAssertTrue(
+            try String(contentsOf: manifestURL, encoding: .utf8).contains("\"switchedFacts\"")
+        )
+
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
@@ -5440,6 +5560,104 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "successful migration must remove only its exact candidate residue"
             )
         }
+    }
+
+    func testSchema7CandidateRetirementResumesAfterInterruptedCleanup() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageSchema7Retirement")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-schema7retirement",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+
+        let databaseURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let database = SQLiteDatabaseDriver(url: databaseURL)
+        try convertCurrentSwiftIndexToSchema7(database)
+        try database.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+
+        let rollbackURL = URL(fileURLWithPath: databaseURL.path + ".schema11-rollback")
+        let manifestURL = URL(fileURLWithPath: databaseURL.path + ".schema11-migration.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rollbackURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
+
+        CodexUsageHistoryIndex.failNextSchemaMigrationRetirementForTesting()
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rollbackURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
+        XCTAssertTrue(
+            try String(contentsOf: manifestURL, encoding: .utf8).contains("\"retiring\"")
+        )
+
+        // A fresh open resumes the durable retirement phase and does not need
+        // the rollback database to validate the already published active copy.
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rollbackURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manifestURL.path))
+    }
+
+    func testSchema7RetirementPreservesRollbackWhenActiveIsDamagedOrMissing() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageSchema7RetirementGuard")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-schema7retirementguard",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+
+        let databaseURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let database = SQLiteDatabaseDriver(url: databaseURL)
+        try convertCurrentSwiftIndexToSchema7(database)
+        try database.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+
+        let rollbackURL = URL(fileURLWithPath: databaseURL.path + ".schema11-rollback")
+        let manifestURL = URL(fileURLWithPath: databaseURL.path + ".schema11-migration.json")
+        CodexUsageHistoryIndex.failNextSchemaMigrationRetirementForTesting()
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rollbackURL.path))
+
+        // Neither an invalid active file nor a missing active file may cause
+        // the only rollback copy to be retired.
+        try Data("damaged active".utf8).write(to: databaseURL)
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: codexHome))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rollbackURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
+
+        try FileManager.default.removeItem(at: databaseURL)
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: codexHome))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rollbackURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
     }
 
     func testSchema6MigrationRollsBackEveryStageWithoutTouchingData() throws {

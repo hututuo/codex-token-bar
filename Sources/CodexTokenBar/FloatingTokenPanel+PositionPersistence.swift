@@ -5,6 +5,7 @@ import CoreGraphics
 @MainActor
 extension FloatingTokenPanelController {
     func saveLockedOrigin(_ origin: NSPoint, throttled: Bool = false) {
+        guard realWindowGuide == nil else { return }
         guard throttled else {
             persistLockedOrigin(origin)
             return

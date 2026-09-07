@@ -9734,6 +9734,9 @@ fn v22_startup_accepts_stale_last_good_after_monotonic_index_advance_without_ope
         ],
     );
     dashboard_snapshot(&root).unwrap();
+    let mut legacy = serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap()).unwrap();
+    legacy["version"] = serde_json::json!(22);
+    fs::write(&cache_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
 
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(&database).unwrap();
@@ -10436,9 +10439,10 @@ fn v22_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
         ],
     );
     dashboard_snapshot(&root).unwrap();
-    let baseline = serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap())
+    let mut baseline = serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap())
         .expect("full dashboard should publish V22 JSON");
     assert_eq!(baseline["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
+    baseline["version"] = serde_json::json!(22);
 
     {
         let assert_miss = |candidate: serde_json::Value| {

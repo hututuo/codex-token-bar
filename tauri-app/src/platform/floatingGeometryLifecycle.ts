@@ -6,6 +6,13 @@ interface GeometryLifecycle {
 }
 let owner: GeometryLifecycle | null = null;
 let depth = 0;
+let rehearsalDepth = 0;
+export function isFloatingGeometryRehearsal() { return rehearsalDepth > 0; }
+export function beginFloatingGeometryRehearsal() {
+  rehearsalDepth += 1;
+  let ended = false;
+  return () => { if (!ended) { ended = true; rehearsalDepth -= 1; quietUntil = Date.now() + 250; } };
+}
 let quietUntil = 0;
 let tail = Promise.resolve();
 const settledListeners = new Set<(position: { x: number; y: number }) => void>();
@@ -15,7 +22,7 @@ export function registerFloatingGeometryLifecycle(value: GeometryLifecycle) {
   return () => { if (owner === value) owner = null; };
 }
 export function floatingGeometryLifecycle() { return owner; }
-export function isFloatingGeometryTransient() { return depth > 0 || Date.now() < quietUntil; }
+export function isFloatingGeometryTransient() { return rehearsalDepth > 0 || depth > 0 || Date.now() < quietUntil; }
 
 export async function runFloatingGeometryChange(action: () => Promise<void>) {
   const request = tail.then(async () => {
@@ -30,6 +37,7 @@ export async function runFloatingGeometryChange(action: () => Promise<void>) {
 }
 
 export function publishFloatingSettledPosition(frame: Pick<DockRect, "x" | "y">) {
+  if (rehearsalDepth > 0) return;
   for (const listener of settledListeners) listener({ x: frame.x, y: frame.y });
 }
 export function onFloatingSettledPosition(listener: (position: { x: number; y: number }) => void) {
