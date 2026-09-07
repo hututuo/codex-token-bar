@@ -52,6 +52,7 @@ function fixture(options = {}) {
     startDrag: async () => true,
     prepareReveal: async () => { prepared.push({ ...dock.state() }); await options.prepareReveal?.(); },
     beforeNativeReveal: options.beforeNativeReveal,
+    prepareCompact: options.prepareCompact,
     report: (error) => errors.push(error),
     timer: (callback, delay) => { const id = ++next; timers.set(id, { at: now + delay, callback }); return id; },
     cancelTimer: (id) => timers.delete(id),
@@ -274,4 +275,50 @@ test("failed viewport handoff restores a usable full window instead of an invisi
   assert.equal(f.dock.state().anchor, null);
   assert.equal(restores, 1);
   assert.equal(f.errors.length, 1);
+});
+
+
+test("quota fades in only after the compact viewport is ready", async () => {
+  let ready;
+  const f = fixture({ prepareCompact: () => new Promise(resolve => { ready = resolve; }) });
+  f.dock.initialize(); await f.advance(800);
+  assert.equal(f.dock.state().collapsed, true);
+  assert.equal(f.dock.state().railReady, false);
+  await f.advance(170);
+  assert.equal(f.frames.at(-1).width, 12);
+  assert.equal(f.dock.state().compact, true);
+  assert.equal(f.dock.state().railReady, false);
+  ready(); await drain();
+  assert.equal(f.dock.state().railReady, true);
+  assert.deepEqual(f.errors, []);
+});
+
+test("hover during compact paint cancels stale quota visibility", async () => {
+  let ready;
+  const f = fixture({ prepareCompact: () => new Promise(resolve => { ready = resolve; }) });
+  f.dock.initialize(); await f.advance(970);
+  f.pointer({ x: 2, y: 210, leftButtonDown: false }); f.dock.hover(true);
+  await drain(); ready(); await drain();
+  assert.equal(f.dock.state().collapsed, false);
+  assert.equal(f.dock.state().railReady, false);
+  assert.equal(f.frames.at(-1).width, 300);
+});
+
+test("compact viewport failure restores the full usable window", async () => {
+  const f = fixture({ prepareCompact: async () => { throw new Error("viewport timeout"); } });
+  f.dock.initialize(); await f.advance(970);
+  assert.equal(f.dock.state().anchor, null);
+  assert.equal(f.frames.at(-1).width, 300);
+  assert.equal(f.errors.length, 1);
+});
+
+test("enter delivered during native shrink resumes reveal after frame completion", async () => {
+  const f = fixture(); f.dock.initialize(); await f.advance(800);
+  f.pointer({ x: 2, y: 210, leftButtonDown: false });
+  f.onFrame(() => f.dock.hover(true));
+  await f.advance(170);
+  assert.equal(f.dock.state().compact, false);
+  assert.equal(f.dock.state().collapsed, false);
+  assert.equal(f.dock.state().railReady, false);
+  assert.equal(f.frames.at(-1).width, 300);
 });

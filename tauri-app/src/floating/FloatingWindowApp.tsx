@@ -574,6 +574,7 @@ export function FloatingWindowApp() {
       data-edge={dockAnchor?.edge ?? "free"}
       data-collapsed={dock.collapsed}
       data-compact={dock.compact}
+      data-rail-ready={dock.railReady}
       data-motion={dock.motion}
       onMouseEnter={() => edgeDock.hover(true)}
       onMouseLeave={() => edgeDock.hover(false)}

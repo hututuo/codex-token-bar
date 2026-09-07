@@ -6,9 +6,10 @@ export interface DockPresentation {
   anchor: DockAnchor | null;
   collapsed: boolean;
   compact: boolean;
+  railReady: boolean;
   motion: "none" | "expand" | "collapse";
 }
-export const FREE_DOCK_PRESENTATION: DockPresentation = { anchor: null, collapsed: false, compact: false, motion: "none" };
+export const FREE_DOCK_PRESENTATION: DockPresentation = { anchor: null, collapsed: false, compact: false, railReady: false, motion: "none" };
 
 export function containsDockPoint(rect: DockRect, point: { x: number; y: number }): boolean {
   return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
@@ -66,6 +67,7 @@ export interface DockPorts {
   persist(point: { x: number; y: number }): void;
   present(value: DockPresentation): void;
   reducedMotion(): boolean;
+  prepareCompact?(anchor: DockAnchor): void | Promise<void>;
   prepareReveal?(): void | Promise<void>;
   beforeNativeReveal?(): Promise<() => void>;
   startDrag(): Promise<boolean>;
@@ -151,7 +153,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     if (!current(token) || blocked() || pointer.leftButtonDown) return;
     await frame(anchor.frame, token);
     if (!current(token)) return;
-    publish({ anchor, collapsed: false, compact: false, motion: "expand" });
+    publish({ anchor, collapsed: false, compact: false, railReady: false, motion: "expand" });
     ports.persist(anchor.frame);
     pointerInside = containsDockPoint(anchor.frame, pointer);
     if (!pointerInside) scheduleHide();
@@ -166,13 +168,27 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     const pointer = await ports.pointer();
     if (!current(token) || blocked() || containsDockPoint(state.anchor.frame, pointer)) return;
     if (pointer.leftButtonDown) { later(80, collapse); return; }
-    publish({ ...state, collapsed: true, motion: ports.reducedMotion() ? "none" : "collapse" });
+    publish({ ...state, collapsed: true, railReady: false, motion: ports.reducedMotion() ? "none" : "collapse" });
     later(ports.reducedMotion() ? 0 : 170, async () => {
       const anchor = state.anchor;
       if (!anchor || !state.collapsed || blocked()) return;
       const finish = generation;
       await frame(anchor.lip, finish);
-      if (current(finish)) publish({ ...state, compact: true, motion: "none" });
+      if (!current(finish)) return;
+      // Native bounds and WebKit viewport settle independently. Keep the quota
+      // node mounted but invisible until the narrow viewport has painted; fading
+      // it in before resizing displays it twice across two coordinate systems.
+      publish({ ...state, compact: true, motion: "none" });
+      if (pointerInside) { await reveal(); return; }
+      try {
+        await ports.prepareCompact?.(anchor);
+        if (current(finish)) publish({ ...state, railReady: true });
+      } catch (error) {
+        if (!current(finish)) return;
+        await frame(anchor.frame, finish);
+        if (current(finish)) publish({ ...FREE_DOCK_PRESENTATION });
+        throw error;
+      }
     });
   }
   async function reveal() {
@@ -199,7 +215,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
         await ports.prepareReveal?.();
         if (!current(token)) return;
       }
-      publish({ ...state, collapsed: false, motion: ports.reducedMotion() ? "none" : "expand" });
+      publish({ ...state, collapsed: false, railReady: false, motion: ports.reducedMotion() ? "none" : "expand" });
       if (!pointerInside) scheduleHide();
     } catch (error) {
       if (current(token) && state.anchor) {

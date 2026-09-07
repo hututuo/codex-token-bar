@@ -37,7 +37,7 @@ export async function waitForDockViewport(width: number, height: number): Promis
     const changed = () => { if (matches()) finish(); };
     const deadline = window.setTimeout(() => {
       window.removeEventListener("resize", changed);
-      reject(new Error("Floating webview did not reach the expanded viewport"));
+      reject(new Error("Floating webview did not reach the requested dock viewport"));
     }, 500);
     window.addEventListener("resize", changed);
     changed();

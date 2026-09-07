@@ -12575,8 +12575,10 @@ details.session-management-banner {
 .floating-edge-host[data-edge="right"] .floating-edge-reveal { left: auto; right: 0; }
 .floating-edge-host:is([data-edge="top"], [data-edge="bottom"]) .floating-edge-reveal { left: 50%; transform: translateX(-50%); }
 .floating-edge-host[data-edge="bottom"] .floating-edge-reveal { top: auto; bottom: 0; }
-.floating-edge-host[data-collapsed="true"] .floating-edge-reveal {
-  opacity: 1; pointer-events: auto; transition: opacity 120ms ease-in-out 35ms;
+.floating-edge-host[data-collapsed="true"] .floating-edge-reveal { pointer-events: auto; }
+/* Show the quota only once, after the compact native viewport has painted. */
+.floating-edge-host[data-collapsed="true"][data-rail-ready="true"] .floating-edge-reveal {
+  opacity: 1; transition: opacity 120ms ease-in-out;
 }
 .floating-edge-reveal[aria-hidden="true"] { opacity: 0; pointer-events: none; }
 .floating-edge-reveal:focus-visible { outline: 2px solid #9ac4ff; outline-offset: -2px; }

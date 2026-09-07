@@ -52,6 +52,10 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
       present(value) { if (!disposed) flushSync(() => setPresentation(value)); },
       reducedMotion: () => reduced.matches,
       beforeNativeReveal: () => fadeBeforeNativeDockReveal(document.querySelector<HTMLElement>(".floating-edge-host"), reduced.matches),
+      async prepareCompact(anchor) {
+        await waitForDockViewport(anchor.lip.width / anchor.scaleFactor, anchor.lip.height / anchor.scaleFactor);
+        await waitForDockPaint();
+      },
       async prepareReveal() {
         const anchor = dock.state().anchor;
         if (anchor) await waitForDockViewport(anchor.frame.width / anchor.scaleFactor, anchor.frame.height / anchor.scaleFactor);
