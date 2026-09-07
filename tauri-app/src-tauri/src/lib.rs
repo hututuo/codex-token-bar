@@ -183,6 +183,7 @@ pub fn run() {
             commands::surface::show_floating_window,
             commands::surface::hide_floating_window,
             commands::surface::read_floating_pointer_state,
+            commands::surface::set_floating_dock_frame,
             commands::surface::show_dashboard_window,
             commands::surface::show_status_panel_window,
             commands::surface::hide_status_panel_window,

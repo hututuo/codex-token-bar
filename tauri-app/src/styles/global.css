@@ -12492,7 +12492,7 @@ details.session-management-banner {
 }
 
 /* Docking animates two compositor layers inside a stationary native window.
-   After collapse, the native input region is resized to the six-point handle. */
+   After collapse, the native input region is resized to the quota handle. */
 .floating-edge-host {
   position: relative;
   width: 100vw;
@@ -12504,7 +12504,7 @@ details.session-management-banner {
   width: var(--dock-width, 100vw);
   height: var(--dock-height, 100vh);
   transform-origin: center;
-  transition: transform 380ms cubic-bezier(.16, 1.12, .25, 1), opacity 160ms ease-out;
+  transition: transform 520ms cubic-bezier(.25, .46, .3, 1), opacity 320ms ease-out;
 }
 .floating-edge-content > .floating-window-shell {
   width: 100%;
@@ -12519,13 +12519,20 @@ details.session-management-banner {
   background: #000;
   opacity: 0;
   pointer-events: none;
-  transition: transform 380ms cubic-bezier(.16, 1.12, .25, 1), opacity 200ms ease-out, border-radius 300ms ease;
+  transition: transform 520ms cubic-bezier(.25, .46, .3, 1), opacity 260ms ease-out, border-radius 300ms ease;
 }
 .floating-edge-host:not([data-edge="free"]) .floating-edge-shell { opacity: 1; }
 .floating-edge-host[data-edge="left"] .floating-edge-shell { border-radius: 0 22px 22px 0; }
-.floating-edge-host[data-edge="right"] .floating-edge-shell { border-radius: 22px 0 0 22px; }
+.floating-edge-host[data-edge="right"] .floating-edge-shell {
+  left: auto; right: 0; transform-origin: top right; border-radius: 22px 0 0 22px;
+}
+.floating-edge-host:is([data-edge="top"], [data-edge="bottom"]) .floating-edge-shell {
+  left: 50%; transform: translateX(-50%); transform-origin: top center;
+}
 .floating-edge-host[data-edge="top"] .floating-edge-shell { border-radius: 0 0 22px 22px; }
-.floating-edge-host[data-edge="bottom"] .floating-edge-shell { border-radius: 22px 22px 0 0; }
+.floating-edge-host[data-edge="bottom"] .floating-edge-shell {
+  top: auto; bottom: 0; transform-origin: bottom center; border-radius: 22px 22px 0 0;
+}
 .floating-edge-host:not([data-edge="free"]) .floating-edge-content {
   transform: scale(var(--dock-content-scale-x), var(--dock-content-scale-y));
 }
@@ -12535,26 +12542,27 @@ details.session-management-banner {
   pointer-events: none;
 }
 .floating-edge-host[data-collapsed="true"] .floating-edge-shell {
-  transform: translate(var(--dock-lip-x), var(--dock-lip-y)) scale(var(--dock-lip-scale-x), var(--dock-lip-scale-y));
+  transform: scale(var(--dock-lip-scale-x), var(--dock-lip-scale-y));
+}
+.floating-edge-host[data-collapsed="true"]:is([data-edge="top"], [data-edge="bottom"]) .floating-edge-shell {
+  transform: translateX(-50%) scale(var(--dock-lip-scale-x), var(--dock-lip-scale-y));
 }
 .floating-edge-host[data-motion="collapse"] :is(.floating-edge-content, .floating-edge-shell) {
   transition: transform 300ms cubic-bezier(.65, 0, .35, 1), opacity 150ms ease-in, border-radius 300ms ease;
 }
 .floating-edge-host[data-motion="none"] :is(.floating-edge-content, .floating-edge-shell) { transition: none; }
-.floating-edge-host[data-compact="true"] .floating-edge-shell {
-  width: var(--dock-lip-width);
-  height: var(--dock-lip-height);
-  transform: none;
-}
-.floating-edge-host[data-compact="true"][data-edge="left"] .floating-edge-shell { border-radius: 0 3px 3px 0; }
-.floating-edge-host[data-compact="true"][data-edge="right"] .floating-edge-shell { border-radius: 3px 0 0 3px; }
-.floating-edge-host[data-compact="true"][data-edge="top"] .floating-edge-shell { border-radius: 0 0 3px 3px; }
-.floating-edge-host[data-compact="true"][data-edge="bottom"] .floating-edge-shell { border-radius: 3px 3px 0 0; }
+.floating-edge-host[data-collapsed="true"][data-edge="left"] .floating-edge-shell { border-radius: 0 3px 3px 0; }
+.floating-edge-host[data-collapsed="true"][data-edge="right"] .floating-edge-shell { border-radius: 3px 0 0 3px; }
+.floating-edge-host[data-collapsed="true"][data-edge="top"] .floating-edge-shell { border-radius: 0 0 3px 3px; }
+.floating-edge-host[data-collapsed="true"][data-edge="bottom"] .floating-edge-shell { border-radius: 3px 3px 0 0; }
 .floating-edge-reveal {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  top: 0; left: 0;
+  width: var(--dock-lip-width);
+  height: var(--dock-lip-height);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease-out;
   min-width: 0;
   min-height: 0;
   margin: 0;
@@ -12564,7 +12572,44 @@ details.session-management-banner {
   background: transparent;
   cursor: pointer;
 }
+.floating-edge-host[data-edge="right"] .floating-edge-reveal { left: auto; right: 0; }
+.floating-edge-host:is([data-edge="top"], [data-edge="bottom"]) .floating-edge-reveal { left: 50%; transform: translateX(-50%); }
+.floating-edge-host[data-edge="bottom"] .floating-edge-reveal { top: auto; bottom: 0; }
+.floating-edge-host[data-collapsed="true"] .floating-edge-reveal {
+  opacity: 1; pointer-events: auto; transition: opacity 240ms ease-in-out 70ms;
+}
+.floating-edge-reveal[aria-hidden="true"] { opacity: 0; pointer-events: none; }
 .floating-edge-reveal:focus-visible { outline: 2px solid #9ac4ff; outline-offset: -2px; }
 @media (prefers-reduced-motion: reduce) {
-  .floating-edge-host :is(.floating-edge-content, .floating-edge-shell) { transition: none !important; }
+  .floating-edge-host :is(.floating-edge-content, .floating-edge-shell, .floating-edge-reveal) { transition: none !important; }
 }
+
+
+.floating-edge-quota {
+  --floating-scale: 1;
+  position: absolute;
+  inset: 2px;
+  display: flex;
+  gap: 2px;
+}
+.floating-edge-host:is([data-edge="left"], [data-edge="right"]) .floating-edge-quota { flex-direction: column; }
+.floating-edge-quota-segment { position: relative; flex: 1; min-width: 0; min-height: 0; }
+.floating-edge-quota .floating-quota-bar {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 100%; height: 8px;
+  min-width: 0; min-height: 0;
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+}
+.floating-edge-host:is([data-edge="left"], [data-edge="right"]) .floating-edge-quota .floating-quota-bar {
+  width: calc((var(--dock-lip-height) - 4px - (var(--edge-quota-count) - 1) * 2px) / var(--edge-quota-count));
+  transform: translate(-50%, -50%) rotate(-90deg);
+}
+.floating-edge-quota .floating-quota-label {
+  font-size: 8px; line-height: 8px; padding: 0 1px;
+  color: white; text-shadow: 0 1px 2px #000;
+}
+.floating-edge-quota .floating-quota-track { background: #ffffff29; border-radius: 2px; }
+.floating-edge-quota .floating-quota-fill { min-width: 0; border-radius: 2px; }
+.floating-edge-quota-empty { flex: 1; background: #ffffff29; border-radius: 2px; }

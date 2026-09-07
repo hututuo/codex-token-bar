@@ -1,40 +1,38 @@
 # 双端悬浮窗边缘吸附（2026-09-07）
 
-## 交互
+## 当前交互
 
-Swift 与 Tauri 均在拖拽结束、启动恢复或布局恢复时检测靠边位置：距当前显示器可用区域边缘 14 个逻辑点以内，吸附到最近的一边。可用区域避开系统菜单栏、Dock 和任务栏。角落按左、右、上、下的顺序解决距离相同的情况。
+Swift 与 Tauri 在拖拽结束、启动恢复或布局恢复时检测靠边位置。距当前显示器可用区域边缘 48 个逻辑点以内，或窗口已部分越过边缘时，吸附到对应边缘。完全不与显示器相交的窗口不参与吸附。可用区域避开菜单栏、Dock 和任务栏；角落等距时按左、右、上、下排序。
 
-首次吸附时，黑色外壳从边缘伸出，包裹原有卡片。鼠标离开 450ms 后收起，边缘仅留下 6 个逻辑点宽/高的黑色把手；侧边把手最长 72 点，上下把手最长 92 点。悬停 100ms 展开，点击把手也可以展开。展开使用弹性曲线，收起使用 300ms 非线性曲线，支持中途反向并遵循减少动态效果设置。拖离边缘后解除吸附。
+黑色外壳包裹原卡片，鼠标移出 450ms 后收起。侧边额度条宽 12 点，保留展开窗口的完整高度；上下边额度条厚 12 点、最长 92 点。额度条与内部额度栏复用窗口筛选和配色：两项可用额度显示两段，缺少 5 小时窗口时仅显示 7 天；未读取到的额度不伪装为已用完。
 
-详情、引导期间保持完整窗口；Swift 锁定/跟随优先于边缘吸附。关闭详情后恢复吸附意图。多屏使用各自的可用区域；Tauri 几何以物理像素计算，界面按显示器 scale factor 换算为逻辑像素。
+悬停立即开始展开，没有额外的悬停等待。展开约 520ms，收起 300ms，支持反向并遵循减少动态效果。额度条在收起过程中渐显，持续保留同一个界面节点；展开前先确定收起形态的样式起点，避免跳过过渡。详情和引导期间保持完整窗口；Swift 锁定/跟随优先。
 
-## 实现边界与性能
+## 实现与性能
 
-- 收放动画在固定的原生窗口内完成；只在展开开始、收起结束时切换原生窗口尺寸，避免逐帧跨原生桥移动窗口。
-- 收起后实际原生命中区域也缩为黑色把手，不保留透明大窗口遮挡其他应用。
-- Swift 采用 tracking area、窗口拖拽回调和一次性延时；Tauri 采用 DOM 进入/离开、窗口移动和缩放事件。Tauri 仅在系统拖拽期间以 60ms 单飞间隔确认鼠标释放，上限两分钟；按住按钮时也会延后收起。没有新增空闲鼠标轮询。
-- 收起时停止浮窗内的未读动效。正常数据采集策略保持现状。
-- 保存的始终是完整展开时的位置。收放写入由程序化几何保护隔离，布局写入串行执行；拖拽结束的实际位置单独进入原有尾随持久化队列。
-- Tauri 原生最小尺寸改为 6×6 逻辑点，正常窗口尺寸仍由前端布局决定、窗口仍不可由用户直接缩放。切换尺寸后读取实际大小，约束拒绝或部分写入失败时尝试恢复完整窗口。
-- Tauri 的鼠标状态命令只允许 floating 窗口调用，仅实现 macOS 与 Windows；其他平台读取失败时保留普通浮窗，不尝试自动隐藏。
+- 两端在固定原生窗口中执行收放动画，仅在展开开始和收起结束切换原生尺寸。收起后命中区域也缩为额度条。
+- Swift 将 `FloatingEdgeTrackingView` 直接挂到原生内容视图，使用 `.activeAlways`。进入事件核对鼠标实际位置，几何更新期间忽略追踪噪声，重复移出事件不能重启正在完成的收起。
+- Tauri macOS 通过被动 `NSTrackingArea` 向 floating 页面发送进入/离开事件，失焦时继续工作，不抢焦点、不拦截点击。Windows 保留网页鼠标事件。
+- `set_floating_dock_frame` 仅允许 floating 页面调用。macOS 使用一次 `NSWindow.setFrame`，坐标转换与 Tao 一致；Windows 使用 `SetWindowPos` 同时更新位置和大小且不激活窗口。避免两次调用之间在旧位置闪现。
+- Tauri 黑壳和额度条始终锚定对应边缘。原生窗口缩小时不切换黑壳的尺寸/节点；展开前同步计算收起样式，再开始 CSS 过渡。
+- 没有新增空闲鼠标轮询。仅系统拖拽期间以 60ms 单飞间隔确认释放，最多两分钟；按住按钮时延后收起。收起时停止未读动效。
+- 始终保存展开位置；原生过渡尺寸不会进入位置存储。几何更新串行执行，实际尺寸不符合预期时恢复完整窗口。
 
-Swift 实现入口：`FloatingEdgeDock.swift`、`FloatingEdgeDockController.swift`，通过 `FloatingTokenPanel.swift` 与锁定/位置保存逻辑接入。
+Swift 入口：`FloatingEdgeDock.swift`、`FloatingEdgeDockController.swift`、`FloatingTokenPanel.swift`、`TokenDisplaySurfaceComponents.swift`。
 
-Tauri 实现入口：`floatingEdgeDock.ts`、`useFloatingEdgeDock.ts`、`floatingGeometryLifecycle.ts`；原生鼠标状态在 `commands/surface.rs`，窗口约束在 `platform/surfaces.rs`。
+Tauri 入口：`floatingEdgeDock.ts`、`useFloatingEdgeDock.ts`、`FloatingPanelPreview.tsx`、`floating_hover_macos.rs`、`commands/surface.rs`。
 
-## 验证与待验收
+## 验证
 
-| 项目 | 状态 |
+| 项目 | 结果 |
 |---|---|
-| Swift 构建、相关单元测试 109 项 | PASS |
-| 前端几何、状态机、位置保存、详情和引导等相关测试 65 项 | PASS |
-| Rust 窗口授权测试 16 项、surface 测试 31 项 | PASS |
-| TypeScript/Vite 与 Tauri macOS debug app 构建 | PASS；产物校验见本地 verification.json |
-| Swift macOS 候选 app 签名完整性 | PASS |
-| 实际鼠标拖拽、悬停、动画观感、跨屏以及隐藏命中区域 | BLOCKED：电脑锁屏，待手动解锁后进行 |
-| Windows 编译与实机运行 | NOT_RUN |
-| 安装、切换当前运行版本、main 合并、推送、发布 | NOT_RUN |
+| Swift 构建与相关测试 112 项 | PASS，含立即展开、重复退出/伪进入不会打断原生收起 |
+| 前端相关测试 64 项 | PASS，含近边/越界、额度一段/两段、样式起点、反向、位置和生命周期 |
+| Rust 原生边界参数测试 1 项、窗口授权测试 16 项 | PASS |
+| TypeScript/Vite、Tauri macOS debug 构建和候选签名 | PASS；记录在本地 refine-* 日志和交付清单 |
+| 前一候选的 Tauri 收起及失焦悬停展开 | 用户已确认可以正常工作 |
+| 本轮 Swift 收起修复与最终动画观感 | 待用户验收；用户明确接手，代理不再操作界面 |
+| Windows 编译与实机 | NOT_RUN |
+| main 合并、远端推送、正式发布 | NOT_RUN |
 
-本轮证据位于 `runs/20260907-floating-edge-dock/`。Swift 候选位于 `dist/edge-dock-candidate/Codex Token Bar.app`；Tauri 候选位于 `tauri-app/src-tauri/target/debug/bundle/macos/Codex Token Bar.app`。两者均为本地候选，不代表已完成真实交互验收。原先运行的 Swift/Tauri app 保持原版本。
-
-恢复源码可以回到本轮起点 `cec7e326`；在候选版本验收前保留原有运行 app 作为回退。没有修改用户已有的浮窗位置或正式配置。
+本地证据位于 `runs/20260907-floating-edge-dock/`。`verification.json` 是首次候选的历史快照；`activation.json` 是首次替换记录；后续修改和替换以 `refine-*` 日志及 `smooth-activation.json` 为准。Swift 本地运行入口为 `dist/Codex Token Bar.app`，Tauri 使用 `target/debug/run-bundle/latest` 指向独立运行包。保留 `42989b38` 运行包作为回退，最终版本的交互验收由用户完成。

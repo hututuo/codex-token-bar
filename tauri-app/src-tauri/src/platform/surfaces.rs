@@ -2259,6 +2259,10 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     );
     let window = window_result?;
     enforce_floating_window_chrome(&window);
+    #[cfg(target_os = "macos")]
+    if let Err(error) = super::floating_hover_macos::install(&window) {
+        startup_trace::mark(&format!("floating native hover unavailable: {error}"));
+    }
 
     Ok(())
 }

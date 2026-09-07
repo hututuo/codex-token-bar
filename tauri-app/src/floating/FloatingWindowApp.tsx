@@ -1,3 +1,4 @@
+import { FloatingEdgeQuotaStrip } from "./FloatingPanelPreview";
 import { useFloatingEdgeDock } from "./useFloatingEdgeDock";
 import { type CSSProperties, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -275,13 +276,14 @@ export function FloatingWindowApp() {
     const shell = dockShellRef.current;
     if (!dockAnchor || !shell || typeof shell.animate !== "function"
       || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const { frame, lip, scaleFactor } = dockAnchor;
+    const { frame, lip, edge } = dockAnchor;
+    const centered = edge === "top" || edge === "bottom" ? "translateX(-50%) " : "";
     // Only initial attachment uses a keyframe. Reversing an in-flight hover
     // transition keeps the browser's current interpolated transform instead.
     const animation = shell.animate([
-      { transform: `translate(${(lip.x - frame.x) / scaleFactor}px, ${(lip.y - frame.y) / scaleFactor}px) scale(${lip.width / frame.width}, ${lip.height / frame.height})` },
-      { transform: "none" },
-    ], { duration: 380, easing: "cubic-bezier(.16, 1.12, .25, 1)" });
+      { transform: `${centered}scale(${lip.width / frame.width}, ${lip.height / frame.height})` },
+      { transform: centered || "none" },
+    ], { duration: 520, easing: "cubic-bezier(.25, .46, .3, 1)" });
     return () => animation.cancel();
   }, [dockAnchor]);
   const dockScale = dockAnchor?.scaleFactor ?? 1;
@@ -633,8 +635,10 @@ export function FloatingWindowApp() {
       />
     </main>
     </div>
-    {dock.compact ? <button className="floating-edge-reveal" onClick={edgeDock.reveal}
-      aria-label="展开边缘悬浮窗" type="button" /> : null}
+    {dockAnchor ? <button className="floating-edge-reveal" onClick={edgeDock.reveal}
+      aria-label="展开边缘悬浮窗" type="button" disabled={!dock.collapsed} aria-hidden={!dock.collapsed} tabIndex={dock.collapsed ? 0 : -1}>
+      <FloatingEdgeQuotaStrip snapshot={snapshot} settings={presentedSettings} />
+    </button> : null}
     </div>
   );
 }

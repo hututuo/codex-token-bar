@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+func floatingQuotaWindows(_ snapshot: AccountQuotaSnapshot) -> [AccountQuotaWindow] {
+    [snapshot.fiveHour, snapshot.sevenDay].compactMap { $0 }
+}
+
 struct TokenQuotaMiniStrip: View {
     let snapshot: AccountQuotaSnapshot
     @Environment(\.tokenDisplayScale) private var displayScale
@@ -8,7 +12,7 @@ struct TokenQuotaMiniStrip: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let windows = [snapshot.fiveHour, snapshot.sevenDay].compactMap { $0 }
+            let windows = floatingQuotaWindows(snapshot)
             let spacing = 4.scaled(by: displayScale)
             let height = FloatingTokenPanelMetrics.quotaBarHeight.scaled(by: displayScale)
             let segmentWidth = max(56.scaled(by: displayScale), (proxy.size.width - spacing * CGFloat(max(windows.count - 1, 0))) / CGFloat(max(windows.count, 1)))

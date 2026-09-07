@@ -25,6 +25,8 @@ mod capabilities;
 mod provider_app;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod floating_hover_macos;
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]

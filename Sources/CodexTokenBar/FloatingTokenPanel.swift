@@ -1163,7 +1163,7 @@ struct FloatingTokenPanelView: View {
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .contentShape(Rectangle())
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
-        .modifier(FloatingEdgeDockModifier(presentation: edgeDockPresentation, size: size))
+        .modifier(FloatingEdgeDockModifier(presentation: edgeDockPresentation, size: size, quota: liveDisplaySnapshot.quota, quotaColorStyle: quotaColorStyle))
     }
 
     private func advancePagingGuide(pages: [FloatingPanelGuidePage]) {

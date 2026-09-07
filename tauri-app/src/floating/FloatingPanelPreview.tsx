@@ -95,6 +95,27 @@ function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value * 100));
 }
 
+export function floatingQuotaWindows(snapshot: FloatingPanelSnapshot) {
+  return [
+        {
+          key: "fiveHour",
+          shortLabel: "5h",
+          availability: snapshot.fiveHourAvailability,
+          label: snapshot.fiveHourLabel,
+          remainingPercent: snapshot.fiveHourRemainingPercent,
+          expectedRemainingPercent: snapshot.fiveHourExpectedRemainingPercent,
+        },
+        {
+          key: "sevenDay",
+          shortLabel: "7d",
+          availability: snapshot.sevenDayAvailability,
+          label: snapshot.sevenDayLabel,
+          remainingPercent: snapshot.sevenDayRemainingPercent,
+          expectedRemainingPercent: snapshot.sevenDayExpectedRemainingPercent,
+        },
+      ].filter((window) => window.availability !== "absent");
+}
+
 export function FloatingQuotaBar({
   availability,
   label,
@@ -633,20 +654,7 @@ function FloatingContentRow({
     case "crowdRadar":
       return <FloatingCrowdRadarRow pageIndex={modelPageIndex} snapshot={crowdRadarSnapshot} style={style} />;
     case "quota": {
-      const quotaWindows = [
-        {
-          availability: snapshot.fiveHourAvailability,
-          label: snapshot.fiveHourLabel,
-          remainingPercent: snapshot.fiveHourRemainingPercent,
-          expectedRemainingPercent: snapshot.fiveHourExpectedRemainingPercent,
-        },
-        {
-          availability: snapshot.sevenDayAvailability,
-          label: snapshot.sevenDayLabel,
-          remainingPercent: snapshot.sevenDayRemainingPercent,
-          expectedRemainingPercent: snapshot.sevenDayExpectedRemainingPercent,
-        },
-      ].filter((window) => window.availability !== "absent");
+      const quotaWindows = floatingQuotaWindows(snapshot);
       return (
         <div
           className={quotaWindows.length === 1
@@ -1302,4 +1310,21 @@ function smoothPulseFade(value: number): number {
   }
   const t = Math.min(Math.max((value - fadeStart) / (1 - fadeStart), 0), 1);
   return 1 - smoothStep(t);
+}
+
+
+export function FloatingEdgeQuotaStrip({ snapshot, settings }: {
+  snapshot: FloatingPanelSnapshot; settings: FloatingWindowSettings;
+}) {
+  const windows = floatingQuotaWindows(snapshot);
+  return <span className="floating-edge-quota" style={{ "--edge-quota-count": Math.max(1, windows.length) } as CSSProperties}>
+    {windows.map((window) => <span className="floating-edge-quota-segment" key={window.key}>
+      <FloatingQuotaBar availability={window.availability} remainingPercent={window.remainingPercent}
+        expectedRemainingPercent={window.expectedRemainingPercent}
+        label={`${window.shortLabel} ${window.availability === "measured" && window.remainingPercent !== null
+          ? `${Math.round(clampPercent(window.remainingPercent))}%` : "--"}`}
+        stale={snapshot.quotaDataStale === true} settings={settings} />
+    </span>)}
+    {windows.length === 0 ? <span className="floating-edge-quota-empty" aria-label="额度待读取" /> : null}
+  </span>;
 }

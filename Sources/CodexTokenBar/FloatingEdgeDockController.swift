@@ -7,6 +7,9 @@ import SwiftUI
 final class FloatingEdgeDockController {
     let presentation = FloatingEdgeDockPresentation()
     private weak var panel: NSPanel?
+    private var trackingView: FloatingEdgeTrackingView?
+    private let pointerLocation: () -> NSPoint
+    private let pressedMouseButtons: () -> Int
     private var enabled: () -> Bool = { false }
     private var persist: (NSPoint) -> Void = { _ in }
     private var pending: DispatchWorkItem?
@@ -20,7 +23,10 @@ final class FloatingEdgeDockController {
     var expandedFrame: NSRect? { presentation.anchor?.expandedFrame }
     var isAttached: Bool { presentation.anchor != nil }
 
-    init() {
+    init(pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
+         pressedMouseButtons: @escaping () -> Int = { NSEvent.pressedMouseButtons }) {
+        self.pointerLocation = pointerLocation
+        self.pressedMouseButtons = pressedMouseButtons
         presentation.onHover = { [weak self] inside in self?.hoverChanged(inside) }
         presentation.onReveal = { [weak self] in self?.reveal() }
     }
@@ -29,13 +35,20 @@ final class FloatingEdgeDockController {
         self.panel = panel
         self.enabled = enabled
         self.persist = persist
+        trackingView?.removeFromSuperview()
+        if let content = panel.contentView {
+            let view = FloatingEdgeTrackingView(frame: content.bounds) { [weak self] in self?.hoverChanged($0) }
+            content.addSubview(view)
+            view.updateTrackingAreas()
+            trackingView = view
+        }
         guard observers.isEmpty else { return }
         for (name, begins) in [(NSMenu.didBeginTrackingNotification, true), (NSMenu.didEndTrackingNotification, false)] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.menuDepth = max(0, self.menuDepth + (begins ? 1 : -1))
-                    if begins { self.cancelPending() } else { self.scheduleCollapseIfOutside() }
+                    if begins { self.reveal() } else { self.scheduleCollapseIfOutside() }
                 }
             })
         }
@@ -49,6 +62,8 @@ final class FloatingEdgeDockController {
         cancelPending()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
+        trackingView?.removeFromSuperview()
+        trackingView = nil
         presentation.anchor = nil
         presentation.collapsed = false
         presentation.compactWindow = false
@@ -116,10 +131,13 @@ final class FloatingEdgeDockController {
     }
 
     func hoverChanged(_ inside: Bool) {
-        guard isAttached else { return }
+        guard isAttached, !isApplyingGeometry, let panel else { return }
+        // AppKit can deliver stale enter/exit events as a tracking area resizes.
+        // They must neither reveal an off-pointer panel nor restart its collapse.
+        guard inside == panel.frame.contains(pointerLocation()) else { return }
         if inside {
             if presentation.collapsed {
-                schedule(after: 0.10) { [weak self] in self?.reveal() }
+                reveal()
             } else {
                 cancelPending()
             }
@@ -136,7 +154,7 @@ final class FloatingEdgeDockController {
             // Expand the input window once, then animate within its fixed frame.
             setFrame(anchor.expandedFrame)
             presentation.compactWindow = false
-            schedule(after: 0.02) { [weak self] in self?.animateReveal() }
+            animateReveal()
         } else {
             animateReveal()
         }
@@ -149,16 +167,16 @@ final class FloatingEdgeDockController {
     }
 
     private func scheduleCollapseIfOutside() {
-        guard isAttached, !dragging, menuDepth == 0, !presentation.compactWindow,
-              let panel, !panel.frame.contains(NSEvent.mouseLocation) else { return }
+        guard isAttached, !dragging, menuDepth == 0, !presentation.compactWindow, !presentation.collapsed,
+              let panel, !panel.frame.contains(pointerLocation()) else { return }
         schedule(after: 0.45) { [weak self] in self?.collapse() }
     }
 
     private func collapse() {
-        guard enabled(), !dragging, menuDepth == 0,
+        guard enabled(), !dragging, menuDepth == 0, !presentation.collapsed,
               let panel, let anchor = presentation.anchor,
-              !panel.frame.contains(NSEvent.mouseLocation) else { return }
-        if NSEvent.pressedMouseButtons != 0 {
+              !panel.frame.contains(pointerLocation()) else { return }
+        if pressedMouseButtons() != 0 {
             schedule(after: 0.10) { [weak self] in self?.collapse() }
             return
         }
@@ -175,7 +193,7 @@ final class FloatingEdgeDockController {
     private var reducedMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     private func motion(expanding: Bool) -> Animation? {
         guard !reducedMotion else { return nil }
-        return expanding ? .spring(response: 0.38, dampingFraction: 0.78)
+        return expanding ? .spring(response: 0.52, dampingFraction: 0.88)
                          : .timingCurve(0.65, 0, 0.35, 1, duration: 0.30)
     }
 

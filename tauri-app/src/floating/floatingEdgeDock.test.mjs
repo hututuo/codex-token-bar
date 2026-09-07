@@ -10,10 +10,10 @@ for (const [edge, frame] of [
   ["top", { x: 400, y: 30, width: 300, height: 120 }],
   ["bottom", { x: 400, y: 695, width: 300, height: 120 }],
 ]) {
-  test(`${edge} snaps to the work area and retains only a six-point handle`, () => {
+  test(`${edge} snaps to the work area and retains only a twelve-point quota handle`, () => {
     const anchor = resolveDockAnchor(geometry(frame));
     assert.equal(anchor.edge, edge);
-    assert.equal(edge === "left" || edge === "right" ? anchor.lip.width : anchor.lip.height, 6);
+    assert.equal(edge === "left" || edge === "right" ? anchor.lip.width : anchor.lip.height, 12);
     assert.ok(anchor.lip.x >= anchor.frame.x && anchor.lip.y >= anchor.frame.y);
     assert.ok(anchor.lip.x + anchor.lip.width <= anchor.frame.x + anchor.frame.width);
     assert.ok(anchor.lip.y + anchor.lip.height <= anchor.frame.y + anchor.frame.height);
@@ -25,8 +25,8 @@ test("negative monitors, Retina scaling, corners and invalid geometry", () => {
     { x: -2000, y: 0, width: 2000, height: 1600 }));
   assert.equal(anchor.edge, "left");
   assert.equal(anchor.frame.x, -2000);
-  assert.equal(anchor.lip.width, 12);
-  assert.equal(resolveDockAnchor(geometry({ x: 40, y: 150, width: 300, height: 120 })), null);
+  assert.equal(anchor.lip.width, 24);
+  assert.equal(resolveDockAnchor(geometry({ x: 70, y: 150, width: 300, height: 120 })), null);
   assert.equal(resolveDockAnchor(geometry({ x: NaN, y: 24, width: 300, height: 120 })), null);
   assert.equal(resolveDockAnchor(geometry({ x: 0, y: 24, width: 1300, height: 120 })), null);
   assert.equal(resolveDockAnchor(geometry({ x: 0, y: 24, width: 300, height: 120 })).edge, "left");
@@ -42,6 +42,7 @@ function fixture() {
   let reads = 0;
   let reducedMotion = false;
   let onFrame = null;
+  const prepared = [];
   const dock = createFloatingEdgeDockController({
     geometry: async () => current,
     pointer: async () => { reads++; return pointer; },
@@ -49,6 +50,7 @@ function fixture() {
     persist: (position) => saved.push(position),
     present: (state) => states.push(state), reducedMotion: () => reducedMotion,
     startDrag: async () => true,
+    prepareReveal: () => prepared.push({ ...dock.state() }),
     report: (error) => errors.push(error),
     timer: (callback, delay) => { const id = ++next; timers.set(id, { at: now + delay, callback }); return id; },
     cancelTimer: (id) => timers.delete(id),
@@ -63,7 +65,7 @@ function fixture() {
     }
     now = end; await drain();
   }
-  return { dock, advance, frames, saved, states, errors, timers,
+  return { dock, advance, frames, saved, states, errors, timers, prepared,
     pointer: (value) => { pointer = value; }, reads: () => reads,
     reduceMotion: (value) => { reducedMotion = value; },
     geometry: (value) => { current = value; }, onFrame: (callback) => { onFrame = callback; } };
@@ -78,7 +80,7 @@ test("idle dock collapses native bounds; hover restores full size; no idle polli
   assert.equal(f.frames.at(-1).width, 300);
   await f.advance(340);
   assert.equal(f.dock.state().compact, true);
-  assert.equal(f.frames.at(-1).width, 6);
+  assert.equal(f.frames.at(-1).width, 12);
   const reads = f.reads(); await f.advance(60_000);
   assert.equal(f.reads(), reads); assert.equal(f.timers.size, 0);
   f.pointer({ x: 2, y: 210, leftButtonDown: false }); f.dock.hover(true);
@@ -96,7 +98,7 @@ test("re-enter during collapse cancels the stale native shrink", async () => {
   f.pointer({ x: 2, y: 210, leftButtonDown: false }); f.dock.hover(true);
   await f.advance(1000);
   assert.equal(f.dock.state().collapsed, false);
-  assert.equal(f.frames.some((frame) => frame.width === 6), false);
+  assert.equal(f.frames.some((frame) => frame.width === 12), false);
 });
 
 test("native resize hover events cannot cancel the compact-window settlement", async () => {
@@ -104,7 +106,7 @@ test("native resize hover events cannot cancel the compact-window settlement", a
   f.onFrame(() => f.dock.hover(false));
   await f.advance(1000);
   assert.equal(f.dock.state().compact, true);
-  assert.equal(f.frames.at(-1).width, 6);
+  assert.equal(f.frames.at(-1).width, 12);
 });
 
 test("details suspend restores the normal frame and does not hide until released", async () => {
@@ -134,7 +136,7 @@ test("monitor changes restore and clamp the full frame in the new work area", as
   const anchor = f.dock.state().anchor;
   assert.equal(anchor.frame.width, 600);
   assert.equal(anchor.frame.x, -1200);
-  assert.equal(anchor.lip.width, 12);
+  assert.equal(anchor.lip.width, 24);
 });
 
 test("dispose cancels timers and late geometry completion", async () => {
@@ -170,7 +172,7 @@ test("reduced motion skips animation settlement delay", async () => {
   const f = fixture(); f.reduceMotion(true); f.dock.initialize(); await f.advance(800);
   assert.equal(f.dock.state().compact, true);
   assert.equal(f.dock.state().motion, "none");
-  assert.equal(f.frames.at(-1).width, 6);
+  assert.equal(f.frames.at(-1).width, 12);
 });
 
 test("reveal rechecks display bounds even if a monitor-change event was missed", async () => {
@@ -182,4 +184,47 @@ test("reveal rechecks display bounds even if a monitor-change event was missed",
   assert.equal(f.frames.at(-1).x, -1200);
   assert.equal(f.frames.at(-1).width, 600);
   assert.equal(f.dock.state().compact, false);
+});
+
+
+test("near edges and partial overshoot attach; vertical quota rail retains full height", () => {
+  for (const x of [36, -90, 864, 990]) {
+    const anchor = resolveDockAnchor(geometry({ x, y: 150, width: 300, height: 120 }));
+    assert.ok(anchor);
+    assert.equal(anchor.lip.height, 120);
+    assert.equal(anchor.lip.width, 12);
+    assert.ok(anchor.frame.x >= 0 && anchor.frame.x + anchor.frame.width <= 1200);
+  }
+  assert.equal(resolveDockAnchor(geometry({ x: 1201, y: 150, width: 300, height: 120 })), null);
+});
+
+test("native hover reveals an inactive window immediately with no debounce timer", async () => {
+  const f = fixture(); f.dock.initialize(); await f.advance(1200);
+  f.pointer({ x: 2, y: 210, leftButtonDown: false });
+  f.dock.hover(true); await drain();
+  assert.equal(f.dock.state().compact, false);
+  assert.equal(f.dock.state().collapsed, false);
+  assert.equal(f.timers.size, 0);
+  f.pointer({ x: 500, y: 500, leftButtonDown: false }); f.dock.hover(false);
+  await f.advance(1000);
+  assert.equal(f.dock.state().compact, true);
+  f.pointer({ x: 2, y: 210, leftButtonDown: false }); f.dock.hover(true); await drain();
+  assert.equal(f.dock.state().collapsed, false);
+});
+
+
+test("expanded native viewport resolves the collapsed visual before beginning reveal", async () => {
+  const f = fixture(); f.dock.initialize(); await f.advance(1200);
+  f.pointer({ x: 2, y: 210, leftButtonDown: false }); f.dock.hover(true); await drain();
+  assert.equal(f.prepared.length, 1);
+  assert.equal(f.prepared[0].compact, false);
+  assert.equal(f.prepared[0].collapsed, true);
+  assert.equal(f.dock.state().collapsed, false);
+});
+
+test("duplicate pointer exits cannot restart an in-flight collapse", async () => {
+  const f = fixture(); f.dock.initialize(); await f.advance(820);
+  assert.equal(f.dock.state().collapsed, true);
+  for (let i = 0; i < 5; i++) { f.dock.hover(false); await f.advance(70); }
+  assert.equal(f.dock.state().compact, true);
 });

@@ -157,3 +157,26 @@ function floatingSettingsFixture() {
     },
   };
 }
+
+
+test("edge quota rail shares normal window selection and pace colors for one or two quotas", async () => {
+  await withSsrModules(async (load) => {
+    const { FloatingEdgeQuotaStrip, floatingQuotaWindows } = await load("/src/floating/FloatingPanelPreview.tsx");
+    const snapshot = floatingSnapshotFixture("measured", 0.5);
+    snapshot.fiveHourExpectedRemainingPercent = 90;
+    snapshot.sevenDayExpectedRemainingPercent = 30;
+    let html = renderToStaticMarkup(React.createElement(FloatingEdgeQuotaStrip, { snapshot, settings: floatingSettingsFixture() }));
+    assert.equal(floatingQuotaWindows(snapshot).length, 2);
+    assert.equal((html.match(/role="meter"/g) ?? []).length, 2);
+    assert.match(html, /5h 50%/); assert.match(html, /7d 50%/);
+    assert.match(html, /rgb\(202 60 73\)/); assert.match(html, /rgb\(20 105 204\)/);
+    snapshot.fiveHourAvailability = "absent";
+    html = renderToStaticMarkup(React.createElement(FloatingEdgeQuotaStrip, { snapshot, settings: floatingSettingsFixture() }));
+    assert.equal(floatingQuotaWindows(snapshot).length, 1);
+    assert.equal((html.match(/role="meter"/g) ?? []).length, 1);
+    assert.doesNotMatch(html, /5h/); assert.match(html, /7d 50%/);
+    snapshot.sevenDayAvailability = "unavailable";
+    html = renderToStaticMarkup(React.createElement(FloatingEdgeQuotaStrip, { snapshot, settings: floatingSettingsFixture() }));
+    assert.match(html, /role="status"/); assert.doesNotMatch(html, /aria-valuenow=/);
+  });
+});

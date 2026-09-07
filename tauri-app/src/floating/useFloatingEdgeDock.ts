@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { isDesktopRuntimeAvailable, warnPlatformFailure } from "../platform/desktopBridge";
 import {
@@ -41,10 +40,8 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
       frame: (rect) => runFloatingGeometryChange(async () => {
         // Boundary writes remain transient and never enter normal placement
         // persistence; animation frames never cross this native API boundary.
-        const size = new PhysicalSize(Math.max(1, Math.round(rect.width)), Math.max(1, Math.round(rect.height)));
-        const position = new PhysicalPosition(Math.round(rect.x), Math.round(rect.y));
-        await appWindow.setSize(size);
-        await appWindow.setPosition(position);
+        const size = { width: Math.max(1, Math.round(rect.width)), height: Math.max(1, Math.round(rect.height)) };
+        await invoke("set_floating_dock_frame", { frame: { x: Math.round(rect.x), y: Math.round(rect.y), ...size } });
         const actual = await appWindow.outerSize();
         if (Math.abs(actual.width - size.width) > 2 || Math.abs(actual.height - size.height) > 2) {
           throw new Error("Native floating window constraints rejected the requested dock size");
@@ -53,6 +50,12 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
       persist: publishFloatingSettledPosition,
       present(value) { if (!disposed) flushSync(() => setPresentation(value)); },
       reducedMotion: () => reduced.matches,
+      prepareReveal() {
+        // Resolve the collapsed style in the expanded native viewport before
+        // starting its transition, without introducing a hover-delay timer.
+        const shell = document.querySelector(".floating-edge-shell");
+        if (shell) void getComputedStyle(shell).transform;
+      },
       startDrag: startFloatingWindowDrag,
       report: (error) => warnPlatformFailure("floating-edge-dock", error),
     });
@@ -62,6 +65,7 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
     const register = (promise: Promise<() => void>) => {
       void promise.then((remove) => { if (disposed) remove(); else listeners.push(remove); }).catch((error) => warnPlatformFailure("floating-edge-dock-listener", error));
     };
+    register(appWindow.listen<boolean>("floating-native-hover", (event) => dock.hover(event.payload)));
     register(appWindow.onMoved(() => {
       if (!isFloatingGeometryTransient() && !isFloatingWindowResizeProgrammatic()) dock.moved();
     }));

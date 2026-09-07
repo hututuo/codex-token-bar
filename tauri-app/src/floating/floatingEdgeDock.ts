@@ -23,14 +23,14 @@ export function resolveDockAnchor({ frame, workArea, scaleFactor }: DockGeometry
     || frame.x + frame.width <= workArea.x || frame.x >= workArea.x + workArea.width
     || frame.y + frame.height <= workArea.y || frame.y >= workArea.y + workArea.height) return null;
   const distances: [FloatingDockEdge, number][] = [
-    ["left", Math.abs(frame.x - workArea.x)],
-    ["right", Math.abs(frame.x + frame.width - workArea.x - workArea.width)],
-    ["top", Math.abs(frame.y - workArea.y)],
-    ["bottom", Math.abs(frame.y + frame.height - workArea.y - workArea.height)],
+    ["left", frame.x - workArea.x],
+    ["right", workArea.x + workArea.width - frame.x - frame.width],
+    ["top", frame.y - workArea.y],
+    ["bottom", workArea.y + workArea.height - frame.y - frame.height],
   ];
   distances.sort((a, b) => a[1] - b[1]);
   const [edge, distance] = distances[0];
-  if (distance > 14 * scaleFactor) return null;
+  if (distance > 48 * scaleFactor) return null;
   const snapped = {
     ...frame,
     x: Math.min(Math.max(frame.x, workArea.x), workArea.x + workArea.width - frame.width),
@@ -44,10 +44,10 @@ export function resolveDockAnchor({ frame, workArea, scaleFactor }: DockGeometry
 }
 
 export function makeDockAnchor(edge: FloatingDockEdge, frame: DockRect, scaleFactor: number): DockAnchor {
-  const thickness = 6 * scaleFactor;
+  const thickness = 12 * scaleFactor;
   const vertical = edge === "left" || edge === "right";
   const length = vertical
-    ? Math.min(frame.height, Math.max(28 * scaleFactor, Math.min(72 * scaleFactor, frame.height * 0.6)))
+    ? frame.height
     : Math.min(frame.width, Math.max(40 * scaleFactor, Math.min(92 * scaleFactor, frame.width * 0.45)));
   const lip = vertical ? {
     x: edge === "left" ? frame.x : frame.x + frame.width - thickness,
@@ -66,6 +66,7 @@ export interface DockPorts {
   persist(point: { x: number; y: number }): void;
   present(value: DockPresentation): void;
   reducedMotion(): boolean;
+  prepareReveal?(): void;
   startDrag(): Promise<boolean>;
   report(error: unknown): void;
   timer?(callback: () => void, delay: number): ReturnType<typeof setTimeout>;
@@ -154,7 +155,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     if (!pointerInside) scheduleHide();
   }
   function scheduleHide() {
-    if (blocked() || !state.anchor || state.compact || pointerInside) return;
+    if (blocked() || !state.anchor || state.compact || state.collapsed || pointerInside) return;
     later(450, collapse);
   }
   async function collapse() {
@@ -186,10 +187,11 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
       await frame(state.anchor.frame, token);
       if (!current(token)) return;
       publish({ ...state, compact: false, motion: "none" });
-      later(20, () => {
+      ports.prepareReveal?.();
+      {
         publish({ ...state, collapsed: false, motion: ports.reducedMotion() ? "none" : "expand" });
         if (!pointerInside) scheduleHide();
-      });
+      }
     } else {
       publish({ ...state, collapsed: false, motion: ports.reducedMotion() ? "none" : "expand" });
       if (!pointerInside) scheduleHide();
@@ -199,7 +201,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     pointerInside = inside;
     if (blocked() || nativeDepth > 0 || !state.anchor) return;
     if (inside) {
-      if (state.collapsed) later(100, reveal);
+      if (state.collapsed) void reveal().catch(ports.report);
       else cancel();
     } else scheduleHide();
   }
