@@ -628,6 +628,8 @@ fn publish_floating_window_visibility(app: &tauri::AppHandle, visible: bool) {
 }
 
 pub fn show_dashboard_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    app.show().map_err(|error| error.to_string())?;
     super::startup::perform_dashboard_activation(
         app.get_webview_window("main").is_some(),
         || create_dashboard_window(app).map_err(|error| error.to_string()),
@@ -635,6 +637,12 @@ pub fn show_dashboard_window(app: &tauri::AppHandle) -> Result<bool, String> {
             app.get_webview_window("main")
                 .ok_or_else(|| "dashboard window is not available".to_string())?
                 .show()
+                .map_err(|error| error.to_string())
+        },
+        || {
+            app.get_webview_window("main")
+                .ok_or_else(|| "dashboard window is not available".to_string())?
+                .unminimize()
                 .map_err(|error| error.to_string())
         },
         || {

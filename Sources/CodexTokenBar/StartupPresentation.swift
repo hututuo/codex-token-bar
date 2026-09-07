@@ -14,9 +14,7 @@ final class DashboardReopenCoordinator {
 
     @discardableResult
     func handleApplicationReopen(hasVisibleWindows: Bool) -> Bool {
-        if hasVisibleWindows {
-            return true
-        }
+        // A floating panel counts as visible too; Dock activation always targets the dashboard.
         guard let reopenAction else {
             return false
         }
@@ -43,7 +41,26 @@ final class CodexTokenBarApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+@MainActor
+final class DashboardStartupVisibility {
+    private var pendingInitialHide = true
+
+    func consumeInitialHide(shouldHide: Bool) -> Bool {
+        guard pendingInitialHide else { return false }
+        pendingInitialHide = false
+        return shouldHide
+    }
+
+    private(set) var explicitlyOpened = false
+
+    func requestOpen() {
+        explicitlyOpened = true
+        pendingInitialHide = false
+    }
+}
+
 enum StartupPresentation {
+    @MainActor private static let visibility = DashboardStartupVisibility()
     private static let setupGuideCompletedKey = "setupGuideCompletedV01"
     private static let loginLaunchWindowSeconds: TimeInterval = 180
 
@@ -54,20 +71,24 @@ enum StartupPresentation {
 
     @MainActor
     static func hideDashboardIfNeeded() {
-        guard shouldHideDashboardAtStartup() else { return }
+        guard visibility.consumeInitialHide(shouldHide: shouldHideDashboardAtStartup()) else { return }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            guard !visibility.explicitlyOpened else { return }
             dashboardWindows().forEach { $0.orderOut(nil) }
         }
     }
 
     @MainActor
     static func showDashboardWindow(openWindow: () -> Void) {
+        visibility.requestOpen()
         NSApp.setActivationPolicy(.regular)
+        NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         let windows = dashboardWindows()
         if let window = windows.first {
+            if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
         } else {
             openWindow()

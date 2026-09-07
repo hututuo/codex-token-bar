@@ -26,7 +26,7 @@ final class StartupPresentationTests: XCTestCase {
     }
 
     @MainActor
-    func testDockReopenUsesInstalledDashboardWindowActionOnlyWhenNeeded() {
+    func testDockReopenAlwaysTargetsDashboardEvenWithVisibleFloatingPanel() {
         let coordinator = DashboardReopenCoordinator()
         var reopenCount = 0
 
@@ -37,9 +37,26 @@ final class StartupPresentationTests: XCTestCase {
         }
 
         XCTAssertTrue(coordinator.handleApplicationReopen(hasVisibleWindows: true))
-        XCTAssertEqual(reopenCount, 0)
-        XCTAssertTrue(coordinator.handleApplicationReopen(hasVisibleWindows: false))
         XCTAssertEqual(reopenCount, 1)
+        XCTAssertTrue(coordinator.handleApplicationReopen(hasVisibleWindows: false))
+        XCTAssertEqual(reopenCount, 2)
+    }
+
+    @MainActor
+    func testStartupHideIsConsumedOnceAndCannotHideExplicitReopen() {
+        let visibility = DashboardStartupVisibility()
+        XCTAssertTrue(visibility.consumeInitialHide(shouldHide: true))
+        visibility.requestOpen()
+        XCTAssertTrue(visibility.explicitlyOpened)
+        XCTAssertFalse(visibility.consumeInitialHide(shouldHide: true))
+
+        let reopenedBeforeAppearance = DashboardStartupVisibility()
+        reopenedBeforeAppearance.requestOpen()
+        XCTAssertFalse(reopenedBeforeAppearance.consumeInitialHide(shouldHide: true))
+
+        let manualLaunch = DashboardStartupVisibility()
+        XCTAssertFalse(manualLaunch.consumeInitialHide(shouldHide: false))
+        XCTAssertFalse(manualLaunch.consumeInitialHide(shouldHide: true))
     }
 
     func testAppRegistersNativeDockReopenDelegate() throws {

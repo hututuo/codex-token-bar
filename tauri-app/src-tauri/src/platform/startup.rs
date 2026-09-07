@@ -106,6 +106,7 @@ pub(crate) fn perform_dashboard_activation(
     dashboard_exists: bool,
     create: impl FnOnce() -> Result<(), String>,
     show: impl FnOnce() -> Result<(), String>,
+    restore: impl FnOnce() -> Result<(), String>,
     focus: impl FnOnce() -> Result<(), String>,
 ) -> Result<bool, String> {
     if !dashboard_exists {
@@ -115,6 +116,7 @@ pub(crate) fn perform_dashboard_activation(
         return Ok(true);
     }
     show()?;
+    restore()?;
     focus()?;
     Ok(true)
 }
@@ -297,6 +299,7 @@ mod tests {
     fn primary_activation_waits_for_page_load_when_dashboard_is_missing() {
         let mut create_calls = 0;
         let mut show_calls = 0;
+        let mut restore_calls = 0;
         let mut focus_calls = 0;
         assert!(perform_dashboard_activation(
             false,
@@ -309,12 +312,16 @@ mod tests {
                 Ok(())
             },
             || {
+                restore_calls += 1;
+                Ok(())
+            },
+            || {
                 focus_calls += 1;
                 Ok(())
             },
         )
         .unwrap());
-        assert_eq!((create_calls, show_calls, focus_calls), (1, 0, 0));
+        assert_eq!((create_calls, show_calls, restore_calls, focus_calls), (1, 0, 0, 0));
 
         assert!(perform_dashboard_activation(
             true,
@@ -324,11 +331,36 @@ mod tests {
                 Ok(())
             },
             || {
+                restore_calls += 1;
+                Ok(())
+            },
+            || {
                 focus_calls += 1;
                 Ok(())
             },
         )
         .unwrap());
-        assert_eq!((create_calls, show_calls, focus_calls), (1, 1, 1));
+        assert_eq!((create_calls, show_calls, restore_calls, focus_calls), (1, 1, 1, 1));
     }
+    #[test]
+    fn dashboard_activation_restores_before_focus_and_propagates_failure() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        perform_dashboard_activation(
+            true,
+            || panic!("existing window"),
+            || { calls.borrow_mut().push("show"); Ok(()) },
+            || { calls.borrow_mut().push("restore"); Ok(()) },
+            || { calls.borrow_mut().push("focus"); Ok(()) },
+        ).unwrap();
+        assert_eq!(*calls.borrow(), vec!["show", "restore", "focus"]);
+        let error = perform_dashboard_activation(
+            true,
+            || panic!("existing window"),
+            || Ok(()),
+            || Err("restore failed".into()),
+            || panic!("must not report successful focus"),
+        ).unwrap_err();
+        assert_eq!(error, "restore failed");
+    }
+
 }
