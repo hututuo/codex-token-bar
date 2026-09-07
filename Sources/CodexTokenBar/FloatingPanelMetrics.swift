@@ -310,6 +310,10 @@ enum FloatingTokenPanelMetrics {
 enum FloatingRunningModelDetailsPlacement: Equatable {
     case below
     case above
+    case leading
+    case trailing
+
+    var isHorizontal: Bool { self == .leading || self == .trailing }
 }
 
 enum FloatingTokenPanelResizePolicy {
@@ -317,8 +321,15 @@ enum FloatingTokenPanelResizePolicy {
 
     static func runningModelDetailsPlacement(
         panelFrame: NSRect, surfaceSize: NSSize, expandedSize: NSSize,
-        screenFrame: NSRect?, margin: CGFloat = screenMargin
+        screenFrame: NSRect?, margin: CGFloat = screenMargin, attached: Bool = true
     ) -> FloatingRunningModelDetailsPlacement {
+        if !attached {
+            guard let screenFrame else { return .trailing }
+            let extra = max(0, expandedSize.width - surfaceSize.width)
+            let right = max(0, screenFrame.maxX - panelFrame.maxX - margin)
+            let left = max(0, panelFrame.minX - screenFrame.minX - margin)
+            return right >= extra ? .trailing : left >= extra ? .leading : right >= left ? .trailing : .leading
+        }
         guard let screenFrame else { return .below }
         let extra = max(0, expandedSize.height - surfaceSize.height)
         let below = max(0, panelFrame.minY - screenFrame.minY - margin)
@@ -330,7 +341,7 @@ enum FloatingTokenPanelResizePolicy {
 
     static func baseFrame(for panelFrame: NSRect, surfaceSize: NSSize,
                           placement: FloatingRunningModelDetailsPlacement) -> NSRect {
-        NSRect(x: panelFrame.minX,
+        NSRect(x: placement == .leading ? panelFrame.maxX - surfaceSize.width : panelFrame.minX,
                y: placement == .above ? panelFrame.minY : panelFrame.maxY - surfaceSize.height,
                width: surfaceSize.width, height: surfaceSize.height)
     }
@@ -343,7 +354,9 @@ enum FloatingTokenPanelResizePolicy {
         if let screenFrame {
             y = min(max(proposedY, screenFrame.minY + margin), max(screenFrame.minY + margin, screenFrame.maxY - margin - expandedSize.height))
         } else { y = proposedY }
-        return NSRect(x: baseFrame.minX, y: y, width: expandedSize.width, height: expandedSize.height)
+        let proposedX = placement == .leading ? baseFrame.maxX - expandedSize.width : baseFrame.minX
+        let x = screenFrame.map { min(max(proposedX, $0.minX + margin), max($0.minX + margin, $0.maxX - margin - expandedSize.width)) } ?? proposedX
+        return NSRect(x: x, y: y, width: expandedSize.width, height: expandedSize.height)
     }
 
     static func constrainedHeight(baseFrame: NSRect, expandedHeight: CGFloat, screenFrame: NSRect?, scale: CGFloat) -> CGFloat {
@@ -390,6 +403,13 @@ struct FloatingTokenPanelLayout: Equatable {
             runningModelDetailsPresented: runningModelDetailsPresented,
             runningModelDetailsRowUnits: runningModelDetailsRowUnits
         )
+        if runningModelDetailsPresented && runningModelDetailsPlacement.isHorizontal {
+            let base = FloatingTokenPanelMetrics.size(effectiveScale: scale.value, visibility: visibility)
+            size = NSSize(width: base.width + (FloatingTokenPanelMetrics.runningModelDetailsGap
+                + FloatingTokenPanelMetrics.runningModelDetailsWidth) * scale.value,
+                height: max(base.height, (FloatingTokenPanelMetrics.runningModelDetailsHeight(rowCount: runningModelDetailsRowUnits)
+                    + 2 * FloatingTokenPanelMetrics.shellPadding) * scale.value))
+        }
         cornerRadius = FloatingTokenPanelMetrics.baseCornerRadius * scale.value
     }
 }

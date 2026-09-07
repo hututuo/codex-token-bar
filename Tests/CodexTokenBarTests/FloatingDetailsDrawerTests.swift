@@ -4,6 +4,34 @@ import SwiftUI
 @testable import CodexTokenBar
 
 final class FloatingDetailsDrawerTests: XCTestCase {
+    func testUndockedDetailsChooseRightOrLeftAndPreserveBaseAndHitTargets() {
+        let scale = FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1)
+        let normal = FloatingTokenPanelLayout(scale: scale, visibility: .default)
+        let screen = NSRect(x: -1200, y: 0, width: 1200, height: 800)
+        for (x, expected) in [(CGFloat(-1100), FloatingRunningModelDetailsPlacement.trailing),
+                              (-normal.size.width, .leading)] {
+            let base = NSRect(x: x, y: 400, width: normal.size.width, height: normal.size.height)
+            let layout = FloatingTokenPanelLayout(scale: scale, visibility: .default,
+                runningModelDetailsPresented: true, runningModelDetailsRowUnits: 3,
+                runningModelDetailsPlacement: expected)
+            let placement = FloatingTokenPanelResizePolicy.runningModelDetailsPlacement(
+                panelFrame: base, surfaceSize: base.size, expandedSize: layout.size, screenFrame: screen, attached: false)
+            XCTAssertEqual(placement, expected)
+            let frame = FloatingTokenPanelResizePolicy.expandedFrame(baseFrame: base,
+                expandedSize: layout.size, surfaceSize: base.size, placement: placement, screenFrame: screen)
+            XCTAssertEqual(FloatingTokenPanelResizePolicy.baseFrame(for: frame, surfaceSize: base.size, placement: placement), base)
+            XCTAssertTrue(screen.contains(frame))
+            let trigger = runningThreadControlFrames(layout: layout, visibility: .default)[0]
+            let normalTrigger = runningThreadControlFrames(layout: normal, visibility: .default)[0]
+            XCTAssertEqual(frame.minX + trigger.minX, base.minX + normalTrigger.minX)
+            XCTAssertEqual(frame.minY + trigger.minY, base.minY + normalTrigger.minY)
+            let card = runningModelDetailsCardFrame(layout: layout, surfaceSize: base.size)
+            XCTAssertFalse(card.intersects(trigger))
+            XCTAssertEqual(card.width, 260)
+            XCTAssertTrue(NSRect(origin: .zero, size: layout.size).contains(card))
+        }
+    }
+
     @MainActor
     func testRenderedCardsShareWidthGapAndOuterMargins() async throws {
         for placement in [FloatingRunningModelDetailsPlacement.below, .above] {
@@ -69,14 +97,14 @@ final class FloatingDetailsDrawerTests: XCTestCase {
     func testRepeatedDrawerCyclesKeepManualWindowConstraintsAndMainPosition() async throws {
         let scale = FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1)
         let normal = FloatingTokenPanelLayout(scale: scale, visibility: .default)
-        for placement in [FloatingRunningModelDetailsPlacement.below, .above] {
+        for placement in [FloatingRunningModelDetailsPlacement.below, .above, .leading, .trailing] {
             let expanded = FloatingTokenPanelLayout(scale: scale, visibility: .default,
                 runningModelDetailsPresented: true, runningModelDetailsRowUnits: 3,
                 runningModelDetailsPlacement: placement)
             let state = FloatingRunningModelDetailsSessionState()
             let dock = FloatingEdgeDockPresentation()
             let marker = NSView(frame: .zero)
-            let base = NSRect(x: 80, y: 300, width: normal.size.width, height: normal.size.height)
+            let base = NSRect(x: 600, y: 300, width: normal.size.width, height: normal.size.height)
             let panel = NSPanel(contentRect: base, styleMask: [.borderless], backing: .buffered, defer: false)
             panel.isReleasedWhenClosed = false
             defer { panel.contentViewController = nil; panel.close() }
@@ -85,12 +113,12 @@ final class FloatingDetailsDrawerTests: XCTestCase {
             XCTAssertTrue(host.hostingController.sizingOptions.isEmpty)
             panel.contentViewController = host
             resizePanel(panel, layout: normal, surfaceSize: normal.size, baseFrame: base)
-            dock.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
+            dock.anchor = placement.isHorizontal ? nil : FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
             state.requestPresentation = { presented in
                 if presented { state.updateLayout(expanded) }
                 resizePanel(panel, layout: presented ? expanded : normal, surfaceSize: normal.size, baseFrame: base)
                 if !presented { state.updateLayout(nil) }
-                dock.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
+                dock.anchor = placement.isHorizontal ? nil : FloatingEdgeDockAnchor(edge: .left, expandedFrame: panel.frame)
             }
             for _ in 0..<4 { host.view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(10)) }
             let original = panel.convertToScreen(marker.convert(marker.bounds, to: nil))
@@ -100,6 +128,7 @@ final class FloatingDetailsDrawerTests: XCTestCase {
                     for sample in 0..<5 {
                         host.view.layoutSubtreeIfNeeded()
                         let actual = panel.convertToScreen(marker.convert(marker.bounds, to: nil))
+                        XCTAssertEqual(actual.minX, original.minX, accuracy: 0.5)
                         XCTAssertEqual(actual.minY, original.minY, accuracy: 0.5, "\(placement) cycle \(cycle) opened \(presented) sample \(sample)")
                         XCTAssertEqual(actual.height, original.height, accuracy: 0.5)
                         XCTAssertEqual(panel.contentMinSize, presented ? expanded.size : normal.size)
@@ -311,13 +340,14 @@ private struct DrawerHostProbe: View {
     var body: some View {
         let size = state.drawerLayout?.size ?? (state.isPresented ? expanded.size : normal.size)
         let above = state.drawerLayout?.runningModelDetailsPlacement == .above
+        let leading = state.drawerLayout?.runningModelDetailsPlacement == .leading
         let factor = dock.anchor == nil ? 1 : max(0.8, (normal.size.width - 10) / normal.size.width)
         let padding = FloatingTokenPanelMetrics.shellPadding * normal.effectiveScale
         let surface = NSSize(width: normal.size.width, height: normal.size.height - 2 * padding)
         let contentHeight = surface.height + (size.height - normal.size.height) / factor
         ZStack(alignment: .topLeading) {
             DrawerMarker(view: marker).frame(width: surface.width, height: surface.height)
-                .offset(y: above ? contentHeight - surface.height : 0)
+                .offset(x: leading ? size.width - normal.size.width : 0, y: above ? contentHeight - surface.height : 0)
             if state.isPresented, let detailMarker {
                 DrawerMarker(view: detailMarker)
                     .frame(width: surface.width, height: max(0, contentHeight - surface.height - 8 * normal.effectiveScale / factor))

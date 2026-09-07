@@ -362,15 +362,16 @@ export function FloatingWindowApp() {
   useEffect(() => {
     let cancelled = false;
     const scale = presentedSettings.scale;
-    const targetWidth = Math.max(FLOATING_BASE_WIDTH, pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0) * scale;
+    const baseWidth = Math.max(FLOATING_BASE_WIDTH, pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0) * scale;
     const mainHeight = floatingContentHeight(presentedSettings.contentVisibility) * scale;
     const surfaceHeight = pagingGuidePresented ? mainHeight
-      : floatingDockShellMetrics({ width: targetWidth, mainHeight, scale }).height;
+      : floatingDockShellMetrics({ width: baseWidth, mainHeight, scale }).height;
 
     const reconcileWindowGeometry = async () => {
       const appWindow = getCurrentWindow();
       let basePosition = runningModelDetailsBasePositionRef.current;
       let targetPosition = basePosition ?? undefined;
+      let targetWidth = baseWidth;
       let targetHeight = Math.max(surfaceHeight, pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT * scale : 0);
       let placement: FloatingRunningModelDetailsPlacement = "below";
       let nextMetrics = { height: FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * scale, offset: 0 };
@@ -386,13 +387,16 @@ export function FloatingWindowApp() {
           width: monitor.workArea.size.width, height: monitor.workArea.size.height,
         } : { x: base.x, y: base.y, width: base.width, height: base.height + 332 * scale * factor };
         const drawer = resolveFloatingDetailsDrawer({ base, workArea,
-          detailsHeight: Math.min(320 * scale, Math.max(FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * scale, runningModelDetailsHeight)) * factor,
+          detailsHeight: (Math.min(320 * scale, Math.max(FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * scale, runningModelDetailsHeight))
+            + (dockFrame ? 0 : 12 * scale)) * factor,
           gap: 8 * scale * factor, inset: 0, minimumDetailsHeight: 96 * scale * factor,
+          attached: dockFrame != null, detailsWidth: 260 * scale * factor,
         });
         placement = drawer.placement;
+        targetWidth = drawer.frame.width / factor;
         targetHeight = drawer.frame.height / factor;
         targetPosition = { x: drawer.frame.x, y: drawer.frame.y };
-        nextMetrics = { height: drawer.detailsHeight / factor, offset: drawer.surfaceOffsetY / factor };
+        nextMetrics = { height: drawer.detailsHeight / factor - (drawer.placement === "leading" || drawer.placement === "trailing" ? 12 * scale : 0), offset: drawer.surfaceOffsetY / factor };
       }
       if (cancelled) return;
       if (effectiveRunningModelDetailsExpanded) runningModelDetailsBasePositionRef.current = basePosition;
@@ -580,7 +584,7 @@ export function FloatingWindowApp() {
     <div ref={dockShellRef} className="floating-edge-shell" aria-hidden="true" />
     <div className="floating-edge-content" inert={dock.collapsed} aria-hidden={dock.collapsed || undefined}>
     <main
-      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}${runningModelDetailsSide === "above" ? " floating-window-shell--running-model-details-above" : ""}`}
+      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""} floating-window-shell--running-model-details-${runningModelDetailsSide}`}
       onMouseDownCapture={dismissRunningModelDetailsForOutsidePointer}
       style={shellStyle}
     >

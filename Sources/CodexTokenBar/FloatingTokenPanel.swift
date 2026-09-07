@@ -614,12 +614,13 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 effectiveScale: lastPanelScale.value,
                 visibility: lastPanelVisibility
             )
-            let expandedSize = FloatingTokenPanelMetrics.size(
-                effectiveScale: lastPanelScale.value,
+            let expandedSize = FloatingTokenPanelLayout(
+                scale: lastPanelScale,
                 visibility: lastPanelVisibility,
                 runningModelDetailsPresented: true,
-                runningModelDetailsRowUnits: lastRunningModelDetailsRowUnits
-            )
+                runningModelDetailsRowUnits: lastRunningModelDetailsRowUnits,
+                runningModelDetailsPlacement: edgeDock.isAttached ? .below : .trailing
+            ).size
             runningModelDetailsBaseFrame = FloatingTokenPanelResizePolicy.baseFrame(
                 for: panel.frame,
                 surfaceSize: surfaceSize,
@@ -629,7 +630,8 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 panelFrame: runningModelDetailsBaseFrame ?? panel.frame,
                 surfaceSize: surfaceSize,
                 expandedSize: expandedSize,
-                screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+                screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame,
+                attached: edgeDock.isAttached
             )
         }
         edgeDock.holdOpen(presented)
@@ -686,7 +688,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     func updateSize(layout: FloatingTokenPanelLayout) {
         guard let panel else { return }
         var layout = layout
-        if layout.runningModelDetailsPresented, let base = runningModelDetailsBaseFrame {
+        if layout.runningModelDetailsPresented, !layout.runningModelDetailsPlacement.isHorizontal, let base = runningModelDetailsBaseFrame {
             layout.size.height = FloatingTokenPanelResizePolicy.constrainedHeight(
                 baseFrame: base, expandedHeight: layout.size.height,
                 screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame, scale: layout.effectiveScale)
@@ -1053,7 +1055,9 @@ struct FloatingTokenPanelView: View {
         let runningModelDetailsSurfaceOffsetY = detailsPlacement == .above ? drawerExtra : 0
         let detailsInset = FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
         let detailsGap = FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale) / dockScale
-        let detailsHeight = max(0, drawerExtra - detailsGap)
+        let horizontalDetails = detailsPlacement.isHorizontal
+        let surfaceOffsetX = detailsPlacement == .leading ? size.width - baseShellSize.width : 0
+        let detailsHeight = horizontalDetails ? max(0, size.height - 2 * shellPadding) : max(0, drawerExtra - detailsGap)
 
         return ZStack(alignment: .topLeading) {
             ZStack {
@@ -1118,13 +1122,13 @@ struct FloatingTokenPanelView: View {
             }
             .frame(width: surfaceSize.width, height: surfaceSize.height, alignment: .topLeading)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .offset(y: runningModelDetailsSurfaceOffsetY)
+            .offset(x: surfaceOffsetX, y: runningModelDetailsSurfaceOffsetY)
 
             if effectiveRunningModelDetailsPresented {
                 FloatingRunningThreadModelDetailsCard(
                     summary: displaySnapshot.runningThreads,
                     scale: scale,
-                    width: max(0, surfaceSize.width - 2 * detailsInset),
+                    width: horizontalDetails ? FloatingTokenPanelMetrics.runningModelDetailsWidth * scale : max(0, surfaceSize.width - 2 * detailsInset),
                     height: detailsHeight,
                     appearance: appearance,
                     isDemo: false,
@@ -1133,8 +1137,8 @@ struct FloatingTokenPanelView: View {
                     }
                 )
                 .offset(
-                    x: detailsInset,
-                    y: detailsPlacement == .above ? detailsInset
+                    x: horizontalDetails ? (detailsPlacement == .leading ? 0 : surfaceSize.width + detailsGap) : detailsInset,
+                    y: horizontalDetails ? 0 : detailsPlacement == .above ? detailsInset
                         : surfaceSize.height + detailsGap
                 )
                 .transition(.asymmetric(
@@ -1277,7 +1281,7 @@ func runningThreadControlFrames(
         ? layout.size.height - surfaceSize.height : 0
     return [
         NSRect(
-            x: centerX - width / 2,
+            x: centerX - width / 2 + (layout.runningModelDetailsPresented && layout.runningModelDetailsPlacement == .leading ? layout.size.width - surfaceSize.width : 0),
             y: layout.size.height - surfaceOffsetY - FloatingTokenPanelMetrics.shellPadding * scale - centerFromTop - height / 2,
             width: width,
             height: height
@@ -1288,6 +1292,12 @@ func runningThreadControlFrames(
 func runningModelDetailsCardFrame(layout: FloatingTokenPanelLayout, surfaceSize: NSSize) -> NSRect {
     let inset = FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: layout.effectiveScale)
     let gap = FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: layout.effectiveScale)
+    if layout.runningModelDetailsPlacement.isHorizontal {
+        let padding = FloatingTokenPanelMetrics.shellPadding * layout.effectiveScale
+        return NSRect(x: layout.runningModelDetailsPlacement == .leading ? 0 : surfaceSize.width + gap,
+                      y: padding, width: FloatingTokenPanelMetrics.runningModelDetailsWidth * layout.effectiveScale,
+                      height: max(0, layout.size.height - 2 * padding))
+    }
     let height = max(0, layout.size.height - surfaceSize.height - gap - inset)
     return NSRect(x: inset,
                   y: layout.runningModelDetailsPlacement == .above

@@ -55,3 +55,25 @@ test("negative display origins and physical scaling choose the same vertical geo
   assert.equal(b.placement, a.placement);
   assert.deepEqual(b.frame, doubled(a.frame));
 });
+
+test("undocked details open right and flip left without moving the original card", () => {
+  for (const [x, side] of [[100, "trailing"], [892, "leading"]]) {
+    const base = { x, y: 160, width: 308, height: 132 };
+    const result = resolveFloatingDetailsDrawer({ base, workArea, detailsHeight: 180, attached: false, inset: 0 });
+    assert.equal(result.placement, side);
+    assert.equal(result.frame.width, 576);
+    assert.equal(result.frame.x + result.surfaceOffsetX, base.x);
+    assert.equal(result.frame.y, base.y);
+    assert.equal(result.frame.height, 180);
+  }
+});
+
+test("attachment changes details from a side card to a vertical drawer", () => {
+  const base = { x: 892, y: 160, width: 308, height: 132 };
+  const side = resolveFloatingDetailsDrawer({ base, workArea, detailsHeight: 180, attached: false });
+  const docked = resolveFloatingDetailsDrawer({ base, workArea, detailsHeight: 180, attached: true });
+  assert.equal(side.placement, "leading");
+  assert.equal(docked.placement, "below");
+  assert.equal(docked.frame.width, base.width);
+  assert.ok(docked.frame.height > side.frame.height);
+});

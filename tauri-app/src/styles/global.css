@@ -8688,6 +8688,30 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   top: auto;
   bottom: calc(100% + 1px + var(--floating-drawer-gap, 8px));
 }
+/* Undocked details retain the independent side card and transparent gap. */
+.floating-window-shell--running-model-details-trailing {
+  place-items: start start;
+  padding-inline: 1px;
+  background: transparent;
+}
+.floating-window-shell--running-model-details-leading {
+  place-items: start end;
+  padding-inline: 1px;
+  background: transparent;
+}
+.floating-window-shell--running-model-details-trailing .floating-running-model-details,
+.floating-window-shell--running-model-details-leading .floating-running-model-details {
+  top: -1px;
+  bottom: auto;
+  width: calc(260px * var(--floating-scale));
+}
+.floating-window-shell--running-model-details-trailing .floating-running-model-details {
+  left: calc(100% + 1px + var(--floating-drawer-gap, 8px));
+}
+.floating-window-shell--running-model-details-leading .floating-running-model-details {
+  left: auto;
+  right: calc(100% + 1px + var(--floating-drawer-gap, 8px));
+}
 .floating-window-shell--running-model-details .floating-running-model-table { overflow-y: auto; overscroll-behavior: contain; align-content: start; }
 .floating-running-model-close-hint { color: #596576; font-size: calc(8px * var(--floating-scale)); line-height: 1.35; }
 @keyframes floating-drawer-content-in { 0%, 45% { opacity: 0; } 100% { opacity: 1; } }
