@@ -1136,19 +1136,14 @@ struct DashboardSevenDayModelData: Equatable {
         }
 
         let start = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
-        let safeStart = QuotaPeriodBoundaryPolicy.firstCompleteBucketStart(after: start)
-        let safeEnd = QuotaPeriodBoundaryPolicy.lastCompleteBucketEnd(before: resetAt)
+        let period = QuotaPeriodBoundaryPolicy.partition(
+            events: cacheUsage.attributionEvents, periodStart: start, periodEnd: resetAt
+        )
         let eventsAreUsable = cacheUsage.attributionModelBucketsComplete
             && !cacheUsage.attributionCurrentScanUnsafeCauseDetected
         if eventsAreUsable {
-            let boundaryBreakdown = QuotaPeriodBoundaryPolicy.boundaryBreakdown(
-                events: cacheUsage.attributionEvents,
-                periodStart: start,
-                periodEnd: resetAt
-            )
-            let events = cacheUsage.attributionEvents.filter {
-                $0.start >= safeStart && $0.start < safeEnd
-            }
+            let boundaryBreakdown = period.boundary
+            let events = period.events
             rows = ModelUsagePresentation.rows(from: events)
             tokens = events.reduce(0) { $0 + max($1.breakdown.totalTokens, 0) }
             boundaryTokens = boundaryBreakdown.totalTokens
@@ -1165,14 +1160,8 @@ struct DashboardSevenDayModelData: Equatable {
         // fabricated Sol/Terra/Luna attribution.
         if cacheUsage.attributionEventsComplete,
            !cacheUsage.attributionCurrentScanUnsafeCauseDetected {
-            let boundaryBreakdown = QuotaPeriodBoundaryPolicy.boundaryBreakdown(
-                events: cacheUsage.attributionEvents,
-                periodStart: start,
-                periodEnd: resetAt
-            )
-            let trustedEvents = cacheUsage.attributionEvents.filter {
-                $0.start >= safeStart && $0.start < safeEnd
-            }
+            let boundaryBreakdown = period.boundary
+            let trustedEvents = period.events
             if !trustedEvents.isEmpty {
                 rows = ModelUsagePresentation.rows(from: trustedEvents)
                 tokens = trustedEvents.reduce(0) { $0 + max($1.breakdown.totalTokens, 0) }
@@ -1344,6 +1333,7 @@ struct DashboardModelCostRow: View {
                         }
                         if scope == .sevenDay, sevenDayBoundaryTokens > 0 {
                             Text("边缘另计 \(sevenDayBoundaryTokens.abbreviatedTokens) Token")
+                                .help("只另计跨越重置时刻的一分钟；缺少分钟明细的旧记录保留原精度。")
                                 .font(.system(size: 9, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()

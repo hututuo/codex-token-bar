@@ -296,7 +296,7 @@ struct SevenDayAPIValuePresentation: Equatable {
                 : "，API 等值 \(SubscriptionSavingsPresentation.fullMoney(valueUSD))"
         }
         if estimate.boundaryBreakdown.hasUsage {
-            text += "；边缘桶独立统计 \(estimate.boundaryBreakdown.totalTokens.abbreviatedTokens) Token"
+            text += "；交界用量独立统计 \(estimate.boundaryBreakdown.totalTokens.abbreviatedTokens) Token"
         }
         if !estimate.detectedModels.isEmpty {
             text += "；模型 \(estimate.detectedModels.map(\.quotaEstimateShortTitle).joined(separator: "/"))"
@@ -334,15 +334,14 @@ extension SubscriptionSavingsEstimator {
         let cycleEnd = resetAt
         let safeCycleStart = QuotaPeriodBoundaryPolicy.firstCompleteBucketStart(after: cycleStart)
         let safeCycleEnd = QuotaPeriodBoundaryPolicy.lastCompleteBucketEnd(before: cycleEnd)
-        let boundaryBreakdown = QuotaPeriodBoundaryPolicy.boundaryBreakdown(
-            events: cacheUsage.attributionEvents,
-            periodStart: cycleStart,
-            periodEnd: cycleEnd
+        let period = QuotaPeriodBoundaryPolicy.partition(
+            events: cacheUsage.attributionEvents, periodStart: cycleStart, periodEnd: cycleEnd
         )
+        let boundaryBreakdown = period.boundary
         let eventIsTrustworthy = cacheUsage.attributionEventsComplete
             && !cacheUsage.attributionCurrentScanUnsafeCauseDetected
             && !cacheUsage.attributionSourceMutationDetected
-        let periodEvents = cacheUsage.attributionEvents.filter {
+        let periodEvents = eventIsTrustworthy ? period.events : cacheUsage.attributionEvents.filter {
             $0.start >= safeCycleStart && $0.start < safeCycleEnd
         }
 

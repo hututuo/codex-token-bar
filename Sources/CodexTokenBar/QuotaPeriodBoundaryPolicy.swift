@@ -86,6 +86,74 @@ struct QuotaPeriodBoundaryBreakdown: Equatable, Sendable {
 }
 
 extension QuotaPeriodBoundaryPolicy {
+    /// Compatibility adapter: keep complete five-minute rows unchanged, and
+    /// split only the two edge rows when exact minute detail reconciles.
+    /// Missing/invalid detail retains the historical five-minute policy.
+    static func partition(
+        events: [TokenCacheAttributionEvent],
+        periodStart: Date,
+        periodEnd: Date
+    ) -> (events: [TokenCacheAttributionEvent], boundary: QuotaPeriodBoundaryBreakdown) {
+        guard periodEnd > periodStart else { return ([], .empty) }
+        let firstMinute = ceil(periodStart.timeIntervalSince1970 / 60) * 60
+        let lastMinuteEnd = floor(periodEnd.timeIntervalSince1970 / 60) * 60
+        var included: [TokenCacheAttributionEvent] = []
+        var leading: [TokenCacheBreakdown] = []
+        var trailing: [TokenCacheBreakdown] = []
+        var leadingStart: Date?
+        var trailingStart: Date?
+        for event in events {
+            let eventEnd = event.start.addingTimeInterval(bucketDuration)
+            guard eventEnd > periodStart, event.start < periodEnd else { continue }
+            if event.start >= periodStart && eventEnd <= periodEnd {
+                included.append(event)
+                continue
+            }
+            let minutes = event.minuteBuckets
+            let hasExactMinutes = minutes.map { values in
+                !values.isEmpty
+                    && Set(values.map(\.start)).count == values.count
+                    && values.allSatisfy {
+                        $0.start >= event.start && $0.start < eventEnd
+                            && $0.start.timeIntervalSince1970.truncatingRemainder(dividingBy: 60) == 0
+                            && $0.breakdown.inputTokens >= 0
+                            && $0.breakdown.cachedInputTokens >= 0
+                            && $0.breakdown.cachedInputTokens <= $0.breakdown.inputTokens
+                            && $0.breakdown.outputTokens >= 0
+                            && $0.breakdown.reasoningOutputTokens >= 0
+                            && $0.breakdown.totalTokens >= 0
+                            && $0.breakdown.calls >= 0
+                    }
+                    && values.map(\.breakdown).combined == event.breakdown
+            } ?? false
+            let slices = hasExactMinutes ? (minutes ?? []) : [
+                TokenCacheBucket(start: event.start, breakdown: event.breakdown)
+            ]
+            let duration: TimeInterval = hasExactMinutes ? 60 : bucketDuration
+            for slice in slices {
+                let sliceEnd = slice.start.addingTimeInterval(duration)
+                if hasExactMinutes,
+                   slice.start.timeIntervalSince1970 >= firstMinute,
+                   slice.start.timeIntervalSince1970 < lastMinuteEnd {
+                    included.append(TokenCacheAttributionEvent(
+                        id: "\(event.id):minute:\(Int64(slice.start.timeIntervalSince1970))",
+                        start: slice.start, model: event.model, breakdown: slice.breakdown
+                    ))
+                } else if slice.start < periodStart && sliceEnd > periodStart {
+                    leading.append(slice.breakdown)
+                    leadingStart = min(leadingStart ?? slice.start, slice.start)
+                } else if slice.start < periodEnd && sliceEnd > periodEnd {
+                    trailing.append(slice.breakdown)
+                    trailingStart = min(trailingStart ?? slice.start, slice.start)
+                }
+            }
+        }
+        return (included, QuotaPeriodBoundaryBreakdown(
+            leading: leading.combined, trailing: trailing.combined,
+            leadingStart: leadingStart, trailingStart: trailingStart
+        ))
+    }
+
     static func boundaryBreakdown(
         buckets: [TokenCacheBucket],
         periodStart: Date,

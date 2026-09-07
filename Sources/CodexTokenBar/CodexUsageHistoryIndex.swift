@@ -2593,66 +2593,127 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ) throws -> [TokenCacheAttributionEvent] {
         try driver.withConnection { connection in
             try configure(connection)
-            let current = try currentAttributionState(connection: connection)
-            guard current.provenanceEpoch == provenanceEpoch else {
-                throw SQLiteDatabaseError(
-                    operation: "Read exact usage attribution ledger",
-                    code: SQLITE_ABORT,
-                    message: "Requested provenance epoch was superseded",
-                    path: driver.url.path
-                )
-            }
-            return try connection.readRows(
-                        """
-                        SELECT
-                            source_lineage,
-                            bucket_start,
-                            model,
-                            input_tokens,
-                            cached_input_tokens,
-                            output_tokens,
-                            reasoning_output_tokens,
-                            total_tokens,
-                            calls
-                        FROM attribution_source_buckets
-                        WHERE provenance_epoch = ?
-                          AND bucket_start >= ?
-                          AND bucket_start < ?
-                        ORDER BY bucket_start, source_lineage, model;
-                        """,
-                        bindings: [
-                            .text(provenanceEpoch),
-                            .int64(Int64(start.timeIntervalSince1970.rounded())),
-                            .int64(Int64(end.timeIntervalSince1970.rounded())),
-                        ]
-                    ) { row -> TokenCacheAttributionEvent? in
-                        guard let sourceLineage = row.text(0),
-                              let bucketStart = row.int64(1),
-                              let inputTokens = row.int(3),
-                              let cachedInputTokens = row.int(4),
-                              let outputTokens = row.int(5),
-                              let reasoningOutputTokens = row.int(6),
-                              let totalTokens = row.int(7),
-                              let calls = row.int(8) else {
-                            return nil
-                        }
-                        let start = Date(timeIntervalSince1970: TimeInterval(bucketStart))
-                        return TokenCacheAttributionEvent.sourceBucket(
-                            provenanceEpoch: provenanceEpoch,
-                            sourceID: sourceLineage,
-                            start: start,
-                            model: row.text(2).flatMap { $0.isEmpty ? nil : $0 },
-                            breakdown: TokenCacheBreakdown(
-                                inputTokens: inputTokens,
-                                cachedInputTokens: cachedInputTokens,
-                                outputTokens: outputTokens,
-                                reasoningOutputTokens: reasoningOutputTokens,
-                                totalTokens: totalTokens,
-                                calls: calls
+            return try connection.readTransaction { connection in
+                let current = try currentAttributionState(connection: connection)
+                guard current.provenanceEpoch == provenanceEpoch else {
+                    throw SQLiteDatabaseError(
+                        operation: "Read exact usage attribution ledger",
+                        code: SQLITE_ABORT,
+                        message: "Requested provenance epoch was superseded",
+                        path: driver.url.path
+                    )
+                }
+                let ledger = try connection.readRows(
+                            """
+                            SELECT
+                                source_lineage,
+                                bucket_start,
+                                model,
+                                input_tokens,
+                                cached_input_tokens,
+                                output_tokens,
+                                reasoning_output_tokens,
+                                total_tokens,
+                                calls
+                            FROM attribution_source_buckets
+                            WHERE provenance_epoch = ?
+                              AND bucket_start >= ?
+                              AND bucket_start < ?
+                            ORDER BY bucket_start, source_lineage, model;
+                            """,
+                            bindings: [
+                                .text(provenanceEpoch),
+                                .int64(Int64(start.timeIntervalSince1970.rounded())),
+                                .int64(Int64(end.timeIntervalSince1970.rounded())),
+                            ]
+                        ) { row -> TokenCacheAttributionEvent? in
+                            guard let sourceLineage = row.text(0),
+                                  let bucketStart = row.int64(1),
+                                  let inputTokens = row.int(3),
+                                  let cachedInputTokens = row.int(4),
+                                  let outputTokens = row.int(5),
+                                  let reasoningOutputTokens = row.int(6),
+                                  let totalTokens = row.int(7),
+                                  let calls = row.int(8) else {
+                                return nil
+                            }
+                            let start = Date(timeIntervalSince1970: TimeInterval(bucketStart))
+                            return TokenCacheAttributionEvent.sourceBucket(
+                                provenanceEpoch: provenanceEpoch,
+                                sourceID: sourceLineage,
+                                start: start,
+                                model: row.text(2).flatMap { $0.isEmpty ? nil : $0 },
+                                breakdown: TokenCacheBreakdown(
+                                    inputTokens: inputTokens,
+                                    cachedInputTokens: cachedInputTokens,
+                                    outputTokens: outputTokens,
+                                    reasoningOutputTokens: reasoningOutputTokens,
+                                    totalTokens: totalTokens,
+                                    calls: calls
+                                )
                             )
+                        }
+                .compactMap { $0 }
+
+                // This is a disposable enrichment of the current cycle, not a
+                // schema migration or historical ledger rewrite. Only attach a
+                // raw-source minute projection when it exactly reconciles with
+                // the durable five-minute contribution (including every component).
+                let minuteStart = max(start, end.addingTimeInterval(-8 * 24 * 60 * 60))
+                let minuteRows = try connection.readRows(
+                    """
+                    SELECT e.source_id, s.session_id,
+                           CAST(e.timestamp / 60 AS INTEGER) * 60,
+                           COALESCE(e.model, ''),
+                           SUM(e.input_tokens), SUM(e.cached_input_tokens),
+                           SUM(e.output_tokens), SUM(e.reasoning_output_tokens),
+                           SUM(e.tokens), COUNT(*)
+                    FROM events e JOIN sources s ON s.source_id = e.source_id
+                    WHERE e.tokens > 0 AND e.timestamp >= ? AND e.timestamp < ?
+                    GROUP BY e.source_id, CAST(e.timestamp / 60 AS INTEGER), COALESCE(e.model, '')
+                    ORDER BY 3, e.source_id, 4;
+                    """,
+                    bindings: [
+                        .int64(Int64(floor(minuteStart.timeIntervalSince1970 / 300) * 300)),
+                        .int64(Int64(end.timeIntervalSince1970)),
+                    ]
+                ) { row -> (Int64, String, TokenCacheBucket, String?) in
+                    let bucket = TokenCacheBucket(
+                        start: Date(timeIntervalSince1970: TimeInterval(row.int64(2) ?? 0)),
+                        breakdown: TokenCacheBreakdown(
+                            inputTokens: row.int(4) ?? 0,
+                            cachedInputTokens: row.int(5) ?? 0,
+                            outputTokens: row.int(6) ?? 0,
+                            reasoningOutputTokens: row.int(7) ?? 0,
+                            totalTokens: row.int(8) ?? 0,
+                            calls: row.int(9) ?? 0
                         )
+                    )
+                    return (row.int64(0) ?? 0, row.text(1) ?? "", bucket,
+                            row.text(3).flatMap { $0.isEmpty ? nil : $0 })
+                }
+                var candidates: [String: [Int64: [TokenCacheBucket]]] = [:]
+                for (sourceID, sessionID, minute, model) in minuteRows {
+                    let lineage = attributionLineage(sessionID: sessionID, sourceID: sourceID)
+                    let bucketStart = Date(timeIntervalSince1970:
+                        floor(minute.start.timeIntervalSince1970 / 300) * 300)
+                    let id = TokenCacheAttributionEvent.sourceBucket(
+                        provenanceEpoch: provenanceEpoch, sourceID: lineage.key,
+                        start: bucketStart, model: model, breakdown: .empty
+                    ).id
+                    candidates[id, default: [:]][sourceID, default: []].append(minute)
+                }
+                return ledger.map { event in
+                    let sources = candidates[event.id] ?? [:]
+                    let minutes = sources.keys.sorted().compactMap { sources[$0] }.first {
+                        $0.map(\.breakdown).combined == event.breakdown
                     }
-            .compactMap { $0 }
+                    return TokenCacheAttributionEvent(
+                        id: event.id, start: event.start, model: event.model,
+                        breakdown: event.breakdown, minuteBuckets: minutes
+                    )
+                }
+            }
         }
     }
 

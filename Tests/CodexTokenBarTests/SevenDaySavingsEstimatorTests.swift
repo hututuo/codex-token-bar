@@ -378,4 +378,32 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         XCTAssertEqual(presentation.valueText, "待读取")
         XCTAssertTrue(presentation.labelText.contains("待读取"))
     }
+    func testCurrentSevenDayCostAndModelRowsKeepClearEdgeMinutes() throws {
+        let endBucket = floor(now.timeIntervalSince1970 / 300) * 300 + 86_400
+        let resetAt = Date(timeIntervalSince1970: endBucket + 88)
+        let events = [endBucket - 604_800, endBucket].map { bucket in
+            let minutes = (0..<5).map { minute in
+                TokenCacheBucket(start: Date(timeIntervalSince1970: bucket + Double(minute * 60)),
+                                 breakdown: breakdown(input: (minute + 1) * 100_000))
+            }
+            return TokenCacheAttributionEvent(
+                id: String(bucket), start: Date(timeIntervalSince1970: bucket), model: "gpt-5.6-sol",
+                breakdown: minutes.map(\.breakdown).combined, minuteBuckets: minutes
+            )
+        }
+        let cache = usage(events: events, complete: true)
+        let snapshot = quota(resetAt: resetAt)
+        let estimate = SubscriptionSavingsEstimator.sevenDayAPIValue(
+            cacheUsage: cache, quotaSnapshot: snapshot, fallbackModel: .gpt56Terra, now: now
+        )
+        let expected = OfficialAPIPriceModel.gpt56Sol.currentPriceRates.costUSD(for: breakdown(input: 1_300_000))
+        XCTAssertEqual(try XCTUnwrap(estimate.valueUSD), expected, accuracy: 0.000001)
+        XCTAssertEqual(estimate.boundaryBreakdown.leading.inputTokens, 200_000)
+        XCTAssertEqual(estimate.boundaryBreakdown.trailing.inputTokens, 200_000)
+        let display = DashboardSevenDayModelData(cacheUsage: cache, quotaSnapshot: snapshot, now: now, dataAvailable: true)
+        XCTAssertEqual(display.tokens, 1_300_000)
+        XCTAssertEqual(display.rows.map(\.breakdown).combined.inputTokens, 1_300_000)
+        XCTAssertEqual(display.boundaryTokens, 400_000)
+    }
+
 }

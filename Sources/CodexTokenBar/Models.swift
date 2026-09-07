@@ -111,7 +111,7 @@ struct TokenCacheBreakdown: Codable, Equatable, Sendable {
     )
 }
 
-struct TokenCacheBucket: Codable, Identifiable, Equatable {
+struct TokenCacheBucket: Codable, Identifiable, Equatable, Sendable {
     var id: Date { start }
     let start: Date
     let breakdown: TokenCacheBreakdown
@@ -126,17 +126,22 @@ struct TokenCacheAttributionEvent: Codable, Identifiable, Equatable, Sendable {
     let start: Date
     let model: String?
     let breakdown: TokenCacheBreakdown
+    /// Optional exact minute projection. Old snapshots and retained ledger
+    /// rows without raw events keep their original five-minute precision.
+    let minuteBuckets: [TokenCacheBucket]?
 
     init(
         id: String,
         start: Date,
         model: String? = nil,
-        breakdown: TokenCacheBreakdown
+        breakdown: TokenCacheBreakdown,
+        minuteBuckets: [TokenCacheBucket]? = nil
     ) {
         self.id = id
         self.start = start
         self.model = model
         self.breakdown = breakdown
+        self.minuteBuckets = minuteBuckets
     }
 
     static func sourceBucket(
@@ -144,7 +149,8 @@ struct TokenCacheAttributionEvent: Codable, Identifiable, Equatable, Sendable {
         sourceID: String,
         start: Date,
         model: String? = nil,
-        breakdown: TokenCacheBreakdown
+        breakdown: TokenCacheBreakdown,
+        minuteBuckets: [TokenCacheBucket]? = nil
     ) -> TokenCacheAttributionEvent {
         let identity = [
             "codex-token-bar-attribution-source-bucket-v1",
@@ -160,7 +166,8 @@ struct TokenCacheAttributionEvent: Codable, Identifiable, Equatable, Sendable {
             id: id,
             start: start,
             model: model,
-            breakdown: breakdown
+            breakdown: breakdown,
+            minuteBuckets: minuteBuckets
         )
     }
 }

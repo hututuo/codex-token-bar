@@ -6,8 +6,7 @@ import {
   type DetectedOfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
 import {
-  firstCompleteQuotaBucketStart,
-  lastCompleteQuotaBucketEnd,
+  partitionQuotaPeriodPoints,
 } from "../quotaPeriodBoundary.ts";
 
 export {
@@ -160,26 +159,14 @@ export function estimateRecent7dAPICost({
   if (typeof resetAtUnix !== "number" || !Number.isFinite(resetAtUnix)) return null;
 
   const periodStartUnix = resetAtUnix - SEVEN_DAY_SECONDS;
-  const safePeriodStartUnix = firstCompleteQuotaBucketStart(periodStartUnix);
-  const safePeriodEndUnix = lastCompleteQuotaBucketEnd(resetAtUnix);
-  const rawPeriodStartBucket = Math.floor(periodStartUnix / (5 * 60)) * (5 * 60);
-  const rawPeriodEndBucket = Math.floor(resetAtUnix / (5 * 60)) * (5 * 60);
-  const rawCyclePoints = (points ?? []).filter((point) => (
-    Number.isFinite(point.startUnix)
-      && point.startUnix >= rawPeriodStartBucket
-      && point.startUnix <= rawPeriodEndBucket
-  ));
-  const cyclePoints = rawCyclePoints.filter((point) => (
-    Number.isFinite(point.startUnix)
-      && point.startUnix >= safePeriodStartUnix
-      && point.startUnix < safePeriodEndUnix
-  ));
-  const boundaryBreakdown = periodBoundaryBreakdown(
-    rawCyclePoints,
-    periodStartUnix,
-    resetAtUnix,
-    5 * 60,
-  );
+  const partition = partitionQuotaPeriodPoints(points ?? [], periodStartUnix, resetAtUnix);
+  const cyclePoints = partition.included;
+  const boundaryBreakdown = {
+    leading: partition.leading.map(safePointBreakdown).reduce(addBreakdowns, emptyBreakdown()),
+    trailing: partition.trailing.map(safePointBreakdown).reduce(addBreakdowns, emptyBreakdown()),
+    leadingStartUnix: partition.leading[0]?.startUnix ?? null,
+    trailingStartUnix: partition.trailing[0]?.startUnix ?? null,
+  };
   const usagePoints = cyclePoints.filter(hasUsage);
   if (usagePoints.length === 0) return null;
 
@@ -270,38 +257,6 @@ type CostBreakdown = {
   totalTokens: number;
   calls: number;
 };
-
-function periodBoundaryBreakdown(
-  points: RecentUsagePoint[],
-  periodStartUnix: number,
-  periodEndUnix: number,
-  bucketSeconds: number,
-): Recent7dSavingsEstimate["boundaryBreakdown"] {
-  const empty = emptyBreakdown();
-  const leadingBucketStart = Math.floor(periodStartUnix / bucketSeconds) * bucketSeconds;
-  const trailingBucketStart = Math.floor(periodEndUnix / bucketSeconds) * bucketSeconds;
-  const leadingStartUnix = Math.abs(periodStartUnix - leadingBucketStart) <= 1e-6
-    ? null
-    : leadingBucketStart;
-  const trailingStartUnix = Math.abs(periodEndUnix - trailingBucketStart) <= 1e-6
-    || trailingBucketStart === leadingStartUnix
-    ? null
-    : trailingBucketStart;
-  const pointBreakdown = (startUnix: number | null): CostBreakdown => (
-    startUnix === null
-      ? empty
-      : points
-        .filter((point) => point.startUnix === startUnix)
-        .map(safePointBreakdown)
-        .reduce(addBreakdowns, emptyBreakdown())
-  );
-  return {
-    leading: pointBreakdown(leadingStartUnix),
-    trailing: pointBreakdown(trailingStartUnix),
-    leadingStartUnix,
-    trailingStartUnix,
-  };
-}
 
 function hasUsage(point: RecentUsagePoint): boolean {
   const breakdown = safePointBreakdown(point);

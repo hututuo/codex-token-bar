@@ -7736,6 +7736,19 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
         30,
         &[("gpt-a", 200, 2, 170, 30, 30)],
     );
+    let minutes = five_minute_12_point.minute_model_breakdowns.as_ref().unwrap();
+    assert_eq!(minutes.len(), 2);
+    assert_eq!(minutes[0].event_start_unix, Some(five_minute_12 + 60));
+    assert_eq!(minutes[1].event_start_unix, Some(five_minute_12 + 240));
+    assert_eq!(minutes[0].breakdown.total_tokens, 120);
+    assert_eq!(minutes[1].breakdown.total_tokens, 80);
+    assert!(data.recent_usage_7d.iter().all(|point| point.minute_model_breakdowns.is_none()));
+    // Older JSON carries no minute detail and still decodes without a migration.
+    let mut old_json = serde_json::to_value(five_minute_12_point).unwrap();
+    old_json.as_object_mut().unwrap().remove("minuteModelBreakdowns");
+    let legacy: RecentUsagePoint = serde_json::from_value(old_json).unwrap();
+    assert!(legacy.minute_model_breakdowns.is_none());
+    assert_eq!(legacy.tokens, five_minute_12_point.tokens);
     assert!(five_minute_12_point.source_contribution_epoch.is_some());
     assert_eq!(
         five_minute_12_point
@@ -9824,6 +9837,7 @@ fn v18_sensitive_snapshot_is_sanitized_again_before_startup_use() {
     snapshot
         .recent_usage_24h
         .push(crate::models::RecentUsagePoint {
+            minute_model_breakdowns: None,
             label: "01:00".into(),
             start_unix: 1_781_715_600,
             tokens: 42,
@@ -10009,6 +10023,7 @@ fn legacy_dashboard_envelope_reads_v18_and_rejects_v16_v17() {
     snapshot
         .recent_usage_24h
         .push(crate::models::RecentUsagePoint {
+            minute_model_breakdowns: None,
             label: "01:00".into(),
             start_unix: 1_781_715_600,
             tokens: 42,

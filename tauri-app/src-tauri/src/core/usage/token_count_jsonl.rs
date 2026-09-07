@@ -4116,6 +4116,7 @@ fn restore_persistent_numeric_recent_usage_points(
     points
         .iter()
         .map(|point| crate::models::RecentUsagePoint {
+            minute_model_breakdowns: None,
             label: point.label.clone(),
             start_unix: point.start_unix,
             tokens: point.tokens,

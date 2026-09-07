@@ -4505,17 +4505,66 @@ impl ExactUsageIndex {
                 });
         }
 
+        let mut recent = usage_series_from_five_minute(
+            aggregate_anchor, local_offset,
+            LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
+            &grouped, &model_grouped, Some(&provenance_epoch), &source_grouped,
+        );
+        // Enrich only the current-cycle horizon from the same published WAL
+        // snapshot. No historical aggregate or schema needs to be rewritten.
+        let minute_start = start.max(end.saturating_sub(8 * 24 * 60 * 60));
+        let mut minute_statement = self.connection.prepare(
+            r#"
+            SELECT timestamp / 60 * 60, model,
+                   SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
+                   SUM(tokens), COUNT(*)
+            FROM published_events
+            WHERE timestamp >= ?1 AND timestamp < ?2
+            GROUP BY 1, model ORDER BY 1, model
+            "#,
+        ).map_err(|error| format!("无法准备周期分钟明细：{error}"))?;
+        let minute_rows = minute_statement.query_map(params![minute_start, end], |row| {
+            Ok(ModelTokenBreakdown {
+                event_start_unix: Some(row.get(0)?),
+                model: row.get(1)?,
+                breakdown: TokenCacheBreakdown {
+                    input_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
+                    cached_input_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
+                    output_tokens: nonnegative_u64(row.get::<_, i64>(4)?),
+                    total_tokens: nonnegative_u64(row.get::<_, i64>(5)?),
+                    calls: saturating_u32(row.get::<_, i64>(6)?),
+                },
+            })
+        }).map_err(|error| format!("无法读取周期分钟明细：{error}"))?;
+        let mut minutes_by_bucket = HashMap::<i64, Vec<ModelTokenBreakdown>>::new();
+        for row in minute_rows {
+            let row = row.map_err(|error| format!("无法解码周期分钟明细：{error}"))?;
+            let bucket = align_usage_bin(row.event_start_unix.unwrap_or(0), 300);
+            minutes_by_bucket.entry(bucket).or_default().push(row);
+        }
+        for point in &mut recent {
+            if let Some(minutes) = minutes_by_bucket.remove(&point.start_unix) {
+                let mut total = UsageBinTotals::default();
+                for minute in &minutes {
+                    total.add_breakdown(UsageBinTotals {
+                        tokens: minute.breakdown.total_tokens,
+                        calls: minute.breakdown.calls,
+                        input_tokens: minute.breakdown.input_tokens,
+                        cached_input_tokens: minute.breakdown.cached_input_tokens,
+                        output_tokens: minute.breakdown.output_tokens,
+                    });
+                }
+                if total.tokens == point.tokens && total.calls == point.calls
+                    && total.input_tokens == point.input_tokens
+                    && total.cached_input_tokens == point.cached_input_tokens
+                    && total.output_tokens == point.output_tokens {
+                    point.minute_model_breakdowns = Some(minutes);
+                }
+            }
+        }
+
         Ok((
-            usage_series_from_five_minute(
-                aggregate_anchor,
-                local_offset,
-                LONG_RECENT_INTERVAL_SECONDS,
-                LONG_RECENT_POINT_COUNT,
-                &grouped,
-                &model_grouped,
-                Some(&provenance_epoch),
-                &source_grouped,
-            ),
+            recent,
             usage_series_from_five_minute(
                 aggregate_anchor,
                 local_offset,
@@ -5268,6 +5317,7 @@ fn usage_series_from_five_minute(
                 .unwrap_or(OffsetDateTime::UNIX_EPOCH)
                 .to_offset(local_offset);
             RecentUsagePoint {
+                minute_model_breakdowns: None,
                 label: timestamp
                     .format(format_description!("[hour]:[minute]"))
                     .unwrap_or_else(|_| "00:00".into()),

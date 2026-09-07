@@ -3061,6 +3061,7 @@ fn fixed_series_now(interval_seconds: i64) -> f64 {
 
 fn recent_point(start_unix: i64) -> RecentUsagePoint {
     RecentUsagePoint {
+        minute_model_breakdowns: None,
         label: "00:00".into(),
         start_unix,
         tokens: 0,

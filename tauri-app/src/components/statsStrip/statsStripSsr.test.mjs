@@ -153,7 +153,7 @@ test("StatsStrip does not render an anonymous 7d fallback model", async () => {
       },
       recentUsageFiveMinute: [{
         label: "7d",
-        startUnix: resetAtUnix - 60,
+        startUnix: resetAtUnix - 300,
         tokens: 1_000_000,
         calls: 1,
         inputTokens: 1_000_000,
@@ -192,7 +192,7 @@ test("StatsStrip keeps a null model row pending even when its totals match", asy
       },
       recentUsageFiveMinute: [{
         label: "7d",
-        startUnix: resetAtUnix - 60,
+        startUnix: resetAtUnix - 300,
         tokens: 1_000_000,
         calls: 1,
         inputTokens: 1_000_000,
@@ -239,7 +239,7 @@ test("StatsStrip keeps trusted 7d model rows visible while marking them stale", 
       },
       recentUsageFiveMinute: [{
         label: "7d",
-        startUnix: resetAtUnix - 60,
+        startUnix: resetAtUnix - 300,
         tokens: 1_000_000,
         calls: 1,
         inputTokens: 1_000_000,
@@ -311,7 +311,7 @@ test("StatsStrip model costs default to 7d and can switch back to cumulative", a
       const resetAtUnix = Math.floor(new Date("2026-07-08T00:00:00Z").getTime() / 1_000);
       const recentPoint = {
         label: "7d",
-        startUnix: resetAtUnix - 60,
+        startUnix: resetAtUnix - 300,
         tokens: 1_000_000,
         calls: 1,
         inputTokens: 1_000_000,

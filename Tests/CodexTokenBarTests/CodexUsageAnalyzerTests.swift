@@ -4209,6 +4209,15 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             )
         }
 
+        let current = try index.attributionSourceBuckets(
+            provenanceEpoch: first.provenanceEpoch,
+            from: now.addingTimeInterval(-3_600), before: now.addingTimeInterval(300)
+        )
+        let minutes = try XCTUnwrap(current.first?.minuteBuckets)
+        XCTAssertEqual(minutes.map(\.breakdown).combined.totalTokens, 120)
+        XCTAssertEqual(minutes.first?.start.timeIntervalSince1970,
+                       floor(now.addingTimeInterval(-60).timeIntervalSince1970 / 60) * 60)
+
         try FileManager.default.removeItem(at: sessionFile)
         let removed = try index.synchronize(
             files: [],
@@ -4233,6 +4242,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertGreaterThan(removed.attributionGeneration, first.attributionGeneration)
         XCTAssertEqual(retained.reduce(0) { $0 + $1.breakdown.totalTokens }, 120)
         XCTAssertEqual(retained.reduce(0) { $0 + $1.breakdown.calls }, 1)
+        XCTAssertNil(retained.first?.minuteBuckets)
     }
 
     func testExactHistoryCrossProcessContentionFailsBeforeSynchronizationWrites() throws {

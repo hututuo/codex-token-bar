@@ -79,6 +79,8 @@ export interface ActivityDay {
 }
 
 export interface RecentUsagePoint {
+  /** Reconciled raw-event minutes for current-cycle edge slicing; absent in old snapshots. */
+  minuteModelBreakdowns?: ModelTokenBreakdown[] | null;
   label: string;
   startUnix: number;
   tokens: number;

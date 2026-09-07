@@ -178,9 +178,9 @@ test("7d API estimate uses the reset boundary and excludes adjacent points", () 
     resetAtUnix,
     priceModel: "gpt56Luna",
     points: [
-      recentPoint(periodStartUnix - 1),
+      recentPoint(periodStartUnix - 300),
       recentPoint(periodStartUnix),
-      recentPoint(resetAtUnix - 1),
+      recentPoint(resetAtUnix - 300),
       recentPoint(resetAtUnix),
     ],
   });

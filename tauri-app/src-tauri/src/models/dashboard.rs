@@ -120,6 +120,9 @@ pub struct ActivityDay {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentUsagePoint {
+    /// Optional disposable minute detail. Historical snapshots keep five-minute precision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minute_model_breakdowns: Option<Vec<ModelTokenBreakdown>>,
     pub label: String,
     pub start_unix: i64,
     pub tokens: u64,

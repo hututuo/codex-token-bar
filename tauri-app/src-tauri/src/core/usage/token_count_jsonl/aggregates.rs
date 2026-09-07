@@ -138,6 +138,7 @@ fn usage_series(
                 .unwrap_or_else(|_| OffsetDateTime::now_utc());
             let usage = grouped.remove(&bin_epoch).unwrap_or_default();
             RecentUsagePoint {
+                minute_model_breakdowns: None,
                 label: format_time(bin_time.to_offset(local_offset)),
                 start_unix: bin_epoch,
                 tokens: usage.tokens,

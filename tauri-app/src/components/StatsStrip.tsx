@@ -130,11 +130,9 @@ function StatsStripView({
     && recent7dModelCost
     && (recent7dModelCost.boundaryBreakdown.leading.totalTokens > 0
       || recent7dModelCost.boundaryBreakdown.trailing.totalTokens > 0)
-    ? `边缘桶另计 ${formatTokens(
-      recent7dModelCost.boundaryBreakdown.leading.inputTokens
-      + recent7dModelCost.boundaryBreakdown.leading.outputTokens
-      + recent7dModelCost.boundaryBreakdown.trailing.inputTokens
-      + recent7dModelCost.boundaryBreakdown.trailing.outputTokens,
+    ? `边缘另计 ${formatTokens(
+      recent7dModelCost.boundaryBreakdown.leading.totalTokens
+      + recent7dModelCost.boundaryBreakdown.trailing.totalTokens,
     )} Token`
     : "";
   const primaryModelCostItems = dashboardPrimaryModelUsageItems(modelCostItems);
@@ -218,7 +216,7 @@ function StatsStripView({
                   </small>
                 ) : null}
                 {boundaryTokenSummary ? (
-                  <small className="stats-model-cost-reference">
+                  <small className="stats-model-cost-reference" title="只另计跨越重置时刻的一分钟；缺少分钟明细的旧记录保留原精度。">
                     {boundaryTokenSummary}
                   </small>
                 ) : null}

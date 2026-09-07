@@ -104,6 +104,7 @@ fn empty_recent_usage(
                 .unwrap_or(now)
                 .to_offset(now.offset());
             RecentUsagePoint {
+                minute_model_breakdowns: None,
                 label: format_time(timestamp),
                 start_unix: bin_epoch,
                 tokens: 0,
