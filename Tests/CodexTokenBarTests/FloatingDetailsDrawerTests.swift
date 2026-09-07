@@ -36,7 +36,7 @@ final class FloatingDetailsDrawerTests: XCTestCase {
             let top = max(mainFrame.maxY, detailFrame.maxY)
             // NSHostingView rounds individual placements to device pixels.
             XCTAssertEqual(bottom, expanded.size.height - top, accuracy: 0.5)
-            XCTAssertGreaterThan(bottom, 8)
+            XCTAssertEqual(bottom, mainFrame.minX, accuracy: 0.5)
             XCTAssertEqual(max(mainFrame.minY, detailFrame.minY) - min(mainFrame.maxY, detailFrame.maxY), 8, accuracy: 0.5)
             XCTAssertEqual(mainFrame.width / mainFrame.height, 258.0 / 120, accuracy: 0.001)
         }
@@ -153,7 +153,7 @@ final class FloatingDetailsDrawerTests: XCTestCase {
             XCTAssertEqual(collapsedFrame.height, expandedFrame.height, accuracy: 0.001)
             XCTAssertEqual(collapsedFrame.width, expandedFrame.width, accuracy: 0.001)
             XCTAssertEqual(abs(collapsedFrame.minX - expandedFrame.minX), normal.size.width, accuracy: 0.001)
-            XCTAssertEqual(expandedFrame.width / expandedFrame.height, normal.size.width / (normal.size.height - 12), accuracy: 0.001)
+            XCTAssertEqual(expandedFrame.width / expandedFrame.height, normal.size.width / (normal.size.height - 2 * FloatingTokenPanelMetrics.shellPadding), accuracy: 0.001)
         }
     }
 
@@ -183,7 +183,7 @@ final class FloatingDetailsDrawerTests: XCTestCase {
         for _ in 0..<10 { host.view.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
         func markerScreenFrame() -> NSRect { panel.convertToScreen(marker.convert(marker.bounds, to: nil)) }
         let before = markerScreenFrame()
-        XCTAssertEqual(before.width / before.height, normal.size.width / (normal.size.height - 12), accuracy: 0.001)
+        XCTAssertEqual(before.width / before.height, normal.size.width / (normal.size.height - 2 * FloatingTokenPanelMetrics.shellPadding), accuracy: 0.001)
         state.dismiss()
         var frames: [NSRect] = []
         for _ in 0..<20 {
@@ -312,7 +312,7 @@ private struct DrawerHostProbe: View {
         let size = state.drawerLayout?.size ?? (state.isPresented ? expanded.size : normal.size)
         let above = state.drawerLayout?.runningModelDetailsPlacement == .above
         let factor = dock.anchor == nil ? 1 : max(0.8, (normal.size.width - 10) / normal.size.width)
-        let padding = 6 * normal.effectiveScale
+        let padding = FloatingTokenPanelMetrics.shellPadding * normal.effectiveScale
         let surface = NSSize(width: normal.size.width, height: normal.size.height - 2 * padding)
         let contentHeight = surface.height + (size.height - normal.size.height) / factor
         ZStack(alignment: .topLeading) {

@@ -4,7 +4,8 @@ enum FloatingTokenPanelMetrics {
     static let baseSize = NSSize(width: 258, height: 120)
     static let minimumControlSize = NSSize(width: 72, height: 34)
     static let baseCornerRadius: CGFloat = 14
-    static let shellPadding: CGFloat = 6
+    // Together with uniform card scaling, this leaves approximately 5pt on each side.
+    static let shellPadding: CGFloat = 2.5
     static let horizontalPadding: CGFloat = 10
     static let verticalPadding: CGFloat = 5
     static let singleElementTopInset: CGFloat = 10
