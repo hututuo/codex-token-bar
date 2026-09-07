@@ -153,4 +153,31 @@ final class FloatingEdgeDockTests: XCTestCase {
         panel.close()
     }
 
+    @MainActor
+    func testNativeDragReturnDoesNotReattachBeforeMouseRelease() async throws {
+        let workArea = try XCTUnwrap(NSScreen.screens.first?.visibleFrame)
+        let frame = NSRect(x: workArea.minX, y: workArea.midY - 60, width: 300, height: 120)
+        let panel = NSPanel(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        var buttons = 1
+        let dock = FloatingEdgeDockController(pointerLocation: { NSPoint(x: workArea.midX, y: workArea.midY) }, pressedMouseButtons: { buttons })
+        dock.bind(panel: panel, enabled: { true }, persist: { _ in })
+        dock.presentation.anchor = FloatingEdgeDockAnchor(edge: .left, expandedFrame: frame)
+        dock.beginDrag()
+        dock.endDrag() // native command returns, but the user is still holding the mouse
+        XCTAssertFalse(dock.isAttached)
+        dock.prepareForResize() // ordinary data/layout refresh must not cancel release tracking
+        let dragged = NSRect(x: workArea.midX - 150, y: workArea.midY - 60, width: 300, height: 120)
+        panel.setFrame(dragged, display: false)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertFalse(dock.isAttached)
+        buttons = 0
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(dock.isAttached)
+        XCTAssertEqual(panel.frame, dragged)
+        try await Task.sleep(for: .milliseconds(550))
+        XCTAssertEqual(panel.frame, dragged)
+        dock.dispose(); panel.close()
+    }
+
 }

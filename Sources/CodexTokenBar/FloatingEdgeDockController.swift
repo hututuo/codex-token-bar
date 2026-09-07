@@ -13,6 +13,7 @@ final class FloatingEdgeDockController {
     private var enabled: () -> Bool = { false }
     private var persist: (NSPoint) -> Void = { _ in }
     private var pending: DispatchWorkItem?
+    private var dragCompletion: DispatchWorkItem?
     private var generation: UInt64 = 0
     private var menuDepth = 0
     private var dragging = false
@@ -59,6 +60,8 @@ final class FloatingEdgeDockController {
     }
 
     func dispose() {
+        dragCompletion?.cancel()
+        dragCompletion = nil
         cancelPending()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
@@ -102,16 +105,35 @@ final class FloatingEdgeDockController {
     }
 
     func beginDrag() {
+        dragCompletion?.cancel()
+        dragCompletion = nil
         dragging = true
         detach()
     }
 
     func endDrag() {
+        guard dragging else { return }
+        // performDrag(with:) can return before the OS-owned mouse gesture ends.
+        // Keep the old dock detached until release, then inspect the final frame.
+        if pressedMouseButtons() & 1 != 0 {
+            dragCompletion?.cancel()
+            let completion = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated { self?.endDrag() }
+            }
+            dragCompletion = completion
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: completion)
+            return
+        }
+        dragCompletion?.cancel()
+        dragCompletion = nil
+        cancelPending()
         dragging = false
         snapIfNearEdge()
     }
 
-    func interactionEnded() { scheduleCollapseIfOutside() }
+    func interactionEnded() {
+        if dragging { endDrag() } else { scheduleCollapseIfOutside() }
+    }
 
     func snapIfNearEdge() {
         guard !dragging, enabled(), let panel, !isApplyingGeometry, !isAttached else { return }
@@ -181,7 +203,7 @@ final class FloatingEdgeDockController {
             return
         }
         withAnimation(motion(expanding: false)) { presentation.collapsed = true }
-        schedule(after: reducedMotion ? 0.02 : 0.34) { [weak self] in
+        schedule(after: reducedMotion ? 0.02 : 0.17) { [weak self] in
             guard let self, self.presentation.collapsed else { return }
             // Shrink native hit bounds too: no transparent rectangle remains
             // over neighbouring applications after the animation has settled.
@@ -193,8 +215,8 @@ final class FloatingEdgeDockController {
     private var reducedMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     private func motion(expanding: Bool) -> Animation? {
         guard !reducedMotion else { return nil }
-        return expanding ? .spring(response: 0.52, dampingFraction: 0.88)
-                         : .timingCurve(0.65, 0, 0.35, 1, duration: 0.30)
+        return expanding ? .spring(response: 0.26, dampingFraction: 0.88)
+                         : .timingCurve(0.65, 0, 0.35, 1, duration: 0.15)
     }
 
     private func setFrame(_ frame: NSRect) {

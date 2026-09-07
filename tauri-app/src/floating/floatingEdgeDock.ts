@@ -66,7 +66,8 @@ export interface DockPorts {
   persist(point: { x: number; y: number }): void;
   present(value: DockPresentation): void;
   reducedMotion(): boolean;
-  prepareReveal?(): void;
+  prepareReveal?(): void | Promise<void>;
+  beforeNativeReveal?(): Promise<() => void>;
   startDrag(): Promise<boolean>;
   report(error: unknown): void;
   timer?(callback: () => void, delay: number): ReturnType<typeof setTimeout>;
@@ -85,6 +86,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
   let dragging = false;
   let dragDeadline = 0;
   let pointerInside = false;
+  let revealing = false;
   const setTimer = ports.timer ?? setTimeout;
   const clearTimer = ports.cancelTimer ?? clearTimeout;
 
@@ -165,7 +167,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     if (!current(token) || blocked() || containsDockPoint(state.anchor.frame, pointer)) return;
     if (pointer.leftButtonDown) { later(80, collapse); return; }
     publish({ ...state, collapsed: true, motion: ports.reducedMotion() ? "none" : "collapse" });
-    later(ports.reducedMotion() ? 0 : 340, async () => {
+    later(ports.reducedMotion() ? 0 : 170, async () => {
       const anchor = state.anchor;
       if (!anchor || !state.collapsed || blocked()) return;
       const finish = generation;
@@ -174,27 +176,40 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     });
   }
   async function reveal() {
-    if (disposed || !state.anchor || resizing > 0) return;
+    if (disposed || !state.anchor || resizing > 0 || revealing) return;
+    revealing = true;
     const token = cancel();
-    if (state.compact) {
-      const live = await ports.geometry();
-      if (!current(token) || !state.anchor) return;
-      const stillAttached = resolveDockAnchor({ ...live, frame: state.anchor.frame });
-      if (live.scaleFactor !== state.anchor.scaleFactor || stillAttached?.edge !== state.anchor.edge) {
-        await recoverDisplayGeometry();
-        return;
+    let restorePaint: (() => void) | undefined;
+    try {
+      if (state.compact) {
+        const live = await ports.geometry();
+        if (!current(token) || !state.anchor) return;
+        const stillAttached = resolveDockAnchor({ ...live, frame: state.anchor.frame });
+        if (live.scaleFactor !== state.anchor.scaleFactor || stillAttached?.edge !== state.anchor.edge) {
+          await recoverDisplayGeometry();
+          return;
+        }
+        // WebKit may display its old narrow backing surface at the newly moved
+        // window origin. Fade that surface out before any native resize occurs.
+        restorePaint = await ports.beforeNativeReveal?.();
+        if (!current(token) || !state.anchor) return;
+        await frame(state.anchor.frame, token);
+        if (!current(token)) return;
+        publish({ ...state, compact: false, motion: "none" });
+        await ports.prepareReveal?.();
+        if (!current(token)) return;
       }
-      await frame(state.anchor.frame, token);
-      if (!current(token)) return;
-      publish({ ...state, compact: false, motion: "none" });
-      ports.prepareReveal?.();
-      {
-        publish({ ...state, collapsed: false, motion: ports.reducedMotion() ? "none" : "expand" });
-        if (!pointerInside) scheduleHide();
-      }
-    } else {
       publish({ ...state, collapsed: false, motion: ports.reducedMotion() ? "none" : "expand" });
       if (!pointerInside) scheduleHide();
+    } catch (error) {
+      if (current(token) && state.anchor) {
+        if (state.compact) await frame(state.anchor.frame, token);
+        if (current(token)) publish({ ...FREE_DOCK_PRESENTATION });
+      }
+      throw error;
+    } finally {
+      restorePaint?.();
+      revealing = false;
     }
   }
   function hover(inside: boolean) {

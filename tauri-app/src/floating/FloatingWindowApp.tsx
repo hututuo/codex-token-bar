@@ -283,7 +283,7 @@ export function FloatingWindowApp() {
     const animation = shell.animate([
       { transform: `${centered}scale(${lip.width / frame.width}, ${lip.height / frame.height})` },
       { transform: centered || "none" },
-    ], { duration: 520, easing: "cubic-bezier(.25, .46, .3, 1)" });
+    ], { duration: 260, easing: "cubic-bezier(.25, .46, .3, 1)" });
     return () => animation.cancel();
   }, [dockAnchor]);
   const dockScale = dockAnchor?.scaleFactor ?? 1;

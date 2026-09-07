@@ -12504,7 +12504,7 @@ details.session-management-banner {
   width: var(--dock-width, 100vw);
   height: var(--dock-height, 100vh);
   transform-origin: center;
-  transition: transform 520ms cubic-bezier(.25, .46, .3, 1), opacity 320ms ease-out;
+  transition: transform 260ms cubic-bezier(.25, .46, .3, 1), opacity 160ms ease-out;
 }
 .floating-edge-content > .floating-window-shell {
   width: 100%;
@@ -12519,7 +12519,7 @@ details.session-management-banner {
   background: #000;
   opacity: 0;
   pointer-events: none;
-  transition: transform 520ms cubic-bezier(.25, .46, .3, 1), opacity 260ms ease-out, border-radius 300ms ease;
+  transition: transform 260ms cubic-bezier(.25, .46, .3, 1), opacity 130ms ease-out, border-radius 150ms ease;
 }
 .floating-edge-host:not([data-edge="free"]) .floating-edge-shell { opacity: 1; }
 .floating-edge-host[data-edge="left"] .floating-edge-shell { border-radius: 0 22px 22px 0; }
@@ -12548,7 +12548,7 @@ details.session-management-banner {
   transform: translateX(-50%) scale(var(--dock-lip-scale-x), var(--dock-lip-scale-y));
 }
 .floating-edge-host[data-motion="collapse"] :is(.floating-edge-content, .floating-edge-shell) {
-  transition: transform 300ms cubic-bezier(.65, 0, .35, 1), opacity 150ms ease-in, border-radius 300ms ease;
+  transition: transform 150ms cubic-bezier(.65, 0, .35, 1), opacity 75ms ease-in, border-radius 150ms ease;
 }
 .floating-edge-host[data-motion="none"] :is(.floating-edge-content, .floating-edge-shell) { transition: none; }
 .floating-edge-host[data-collapsed="true"][data-edge="left"] .floating-edge-shell { border-radius: 0 3px 3px 0; }
@@ -12562,7 +12562,7 @@ details.session-management-banner {
   height: var(--dock-lip-height);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 160ms ease-out;
+  transition: opacity 80ms ease-out;
   min-width: 0;
   min-height: 0;
   margin: 0;
@@ -12576,7 +12576,7 @@ details.session-management-banner {
 .floating-edge-host:is([data-edge="top"], [data-edge="bottom"]) .floating-edge-reveal { left: 50%; transform: translateX(-50%); }
 .floating-edge-host[data-edge="bottom"] .floating-edge-reveal { top: auto; bottom: 0; }
 .floating-edge-host[data-collapsed="true"] .floating-edge-reveal {
-  opacity: 1; pointer-events: auto; transition: opacity 240ms ease-in-out 70ms;
+  opacity: 1; pointer-events: auto; transition: opacity 120ms ease-in-out 35ms;
 }
 .floating-edge-reveal[aria-hidden="true"] { opacity: 0; pointer-events: none; }
 .floating-edge-reveal:focus-visible { outline: 2px solid #9ac4ff; outline-offset: -2px; }

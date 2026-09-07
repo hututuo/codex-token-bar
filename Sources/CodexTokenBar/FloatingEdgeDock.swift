@@ -108,7 +108,7 @@ struct FloatingEdgeDockModifier: ViewModifier {
                 .buttonStyle(.plain)
                 .offset(x: compact ? 0 : lip.minX - full.minX, y: compact ? 0 : full.maxY - lip.maxY)
                 .opacity(collapsed ? 1 : 0)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: collapsed)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: collapsed)
                 .allowsHitTesting(collapsed)
                 .accessibilityHidden(!collapsed)
                 .accessibilityLabel("展开边缘悬浮窗")

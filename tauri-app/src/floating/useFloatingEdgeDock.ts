@@ -10,6 +10,7 @@ import {
   runFloatingGeometryChange,
 } from "../platform/floatingGeometryLifecycle";
 import { isFloatingWindowResizeProgrammatic, startFloatingWindowDrag } from "../platform/floatingWindowControls";
+import { fadeBeforeNativeDockReveal, waitForDockViewport, waitForDockPaint } from "./floatingDockPaintHandoff";
 import { createFloatingEdgeDockController, FREE_DOCK_PRESENTATION, type DockPresentation } from "./floatingEdgeDock";
 
 export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
@@ -50,11 +51,15 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
       persist: publishFloatingSettledPosition,
       present(value) { if (!disposed) flushSync(() => setPresentation(value)); },
       reducedMotion: () => reduced.matches,
-      prepareReveal() {
+      beforeNativeReveal: () => fadeBeforeNativeDockReveal(document.querySelector<HTMLElement>(".floating-edge-host"), reduced.matches),
+      async prepareReveal() {
+        const anchor = dock.state().anchor;
+        if (anchor) await waitForDockViewport(anchor.frame.width / anchor.scaleFactor, anchor.frame.height / anchor.scaleFactor);
         // Resolve the collapsed style in the expanded native viewport before
         // starting its transition, without introducing a hover-delay timer.
         const shell = document.querySelector(".floating-edge-shell");
         if (shell) void getComputedStyle(shell).transform;
+        await waitForDockPaint();
       },
       startDrag: startFloatingWindowDrag,
       report: (error) => warnPlatformFailure("floating-edge-dock", error),
