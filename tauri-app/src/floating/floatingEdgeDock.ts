@@ -88,6 +88,8 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
   let dragDeadline = 0;
   let pointerInside = false;
   let revealing = false;
+  let heldOpen = false;
+  let resizingAnchor: DockAnchor | null = null;
   const setTimer = ports.timer ?? setTimeout;
   const clearTimer = ports.cancelTimer ?? clearTimeout;
 
@@ -135,13 +137,14 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
   async function detach() {
     const token = cancel();
     const anchor = state.anchor;
+    resizingAnchor = null;
     if (anchor) {
       await frame(anchor.frame, token);
       if (current(token)) publish({ ...FREE_DOCK_PRESENTATION });
     }
   }
   async function settle() {
-    if (blocked() || state.anchor) return;
+    if (blocked() || heldOpen || state.anchor) return;
     const token = cancel();
     const geometry = await ports.geometry();
     if (!current(token) || blocked()) return;
@@ -158,11 +161,11 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     if (!pointerInside) scheduleHide();
   }
   function scheduleHide() {
-    if (blocked() || !state.anchor || state.compact || state.collapsed || pointerInside) return;
+    if (blocked() || heldOpen || !state.anchor || state.compact || state.collapsed || pointerInside) return;
     later(450, collapse);
   }
   async function collapse() {
-    if (blocked() || !state.anchor || pointerInside) return;
+    if (blocked() || heldOpen || !state.anchor || pointerInside) return;
     const token = cancel();
     const pointer = await ports.pointer();
     if (!current(token) || blocked() || containsDockPoint(state.anchor.frame, pointer)) return;
@@ -294,13 +297,36 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
       suspended = value;
       if (value) await detach(); else later(100, settle);
     },
+    async holdOpen(value: boolean) {
+      heldOpen = value;
+      if (value) {
+        cancel();
+        if (state.collapsed) await reveal();
+      } else scheduleHide();
+    },
     async beforeResize() {
       resizing += 1;
-      await detach();
+      if (state.anchor && !suspended && !dragging) {
+        resizingAnchor = state.anchor;
+        const token = cancel();
+        if (state.compact) await frame(state.anchor.frame, token);
+        if (current(token)) publish({ ...state, collapsed: false, compact: false, railReady: false, motion: "none" });
+      } else await detach();
     },
     afterResize() {
       resizing = Math.max(0, resizing - 1);
-      if (dragging) later(60, pollDrag);
+      if (resizing > 0) return;
+      const anchor = resizingAnchor;
+      resizingAnchor = null;
+      if (anchor && !blocked()) {
+        const token = cancel();
+        void ports.geometry().then(live => {
+          if (!current(token) || blocked()) return;
+          publish({ anchor: makeDockAnchor(anchor.edge, live.frame, live.scaleFactor),
+            collapsed: false, compact: false, railReady: false, motion: "none" });
+          scheduleHide();
+        }).catch(ports.report);
+      } else if (dragging) later(60, pollDrag);
       else if (!blocked()) later(100, settle);
     },
     moved() {

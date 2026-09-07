@@ -30,7 +30,6 @@ import {
   FLOATING_PAGING_GUIDE_HEIGHT,
   FLOATING_PAGING_GUIDE_WIDTH,
   FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT,
-  FLOATING_RUNNING_MODEL_DETAILS_WINDOW_WIDTH,
   DEFAULT_FLOATING_SETTINGS,
   floatingGuidePages,
   floatingSettingsCompletingPagingGuide,
@@ -47,7 +46,7 @@ import {
 } from "./FloatingRunningThreadModelDetails";
 import { useFloatingCrowdRadar, useFloatingRadar } from "./useFloatingRadar";
 import {
-  runningModelDetailsPlacement,
+  resolveFloatingDetailsDrawer,
   type FloatingRunningModelDetailsPlacement,
 } from "./floatingWindowPlacement";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
@@ -79,7 +78,8 @@ export function FloatingWindowApp() {
   const [pagingGuideSaving, setPagingGuideSaving] = useState(false);
   const [pagingGuideError, setPagingGuideError] = useState<string | null>(null);
   const [runningModelDetailsExpanded, setRunningModelDetailsExpanded] = useState(false);
-  const [runningModelDetailsSide, setRunningModelDetailsSide] = useState<FloatingRunningModelDetailsPlacement>("trailing");
+  const [runningModelDetailsSide, setRunningModelDetailsSide] = useState<FloatingRunningModelDetailsPlacement>("below");
+  const [drawerMetrics, setDrawerMetrics] = useState({ height: 96, offset: 0 });
   const [runningModelDetailsHeight, setRunningModelDetailsHeight] = useState(
     FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT,
   );
@@ -267,13 +267,28 @@ export function FloatingWindowApp() {
     && contentHasRunningThreadDetailsTarget;
   const edgeDock = useFloatingEdgeDock(
     settingsLoaded,
-    pagingGuidePresented || effectiveRunningModelDetailsExpanded || !surfaceLifecycle.active,
+    pagingGuidePresented || !surfaceLifecycle.active,
+    effectiveRunningModelDetailsExpanded,
   );
   const dock = edgeDock.presentation;
   const dockAnchor = dock.anchor;
   const dockShellRef = useRef<HTMLDivElement | null>(null);
+  const previousDockAnchor = useRef(dockAnchor);
   useLayoutEffect(() => {
     const shell = dockShellRef.current;
+    const previous = previousDockAnchor.current;
+    previousDockAnchor.current = dockAnchor;
+    if (previous && dockAnchor) {
+      const extra = (dockAnchor.frame.height - previous.frame.height) / dockAnchor.scaleFactor;
+      const host = shell?.parentElement;
+      if (extra > 1 && effectiveRunningModelDetailsExpanded && host && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        const inset = runningModelDetailsSide === "above" ? `${extra}px 0 0 0` : `0 0 ${extra}px 0`;
+        const animation = host.animate([{ clipPath: `inset(${inset})` }, { clipPath: "inset(0px)" }],
+          { duration: 220, easing: "cubic-bezier(.25,.46,.3,1)" });
+        return () => animation.cancel();
+      }
+      return;
+    }
     if (!dockAnchor || !shell || typeof shell.animate !== "function"
       || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const { frame, lip, edge } = dockAnchor;
@@ -339,8 +354,12 @@ export function FloatingWindowApp() {
     function closeForWindowBlur() {
       setRunningModelDetailsExpanded(false);
     }
+    const closeForEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setRunningModelDetailsExpanded(false); }
+    };
     window.addEventListener("blur", closeForWindowBlur);
-    return () => window.removeEventListener("blur", closeForWindowBlur);
+    window.addEventListener("keydown", closeForEscape);
+    return () => { window.removeEventListener("blur", closeForWindowBlur); window.removeEventListener("keydown", closeForEscape); };
   }, [effectiveRunningModelDetailsExpanded]);
 
   useEffect(() => {
@@ -355,87 +374,50 @@ export function FloatingWindowApp() {
 
   useEffect(() => {
     let cancelled = false;
-    const height = floatingContentHeight(presentedSettings.contentVisibility);
-    const targetWidth = Math.max(
-      FLOATING_BASE_WIDTH,
-      pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0,
-      effectiveRunningModelDetailsExpanded ? FLOATING_RUNNING_MODEL_DETAILS_WINDOW_WIDTH : 0,
-    ) * presentedSettings.scale;
-    const targetHeight = Math.max(
-      height * presentedSettings.scale,
-      pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT * presentedSettings.scale : 0,
-      effectiveRunningModelDetailsExpanded
-        ? Math.max(
-            FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * presentedSettings.scale,
-            runningModelDetailsHeight + 8 * presentedSettings.scale,
-          )
-        : 0,
-    );
+    const scale = presentedSettings.scale;
+    const surfaceHeight = floatingContentHeight(presentedSettings.contentVisibility) * scale;
+    const targetWidth = Math.max(FLOATING_BASE_WIDTH, pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0) * scale;
 
     const reconcileWindowGeometry = async () => {
       const appWindow = getCurrentWindow();
       let basePosition = runningModelDetailsBasePositionRef.current;
-      let placement: FloatingRunningModelDetailsPlacement = "trailing";
-
+      let targetPosition = basePosition ?? undefined;
+      let targetHeight = Math.max(surfaceHeight, pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT * scale : 0);
+      let placement: FloatingRunningModelDetailsPlacement = "below";
+      let nextMetrics = { height: FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * scale, offset: 0 };
       if (effectiveRunningModelDetailsExpanded) {
-        if (!basePosition) {
-          try {
-            const position = await appWindow.outerPosition();
-            basePosition = { x: position.x, y: position.y };
-          } catch {
-            basePosition = null;
-          }
-        }
-
-        if (basePosition) {
-          try {
-            const [monitor, scaleFactor] = await Promise.all([
-              currentMonitor(),
-              appWindow.scaleFactor(),
-            ]);
-            if (monitor) {
-              placement = runningModelDetailsPlacement({
-                windowLeft: basePosition.x,
-                surfaceWidth: FLOATING_BASE_WIDTH * presentedSettings.scale * scaleFactor,
-                expandedWidth: targetWidth * scaleFactor,
-                workAreaLeft: monitor.workArea.position.x,
-                workAreaRight: monitor.workArea.position.x + monitor.workArea.size.width,
-              });
-            }
-          } catch {
-            placement = "trailing";
-          }
-        }
-
-        if (cancelled) return;
-        runningModelDetailsBasePositionRef.current = basePosition;
-        setRunningModelDetailsSide((current) => current === placement ? current : placement);
-      } else {
-        placement = "trailing";
+        const [monitor, factor, position] = await Promise.all([
+          currentMonitor(), appWindow.scaleFactor(), appWindow.outerPosition(),
+        ]);
+        const dockFrame = edgeDock.expandedFrame();
+        basePosition ??= { x: dockFrame?.x ?? position.x, y: dockFrame?.y ?? position.y };
+        const base = { ...basePosition, width: targetWidth * factor, height: surfaceHeight * factor };
+        const workArea = monitor ? {
+          x: monitor.workArea.position.x, y: monitor.workArea.position.y,
+          width: monitor.workArea.size.width, height: monitor.workArea.size.height,
+        } : { x: base.x, y: base.y, width: base.width, height: base.height + 332 * scale * factor };
+        const drawer = resolveFloatingDetailsDrawer({ base, workArea,
+          detailsHeight: Math.min(320 * scale, Math.max(FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * scale, runningModelDetailsHeight)) * factor,
+          gap: 8 * scale * factor, inset: 4 * scale * factor, minimumDetailsHeight: 96 * scale * factor,
+        });
+        placement = drawer.placement;
+        targetHeight = drawer.frame.height / factor;
+        targetPosition = { x: drawer.frame.x, y: drawer.frame.y };
+        nextMetrics = { height: drawer.detailsHeight / factor, offset: drawer.surfaceOffsetY / factor };
       }
-
       if (cancelled) return;
-      await desktopPlatform.resizeFloatingWindow(
-        targetWidth,
-        targetHeight,
-        basePosition
-          ? {
-              basePosition,
-              placement,
-              surfaceWidth: FLOATING_BASE_WIDTH * presentedSettings.scale,
-            }
-          : undefined,
-      );
+      if (effectiveRunningModelDetailsExpanded) runningModelDetailsBasePositionRef.current = basePosition;
+      setRunningModelDetailsSide(placement);
+      setDrawerMetrics(current => current.height === nextMetrics.height && current.offset === nextMetrics.offset ? current : nextMetrics);
+      const resized = await desktopPlatform.resizeFloatingWindow(targetWidth, targetHeight, { targetPosition });
+      if (!resized && effectiveRunningModelDetailsExpanded && !cancelled) setRunningModelDetailsExpanded(false);
       if (!effectiveRunningModelDetailsExpanded && !cancelled) {
         runningModelDetailsBasePositionRef.current = null;
-        setRunningModelDetailsSide("trailing");
+        setRunningModelDetailsSide("below");
       }
     };
-
-    void reconcileWindowGeometry();
-    return () => {
-      cancelled = true;
-    };
+    void reconcileWindowGeometry().catch(error => console.warn("Floating details layout failed", error));
+    return () => { cancelled = true; };
   }, [
     effectiveRunningModelDetailsExpanded,
     pagingGuidePresented,
@@ -530,6 +512,8 @@ export function FloatingWindowApp() {
   const { style: appearanceStyle } = floatingPanelAppearance(presentedSettings);
   const shellStyle = {
     ...appearanceStyle,
+    "--floating-drawer-height": `${drawerMetrics.height}px`,
+    "--floating-drawer-offset": `${drawerMetrics.offset}px`,
   } as CSSProperties;
   const guideScale = presentedSettings.scale;
   const pagingGuideTargetYs = pagedFloatingRowCenterYs(presentedSettings.contentVisibility)
@@ -584,7 +568,7 @@ export function FloatingWindowApp() {
     <div ref={dockShellRef} className="floating-edge-shell" aria-hidden="true" />
     <div className="floating-edge-content" inert={dock.collapsed} aria-hidden={dock.collapsed || undefined}>
     <main
-      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}${effectiveRunningModelDetailsExpanded && runningModelDetailsSide === "leading" ? " floating-window-shell--running-model-details-leading" : ""}`}
+      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}${effectiveRunningModelDetailsExpanded && runningModelDetailsSide === "above" ? " floating-window-shell--running-model-details-above" : ""}`}
       onMouseDownCapture={dismissRunningModelDetailsForOutsidePointer}
       style={shellStyle}
     >

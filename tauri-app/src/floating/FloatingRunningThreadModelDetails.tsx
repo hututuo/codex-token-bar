@@ -82,7 +82,13 @@ export function FloatingRunningThreadModelDetails({
       return undefined;
     }
     const reportHeight = () => {
-      const height = Math.ceil(element.getBoundingClientRect().height);
+      const table = element.querySelector<HTMLElement>(".floating-running-model-table");
+      const style = getComputedStyle(element);
+      const children = [...element.children] as HTMLElement[];
+      const tableHeight = table ? [...table.children].reduce((sum, child) => sum + child.getBoundingClientRect().height, 0) : 0;
+      const height = Math.ceil(children.reduce((sum, child) => sum + (child === table ? tableHeight : child.getBoundingClientRect().height), 0)
+        + parseFloat(style.paddingTop || "0") + parseFloat(style.paddingBottom || "0")
+        + Math.max(0, children.length - 1) * parseFloat(style.rowGap || "0") + 2);
       if (height > 0) onHeightChange(height);
     };
     reportHeight();
@@ -101,6 +107,9 @@ export function FloatingRunningThreadModelDetails({
       className={`floating-running-model-details${className ? ` ${className}` : ""}`}
       onDoubleClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && onClose) { event.preventDefault(); event.stopPropagation(); onClose(); }
+      }}
       ref={detailsRef}
     >
       <header>
@@ -117,6 +126,7 @@ export function FloatingRunningThreadModelDetails({
           >×</button>
         </span>
       </header>
+      {onClose ? <small className="floating-running-model-close-hint">Esc 或 × 关闭 · 再次点击主／子数字也可收起</small> : null}
       <div className="floating-running-model-table">
         <div aria-hidden="true" className="floating-running-model-column-labels">
           <span>主线程 <b>{summary.mainThreads ?? 0}</b></span>
@@ -149,6 +159,7 @@ function RunningThreadGroupRow({ group }: { group: RunningThreadGroup }) {
       <span
         aria-describedby={tooltipId}
         className="floating-running-model-main"
+        title={title}
         tabIndex={0}
       >
         <ModelDot model={group.mainThread.model} />

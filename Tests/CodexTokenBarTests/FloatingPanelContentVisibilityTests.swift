@@ -205,7 +205,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
     }
 
-    func testRunningModelDetailsExpandToTheRightWithoutChangingTheSurfaceWidth() {
+    func testRunningModelDetailsExpandVerticallyWithoutChangingTheSurfaceWidth() {
         let collapsed = FloatingTokenPanelMetrics.size(
             effectiveScale: 1,
             visibility: .default
@@ -220,9 +220,6 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(
             expanded.width,
             collapsed.width
-                + FloatingTokenPanelMetrics.runningModelDetailsGap
-                + FloatingTokenPanelMetrics.runningModelDetailsWidth
-                + FloatingTokenPanelMetrics.runningModelDetailsTrailingInset
         )
         XCTAssertGreaterThanOrEqual(
             expanded.height,
@@ -234,7 +231,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
     }
 
-    func testRunningModelDetailsFlipToTheAvailableSideWithoutMovingTheBaseSurface() {
+    func testRunningModelDetailsOpenAboveAtTheBottomWithoutMovingTheBaseSurface() {
         let surfaceSize = FloatingTokenPanelMetrics.size(
             effectiveScale: 1,
             visibility: .default
@@ -248,7 +245,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let screenFrame = NSRect(x: 0, y: 0, width: 1_200, height: 800)
         let baseFrame = NSRect(
             x: 900,
-            y: 420,
+            y: 20,
             width: surfaceSize.width,
             height: surfaceSize.height
         )
@@ -259,7 +256,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             expandedSize: expandedSize,
             screenFrame: screenFrame
         )
-        XCTAssertEqual(placement, .leading)
+        XCTAssertEqual(placement, .above)
 
         let expandedFrame = FloatingTokenPanelResizePolicy.expandedFrame(
             baseFrame: baseFrame,
@@ -268,9 +265,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             placement: placement,
             screenFrame: screenFrame
         )
-        let detailsExtraWidth = expandedSize.width - surfaceSize.width
-        XCTAssertEqual(expandedFrame.minX + detailsExtraWidth, baseFrame.minX, accuracy: 0.001)
-        XCTAssertEqual(expandedFrame.maxY, baseFrame.maxY, accuracy: 0.001)
+        XCTAssertEqual(expandedFrame.minX, baseFrame.minX, accuracy: 0.001)
+        XCTAssertEqual(expandedFrame.minY, baseFrame.minY, accuracy: 0.001)
         XCTAssertEqual(
             FloatingTokenPanelResizePolicy.baseFrame(
                 for: expandedFrame,
@@ -281,9 +277,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
     }
 
-    func testRunningModelDetailsStayTrailingWhenThereIsRoom() {
+    func testRunningModelDetailsOpenBelowWhenThereIsRoom() {
         let surfaceSize = NSSize(width: 258, height: 120)
-        let expandedSize = NSSize(width: 536, height: 150)
+        let expandedSize = NSSize(width: 258, height: 300)
         let baseFrame = NSRect(x: 120, y: 420, width: surfaceSize.width, height: surfaceSize.height)
         let placement = FloatingTokenPanelResizePolicy.runningModelDetailsPlacement(
             panelFrame: baseFrame,
@@ -292,7 +288,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             screenFrame: NSRect(x: 0, y: 0, width: 1_200, height: 800)
         )
 
-        XCTAssertEqual(placement, .trailing)
+        XCTAssertEqual(placement, .below)
         let expandedFrame = FloatingTokenPanelResizePolicy.expandedFrame(
             baseFrame: baseFrame,
             expandedSize: expandedSize,

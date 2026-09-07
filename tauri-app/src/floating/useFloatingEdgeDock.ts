@@ -13,7 +13,7 @@ import { isFloatingWindowResizeProgrammatic, startFloatingWindowDrag } from "../
 import { waitForDockViewport, waitForDockPaint } from "./floatingDockPaintHandoff";
 import { createFloatingEdgeDockController, FREE_DOCK_PRESENTATION, type DockPresentation } from "./floatingEdgeDock";
 
-export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
+export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOpen = false) {
   const [presentation, setPresentation] = useState<DockPresentation>(FREE_DOCK_PRESENTATION);
   const controller = useRef<ReturnType<typeof createFloatingEdgeDockController> | null>(null);
   const suspendedRef = useRef(suspended);
@@ -106,8 +106,13 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean) {
     void controller.current?.suspend(suspended).catch((error) => warnPlatformFailure("floating-edge-dock", error));
   }, [suspended]);
 
+  useEffect(() => {
+    void controller.current?.holdOpen(heldOpen).catch((error) => warnPlatformFailure("floating-edge-dock", error));
+  }, [heldOpen, enabled]);
+
   return {
     presentation,
+    expandedFrame: () => controller.current?.state().anchor?.frame,
     hover: (inside: boolean) => controller.current?.hover(inside),
     reveal: () => { void controller.current?.reveal().catch((error) => warnPlatformFailure("floating-edge-dock", error)); },
     startDrag: () => {

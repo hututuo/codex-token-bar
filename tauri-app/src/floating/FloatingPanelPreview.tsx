@@ -263,7 +263,7 @@ export function FloatingPanelSurface({
   onPreviewRowSelect,
   onPageNavigation,
   runningModelDetailsExpanded = false,
-  runningModelDetailsSide = "trailing",
+  runningModelDetailsSide = "below",
   onRunningThreadsActivate,
   guideMode = false,
   guideOverlayVisible = false,

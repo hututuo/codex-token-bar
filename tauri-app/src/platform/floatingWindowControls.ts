@@ -1,5 +1,6 @@
 import { floatingGeometryLifecycle, isFloatingGeometryTransient, runFloatingGeometryChange } from "./floatingGeometryLifecycle";
-import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
+import { PhysicalPosition } from "@tauri-apps/api/dpi";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   clearPlatformFailure,
@@ -7,19 +8,15 @@ import {
   warnPlatformFailure,
   type Unlisten,
 } from "./desktopBridge";
-import type { FloatingRunningModelDetailsPlacement } from "../floating/floatingWindowPlacement";
 
 export interface DesktopPosition {
   x: number;
   y: number;
 }
 
-export type { FloatingRunningModelDetailsPlacement } from "../floating/floatingWindowPlacement";
 
 export interface FloatingWindowResizeOptions {
-  basePosition?: DesktopPosition;
-  placement?: FloatingRunningModelDetailsPlacement;
-  surfaceWidth?: number;
+  targetPosition?: DesktopPosition;
 }
 
 let programmaticPosition: DesktopPosition | null = null;
@@ -39,32 +36,18 @@ export async function resizeFloatingWindow(
     await dockLifecycle?.beforeResize();
     const appWindow = getCurrentWindow();
     programmaticResizeUntil = Date.now() + 1_000;
-    let targetPosition: DesktopPosition | null = null;
-    if (options.basePosition) {
-      const scaleFactor = await appWindow.scaleFactor();
-      const expandedWidth = width * scaleFactor;
-      const surfaceWidth = (options.surfaceWidth ?? width) * scaleFactor;
-      const extraWidth = Math.max(0, expandedWidth - surfaceWidth);
-      targetPosition = {
-        x: Math.round(
-          options.basePosition.x
-            + (options.placement === "leading" ? -extraWidth : 0),
-        ),
-        y: options.basePosition.y,
-      };
-    }
+    const targetPosition = options.targetPosition;
 
     await runFloatingGeometryChange(async () => {
-      await appWindow.setSize(new LogicalSize(width, height));
-      if (targetPosition) {
-        markFloatingWindowPositionProgrammatic(targetPosition);
-        try {
-          await appWindow.setPosition(new PhysicalPosition(targetPosition.x, targetPosition.y));
-        } catch (error) {
-          programmaticPosition = null;
-          throw error;
-        }
-      }
+      const [scaleFactor, current] = await Promise.all([appWindow.scaleFactor(), appWindow.outerPosition()]);
+      const position = targetPosition ?? current;
+      markFloatingWindowPositionProgrammatic(position);
+      // Commit origin and size together, especially when a bottom-edge drawer
+      // grows upward. Restore the normal full WebKit viewport at this boundary.
+      await invoke("set_floating_dock_frame", { frame: {
+        x: Math.round(position.x), y: Math.round(position.y),
+        width: Math.round(width * scaleFactor), height: Math.round(height * scaleFactor),
+      }, viewport: null });
     });
     programmaticResizeUntil = Date.now() + 250;
     clearPlatformFailure("resize-floating-window");

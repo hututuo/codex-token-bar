@@ -41,11 +41,11 @@ enum FloatingTokenPanelMetrics {
     // The guide card now sits below the normal panel. Keep only enough extra
     // height for that card instead of stretching the whole panel vertically.
     static let pagingGuideHeight: CGFloat = 240
-    static let runningModelDetailsGap: CGFloat = 10
+    static let runningModelDetailsGap: CGFloat = 8
     static let runningModelDetailsWidth: CGFloat = 260
-    static let runningModelDetailsTrailingInset: CGFloat = 8
+    static let runningModelDetailsTrailingInset: CGFloat = 4
     static let runningModelDetailsMinimumHeight: CGFloat = 96
-    static let runningModelDetailsBaseHeight: CGFloat = 60
+    static let runningModelDetailsBaseHeight: CGFloat = 84
     static let runningModelDetailsRowHeight: CGFloat = 27
     static let defaultScale = 1.0
     static let scaleRange = 0.75...2.0
@@ -125,11 +125,11 @@ enum FloatingTokenPanelMetrics {
     }
 
     static func runningModelDetailsHeight(rowCount: Int) -> CGFloat {
-        max(
+        min(320, max(
             runningModelDetailsMinimumHeight,
             runningModelDetailsBaseHeight
                 + CGFloat(max(1, rowCount)) * runningModelDetailsRowHeight
-        )
+        ))
     }
 
     static func firstPagedRowCenterY(
@@ -287,25 +287,14 @@ enum FloatingTokenPanelMetrics {
 
         let contentWidth = rows.flatMap(\.groups).map(rowWidth(for:)).max() ?? 0
         let normalWidth = max(minimumControlSize.width, horizontalPadding * 2 + contentWidth)
-        let detailsWidth = runningModelDetailsPresented
-            ? normalWidth
-                + runningModelDetailsGap
-                + runningModelDetailsWidth
-                + runningModelDetailsTrailingInset
-            : 0
-        let width = max(
-            max(normalWidth, detailsWidth),
-            pagingGuidePresented ? pagingGuideWindowWidth : 0
-        )
+        let width = max(normalWidth, pagingGuidePresented ? pagingGuideWindowWidth : 0)
         let topInset = visibility.needsTopControlInset ? singleElementTopInset : 0
         let computedHeight = max(minimumControlSize.height, verticalPadding * 2 + topInset + contentHeight(visibility: visibility))
+        let normalHeight = visibility == .default ? baseSize.height : computedHeight
         let height = max(
-            max(
-                visibility == .default ? baseSize.height : computedHeight,
-                runningModelDetailsPresented
-                    ? runningModelDetailsHeight(rowCount: runningModelDetailsRowUnits)
-                    : 0
-            ),
+            normalHeight + (runningModelDetailsPresented
+                ? runningModelDetailsGap + runningModelDetailsHeight(rowCount: runningModelDetailsRowUnits) + runningModelDetailsTrailingInset
+                : 0),
             pagingGuidePresented ? pagingGuideHeight : 0
         )
         return NSSize(width: width, height: height)
@@ -317,90 +306,52 @@ enum FloatingTokenPanelMetrics {
 }
 
 enum FloatingRunningModelDetailsPlacement: Equatable {
-    case trailing
-    case leading
+    case below
+    case above
 }
 
 enum FloatingTokenPanelResizePolicy {
-    static let screenMargin: CGFloat = 8
+    static let screenMargin: CGFloat = 0
 
     static func runningModelDetailsPlacement(
-        panelFrame: NSRect,
-        surfaceSize: NSSize,
-        expandedSize: NSSize,
-        screenFrame: NSRect?,
-        margin: CGFloat = screenMargin
+        panelFrame: NSRect, surfaceSize: NSSize, expandedSize: NSSize,
+        screenFrame: NSRect?, margin: CGFloat = screenMargin
     ) -> FloatingRunningModelDetailsPlacement {
-        let extraWidth = max(0, expandedSize.width - surfaceSize.width)
-        guard extraWidth > 0, let screenFrame else {
-            return .trailing
-        }
-
-        let trailingAvailable = max(0, screenFrame.maxX - panelFrame.maxX)
-        let leadingAvailable = max(0, panelFrame.minX - screenFrame.minX)
-        if trailingAvailable >= extraWidth + margin {
-            return .trailing
-        }
-        if leadingAvailable >= extraWidth + margin {
-            return .leading
-        }
-        return trailingAvailable >= leadingAvailable ? .trailing : .leading
+        guard let screenFrame else { return .below }
+        let extra = max(0, expandedSize.height - surfaceSize.height)
+        let below = max(0, panelFrame.minY - screenFrame.minY - margin)
+        let above = max(0, screenFrame.maxY - panelFrame.maxY - margin)
+        if below >= extra { return .below }
+        if above >= extra { return .above }
+        return below >= above ? .below : .above
     }
 
-    static func baseFrame(
-        for panelFrame: NSRect,
-        surfaceSize: NSSize,
-        placement: FloatingRunningModelDetailsPlacement
-    ) -> NSRect {
-        let extraWidth = max(0, panelFrame.width - surfaceSize.width)
-        let originX = placement == .leading
-            ? panelFrame.minX + extraWidth
-            : panelFrame.minX
-        return NSRect(
-            x: originX,
-            y: panelFrame.maxY - surfaceSize.height,
-            width: surfaceSize.width,
-            height: surfaceSize.height
-        )
+    static func baseFrame(for panelFrame: NSRect, surfaceSize: NSSize,
+                          placement: FloatingRunningModelDetailsPlacement) -> NSRect {
+        NSRect(x: panelFrame.minX,
+               y: placement == .above ? panelFrame.minY : panelFrame.maxY - surfaceSize.height,
+               width: surfaceSize.width, height: surfaceSize.height)
     }
 
-    static func expandedFrame(
-        baseFrame: NSRect,
-        expandedSize: NSSize,
-        surfaceSize: NSSize,
-        placement: FloatingRunningModelDetailsPlacement,
-        screenFrame: NSRect?,
-        margin: CGFloat = screenMargin
-    ) -> NSRect {
-        let extraWidth = max(0, expandedSize.width - surfaceSize.width)
-        let proposedX = placement == .leading
-            ? baseFrame.minX - extraWidth
-            : baseFrame.minX
-        let proposedY = baseFrame.maxY - expandedSize.height
-        let origin = clampedOrigin(
-            NSPoint(x: proposedX, y: proposedY),
-            size: expandedSize,
-            screenFrame: screenFrame,
-            margin: margin
-        )
-        return NSRect(origin: origin, size: expandedSize)
+    static func expandedFrame(baseFrame: NSRect, expandedSize: NSSize, surfaceSize: NSSize,
+                              placement: FloatingRunningModelDetailsPlacement,
+                              screenFrame: NSRect?, margin: CGFloat = screenMargin) -> NSRect {
+        let proposedY = placement == .above ? baseFrame.minY : baseFrame.maxY - expandedSize.height
+        let y: CGFloat
+        if let screenFrame {
+            y = min(max(proposedY, screenFrame.minY + margin), max(screenFrame.minY + margin, screenFrame.maxY - margin - expandedSize.height))
+        } else { y = proposedY }
+        return NSRect(x: baseFrame.minX, y: y, width: expandedSize.width, height: expandedSize.height)
     }
 
-    private static func clampedOrigin(
-        _ proposed: NSPoint,
-        size: NSSize,
-        screenFrame: NSRect?,
-        margin: CGFloat
-    ) -> NSPoint {
-        guard let screenFrame else { return proposed }
-        let minimumX = screenFrame.minX + margin
-        let maximumX = max(minimumX, screenFrame.maxX - size.width - margin)
-        let minimumY = screenFrame.minY + margin
-        let maximumY = max(minimumY, screenFrame.maxY - size.height - margin)
-        return NSPoint(
-            x: min(max(proposed.x, minimumX), maximumX),
-            y: min(max(proposed.y, minimumY), maximumY)
-        )
+    static func constrainedHeight(baseFrame: NSRect, expandedHeight: CGFloat, screenFrame: NSRect?, scale: CGFloat) -> CGFloat {
+        guard let screenFrame else { return expandedHeight }
+        let available = max(baseFrame.minY - screenFrame.minY, screenFrame.maxY - baseFrame.maxY)
+        let wanted = max(0, expandedHeight - baseFrame.height)
+        let minimumExtra = (FloatingTokenPanelMetrics.runningModelDetailsMinimumHeight
+            + FloatingTokenPanelMetrics.runningModelDetailsGap + FloatingTokenPanelMetrics.runningModelDetailsTrailingInset) * scale
+        let extra = min(wanted, max(0, screenFrame.height - baseFrame.height), max(min(wanted, minimumExtra), available))
+        return baseFrame.height + extra
     }
 }
 
@@ -414,7 +365,7 @@ struct FloatingTokenPanelScale: Equatable {
 
 struct FloatingTokenPanelLayout: Equatable {
     let effectiveScale: CGFloat
-    let size: NSSize
+    var size: NSSize
     let cornerRadius: CGFloat
     let runningModelDetailsPresented: Bool
     let runningModelDetailsPlacement: FloatingRunningModelDetailsPlacement
@@ -425,7 +376,7 @@ struct FloatingTokenPanelLayout: Equatable {
         pagingGuidePresented: Bool = false,
         runningModelDetailsPresented: Bool = false,
         runningModelDetailsRowUnits: Int = 0,
-        runningModelDetailsPlacement: FloatingRunningModelDetailsPlacement = .trailing
+        runningModelDetailsPlacement: FloatingRunningModelDetailsPlacement = .below
     ) {
         effectiveScale = scale.value
         self.runningModelDetailsPresented = runningModelDetailsPresented

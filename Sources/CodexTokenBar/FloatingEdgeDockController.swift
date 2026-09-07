@@ -18,6 +18,8 @@ final class FloatingEdgeDockController {
     private var menuDepth = 0
     private var dragging = false
     private var resumeAfterLayout = false
+    private var resizingAnchor: FloatingEdgeDockAnchor?
+    private var heldOpen = false
     private var undockedCornerRadius: CGFloat = 14
     private var observers: [NSObjectProtocol] = []
     private(set) var isApplyingGeometry = false
@@ -74,12 +76,15 @@ final class FloatingEdgeDockController {
         enabled = { false }
         persist = { _ in }
         dragging = false
+        heldOpen = false
+        resizingAnchor = nil
         menuDepth = 0
     }
 
     @discardableResult
     func detach() -> Bool {
         resumeAfterLayout = false
+        resizingAnchor = nil
         cancelPending()
         guard let anchor = presentation.anchor else { return false }
         // Restore before handing geometry back to drag, lock-follow or a details
@@ -92,13 +97,32 @@ final class FloatingEdgeDockController {
         return true
     }
 
+    func holdOpen(_ value: Bool) {
+        heldOpen = value
+        if value { reveal(); cancelPending() }
+        else { scheduleCollapseIfOutside() }
+    }
+
     func prepareForResize() {
+        if let anchor = presentation.anchor, enabled() {
+            resizingAnchor = anchor
+            reveal()
+            cancelPending()
+            return
+        }
         let shouldResume = isAttached || resumeAfterLayout
         detach()
         resumeAfterLayout = shouldResume
     }
 
     func resumeAfterResize() {
+        if let previous = resizingAnchor, let panel, enabled() {
+            resizingAnchor = nil
+            presentation.anchor = FloatingEdgeDockAnchor(edge: previous.edge, expandedFrame: panel.frame)
+            panel.contentView?.layer?.cornerRadius = 0
+            scheduleCollapseIfOutside()
+            return
+        }
         guard resumeAfterLayout, enabled() else { return }
         snapIfNearEdge()
         if isAttached { resumeAfterLayout = false }
@@ -136,7 +160,7 @@ final class FloatingEdgeDockController {
     }
 
     func snapIfNearEdge() {
-        guard !dragging, enabled(), let panel, !isApplyingGeometry, !isAttached else { return }
+        guard !heldOpen, !dragging, enabled(), let panel, !isApplyingGeometry, !isAttached else { return }
         let frame = panel.frame
         guard let screen = NSScreen.screens.max(by: {
             Self.intersectionArea(frame, $0.visibleFrame) < Self.intersectionArea(frame, $1.visibleFrame)
@@ -189,13 +213,13 @@ final class FloatingEdgeDockController {
     }
 
     private func scheduleCollapseIfOutside() {
-        guard isAttached, !dragging, menuDepth == 0, !presentation.compactWindow, !presentation.collapsed,
+        guard isAttached, !heldOpen, !dragging, menuDepth == 0, !presentation.compactWindow, !presentation.collapsed,
               let panel, !panel.frame.contains(pointerLocation()) else { return }
         schedule(after: 0.45) { [weak self] in self?.collapse() }
     }
 
     private func collapse() {
-        guard enabled(), !dragging, menuDepth == 0, !presentation.collapsed,
+        guard enabled(), !heldOpen, !dragging, menuDepth == 0, !presentation.collapsed,
               let panel, let anchor = presentation.anchor,
               !panel.frame.contains(pointerLocation()) else { return }
         if pressedMouseButtons() != 0 {

@@ -312,3 +312,30 @@ test("enter delivered during native shrink resumes reveal after frame completion
   assert.equal(f.dock.state().railReady, false);
   assert.equal(f.frames.at(-1).width, 300);
 });
+
+test("details resize preserves the dock shell and cannot auto-collapse while held open", async () => {
+  const f = fixture(); f.dock.initialize(); await f.advance(350);
+  const original = f.dock.state().anchor.frame;
+  await f.dock.holdOpen(true);
+  await f.dock.beforeResize();
+  assert.equal(f.dock.state().anchor.edge, "left");
+  f.geometry(geometry({ ...original, height: 320 }));
+  f.dock.afterResize(); await drain();
+  assert.equal(f.dock.state().anchor.frame.height, 320);
+  f.dock.hover(false); await f.advance(5000);
+  assert.equal(f.dock.state().collapsed, false);
+  assert.equal(f.states.some(state => !state.anchor), false);
+  assert.equal(f.saved.length, 1);
+  await f.dock.beforeResize(); f.geometry(geometry(original)); f.dock.afterResize(); await drain();
+  await f.dock.holdOpen(false); await f.advance(700);
+  assert.equal(f.dock.state().compact, true);
+  assert.deepEqual(f.dock.state().anchor.frame, original);
+  assert.equal(f.saved.length, 1);
+});
+
+test("a free-window drawer reaching the edge does not acquire a new dock", async () => {
+  const f = fixture(); await f.dock.holdOpen(true);
+  f.dock.initialize(); await f.advance(5000);
+  assert.equal(f.dock.state().anchor, null);
+  assert.equal(f.frames.length, 0);
+});

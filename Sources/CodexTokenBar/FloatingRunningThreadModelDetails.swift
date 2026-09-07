@@ -158,9 +158,17 @@ struct FloatingRunningThreadModelDetailsCard: View {
                 closeAffordance
             }
 
+            if onClose != nil {
+                Text("Esc 或 × 关闭 · 再次点击主／子数字也可收起")
+                    .font(.system(size: 8.scaled(by: scale), weight: .regular))
+                    .foregroundStyle(secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider().overlay(divider)
 
-            VStack(alignment: .leading, spacing: 0) {
+            ScrollView(.vertical) {
+              VStack(alignment: .leading, spacing: 0) {
                 columnLabels
                 if summary.runningModelDetailsRowCount == 0 {
                     Text(emptyStateText)
@@ -177,7 +185,9 @@ struct FloatingRunningThreadModelDetailsCard: View {
                         unassignedRow(summary.unassignedSubagents)
                     }
                 }
+              }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding(10.scaled(by: scale))
         .frame(width: width, height: height, alignment: .topLeading)

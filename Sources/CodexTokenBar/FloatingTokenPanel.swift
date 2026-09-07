@@ -66,14 +66,26 @@ enum FloatingRunningModelDetailsDismissalPolicy {
 @MainActor
 final class FloatingRunningModelDetailsSessionState: ObservableObject {
     @Published private(set) var isPresented = false
+    @Published private(set) var drawerLayout: FloatingTokenPanelLayout?
+
+    func updateLayout(_ value: FloatingTokenPanelLayout?) {
+        guard drawerLayout != value else { return }
+        withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.22)) {
+            drawerLayout = value
+        }
+    }
 
     func toggle() {
-        isPresented.toggle()
+        withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.22)) {
+            isPresented.toggle()
+        }
     }
 
     func dismiss() {
         guard isPresented else { return }
-        isPresented = false
+        withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.16)) {
+            isPresented = false
+        }
     }
 }
 
@@ -97,7 +109,7 @@ final class FloatingTokenPanelWindow: NSPanel {
     var onDragEnded: (() -> Void)?
     var onInteractionEnded: (() -> Void)?
 
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { runningModelDetailsPresented }
     override var canBecomeMain: Bool { false }
 
     override init(
@@ -121,6 +133,10 @@ final class FloatingTokenPanelWindow: NSPanel {
     }
 
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, event.keyCode == 53, runningModelDetailsPresented {
+            onDismissRunningModelDetails?()
+            return
+        }
         if event.type == .leftMouseUp || event.type == .rightMouseUp { onInteractionEnded?() }
         guard event.type == .leftMouseDown else {
             super.sendEvent(event)
@@ -202,7 +218,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     var lastPagingGuidePresented = false
     var lastRunningModelDetailsPresented = false
     private var lastRunningModelDetailsRowUnits = 0
-    var runningModelDetailsPlacement: FloatingRunningModelDetailsPlacement = .trailing
+    var runningModelDetailsPlacement: FloatingRunningModelDetailsPlacement = .below
     var runningModelDetailsBaseFrame: NSRect?
     var lastExternalActivePID: pid_t?
     var lastExternalClickLocation: NSPoint?
@@ -359,7 +375,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         lastRunningModelDetailsPresented = false
         runningModelDetailsSessionState.dismiss()
         runningModelDetailsBaseFrame = nil
-        runningModelDetailsPlacement = .trailing
+        runningModelDetailsPlacement = .below
 
         if unregisterActive {
             Self.unregisterActiveController(self)
@@ -479,7 +495,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             edgeDock.bind(panel: panel, enabled: { [weak self] in
                 guard let self else { return false }
                 return self.isPresented && !self.appliedLockState
-                    && !self.lastPagingGuidePresented && !self.lastRunningModelDetailsPresented
+                    && !self.lastPagingGuidePresented
             }, persist: { [weak self] origin in self?.saveLockedOrigin(origin) })
             panel.onDragBegan = { [weak self] in self?.edgeDock.beginDrag() }
             panel.onDragEnded = { [weak self] in self?.edgeDock.endDrag() }
@@ -604,6 +620,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
             )
         }
+        edgeDock.holdOpen(presented)
         lastRunningModelDetailsPresented = presented
         (panel as? FloatingTokenPanelWindow)?.suppressesBackgroundMouseActions = presented
             || lastPagingGuidePresented
@@ -617,9 +634,12 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 runningModelDetailsPlacement: runningModelDetailsPlacement
             )
         )
-        if !presented {
+        if presented { panel?.makeKey() }
+        else {
+            panel?.resignKey()
             runningModelDetailsBaseFrame = nil
-            runningModelDetailsPlacement = .trailing
+            runningModelDetailsPlacement = .below
+            runningModelDetailsSessionState.updateLayout(nil)
         }
     }
 
@@ -654,6 +674,13 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     func updateSize(layout: FloatingTokenPanelLayout) {
         guard let panel else { return }
+        var layout = layout
+        if layout.runningModelDetailsPresented, let base = runningModelDetailsBaseFrame {
+            layout.size.height = FloatingTokenPanelResizePolicy.constrainedHeight(
+                baseFrame: base, expandedHeight: layout.size.height,
+                screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame, scale: layout.effectiveScale)
+        }
+        runningModelDetailsSessionState.updateLayout(layout.runningModelDetailsPresented ? layout : nil)
         if let fullFrame = edgeDock.expandedFrame, fullFrame.size == layout.size,
            !layout.runningModelDetailsPresented, !lastPagingGuidePresented, !appliedLockState {
             return
@@ -687,24 +714,13 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             )
             panel.runningModelDetailsPresented = lastRunningModelDetailsPresented
                 && !lastPagingGuidePresented
-            let detailsX = layout.runningModelDetailsPlacement == .leading
-                ? FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(
-                    by: layout.effectiveScale
-                )
-                : surfaceSize.width
-                    + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: layout.effectiveScale)
             panel.runningModelDetailsFrame = panel.runningModelDetailsPresented
-                ? NSRect(
-                    x: detailsX,
-                    y: 4.scaled(by: layout.effectiveScale),
-                    width: FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(
-                        by: layout.effectiveScale
-                    ),
-                    height: max(0, layout.size.height - 8.scaled(by: layout.effectiveScale))
-                )
+                ? runningModelDetailsCardFrame(layout: layout, surfaceSize: surfaceSize)
                 : .zero
         }
-        panel.contentView?.layer?.cornerRadius = layout.cornerRadius
+        edgeDock.resumeAfterResize()
+        panel.contentView?.layer?.cornerRadius = edgeDock.isAttached ? 0 : layout.cornerRadius
+
         saveLockedOrigin(
             persistedOrigin(
                 for: panel,
@@ -715,7 +731,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         refreshLockedAnchorOffsetForCurrentFrame()
         if !layout.runningModelDetailsPresented {
             runningModelDetailsBaseFrame = nil
-            runningModelDetailsPlacement = .trailing
+            runningModelDetailsPlacement = .below
         }
         DispatchQueue.main.async { [weak self] in
             self?.isProgrammaticPanelMove = false
@@ -775,8 +791,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         surfaceSize: NSSize? = nil,
         detailsPresented: Bool? = nil
     ) -> NSPoint {
-        if let dockedFrame = edgeDock.expandedFrame { return dockedFrame.origin }
         let detailsPresented = detailsPresented ?? (lastRunningModelDetailsPresented && !lastPagingGuidePresented)
+        if detailsPresented, let base = runningModelDetailsBaseFrame { return base.origin }
+        if let dockedFrame = edgeDock.expandedFrame { return dockedFrame.origin }
         guard detailsPresented,
               let surfaceSize = surfaceSize ?? currentRunningModelDetailsSurfaceSize()
         else {
@@ -858,6 +875,7 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelPagingGuideState.setupGuideCompletedKey) private var setupGuideCompleted = false
     @AppStorage(FloatingPanelContentVisibility.pagingGuideRevisionKey) private var pagingGuideRevision = 0
     @AppStorage(FloatingPanelContentVisibility.pageNavigationArrowsKey) private var persistedPageNavigationArrows = FloatingPanelContentVisibility.default.showPageNavigationArrows
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pagingGuideShowsArrowGlyphs = false
     @State private var pagingGuidePageIndex = 0
     let onClose: () -> Void
@@ -948,13 +966,16 @@ struct FloatingTokenPanelView: View {
         let effectiveRunningModelDetailsPresented = runningModelDetailsSessionState.isPresented
             && !pagingGuidePresented
             && visibility.hasRunningThreadDetailsTarget
-        let size = FloatingTokenPanelMetrics.size(
+        let measuredSize = FloatingTokenPanelMetrics.size(
             effectiveScale: scale,
             visibility: visibility,
             pagingGuidePresented: pagingGuidePresented,
             runningModelDetailsPresented: effectiveRunningModelDetailsPresented,
             runningModelDetailsRowUnits: displaySnapshot.runningThreads.runningModelDetailsRowUnits
         )
+        let drawerLayout = runningModelDetailsSessionState.drawerLayout
+        let size = effectiveRunningModelDetailsPresented ? drawerLayout?.size ?? measuredSize : measuredSize
+        let detailsPlacement = drawerLayout?.runningModelDetailsPlacement ?? .below
         let surfaceSize = FloatingTokenPanelMetrics.size(
             effectiveScale: scale,
             visibility: visibility,
@@ -1003,12 +1024,11 @@ struct FloatingTokenPanelView: View {
         // reserved for the explicit guide button.
         let pageNavigationAction: (() -> Void)? = nil
 
-        let runningModelDetailsSurfaceOffset = effectiveRunningModelDetailsPresented
-            && layout.runningModelDetailsPlacement == .leading
-            ? FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(by: scale)
-                + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale)
-                + FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
-            : 0
+        let runningModelDetailsSurfaceOffsetY = effectiveRunningModelDetailsPresented && detailsPlacement == .above
+            ? size.height - surfaceSize.height : 0
+        let detailsInset = FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
+        let detailsHeight = max(0, size.height - surfaceSize.height
+            - FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale) - detailsInset)
 
         return ZStack(alignment: .topLeading) {
             ZStack {
@@ -1073,14 +1093,14 @@ struct FloatingTokenPanelView: View {
             }
             .frame(width: surfaceSize.width, height: surfaceSize.height, alignment: .topLeading)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .offset(x: runningModelDetailsSurfaceOffset)
+            .offset(y: runningModelDetailsSurfaceOffsetY)
 
             if effectiveRunningModelDetailsPresented {
                 FloatingRunningThreadModelDetailsCard(
                     summary: displaySnapshot.runningThreads,
                     scale: scale,
-                    width: FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(by: scale),
-                    height: max(0, size.height - 8.scaled(by: scale)),
+                    width: max(0, surfaceSize.width - 2 * detailsInset),
+                    height: detailsHeight,
                     appearance: appearance,
                     isDemo: false,
                     onClose: {
@@ -1088,12 +1108,11 @@ struct FloatingTokenPanelView: View {
                     }
                 )
                 .offset(
-                    x: layout.runningModelDetailsPlacement == .leading
-                        ? FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
-                        : surfaceSize.width
-                            + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale),
-                    y: 4.scaled(by: scale)
+                    x: detailsInset,
+                    y: detailsPlacement == .above ? detailsInset
+                        : surfaceSize.height + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale)
                 )
+                .transition(.opacity.animation(reduceMotion ? nil : .easeOut(duration: 0.12).delay(0.1)))
                 .zIndex(5)
             }
 
@@ -1161,6 +1180,11 @@ struct FloatingTokenPanelView: View {
         .environment(\.tokenDisplayRadarActionTextPalette, radarActionTextPalette)
         .environment(\.tokenDisplayRadarModelTextPalette, radarModelTextPalette)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .background {
+            if effectiveRunningModelDetailsPresented {
+                RoundedRectangle(cornerRadius: 18.scaled(by: scale), style: .continuous).fill(.black)
+            }
+        }
         .contentShape(Rectangle())
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
         .modifier(FloatingEdgeDockModifier(presentation: edgeDockPresentation, size: size, quota: liveDisplaySnapshot.quota, quotaColorStyle: quotaColorStyle))
@@ -1217,20 +1241,25 @@ func runningThreadControlFrames(
     let centerX = visibility.embedsRunningThreadsInMetricsRow
         ? surfaceSize.width - 41.scaled(by: scale)
         : surfaceSize.width / 2
-    let surfaceOffsetX = layout.runningModelDetailsPresented
-        && layout.runningModelDetailsPlacement == .leading
-        ? FloatingTokenPanelMetrics.runningModelDetailsWidth.scaled(by: scale)
-            + FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: scale)
-            + FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: scale)
-        : 0
+    let surfaceOffsetY = layout.runningModelDetailsPresented && layout.runningModelDetailsPlacement == .above
+        ? layout.size.height - surfaceSize.height : 0
     return [
         NSRect(
-            x: surfaceOffsetX + centerX - width / 2,
-            y: layout.size.height - centerFromTop - height / 2,
+            x: centerX - width / 2,
+            y: layout.size.height - surfaceOffsetY - centerFromTop - height / 2,
             width: width,
             height: height
         )
     ]
+}
+
+func runningModelDetailsCardFrame(layout: FloatingTokenPanelLayout, surfaceSize: NSSize) -> NSRect {
+    let inset = FloatingTokenPanelMetrics.runningModelDetailsTrailingInset.scaled(by: layout.effectiveScale)
+    let gap = FloatingTokenPanelMetrics.runningModelDetailsGap.scaled(by: layout.effectiveScale)
+    let height = max(0, layout.size.height - surfaceSize.height - gap - inset)
+    return NSRect(x: inset,
+                  y: layout.runningModelDetailsPlacement == .above ? surfaceSize.height + gap : inset,
+                  width: max(0, surfaceSize.width - 2 * inset), height: height)
 }
 
 @MainActor

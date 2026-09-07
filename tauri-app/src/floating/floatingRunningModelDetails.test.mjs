@@ -99,13 +99,14 @@ test("running model card renders parent-grouped models, effort, and title toolti
     assert.match(html, /role="tooltip"/);
     assert.match(html, /未关联/);
     assert.match(html, /aria-label="关闭运行模型详情"/);
+    assert.match(html, /Esc 或 × 关闭/);
   });
 });
 
 test("running model card and floating window size themselves from grouped rows", async () => {
   const { readFile } = await import("node:fs/promises");
   const css = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
-  const card = css.match(/\.floating-running-model-details \{([\s\S]*?)\n\}/)?.[1];
+  const card = css.match(/^\.floating-running-model-details \{([\s\S]*?)^\}/m)?.[1];
   const row = css.match(/\.floating-running-model-group-row \{([\s\S]*?)\n\}/)?.[1];
   const app = await readFile(new URL("./FloatingWindowApp.tsx", import.meta.url), "utf8");
   const details = await readFile(new URL("./FloatingRunningThreadModelDetails.tsx", import.meta.url), "utf8");
@@ -146,6 +147,9 @@ test("running model close button invokes the supplied dismiss action", async () 
         assert.ok(close);
         await React.act(async () => close.click());
         assert.equal(closes, 1);
+        const card = container.querySelector(".floating-running-model-details");
+        await React.act(async () => card.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+        assert.equal(closes, 2);
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -169,7 +173,7 @@ test("floating window dismisses running model details on blur and blank clicks",
 test("running model details card keeps its border without an outer drop shadow", async () => {
   const { readFile } = await import("node:fs/promises");
   const css = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
-  const block = css.match(/\.floating-running-model-details \{([\s\S]*?)\n\}/)?.[1];
+  const block = css.match(/^\.floating-running-model-details \{([\s\S]*?)^\}/m)?.[1];
 
   assert.ok(block);
   assert.match(css, /--floating-running-model-card-background: #fafdff/);
@@ -190,24 +194,25 @@ test("expanded running-model card preserves the rounded base panel geometry", as
   assert.ok(shellBlock);
   assert.ok(surfaceBlock);
   assert.ok(fillBlock);
-  assert.match(shellBlock, /padding-left: 1px/);
+  assert.match(shellBlock, /padding: 0/);
+  assert.match(shellBlock, /background: #000/);
   assert.match(surfaceBlock, /width: min\(calc\(\(308px \* var\(--floating-scale\)\) - 2px\), calc\(100vw - 2px\)\)/);
   assert.match(fillBlock, /border-radius: inherit/);
 });
 
-test("expanded running-model card can render inward at the leading edge", async () => {
+test("expanded running-model card can render above the main card", async () => {
   const { readFile } = await import("node:fs/promises");
   const app = await readFile(new URL("./FloatingWindowApp.tsx", import.meta.url), "utf8");
   const surface = await readFile(new URL("./FloatingPanelPreview.tsx", import.meta.url), "utf8");
   const css = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
 
   assert.match(app, /currentMonitor\(\)/);
-  assert.match(app, /runningModelDetailsPlacement/);
+  assert.match(app, /resolveFloatingDetailsDrawer/);
   assert.match(app, /basePosition/);
   assert.match(surface, /data-running-model-details-side/);
-  assert.match(css, /floating-window-shell--running-model-details-leading/);
-  assert.match(css, /data-running-model-details-side="leading"/);
-  assert.match(css, /right: calc\(100% \+ calc\(10px \* var\(--floating-scale\)\)\)/);
+  assert.match(css, /floating-window-shell--running-model-details-above/);
+  assert.match(css, /overflow-y: auto/);
+  assert.match(css, /bottom: calc\(100% \+ 8px \* var\(--floating-scale\)\)/);
 });
 
 test("running model details card derives a softened color from the floating theme", async () => {
