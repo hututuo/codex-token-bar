@@ -1212,7 +1212,7 @@ struct FloatingTokenPanelView: View {
         .environment(\.tokenDisplayRadarModelTextPalette, radarModelTextPalette)
         .frame(width: contentSize.width, height: contentSize.height, alignment: .topLeading)
         .background {
-            if effectiveRunningModelDetailsPresented {
+            if effectiveRunningModelDetailsPresented && edgeDockPresentation.anchor != nil {
                 RoundedRectangle(cornerRadius: 18.scaled(by: scale), style: .continuous).fill(.black)
             }
         }
