@@ -30,3 +30,22 @@ for (const edge of ["left", "right", "top", "bottom"]) {
     window.happyDOM.abort();
   });
 }
+
+for (const side of ["below", "above"]) {
+  test(`${side}: closing details preserves the main card alignment until native resize`, () => {
+    const window = new Window();
+    const doc = window.document;
+    const style = doc.createElement("style");
+    style.textContent = readFileSync(new URL("../styles/global.css", import.meta.url), "utf8");
+    doc.head.append(style);
+    doc.body.innerHTML = `<div class="floating-edge-host" data-collapsed="false" style="--dock-height: 400px"><div class="floating-edge-content"><main class="floating-window-shell floating-window-shell--running-model-details${side === "above" ? " floating-window-shell--running-model-details-above" : ""}"></main></div></div>`;
+    const shell = doc.querySelector("main");
+    const alignment = () => window.getComputedStyle(shell).placeItems;
+    const opened = alignment();
+    shell.classList.remove("floating-window-shell--running-model-details");
+    assert.equal(alignment(), opened);
+    assert.equal(alignment(), side === "above" ? "end center" : "start center");
+    assert.equal(window.getComputedStyle(doc.querySelector(".floating-edge-content")).height, `${window.innerHeight}px`);
+    window.happyDOM.abort();
+  });
+}

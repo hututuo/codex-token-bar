@@ -8650,7 +8650,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: grid;
   width: 100vw;
   height: 100vh;
-  place-items: center;
+  place-items: start center;
   overflow: hidden;
   background: transparent;
 }
@@ -8668,7 +8668,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-window-shell--running-model-details-above {
-  padding-top: var(--floating-drawer-offset);
+  /* Bottom alignment remains stable while native height/origin shrink together. */
+  place-items: end center;
 }
 .floating-window-shell--running-model-details .floating-running-model-details {
   left: calc(4px * var(--floating-scale));
@@ -12524,6 +12525,10 @@ details.session-management-banner {
   height: var(--dock-height, 100vh);
   transform-origin: center;
   transition: transform 260ms cubic-bezier(.25, .46, .3, 1), opacity 160ms ease-out;
+}
+/* The live viewport changes before the asynchronous dock anchor refresh. */
+.floating-edge-host[data-collapsed="false"] > .floating-edge-content {
+  height: 100vh;
 }
 .floating-edge-content > .floating-window-shell {
   width: 100%;

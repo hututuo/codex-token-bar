@@ -407,7 +407,8 @@ export function FloatingWindowApp() {
       }
       if (cancelled) return;
       if (effectiveRunningModelDetailsExpanded) runningModelDetailsBasePositionRef.current = basePosition;
-      setRunningModelDetailsSide(placement);
+      // Keep the same attachment edge until the native close resize finishes.
+      if (effectiveRunningModelDetailsExpanded) setRunningModelDetailsSide(placement);
       setDrawerMetrics(current => current.height === nextMetrics.height && current.offset === nextMetrics.offset ? current : nextMetrics);
       const resized = await desktopPlatform.resizeFloatingWindow(targetWidth, targetHeight, { targetPosition });
       if (!resized && effectiveRunningModelDetailsExpanded && !cancelled) setRunningModelDetailsExpanded(false);
@@ -568,7 +569,7 @@ export function FloatingWindowApp() {
     <div ref={dockShellRef} className="floating-edge-shell" aria-hidden="true" />
     <div className="floating-edge-content" inert={dock.collapsed} aria-hidden={dock.collapsed || undefined}>
     <main
-      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}${effectiveRunningModelDetailsExpanded && runningModelDetailsSide === "above" ? " floating-window-shell--running-model-details-above" : ""}`}
+      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}${effectiveRunningModelDetailsExpanded ? " floating-window-shell--running-model-details" : ""}${runningModelDetailsSide === "above" ? " floating-window-shell--running-model-details-above" : ""}`}
       onMouseDownCapture={dismissRunningModelDetailsForOutsidePointer}
       style={shellStyle}
     >

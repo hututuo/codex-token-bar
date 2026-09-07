@@ -3,6 +3,27 @@ import XCTest
 @testable import CodexTokenBar
 
 final class FloatingDetailsDrawerTests: XCTestCase {
+    @MainActor
+    func testClosingDrawerRestoresExactScreenEdgeWithoutOrdinaryWindowMargin() throws {
+        let screen = try XCTUnwrap(NSScreen.main?.visibleFrame)
+        let scale = FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1)
+        let layout = FloatingTokenPanelLayout(scale: scale, visibility: .default)
+        for x in [screen.minX, screen.maxX - layout.size.width] {
+            let base = NSRect(x: x, y: screen.minY + 150, width: layout.size.width, height: layout.size.height)
+            let panel = NSPanel(contentRect: base, styleMask: [.borderless], backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            defer { panel.close() }
+            let appliedBase = panel.frame
+            panel.setFrame(NSRect(x: base.minX, y: base.minY - 100, width: base.width, height: base.height + 100), display: false)
+            resizePanel(panel, layout: layout, surfaceSize: layout.size, baseFrame: appliedBase)
+            XCTAssertEqual(panel.frame, appliedBase)
+            let edge: FloatingDockEdge = x == screen.minX ? .left : .right
+            let anchor = FloatingEdgeDockAnchor(edge: edge, expandedFrame: panel.frame)
+            if edge == .left { XCTAssertEqual(anchor.collapsedFrame.minX, screen.minX) }
+            else { XCTAssertEqual(anchor.collapsedFrame.maxX, screen.maxX) }
+        }
+    }
+
     func testLongDrawerKeepsWidthAndCapsToAvailableVerticalSpace() {
         let base = NSRect(x: -800, y: 140, width: 258, height: 120)
         let screen = NSRect(x: -800, y: 0, width: 800, height: 400)

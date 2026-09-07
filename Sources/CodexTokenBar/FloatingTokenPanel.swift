@@ -70,12 +70,19 @@ final class FloatingRunningModelDetailsSessionState: ObservableObject {
 
     func updateLayout(_ value: FloatingTokenPanelLayout?) {
         guard drawerLayout != value else { return }
-        withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.22)) {
-            drawerLayout = value
+        if value == nil {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { drawerLayout = nil }
+        } else {
+            withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.22)) {
+                drawerLayout = value
+            }
         }
     }
 
     func toggle() {
+        if isPresented { dismiss(); return }
         withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.22)) {
             isPresented.toggle()
         }
@@ -83,9 +90,11 @@ final class FloatingRunningModelDetailsSessionState: ObservableObject {
 
     func dismiss() {
         guard isPresented else { return }
-        withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.16)) {
-            isPresented = false
-        }
+        // Geometry closes atomically with the native window. Animating this
+        // layout would interpolate the main card after its window already moved.
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { isPresented = false }
     }
 }
 
@@ -1286,7 +1295,8 @@ func resizePanel(
         targetFrame = anchoredPanelFrame(
             for: panel,
             size: targetSize,
-            topLeft: NSPoint(x: baseFrame.minX, y: baseFrame.maxY)
+            topLeft: NSPoint(x: baseFrame.minX, y: baseFrame.maxY),
+            margin: 0
         )
     } else {
         targetFrame = anchoredPanelFrame(
@@ -1295,19 +1305,23 @@ func resizePanel(
             topLeft: NSPoint(x: previousFrame.minX, y: previousFrame.maxY)
         )
     }
+    // Updating constraints and hosting bounds can cause intermediate AppKit
+    // frames; present only the final native frame and matching content layout.
+    panel.disableScreenUpdatesUntilFlush()
     panel.contentViewController?.view.frame = NSRect(origin: .zero, size: targetSize)
     panel.contentMinSize = targetSize
     panel.contentMaxSize = targetSize
-    panel.setFrame(targetFrame, display: true, animate: false)
+    panel.setFrame(targetFrame, display: false, animate: false)
+    panel.contentView?.layoutSubtreeIfNeeded()
+    panel.displayIfNeeded()
 }
 
 @MainActor
-func anchoredPanelFrame(for panel: NSPanel, size: NSSize, topLeft: NSPoint) -> NSRect {
+func anchoredPanelFrame(for panel: NSPanel, size: NSSize, topLeft: NSPoint, margin: CGFloat = 8) -> NSRect {
     let screenFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
     var origin = NSPoint(x: topLeft.x, y: topLeft.y - size.height)
 
     if let screenFrame {
-        let margin: CGFloat = 8
         origin.x = min(max(origin.x, screenFrame.minX + margin), screenFrame.maxX - size.width - margin)
         origin.y = min(max(origin.y, screenFrame.minY + margin), screenFrame.maxY - size.height - margin)
     }
