@@ -169,14 +169,19 @@ final class FloatingEdgeDockTests: XCTestCase {
         dock.prepareForResize() // ordinary data/layout refresh must not cancel release tracking
         let dragged = NSRect(x: workArea.midX - 150, y: workArea.midY - 60, width: 300, height: 120)
         panel.setFrame(dragged, display: false)
+        // AppKit may align a half-point origin to the display pixel grid.
+        let appliedDragFrame = panel.frame
+        XCTAssertEqual(appliedDragFrame.minX, dragged.minX, accuracy: 1)
+        XCTAssertEqual(appliedDragFrame.minY, dragged.minY, accuracy: 1)
+        XCTAssertEqual(appliedDragFrame.size, dragged.size)
         try await Task.sleep(for: .milliseconds(80))
         XCTAssertFalse(dock.isAttached)
         buttons = 0
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertFalse(dock.isAttached)
-        XCTAssertEqual(panel.frame, dragged)
+        XCTAssertEqual(panel.frame, appliedDragFrame)
         try await Task.sleep(for: .milliseconds(550))
-        XCTAssertEqual(panel.frame, dragged)
+        XCTAssertEqual(panel.frame, appliedDragFrame)
         dock.dispose(); panel.close()
     }
 
