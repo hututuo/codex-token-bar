@@ -350,19 +350,19 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
       <Metric label={models.some(model => !model.usesIndependentQuota && model.costUSD === null) ? "今日 API 等值 · 已知小计" : "今日 API 等值"} value={models.length ? `$${models.reduce((sum, model) => sum + (model.costUSD ?? 0), 0).toFixed(2)}` : "—"} />
       </div>
     </section>
-    <SidebarTrend points={data.trend ?? []} />
-    <section className="qs-token-composition">
-      <div className="qs-section-heading"><h3>今日 Token 构成</h3><span>缓存包含在输入内</span></div>
-      <div className="qs-composition-chart" role="img" aria-label="今日输入、缓存和输出占比">{breakdownKnown && inputParts.map(part => <i key={part.label} style={{ flexGrow: part.value, background: part.color }} />)}</div>
-      <div className="qs-token-legend">{inputParts.map(part => <div key={part.label}><span><i style={{background:part.color}} />{part.label}</span><strong>{breakdownKnown ? formatTokens(part.value) : "—"}</strong></div>)}</div>
-      
-    </section>
     <section className="qs-model-usage" id="qs-section-models"><div className="qs-section-heading"><h3>今日模型用量</h3><span>今日占比 · 全部模型为分母</span></div>
       {models.length === 0 ? <p className="qs-empty">暂无可信的今日模型用量</p> : models.map(model => <div className="qs-model-row" key={model.key}>
         <div><strong title={model.key}>{model.label}</strong><span>{formatTokens(model.tokens)} <small>{(model.share * 100).toFixed(1)}%</small></span></div>
         <div className="qs-model-cost">API 等值 {floatingModelUsageValue(model, "cost")}</div>
         <progress max={100} value={model.share * 100} style={{ "--qs-accent": model.color } as CSSProperties} />
       </div>)}
+    </section>
+    <SidebarTrend points={data.trend ?? []} />
+    <section className="qs-token-composition">
+      <div className="qs-section-heading"><h3>今日 Token 构成</h3><span>缓存包含在输入内</span></div>
+      <div className="qs-composition-chart" role="img" aria-label="今日输入、缓存和输出占比">{breakdownKnown && inputParts.map(part => <i key={part.label} style={{ flexGrow: part.value, background: part.color }} />)}</div>
+      <div className="qs-token-legend">{inputParts.map(part => <div key={part.label}><span><i style={{background:part.color}} />{part.label}</span><strong>{breakdownKnown ? formatTokens(part.value) : "—"}</strong></div>)}</div>
+
     </section>
     <button className="qs-activity" onClick={onOpenRunning} type="button" aria-label="查看运行主会话和子代理">
       <div><strong>运行 {runningThreads.total ?? "未知"}</strong><span>主会话 {runningThreads.mainThreads ?? "—"} · 子代理 {runningThreads.subagents ?? "—"}</span></div>
