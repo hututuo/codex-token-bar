@@ -313,7 +313,7 @@ struct QuotaSidebarDetailView: View {
         // this render, so the cards and the model denominator agree.
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota,
                                                   runningThreads: tasks.runningThreadSummary)
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 6) {
             header(snapshot.quota)
             HStack(spacing: 22) {
                 tab("额度概览", detail: .overview)
@@ -352,11 +352,11 @@ struct QuotaSidebarDetailView: View {
     }
 
     private func header(_ quota: AccountQuotaSnapshot) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 6) {
             Image(systemName: "terminal").font(.system(size: 22)).foregroundStyle(SidebarPalette.green)
                 .padding(9).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
                     Text("Codex").font(.system(size: 19, weight: .semibold))
                     Text(quota.displayName).font(.system(size: 9, weight: .semibold))
                         .lineLimit(1).padding(.horizontal, 6).padding(.vertical, 3)
@@ -395,18 +395,14 @@ struct QuotaSidebarDetailView: View {
         let cost = models.compactMap(\.costUSD).reduce(0, +)
         let costLabel = models.contains { !$0.usesIndependentQuota && $0.costUSD == nil } ? "今日 API 等值 · 已知小计" : "今日 API 等值"
 
-        return VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 16) {
-                    if let fiveHour = snapshot.quota.fiveHour {
-                        quotaRow("5 小时额度", window: fiveHour, snapshot: snapshot.quota, color: SidebarPalette.green)
-                            .frame(maxWidth: .infinity)
-                    }
-                    quotaRow("7 天额度", window: snapshot.quota.sevenDay, snapshot: snapshot.quota, color: SidebarPalette.purple)
-                        .frame(maxWidth: .infinity)
+        return VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 6) {
+                if let fiveHour = snapshot.quota.fiveHour {
+                    quotaRow("5 小时额度", window: fiveHour, snapshot: snapshot.quota, color: SidebarPalette.green)
                 }
+                quotaRow("7 天额度", window: snapshot.quota.sevenDay, snapshot: snapshot.quota, color: SidebarPalette.purple)
                 if let pace = snapshot.quota.sevenDayPaceStatus {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         Text(pace.compactTitle).font(.system(size: 11)).foregroundStyle(SidebarPalette.green)
                             .help(pace.compactDetail)
                         Spacer(minLength: 0)
@@ -420,11 +416,9 @@ struct QuotaSidebarDetailView: View {
                     Text(snapshot.quota.status).font(.system(size: 9)).foregroundStyle(.orange)
                         .lineLimit(1).help(snapshot.quota.status)
                 }
-            }.padding(11).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14)).id("top")
+            }.padding(8).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14)).id("top")
 
-            modelUsage(snapshot).id("models")
-
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 Color.clear.frame(height: 0).id("usage")
                 sectionTitle("用量", subtitle: "本地统计")
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), alignment: .leading, spacing: 7) {
@@ -440,6 +434,7 @@ struct QuotaSidebarDetailView: View {
                 }
                 Text("实时：\(snapshot.status)").font(.system(size: 9)).foregroundStyle(.gray).lineLimit(1).help(snapshot.status)
             }
+            modelUsage(snapshot).id("models")
             SidebarTrendView(bins: Array(store.snapshot.recentBins.suffix(288)), quota: Array(history.snapshot.recentBins.suffix(288)))
             tokenComposition(snapshot)
         }.padding(.bottom, 2)
@@ -453,7 +448,7 @@ struct QuotaSidebarDetailView: View {
             ("输出", total.outputTokens, SidebarPalette.green)
         ]
         let denominator = max(1, parts.reduce(0) { $0 + $1.1 })
-        return VStack(alignment: .leading, spacing: 9) {
+        return VStack(alignment: .leading, spacing: 6) {
             sectionTitle("今日 Token 构成", subtitle: "缓存包含在输入内")
             GeometryReader { geometry in
                 HStack(spacing: 0) {
@@ -465,7 +460,7 @@ struct QuotaSidebarDetailView: View {
             }.frame(height: 8).background(.white.opacity(0.1)).clipShape(Capsule())
             HStack {
                 ForEach(parts.indices, id: \.self) { index in
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(parts[index].0).font(.system(size: 9)).foregroundStyle(parts[index].2)
                         Text(snapshot.todayModelBreakdowns.isEmpty ? "—" : parts[index].1.abbreviatedTokens)
                             .font(.system(size: 13, weight: .medium)).monospacedDigit()
@@ -473,22 +468,22 @@ struct QuotaSidebarDetailView: View {
                 }
             }
             
-        }.padding(12).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+        }.padding(8).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func resetCreditList(_ quota: AccountQuotaSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             sectionTitle("重置卡", subtitle: "可用 \(quota.availableResetCreditCount) 张")
             if quota.sortedResetCreditsForDisplay.isEmpty {
                 Text(quota.resetCreditStatus).font(.system(size: 10)).foregroundStyle(.gray)
             }
             ForEach(Array(quota.sortedResetCreditsForDisplay.enumerated()), id: \.element.id) { index, card in
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 3) {
                     HStack { Text("重置卡 \(index + 1)"); Spacer(); Text(card.statusText).foregroundStyle(card.isAvailable ? SidebarPalette.amber : .gray) }
                     Text("发放  " + card.detailedGrantedText).foregroundStyle(.gray)
                     Text("到期  " + card.detailedExpiryText).foregroundStyle(.gray)
                     if let redeemed = card.detailedRedeemedText { Text("使用  " + redeemed).foregroundStyle(.gray) }
-                }.font(.system(size: 10)).padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                }.font(.system(size: 10)).padding(6).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
             }
         }
@@ -511,28 +506,28 @@ struct QuotaSidebarDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
             } else {
                 ForEach(items) { item in
-                    VStack(spacing: 4) {
-                        HStack(spacing: 8) {
+                    VStack(spacing: 2) {
+                        HStack(spacing: 6) {
                             Circle().fill(item.color).frame(width: 5, height: 5)
                             Text(item.label).font(.system(size: 10, weight: .medium)).lineLimit(1).help(item.label)
                             Spacer(minLength: 0)
                             Text(item.tokens.abbreviatedTokens).foregroundStyle(.white.opacity(0.8))
-                                .frame(width: 58, alignment: .trailing)
-                            Text(item.valueText(for: .cost)).font(.system(size: 9)).foregroundStyle(.gray)
-                                .frame(width: 78, alignment: .trailing).lineLimit(1).minimumScaleFactor(0.8)
-                                .help("API 等值 " + item.valueText(for: .cost))
-                            Text(String(format: "%.1f%%", item.share * 100)).foregroundStyle(item.color).frame(width: 42, alignment: .trailing)
+                            Text(String(format: "%.1f%%", item.share * 100)).foregroundStyle(.gray).frame(width: 42, alignment: .trailing)
                         }.font(.system(size: 10)).monospacedDigit()
+                        HStack {
+                            Spacer()
+                            Text("API 等值 " + item.valueText(for: .cost)).font(.system(size: 9)).foregroundStyle(.gray)
+                        }
                         SidebarValueBar(fraction: item.share, color: item.color, emphasis: 0.7).frame(height: 3)
                     }
                 }
             }
-        }.padding(11).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
+        }.padding(8).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func quotaRow(_ title: String, window: AccountQuotaWindow?, snapshot: AccountQuotaSnapshot, color: Color) -> some View {
         let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: snapshot)
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.system(size: 12))
                 Spacer()
@@ -551,10 +546,10 @@ struct QuotaSidebarDetailView: View {
     }
 
     private func metric(_ label: String, _ value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(value).font(.system(size: 16, weight: .medium, design: .rounded)).monospacedDigit().foregroundStyle(color)
             Text(label).font(.system(size: 9)).foregroundStyle(.gray)
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
             .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
     }
 
@@ -572,7 +567,7 @@ struct QuotaSidebarDetailView: View {
                 Spacer()
                 activityMetric(tasks.unreadThreadCountAvailable ? "\(tasks.unreadThreadCount)" : "—", "待查看", color: SidebarPalette.green)
                 Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(.gray).padding(.leading, 14)
-            }.padding(12).background(SidebarPalette.green.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+            }.padding(8).background(SidebarPalette.green.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
                 .overlay(alignment: .topTrailing) {
                     if summary.freshness == .stale { Text("刷新未成功").font(.system(size: 8)).foregroundStyle(.orange).padding(4) }
                 }
@@ -602,7 +597,7 @@ struct QuotaSidebarDetailView: View {
                     taskGroup(group)
                 }
                 if !summary.unassignedSubagents.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("未关联主任务").font(.system(size: 11, weight: .semibold))
                             Spacer()
@@ -613,7 +608,7 @@ struct QuotaSidebarDetailView: View {
                         ForEach(summary.unassignedSubagents) { member in
                             childTask(member)
                         }
-                    }.padding(11).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
+                    }.padding(8).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
                 }
                 if summary.total == 0 {
                     taskNotice("当前没有运行中的任务", icon: "checkmark.circle")
@@ -621,7 +616,7 @@ struct QuotaSidebarDetailView: View {
                     taskNotice("已读取运行数量，尚无任务层级明细", icon: "list.bullet.rectangle")
                 }
             }
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(unreadText).font(.system(size: 11)).foregroundStyle(SidebarPalette.green)
                 if !tasks.lastCompletedTitle.isEmpty {
                     Text("最近完成").font(.system(size: 9)).foregroundStyle(.gray)
@@ -638,7 +633,7 @@ struct QuotaSidebarDetailView: View {
     }
 
     private func taskGroup(_ group: RunningThreadGroup) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 taskBadge("主任务", color: SidebarPalette.amber)
                 Spacer()
@@ -646,7 +641,7 @@ struct QuotaSidebarDetailView: View {
             }
             taskIdentity(group.mainThread, titleSize: 13)
             if !group.subagents.isEmpty {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
                     ForEach(group.subagents) { member in
                         childTask(member)
                     }
@@ -665,13 +660,13 @@ struct QuotaSidebarDetailView: View {
     }
 
     private func childTask(_ member: RunningThreadMember) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
                 Image(systemName: "arrow.turn.down.right").font(.system(size: 9)).foregroundStyle(SidebarPalette.purple)
                 taskBadge("子代理", color: SidebarPalette.purple)
             }
             taskIdentity(member, titleSize: 11)
-        }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
             .background(SidebarPalette.purple.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
             .accessibilityElement(children: .contain)
     }
