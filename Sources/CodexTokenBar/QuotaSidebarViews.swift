@@ -313,7 +313,7 @@ struct QuotaSidebarDetailView: View {
         // this render, so the cards and the model denominator agree.
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota,
                                                   runningThreads: tasks.runningThreadSummary)
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: 9) {
             header(snapshot.quota)
             HStack(spacing: 22) {
                 tab("额度概览", detail: .overview)
@@ -343,7 +343,7 @@ struct QuotaSidebarDetailView: View {
             Text(controller.interaction.pinned ? "已固定 · 点击关闭收起" : "移出后收起 · 图钉固定详情")
                 .font(.system(size: 9)).foregroundStyle(.gray)
         }
-        .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 18).padding(.vertical, 14).frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SidebarPalette.background)
         .clipShape(RoundedRectangle(cornerRadius: 22))
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.12), lineWidth: 1))
@@ -395,8 +395,8 @@ struct QuotaSidebarDetailView: View {
         let cost = models.compactMap(\.costUSD).reduce(0, +)
         let costLabel = models.contains { !$0.usesIndependentQuota && $0.costUSD == nil } ? "今日 API 等值 · 已知小计" : "今日 API 等值"
 
-        return VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 12) {
                 if let fiveHour = snapshot.quota.fiveHour {
                     quotaRow("5 小时额度", window: fiveHour, snapshot: snapshot.quota, color: SidebarPalette.green)
                 }
@@ -416,7 +416,7 @@ struct QuotaSidebarDetailView: View {
                     Text(snapshot.quota.status).font(.system(size: 9)).foregroundStyle(.orange)
                         .lineLimit(1).help(snapshot.quota.status)
                 }
-            }.padding(14).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14)).id("top")
+            }.padding(11).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14)).id("top")
 
             VStack(alignment: .leading, spacing: 10) {
                 Color.clear.frame(height: 0).id("usage")
@@ -499,14 +499,14 @@ struct QuotaSidebarDetailView: View {
 
     private func modelUsage(_ snapshot: TokenDisplaySnapshot) -> some View {
         let items = Array(FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 })
-        return VStack(alignment: .leading, spacing: 11) {
+        return VStack(alignment: .leading, spacing: 8) {
             sectionTitle("今日模型用量", subtitle: "Token 占比 · API 等值")
             if items.isEmpty {
                 Text("尚无可信的今日模型明细").font(.system(size: 11)).foregroundStyle(.gray)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
             } else {
                 ForEach(items) { item in
-                    VStack(spacing: 6) {
+                    VStack(spacing: 4) {
                         HStack(spacing: 8) {
                             Circle().fill(item.color).frame(width: 5, height: 5)
                             Text(item.label).font(.system(size: 10, weight: .medium)).lineLimit(1).help(item.label)
@@ -522,7 +522,7 @@ struct QuotaSidebarDetailView: View {
                     }
                 }
             }
-        }.padding(14).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
+        }.padding(11).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func quotaRow(_ title: String, window: AccountQuotaWindow?, snapshot: AccountQuotaSnapshot, color: Color) -> some View {
@@ -608,7 +608,7 @@ struct QuotaSidebarDetailView: View {
                         ForEach(summary.unassignedSubagents) { member in
                             childTask(member)
                         }
-                    }.padding(14).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
+                    }.padding(11).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
                 }
                 if summary.total == 0 {
                     taskNotice("当前没有运行中的任务", icon: "checkmark.circle")
