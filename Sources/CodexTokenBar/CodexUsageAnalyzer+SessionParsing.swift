@@ -178,6 +178,7 @@ extension CodexUsageAnalyzer {
         insertFingerprint: (UsageSnapshotFingerprint) throws -> Bool,
         emit: (IndexedTokenEvent) throws -> Void
     ) throws -> IndexedSessionParseResult {
+        let paginatedMetadata = try PaginatedHistoryBoundary.metadata(file: file, handle: request.readHandle)
         var previousTotal = request.initialState.previousTotalTokens
         var currentUserPromptOffset = request.initialState.currentUserPromptOffset
         var assistantStartOffset = request.initialState.assistantStartOffset
@@ -203,6 +204,10 @@ extension CodexUsageAnalyzer {
                 throw CancellationError()
             }
             try autoreleasepool {
+                PaginatedHistoryBoundary.observeOwnTurn(lineString, metadata: paginatedMetadata, state: &accounting)
+                if paginatedMetadata != nil, accounting.paginatedOwnStartOrdinal != nil {
+                    isSkippingForkReplay = false
+                }
                 if forkReplayStartedAt == nil,
                    let metadata = parseSessionMetaForkMetadata(lineString) {
                     forkReplayStartedAt = metadata.timestamp
@@ -273,8 +278,8 @@ extension CodexUsageAnalyzer {
                     + "|" + (usageLine.last?.accounting.signature ?? "missing")
                     + "|" + usageLine.identityTimestamp
                 let adjacentDuplicate = accounting.lastSnapshot == signature
-                let isNewSnapshot = try usageSnapshotFingerprint(for: usageLine)
-                    .map(insertFingerprint) ?? true
+                let usageFingerprint = usageSnapshotFingerprint(for: usageLine)
+                let isNewSnapshot = try usageFingerprint.map(insertFingerprint) ?? true
                 if adjacentDuplicate { return }
                 var nextAccounting = accounting
                 let measured = nextAccounting.observe(
@@ -287,7 +292,18 @@ extension CodexUsageAnalyzer {
                 // is a new request; preserve the existing replay protection.
                 guard isNewSnapshot else { return }
                 accounting = nextAccounting
-                if isSkippingForkReplay {
+                let inherited: Bool
+                if let metadata = paginatedMetadata, !metadata.isMainFork || accounting.paginatedOwnStartOrdinal != nil {
+                    let declared = metadata.ordinal
+                    let boundary = min(declared, accounting.paginatedOwnStartOrdinal ?? declared)
+                    guard let ordinal = usageLine.ordinal else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    inherited = ordinal < boundary
+                } else {
+                    inherited = isSkippingForkReplay
+                }
+                if inherited {
                     lastSkippedForkReplayTokenAt = usageLine.timestamp
                     return
                 }
@@ -313,7 +329,8 @@ extension CodexUsageAnalyzer {
                         assistantStartOffset: assistantStartOffset,
                         accountingKind: measured.kind,
                         reportedTotalTokens: usageLine.last?.accounting.reportedTotal
-                            ?? usageLine.total?.accounting.reportedTotal
+                            ?? usageLine.total?.accounting.reportedTotal,
+                        usageFingerprint: try usageFingerprint?.databaseValue
                     )
                 )
                 eventCount += 1
@@ -891,7 +908,7 @@ extension CodexUsageAnalyzer {
         let total = parseTokenUsage(info["total_token_usage"] as? [String: Any], rejecting: negativeZeroFields["total_token_usage"] ?? [])
         let last = parseTokenUsage(info["last_token_usage"] as? [String: Any], rejecting: negativeZeroFields["last_token_usage"] ?? [])
         guard total != nil || last != nil else { return nil }
-        return ParsedTokenUsageLine(timestamp: timestamp, identityTimestamp: timestampString, total: total, last: last)
+        return ParsedTokenUsageLine(ordinal: PaginatedHistoryBoundary.unsigned(object["ordinal"]), timestamp: timestamp, identityTimestamp: timestampString, total: total, last: last)
     }
 
     private struct ParsedTurnContext {
@@ -1069,6 +1086,7 @@ extension CodexUsageAnalyzer {
         let needles = [
             Data(#""token_count""#.utf8),
             Data(#""turn_context""#.utf8),
+            Data(#""task_started""#.utf8),
             Data(#""user_message""#.utf8),
             Data(#""agent_message""#.utf8),
             Data(#""session_meta""#.utf8)
@@ -1107,7 +1125,8 @@ extension CodexUsageAnalyzer {
                 let lineOffset = pendingStartOffset
                     + UInt64(pending.distance(from: pending.startIndex, to: searchStart))
                 if needles.contains(where: { lineData.range(of: $0) != nil }) {
-                    try handleLine(lineOffset, String(decoding: lineData, as: UTF8.self))
+                    guard let line = String(data: lineData, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+                    try handleLine(lineOffset, line)
                 }
                 let consumedBytes = pending.distance(
                     from: pending.startIndex,

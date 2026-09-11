@@ -92,3 +92,27 @@ export interface ResetCreditBundle {
   diagnostics: QuotaDiagnostic[];
   successful: boolean;
 }
+
+export interface QuotaCycle {
+  id: string;
+  startLowerUnix: number | null;
+  startUpperUnix: number | null;
+  endLowerUnix: number;
+  endUpperUnix: number;
+  firstObservedUnix: number;
+  lastObservedUnix: number;
+  expectedResetUnix: number;
+  current: boolean;
+  expired: boolean;
+  earlyEnd: boolean;
+  pendingReset: boolean;
+  incomplete: boolean;
+}
+export interface QuotaCycleUsage {
+  pendingReason?: string | null;
+  cycleId: string;
+  modelBreakdowns: import("./usage").ModelTokenBreakdown[];
+  boundaryModelBreakdowns: import("./usage").ModelTokenBreakdown[];
+  observedStartUnix: number;
+  observedEndUnix: number;
+}

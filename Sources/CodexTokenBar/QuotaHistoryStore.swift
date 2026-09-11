@@ -798,7 +798,18 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             )
         }
 
-        return QuotaHistorySnapshot(daily: daily, recentBins: recentBins, hourlyBins: hourlyBins, latest: sorted.last?.createdAt)
+        let identity = sorted.last(where: { $0.identityVersion != nil }).flatMap { row in
+            QuotaHistoryIdentity(version: row.identityVersion ?? 0, homeIdentity: row.homeIdentity,
+                stableAccountKey: row.stableAccountKey, planType: row.identityPlanType,
+                limitID: row.identityLimitID)
+        }
+        let observations = sorted.compactMap { row -> QuotaCycleObservation? in
+            guard let used = row.sevenDayUsedPercent, let reset = row.sevenDayResetsAt else { return nil }
+            return QuotaCycleObservation(at: row.createdAt, usedPercent: used, resetsAt: reset)
+        }
+        return QuotaHistorySnapshot(daily: daily, recentBins: recentBins, hourlyBins: hourlyBins,
+            latest: sorted.last?.createdAt,
+            actualCycles: QuotaActualCycleProjector.project(observations, now: now), cycleIdentity: identity)
     }
 
     private static func sanitizedRows(_ rows: [QuotaHistoryRow], now: Date) -> [QuotaHistoryRow] {

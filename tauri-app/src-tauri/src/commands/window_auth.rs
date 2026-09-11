@@ -9,6 +9,8 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "read_precise_dashboard_source_probe",
     "acknowledge_attribution_safety",
     "read_usage_cache_status",
+    "read_quota_cycles",
+    "read_quota_cycle_usage",
     "read_live_thread_options",
     "reset_live_rate_monitor",
     "read_autostart_status",
@@ -93,6 +95,8 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "dismiss_status_panel_on_blur",
 ];
 
+pub(crate) const QUOTA_SIDEBAR_ONLY_COMMANDS: &[&str] = &["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "drag_quota_sidebar"];
+
 pub(crate) const STATUS_WINDOW_ONLY_COMMANDS: &[&str] = &["publish_status_indicator_readout"];
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -116,6 +120,8 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
         return label == MAIN_WINDOW_LABEL;
     }
 
+    if QUOTA_SIDEBAR_ONLY_COMMANDS.contains(&command) { return label == "quota-sidebar"; }
+
     if STATUS_WINDOW_ONLY_COMMANDS.contains(&command) {
         return label == STATUS_WINDOW_LABEL;
     }
@@ -128,6 +134,8 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
         return label == FLOATING_WINDOW_LABEL;
     }
 
+    if label == "quota-sidebar-detail" { return command == "record_startup_event"; }
+
     if SURFACE_SAFE_COMMANDS.contains(&command) {
         return is_app_surface_label(label);
     }
@@ -136,13 +144,24 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
 }
 
 fn is_app_surface_label(label: &str) -> bool {
-    matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL | STATUS_WINDOW_LABEL)
+    matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL | STATUS_WINDOW_LABEL | "quota-sidebar")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn quota_sidebar_has_its_own_geometry_authority_and_read_lifecycle() {
+        for command in ["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "drag_quota_sidebar"] {
+            assert!(allows_window_label(command, "quota-sidebar"));
+            for label in ["main", "floating", "status", "quota-sidebar-detail", "unknown"] { assert!(!allows_window_label(command, label)); }
+        }
+        for command in ["get_codex_home", "read_account_quota", "read_usage_summary_snapshot", "schedule_precise_dashboard_aggregate", "read_running_thread_summary", "claim_live_rate_owner_session", "start_live_rate_stream", "stop_live_rate_stream"] {
+            assert!(allows_window_label(command, "quota-sidebar"), "{command}");
+        }
+        assert!(!allows_window_label("save_display_surfaces", "quota-sidebar"));
+    }
     #[test]
     fn floating_pointer_state_is_restricted_to_the_floating_surface() {
         assert!(allows_window_label("read_floating_pointer_state", "floating"));
@@ -279,8 +298,9 @@ mod tests {
     fn window_checked_commands() -> Vec<String> {
         let commands_dir = source_root().join("commands");
         let mut checked = Vec::new();
-        for entry in std::fs::read_dir(commands_dir).unwrap() {
-            let path = entry.unwrap().path();
+        let mut paths = std::fs::read_dir(commands_dir).unwrap().map(|entry| entry.unwrap().path()).collect::<Vec<_>>();
+        paths.push(source_root().join("platform/quota_sidebar.rs"));
+        for path in paths {
             if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
                 continue;
             }
@@ -310,7 +330,7 @@ mod tests {
         );
         for command in &checked {
             assert!(
-                ["main", "floating", "status"]
+                ["main", "floating", "status", "quota-sidebar", "quota-sidebar-detail"]
                     .iter()
                     .any(|label| allows_window_label(command, label)),
                 "{command} 调用了 require_window_label 但不在任何窗口白名单中，任何窗口都无法调用"
@@ -326,6 +346,7 @@ mod tests {
         for command in MAIN_WINDOW_ONLY_COMMANDS
             .iter()
             .chain(SURFACE_SAFE_COMMANDS.iter())
+            .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(
@@ -347,6 +368,7 @@ mod tests {
         for command in MAIN_WINDOW_ONLY_COMMANDS
             .iter()
             .chain(SURFACE_SAFE_COMMANDS.iter())
+            .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(

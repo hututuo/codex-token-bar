@@ -17,6 +17,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 
 mod database;
+pub(crate) mod cycles;
 mod protection;
 #[cfg(test)]
 mod protection_integration_tests;

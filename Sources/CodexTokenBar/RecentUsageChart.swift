@@ -1335,6 +1335,7 @@ struct RecentUsageChart: View, Equatable {
     @State private var previewVisibility = RecentChartPreviewVisibilityState()
     @State private var accessibilityCursorState = RecentChartAccessibilityCursorState()
     @State private var scrollPresentation: RecentChartScrollPresentation?
+    @State private var cachedBucketNormalizedCostsUSD: [Double] = []
     @State private var cachedBucketCostsUSD: [Double]
     @State private var cachedFixedScales: RecentChartFixedScaleMap
     @State private var renderGeneration: Int
@@ -1461,6 +1462,12 @@ struct RecentUsageChart: View, Equatable {
         }
     }
 
+    private var visibleWindowNormalizedCostUSD: Double {
+        let summary = visibleWindowSummary
+        guard summary.endIndex >= summary.startIndex else { return 0 }
+        return (summary.startIndex...summary.endIndex).reduce(0) { $0 + (cachedBucketNormalizedCostsUSD[safe: $1] ?? 0) }
+    }
+
     private var preparationInput: RecentChartPreparationInput {
         RecentChartPreparationInput(
             bins: bins,
@@ -1511,7 +1518,7 @@ struct RecentUsageChart: View, Equatable {
                     ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
                     ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
                     ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
-                    ChartLegend(color: AppTheme.chartCost, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
+                    ChartLegend(color: AppTheme.chartCost, label: "金额", value: PlanCostNormalization.text(original: visibleWindowCostUSD, normalized: visibleWindowNormalizedCostUSD))
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
                     }
@@ -2095,6 +2102,7 @@ struct RecentUsageChart: View, Equatable {
                         cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
                         modelBreakdowns: preparedData.modelBreakdowns[safe: activeIndex] ?? [],
                         costUSD: bucketCostUSD(at: activeIndex),
+                        normalizedCostUSD: cachedBucketNormalizedCostsUSD[safe: activeIndex] ?? 0,
                         fiveHourRemaining: quotaSeriesVisibility.showsFiveHour
                             ? preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil
                             : nil,
@@ -2299,10 +2307,12 @@ struct RecentUsageChart: View, Equatable {
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins
         )
-        let updatedBucketCostsUSD = Self.bucketCosts(
+        let updatedEstimates = Self.bucketPrices(
             for: updatedData,
             priceModel: selectedQuotaEstimateModel
         )
+        let updatedBucketCostsUSD = updatedEstimates.map(\.costUSD)
+        cachedBucketNormalizedCostsUSD = updatedEstimates.map(\.normalizedCostUSD)
         let updatedFixedScales = Self.fixedScales(for: updatedData)
         guard updatedData != preparedData else {
             var renderInputsChanged = false
@@ -2336,10 +2346,12 @@ struct RecentUsageChart: View, Equatable {
 
     private func refreshBucketCosts() {
         cachedFixedConsumptionSelection = nil
-        let updated = Self.bucketCosts(
+        let estimates = Self.bucketPrices(
             for: preparedData,
             priceModel: selectedQuotaEstimateModel
         )
+        let updated = estimates.map(\.costUSD)
+        cachedBucketNormalizedCostsUSD = estimates.map(\.normalizedCostUSD)
         if updated != cachedBucketCostsUSD {
             cachedBucketCostsUSD = updated
             renderGeneration &+= 1
@@ -2355,10 +2367,10 @@ struct RecentUsageChart: View, Equatable {
         )
     }
 
-    private static func bucketCosts(
+    private static func bucketPrices(
         for prepared: RecentChartPreparedData,
         priceModel: OfficialAPIPriceModel
-    ) -> [Double] {
+    ) -> [ModelAwareAPIPriceEstimate] {
         prepared.bins.indices.map { index in
             let fallbackBreakdown = prepared.cacheBreakdowns[safe: index] ?? .empty
             let estimate = ModelAwareAPIPriceEstimator.estimate(
@@ -2368,7 +2380,7 @@ struct RecentUsageChart: View, Equatable {
                 standardAPI: true,
                 rates: { $0.currentPriceRates }
             )
-            return estimate.costUSD.isFinite ? max(estimate.costUSD, 0) : 0
+            return estimate
         }
     }
 

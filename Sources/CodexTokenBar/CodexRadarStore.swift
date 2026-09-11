@@ -253,7 +253,7 @@ final class CodexRadarStore: ObservableObject {
         feedReader: any CodexRadarFeedReading = LiveCodexRadarFeedReader(),
         detailReader: any CodexRadarDetailReading = LiveCodexRadarDetailReader(),
         crowdReader: any CodexCrowdRadarReading = LiveCodexCrowdRadarReader(),
-        refreshInterval: TimeInterval = 600,
+        refreshInterval: TimeInterval = 300,
         detailRefreshDefaults: UserDefaults = .standard,
         detailRefreshCalendar: Calendar = .current,
         detailRetrySleep: @escaping UsageRefreshCadenceRecoveryScheduler.Sleep = { nanoseconds in

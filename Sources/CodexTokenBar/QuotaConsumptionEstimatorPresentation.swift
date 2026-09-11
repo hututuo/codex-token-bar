@@ -142,7 +142,7 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
         currentSevenDayQuotaPresent: Bool = true
     ) {
         let fullPrice = selection.fullCurrentAPIPriceEstimate
-        let fullCostText = fullPrice.costUSD.quotaEstimatorMoneyText
+        let fullCostText = PlanCostNormalization.text(original: fullPrice.costUSD, normalized: fullPrice.normalizedCostUSD)
         costText = fullPrice.unpricedModels.isEmpty && fullPrice.unpricedCalls == 0
             ? fullCostText
             : "已知价小计 \(fullCostText)"
@@ -399,7 +399,7 @@ extension QuotaConsumptionSelection {
 extension QuotaConsumptionEstimate {
     var quotaEstimatorBudgetText: String {
         guard let impliedWindowBudgetUSD else { return "--" }
-        return "$\(Self.quotaEstimatorMoneyString(impliedWindowBudgetUSD))"
+        return PlanCostNormalization.text(original: impliedWindowBudgetUSD, normalized: normalizedWindowBudgetUSD ?? impliedWindowBudgetUSD)
     }
 
     static func quotaEstimatorMoneyString(_ value: Double) -> String {

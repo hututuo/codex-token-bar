@@ -42,6 +42,12 @@ enum CodexRadarPresentationText {
         return action(rawValue)
     }
 
+    static func isSpeedWindow(snapshot: CodexRadarSnapshot?, now: Date = Date()) -> Bool {
+        guard effectiveAction(snapshot: snapshot) == "速登窗口", let snapshot,
+              snapshot.window.open != false, snapshot.windowOpen != false else { return false }
+        return countdownDeadline(snapshot: snapshot).map { $0 > now } ?? true
+    }
+
     /// Shows a live countdown only when Radar provides a future window end.
     /// The fallback deliberately stays at the four-character window label;
     /// an inferred end time must never be presented as authoritative.
@@ -49,6 +55,7 @@ enum CodexRadarPresentationText {
         guard effectiveAction(snapshot: snapshot) == "速登窗口" else {
             return effectiveAction(snapshot: snapshot)
         }
+        guard isSpeedWindow(snapshot: snapshot, now: now) else { return "等待" }
         guard let endDate = countdownDeadline(snapshot: snapshot),
               endDate > now else {
             return "速登窗口"
@@ -956,7 +963,10 @@ struct CodexRadarModelIQPoint: Decodable, Equatable, Sendable, Identifiable {
 
     var costDisplayText: String {
         guard let costUsd else { return "费用未知" }
-        return "$\(Self.display(costUsd, fractionDigits: 2))"
+        guard let model = OfficialAPIPriceModel.detected(from: model) else {
+            return "\(costUsd.quotaEstimatorMoneyText) · 均一化待模型数据"
+        }
+        return PlanCostNormalization.text(original: costUsd, normalized: costUsd * PlanCostNormalization.factor(for: model))
     }
 
     var totalTokensDisplayText: String {
@@ -1175,12 +1185,12 @@ struct CodexRadarQuotaRow: Decodable, Equatable, Sendable, Identifiable {
 
     var fiveHourDisplayText: String {
         guard let fiveH else { return "--" }
-        return "$\(CodexRadarModelIQPoint.display(fiveH, fractionDigits: 2))"
+        return "$\(CodexRadarModelIQPoint.display(fiveH, fractionDigits: 2)) · 均一化待模型数据"
     }
 
     var sevenDayDisplayText: String {
         guard let sevenD else { return "--" }
-        return "$\(CodexRadarModelIQPoint.display(sevenD, fractionDigits: 2))"
+        return "$\(CodexRadarModelIQPoint.display(sevenD, fractionDigits: 2)) · 均一化待模型数据"
     }
 }
 

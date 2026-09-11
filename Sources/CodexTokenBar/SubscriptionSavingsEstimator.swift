@@ -2,6 +2,7 @@ import Foundation
 
 struct SubscriptionSavingsEstimate: Equatable {
     let apiEquivalentUSD: Double
+    var normalizedCostUSD: Double? = nil
     let subscriptionCostUSD: Double?
     let netSavingsUSD: Double?
     let billingMonths: Int
@@ -60,6 +61,7 @@ enum SubscriptionSavingsEstimator {
 
         return SubscriptionSavingsEstimate(
             apiEquivalentUSD: apiEquivalentUSD,
+            normalizedCostUSD: apiPrice.normalizedCostUSD,
             subscriptionCostUSD: subscriptionCostUSD,
             netSavingsUSD: netSavingsUSD,
             billingMonths: billingMonths,
@@ -116,6 +118,7 @@ enum SubscriptionSavingsEstimator {
 }
 
 struct SubscriptionSavingsPresentation: Equatable {
+    var normalizedValueText: String? = nil
     let valueText: String
     let labelText: String
     let helpText: String
@@ -132,10 +135,12 @@ struct SubscriptionSavingsPresentation: Equatable {
            let subscriptionCostUSD = estimate.subscriptionCostUSD,
            let monthlyPlanUSD = estimate.monthlyPlanUSD {
             valueText = Self.compactMoney(netSavingsUSD)
+            normalizedValueText = "均一化 " + Self.compactMoney((estimate.normalizedCostUSD ?? estimate.apiEquivalentUSD) - subscriptionCostUSD)
             labelText = "累计净薅到（估）"
             helpText = "\(Self.pricingDescription(estimate))：API 等值 \(Self.fullMoney(estimate.apiEquivalentUSD)) − \(estimate.normalizedPlanName) \(estimate.billingMonths) 个月套餐成本 \(Self.fullMoney(subscriptionCostUSD))（\(Self.fullMoney(monthlyPlanUSD))/月）= \(Self.fullMoney(netSavingsUSD))。历史套餐变化未计入。"
         } else {
             valueText = Self.compactMoney(estimate.apiEquivalentUSD)
+            normalizedValueText = "均一化 " + Self.compactMoney(estimate.normalizedCostUSD ?? estimate.apiEquivalentUSD)
             labelText = estimate.hasUnpricedUsage ? "API 已知价小计（估）" : "API 等值（估）"
             let planDescription = if estimate.hasUnpricedUsage {
                 if let subscriptionCostUSD = estimate.subscriptionCostUSD,
@@ -214,6 +219,7 @@ enum SevenDayAPIValueQuality: Equatable, Sendable {
 
 struct SevenDayAPIValueEstimate: Equatable, Sendable {
     let valueUSD: Double?
+    var normalizedCostUSD: Double? = nil
     let quality: SevenDayAPIValueQuality
     let cycleStart: Date?
     let cycleEnd: Date?
@@ -265,11 +271,11 @@ struct SevenDayAPIValuePresentation: Equatable {
             labelText = "本7d API 等值（待读取）"
             helpText = reason
         case .measured:
-            valueText = estimate.valueUSD.map(SubscriptionSavingsPresentation.compactMoney) ?? "待读取"
+            valueText = estimate.valueUSD.map { PlanCostNormalization.text(original: $0, normalized: estimate.normalizedCostUSD ?? $0) } ?? "待读取"
             labelText = estimate.hasUnpricedUsage ? "本7d API 已知价小计（估）" : label
             helpText = Self.helpText(for: estimate, quality: "已完成逐事件读取，按历史真实模型的当前 API 单价估算")
         case .estimated(let source):
-            valueText = estimate.valueUSD.map(SubscriptionSavingsPresentation.compactMoney) ?? "待读取"
+            valueText = estimate.valueUSD.map { PlanCostNormalization.text(original: $0, normalized: estimate.normalizedCostUSD ?? $0) } ?? "待读取"
             labelText = estimate.hasUnpricedUsage
                 ? "本7d API 已知价小计（估算，精确计算中）"
                 : "本7d API 等值（估算，精确计算中）"
@@ -356,6 +362,7 @@ extension SubscriptionSavingsEstimator {
             )
             return SevenDayAPIValueEstimate(
                 valueUSD: price.costUSD,
+                normalizedCostUSD: price.normalizedCostUSD,
                 quality: .measured,
                 cycleStart: cycleStart,
                 cycleEnd: cycleEnd,
@@ -416,6 +423,7 @@ extension SubscriptionSavingsEstimator {
         )
         return SevenDayAPIValueEstimate(
             valueUSD: price.costUSD,
+                normalizedCostUSD: price.normalizedCostUSD,
             quality: .estimated(source: fallbackBuckets.1),
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,

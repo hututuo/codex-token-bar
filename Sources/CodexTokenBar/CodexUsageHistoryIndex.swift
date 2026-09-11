@@ -90,6 +90,7 @@ extension CodexUsageAnalyzer {
         let assistantStartOffset: UInt64?
         var accountingKind: UsageAccountingKind = .counted
         var reportedTotalTokens: Int? = nil
+        var usageFingerprint: Data? = nil
     }
 
     struct IndexedSessionParseResult {
@@ -209,6 +210,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let tableCounts: [Int64]
         let aggregateTotals: [Int64]
         let lineage: [String?]
+        let protectedTables: [String:String]?
+
+        func preserves(_ expected: Self) -> Bool {
+            tableCounts == expected.tableCounts && aggregateTotals == expected.aggregateTotals
+                && lineage == expected.lineage
+                && (expected.protectedTables ?? [:]).allSatisfy { protectedTables?[$0.key] == $0.value }
+        }
     }
 
     enum MigrationAssessment: Equatable {
@@ -454,18 +462,22 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         case unresolved
     }
 
-    private static let schemaVersion = "12"
+    private static let schemaVersion = "13"
     private static let structuralSchemaVersion = "11"
-    private static let inPlaceSchemaVersions: Set<String> = ["6", "7", "11", "12"]
-    private static let forkReplayBoundaryRevision = "explicit-subagent-delayed-context-v3"
+    private static let inPlaceSchemaVersions: Set<String> = ["6", "7", "11", "12", "13"]
+    private static let oldForkReplayBoundaryRevision = "explicit-subagent-delayed-context-v3"
+    private static let paginatedV4BoundaryRevision = "paginated-subagent-boundary-v4"
+    private static let paginatedV5BoundaryRevision = "paginated-owned-turn-v5"
+    private static let forkReplayBoundaryRevision = "paginated-owned-turn-v6"
     /// Bump whenever event parsing or source-bucket identity semantics change.
     /// Existing attribution ledgers then fail closed instead of reconciling
     /// contributions produced by incompatible parsers.
-    private static let attributionProvenanceRevision = "source-bucket-v4-fork-replay-boundary-v2"
+    private static let attributionProvenanceRevision = "source-bucket-v5-paginated-boundary-v4"
     /// Only revisions that were actually emitted by released/known builds may
     /// be upgraded in place.  Treat every other non-empty value as a future
     /// contract and fail before touching the ledger or its revision marker.
     private static let knownLegacyAttributionProvenanceRevisions: Set<String> = [
+        "source-bucket-v4-fork-replay-boundary-v2",
         "legacy-ledger-v1",
         "source-bucket-v2-incremental-parser-v1",
         "source-bucket-v3-model-aware-parser-v1",
@@ -513,7 +525,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let stagingManifestSchemaVersion = 3
     private static let legacyStagingManifestSchemaVersions: Set<Int> = [1, 2]
     private static let stagingManifestIntegrity = "sqlite-quick-check-v1"
-    private static let legacyStagingParserRevision = "token-event-v2-\(forkReplayBoundaryRevision)"
+    private static let legacyStagingParserRevision = "token-event-v2-\(oldForkReplayBoundaryRevision)"
+    private static let oldStagingParserRevision = "token-event-v3-\(UsageAccountingState.revision)-\(oldForkReplayBoundaryRevision)"
+    private static let paginatedV4StagingRevision = "token-event-v3-\(UsageAccountingState.revision)-\(paginatedV4BoundaryRevision)"
+    private static let paginatedV5StagingRevision = "token-event-v3-\(UsageAccountingState.revision)-\(paginatedV5BoundaryRevision)"
     private static let stagingParserRevision = "token-event-v3-\(UsageAccountingState.revision)-\(forkReplayBoundaryRevision)"
     private static let explicitSubagentFirstLineLimit = 256 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
@@ -547,6 +562,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         onProgress: ((PreciseIndexProgress) -> Void)? = nil
     ) throws {
         let databaseURL = Self.databaseURL(for: codexHome)
+        try Self.relocateLegacyIndex(from: Self.databaseURL(for: codexHome, legacyCache: true),
+            to: databaseURL, fileManager: fileManager, onProgress: onProgress)
         try self.init(databaseURL: databaseURL, fileManager: fileManager, onProgress: onProgress)
     }
 
@@ -555,6 +572,28 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         fileManager: FileManager = .default
     ) throws {
         try self.init(databaseURL: databaseURL, fileManager: fileManager)
+    }
+
+    /// Browsing an already published cycle must never migrate or scan logs.
+    private init(readOnlyCycleHome codexHome: URL) throws {
+        let url = Self.databaseURL(for: codexHome)
+        fileManager = .default
+        operationGate = Self.operationGate(for: url)
+        driver = SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false,
+            enableWAL: false)
+        guard case .compatible = try Self.assessMigration(databaseURL: url, fileManager: .default) else {
+            throw SQLiteDatabaseError(operation: "Read quota cycle", code: SQLITE_ABORT,
+                message: "精确索引尚未就绪", path: url.path)
+        }
+    }
+
+    static func quotaCycleSourceBuckets(codexHome: URL, provenanceEpoch: String,
+        generation: Int64, from start: Date, before end: Date,
+        minuteBucketStarts: [Date]) throws -> [TokenCacheAttributionEvent] {
+        let reader = try Self(readOnlyCycleHome: codexHome)
+        return try reader.attributionSourceBuckets(provenanceEpoch: provenanceEpoch,
+            from: start, before: end, minuteBucketStarts: minuteBucketStarts,
+            expectedGeneration: generation)
     }
 
     private init(
@@ -612,8 +651,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             // Fail closed and preserve the database on any error; explicit
             // recovery can inspect the original bytes instead of silently
             // deleting the user's only published index.
+            try driver.withConnection { try UsageHistoryRetention.validate(on: $0) }
             try prepareSchema(onProgress: migratedViaCandidate ? nil : onProgress)
-            if openMode == .active { try migrateAccounting() }
+            if openMode == .active {
+                try driver.withConnection { try UsageHistoryRetention.install(on: $0) }
+                try driver.withConnection { try UsageEventLedger.install(on: $0) }
+                try migrateAccounting()
+                // Accounting may have added optional evidence columns.
+                try driver.withConnection { try UsageHistoryRetention.install(on: $0) }
+            }
         }
     }
 
@@ -772,7 +818,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 guard try candidateMigrationFacts(
                     databaseURL: candidateURL,
                     fileManager: fileManager
-                ) == sourceFacts else {
+                ).preserves(sourceFacts) else {
                     throw CodexUsageIndexRepairRequiredError(
                         reason: "已有候选库不是活动库的完整 SQLite 副本；已保留现场"
                     )
@@ -1020,7 +1066,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let schema = try connection.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version' LIMIT 1;"
             ) { $0.text(0) }.first ?? nil
-            if schema == schemaVersion {
+            if schema == "12" || schema == schemaVersion {
+                // An older build may have committed accounting and stopped
+                // before retiring its structural migration manifest.
                 let quickCheck = try connection.readRows("PRAGMA quick_check;") { $0.text(0) ?? "" }
                 let foreignKeys = try connection.readRows("PRAGMA foreign_key_check;") { $0.text(0) ?? "unknown" }
                 guard quickCheck == ["ok"], foreignKeys.isEmpty else {
@@ -1030,7 +1078,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     "SELECT value FROM schema_meta WHERE key = 'accounting_structural_receipt';"
                 ) { $0.text(0) }.first ?? nil
                 guard let receipt,
-                      try JSONDecoder().decode(CandidateMigrationFacts.self, from: Data(receipt.utf8)) == expectedFacts else {
+                      try JSONDecoder().decode(CandidateMigrationFacts.self, from: Data(receipt.utf8)).preserves(expectedFacts) else {
                     throw CodexUsageIndexRepairRequiredError(reason: "accounting 转换缺少 schema 11 校验回执")
                 }
                 return
@@ -1073,7 +1121,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     reason: "候选库指纹行数对账失败"
                 )
             }
-            guard try candidateMigrationFacts(connection: connection) == expectedFacts else {
+            guard try candidateMigrationFacts(connection: connection).preserves(expectedFacts) else {
                 throw CodexUsageIndexRepairRequiredError(
                     reason: "候选库事件、分块、聚合或 generation 对账失败"
                 )
@@ -1136,8 +1184,28 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return CandidateMigrationFacts(
             tableCounts: counts,
             aggregateTotals: aggregateTotals,
-            lineage: lineage
+            lineage: lineage,
+            protectedTables: try protectedTableDigests(connection)
         )
+    }
+
+    /// These tables may be the only surviving detailed observations. Candidate
+    /// equality must compare their values, not just the current totals.
+    private static func protectedTableDigests(_ db: SQLiteDatabaseConnection) throws -> [String:String] {
+        let tables = try db.readRows("SELECT name FROM sqlite_master WHERE type='table' AND (name GLOB 'retained_usage_*' OR name GLOB 'usage_ledger_*') AND name NOT LIKE '%_meta' ORDER BY name") { $0.text(0) }.compactMap { $0 }
+        var result: [String:String] = [:]
+        for table in tables {
+            let quoted = "\"" + table.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            let columns = try db.readRows("PRAGMA table_info(\(quoted))") { $0.int(0) }.compactMap { $0 }
+            let order = columns.map { String($0 + 1) }.joined(separator: ",")
+            var digest = SHA256()
+            try db.forEachRow("SELECT * FROM \(quoted) ORDER BY \(order)") { row in
+                digest.update(data: Data([255]))
+                for column in 0..<row.columnCount { digest.update(data: row.canonicalBytes(column)) }
+            }
+            result[table] = digest.finalize().map { String(format:"%02x",$0) }.joined()
+        }
+        return result
     }
 
     private static func candidateMigrationFactsFromAccountingReceipt(
@@ -1247,8 +1315,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             available = UInt64(raw)
         }
         let activeFamily = main.addingClampingOnOverflow(wal)
+        // Free space excludes the existing source. The candidate copy and
+        // VACUUM's temporary database plus journal can coexist. WAL pages
+        // can enlarge the copied database as well.
         let required = activeFamily
-            .addingClampingOnOverflow(main)
+            .addingClampingOnOverflow(activeFamily)
+            .addingClampingOnOverflow(activeFamily)
             .addingClampingOnOverflow(512 * 1_024 * 1_024)
         guard available >= required else {
             throw NSError(
@@ -1533,6 +1605,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             fileManager: fileManager
         )
         return try readOnly.withConnection { connection in
+            try UsageHistoryRetention.validate(on: connection)
+            try UsageEventLedger.validate(on: connection)
             let schemaMetaExists = try connection.readRows(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta');"
             ) { ($0.int(0) ?? 0) != 0 }.first ?? false
@@ -1571,7 +1645,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             }
             if let replay = try meta("fork_replay_boundary_revision"),
-               replay != forkReplayBoundaryRevision {
+               replay != forkReplayBoundaryRevision, replay != oldForkReplayBoundaryRevision, replay != paginatedV4BoundaryRevision, replay != paginatedV5BoundaryRevision {
                 return .upgradeRequired(
                     component: "fork replay",
                     stored: replay,
@@ -1661,7 +1735,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         "SELECT DISTINCT parser_revision FROM event_enrichment_sources WHERE parser_revision <> '';"
                     ) { $0.text(0) }.compactMap { $0 }
                     if let unknown = revisions.first(where: {
-                        $0 != stagingParserRevision && $0 != legacyStagingParserRevision
+                        $0 != stagingParserRevision && $0 != legacyStagingParserRevision && $0 != oldStagingParserRevision && $0 != paginatedV4StagingRevision && $0 != paginatedV5StagingRevision
                     }) {
                         return .upgradeRequired(
                             component: "模型补全 parser receipt",
@@ -2630,8 +2704,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     // Rotate in the same transaction as the first unsafe
                     // replacement. A reader sees either the old batch and old
                     // provenance, or the complete new batch and new epoch.
-                    let currentBatchUnsafeCause = rewrittenFiles > 0
-                        || lineageAmbiguityDetected
+                    let currentBatchUnsafeCause = lineageAmbiguityDetected
                     if currentBatchUnsafeCause {
                         let attributionState = try currentAttributionState(
                             connection: transaction
@@ -2679,8 +2752,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             // or unprovable lineage replacement becomes visible. The rotation
             // transaction first copies the durable ledger, so interruption can
             // overestimate local usage but cannot silently reconcile ambiguity.
-            let currentScanUnsafeCauseDetected = rewrittenFiles > 0
-                || lineageAmbiguityDetected
+            let currentScanUnsafeCauseDetected = lineageAmbiguityDetected
             let unsafeEpisodeBegan = currentScanUnsafeCauseDetected
                 && !preRotationAttributionState.currentScanUnsafeCauseDetected
             return try connection.transaction { transaction in
@@ -2738,10 +2810,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         bindings: [.int64(sourceID)]
                     ) { $0.int64(0) }.compactMap { $0 }
                     removedDashboardBuckets.formUnion(sourceBuckets)
-                    try transaction.execute(
-                        "DELETE FROM sources WHERE source_id = ?;",
-                        bindings: [.int64(sourceID)]
-                    )
+                    try transaction.execute("UPDATE usage_ledger_sources SET missing=1 WHERE source_id=?",bindings:[.int64(sourceID)])
+                    try transaction.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=? AND available<>0",bindings:[.int64(sourceID)])
                 }
                 for bucket in removedDashboardBuckets.sorted() {
                     try refreshDashboardFiveMinuteAggregates(
@@ -2845,13 +2915,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         provenanceEpoch: String,
         from start: Date,
         before end: Date,
-        minuteBucketStarts: [Date] = []
+        minuteBucketStarts: [Date] = [],
+        expectedGeneration: Int64? = nil
     ) throws -> [TokenCacheAttributionEvent] {
         try driver.withConnection { connection in
             try configure(connection)
             return try connection.readTransaction { connection in
                 let current = try currentAttributionState(connection: connection)
-                guard current.provenanceEpoch == provenanceEpoch else {
+                guard current.provenanceEpoch == provenanceEpoch,
+                      expectedGeneration.map({ $0 == current.generation && !current.currentScanUnsafeCauseDetected }) ?? true else {
                     throw SQLiteDatabaseError(
                         operation: "Read exact usage attribution ledger",
                         code: SQLITE_ABORT,
@@ -3378,11 +3450,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     """
                     SELECT
                         sources.path,
-                        events.source_offset,
-                        events.user_prompt_offset,
-                        events.assistant_start_offset
+                        b.raw_offset,
+                        b.prompt_offset,
+                        b.assistant_offset
                     FROM events
                     JOIN sources ON sources.source_id = events.source_id
+                    JOIN usage_ledger_bindings b ON b.source_id=events.source_id AND b.event_id=events.source_offset AND b.available=1
+                    JOIN usage_ledger_sources l ON l.source_id=b.source_id AND l.generation=b.generation AND l.missing=0
                     WHERE events.source_id = ? AND events.source_offset = ?
                     LIMIT 1;
                     """,
@@ -5473,13 +5547,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         let candidates = try connection.readRows(
             """
-            SELECT source_id, path
+            SELECT source_id, path, (is_skipping_fork_replay = 1 AND is_explicit_subagent_fork = 0)
             FROM sources
-            WHERE is_skipping_fork_replay = 1
-              AND is_explicit_subagent_fork = 0;
+            ;
             """
         ) { row in
-            (id: row.int64(0), path: row.text(1))
+            (id: row.int64(0), path: row.text(1), legacy: row.int(2) == 1)
         }
         var unresolvedCandidate = false
         for candidate in candidates {
@@ -5488,7 +5561,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 unresolvedCandidate = true
                 continue
             }
-            switch probeExplicitSubagentSessionFile(URL(fileURLWithPath: path)) {
+            let boundary: UInt64?
+            do { boundary = try PaginatedHistoryBoundary.read(file: URL(fileURLWithPath: path)) }
+            catch { unresolvedCandidate = true; continue }
+            if storedRevision == Self.paginatedV5BoundaryRevision && boundary != UInt64.max { continue }
+            if boundary == nil && (storedRevision == Self.paginatedV4BoundaryRevision || storedRevision == Self.paginatedV5BoundaryRevision || !candidate.legacy) { continue }
+            switch boundary != nil ? ExplicitSubagentSessionFileProbe.explicit : probeExplicitSubagentSessionFile(URL(fileURLWithPath: path)) {
             case .explicit:
                 // A mismatched probe schedules an atomic single-file rebuild
                 // while leaving the currently published rows available to
@@ -5517,6 +5595,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
         }
 
+        let receiptColumns = Set(try connection.readRows("PRAGMA table_info(event_enrichment_sources);") { $0.text(1) ?? "" })
+        if receiptColumns.contains("parser_revision") {
+            try connection.execute("UPDATE event_enrichment_sources SET parser_revision = ? WHERE parser_revision IN (?, ?, ?, ?);",
+                bindings: [.text(Self.stagingParserRevision), .text(Self.oldStagingParserRevision), .text(Self.paginatedV4StagingRevision), .text(Self.legacyStagingParserRevision), .text(Self.paginatedV5StagingRevision)])
+        }
         guard !unresolvedCandidate else {
             return false
         }
@@ -5659,6 +5742,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 session_id,
                 accounting_state
             FROM sources
+            WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=sources.source_id AND l.missing=1)
             ORDER BY source_id;
             """
         ) { row in
@@ -5739,7 +5823,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         connection: SQLiteDatabaseConnection
     ) throws -> [SourceIdentity] {
         try connection.readRows(
-            "SELECT source_id, path, session_id FROM sources ORDER BY source_id;"
+            "SELECT source_id, path, session_id FROM sources WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=sources.source_id AND l.missing=1) ORDER BY source_id;"
         ) { row -> SourceIdentity? in
             guard let sourceID = row.int64(0),
                   let path = row.text(1) else {
@@ -5765,6 +5849,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
              AND e.completed_size = s.size_bytes
              AND e.completed_probe = s.content_probe
             WHERE e.source_id IS NULL
+              AND NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=s.source_id AND l.missing=1)
             ORDER BY s.source_id;
             """,
             bindings: [
@@ -5918,27 +6003,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 let persistentFingerprintStatement = try transaction.prepare(
                     "INSERT OR IGNORE INTO source_fingerprints(source_id, value) VALUES (?, ?);"
                 )
-                let eventStatement = try transaction.prepare(
-                    """
-                    INSERT INTO events(
-                        source_id,
-                        source_offset,
-                        timestamp,
-                        tokens,
-                        input_tokens,
-                        cached_input_tokens,
-                        output_tokens,
-                        reasoning_output_tokens,
-                        model,
-                        user_prompt_offset,
-                        assistant_start_offset,
-                        accounting_kind,
-                        reported_total_tokens
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                    """
-                )
-
+                let rawGeneration = try transaction.readRows("SELECT generation FROM usage_ledger_sources WHERE source_id=?",bindings:[.int64(existing.id)]) { $0.text(0) }.first ?? nil
+                guard let rawGeneration else { throw CodexUsageIndexRepairRequiredError(reason:"来源缺少账本代际") }
                 let result = try parser(
                     file,
                     sessionID,
@@ -5968,31 +6034,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             lastAffectedAttributionBucket ?? bucketStart,
                             bucketStart
                         )
-                        let userPromptOffset: SQLiteBinding = if let offset = indexedEvent.userPromptOffset {
-                            .int64(try sqliteInt64(offset))
-                        } else {
-                            .null
-                        }
-                        let assistantStartOffset: SQLiteBinding = if let offset = indexedEvent.assistantStartOffset {
-                            .int64(try sqliteInt64(offset))
-                        } else {
-                            .null
-                        }
-                        try eventStatement.execute([
-                            .int64(existing.id),
-                            .int64(try sqliteInt64(indexedEvent.sourceOffset)),
-                            .date(event.timestamp),
-                            .int(event.tokens),
-                            .int(event.inputTokens),
-                            .int(event.cachedInputTokens),
-                            .int(event.outputTokens),
-                            .int(event.reasoningOutputTokens),
-                            event.model.map(SQLiteBinding.text) ?? .null,
-                            userPromptOffset,
-                            assistantStartOffset,
-                            .int(indexedEvent.accountingKind.rawValue),
-                            indexedEvent.reportedTotalTokens.map(SQLiteBinding.int) ?? .null
-                        ])
+                        _ = try UsageEventLedger.admit(
+                            .init(rawOffset:try sqliteInt64(indexedEvent.sourceOffset),timestamp:event.timestamp.timeIntervalSince1970,
+                                  tokens:Int64(event.tokens),input:Int64(event.inputTokens),cached:Int64(event.cachedInputTokens),
+                                  output:Int64(event.outputTokens),reasoning:Int64(event.reasoningOutputTokens),model:event.model,
+                                  promptOffset:try indexedEvent.userPromptOffset.map(sqliteInt64),
+                                  assistantOffset:try indexedEvent.assistantStartOffset.map(sqliteInt64),
+                                  accountingKind:Int64(indexedEvent.accountingKind.rawValue),reported:indexedEvent.reportedTotalTokens.map(Int64.init),
+                                  legacy:nil,fingerprint:indexedEvent.usageFingerprint),
+                            source:existing.id,generation:rawGeneration,admission:.newConsumption,on:transaction)
+
                     }
                 )
 
@@ -6062,6 +6113,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
         } catch AppendCheckpointError.rejected {
             return nil
+        } catch {
+            // The old offset may now lie inside a UTF-8 code point. Only a
+            // proven rewrite converts a parse failure into a source rebuild.
+            var indexes = Set([checkpoint.resumeOffset > 0 ? (checkpoint.resumeOffset - 1) / Self.chunkSize : 0])
+            if let tailChunkIndex { indexes.insert(tailChunkIndex) }
+            for index in indexes where existing.signature.size > 0 {
+                guard let stored = try storedSourceChunk(sourceID: existing.id, index: index, connection: connection) else { return nil }
+                if try hashSourceChunk(file: file, readHandle: readHandle, index: index, byteCount: stored.byteCount) != stored { return nil }
+            }
+            throw error
         }
     }
 
@@ -6687,6 +6748,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             )
         }
         let databaseURL = stagingDatabaseURL(for: job.file)
+        if ["-wal", "-shm", "-journal"].contains(where: { fileManager.fileExists(atPath: databaseURL.path + $0) }) {
+            try quarantineIncompleteStage(at: databaseURL, for: job)
+        }
         let readHandle = try FileHandle(forReadingFrom: job.file)
         defer { try? readHandle.close() }
         let formalSignature = try sourceSignature(
@@ -6761,7 +6825,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     user_prompt_offset INTEGER,
                     assistant_start_offset INTEGER,
                     accounting_kind INTEGER NOT NULL DEFAULT 0,
-                    reported_total_tokens INTEGER
+                    reported_total_tokens INTEGER,
+                    usage_fingerprint BLOB
                 ) WITHOUT ROWID;
 
                 CREATE TABLE chunks (
@@ -6789,8 +6854,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         user_prompt_offset,
                         assistant_start_offset,
                         accounting_kind,
-                        reported_total_tokens
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        reported_total_tokens,
+                        usage_fingerprint
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """
                 )
                 let result = try parser(
@@ -6831,7 +6897,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             userPromptOffset,
                             assistantStartOffset,
                             .int(indexedEvent.accountingKind.rawValue),
-                            indexedEvent.reportedTotalTokens.map(SQLiteBinding.int) ?? .null
+                            indexedEvent.reportedTotalTokens.map(SQLiteBinding.int) ?? .null,
+                            indexedEvent.usageFingerprint.map(SQLiteBinding.blob) ?? .null
                         ])
                     }
                 )
@@ -7081,6 +7148,22 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     chunkCount: row.int(11)
                 )
             }
+            if rows.isEmpty {
+                let check = try stage.readRows("PRAGMA quick_check;") { $0.text(0) ?? "" }
+                guard check == ["ok"] else { return false }
+                for table in ["events", "fingerprints", "chunks"] {
+                    let count = try stage.readRows("SELECT COUNT(*) FROM \(table);") { $0.int(0) ?? -1 }.first ?? -1
+                    if count != 0 { return false }
+                }
+                return true
+            }
+            if rows.count == 1, let row = rows.first,
+               row.path == job.file.path, row.sessionID == job.sessionID,
+               (row.schema == Self.stagingManifestSchemaVersion || Self.legacyStagingManifestSchemaVersions.contains(row.schema ?? -1)),
+               [Self.oldStagingParserRevision, Self.legacyStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.parser ?? ""),
+               try PaginatedHistoryBoundary.read(file: job.file) != nil {
+                return try stage.readRows("PRAGMA quick_check;") { $0.text(0) ?? "" } == ["ok"]
+            }
             guard rows.count == 1,
                   let row = rows.first,
                   row.complete == 0,
@@ -7127,23 +7210,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         at databaseURL: URL,
         for job: FullRebuildJob
     ) throws {
-        let digest = stagingDatabaseDigest(for: job.file)
-        let destination = stagingDirectoryURL.appendingPathComponent(
-            "\(digest).candidate-\(UUID().uuidString).sqlite"
-        )
-        // Stages are created with DELETE journaling and WAL disabled. A
-        // surviving sidecar means the private transaction may still be
-        // incomplete; preserve it for repair instead of splitting the family
-        // across two names.
-        let sidecars = ["-wal", "-shm", "-journal"].map {
-            URL(fileURLWithPath: databaseURL.path + $0)
+        let destination = stagingDirectoryURL.appendingPathComponent("preserved", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let source = URL(fileURLWithPath: databaseURL.path + suffix)
+            if fileManager.fileExists(atPath: source.path) {
+                try fileManager.moveItem(at: source, to: destination.appendingPathComponent(source.lastPathComponent))
+            }
         }
-        guard sidecars.allSatisfy({ !fileManager.fileExists(atPath: $0.path) }) else {
-            throw CodexUsageIndexRepairRequiredError(
-                reason: "未完成暂存仍有 SQLite sidecar；已保留现场"
-            )
-        }
-        try fileManager.moveItem(at: databaseURL, to: destination)
         try Self.synchronizeDirectory(at: stagingDirectoryURL)
     }
 
@@ -7221,12 +7296,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             if let parser = header.parser,
                !parser.isEmpty,
                parser != Self.stagingParserRevision,
-               parser != Self.legacyStagingParserRevision {
+               parser != Self.legacyStagingParserRevision, parser != Self.oldStagingParserRevision, parser != Self.paginatedV4StagingRevision, parser != Self.paginatedV5StagingRevision {
                 throw CodexUsageIndexUpgradeRequiredError(
                     component: "staging parser",
                     stored: parser,
                     supported: Self.stagingParserRevision
                 )
+            }
+            if header.parser != Self.stagingParserRevision,
+               try PaginatedHistoryBoundary.read(file: job.file) != nil {
+                return nil
             }
             let quickCheck = try stage.readRows("PRAGMA quick_check;") {
                 $0.text(0) ?? ""
@@ -7273,7 +7352,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                       row.text(1) == job.file.path,
                       row.text(2) == job.sessionID,
                       row.text(3) == expectedMigrationRevision,
-                      (row.text(4) == Self.stagingParserRevision || row.text(4) == Self.legacyStagingParserRevision),
+                      ([Self.stagingParserRevision, Self.legacyStagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "")),
                       let artifactID = row.text(5),
                       !artifactID.isEmpty,
                       let rawActualBytes = row.int64(6),
@@ -7362,7 +7441,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             $0 >= 0 ? UInt64($0) : nil
                         },
                         currentModel: row.text(21),
-                        accountingState: row.text(4) == Self.stagingParserRevision ? try UsageAccountingState.decode(row.text(24)) : nil
+                        accountingState: [Self.stagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "") ? try UsageAccountingState.decode(row.text(24)) : nil
                     )
                 )
             }
@@ -7415,16 +7494,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }.compactMap { $0 }
         let candidateIDs = candidates.map(\.id)
         if candidateIDs.count == 1, let sourceID = candidateIDs.first {
-            let contentMatches = try stagedContentMatchesSource(
-                staged,
-                sourceID: sourceID,
-                connection: connection
-            )
-            return (
-                LineageReplacement(sourceID: sourceID),
-                !contentMatches,
-                false
-            )
+            // The canonical session identity moves its numeric ledger with it.
+            // Changed raw content is reconciled below, never a ledger reset.
+            return (LineageReplacement(sourceID: sourceID), false, false)
         }
         guard candidateIDs.isEmpty else {
             return (nil, true, false)
@@ -7537,31 +7609,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let mismatch = try connection.readRows(
             """
             SELECT EXISTS(
-                SELECT 1
-                FROM events published
-                LEFT JOIN event_enrichment_stage.events staged
-                  ON staged.source_offset = published.source_offset
-                WHERE published.source_id = ?
-                  AND (
-                    staged.source_offset IS NULL
-                    OR published.timestamp IS NOT staged.timestamp
+                SELECT 1 FROM event_enrichment_stage.events staged
+                LEFT JOIN usage_ledger_bindings b ON b.source_id=? AND b.raw_offset=staged.source_offset
+                    AND b.available=1 AND b.generation=(SELECT generation FROM usage_ledger_sources WHERE source_id=?)
+                LEFT JOIN events published ON published.source_id=b.source_id AND published.source_offset=b.event_id
+                WHERE published.source_offset IS NULL
                     OR published.tokens IS NOT staged.tokens
                     OR published.input_tokens IS NOT staged.input_tokens
                     OR published.cached_input_tokens IS NOT staged.cached_input_tokens
                     OR published.output_tokens IS NOT staged.output_tokens
                     OR published.reasoning_output_tokens IS NOT staged.reasoning_output_tokens
-                  )
-                UNION ALL
-                SELECT 1
-                FROM event_enrichment_stage.events staged
-                LEFT JOIN events published
-                  ON published.source_id = ?
-                 AND published.source_offset = staged.source_offset
-                WHERE published.source_offset IS NULL
                 LIMIT 1
             );
-            """,
-            bindings: [.int64(sourceID), .int64(sourceID)]
+            """, bindings: [.int64(sourceID),.int64(sourceID)]
         ) { $0.int(0) ?? 1 }.first ?? 1
         return mismatch == 0
     }
@@ -7598,61 +7658,31 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         if legacyAccounting {
             try transaction.execute("UPDATE schema_meta SET value='legacy-source-audit-required' WHERE key='accounting_coverage';")
         }
-            if let existing = try indexedSource(
-                path: staged.job.file.path,
-                connection: transaction
-            ) {
-                try transaction.execute(
-                    """
-                    UPDATE sources
-                    SET session_id = ?, last_seen_generation = ?
-                    WHERE source_id = ?;
-                    """,
-                    bindings: [
-                        .text(staged.job.sessionID),
-                        .text(generation),
-                        .int64(existing.id),
-                    ]
-                )
-            } else if let replacementSourceID {
-                try transaction.execute(
-                    """
-                    UPDATE sources
-                    SET path = ?, session_id = ?, last_seen_generation = ?
-                    WHERE source_id = ?;
-                    """,
-                    bindings: [
-                        .text(staged.job.file.path),
-                        .text(staged.job.sessionID),
-                        .text(generation),
-                        .int64(replacementSourceID),
-                    ]
-                )
-            } else {
-                let sourceID = try allocateSourceID(connection: transaction)
-                try transaction.execute(
-                    """
-                    INSERT INTO sources(
-                        source_id,
-                        path,
-                        session_id,
-                        size_bytes,
-                        modified_at,
-                        content_probe,
-                        last_seen_generation
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    bindings: [
-                        .int64(sourceID),
-                        .text(staged.job.file.path),
-                        .text(staged.job.sessionID),
-                        .int64(try sqliteInt64(staged.committedSignature.size)),
-                        .double(staged.committedSignature.modifiedAt),
-                        .text(staged.committedSignature.contentProbe),
-                        .text(generation)
-                    ]
-                )
+        var existing = try indexedSource(path: staged.job.file.path, connection: transaction)
+        if let previous = existing, previous.sessionID.lowercased() != staged.job.sessionID.lowercased() {
+            // A reused path is not a reused owner. Reserve the old source and
+            // its ledger before allocating a new source for the new task.
+            try transaction.execute("UPDATE usage_ledger_sources SET missing=1 WHERE source_id=?",bindings:[.int64(previous.id)])
+            try transaction.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=?",bindings:[.int64(previous.id)])
+            try transaction.execute("UPDATE sources SET path=? WHERE source_id=?",bindings:[.text("retained-source://\(previous.id)/\(UUID().uuidString)"),.int64(previous.id)])
+            existing = nil
+        }
+        let chosenSourceID = existing?.id ?? replacementSourceID
+        if let sourceID = chosenSourceID {
+            let owner = try transaction.readRows("SELECT session_id FROM sources WHERE source_id=?",bindings:[.int64(sourceID)]) { $0.text(0) }.first ?? nil
+            guard owner?.lowercased() == staged.job.sessionID.lowercased() else {
+                throw CodexUsageIndexRepairRequiredError(reason: "移动来源身份不匹配，已保留旧账并停止发布")
             }
+            try transaction.execute("UPDATE sources SET path=?,last_seen_generation=? WHERE source_id=?",bindings:[.text(staged.job.file.path),.text(generation),.int64(sourceID)])
+        } else {
+            let sourceID = try allocateSourceID(connection: transaction)
+            try transaction.execute("""
+                INSERT INTO sources(source_id,path,session_id,size_bytes,modified_at,content_probe,last_seen_generation)
+                VALUES (?,?,?,?,?,?,?)
+                """,bindings:[.int64(sourceID),.text(staged.job.file.path),.text(staged.job.sessionID),
+                    .int64(try sqliteInt64(staged.committedSignature.size)),.double(staged.committedSignature.modifiedAt),
+                    .text(staged.committedSignature.contentProbe),.text(generation)])
+        }
             guard let source = try indexedSource(
                 path: staged.job.file.path,
                 connection: transaction
@@ -7664,21 +7694,41 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     path: driver.url.path
                 )
             }
-            try transaction.execute(
-                "DELETE FROM events WHERE source_id = ?;",
-                bindings: [.int64(source.id)]
-            )
-            try transaction.execute(
-                "DELETE FROM source_fingerprints WHERE source_id = ?;",
-                bindings: [.int64(source.id)]
-            )
+            let previousRawGeneration = try transaction.readRows("SELECT generation FROM usage_ledger_sources WHERE source_id=?",bindings:[.int64(source.id)]) { $0.text(0) }.first ?? nil
+            let hadConsumption = try transaction.readRows("SELECT EXISTS(SELECT 1 FROM events WHERE source_id=? AND tokens>0)",bindings:[.int64(source.id)]) { $0.int(0) }.first == 1
+            let oldFingerprints = Set(try transaction.readRows("SELECT value FROM source_fingerprints WHERE source_id=?",bindings:[.int64(source.id)]) { $0.data(0) }.compactMap { $0 })
+            let oldChunks = try transaction.readRows("SELECT chunk_index,byte_count,sha256 FROM source_chunks WHERE source_id=? ORDER BY chunk_index",bindings:[.int64(source.id)]) {
+                ($0.int64(0) ?? -1,$0.int64(1) ?? -1,$0.text(2) ?? "")
+            }
+            let newChunks = try stage.readRows("SELECT chunk_index,byte_count,sha256 FROM chunks ORDER BY chunk_index") {
+                ($0.int64(0) ?? -1,$0.int64(1) ?? -1,$0.text(2) ?? "")
+            }
+            // Reuse the full parser's chunk hashes; at most the old partial
+            // tail needs an extra bounded read when a migration also appended.
+            var unchangedContent = !oldChunks.isEmpty && newChunks.count >= oldChunks.count
+            for (position, old) in oldChunks.enumerated() where unchangedContent {
+                guard old.0 == Int64(position), old.1 > 0 else { unchangedContent=false; break }
+                let new = newChunks[position]
+                if old.0 == new.0 && old.1 == new.1 && old.2 == new.2 { continue }
+                guard position == oldChunks.count-1, new.0 == old.0, new.1 > old.1 else { unchangedContent=false; break }
+                let handle = try FileHandle(forReadingFrom:staged.job.file)
+                defer { try? handle.close() }
+                let offset = oldChunks.prefix(position).reduce(Int64(0)) { $0 + $1.1 }
+                try handle.seek(toOffset:UInt64(offset))
+                let data = try handle.read(upToCount:Int(old.1)) ?? Data()
+                unchangedContent = data.count == Int(old.1) && SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined() == old.2
+            }
+            let rawGeneration = UUID().uuidString
+            try UsageEventLedger.beginGeneration(source:source.id,session:staged.job.sessionID,generation:rawGeneration,on:transaction)
+            let isPaginated = try UsageEventLedger.isPaginatedFile(staged.job.file)
+            try transaction.execute("UPDATE usage_ledger_sources SET format=? WHERE source_id=?",bindings:[.text(isPaginated ? "paginated" : "legacy"),.int64(source.id)])
             try transaction.execute(
                 "DELETE FROM source_chunks WHERE source_id = ?;",
                 bindings: [.int64(source.id)]
             )
 
             let fingerprintStatement = try transaction.prepare(
-                "INSERT INTO source_fingerprints(source_id, value) VALUES (?, ?);"
+                "INSERT OR IGNORE INTO source_fingerprints(source_id, value) VALUES (?, ?);"
             )
             var importedFingerprintCount = 0
             try stage.forEachRow(
@@ -7725,25 +7775,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     path: staged.databaseURL.path
                 )
             }
-            let eventStatement = try transaction.prepare(
-                """
-                INSERT INTO events(
-                    source_id,
-                    source_offset,
-                    timestamp,
-                    tokens,
-                    input_tokens,
-                    cached_input_tokens,
-                    output_tokens,
-                    reasoning_output_tokens,
-                    model,
-                    user_prompt_offset,
-                    assistant_start_offset,
-                        accounting_kind,
-                        reported_total_tokens, legacy_tokens
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """
-            )
             var importedEventCount = 0
             try stage.forEachRow(
                 """
@@ -7759,7 +7790,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     user_prompt_offset,
                     assistant_start_offset,
                     \(stageColumns.contains("accounting_kind") ? "accounting_kind" : "0"),
-                    \(stageColumns.contains("reported_total_tokens") ? "reported_total_tokens" : "NULL")
+                    \(stageColumns.contains("reported_total_tokens") ? "reported_total_tokens" : "NULL"),
+                    \(stageColumns.contains("usage_fingerprint") ? "usage_fingerprint" : "NULL")
                 FROM events
                 ORDER BY source_offset;
                 """
@@ -7780,22 +7812,23 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 let components = UsageAccountingComponents(input: inputTokens, cached: cachedInputTokens, output: outputTokens, reasoning: reasoningOutputTokens)
                 let legacyCounted = components.isValid && components.total > 0
-                _ = try eventStatement.execute([
-                    .int64(source.id),
-                    .int64(sourceOffset),
-                    .double(timestamp),
-                    .int(legacyAccounting ? (legacyCounted ? components.total : 0) : tokens),
-                    .int(inputTokens),
-                    .int(cachedInputTokens),
-                    .int(outputTokens),
-                    .int(reasoningOutputTokens),
-                    row.text(7).map(SQLiteBinding.text) ?? .null,
-                    row.int64(8).map(SQLiteBinding.int64) ?? .null,
-                    row.int64(9).map(SQLiteBinding.int64) ?? .null,
-                    .int(legacyAccounting ? (legacyCounted ? 0 : 3) : (row.int(10) ?? 0)),
-                    row.int(11).map(SQLiteBinding.int) ?? .null,
-                    legacyAccounting ? .int(tokens) : .null
-                ])
+                let fingerprint = row.data(12)
+                let unseenFullSnapshot = try fingerprint.map { try UsageEventLedger.isCompleteSnapshot($0) && !oldFingerprints.contains($0) } ?? false
+                // An unchanged source supplies an exact raw-location proof.
+                // Recognized paginated rewrites preserve snapshot payloads, so
+                // unseen complete snapshots are new observations. Partial or
+                // otherwise unproved changes remain separate pending evidence.
+                let admission: UsageEventLedger.Admission = !hadConsumption || unchangedContent || (isPaginated && unseenFullSnapshot)
+                    ? .newConsumption : .reconcile
+                _ = try UsageEventLedger.admit(
+                    .init(rawOffset:sourceOffset,timestamp:timestamp,
+                          tokens:Int64(legacyAccounting ? (legacyCounted ? components.total : 0) : tokens),
+                          input:Int64(inputTokens),cached:Int64(cachedInputTokens),output:Int64(outputTokens),reasoning:Int64(reasoningOutputTokens),
+                          model:row.text(7),promptOffset:row.int64(8),assistantOffset:row.int64(9),
+                          accountingKind:Int64(legacyAccounting ? (legacyCounted ? 0 : 3) : (row.int(10) ?? 0)),
+                          reported:row.int64(11),legacy:legacyAccounting ? Int64(tokens) : nil,fingerprint:fingerprint),
+                    source:source.id,generation:rawGeneration,admission:admission,
+                    unchangedFromGeneration:unchangedContent ? previousRawGeneration : nil,correctionRevision:Self.stagingParserRevision,on:transaction)
                 importedEventCount += 1
             }
             guard importedEventCount == staged.eventCount else {
@@ -8127,7 +8160,49 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             .joined()
     }
 
-    private static func databaseURL(for codexHome: URL) -> URL {
+    /// Finish the established migration before relocating. The old location
+    /// stays at schema 13, so previous releases cannot resume writing stale
+    /// history after the new writer switches to Application Support.
+    static func relocateLegacyIndex(from legacy: URL, to destination: URL,
+        fileManager: FileManager = .default,
+        onProgress: ((PreciseIndexProgress) -> Void)? = nil) throws {
+        guard legacy.standardizedFileURL != destination.standardizedFileURL,
+              !fileManager.fileExists(atPath: destination.path),
+              fileManager.fileExists(atPath: legacy.path)
+                || fileManager.fileExists(atPath: candidateMigrationManifestURL(for: legacy).path) else { return }
+        let source = try Self(databaseURL: legacy, fileManager: fileManager, onProgress: onProgress)
+        try source.withExclusiveAccess {
+            try operationGate(for: destination).withLock {
+                guard !fileManager.fileExists(atPath: destination.path) else { return }
+                try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                // A failed private copy is safe to overwrite: the complete old
+                // database remains at legacy and is never retired here.
+                let bytes = try candidateFileStamp(at: legacy, fileManager: fileManager).size
+                let walBytes = try optionalCandidateFileStamp(at: URL(fileURLWithPath: legacy.path + "-wal"), fileManager: fileManager)?.size ?? 0
+                let available = try source.availableStorageCapacity(at: destination.deletingLastPathComponent())
+                guard available >= bytes.addingClampingOnOverflow(walBytes).addingClampingOnOverflow(512 * 1_024 * 1_024) else {
+                    throw CodexUsageIndexRepairRequiredError(reason: "历史账本迁移空间不足；旧库已保留")
+                }
+                let candidate = URL(fileURLWithPath: destination.path + ".ledger-copy")
+                let backup = SQLiteDatabaseDriver(url: candidate, enableWAL: false, fileManager: fileManager)
+                try backup.withConnection { db in
+                    try db.restoreDatabase(from: legacy)
+                    _ = try db.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
+                    _ = try db.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+                    guard (try db.readRows("PRAGMA quick_check") { $0.text(0) }) == ["ok"] else {
+                        throw CodexUsageIndexRepairRequiredError(reason: "历史账本副本校验失败；旧库已保留")
+                    }
+                    try UsageHistoryRetention.validate(on: db)
+                    try UsageEventLedger.validate(on: db)
+                }
+                try synchronizeFile(at: candidate)
+                try fileManager.moveItem(at: candidate, to: destination)
+                try synchronizeDirectory(at: destination.deletingLastPathComponent())
+            }
+        }
+    }
+
+    private static func databaseURL(for codexHome: URL, legacyCache: Bool = false) -> URL {
         let root: URL
         if ProcessInfo.processInfo.environment[disabledCacheEnvironmentKey] == "1" {
             root = ephemeralRoot
@@ -8137,9 +8212,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 .appendingPathComponent(cacheDirectoryName, isDirectory: true)
                 .appendingPathComponent(indexNamespace, isDirectory: true)
         } else {
-            let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-                ?? FileManager.default.temporaryDirectory
-            root = cacheRoot
+            let dataRoot = FileManager.default.urls(for: legacyCache ? .cachesDirectory : .applicationSupportDirectory, in: .userDomainMask).first
+                ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+            root = dataRoot
                 .appendingPathComponent(cacheDirectoryName, isDirectory: true)
                 .appendingPathComponent(indexNamespace, isDirectory: true)
         }
@@ -8514,7 +8589,7 @@ private final class CodexUsageHistoryIndexOperationGate: @unchecked Sendable {
     }
 }
 
-private extension CodexUsageAnalyzer.UsageSnapshotFingerprint {
+extension CodexUsageAnalyzer.UsageSnapshotFingerprint {
     var databaseValue: Data {
         get throws {
             let signedValues = [

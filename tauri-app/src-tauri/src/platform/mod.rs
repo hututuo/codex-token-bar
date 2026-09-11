@@ -36,6 +36,8 @@ mod windows_autostart;
 mod settings;
 mod startup;
 mod surfaces;
+pub mod quota_sidebar;
+pub use quota_sidebar::sync_quota_sidebar;
 
 pub use startup::{SingleInstanceLaunchOutcome, StartupLaunchMode};
 

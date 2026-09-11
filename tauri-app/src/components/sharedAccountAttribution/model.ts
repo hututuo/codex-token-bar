@@ -67,7 +67,11 @@ export interface SharedAccountAttributionResult {
   residualPercent: number | null;
   localComparableUSD: number | null;
   scannedLocalComparableUSD: number | null;
+  normalizedScannedComparableUSD?: number;
+  normalizedScannedCurrentUSD?: number;
   localCurrentAPIEquivalentUSD: number | null;
+  normalizedCurrentCostUSD?: number | null;
+  normalizedComparableCostUSD?: number | null;
   excludedModels: string[];
   excludedCalls: number;
   /** Explicit model names with no recognized API card; omitted from dollars. */
@@ -300,7 +304,11 @@ export function estimateSharedAccountAttribution({
     residualPercent: safeResidualPercent,
     localComparableUSD,
     scannedLocalComparableUSD,
+    normalizedScannedComparableUSD: (priceBasis === "radar20260730" ? scannedLocalRadarEstimate : scannedLocalCurrentEstimate).normalizedCostUSD,
+    normalizedScannedCurrentUSD: scannedLocalCurrentEstimate.normalizedCostUSD,
     localCurrentAPIEquivalentUSD,
+    normalizedCurrentCostUSD: localCurrentEstimate.normalizedCostUSD,
+    normalizedComparableCostUSD: (priceBasis === "radar20260730" ? localRadarEstimate : localCurrentEstimate).normalizedCostUSD,
     excludedModels: localCurrentEstimate.excludedModels,
     excludedCalls: localCurrentEstimate.excludedCalls,
     unpricedModels: localCurrentEstimate.unpricedModels,

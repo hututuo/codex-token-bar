@@ -3328,3 +3328,60 @@ mod tests {
         .unwrap();
     }
 }
+
+#[tauri::command]
+pub async fn read_quota_cycles(
+    window: tauri::WebviewWindow, app: AppHandle, source_token: CodexHomeSourceToken, expected_scope: String,
+) -> Result<Vec<crate::core::quota_history::cycles::QuotaCycle>, String> {
+    require_window_label(&window, "read_quota_cycles")?;
+    run_source_bound_dashboard_read(&app, source_token, move |home| {
+        crate::core::quota::observed_cycles(&home, &expected_scope)
+    }).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaCycleUsage {
+    cycle_id: String,
+    pending_reason: Option<String>,
+    model_breakdowns: Vec<crate::models::ModelTokenBreakdown>,
+    boundary_model_breakdowns: Vec<crate::models::ModelTokenBreakdown>,
+    observed_start_unix: i64,
+    observed_end_unix: i64,
+}
+
+#[tauri::command]
+pub async fn read_quota_cycle_usage(
+    window: tauri::WebviewWindow, app: AppHandle, source_token: CodexHomeSourceToken,
+    expected_scope: String, cycle_id: String,
+) -> Result<QuotaCycleUsage, String> {
+    require_window_label(&window, "read_quota_cycle_usage")?;
+    run_source_bound_dashboard_read(&app, source_token, move |home| {
+        let cycles = crate::core::quota::observed_cycles(&home, &expected_scope)?;
+        let cycle = cycles.iter().find(|c| c.id == cycle_id).ok_or("额度周期已更新，请重新选择")?;
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let start = cycle.start_upper_unix.unwrap_or(cycle.first_observed_unix);
+        let end = cycle.end_lower_unix.min(now).max(start);
+        let ranges = [(start,end),
+            (cycle.start_lower_unix.unwrap_or(start),start),
+            (cycle.end_lower_unix.min(now),cycle.end_upper_unix.min(now))];
+        let (rows, pending_reason) = match token_count_jsonl::quota_cycle_model_ranges(&home,&ranges) {
+            Ok(rows) => (rows, None),
+            Err(message) if matches!(message.as_str(),
+                "周期明细资料正在更新，请等待精准统计更新" | "周期明细等待精准聚合更新" | "周期明细等待完整聚合发布") => (Vec::new(), Some(message)),
+            Err(message) => return Err(message),
+        };
+        let mut rows = rows.into_iter();
+        let model_breakdowns = rows.next().unwrap_or_default();
+        let boundary_model_breakdowns = rows.flatten().collect();
+        // The source-token owner fences Home changes; repeat the account fence
+        // after SQLite work as account switching can happen inside one Home.
+        let current = crate::core::quota::observed_cycles(&home,&expected_scope)?;
+        let still_valid = current.iter().find(|c| c.id == cycle_id).is_some_and(|c|
+            c.start_upper_unix == cycle.start_upper_unix && c.end_lower_unix == cycle.end_lower_unix
+            && c.end_upper_unix == cycle.end_upper_unix);
+        if !still_valid { return Err("额度周期边界已更新，请重新读取".into()); }
+        Ok(QuotaCycleUsage { cycle_id, pending_reason, model_breakdowns, boundary_model_breakdowns,
+            observed_start_unix:start, observed_end_unix:end })
+    }).await
+}

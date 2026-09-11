@@ -1,3 +1,4 @@
+import { ModelAmountPair } from "./ModelAmountPair";
 import { memo, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { DashboardStats, LocalDataWarning, ModelTokenBreakdown, RecentUsagePoint } from "../types/dashboard";
 import { usagePrecisionWarnings } from "../state/dashboardWarnings";
@@ -5,7 +6,6 @@ import { formatTokens } from "../utils/format";
 import type { OfficialAPIPriceModel } from "./recentUsageChart/model";
 import {
   estimateLifetimeSavings,
-  estimateRecent7dAPICost,
   isOfficialAPIPriceModel,
   QUOTA_PRICE_MODEL_EVENT,
   lifetimeBreakdownFromStats,
@@ -15,14 +15,20 @@ import { readStoredQuotaPriceModel } from "../settings/quotaPriceModel";
 import {
   dashboardPrimaryModelUsageItems,
   dashboardSecondaryModelUsageItems,
-  floatingModelUsageMoneyText,
+  normalizedMoneyText,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
   hasUnknownModelPrices,
 } from "../floating/floatingModelUsage";
+import { useQuotaCycleHistory } from "./statsStrip/useQuotaCycleHistory";
+import { QuotaCycleControls, quotaCycleErrorStatus } from "./statsStrip/QuotaCycleControls";
+import type { CodexHomeSourceToken, QuotaAttributionIdentity } from "../types/dashboard";
 import { modelCostRowsAvailable } from "./tokenActivity/modelCostAvailability";
 
 interface StatsStripProps {
+  sourceToken?: CodexHomeSourceToken | null;
+  attributionIdentity?: QuotaAttributionIdentity | null;
+  quotaUpdatedAt?: string | null;
   stats: DashboardStats;
   todayModelBreakdowns?: ModelTokenBreakdown[];
   todayTokens?: number;
@@ -52,12 +58,13 @@ type ModelCostScope = "today" | "sevenDay" | "lifetime";
 type ModelAttributionDisplayState = "current" | "stale" | "pending";
 
 function StatsStripView({
+  sourceToken = null,
+  attributionIdentity = null,
+  quotaUpdatedAt = null,
   stats,
   todayModelBreakdowns = [],
   todayTokens = 0,
   usageSummaryFresh = false,
-  recentUsageFiveMinute = [],
-  sevenDayResetAtUnix = null,
   preciseDataFresh = true,
   planLabel,
   warnings = [],
@@ -72,15 +79,13 @@ function StatsStripView({
     priceModel,
     modelBreakdowns: stats.modelBreakdowns,
   })), [planLabel, priceModel, stats]);
-  const recent7dModelCost = useMemo(() => estimateRecent7dAPICost({
-    points: recentUsageFiveMinute,
-    resetAtUnix: sevenDayResetAtUnix,
-    priceModel,
-  }), [priceModel, recentUsageFiveMinute, sevenDayResetAtUnix]);
-  const sevenDayModelDisplayState: ModelAttributionDisplayState =
-    recent7dModelCost?.quality === "measured"
-      ? (preciseDataFresh ? "current" : "stale")
-      : "pending";
+  const cycleHistory = useQuotaCycleHistory(sourceToken, attributionIdentity,
+    `${quotaUpdatedAt ?? ""}|${preciseDataFresh}|${stats.totalTokens}`, modelCostScope === "sevenDay");
+  const cycleModelsIncomplete = cycleHistory.usage?.modelBreakdowns.some(row =>
+    row.breakdown.totalTokens > 0 && (typeof row.model !== "string" || !row.model.trim()),
+  ) ?? false;
+  const sevenDayModelDisplayState: ModelAttributionDisplayState = cycleHistory.usage && !cycleModelsIncomplete
+    ? (preciseDataFresh ? "current" : "stale") : "pending";
   const todayModelDisplayState: ModelAttributionDisplayState = !usageSummaryFresh
     ? (todayModelBreakdowns.length > 0 ? "stale" : "pending")
     : todayTokens <= 0
@@ -93,13 +98,13 @@ function StatsStripView({
     : modelCostScope === "lifetime"
     ? stats.modelBreakdowns ?? []
     : sevenDayModelDisplayState === "current" || sevenDayModelDisplayState === "stale"
-    ? recent7dModelCost?.modelBreakdowns ?? []
+    ? cycleHistory.usage?.modelBreakdowns ?? []
     : [];
   const expectedModelTokens = modelCostScope === "today"
     ? todayTokens
     : modelCostScope === "lifetime"
     ? stats.totalTokens
-    : recent7dModelCost?.modelBreakdowns.reduce((total, row) => total + row.breakdown.totalTokens, 0) ?? 0;
+    : cycleHistory.usage?.modelBreakdowns.reduce((total, row) => total + row.breakdown.totalTokens, 0) ?? 0;
   const modelCostDataAvailable = modelCostScope === "sevenDay"
     ? sevenDayModelDisplayState !== "pending"
     : modelCostScope === "today"
@@ -124,17 +129,15 @@ function StatsStripView({
     : "current";
   const independentReferenceSummary = modelCostItems
     .filter((item) => item.referenceCostUSD !== null)
-    .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
+    .map((item) => `${item.label} 参考 ${normalizedMoneyText(item.referenceCostUSD ?? 0, item.referenceCostUSD ?? 0)}`)
     .join(" · ");
-  const boundaryTokenSummary = modelCostScope === "sevenDay"
-    && recent7dModelCost
-    && (recent7dModelCost.boundaryBreakdown.leading.totalTokens > 0
-      || recent7dModelCost.boundaryBreakdown.trailing.totalTokens > 0)
-    ? `边缘另计 ${formatTokens(
-      recent7dModelCost.boundaryBreakdown.leading.totalTokens
-      + recent7dModelCost.boundaryBreakdown.trailing.totalTokens,
-    )} Token`
-    : "";
+  const boundaryTokens = cycleHistory.usage?.boundaryModelBreakdowns.reduce((sum,row)=>sum+row.breakdown.totalTokens,0) ?? 0;
+  const boundaryTokenSummary = modelCostScope === "sevenDay" && boundaryTokens > 0
+    ? `未确定所属周期 · ${formatTokens(boundaryTokens)} Token` : "";
+  const boundaryItems = useMemo(() => floatingTodayModelUsageItems(
+    cycleHistory.usage?.boundaryModelBreakdowns ?? [], priceModel, { mergeAutoReview: false },
+  ).filter(item => item.tokens > 0).map(item => item.key === "unknown"
+    ? { ...item, costUSD: null } : item), [cycleHistory.usage, priceModel]);
   const primaryModelCostItems = dashboardPrimaryModelUsageItems(modelCostItems);
   const secondaryModelCostItems = dashboardSecondaryModelUsageItems(modelCostItems);
 
@@ -160,6 +163,7 @@ function StatsStripView({
           ))}
           <div className="stats-cell stats-cell--savings" title={lifetimeSavings.helpText}>
             <strong>{lifetimeSavings.valueText}</strong>
+            {lifetimeSavings.normalizedValueText ? <small className="stats-normalized-value">{lifetimeSavings.normalizedValueText}</small> : null}
             <span>{lifetimeSavings.labelText}</span>
           </div>
           {statsConfig.slice(1).map(([key, label, format]) => (
@@ -170,7 +174,9 @@ function StatsStripView({
           ))}
         </div>
 
-        <div className="stats-model-cost-row" aria-label={`${modelCostScope === "sevenDay" ? "本7d" : modelCostScope === "today" ? "今日" : "累计"}各模型 API 等值费用`}>
+        <div className="stats-model-cost-row" aria-label={`${modelCostScope === "sevenDay" ? "本期" : modelCostScope === "today" ? "今日" : "累计"}各模型 API 等值费用`}>
+          {modelCostScope === "sevenDay" ? <QuotaCycleControls cycles={cycleHistory.cycles}
+            selected={cycleHistory.selected} onSelect={cycleHistory.select} error={cycleHistory.error} /> : null}
           <div className="stats-model-cost-header">
             <div className="stats-model-cost-scope" role="group" aria-label="模型费用范围">
               <button
@@ -179,7 +185,7 @@ function StatsStripView({
                 onClick={() => setModelCostScope("sevenDay")}
                 type="button"
               >
-                本7d
+                本期
               </button>
               <button
                 aria-pressed={modelCostScope === "today"}
@@ -201,13 +207,13 @@ function StatsStripView({
             <strong className="stats-model-cost-title">各模型 API 等值费用</strong>
             {selectedModelDisplayState !== "current" ? (
               <span className="stats-model-cost-status" role="status">
-                正在精准计算中…{selectedModelDisplayState === "stale" ? " 显示上次可信结果" : ""}
+                {modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : cycleModelsIncomplete ? "模型身份待补全" : "周期明细待读取") : "正在精准计算中…"}{selectedModelDisplayState === "stale" ? " 显示上次可信结果" : ""}
               </span>
             ) : null}
             {modelCostDataAvailable && modelDetailAvailable && modelCostItems.length > 0 ? (
               <span className="stats-model-cost-total-wrap">
                 <strong className="stats-model-cost-total">
-                  {modelPricesIncomplete ? "已知价格小计" : "合计"} {floatingModelUsageMoneyText(modelCostTotal)}
+                  {modelPricesIncomplete ? "已知价格小计" : modelCostScope === "sevenDay" && cycleHistory.selected?.incomplete ? "已观测部分" : "合计"} {normalizedMoneyText(modelCostTotal, modelCostItems.reduce((total, item) => total + (item.normalizedCostUSD ?? 0), 0))}
                 </strong>
                 {modelPricesIncomplete ? <small className="stats-model-cost-reference">部分模型价格未知，未计入金额</small> : null}
                 {independentReferenceSummary ? (
@@ -215,16 +221,19 @@ function StatsStripView({
                     {independentReferenceSummary}
                   </small>
                 ) : null}
-                {boundaryTokenSummary ? (
-                  <small className="stats-model-cost-reference" title="只另计跨越重置时刻的一分钟；缺少分钟明细的旧记录保留原精度。">
-                    {boundaryTokenSummary}
-                  </small>
-                ) : null}
+
               </span>
             ) : null}
           </div>
+          {modelCostScope === "sevenDay" && boundaryItems.length > 0 ? (
+            <details className="stats-quota-boundary-detail">
+              <summary>{boundaryTokenSummary}</summary>
+              <p>这些用量发生在周期切换附近，暂时无法确定属于哪一期，因此未计入周期合计。记录仍然保留。</p>
+              {boundaryItems.map(item => <span key={item.key}>{item.label} · {formatTokens(item.tokens)} Token · {item.key === "unknown" ? "模型身份待补全" : `API 等值约 ${floatingModelUsageValue(item, "cost")}`}</span>)}
+            </details>
+          ) : null}
           {modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (
-            <span className="stats-model-cost-empty">本7d模型明细待读取</span>
+            <span className="stats-model-cost-empty">{cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : cycleModelsIncomplete ? `${formatTokens(expectedModelTokens)} Token · 模型身份待补全` : "本期模型明细待读取"}</span>
           ) : modelCostScope === "today" && selectedModelDisplayState === "pending" ? (
             <span className="stats-model-cost-empty">今日模型明细待读取</span>
           ) : !modelCostDataAvailable ? (
@@ -235,7 +244,7 @@ function StatsStripView({
             </span>
           ) : modelCostItems.length === 0 ? (
             <span className="stats-model-cost-empty">
-              {modelCostScope === "sevenDay" ? "本7d暂无模型用量" : modelCostScope === "today" ? "今日暂无模型用量" : "暂无逐模型历史"}
+              {modelCostScope === "sevenDay" ? "本期暂无模型用量" : modelCostScope === "today" ? "今日暂无模型用量" : "暂无逐模型历史"}
             </span>
           ) : (
             <div className="stats-model-cost-groups">
@@ -250,8 +259,8 @@ function StatsStripView({
                     >
                       <i />
                       <em>{item.label}</em>
-                      <b>{floatingModelUsageValue(item, "cost")}</b>
-                      <small>{floatingModelUsageValue(item, "share")}</small>
+                      <b><ModelAmountPair item={item} /></b>
+                      <small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item, "share")}</small>
                     </span>
                   ))}
                 </div>
@@ -264,8 +273,8 @@ function StatsStripView({
                       <span className="stats-model-cost-secondary-chip" key={item.key}>
                         <i style={{ backgroundColor: item.color }} />
                         <em>{item.label}</em>
-                        <b>{floatingModelUsageValue(item, "cost")}</b>
-                        <small>{floatingModelUsageValue(item, "share")}</small>
+                        <b><ModelAmountPair item={item} /></b>
+                        <small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item, "share")}</small>
                       </span>
                     ))}
                   </div>

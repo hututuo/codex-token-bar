@@ -820,8 +820,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         trace?.mark("threadInfo.end", metadata: ["count": String(threadInfo.count)])
         trace?.mark("cacheUsage.begin")
         let attributionCurrentScanUnsafeCauseDetected =
-            synchronization.rewrittenFiles > 0
-                || synchronization.lineageAmbiguityDetected
+            synchronization.lineageAmbiguityDetected
         let aggregatedCacheUsage = aggregation.cacheUsage(
             recentBins: recentBins,
             threadInfo: threadInfo,

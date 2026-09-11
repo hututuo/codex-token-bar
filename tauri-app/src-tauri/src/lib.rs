@@ -100,6 +100,9 @@ pub fn run() {
                         );
                     }
                 }
+                if let Err(error) = platform::sync_quota_sidebar(&deferred_app, &settings.display_surfaces).await {
+                    eprintln!("Codex Token Bar: quota sidebar setup failed: {error}");
+                }
                 if let Err(error) = deferred_live
                     .sync_status_tray_interest(&deferred_app, &settings.display_surfaces)
                 {
@@ -142,6 +145,8 @@ pub fn run() {
             commands::dashboard::acknowledge_attribution_safety,
             commands::dashboard::read_usage_summary_snapshot,
             commands::dashboard::read_usage_cache_status,
+            commands::dashboard::read_quota_cycles,
+            commands::dashboard::read_quota_cycle_usage,
             commands::codex_instances::list_codex_instances,
             commands::codex_instances::create_codex_instance,
             commands::codex_instances::import_codex_instance,
@@ -180,6 +185,9 @@ pub fn run() {
             commands::live::read_unread_summary,
             commands::thread_activity::read_running_thread_summary,
             commands::live::acknowledge_current_unread,
+            platform::quota_sidebar::set_quota_sidebar_mode,
+            platform::quota_sidebar::quota_sidebar_pointer_inside,
+            platform::quota_sidebar::drag_quota_sidebar,
             commands::surface::show_floating_window,
             commands::surface::hide_floating_window,
             commands::surface::read_floating_pointer_state,

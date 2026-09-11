@@ -16,7 +16,7 @@ import { recordPerformanceEvent } from "./startupClient";
 
 const CODEX_RADAR_ENDPOINT = "https://codexradar.com/current.json";
 const CODEX_RADAR_HTML_ENDPOINT = "https://codexradar.com/";
-const CODEX_RADAR_CACHE_MS = 600_000;
+const CODEX_RADAR_CACHE_MS = 300_000;
 
 let cachedSnapshot: { snapshot: CodexRadarSnapshot; readAt: number } | null = null;
 let inFlightStateRead: Promise<CodexRadarReadState> | null = null;

@@ -879,6 +879,8 @@ struct StatStripStatusLinePresentation: Equatable {
 struct StatStrip: View, @preconcurrency Equatable {
     let snapshot: DashboardSnapshot
     var quotaSnapshot: AccountQuotaSnapshot? = nil
+    var quotaCycleHistory: QuotaHistorySnapshot = .empty
+    var cycleCodexHome: URL? = nil
     var todayUsageSummary: DayUsage? = nil
     var todayModelBreakdowns: [ModelTokenBreakdown] = []
     var todayModelBreakdownsFresh = false
@@ -992,6 +994,9 @@ struct StatStrip: View, @preconcurrency Equatable {
             && left.cacheUsage.dailyModelBreakdowns == right.cacheUsage.dailyModelBreakdowns
             && left.cacheUsage.recentBins.count == right.cacheUsage.recentBins.count
             && left.cacheUsage.recentBins.last == right.cacheUsage.recentBins.last
+            && lhs.quotaCycleHistory.actualCycles == rhs.quotaCycleHistory.actualCycles
+            && lhs.quotaCycleHistory.cycleIdentity == rhs.quotaCycleHistory.cycleIdentity
+            && lhs.cycleCodexHome == rhs.cycleCodexHome
             && lhs.quotaSnapshot == rhs.quotaSnapshot
             && lhs.todayModelBreakdowns == rhs.todayModelBreakdowns
             && lhs.todayModelBreakdownsFresh == rhs.todayModelBreakdownsFresh
@@ -1017,7 +1022,8 @@ struct StatStrip: View, @preconcurrency Equatable {
                 StatCell(
                     value: savingsPresentation.valueText,
                     label: savingsPresentation.labelText,
-                    help: savingsPresentation.helpText
+                    help: savingsPresentation.helpText,
+                    secondaryValue: savingsPresentation.normalizedValueText
                 )
                 Divider().frame(height: 40)
                 StatCell(value: tokenValue(stats.peakDayTokens.abbreviatedTokens), label: "峰值 Token 数")
@@ -1045,7 +1051,12 @@ struct StatStrip: View, @preconcurrency Equatable {
                 .frame(maxWidth: .infinity, alignment: .center)
             }
 
-            if showsModelCostRow {
+            if showsModelCostRow, modelCostScopeBinding.wrappedValue == .sevenDay {
+                DashboardQuotaCycleBrowser(scope: modelCostScopeBinding, history: quotaCycleHistory,
+                    identity: quotaSnapshot?.historyIdentity, codexHome: cycleCodexHome,
+                    snapshot: snapshot, fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
+                    preciseFresh: preciseTimeSeriesFresh)
+            } else if showsModelCostRow {
                 DashboardModelCostRow(
                     scope: modelCostScopeBinding,
                     todayRows: todayModelBreakdowns,
@@ -1203,6 +1214,7 @@ struct DashboardModelCostRow: View {
     let sevenDayDataAvailable: Bool
     let sevenDayModelDisplayState: ModelAttributionDisplayState
     let sevenDayEstimateSource: String?
+    var periodLabel = "本期"
 
     private var sourceRows: [ModelTokenBreakdown] {
         switch scope {
@@ -1241,7 +1253,7 @@ struct DashboardModelCostRow: View {
 
     private var missingDetailText: String {
         switch scope {
-        case .sevenDay: return "本7d模型明细待读取"
+        case .sevenDay: return "\(periodLabel)模型明细待读取"
         case .today: return "今日模型明细待读取"
         case .lifetime: return "逐模型历史待读取"
         }
@@ -1257,7 +1269,7 @@ struct DashboardModelCostRow: View {
 
     private var emptyDetailText: String {
         switch scope {
-        case .sevenDay: return "本7d暂无模型用量"
+        case .sevenDay: return "\(periodLabel)暂无模型用量"
         case .today: return "今日暂无模型用量"
         case .lifetime: return "暂无逐模型历史"
         }
@@ -1273,7 +1285,7 @@ struct DashboardModelCostRow: View {
         let hasUnknownPrices = visibleItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
         let visibleReferenceEntries = visibleItems.compactMap { item -> String? in
             guard let referenceCostUSD = item.referenceCostUSD else { return nil }
-            return "\(item.label) 参考 \(referenceCostUSD.quotaEstimatorMoneyText)"
+            return "\(item.label) 参考 \(PlanCostNormalization.text(original: referenceCostUSD, normalized: referenceCostUSD))"
         }
         let visibleReferenceCostSummary = visibleReferenceEntries.isEmpty
             ? nil
@@ -1314,7 +1326,7 @@ struct DashboardModelCostRow: View {
 
                 if selectedAvailable, modelDetailAvailable, !visibleItems.isEmpty {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") \(visibleTotalCost.quotaEstimatorMoneyText)")
+                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") \(PlanCostNormalization.text(original: visibleTotalCost, normalized: visibleItems.compactMap(\.normalizedCostUSD).reduce(0, +)))")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(AppTheme.accentBlue)
                             .monospacedDigit()
@@ -1332,12 +1344,12 @@ struct DashboardModelCostRow: View {
                                 .fixedSize()
                         }
                         if scope == .sevenDay, sevenDayBoundaryTokens > 0 {
-                            Text("边缘另计 \(sevenDayBoundaryTokens.abbreviatedTokens) Token")
-                                .help("只另计跨越重置时刻的一分钟；缺少分钟明细的旧记录保留原精度。")
+                            Text("\(sevenDayBoundaryTokens.abbreviatedTokens) Token 发生在周期切换附近，暂未计入合计")
+                                .help("无法判断这些用量属于重置前还是重置后。记录仍然保留，没有丢失，也不会在两个周期重复计算。")
                                 .font(.system(size: 9, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
-                                .fixedSize()
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
@@ -1347,7 +1359,7 @@ struct DashboardModelCostRow: View {
                 if scope == .sevenDay {
                     Text(selectedModelDisplayState == .stale
                         ? "正在精准计算中，显示上次可信结果"
-                        : "本7d模型明细待读取")
+                        : "\(periodLabel)模型明细待读取")
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1433,7 +1445,7 @@ private struct DashboardModelCostScopePicker: View {
                 Button {
                     scope = option
                 } label: {
-                    Text(option.rawValue)
+                    Text(option == .sevenDay ? "本期" : option.rawValue)
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(scope == option ? AppTheme.accentBlue : .secondary)
                         .frame(maxWidth: .infinity, minHeight: 22)
@@ -1480,7 +1492,7 @@ private struct DashboardPrimaryModelCostCard: View {
 
             Spacer(minLength: 2)
 
-            Text(item.valueText(for: .cost))
+            ModelAmountPair(item: item)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.primary)
                 .monospacedDigit()
@@ -1566,7 +1578,7 @@ private struct DashboardSecondaryModelCostChip: View {
     }
 
     private var costText: some View {
-        Text(item.valueText(for: .cost))
+        ModelAmountPair(item: item)
             .foregroundStyle(.primary)
             .monospacedDigit()
     }
@@ -1582,6 +1594,7 @@ struct StatCell: View {
     let value: String
     let label: String
     var help: String? = nil
+    var secondaryValue: String? = nil
 
     var body: some View {
         VStack(spacing: 4) {
@@ -1591,6 +1604,9 @@ struct StatCell: View {
                 .minimumScaleFactor(0.72)
                 .lineLimit(1)
 
+            if let secondaryValue {
+                Text(secondaryValue).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+            }
             Text(label)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)

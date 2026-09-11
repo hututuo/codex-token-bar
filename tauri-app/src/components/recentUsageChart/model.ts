@@ -197,6 +197,7 @@ interface TokenBreakdown {
 export interface QuotaConsumptionEstimate {
   selectedCostUSD: number;
   impliedWindowBudgetUSD: number | null;
+  normalizedWindowBudgetUSD?: number | null;
   quotaDropPercent: number;
   inputTokens: number;
   cachedInputTokens: number;
@@ -217,6 +218,7 @@ export interface QuotaConsumptionEstimate {
 }
 
 export interface QuotaConsumptionSelection {
+  normalizedCostUSD: number;
   startIndex: number;
   endIndex: number;
   bucketCount: number;
@@ -259,6 +261,8 @@ export interface QuotaSelectionAttributionResult {
   nonLocalDifferencePercent: number | null;
   localComparableCostUSD: number | null;
   localCurrentAPIEquivalentUSD: number;
+  normalizedCurrentCostUSD?: number;
+  normalizedComparableCostUSD?: number | null;
   excludedModels: string[];
   excludedCalls: number;
   /** Explicit model names with no recognized API card; omitted from dollars. */
@@ -543,10 +547,11 @@ export function plotChartPoints(
   };
 }
 
-export function recentChartBucketCosts(
-  points: RecentUsagePoint[],
-  priceModel: OfficialAPIPriceModel,
-): number[] {
+export function recentChartBucketCosts(points: RecentUsagePoint[], priceModel: OfficialAPIPriceModel): number[] {
+  return recentChartBucketPrices(points, priceModel).map(estimate => estimate.costUSD);
+}
+
+export function recentChartBucketPrices(points: RecentUsagePoint[], priceModel: OfficialAPIPriceModel) {
   return points.map((point) => {
     const fallback = {
       inputTokens: finiteNonnegative(point.inputTokens),
@@ -559,7 +564,7 @@ export function recentChartBucketCosts(
       fallback,
       priceModel,
     );
-    return Number.isFinite(estimate.costUSD) ? Math.max(estimate.costUSD, 0) : 0;
+    return estimate;
   });
 }
 
@@ -996,6 +1001,7 @@ export function quotaConsumptionSelection(
     endUnix: data.points[upper].startUnix + data.bucketSeconds,
     priceModel,
     selectedCostUSD: selectedEstimate.costUSD,
+    normalizedCostUSD: selectedEstimate.normalizedCostUSD,
     totalTokens: breakdown.totalTokens,
     inputTokens: breakdown.inputTokens,
     cachedInputTokens: breakdown.cachedInputTokens,
@@ -1260,6 +1266,7 @@ function quotaConsumptionEstimate(
   return {
     selectedCostUSD,
     impliedWindowBudgetUSD,
+    normalizedWindowBudgetUSD: impliedWindowBudgetUSD === null ? null : comparisonEstimate.normalizedCostUSD / (drop / 100),
     quotaDropPercent: drop,
     inputTokens: breakdown.inputTokens,
     cachedInputTokens: breakdown.cachedInputTokens,
@@ -1381,6 +1388,8 @@ export function quotaSelectionAttribution(
     nonLocalDifferencePercent,
     localComparableCostUSD,
     localCurrentAPIEquivalentUSD: localCurrentAPIEquivalent.costUSD,
+    normalizedCurrentCostUSD: localCurrentAPIEquivalent.normalizedCostUSD,
+    normalizedComparableCostUSD: localComparableEstimate?.normalizedCostUSD,
     excludedModels: localCurrentAPIEquivalent.excludedModels,
     excludedCalls: localCurrentAPIEquivalent.excludedCalls,
     unpricedModels,

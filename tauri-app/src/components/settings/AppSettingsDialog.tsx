@@ -165,6 +165,7 @@ interface AppSettingsDialogProps {
   onSaveSessionEnhancements: (settings: SessionEnhancementSettings) => Promise<void>;
   onTokenRateFullScaleChange: (fullScale: number) => void;
   onToggleAutostart: () => void;
+  onQuotaSidebarChange: (patch: Pick<Partial<DisplaySurfaceSettings>, "quotaSidebarEnabled" | "quotaSidebarSide">) => void;
   onToggleFloating: () => void;
   onToggleLiveRate: () => void;
   onToggleStatusTray: () => void;
@@ -221,6 +222,7 @@ export function AppSettingsDialog({
   onSaveSessionEnhancements,
   onTokenRateFullScaleChange,
   onToggleAutostart,
+  onQuotaSidebarChange,
   onToggleFloating,
   onToggleLiveRate,
   onToggleStatusTray,
@@ -418,6 +420,7 @@ export function AppSettingsDialog({
                 <SurfaceSettings
                   displaySurfaces={displaySurfaces}
                   onOpenStatusSettings={() => setSelectedCategory("status")}
+                  onQuotaSidebarChange={onQuotaSidebarChange}
                   onToggleFloating={onToggleFloating}
                   platform={platform}
                 />
@@ -688,14 +691,23 @@ function GeneralSettings({
 function SurfaceSettings({
   displaySurfaces,
   onOpenStatusSettings,
+  onQuotaSidebarChange,
   onToggleFloating,
   platform,
-}: Pick<AppSettingsDialogProps, "displaySurfaces" | "onToggleFloating" | "platform"> & {
+}: Pick<AppSettingsDialogProps, "displaySurfaces" | "onToggleFloating" | "onQuotaSidebarChange" | "platform"> & {
   onOpenStatusSettings: () => void;
 }) {
   const floatingAvailable = platform.floatingWindow.available;
   return (
     <SettingsGroup title="可见位置" description="选择速率与额度信息出现在哪些显示面。">
+      <SettingRow title="额度侧栏" description="独立贴在屏幕边缘；悬停看额度，点击展开详情。默认关闭。">
+        <ToggleButton active={displaySurfaces.quotaSidebarEnabled} disabled={!floatingAvailable} label="额度侧栏" onClick={() => onQuotaSidebarChange({ quotaSidebarEnabled: !displaySurfaces.quotaSidebarEnabled })} />
+      </SettingRow>
+      <SettingRow title="侧栏位置" description="固定在可用屏幕的垂直中心，向屏幕内侧展开。">
+        <select aria-label="侧栏位置" value={displaySurfaces.quotaSidebarSide} onChange={(event) => onQuotaSidebarChange({ quotaSidebarSide: event.target.value === "left" ? "left" : "right" })}>
+          <option value="left">左侧</option><option value="right">右侧</option>
+        </select>
+      </SettingRow>
       <SettingRow title="桌面悬浮窗" description={platform.floatingWindow.note}>
         <ToggleButton
           active={displaySurfaces.floatingWindowEnabled}

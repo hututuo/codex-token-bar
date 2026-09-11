@@ -7,7 +7,7 @@ import {
   type CodexCrowdRadarSnapshot,
 } from "../api/codexCrowdRadarClient";
 
-const FLOATING_RADAR_REFRESH_INTERVAL_MS = 600_000;
+const FLOATING_RADAR_REFRESH_INTERVAL_MS = 300_000;
 
 type RadarReader = typeof readCodexRadarState;
 type RadarSubscriber = typeof subscribeCodexRadarState;

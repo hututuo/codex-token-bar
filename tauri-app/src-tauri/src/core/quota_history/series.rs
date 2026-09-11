@@ -181,7 +181,6 @@ impl std::ops::Deref for ProjectedRow {
     fn deref(&self) -> &Self::Target { &self.row }
 }
 
-#[cfg(test)]
 pub(super) fn sanitized_rows(rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
     let now = rows.iter().map(|r| r.created_at).filter(|at| at.is_finite()).fold(0.0_f64, f64::max);
     projected_rows(rows, now).into_iter().map(|r| r.row).collect()

@@ -6,6 +6,8 @@ import { liveRateNotice } from "./liveRate/liveRateNotice";
 interface LiveRateCardProps {
   floatingSettings: FloatingWindowSettings;
   floatingEnabled: boolean;
+  quotaSidebarEnabled: boolean;
+  onToggleQuotaSidebar: () => void;
   onTokenRateFullScaleChange: (fullScale: number) => void;
   onOpenSettings: () => void;
   onLiveRateReset: () => Promise<void>;
@@ -25,6 +27,8 @@ interface LiveRateCardProps {
 export function LiveRateCard({
   floatingSettings,
   floatingEnabled,
+  quotaSidebarEnabled,
+  onToggleQuotaSidebar,
   onTokenRateFullScaleChange,
   onOpenSettings,
   onLiveRateReset,
@@ -134,6 +138,13 @@ export function LiveRateCard({
               title={platform.floatingWindow.note}
               type="button"
             >悬浮窗：{floatingEnabled ? "开" : "关"}</button>
+            <button
+              aria-pressed={quotaSidebarEnabled}
+              disabled={!platform.floatingWindow.available}
+              onClick={onToggleQuotaSidebar}
+              title="独立额度侧栏：悬停查看额度，点击展开详情"
+              type="button"
+            >额度侧栏：{quotaSidebarEnabled ? "开" : "关"}</button>
             <button
               aria-pressed={statusTrayLiveTextEnabled}
               disabled={!platform.statusTray.available || !platform.statusTrayLiveText.available}

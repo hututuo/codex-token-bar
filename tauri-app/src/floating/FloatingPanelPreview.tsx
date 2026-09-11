@@ -1,3 +1,4 @@
+import { ModelAmountPair } from "../components/ModelAmountPair";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import {
   codexRadarDiagnosticLabel,
@@ -6,7 +7,7 @@ import {
   primaryModelMeasurementRow,
   radarActionDisplayTextForSnapshot,
   radarEffectiveActionDisplayText,
-  radarSpeedWindowDeadlineMs,
+  radarSpeedWindowDeadlineMs, radarIsSpeedWindow,
   secondaryModelRows,
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
@@ -714,7 +715,7 @@ function FloatingTodayModelUsageRow({
             <span className="floating-model-usage-item" key={item.key}>
               <i aria-hidden="true" style={{ background: item.color }} />
               <em>{item.label}</em>
-              <strong>{floatingModelUsageValue(item, page)}</strong>
+              <strong>{page === "cost" ? <ModelAmountPair item={item} /> : floatingModelUsageValue(item, page)}</strong>
             </span>
           ))}
           {overflowText ? (
@@ -776,7 +777,7 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
   }, [radarWindowDeadlineMs]);
   const effectiveActionText = radarEffectiveActionDisplayText(snapshot);
   const actionText = radarActionDisplayTextForSnapshot(snapshot, radarNowMs);
-  const isSpeedWindow = effectiveActionText === "速登窗口";
+  const isSpeedWindow = radarIsSpeedWindow(snapshot, radarNowMs);
   const modelLimit = isSpeedWindow ? 2 : 3;
   const secondaryText = snapshot
     ? floatingRadarSecondaryIQText(snapshot, modelLimit)

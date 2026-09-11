@@ -1,3 +1,4 @@
+import { QuotaSidebarApp } from "../quota-sidebar/QuotaSidebarApp";
 import { FloatingGuideOverlayApp } from "../floating/FloatingGuideOverlayApp";
 import { useMemo } from "react";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
@@ -8,6 +9,7 @@ import { DashboardApp } from "./DashboardApp";
 export function App() {
   const surface = useMemo(getSurfaceMode, []);
   const guide = new URLSearchParams(window.location.search).get("surface");
+  if (guide === "quota-sidebar" || guide === "quota-sidebar-detail") return <QuotaSidebarApp />;
   if (guide === "floating-guide-card" || guide === "floating-guide-cursor") {
     return <FloatingGuideOverlayApp cursor={guide === "floating-guide-cursor"} />;
   }

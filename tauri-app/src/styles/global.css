@@ -12679,3 +12679,39 @@ details.session-management-banner {
 .floating-edge-quota .floating-quota-track { background: #ffffff29; border-radius: 2px; }
 .floating-edge-quota .floating-quota-fill { min-width: 0; border-radius: 2px; }
 .floating-edge-quota-empty { flex: 1; background: #ffffff29; border-radius: 2px; }
+
+.stats-quota-cycle-controls { display: block; width: 100%; margin-bottom: 10px; }
+.stats-quota-cycle-controls small { color: var(--text-muted); font-size: 11px; }
+.stats-quota-cycle-controls select { max-width: min(420px, 60vw); border: 0; background: transparent; color: inherit; font: inherit; padding: 4px 6px; }
+.stats-quota-cycle-controls button:disabled { opacity: .4; cursor: default; }
+
+.stats-quota-boundary-detail { font-size: 11px; color: var(--text-muted); margin: 8px 0; }
+.stats-quota-boundary-detail span { display: block; margin: 5px 0; }
+
+.quota-cycle-calendar { box-sizing: border-box; width: 100%; margin: 10px 0; padding: 12px; border: 1px solid var(--border-color, #8883); border-radius: 14px; background: var(--surface-secondary, #88808); }
+.quota-calendar-header { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.quota-calendar-header button { border:0; border-radius:7px; padding:5px 10px; background:#8881; color:inherit; cursor:pointer; }
+.quota-calendar-header strong { font-size:13px; }
+.quota-calendar-current { margin-left:auto; font-size:11px; }
+.quota-calendar-weekdays,.quota-calendar-dates,.quota-calendar-bands { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); }
+.quota-calendar-weekdays span { text-align:center; color:var(--text-muted); font-size:10px; padding-bottom:7px; }
+.quota-calendar-week { position:relative; height:34px; margin:4px 0; }
+.quota-calendar-dates { position:absolute; inset:0; pointer-events:none; align-items:center; }
+.quota-calendar-dates span { text-align:center; font-size:11px; font-variant-numeric:tabular-nums; }
+.quota-calendar-dates .outside { opacity:.3; }
+.quota-calendar-bands { position:absolute; inset:0; display:block; }
+.quota-calendar-bands button { position:absolute; top:0; bottom:0; min-width:0; margin:0; padding:0; border:1px solid transparent; border-radius:4px; background:color-mix(in srgb,var(--cycle-color) 24%,transparent); cursor:pointer; transition:background .16s ease; }
+.quota-calendar-bands button[aria-pressed="true"] { background:color-mix(in srgb,var(--cycle-color) 42%,transparent); border-color:var(--cycle-color); }
+.quota-calendar-bands button:hover { background:color-mix(in srgb,var(--cycle-color) 38%,transparent); }
+.quota-calendar-bands button:focus-visible { outline:2px solid var(--cycle-color); outline-offset:1px; }
+.quota-calendar-selection { display:block; padding:3px 2px 7px; }
+
+.quota-calendar-disclosure { display:block; border:0; background:transparent; color:inherit; padding:5px 0; font-size:11px; font-weight:600; cursor:pointer; }
+
+/* Keep both price bases legible without stretching compact cards horizontally. */
+.model-amount-pair { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 2px; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.model-amount-pair-normalized { color: var(--muted); font-size: .82em; font-weight: 500; }
+.stats-model-cost-primary-card, .stats-model-cost-secondary-chip { padding-top: 5px; padding-bottom: 5px; }
+.floating-model-usage--cost .model-amount-pair-normalized { color: inherit; opacity: .76; }
+
+.stats-normalized-value { color: var(--muted); font-size: 10px; line-height: 1.2; font-variant-numeric: tabular-nums; }

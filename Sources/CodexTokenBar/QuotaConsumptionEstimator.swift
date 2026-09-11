@@ -55,6 +55,7 @@ enum IndependentQuotaReferencePricing {
 
 struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
     let costUSD: Double
+    let normalizedCostUSD: Double
     let detectedModels: [OfficialAPIPriceModel]
     let fallbackCalls: Int
     /// Models on an independent quota; retained in token/model stats but never priced.
@@ -67,6 +68,7 @@ struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
 
     init(
         costUSD: Double,
+        normalizedCostUSD: Double? = nil,
         detectedModels: [OfficialAPIPriceModel],
         fallbackCalls: Int,
         excludedModels: [String] = [],
@@ -75,6 +77,7 @@ struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
         unpricedCalls: Int = 0
     ) {
         self.costUSD = costUSD
+        self.normalizedCostUSD = normalizedCostUSD ?? costUSD
         self.detectedModels = detectedModels
         self.fallbackCalls = fallbackCalls
         self.excludedModels = excludedModels
@@ -380,6 +383,13 @@ enum ModelAwareAPIPriceEstimator {
                 let rowRates = row.historicalQuote?.rates ?? rates(fallbackModel)
                 return partial + rowRates.costUSD(for: row.breakdown)
             },
+            normalizedCostUSD: rows.reduce(0.0) { partial, row in
+                guard OfficialAPIPriceModel.independentQuotaModelName(from: row.model) == nil,
+                      row.detectedModel != nil || (row.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) else { return partial }
+                let model = row.detectedModel ?? fallbackModel
+                return partial + (row.historicalQuote?.rates ?? rates(model)).costUSD(for: row.breakdown)
+                    * PlanCostNormalization.factor(for: model)
+            },
             detectedModels: OfficialAPIPriceModel.allCases.filter { grouped[$0] != nil },
             fallbackCalls: unknownBreakdown.calls,
             excludedModels: excludedModels,
@@ -400,6 +410,7 @@ enum ModelAwareAPIPriceEstimator {
     ) -> ModelAwareAPIPriceEstimate {
         ModelAwareAPIPriceEstimate(
             costUSD: rates(model).costUSD(for: breakdown),
+            normalizedCostUSD: rates(model).costUSD(for: breakdown) * PlanCostNormalization.factor(for: model),
             detectedModels: [],
             fallbackCalls: breakdown.calls,
             excludedModels: excludedModels,
@@ -597,6 +608,7 @@ enum QuotaConsumptionPriceCard: Equatable {
 struct QuotaConsumptionEstimate: Equatable {
     let selectedCostUSD: Double
     let impliedWindowBudgetUSD: Double?
+    var normalizedWindowBudgetUSD: Double? = nil
     let quotaDropPercent: Double
     let quotaDropBasis: QuotaConsumptionDropBasis
     let comparisonBreakdown: TokenCacheBreakdown
@@ -622,6 +634,7 @@ struct QuotaConsumptionEstimate: Equatable {
     init(
         selectedCostUSD: Double,
         impliedWindowBudgetUSD: Double?,
+        normalizedWindowBudgetUSD: Double? = nil,
         quotaDropPercent: Double,
         quotaDropObserved: Bool = true,
         quotaDropBasis: QuotaConsumptionDropBasis? = nil,
@@ -641,6 +654,7 @@ struct QuotaConsumptionEstimate: Equatable {
     ) {
         self.selectedCostUSD = selectedCostUSD
         self.impliedWindowBudgetUSD = impliedWindowBudgetUSD
+        self.normalizedWindowBudgetUSD = normalizedWindowBudgetUSD
         self.quotaDropPercent = quotaDropPercent
         self.quotaDropBasis = quotaDropBasis
             ?? (quotaDropObserved ? .observed : .unavailable)
@@ -692,6 +706,7 @@ enum QuotaConsumptionEstimator {
         priceCard: QuotaConsumptionPriceCard,
         selectedCostUSD: Double? = nil,
         comparisonCostUSD: Double? = nil,
+        normalizedComparisonCostUSD: Double? = nil,
         quotaDropBasis: QuotaConsumptionDropBasis? = nil,
         comparisonBreakdown: TokenCacheBreakdown? = nil,
         boundaryBreakdown: QuotaPeriodBoundaryBreakdown = .empty,
@@ -727,6 +742,10 @@ enum QuotaConsumptionEstimator {
         return QuotaConsumptionEstimate(
             selectedCostUSD: selectedCost,
             impliedWindowBudgetUSD: impliedBudget,
+            normalizedWindowBudgetUSD: impliedBudget.map { budget in
+                if let normalizedComparisonCostUSD { return normalizedComparisonCostUSD / (drop / 100) }
+                return budget * PlanCostNormalization.factor(for: priceCard.officialAPIModel)
+            },
             quotaDropPercent: drop,
             quotaDropBasis: resolvedBasis,
             comparisonBreakdown: resolvedComparisonBreakdown,
@@ -961,6 +980,7 @@ extension RecentChartPreparedData {
                 priceCard: priceCard,
                 selectedCostUSD: fullPrice.costUSD,
                 comparisonCostUSD: fiveHourPrice.costUSD,
+                normalizedComparisonCostUSD: fiveHourPrice.normalizedCostUSD,
                 quotaDropBasis: fiveHourDrop.basis,
                 comparisonBreakdown: fiveHourDrop.comparisonBreakdown,
                 boundaryBreakdown: fiveHourDrop.boundaryBreakdown,
@@ -976,6 +996,7 @@ extension RecentChartPreparedData {
                 priceCard: priceCard,
                 selectedCostUSD: fullPrice.costUSD,
                 comparisonCostUSD: sevenDayPrice.costUSD,
+                normalizedComparisonCostUSD: sevenDayPrice.normalizedCostUSD,
                 quotaDropBasis: sevenDayDrop.basis,
                 comparisonBreakdown: sevenDayDrop.comparisonBreakdown,
                 boundaryBreakdown: sevenDayDrop.boundaryBreakdown,
@@ -1306,5 +1327,21 @@ extension RecentChartPreparedData {
             && next != nil
             && (previous ?? 0) <= 95
             && (next ?? 0) <= (previous ?? 0) + 1
+    }
+}
+
+/// User-defined comparison coefficients, applied after the existing price card.
+/// This never changes persisted usage or claims to reproduce the provider bill.
+enum PlanCostNormalization {
+    static let explanation = "均一化估算：Sol ×1.0 · Astra ×1.5 · Luna ×2.0；其他模型暂按 ×1.0。基于原金额估算，并非实际账单。"
+    static func factor(for model: OfficialAPIPriceModel) -> Double {
+        switch model {
+        case .gpt6Astra: 1.5
+        case .gpt56Luna: 2.0
+        default: 1.0
+        }
+    }
+    static func text(original: Double, normalized: Double) -> String {
+        "\(original.quotaEstimatorMoneyText) · 均一化 \(normalized.quotaEstimatorMoneyText)"
     }
 }

@@ -546,6 +546,8 @@ struct QuotaHistorySnapshot: Equatable {
     let recentBins: [QuotaHistoryRecentBucket]
     let hourlyBins: [QuotaHistoryRecentBucket]
     let latest: Date?
+    var actualCycles: [QuotaActualCycle] = []
+    var cycleIdentity: QuotaHistoryIdentity? = nil
 
     static let empty = QuotaHistorySnapshot(daily: [], recentBins: [], hourlyBins: [], latest: nil)
 }

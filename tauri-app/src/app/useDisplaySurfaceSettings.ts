@@ -32,6 +32,7 @@ export interface DisplaySurfaceSettingsState {
   toggleLiveRate: () => void;
   toggleFloatingWindow: () => Promise<void>;
   toggleStatusTrayLiveText: () => void;
+  updateQuotaSidebar: (patch: Pick<Partial<DisplaySurfaceSettings>, "quotaSidebarEnabled" | "quotaSidebarSide">) => void;
   updateStatusMetricOrder: (order: StatusMetricId[]) => void;
   updateStatusMetricLabelStyle: (style: StatusMetricLabelStyle) => void;
   updateStatusSummaryOrder: (order: StatusSummarySectionId[]) => void;
@@ -164,6 +165,7 @@ export function useDisplaySurfaceSettings({
     toggleLiveRate,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
+    updateQuotaSidebar: updateDisplaySurfaces,
     updateStatusMetricOrder,
     updateStatusMetricLabelStyle,
     updateStatusSummaryOrder,
@@ -175,7 +177,9 @@ function sameDisplaySurfaces(
   right: DisplaySurfaceSettings,
 ): boolean {
   return (
-    left.floatingWindowEnabled === right.floatingWindowEnabled
+    left.quotaSidebarEnabled === right.quotaSidebarEnabled
+    && left.quotaSidebarSide === right.quotaSidebarSide
+    && left.floatingWindowEnabled === right.floatingWindowEnabled
     && left.liveRateEnabled === right.liveRateEnabled
     && left.statusTrayLiveTextEnabled === right.statusTrayLiveTextEnabled
     && left.statusMetricOrder.length === right.statusMetricOrder.length

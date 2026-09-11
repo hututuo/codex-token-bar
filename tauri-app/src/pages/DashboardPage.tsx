@@ -114,6 +114,7 @@ interface DashboardPageProps {
   onSaveSessionEnhancements: (settings: SessionEnhancementSettings) => Promise<void>;
   onReconnectThreadDelete: () => Promise<void>;
   onToggleAutostart: () => void;
+  onQuotaSidebarChange: (patch: Pick<Partial<DisplaySurfaceSettings>, "quotaSidebarEnabled" | "quotaSidebarSide">) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   onStatusMetricOrderChange: (order: StatusMetricId[]) => void;
@@ -196,6 +197,7 @@ export function DashboardPage({
   onRefresh,
   onReconnectThreadDelete,
   onToggleAutostart,
+  onQuotaSidebarChange,
   onToggleFloating,
   onToggleStatusTray,
   onStatusMetricOrderChange,
@@ -344,6 +346,7 @@ export function DashboardPage({
         {summaryReady ? (
           <>
             <DashboardSummarySection
+              sourceToken={sourceToken}
               dashboard={dashboard}
               displaySurfaces={displaySurfaces}
               floatingSettings={floatingSettings}
@@ -363,6 +366,7 @@ export function DashboardPage({
               onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
               onAttributionChange={setSharedAccountAttribution}
               onToggleLiveRate={onToggleLiveRate}
+              onQuotaSidebarChange={onQuotaSidebarChange}
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}
               platform={platform}
@@ -439,6 +443,7 @@ export function DashboardPage({
         onSaveSessionEnhancements={onSaveSessionEnhancements}
         onTokenRateFullScaleChange={onTokenRateFullScaleChange}
         onToggleAutostart={onToggleAutostart}
+        onQuotaSidebarChange={onQuotaSidebarChange}
         onToggleFloating={onToggleFloating}
         onToggleLiveRate={onToggleLiveRate}
         onToggleStatusTray={onToggleStatusTray}

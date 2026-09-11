@@ -1052,16 +1052,12 @@ extension CodexUsageAnalyzer {
                 if shouldFinalizeLegacyV8Migration {
                     trace?.mark("finalizeV8Migration.begin")
                     try Self.markLegacyV8MigrationComplete()
-                    if let legacyDirectory = Self.legacyV8NamespaceDirectory {
-                        try? FileManager.default.removeItem(at: legacyDirectory)
-                    }
+                    // Keep legacy event evidence until the durable ledger has
+                    // verified import coverage, independently of cache readiness.
                     lock.lock()
                     self.shouldFinalizeLegacyV8Migration = false
                     lock.unlock()
                     trace?.mark("finalizeV8Migration.end")
-                }
-                if !dirtySessions.isEmpty, let legacyV5CacheURL = Self.legacyV5CacheURL {
-                    try? FileManager.default.removeItem(at: legacyV5CacheURL)
                 }
                 trace?.end("ok", metadata: [
                     "dirtySessions": String(dirtySessions.count),
@@ -1271,20 +1267,11 @@ extension CodexUsageAnalyzer {
 
         private static var legacyCacheURLs: [URL] {
             guard let cacheRootURL else { return [] }
-            let oldSharedFiles = [2, 3, 4, 5].map { version in
-                cacheRootURL
-                    .appendingPathComponent("CodexTokenBar", isDirectory: true)
-                    .appendingPathComponent("session-token-events-v\(version).json")
-            }
-            let oldSharedDirectories = [
-                cacheRootURL
-                    .appendingPathComponent("CodexTokenBar", isDirectory: true)
-                    .appendingPathComponent("session-token-events-v6", isDirectory: true),
-                cacheRootURL
-                    .appendingPathComponent("CodexTokenBar", isDirectory: true)
-                    .appendingPathComponent("session-token-snapshots-v6.json")
-            ]
-            return oldSharedFiles + oldSharedDirectories
+            // Event caches can outlive raw JSONL after an upstream rewrite.
+            // Only this derived snapshot is automatically disposable.
+            return [cacheRootURL
+                .appendingPathComponent("CodexTokenBar", isDirectory: true)
+                .appendingPathComponent("session-token-snapshots-v6.json")]
         }
 
         private static var cacheRootURL: URL? {
@@ -1354,6 +1341,8 @@ extension CodexUsageAnalyzer {
 
         private static func removeLegacyCaches() {
             for url in legacyCacheURLs {
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                      attributes[.type] as? FileAttributeType == .typeRegular else { continue }
                 try? FileManager.default.removeItem(at: url)
             }
         }
@@ -1578,6 +1567,7 @@ extension CodexUsageAnalyzer {
     }
 
     struct ParsedTokenUsageLine {
+        var ordinal: UInt64? = nil
         let timestamp: Date
         let identityTimestamp: String
         let total: ParsedTokenUsage?

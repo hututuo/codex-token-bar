@@ -73,6 +73,10 @@ struct UsageAccountingState: Codable, Equatable, Sendable {
     var canStartFromZero = false
     var counterReset = false
     var lastSnapshot: String?
+    var paginatedOwnStartOrdinal: UInt64?
+    var paginatedPendingTurnID: String?
+    var paginatedPendingTurnOrdinal: UInt64?
+    var paginatedPendingIsContext: Bool?
 
     static var fresh: Self { Self(canStartFromZero: true) }
 

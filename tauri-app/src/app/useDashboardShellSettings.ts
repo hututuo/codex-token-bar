@@ -95,6 +95,7 @@ export interface DashboardShellSettingsState {
   toggleLiveRate: () => void;
   toggleFloatingWindow: () => Promise<void>;
   toggleStatusTrayLiveText: () => void;
+  updateQuotaSidebar: (patch: Pick<Partial<DisplaySurfaceSettings>, "quotaSidebarEnabled" | "quotaSidebarSide">) => void;
   updateStatusMetricOrder: (order: StatusMetricId[]) => void;
   updateStatusMetricLabelStyle: (style: StatusMetricLabelStyle) => void;
   updateStatusSummaryOrder: (order: StatusSummarySectionId[]) => void;
@@ -172,6 +173,7 @@ export function useDashboardShellSettings({
     toggleLiveRate: toggleLiveRateSurface,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
+    updateQuotaSidebar,
     updateStatusMetricOrder,
     updateStatusMetricLabelStyle,
     updateStatusSummaryOrder,
@@ -498,6 +500,7 @@ export function useDashboardShellSettings({
     toggleLiveRate,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
+    updateQuotaSidebar,
     updateStatusMetricOrder,
     updateStatusMetricLabelStyle,
     updateStatusSummaryOrder,

@@ -1690,6 +1690,8 @@ struct SharedAccountUsageAttributionResult: Equatable {
     let boundaryBreakdown: QuotaPeriodBoundaryBreakdown
     let scannedBreakdown: TokenCacheBreakdown
     let scannedComparableCostUSD: Double?
+    var normalizedComparableCostUSD: Double? = nil
+    var normalizedCurrentCostUSD: Double? = nil
     let localComparableCostUSD: Double?
     let localCurrentOfficialCostUSD: Double?
     let radarSevenDayTotalUSD: Double?
@@ -2132,6 +2134,8 @@ enum SharedAccountUsageAttributionEstimator {
                     boundaryBreakdown: boundaryBreakdown,
                     scannedBreakdown: scannedBreakdown,
                     scannedComparableCostUSD: nil,
+                    normalizedComparableCostUSD: pendingComparableCost.normalizedCostUSD,
+                    normalizedCurrentCostUSD: pendingCurrentCost.normalizedCostUSD,
                     localComparableCostUSD: pendingComparableCost.costUSD,
                     localCurrentOfficialCostUSD: pendingCurrentCost.costUSD,
                     radarSevenDayTotalUSD: pendingRadarTotal,
@@ -2211,6 +2215,7 @@ enum SharedAccountUsageAttributionEstimator {
                 boundaryBreakdown: boundaryBreakdown,
                 scannedBreakdown: scannedBreakdown,
                 currentOfficialCostUSD: currentOfficialCost,
+                normalizedCurrentCostUSD: currentOfficialEstimate.normalizedCostUSD,
                 radar: radar,
                 quotaDataStale: quotaDataStale,
                 radarDataStale: radarDataStale,
@@ -2241,6 +2246,7 @@ enum SharedAccountUsageAttributionEstimator {
                 breakdown: protectedBreakdown,
                 scannedBreakdown: scannedBreakdown,
                 currentOfficialCostUSD: currentOfficialCost,
+                normalizedCurrentCostUSD: currentOfficialEstimate.normalizedCostUSD,
                 radarTotalUSD: radarTotal,
                 radarRow: row,
                 radar: radar,
@@ -2315,6 +2321,8 @@ enum SharedAccountUsageAttributionEstimator {
             boundaryBreakdown: boundaryBreakdown,
             scannedBreakdown: scannedBreakdown,
             scannedComparableCostUSD: scannedComparableCost,
+            normalizedComparableCostUSD: localComparableEstimate.normalizedCostUSD,
+            normalizedCurrentCostUSD: currentOfficialEstimate.normalizedCostUSD,
             localComparableCostUSD: localComparableCost,
             localCurrentOfficialCostUSD: localCurrentOfficialCost,
             radarSevenDayTotalUSD: radarTotal,
@@ -2387,6 +2395,7 @@ enum SharedAccountUsageAttributionEstimator {
         boundaryBreakdown: QuotaPeriodBoundaryBreakdown = .empty,
         scannedBreakdown: TokenCacheBreakdown? = nil,
         currentOfficialCostUSD: Double? = nil,
+        normalizedCurrentCostUSD: Double? = nil,
         radarTotalUSD: Double? = nil,
         radarRow: CodexRadarQuotaRow? = nil,
         radar: CodexRadarQuotaRadar? = nil,
@@ -2423,6 +2432,7 @@ enum SharedAccountUsageAttributionEstimator {
             boundaryBreakdown: boundaryBreakdown,
             scannedBreakdown: scannedBreakdown ?? breakdown,
             scannedComparableCostUSD: nil,
+            normalizedCurrentCostUSD: normalizedCurrentCostUSD,
             localComparableCostUSD: nil,
             localCurrentOfficialCostUSD: currentOfficialCostUSD,
             radarSevenDayTotalUSD: radarTotalUSD,

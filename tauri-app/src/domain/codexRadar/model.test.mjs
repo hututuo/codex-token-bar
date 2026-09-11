@@ -132,7 +132,7 @@ test("Radar surface status prefers the local successful refresh time over monito
   });
 
   assert.match(codexRadarRefreshTimestamp(refreshed), /\d{2}:\d{2}:\d{2}/);
-  assert.match(codexRadarSurfaceStatus(refreshed), /^10分钟刷新 · \d{2}:\d{2}:\d{2}$/);
+  assert.match(codexRadarSurfaceStatus(refreshed), /^5分钟刷新 · \d{2}:\d{2}:\d{2}$/);
   assert.doesNotMatch(codexRadarSurfaceStatus(refreshed), /2026-07-22/);
 });
 

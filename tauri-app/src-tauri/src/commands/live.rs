@@ -1647,6 +1647,7 @@ fn require_live_rate_owner(window_label: &str, owner_token: &str) -> Result<(), 
     let expected = match window_label {
         "main" => "dashboard-live-rate",
         "floating" => "floating-live-rate",
+        "quota-sidebar" => "quota-sidebar-live-rate",
         "status" => "status-live-rate",
         _ => {
             return Err(format!(
@@ -2437,6 +2438,9 @@ mod tests {
     #[test]
     fn stable_surface_owner_ids_are_bound_to_their_webview_labels() {
         assert!(require_live_rate_owner("main", "dashboard-live-rate").is_ok());
+        assert!(require_live_rate_owner("quota-sidebar", "quota-sidebar-live-rate").is_ok());
+        assert!(require_live_rate_owner("quota-sidebar", "floating-live-rate").is_err());
+        assert!(require_live_rate_owner("quota-sidebar-detail", "quota-sidebar-live-rate").is_err());
         assert!(require_live_rate_owner("floating", "floating-live-rate").is_ok());
         assert!(require_live_rate_owner("status", "status-live-rate").is_ok());
         assert!(require_live_rate_owner("status", "dashboard-live-rate").is_err());

@@ -3114,3 +3114,20 @@ printf '%s\n' "$1"
         }
     }
 }
+
+/// Read-only account fence for historical period navigation. A quota refresh
+/// supplies the cache; navigating periods never starts a remote request.
+pub(crate) fn observed_cycles(codex_home: &Path, expected_scope: &str) -> Result<Vec<quota_history::cycles::QuotaCycle>, String> {
+    let scope = observed_quota_cache_scope(codex_home);
+    let bundle = cached_successful_quota(&scope)?.ok_or("额度周期等待当前账号资料")?;
+    let attribution = bundle.attribution_identity.as_ref().ok_or("额度账号身份未确认")?;
+    if format!("{}|{}|{}", attribution.scope_key, attribution.plan, attribution.limit) != expected_scope {
+        return Err("额度账号已变化，请重新读取周期".into());
+    }
+    let identity = scope.history_identity(&bundle, Some(&attribution.limit)).ok_or("额度账号身份未确认")?;
+    let result = quota_history::cycles::read(&identity)?;
+    if !scope.allows_success_reuse(&observed_quota_cache_scope(codex_home)) {
+        return Err("额度账号在读取期间已变化".into());
+    }
+    Ok(result)
+}

@@ -186,9 +186,9 @@ pub fn cleanup_old_discardable_usage_caches_now() {
 }
 
 fn remove_cache_path(path: &std::path::Path) {
-    if path.is_dir() {
-        let _ = fs::remove_dir_all(path);
-    } else {
+    // The allowlist contains summary files only. An unexpected directory or
+    // unreadable entry must never turn cleanup into a recursive deletion.
+    if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file() || m.file_type().is_symlink()) {
         let _ = fs::remove_file(path);
     }
 }
@@ -351,19 +351,30 @@ mod tests {
         fs::write(&old_tauri_file, b"old").unwrap();
         fs::write(&unknown_file, b"unknown").unwrap();
         fs::write(&quota, b"quota").unwrap();
+        let old_index = old_tauri.join("exact-token-index").join("old.sqlite3");
+        fs::create_dir_all(old_index.parent().unwrap()).unwrap();
+        fs::write(&old_index,b"unique historical events").unwrap();
+        let old_summary = old_tauri.join("dashboard-aggregate.json");
+        fs::write(&old_summary,b"regenerable summary").unwrap();
+        let unexpected_directory = old_tauri_other_version.join("dashboard-aggregate.json");
+        fs::create_dir_all(&unexpected_directory).unwrap();
+        fs::write(unexpected_directory.join("evidence.sqlite3"),b"preserve").unwrap();
 
         cleanup_old_discardable_usage_caches_now();
 
-        assert!(!old_shared.exists());
-        assert!(!old_tauri.exists());
-        assert!(!old_tauri_other_version.exists());
-        assert!(!old_tauri_file.exists());
+        assert!(old_shared.exists());
+        assert!(old_tauri.exists());
+        assert!(old_tauri_other_version.exists());
+        assert!(old_tauri_file.exists());
         assert!(current.exists());
         assert!(unknown_future_tauri.exists());
         assert!(local_candidates.exists());
         assert!(unknown_directory.exists());
         assert!(unknown_file.exists());
         assert!(quota.exists());
+        assert_eq!(fs::read(&old_index).unwrap(),b"unique historical events");
+        assert!(!old_summary.exists());
+        assert!(unexpected_directory.join("evidence.sqlite3").exists());
 
         let _ = fs::remove_dir_all(root);
     }

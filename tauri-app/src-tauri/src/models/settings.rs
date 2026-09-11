@@ -660,6 +660,10 @@ pub struct FloatingWindowPositionSnapshot {
 pub struct DisplaySurfaceSettingsSnapshot {
     #[serde(default = "default_enabled")]
     pub floating_window_enabled: bool,
+    #[serde(default)]
+    pub quota_sidebar_enabled: bool,
+    #[serde(default = "default_quota_sidebar_side")]
+    pub quota_sidebar_side: String,
     #[serde(default = "default_enabled")]
     pub live_rate_enabled: bool,
     #[serde(default = "default_disabled")]
@@ -676,6 +680,8 @@ impl Default for DisplaySurfaceSettingsSnapshot {
     fn default() -> Self {
         Self {
             floating_window_enabled: default_enabled(),
+            quota_sidebar_enabled: false,
+            quota_sidebar_side: default_quota_sidebar_side(),
             live_rate_enabled: default_enabled(),
             status_tray_live_text_enabled: default_disabled(),
             status_metric_order: default_status_metric_order(),
@@ -684,6 +690,8 @@ impl Default for DisplaySurfaceSettingsSnapshot {
         }
     }
 }
+
+pub fn default_quota_sidebar_side() -> String { "right".into() }
 
 pub const STATUS_METRIC_IDS: [&str; 9] = [
     "rate", "fiveHour", "sevenDay", "iq", "today", "total", "requests", "running", "unread",

@@ -101,6 +101,8 @@ enum AppSettingsRouteRequest {
 }
 
 struct AppSettingsView: View {
+    @AppStorage(QuotaSidebarSettings.enabledKey) private var quotaSidebarEnabled = false
+    @AppStorage(QuotaSidebarSettings.edgeKey) private var quotaSidebarEdgeRaw = QuotaSidebarEdge.right.rawValue
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
     @ObservedObject var autoResumeController: AutoResumeTaskManager
@@ -485,6 +487,11 @@ struct AppSettingsView: View {
         Group {
             settingsSection(title: "辅助显示面", subtitle: "状态栏的内容与入口集中在独立设置页") {
                 settingsToggle("悬浮窗", systemImage: "rectangle.on.rectangle", isOn: $floatingPanelEnabled)
+                settingsToggle("额度侧栏", systemImage: "sidebar.right", isOn: $quotaSidebarEnabled)
+                settingsPicker("侧栏位置", systemImage: "arrow.left.and.right", selection: $quotaSidebarEdgeRaw,
+                               options: [("left", "左侧"), ("right", "右侧")])
+                Text("独立于悬浮窗。色条常驻，悬停速览，点击额度环或任务查看详情。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             settingsSection(title: "主界面缩放", subtitle: "自动适配窗口，也可以固定界面大小") {

@@ -38,7 +38,7 @@ test("Codex Radar summary and detail share one crowd snapshot", () => {
 });
 
 test("Codex Radar refreshes the public summary and crowd source on the ten-minute cadence", () => {
-  assert.match(source, /const RADAR_REFRESH_INTERVAL_MS = 600_000/);
+  assert.match(source, /const RADAR_REFRESH_INTERVAL_MS = 300_000/);
   assert.match(source, /window\.setInterval\(\(\) => \{[\s\S]*?void refresh\(true\)/);
   assert.match(source, /const crowdRefresh = refreshCrowdRadar\(\)/);
 });

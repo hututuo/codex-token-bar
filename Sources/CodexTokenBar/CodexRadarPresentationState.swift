@@ -55,7 +55,7 @@ struct CodexRadarPresentationState: Equatable {
         if feedStaleDataDisplayed {
             return "RSS 读取失败 · \(refreshLabel)"
         }
-        return "10分钟刷新 · \(refreshLabel)"
+        return "5分钟刷新 · \(refreshLabel)"
     }
 
     var statusBadge: CodexRadarStatusBadge? {

@@ -470,7 +470,7 @@ export function codexRadarSurfaceStatus(snapshot: CodexRadarSnapshot | null, dia
     return diagnostics[0].message;
   }
   if (snapshot) {
-    return `10分钟刷新 · ${codexRadarRefreshTimestamp(snapshot)}`;
+    return `5分钟刷新 · ${codexRadarRefreshTimestamp(snapshot)}`;
   }
   return "Codex 雷达待读取";
 }
@@ -689,6 +689,12 @@ export function radarEffectiveActionDisplayText(
   return radarActionDisplayText(recommended || snapshot?.window.action || null);
 }
 
+export function radarIsSpeedWindow(snapshot: CodexRadarSnapshot | null | undefined, nowMs = Date.now()): boolean {
+  if (!snapshot || radarEffectiveActionDisplayText(snapshot) !== "速登窗口" || snapshot.window.open === false || snapshot.windowOpen === false) return false;
+  const deadline = radarSpeedWindowDeadlineMs(snapshot);
+  return deadline === null || deadline > nowMs;
+}
+
 export function radarSpeedWindowDeadlineMs(
   snapshot: CodexRadarSnapshot | null | undefined,
 ): number | null {
@@ -724,6 +730,7 @@ export function radarActionDisplayTextForSnapshot(
   if (action !== "速登窗口") {
     return action;
   }
+  if (!radarIsSpeedWindow(snapshot, nowMs)) return "等待";
   const deadlineMs = radarSpeedWindowDeadlineMs(snapshot);
   if (deadlineMs === null || deadlineMs <= nowMs) {
     return "速登窗口";

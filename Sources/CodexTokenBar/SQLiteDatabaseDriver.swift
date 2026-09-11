@@ -31,6 +31,30 @@ struct SQLiteStatement {
         sqlite3_column_count(raw)
     }
 
+    /// Lossless typed encoding for migration proofs, including embedded NUL
+    /// text and the exact bit pattern of REAL values.
+    func canonicalBytes(_ column: Int32) -> Data {
+        let type = sqlite3_column_type(raw, column)
+        var value = Data()
+        switch type {
+        case SQLITE_INTEGER:
+            var bits = sqlite3_column_int64(raw, column).bigEndian
+            value = withUnsafeBytes(of: &bits) { Data($0) }
+        case SQLITE_FLOAT:
+            var bits = sqlite3_column_double(raw, column).bitPattern.bigEndian
+            value = withUnsafeBytes(of: &bits) { Data($0) }
+        case SQLITE_TEXT, SQLITE_BLOB:
+            let length = Int(sqlite3_column_bytes(raw, column))
+            if length > 0, let bytes = sqlite3_column_blob(raw, column) { value = Data(bytes: bytes, count: length) }
+        default: break
+        }
+        var result = Data([UInt8(type)])
+        var size = UInt64(value.count).bigEndian
+        withUnsafeBytes(of: &size) { result.append(contentsOf: $0) }
+        result.append(value)
+        return result
+    }
+
     func text(_ column: Int32) -> String? {
         guard sqlite3_column_type(raw, column) != SQLITE_NULL,
               let value = sqlite3_column_text(raw, column) else {

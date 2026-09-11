@@ -3,8 +3,11 @@ import ReactDOM from "react-dom/client";
 import { recordStartupEvent } from "./api/client";
 import { App } from "./app/App";
 import "./styles/global.css";
+import "./quota-sidebar/QuotaSidebar.css";
 
 const startupSurface = new URLSearchParams(window.location.search).get("surface") ?? "main";
+if (startupSurface === "quota-sidebar" || startupSurface === "quota-sidebar-detail") document.documentElement.classList.add("quota-sidebar-document");
+if (startupSurface === "quota-sidebar" && /Mac/.test(navigator.platform)) document.documentElement.classList.add("quota-sidebar-fixed-canvas");
 if (startupSurface === "status") {
   document.documentElement.classList.add("status-document");
 }

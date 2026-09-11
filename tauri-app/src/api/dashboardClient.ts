@@ -207,3 +207,10 @@ export function readAccountResetCredits(
     30_000,
   );
 }
+
+export function readQuotaCycles(sourceToken: CodexHomeSourceToken, expectedScope: string) {
+  return callCommandStrict<import("../types/quota").QuotaCycle[]>("read_quota_cycles", { sourceToken, expectedScope }, null);
+}
+export function readQuotaCycleUsage(sourceToken: CodexHomeSourceToken, expectedScope: string, cycleId: string) {
+  return callCommandStrict<import("../types/quota").QuotaCycleUsage>("read_quota_cycle_usage", { sourceToken, expectedScope, cycleId }, null);
+}

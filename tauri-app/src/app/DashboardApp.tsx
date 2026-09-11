@@ -136,6 +136,7 @@ export function DashboardApp() {
         onToggleLiveRate={shellSettings.toggleLiveRate}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}
+        onQuotaSidebarChange={shellSettings.updateQuotaSidebar}
         onStatusMetricOrderChange={shellSettings.updateStatusMetricOrder}
         onStatusMetricLabelStyleChange={shellSettings.updateStatusMetricLabelStyle}
         onStatusSummaryOrderChange={shellSettings.updateStatusSummaryOrder}

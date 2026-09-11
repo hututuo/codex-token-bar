@@ -93,11 +93,14 @@ pub async fn save_display_surfaces(
     // 保存（磁盘写+fsync）在阻塞池；托盘同步沿用既有原生调用路径（live 流
     // 循环本就从异步任务调用同一原生入口），失败只记录不回滚已保存设置。
     let saved = run_blocking_command(move || platform::save_display_surfaces(display)).await?;
-    Ok(sync_saved_display_surfaces(
+    let saved = sync_saved_display_surfaces(
         saved,
         |saved| live_rate.sync_status_tray_interest(&app, &saved.display_surfaces),
         |error| eprintln!("Codex Token Bar: saved display settings but native tray sync failed: {error}"),
-    ))
+    );
+    platform::sync_quota_sidebar(&app, &saved.display_surfaces).await
+        .map_err(|error| format!("显示设置已保存，但额度侧栏窗口更新失败：{error}"))?;
+    Ok(saved)
 }
 
 fn sync_saved_display_surfaces(

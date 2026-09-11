@@ -68,6 +68,14 @@ pub(super) struct AccountingState {
     pub can_start_from_zero: bool,
     pub counter_reset: bool,
     pub last_snapshot: Option<String>,
+    #[serde(default)]
+    pub paginated_own_start_ordinal: Option<u64>,
+    #[serde(default)]
+    pub paginated_pending_turn_id: Option<String>,
+    #[serde(default)]
+    pub paginated_pending_turn_ordinal: Option<u64>,
+    #[serde(default)]
+    pub paginated_pending_is_context: Option<bool>,
 }
 impl AccountingState {
     pub fn fresh() -> Self { Self { can_start_from_zero: true, ..Self::default() } }
@@ -293,6 +301,7 @@ mod tests {
             can_start_from_zero: false,
             counter_reset: true,
             last_snapshot: Some("snapshot-signature".to_owned()),
+            ..AccountingState::default()
         };
 
         let encoded = state.encode();

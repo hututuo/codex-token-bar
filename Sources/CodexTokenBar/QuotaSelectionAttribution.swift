@@ -123,6 +123,8 @@ struct QuotaSelectionAttributionResult: Equatable {
     let priceRevision: SharedAccountRadarPriceRevision
     let accountDropBasis: QuotaConsumptionDropBasis
     let accountDropPercent: Double?
+    var normalizedComparableCostUSD: Double? = nil
+    var normalizedCurrentCostUSD: Double? = nil
     let localComparableCostUSD: Double?
     let localCurrentOfficialCostUSD: Double
     let radarSevenDayTotalUSD: Double?
@@ -254,6 +256,8 @@ enum QuotaSelectionAttributionEstimator {
             priceRevision: context.priceRevision,
             accountDropBasis: selection.sevenDay.quotaDropBasis,
             accountDropPercent: accountDrop,
+            normalizedComparableCostUSD: comparableEstimate.normalizedCostUSD,
+            normalizedCurrentCostUSD: currentOfficialEstimate.normalizedCostUSD,
             localComparableCostUSD: comparableCost,
             localCurrentOfficialCostUSD: currentOfficialCost,
             radarSevenDayTotalUSD: radarTotal,
@@ -378,6 +382,8 @@ enum QuotaSelectionAttributionEstimator {
             priceRevision: context.priceRevision,
             accountDropBasis: accountDropBasis,
             accountDropPercent: accountDrop,
+            normalizedComparableCostUSD: comparableEstimate?.normalizedCostUSD,
+            normalizedCurrentCostUSD: currentOfficialEstimate.normalizedCostUSD,
             localComparableCostUSD: comparableEstimate?.costUSD,
             localCurrentOfficialCostUSD: currentOfficialEstimate.costUSD,
             radarSevenDayTotalUSD: radarTotal,
