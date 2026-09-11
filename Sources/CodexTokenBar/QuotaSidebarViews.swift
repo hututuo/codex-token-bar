@@ -234,7 +234,7 @@ struct QuotaSidebarRail: View {
 
     private func ring(label: String, window: AccountQuotaWindow?, color: Color) -> some View {
         let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: quota.snapshot)
-        return Button { controller.select(.overview, section: label == "5h" ? "five" : "seven") } label: {
+        return Button { controller.select(.overview, section: "top") } label: {
             VStack(spacing: 5) {
                 ZStack {
                     SidebarValueRing(fraction: data.remaining.map { Double($0) / 100 }, color: color,
@@ -256,7 +256,7 @@ struct QuotaSidebarRail: View {
             .accessibilityLabel("\(label) 剩余 \(data.accessibilityText)，点击查看详情")
             .accessibilityIdentifier("quota-sidebar-\(label)")
             .accessibilityAddTraits(.isButton)
-            .accessibilityAction { controller.select(.overview, section: label == "5h" ? "five" : "seven") }
+            .accessibilityAction { controller.select(.overview, section: "top") }
     }
 
     private func expected(window: AccountQuotaWindow?) -> Double? {

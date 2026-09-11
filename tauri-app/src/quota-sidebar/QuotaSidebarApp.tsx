@@ -222,8 +222,8 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = 200, li
     </div><div className="qs-summary" onClickCapture={event => flashSidebarButton(event.target)} data-visible={state.mode !== "rest"} aria-hidden={state.mode === "rest"} inert={state.mode === "rest"}>
       <span className="qs-caption">速览</span>
             <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
-      {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "five")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} /><Value value={quotaText(five)} /></button>}
-      <button className="qs-quota-trigger" onClick={() => onOpen("quota", "seven")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} /><Value value={quotaText(seven)} /></button>
+      {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} /><Value value={quotaText(five)} /></button>}
+      <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} /><Value value={quotaText(seven)} /></button>
       <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}>{modelStrip(false)}<span>模型占比</span></button>
       <div className="qs-divider" />
       <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><span className="qs-task-ring"><Value value={String(data.runningThreads.total ?? "—")} /></span><span>{data.runningThreads.status === "ready" ? `${data.runningThreads.mainThreads ?? "—"} 主 · ${data.runningThreads.subagents ?? "—"} 子` : data.runningThreads.status === "stale" ? "运行·过期" : "运行·未知"}</span></button>
@@ -274,7 +274,8 @@ function DetailSurface() {
   useLayoutEffect(() => {
     if (!value || value.state.mode !== "detail") return;
     const container = document.querySelector<HTMLElement>(".qs-detail-content");
-    const target = document.getElementById(`qs-section-${value.state.section || "top"}`);
+    const target = value.state.section && value.state.section !== "top"
+      ? document.getElementById(`qs-section-${value.state.section}`) : null;
     if (container) container.scrollTop = target ? target.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop : 0;
   }, [value?.state.mode, value?.state.tab, value?.state.section, value?.state.focusRevision, value?.data.trend?.length]);
   const action = (action: SidebarAction) => void emitTo(railLabel, "quota-sidebar-action", action.type === "open" ? { ...action, section: action.section || "top" } : action);
