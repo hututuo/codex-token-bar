@@ -1491,7 +1491,7 @@ struct RecentUsageChart: View, Equatable {
                         )
                         .help(RecentChartQuotaEstimateAffordancePresentation.headerHelp)
                 }
-                Text(selectedRange.subtitle)
+                Text(selectedRange == .sevenDays && preparedData.bucketInterval == 300 ? RecentChartRange.twentyFourHours.subtitle : selectedRange.subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Text(RecentChartQuotaEstimateAffordancePresentation.inlineInstruction)

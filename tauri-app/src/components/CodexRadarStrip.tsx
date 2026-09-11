@@ -47,7 +47,7 @@ import {
 import { subscribeRadarCountdown } from "../domain/codexRadar/countdown";
 import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
 
-const RADAR_REFRESH_INTERVAL_MS = 600_000;
+const RADAR_REFRESH_INTERVAL_MS = 300_000;
 const RADAR_CHART_COLORS = ["#18a7f2", "#ff8a2c", "#2f7df6", "#32b85f", "#a65af5"];
 
 interface CodexRadarStripProps {
@@ -69,6 +69,8 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const [detailRefreshing, setDetailRefreshing] = useState(false);
   const lastExternalRefreshGeneration = useRef(0);
   const refreshingRef = useRef(false);
+  const summaryRecoveryTimer = useRef<number | null>(null);
+  const summaryRecoveryAttempt = useRef(0);
   const crowdRefreshingRef = useRef(false);
   const crowdRecoveryAttemptRef = useRef(0);
   const crowdRecoveryTimerRef = useRef<number | null>(null);
@@ -136,7 +138,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
     }, delayMs);
   }
 
-  async function refreshCrowdRadar() {
+  async function refreshCrowdRadar(force = false) {
     if (!radarMountedRef.current || crowdRefreshingRef.current) {
       return;
     }
@@ -150,7 +152,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       setCrowdRadarStatus(crowdRadarRef.current ? "正在更新众测雷达..." : "正在读取众测雷达...");
     });
     try {
-      const next = await readCodexCrowdRadarSnapshot();
+      const next = await readCodexCrowdRadarSnapshot({ force });
       if (!requestIsCurrent()) {
         return;
       }
@@ -166,7 +168,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         const serverStale = [next.provenance?.table, next.provenance?.leaderboard]
           .some((source) => source?.stale === true);
         setCrowdRadarStatus(serverStale
-          ? "众测数据已更新（服务端标记陈旧，详见诊断）"
+          ? "众测已读取（来源服务器返回缓存）"
           : next.endpointErrors?.length
             ? "众测数据已更新（部分来源失败，详见诊断）"
             : "众测数据已更新");
@@ -182,7 +184,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           ? "众测刷新失败，继续显示上次数据"
           : "众测雷达暂不可用");
       });
-      if (!crowdRadarRef.current && crowdRecoveryTimerRef.current === null) {
+      if (crowdRecoveryTimerRef.current === null) {
         const delay = nextCodexCrowdRadarRecoveryDelayMs(crowdRecoveryAttemptRef.current);
         if (delay !== null) {
           crowdRecoveryAttemptRef.current += 1;
@@ -213,12 +215,15 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       setRefreshing(true);
       setStatus(snapshotRef.current ? "正在更新 Codex 雷达..." : "正在读取 Codex 雷达...");
     });
-    const crowdRefresh = refreshCrowdRadar();
+    const crowdRefresh = refreshCrowdRadar(force);
+    let failed = false;
+    if (summaryRecoveryTimer.current !== null) { window.clearTimeout(summaryRecoveryTimer.current); summaryRecoveryTimer.current = null; }
     try {
       const next = await readCodexRadarState(snapshotRef.current, { force });
       if (!requestIsCurrent()) {
         return;
       }
+      failed = !next.snapshot || next.snapshot.staleDataDisplayed;
       snapshotRef.current = next.snapshot;
       startTransition(() => {
         setSnapshot(next.snapshot);
@@ -226,6 +231,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         setStatus(next.statusText);
       });
     } catch (error) {
+      failed = true;
       if (!requestIsCurrent()) {
         return;
       }
@@ -236,6 +242,10 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       await crowdRefresh;
       if (requestIsCurrent()) {
         refreshingRef.current = false;
+        if (!failed) summaryRecoveryAttempt.current = 0;
+        else if (summaryRecoveryAttempt.current < 3) {
+          summaryRecoveryTimer.current = window.setTimeout(() => { summaryRecoveryTimer.current = null; void refresh(true); }, 30_000 * 2 ** summaryRecoveryAttempt.current++);
+        }
         startTransition(() => {
           setRefreshing(false);
         });
@@ -335,6 +345,8 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         setStatus(next.statusText);
       });
     });
+    const online = () => { summaryRecoveryAttempt.current = 0; crowdRecoveryAttemptRef.current = 0; void refresh(true); };
+    window.addEventListener("online", online);
     void refresh(true);
     const timer = window.setInterval(() => {
       if (!crowdRadarRef.current) crowdRecoveryAttemptRef.current = 0;
@@ -346,6 +358,9 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       refreshingRef.current = false;
       crowdRefreshingRef.current = false;
       unsubscribe();
+      window.removeEventListener("online", online);
+      if (summaryRecoveryTimer.current !== null) window.clearTimeout(summaryRecoveryTimer.current);
+      summaryRecoveryTimer.current = null;
       window.clearInterval(timer);
       if (crowdRecoveryTimerRef.current !== null) {
         window.clearTimeout(crowdRecoveryTimerRef.current);
@@ -497,7 +512,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
             style={crowdBest ? { "--radar-score-color": semanticMetricColor(crowdBest.passRate * 100) } as CSSProperties : undefined}
           >
             <strong>{crowdBest ? `IQ ${(crowdBest.passRate * 150).toFixed(1)}` : "IQ --"}</strong>
-            <span>{crowdBest ? `${crowdRadarModelLabel(crowdBest)}${crowdRadarStale ? " · 旧" : ""}` : "待读取"}</span>
+            <span>{crowdBest ? `${crowdRadarModelLabel(crowdBest)}${crowdRadarStale ? (crowdRadarStatus.startsWith("众测刷新失败") ? " · 刷新失败" : " · 来源缓存") : ""}` : "待读取"}</span>
           </div>
           <div className="radar-model-row">
             {crowdLeaders.length > 1
@@ -922,14 +937,16 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
           }))}
           title="社区反馈样本"
         />
+        {(snapshot.feedStaleDataDisplayed || snapshot.diagnostics.some(item => item.source === "feed")) &&
+          <p className="codex-radar-paragraph" role="status">提醒历史本次未刷新。{snapshot.feedItems.length ? "以下保留上次读取的历史提醒。" : "暂时没有可显示的提醒。"}{!snapshot.staleDataDisplayed ? "当前速登状态和测评数据已正常读取。" : "当前雷达状态请查看上方提示。"}</p>}
         <RadarArticleList
-          emptyText="暂无 RSS 提醒历史"
+          emptyText="暂无提醒历史"
           items={snapshot.feedItems.map((item) => ({
             title: item.title,
             subtitle: `${item.pubDate} · ${item.description}`,
             url: item.link,
           }))}
-          title="RSS 提醒历史"
+          title="提醒历史"
         />
         <RadarDetailSubsection title="来源">
           <RadarKeyValueGrid rows={[

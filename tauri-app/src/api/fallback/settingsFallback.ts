@@ -34,6 +34,8 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
   floatingPosition: null,
   displaySurfaces: {
     floatingWindowEnabled: true,
+    quotaSidebarEnabled: false,
+    quotaSidebarSide: "right",
     liveRateEnabled: true,
     statusTrayLiveTextEnabled: false,
     statusMetricOrder: ["rate", "fiveHour", "sevenDay", "iq"],

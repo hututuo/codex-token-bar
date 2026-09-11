@@ -71,11 +71,11 @@ let crowdRadarReadFailure: {
   expiresAt: number;
 } | null = null;
 
-export function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnapshot> {
+export function readCodexCrowdRadarSnapshot(options: { force?: boolean } = {}): Promise<CodexCrowdRadarSnapshot> {
   if (crowdRadarReadInFlight) {
     return crowdRadarReadInFlight;
   }
-  if (crowdRadarReadFailure && crowdRadarReadFailure.expiresAt > Date.now()) {
+  if (!options.force && crowdRadarReadFailure && crowdRadarReadFailure.expiresAt > Date.now()) {
     return crowdRadarReadFailure.promise;
   }
   // Keep the compatibility parser independently executable in Node tests while

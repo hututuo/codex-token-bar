@@ -6,7 +6,7 @@ import {
   primaryModelMeasurementRow,
   radarActionDisplayTextForSnapshot,
   radarEffectiveActionDisplayText,
-  radarSpeedWindowDeadlineMs,
+  radarSpeedWindowDeadlineMs, radarIsSpeedWindow,
   secondaryModelRows,
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
@@ -776,7 +776,7 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
   }, [radarWindowDeadlineMs]);
   const effectiveActionText = radarEffectiveActionDisplayText(snapshot);
   const actionText = radarActionDisplayTextForSnapshot(snapshot, radarNowMs);
-  const isSpeedWindow = effectiveActionText === "速登窗口";
+  const isSpeedWindow = radarIsSpeedWindow(snapshot, radarNowMs);
   const modelLimit = isSpeedWindow ? 2 : 3;
   const secondaryText = snapshot
     ? floatingRadarSecondaryIQText(snapshot, modelLimit)

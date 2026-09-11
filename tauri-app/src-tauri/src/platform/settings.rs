@@ -2379,6 +2379,7 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
 fn sanitize_display_surfaces(
     mut settings: DisplaySurfaceSettingsSnapshot,
 ) -> DisplaySurfaceSettingsSnapshot {
+    if settings.quota_sidebar_side != "left" { settings.quota_sidebar_side = "right".into(); }
     let supported = crate::models::STATUS_METRIC_IDS
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
@@ -3515,6 +3516,8 @@ mod tests {
                 |settings| {
                     settings.display_surfaces = DisplaySurfaceSettingsSnapshot {
                         floating_window_enabled: false,
+                        quota_sidebar_enabled: false,
+                        quota_sidebar_side: "right".into(),
                         live_rate_enabled: true,
                         status_tray_live_text_enabled: false,
                         status_metric_order: vec!["unread".into(), "rate".into()],

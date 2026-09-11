@@ -914,6 +914,109 @@ fn exact_index_parses_a_valid_jsonl_line_larger_than_the_old_16_mib_limit() {
 }
 
 #[test]
+fn release_upgrade_keeps_legacy_ledger_through_paginated_rewrite_and_append() {
+    let _test_state=app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file=root.join("sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl");
+    let token=|age: i64,total: i64,last: i64| serde_json::json!({"timestamp":recent_test_timestamp(age + 30),"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":total,"cached_input_tokens":0,"output_tokens":0,"total_tokens":total},"last_token_usage":{"input_tokens":last,"cached_input_tokens":0,"output_tokens":0,"total_tokens":last}}}}).to_string();
+    write_lines(&file,&[&token(10,80,80),&token(9,100,20)]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,100);
+    let index_path=super::exact_usage_index::database_path(&root).unwrap();
+    convert_current_index_to_v091_schema9(&index_path);
+    let header=r#"{"type":"session_meta","payload":{"id":"019ff8b9-09e7-75c1-b9a5-14fe7b60065a","history_mode":"paginated"}}"#;
+    write_lines(&file,&[header,&token(4,100,20),&token(3,105,5)]);
+    let upgraded=dashboard_snapshot(&root).unwrap();
+    assert_eq!(upgraded.stats.total_tokens,105);
+    assert_eq!(upgraded.stats.total_calls,3);
+    assert_eq!(attribution_source_tokens(&upgraded),105);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,105);
+    let db=Connection::open(&index_path).unwrap();
+    assert_eq!(db.query_row("SELECT SUM(total_tokens) FROM dashboard_source_totals",[],|r|r.get::<_,i64>(0)).unwrap(),105);
+    db.execute_batch("UPDATE sources SET append_ready=0,modified_ns='0';").unwrap();
+    drop(db);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,105);
+    let mut handle=fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(handle,"{}",token(2,112,7)).unwrap();
+    drop(handle);
+    let before=ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,112);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0,before.0,"rewrite checkpoint must resume incrementally");
+    let saved=fs::read(&file).unwrap();
+    fs::remove_file(&file).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,112);
+    let mut missing_index=ExactUsageIndex::open(&root).unwrap();
+    assert!(!missing_index.sources_changed(&root,&mut Vec::new()).unwrap(),"retained missing sources must not request another scan forever");
+    drop(missing_index);
+    fs::write(&file,saved).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,112);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,112);
+    fs::create_dir_all(root.join("archived_sessions")).unwrap();
+    let archived=root.join("archived_sessions").join(file.file_name().unwrap());
+    fs::rename(&file,&archived).unwrap();
+    let moved=dashboard_snapshot(&root).unwrap();
+    assert_eq!(moved.stats.total_tokens,112);
+    assert_eq!(attribution_source_tokens(&moved),112);
+    let db=Connection::open(&index_path).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM sources",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    drop(db);
+    let mut handle=fs::OpenOptions::new().append(true).open(&archived).unwrap();
+    writeln!(handle,"{}",token(1,115,3)).unwrap();
+    drop(handle);
+    let before=ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,115);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0,before.0);
+    // Simulate an older parser's wrong numeric interpretation at a retained
+    // byte location. Re-reading the unchanged prefix corrects it once and
+    // records why; a rewrite lacking this proof was held earlier in this test.
+    let db=Connection::open(&index_path).unwrap();
+    db.execute_batch("UPDATE event_rows SET tokens=17,input_tokens=17 WHERE tokens=7; UPDATE sources SET append_ready=0,modified_ns='0'").unwrap();
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),125);
+    drop(db);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,115);
+    let db=Connection::open(&index_path).unwrap();
+    assert_eq!(db.query_row("SELECT old_tokens || ':' || new_tokens FROM usage_ledger_corrections",[],|r|r.get::<_,String>(0)).unwrap(),"17:7");
+    drop(db);
+    let durable=root.join("application-data/usage.sqlite3");
+    fs::create_dir_all(durable.parent().unwrap()).unwrap();
+    let interrupted=Connection::open(format!("{}.ledger-copy",durable.display())).unwrap();
+    interrupted.execute_batch("CREATE TABLE interrupted_copy(value INTEGER)").unwrap();
+    drop(interrupted);
+    super::exact_usage_index::relocate_legacy_index(&root,&index_path,&durable).unwrap();
+    let copy=Connection::open(&durable).unwrap();
+    assert_eq!(copy.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),115);
+    assert_eq!(copy.query_row("SELECT COUNT(*) FROM usage_ledger_bindings",[],|r|r.get::<_,i64>(0)).unwrap(),5);
+    assert!(index_path.exists());
+    copy.execute_batch("CREATE TABLE relocation_noop(value INTEGER); INSERT INTO relocation_noop VALUES(42)").unwrap();
+    super::exact_usage_index::relocate_legacy_index(&root,&index_path,&durable).unwrap();
+    assert_eq!(copy.query_row("SELECT value FROM relocation_noop",[],|r|r.get::<_,i64>(0)).unwrap(),42);
+    drop(copy);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn release_offsetless_ambiguous_calls_are_preserved_without_duplicate_admission() {
+    let _guard=app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();fs::create_dir_all(root.join("sessions")).unwrap();
+    let file=root.join("sessions/rollout-offsetless-ambiguity.jsonl");
+    let at=recent_test_timestamp(30);
+    let line=|total|serde_json::json!({"timestamp":at,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":total,"output_tokens":0,"total_tokens":total},"last_token_usage":{"input_tokens":80,"output_tokens":0,"total_tokens":80}}}}).to_string();
+    write_lines(&file,&[line(80),line(160)]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,160);
+    let path=super::exact_usage_index::database_path(&root).unwrap();
+    convert_current_index_to_v091_schema9(&path);
+    let db=Connection::open(&path).unwrap();db.execute_batch("UPDATE files SET append_ready=0,modified_ns='0'").unwrap();drop(db);
+    let repaired=dashboard_snapshot(&root).unwrap();
+    assert_eq!(repaired.stats.total_tokens,160);
+    assert_eq!(repaired.stats.total_calls,2);
+    let db=Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_unresolved",[],|r|r.get::<_,i64>(0)).unwrap(),2);drop(db);
+    let mut out=fs::OpenOptions::new().append(true).open(&file).unwrap();writeln!(out,"{}",line(240)).unwrap();drop(out);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,240);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     reset_dashboard_aggregate_build_count_for_testing();
@@ -960,15 +1063,15 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
         )],
     );
     let rebuilt = dashboard_snapshot(&root).unwrap();
-    assert_eq!(rebuilt.stats.total_tokens, 90);
+    assert_eq!(rebuilt.stats.total_tokens, 145);
     assert_eq!(rebuilt.stats.total_calls, 2);
     assert_eq!(rebuilt.stats.total_threads, 2);
     let rebuilt_epoch = rebuilt.recent_usage_24h[0]
         .source_contribution_epoch
         .clone()
         .unwrap();
-    assert_ne!(rebuilt_epoch, initial_epoch);
-    assert_eq!(attribution_source_tokens(&rebuilt), 90);
+    assert_eq!(rebuilt_epoch, initial_epoch);
+    assert_eq!(attribution_source_tokens(&rebuilt), 145);
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(database).unwrap();
     assert_eq!(
@@ -979,16 +1082,16 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
                 |row| { row.get::<_, i64>(0) }
             )
             .unwrap(),
-        90,
-        "rewriting a file must remove its old bucket contribution"
+        145,
+        "unknown rewrite must preserve the old bucket contribution"
     );
     drop(connection);
 
     fs::remove_file(&deleted_file).unwrap();
     let after_delete = dashboard_snapshot(&root).unwrap();
-    assert_eq!(after_delete.stats.total_tokens, 65);
-    assert_eq!(after_delete.stats.total_calls, 1);
-    assert_eq!(after_delete.stats.total_threads, 1);
+    assert_eq!(after_delete.stats.total_tokens, 145);
+    assert_eq!(after_delete.stats.total_calls, 2);
+    assert_eq!(after_delete.stats.total_threads, 2);
     assert_eq!(
         after_delete.recent_usage_24h[0]
             .source_contribution_epoch
@@ -997,7 +1100,7 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     );
     assert_eq!(
         attribution_source_tokens(&after_delete),
-        90,
+        145,
         "deleted sources remain in the durable sparse attribution ledger"
     );
 
@@ -1317,7 +1420,7 @@ fn orphan_repair_marker_miss_fails_closed_when_writer_upgrade_is_busy() {
 }
 
 #[test]
-fn persistent_rewrite_stays_one_unsafe_incident_until_a_clean_generation_is_acknowledged() {
+fn persistent_unknown_rewrite_retains_history_without_revoking_attribution() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
@@ -1349,110 +1452,17 @@ fn persistent_rewrite_stays_one_unsafe_incident_until_a_clean_generation_is_ackn
         .precise_attribution_unsafe_since_generation
         .is_none());
 
-    write_lines(&file, &[event(200)]);
-    #[cfg(windows)]
-    std::thread::sleep(std::time::Duration::from_millis(25));
-    let first_unsafe = dashboard_snapshot(&root).unwrap();
-    assert!(first_unsafe.precise_attribution_current_scan_unsafe);
-    let unsafe_epoch = first_unsafe
-        .precise_attribution_provenance_epoch
-        .clone()
-        .unwrap();
-    let unsafe_since = first_unsafe
-        .precise_attribution_unsafe_since_generation
-        .unwrap();
-    let unsafe_id = first_unsafe.precise_attribution_unsafe_id.clone().unwrap();
-
-    write_lines(&file, &[event(300)]);
-    #[cfg(windows)]
-    std::thread::sleep(std::time::Duration::from_millis(25));
-    let still_unsafe = dashboard_snapshot(&root).unwrap();
-    assert!(still_unsafe.precise_attribution_current_scan_unsafe);
-    assert_eq!(
-        still_unsafe.precise_attribution_provenance_epoch.as_deref(),
-        Some(unsafe_epoch.as_str())
-    );
-    assert_eq!(
-        still_unsafe.precise_attribution_unsafe_since_generation,
-        Some(unsafe_since)
-    );
-    assert_eq!(
-        still_unsafe.precise_attribution_unsafe_id.as_deref(),
-        Some(unsafe_id.as_str())
-    );
-    assert!(!acknowledge_attribution_safety(
-        &root,
-        &unsafe_epoch,
-        &unsafe_id,
-        still_unsafe.precise_attribution_generation.unwrap(),
-    )
-    .unwrap());
-
-    let clean = dashboard_snapshot(&root).unwrap();
-    assert!(!clean.precise_attribution_current_scan_unsafe);
-    assert_eq!(
-        clean.precise_attribution_unsafe_id.as_deref(),
-        Some(unsafe_id.as_str())
-    );
-    let clean_generation = clean.precise_attribution_generation.unwrap();
-    assert!(!acknowledge_attribution_safety(
-        &root,
-        &unsafe_epoch,
-        &unsafe_id,
-        clean_generation.saturating_sub(1),
-    )
-    .unwrap());
-    assert!(!acknowledge_attribution_safety(
-        &root,
-        &unsafe_epoch,
-        &Uuid::new_v4().to_string(),
-        clean_generation,
-    )
-    .unwrap());
-    assert!(!acknowledge_attribution_safety(
-        &root,
-        &unsafe_epoch,
-        &unsafe_id,
-        clean_generation.saturating_add(1),
-    )
-    .unwrap());
-    assert!(
-        acknowledge_attribution_safety(&root, &unsafe_epoch, &unsafe_id, clean_generation,)
-            .unwrap()
-    );
-    let acknowledged = ExactUsageIndex::open(&root)
-        .unwrap()
-        .attribution_safety_state()
-        .unwrap();
-    assert!(acknowledged.unsafe_since_generation.is_none());
-    assert!(acknowledged.unsafe_id.is_none());
-
-    let post_ack_clean = dashboard_snapshot(&root).unwrap();
-    assert!(!post_ack_clean.precise_attribution_current_scan_unsafe);
-    assert!(post_ack_clean.precise_attribution_unsafe_id.is_none());
-
-    write_lines(&file, &[event(400)]);
-    #[cfg(windows)]
-    std::thread::sleep(std::time::Duration::from_millis(25));
-    let second_unsafe = dashboard_snapshot(&root).unwrap();
-    assert!(second_unsafe.precise_attribution_current_scan_unsafe);
-    assert_ne!(
-        second_unsafe
-            .precise_attribution_provenance_epoch
-            .as_deref(),
-        Some(unsafe_epoch.as_str()),
-        "a later incident after acknowledgement must rotate provenance again"
-    );
-    let second_unsafe_id = second_unsafe.precise_attribution_unsafe_id.clone().unwrap();
-    assert_ne!(second_unsafe_id, unsafe_id);
-    reset_dashboard_aggregate_build_count_for_testing();
-    let second_clean = dashboard_snapshot(&root).unwrap();
-    assert!(!second_clean.precise_attribution_current_scan_unsafe);
-    assert_eq!(
-        second_clean.precise_attribution_unsafe_id.as_deref(),
-        Some(second_unsafe_id.as_str())
-    );
-
+    for tokens in [200,300,400] {
+        write_lines(&file,&[event(tokens)]);
+        let refreshed=dashboard_snapshot(&root).unwrap();
+        assert_eq!(refreshed.stats.total_tokens,100);
+        assert!(!refreshed.precise_attribution_current_scan_unsafe);
+        assert!(refreshed.precise_attribution_unsafe_id.is_none());
+        assert_eq!(refreshed.precise_attribution_provenance_epoch,initial.precise_attribution_provenance_epoch);
+    }
+    let db=Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_unresolved",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1916,10 +1926,10 @@ fn compact_sync_preserves_a_source_deleted_before_the_next_full_snapshot() {
     );
     assert_eq!(dashboard_usage_summary(&root).unwrap().total_tokens, 400);
     fs::remove_file(&transient_file).unwrap();
-    assert_eq!(dashboard_usage_summary(&root).unwrap().total_tokens, 100);
+    assert_eq!(dashboard_usage_summary(&root).unwrap().total_tokens, 400);
 
     let after_delete = dashboard_snapshot(&root).unwrap();
-    assert_eq!(after_delete.stats.total_tokens, 100);
+    assert_eq!(after_delete.stats.total_tokens, 400);
     assert_eq!(attribution_source_tokens(&after_delete), 400);
     assert_eq!(
         after_delete.recent_usage_24h[0]
@@ -1950,7 +1960,7 @@ fn compact_sync_preserves_a_source_deleted_before_the_next_full_snapshot() {
         Some(epoch.as_str()),
         "a logically missing durable ledger row must rotate provenance instead of understating local use"
     );
-    assert_eq!(attribution_source_tokens(&after_missing_row), 100);
+    assert_eq!(attribution_source_tokens(&after_missing_row), 400);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1997,7 +2007,7 @@ fn exact_index_reuses_one_stable_source_across_file_rewrites() {
             r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":101,"cached_input_tokens":20,"output_tokens":20,"total_tokens":121}}}}"#,
         ],
     );
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 121);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection
@@ -2008,7 +2018,7 @@ fn exact_index_reuses_one_stable_source_across_file_rewrites() {
             )
             .unwrap(),
         1,
-        "a rewrite must replace one source's children without allocating a new source identity"
+        "a rewrite must retain one source's history without allocating a new source identity"
     );
     assert_eq!(
         connection
@@ -2018,11 +2028,11 @@ fn exact_index_reuses_one_stable_source_across_file_rewrites() {
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .unwrap(),
-        (1, 121)
+        (1, 120)
     );
     drop(connection);
 
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 121);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection
@@ -2134,6 +2144,27 @@ fn exact_index_retries_an_incomplete_tail_after_the_jsonl_line_is_completed() {
     assert_eq!(completed.stats.total_tokens, 170);
     assert_eq!(completed.stats.total_calls, 2);
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_new_request_never_reuses_a_completed_flight_during_owner_cleanup() {
+    let _guard=app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file=root.join("sessions/rollout-finished-flight.jsonl");
+    let line=|n|serde_json::json!({"timestamp":recent_test_timestamp(20),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":n,"output_tokens":0,"total_tokens":n}}}}).to_string();
+    write_lines(&file,&[line(100)]);
+    let first=request_precise_refresh(&root,PreciseRefreshIntent::Full).unwrap();
+    first.wait();
+    assert!(first.is_done());
+    let coordinator=precise_refresh_coordinator(&root).unwrap();
+    *coordinator.flight.lock().unwrap()=Some(Arc::clone(&first));
+    let mut out=fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(out,"{}",line(50)).unwrap(); drop(out);
+    let next=request_precise_refresh(&root,PreciseRefreshIntent::Full).unwrap();
+    assert!(!Arc::ptr_eq(&first,&next));
+    assert_eq!(next.wait().summary.unwrap().total_tokens,150);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2668,8 +2699,8 @@ fn exact_index_rolling_audit_falls_back_to_full_rebuild_after_middle_rewrite_and
 
     let refreshed = dashboard_snapshot(&root).unwrap();
 
-    assert_eq!(refreshed.stats.total_tokens, 145);
-    assert_eq!(refreshed.stats.total_calls, 2);
+    assert_eq!(refreshed.stats.total_tokens, 120);
+    assert_eq!(refreshed.stats.total_calls, 1);
     let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
     assert_eq!(full_bytes, fs::metadata(&file).unwrap().len());
     assert_eq!(
@@ -3580,7 +3611,7 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "12"
+        "13"
     );
     assert_eq!(
         connection
@@ -3837,7 +3868,7 @@ fn exact_index_migrates_fba33820_schema10_without_reparsing_and_keeps_append_che
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "12"
+        "13"
     );
     assert_eq!(
         connection
@@ -3944,6 +3975,8 @@ fn accounting_preparation_reuses_candidate_facts_through_semantic_conversion() {
     let connection = Connection::open(&index_path).unwrap();
     assert!(connection.query_row("SELECT value FROM metadata WHERE key='accounting_structural_receipt'", [],
         |row| row.get::<_,String>(0)).unwrap().contains("fingerprint_count"));
+    // Simulate the previous writer committing schema 12 before cleanup.
+    connection.execute("UPDATE metadata SET value='12' WHERE key='schema_version'",[]).unwrap();
     drop(connection);
     // A later process/open has no in-memory proof. Resume still validates the
     // durable switched manifest and retains rollback until a successful sync.
@@ -4608,7 +4641,7 @@ fn exact_index_schema11_switch_interruptions_resume_without_jsonl_reparse() {
                     |row| row.get::<_, String>(0),
                 )
                 .unwrap(),
-            "12"
+            "13"
         );
         assert!(rollback_path.exists());
         assert!(manifest_path.exists());
@@ -4826,7 +4859,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "12"
+        "13"
     );
     assert_eq!(
         interrupted_database
@@ -4859,7 +4892,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "12"
+        "13"
     );
     assert_eq!(
         completed
@@ -5012,13 +5045,13 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
                 row.get::<_, i64>(0)
             })
             .unwrap(),
-        0,
-        "resume must publish the durable tombstone instead of resurrecting the missing source"
+        1,
+        "resume must retain consumption even when raw source text is missing"
     );
     assert_eq!(
         completed
             .query_row(
-                "SELECT source_id FROM sources WHERE path = ?1 AND deleted = 1",
+                "SELECT source_id FROM sources WHERE path = ?1 AND source_id IN(SELECT source_id FROM usage_ledger_sources WHERE missing=1)",
                 [canonical_file.to_string_lossy().as_ref()],
                 |row| row.get::<_, i64>(0),
             )
@@ -5664,6 +5697,7 @@ fn exact_index_replay_marker_repair_targets_only_explicit_replay() {
             params![relative_file],
         )
         .unwrap();
+    connection.execute("DELETE FROM usage_ledger_bindings WHERE NOT EXISTS(SELECT 1 FROM event_rows e WHERE e.id=usage_ledger_bindings.event_id)",[]).unwrap();
     let before = connection
         .query_row(
             "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
@@ -5771,7 +5805,7 @@ fn exact_index_replay_marker_repair_targets_only_explicit_replay() {
     );
     let connection = Connection::open(&index_path).unwrap();
     let explicit_tokens = connection
-        .prepare("SELECT tokens FROM published_events WHERE file_path = ?1 ORDER BY ordinal")
+        .prepare("SELECT tokens FROM published_events WHERE file_path = ?1 ORDER BY timestamp, ordinal")
         .unwrap()
         .query_map(params![relative_file], |row| row.get::<_, i64>(0))
         .unwrap()
@@ -5779,7 +5813,7 @@ fn exact_index_replay_marker_repair_targets_only_explicit_replay() {
         .unwrap();
     assert_eq!(explicit_tokens, vec![60, 80, 40]);
     let unrelated_tokens = connection
-        .prepare("SELECT tokens FROM published_events WHERE file_path = ?1 ORDER BY ordinal")
+        .prepare("SELECT tokens FROM published_events WHERE file_path = ?1 ORDER BY timestamp, ordinal")
         .unwrap()
         .query_map(params![relative_unrelated_file], |row| row.get::<_, i64>(0))
         .unwrap()
@@ -5899,7 +5933,7 @@ fn exact_index_retries_unresolved_replay_candidate_without_persisting_marker() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "explicit-subagent-delayed-context-v3"
+        "paginated-owned-turn-v6"
     );
     drop(connection);
     drop(retried);
@@ -6758,11 +6792,11 @@ fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggr
             .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
             .unwrap()
             .total_tokens,
-        146
+        145
     );
     let (completed_epoch, completed_attribution_tokens) = read_attribution_state();
-    assert_ne!(completed_epoch, published_epoch);
-    assert_eq!(completed_attribution_tokens, 146);
+    assert_eq!(completed_epoch, published_epoch);
+    assert_eq!(completed_attribution_tokens, 145);
     drop(interrupted);
 
     fs::remove_dir_all(root).unwrap();
@@ -8427,6 +8461,70 @@ fn dashboard_snapshot_deduplicates_rollout_path_already_under_sessions() {
     assert_eq!(snapshot.stats.total_tokens, 77);
     assert_eq!(snapshot.stats.total_calls, 1);
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn response_message_ranking_repairs_existing_index_without_accounting_replay() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let dir = root.join("sessions");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("rollout-019eaaaa-bbbb-cccc-dddd-message-links.jsonl");
+    write_lines(&file,&[
+        r#"{"timestamp":"2026-06-18T00:59:30Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"Not a turn"}]}}"#,
+        r#"{"timestamp":"2026-06-18T00:59:40Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"第一问"}]}}"#,
+        r#"{"timestamp":"2026-06-18T00:59:50Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"第一答"}]}}"#,
+        r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":300,"output_tokens":50,"total_tokens":1250}}}}"#,
+        r#"{"timestamp":"2026-06-18T01:04:40Z","type":"event_msg","payload":{"type":"user_message","message":"第二问"}}"#,
+        r#"{"timestamp":"2026-06-18T01:04:40Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"第二问"}]}}"#,
+        r#"{"timestamp":"2026-06-18T01:04:50Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"第二答"}]}}"#,
+        r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":40,"total_tokens":1040}}}}"#,
+    ]);
+    let first = dashboard_snapshot(&root).unwrap();
+    assert_eq!(first.cache_usage.turns.len(),2);
+    assert!(first.cache_usage.turns.iter().any(|t|t.user_prompt=="第一问" && t.assistant_response=="第一答"));
+    let path = super::exact_usage_index::database_path(&root).unwrap();
+    let db=Connection::open(&path).unwrap();
+    db.execute_batch("UPDATE event_rows SET user_prompt_start=NULL,user_prompt_end=NULL,assistant_response_start=NULL,assistant_response_end=NULL; UPDATE usage_ledger_bindings SET user_prompt_start=NULL,user_prompt_end=NULL,assistant_response_start=NULL,assistant_response_end=NULL; DELETE FROM usage_ledger_turns; DELETE FROM dashboard_turn_candidates_current; UPDATE sources SET current_user_prompt_start=NULL,current_user_prompt_end=NULL,assistant_response_start=NULL,assistant_response_end=NULL;").unwrap();
+    // Preserve identity, accounting and published generation; mimic only the
+    // missing message associations written by the previous parser.
+    drop(db);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut index=ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root,&mut Vec::new()).unwrap();
+    let data=index.dashboard_data(&root,OffsetDateTime::now_utc(),UtcOffset::UTC,&mut Vec::new()).unwrap();
+    assert_eq!(data.stats.total_tokens,first.stats.total_tokens);
+    assert_eq!(data.stats.total_calls,first.stats.total_calls);
+    assert_eq!(data.cache_usage.turns.len(),2);
+    assert_eq!(data.cache_usage.sessions[0].breakdown.calls,2);
+    assert!(data.cache_usage.turns.iter().any(|t|t.user_prompt=="第二问" && t.assistant_response=="第二答"));
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),(0,0),"repair must not invoke accounting scans");
+    let revision=index.sync(&root,&mut Vec::new()).unwrap();
+    assert_eq!(revision,index.sync(&root,&mut Vec::new()).unwrap(),"warm pass must be a no-op");
+    let db=Connection::open(path).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_message_receipts",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),2);
+    drop(db);
+    let mut out=fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(out,"{}",r#"{"timestamp":"2026-06-18T01:06:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1100,"cached_input_tokens":250,"output_tokens":40,"total_tokens":1140}}}}"#).unwrap();
+    drop(out);
+    index.sync(&root,&mut Vec::new()).unwrap();
+    let appended=index.dashboard_data(&root,OffsetDateTime::now_utc(),UtcOffset::UTC,&mut Vec::new()).unwrap();
+    assert_eq!(appended.stats.total_tokens,first.stats.total_tokens+1140);
+    assert_eq!(appended.cache_usage.turns.len(),2,"Append must continue the repaired last turn");
+    // A previously appended source may have only a historical whole-prefix
+    // hash. Complete chunk proofs must still allow its missing links to heal.
+    let db=Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    db.execute_batch("UPDATE event_rows SET user_prompt_start=NULL,user_prompt_end=NULL; DELETE FROM usage_ledger_turns; DELETE FROM usage_ledger_message_receipts; DELETE FROM dashboard_turn_candidates_current; UPDATE sources SET prefix_sha256=zeroblob(32);").unwrap();
+    drop(db);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    index.sync(&root,&mut Vec::new()).unwrap();
+    let repaired=index.dashboard_data(&root,OffsetDateTime::now_utc(),UtcOffset::UTC,&mut Vec::new()).unwrap();
+    assert_eq!(repaired.cache_usage.turns.len(),2);
+    assert_eq!(repaired.stats.total_tokens,appended.stats.total_tokens);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),(0,0));
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -11850,11 +11948,16 @@ fn convert_current_index_to_v091_schema9(index_path: &Path) {
                            WHERE p.source_id = f.source_id)
             );
             CREATE TABLE schema9_events AS
-            SELECT id, file_generation, file_path, ordinal, timestamp, session_id,
-                   tokens, input_tokens, cached_input_tokens, output_tokens,
-                   reasoning_output_tokens, model, user_prompt_start, user_prompt_end,
-                   assistant_response_start, assistant_response_end
-            FROM events;
+            SELECT e.id, e.file_generation, e.file_path,
+                   ROW_NUMBER() OVER(PARTITION BY e.file_generation,e.file_path ORDER BY e.ordinal) AS ordinal,
+                   e.timestamp, e.session_id,e.tokens,e.input_tokens,e.cached_input_tokens,e.output_tokens,
+                   e.reasoning_output_tokens,e.model,
+                   COALESCE(b.user_prompt_start,p.user_prompt_start) AS user_prompt_start,
+                   COALESCE(b.user_prompt_end,p.user_prompt_end) AS user_prompt_end,
+                   COALESCE(b.assistant_response_start,p.assistant_response_start) AS assistant_response_start,
+                   COALESCE(b.assistant_response_end,p.assistant_response_end) AS assistant_response_end
+            FROM events e LEFT JOIN usage_ledger_bindings b ON b.event_id=e.id
+              LEFT JOIN usage_ledger_pending_bindings p ON p.event_id=e.id;
             CREATE TABLE schema9_fingerprints(
                 file_generation INTEGER NOT NULL,
                 file_path TEXT NOT NULL,
@@ -11881,12 +11984,12 @@ fn convert_current_index_to_v091_schema9(index_path: &Path) {
                    calls, input_tokens, cached_input_tokens, output_tokens
             FROM dashboard_5m;
             CREATE TABLE schema9_turns AS
-            SELECT aggregate_generation, event_id, source_file_generation,
-                   file_path, ordinal, timestamp, session_id, total_tokens,
-                   input_tokens, cached_input_tokens, output_tokens,
-                   user_prompt_start, user_prompt_end, assistant_response_start,
-                   assistant_response_end, turn_index, session_calls
-            FROM dashboard_turn_candidates;
+            SELECT t.aggregate_generation,t.event_id,t.source_file_generation,
+                   t.file_path,e.ordinal,t.timestamp,t.session_id,t.total_tokens,
+                   t.input_tokens,t.cached_input_tokens,t.output_tokens,
+                   e.user_prompt_start,e.user_prompt_end,e.assistant_response_start,
+                   e.assistant_response_end,t.turn_index,t.session_calls
+            FROM dashboard_turn_candidates t JOIN schema9_events e ON e.id=t.event_id;
             "#,
         )
         .unwrap();
@@ -11920,6 +12023,13 @@ fn convert_current_index_to_v091_schema9(index_path: &Path) {
             DROP VIEW events;
             DROP VIEW files;
 
+            DROP TABLE IF EXISTS usage_ledger_pending_missing;
+            DROP TABLE IF EXISTS usage_ledger_pending_bindings;
+            DROP TABLE IF EXISTS usage_ledger_bindings;
+            DROP TABLE IF EXISTS usage_ledger_sources;
+            DROP TABLE IF EXISTS usage_ledger_unresolved;
+            DROP TABLE IF EXISTS usage_ledger_turns;
+            DROP TABLE IF EXISTS usage_ledger_corrections; DROP TABLE IF EXISTS usage_ledger_meta;
             DROP TABLE pending_event_rows;
             DROP TABLE pending_fingerprints;
             DROP TABLE pending_chunks;
@@ -12212,4 +12322,265 @@ fn create_state_database_with_rollout_source(
             rusqlite::params![thread_id, rollout_path.to_string_lossy(), thread_source],
         )
         .unwrap();
+}
+
+#[test]
+fn exact_index_rewritten_utf8_tail_rebuilds_before_decoding_stale_offset() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019e-rewritten-utf8-tail.jsonl");
+    let token = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let before = format!("{token}\n{{\"padding\":\"{}\"}}\n", "x".repeat(9 * 1024 * 1024));
+    fs::write(&file, &before).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let after = format!("{}{}\"}}\n", &before[..before.len() - 4], "中".repeat(20));
+    assert!(std::str::from_utf8(&after.as_bytes()[before.len()..]).is_err());
+    fs::write(&file, &after).unwrap();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0, after.len() as u64);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_retries_split_utf8_at_unfinished_tail_without_dropping_usage() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019e-partial-utf8-tail.jsonl");
+    let token = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let mut content = format!("{token}\n{{\"padding\":\"").into_bytes();
+    content.push("中".as_bytes()[0]);
+    fs::write(&file, content).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    handle.write_all(&"中".as_bytes()[1..]).unwrap();
+    handle.write_all(b"\"}\n").unwrap();
+    writeln!(handle, "{}", token.replace("01:00:00", "01:05:00").replace("100", "200").replace("120", "220")).unwrap();
+    drop(handle);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 340);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_paginated_boundary_survives_append_and_legacy_revision_upgrade() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-paginated-child.jsonl");
+    let snapshot = || { let mut index = ExactUsageIndex::open(&root).unwrap(); index.sync(&root, &mut Vec::new()).unwrap(); index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens };
+    let token = |ordinal, tokens| serde_json::json!({"ordinal":ordinal,"timestamp":format!("2026-07-20T01:00:{ordinal:02}Z"),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":tokens,"output_tokens":0,"total_tokens":tokens}}}}).to_string();
+    write_lines(&file, &[
+        r#"{"ordinal":0,"timestamp":"2026-07-20T02:00:00Z","type":"session_meta","payload":{"id":"child","history_mode":"paginated","thread_source":"subagent","subagent_history_start_ordinal":4}}"#,
+        r#"{"ordinal":1,"timestamp":"2026-07-20T01:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+        &token(2,100), &token(3,120),
+    ]);
+    assert_eq!(snapshot(), 0);
+    let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(f,"{}",token(4,20)).unwrap(); drop(f);
+    assert_eq!(snapshot(), 20);
+    let db = root.join(".codex-token-bar-test-cache/exact-token-index.sqlite3");
+    let c = Connection::open(&db).unwrap();
+    c.execute("UPDATE metadata SET value='explicit-subagent-delayed-context-v3' WHERE key='fork_replay_boundary_revision'",[]).unwrap(); drop(c);
+    assert_eq!(snapshot(), 20);
+    let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(f,"{}",token(5,30)).unwrap(); drop(f);
+    assert_eq!(snapshot(), 50);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    assert_eq!(snapshot(), 50);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0,0));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_empty_private_stage_is_preserved_and_rebuilt() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root(); fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-empty-stage.jsonl");
+    let token = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"output_tokens":0,"total_tokens":120}}}}"#;
+    write_lines(&file, &[token]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,120);
+    fs::write(&file,format!("{{\"padding\":\"{}\"}}\n{}\n", "x".repeat(EXACT_INDEX_CHUNK_SIZE as usize),token.replace("120","130"))).unwrap();
+    ExactUsageIndex::fail_after_staging_once_for_testing();
+    let mut index=ExactUsageIndex::open(&root).unwrap();
+    assert!(index.sync(&root,&mut Vec::new()).unwrap_err().contains("injected interruption"));drop(index);
+    let dir=root.join(".codex-token-bar-test-cache/exact-token-index.sqlite3.staging");
+    let stage=fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).find(|p| p.extension().is_some_and(|e| e=="sqlite3")).unwrap();
+    let c=Connection::open(&stage).unwrap();
+    for table in ["manifest","events","fingerprints","chunks"] { c.execute(&format!("DELETE FROM {table}"),[]).unwrap(); }drop(c);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,120);
+    assert!(dir.join("preserved").exists());
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,120);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "requires a selected migrated rollout and independently reconciled token total"]
+fn live_paginated_rollout_matches_reconciled_total() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let source = std::env::var("TOKEN_BAR_MIGRATED_FIXTURE").expect("select a fixture explicitly");
+    use sha2::{Digest, Sha256};
+    fn digest(path: &str) -> Vec<u8> {
+        let mut file = fs::File::open(path).unwrap();
+        let mut hash = Sha256::new(); let mut buffer = vec![0; 1024*1024];
+        loop { let n = std::io::Read::read(&mut file, &mut buffer).unwrap(); if n == 0 { break; } hash.update(&buffer[..n]); }
+        hash.finalize().to_vec()
+    }
+    let before = digest(&source);
+    let root=temp_root(); fs::create_dir_all(root.join("sessions")).unwrap();
+    fs::copy(&source,root.join("sessions/rollout-migrated-fixture.jsonl")).unwrap();
+    let mut index=ExactUsageIndex::open(&root).unwrap(); index.sync(&root,&mut Vec::new()).unwrap();
+    let expected: u64 = std::env::var("TOKEN_BAR_MIGRATED_EXPECTED_TOKENS").expect("independently reconciled total").parse().unwrap();
+    assert_eq!(index.summary(OffsetDateTime::now_utc(),UtcOffset::UTC).unwrap().total_tokens,expected);
+    assert_eq!(digest(&source),before);
+    drop(index);fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_ignores_history_repair_workspaces_without_deleting_originals() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();fs::create_dir_all(root.join("sessions")).unwrap();
+    let source=root.join("sessions/rollout-repair-source.jsonl");
+    let token=r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"output_tokens":0,"total_tokens":120}}}}"#;
+    write_lines(&source,&[token]);
+    let scratch=root.join("sessions/.codex-history-repair-stage.test");fs::create_dir_all(&scratch).unwrap();
+    let copy=scratch.join("rollout-repair-source.jsonl");fs::copy(&source,&copy).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,120);
+    assert!(copy.exists());assert_eq!(fs::read(&source).unwrap(),fs::read(&copy).unwrap());
+    let c=Connection::open(root.join(".codex-token-bar-test-cache/exact-token-index.sqlite3")).unwrap();
+    assert_eq!(c.query_row("SELECT COUNT(*) FROM sources WHERE deleted=0",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    drop(c);fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_paginated_own_turn_recovers_without_replaying_parent_and_resumes() { verify_paginated_owned_turn(false); }
+
+#[test]
+fn exact_index_paginated_main_fork_recovers_from_v5_and_resumes() { verify_paginated_owned_turn(true); }
+
+fn verify_paginated_owned_turn(main_fork: bool) {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root(); fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-owned-child.jsonl");
+    let stamp = "2026-08-13T01:25:04.725Z";
+    let parent = "019ff8b8-0000-7000-8000-000000000000";
+    let child_turn = "019ff8b9-0ace-7c02-9f89-4358b15cceda";
+    let record = |ordinal, kind, payload: serde_json::Value| serde_json::json!({"ordinal":ordinal,"timestamp":stamp,"type":kind,"payload":payload}).to_string();
+    let start = |ordinal, id| record(ordinal,"event_msg",serde_json::json!({"type":"task_started","turn_id":id}));
+    let context = |ordinal, id| record(ordinal,"turn_context",serde_json::json!({"model":"gpt-5.6-sol","turn_id":id}));
+    let token = |ordinal, amount| record(ordinal,"event_msg",serde_json::json!({"type":"token_count","info":{"last_token_usage":{"input_tokens":amount,"output_tokens":0,"total_tokens":amount}}}));
+    write_lines(&file, &[
+        &record(0,"session_meta",if main_fork { serde_json::json!({"id":"019ff8b9-09e7-75c1-b9a5-14fe7b60065a","history_mode":"paginated","thread_source":"user","forked_from_id":parent}) } else { serde_json::json!({"id":"019ff8b9-09e7-75c1-b9a5-14fe7b60065a","history_mode":"paginated","thread_source":"subagent","subagent_history_start_ordinal":100}) }),
+        &start(1,parent), &context(2,parent), &token(3,100), &start(4,child_turn),
+    ]);
+    let ordinary = root.join("sessions/rollout-ordinary.jsonl");
+    write_lines(&ordinary, &[&token(10,9000)]);
+    if main_fork {
+        write_lines(&root.join("sessions/rollout-unaffected-child.jsonl"), &[&record(0,"session_meta",serde_json::json!({"id":parent,"history_mode":"paginated","thread_source":"subagent","subagent_history_start_ordinal":100})), &token(3,11)]);
+    }
+    let snapshot = || { let mut index=ExactUsageIndex::open(&root).unwrap(); index.sync(&root,&mut Vec::new()).unwrap(); index.summary(OffsetDateTime::now_utc(),UtcOffset::UTC).unwrap().total_tokens - 9000 };
+    assert_eq!(snapshot(),0); // A start alone is not ownership proof.
+    let mut f=fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(f,"{}",context(5,child_turn)).unwrap(); writeln!(f,"{}",token(6,20)).unwrap(); drop(f);
+    assert_eq!(snapshot(),20); // The pending identity survives append/reopen.
+    let mut f=fs::OpenOptions::new().append(true).open(&file).unwrap(); writeln!(f,"{}",token(7,30)).unwrap(); drop(f);
+    assert_eq!(snapshot(),50);
+    ExactUsageIndex::reset_scan_bytes_for_testing(); assert_eq!(snapshot(),50);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),(0,0));
+    let c=Connection::open(root.join(".codex-token-bar-test-cache/exact-token-index.sqlite3")).unwrap();
+    let old_revision = if main_fork { "paginated-owned-turn-v5" } else { "paginated-subagent-boundary-v4" };
+    c.execute("UPDATE metadata SET value=?1 WHERE key='fork_replay_boundary_revision'",params![old_revision]).unwrap();
+    c.execute("UPDATE event_enrichment_sources SET parser_revision=?1",params![format!("components-v1-{old_revision}")]).unwrap();
+    // Reproduce an already-published v4 zero: unchanged source/checkpoint but
+    // the child's own rows were filtered out. The main file must not reparse.
+    c.execute("DELETE FROM event_rows WHERE source_id=(SELECT source_id FROM sources WHERE path=?1)",params![file.to_string_lossy()]).unwrap();drop(c);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    assert_eq!(snapshot(),50);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0,fs::metadata(&file).unwrap().len());
+    ExactUsageIndex::reset_scan_bytes_for_testing();assert_eq!(snapshot(),50);assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),(0,0));
+    fs::remove_dir_all(root).unwrap();
+}
+
+
+/// Run against the isolated home generated by v0.9.1, with no schema relabeling.
+#[test]
+#[ignore = "requires actual v0.9.1 export; run the release-direct-upgrade procedure"]
+fn actual_release_nine_upgrades_rewrites_and_appends() {
+    let _guard=app_paths::app_path_test_env_guard(&[]);
+    let root=PathBuf::from(std::env::var("CODEX_RELEASE_TAURI_HOME").unwrap());
+    let path=super::exact_usage_index::database_path(&root).unwrap();
+    let db=Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"9");
+    db.execute_batch("CREATE TABLE release_expected AS SELECT timestamp,input_tokens,cached_input_tokens,output_tokens,tokens FROM events").unwrap();
+    drop(db);
+    let before=ExactUsageIndex::scan_bytes_for_testing();
+    let index=ExactUsageIndex::open(&root).unwrap();drop(index);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),before,"structural migration must not parse JSONL");
+    let db=Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"13");
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM (SELECT timestamp,input_tokens,cached_input_tokens,output_tokens,tokens FROM release_expected EXCEPT SELECT timestamp,input_tokens,cached_input_tokens,output_tokens,tokens FROM event_rows)",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),2);
+    drop(db);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,100);
+    let file=root.join("sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl");
+    let lines=fs::read_to_string(&file).unwrap();
+    let previous:serde_json::Value=serde_json::from_str(lines.lines().last().unwrap()).unwrap();
+    let token=|total: i64,last: i64| {let mut v=previous.clone();v["timestamp"]=recent_test_timestamp(0).into();v["payload"]["info"]["total_token_usage"]["input_tokens"]=total.into();v["payload"]["info"]["total_token_usage"]["total_tokens"]=total.into();v["payload"]["info"]["last_token_usage"]["input_tokens"]=last.into();v["payload"]["info"]["last_token_usage"]["total_tokens"]=last.into();v.to_string()};
+    let header=r#"{"type":"session_meta","payload":{"id":"019ff8b9-09e7-75c1-b9a5-14fe7b60065a","history_mode":"paginated"}}"#;
+    write_lines(&file,&[header.to_string(),token(100_i64,20_i64),token(105,5)]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,105);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,105);
+    let mut out=fs::OpenOptions::new().append(true).open(&file).unwrap();writeln!(out,"{}",token(112,7)).unwrap();drop(out);
+    let before=ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,112);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0,before.0,"normal append must not full parse");
+    fs::remove_file(&file).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,112);
+    println!("ACTUAL RELEASE 9 -> 13: components preserved, structural parse bytes 0, rewrite 100 -> 105, append 112, missing source retained");
+}
+
+
+#[test]
+#[ignore = "requires the 164-file real backup exported by v0.9.1 into an isolated home"]
+fn actual_release_historical_database_upgrades_and_keeps_incremental_scan() {
+    let _guard=app_paths::app_path_test_env_guard(&[]);
+    let root=PathBuf::from(std::env::var("CODEX_RELEASE_TAURI_HISTORICAL_HOME").unwrap());
+    let path=super::exact_usage_index::database_path(&root).unwrap();
+    let db=Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"9");
+    db.execute_batch("CREATE TABLE release_expected AS SELECT id,timestamp,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model,tokens AS old_tokens FROM events").unwrap();
+    let count:i64=db.query_row("SELECT COUNT(*) FROM events",[],|r|r.get(0)).unwrap();assert!(count>1000);drop(db);
+    let before=ExactUsageIndex::scan_bytes_for_testing();
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),before,"structure-only migration read JSONL");
+    let db=Connection::open(&path).unwrap();
+    let fields="id,timestamp,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model";
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),count);
+    for (a,b) in [("release_expected","event_rows"),("event_rows","release_expected")] {
+        assert_eq!(db.query_row(&format!("SELECT COUNT(*) FROM (SELECT {fields} FROM {a} EXCEPT SELECT {fields} FROM {b})"),[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM event_rows e JOIN release_expected r USING(id) WHERE e.legacy_tokens IS NOT r.old_tokens",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"13");
+    let structural_total:i64=db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get(0)).unwrap();drop(db);
+    let first=dashboard_snapshot(&root).unwrap();
+    let after_first=ExactUsageIndex::scan_bytes_for_testing();
+    let warm=dashboard_snapshot(&root).unwrap();
+    assert_eq!(first.stats.total_tokens,warm.stats.total_tokens);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),after_first,"warm refresh reparsed JSONL");
+    let baseline=warm.stats.total_tokens;
+    let file=root.join("sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl");assert!(!file.exists());
+    let token=|total:i64,last:i64|serde_json::json!({"timestamp":recent_test_timestamp(0),"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":total,"cached_input_tokens":0,"output_tokens":0,"total_tokens":total},"last_token_usage":{"input_tokens":last,"cached_input_tokens":0,"output_tokens":0,"total_tokens":last}}}}).to_string();
+    write_lines(&file,&[token(5,5)]);assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,baseline+5);
+    let mut output=fs::OpenOptions::new().append(true).open(&file).unwrap();writeln!(output,"{}",token(12,7)).unwrap();drop(output);
+    let before_append=ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,baseline+12);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0,before_append.0,"append triggered full parse");
+    // Move only this isolated fixture's raw directories; published index stays put.
+    for name in ["sessions","archived_sessions"] {fs::rename(root.join(name),root.with_file_name(format!("tauri-missing-{name}"))).unwrap();}
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,baseline+12);
+    for name in ["sessions","archived_sessions"] {fs::rename(root.with_file_name(format!("tauri-missing-{name}")),root.join(name)).unwrap();}
+    fs::remove_file(file).unwrap();
+    println!("REAL HISTORY Rust rows {count}; structural total {structural_total}; refreshed total {baseline}; first scan bytes {after_first:?}; warm 0; append incremental; missing history retained");
 }

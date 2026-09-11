@@ -9,6 +9,7 @@ private enum LiveRatePanelLayout {
 struct LiveRateView: View {
     let monitor: LiveRateMonitor
     @Binding var floatingPanelEnabled: Bool
+    @Binding var quotaSidebarEnabled: Bool
     @Binding var statusBarPanelEnabled: Bool
     @Binding var liveRateMonitoringEnabled: Bool
     @Binding var floatingPanelShowRateAndBar: Bool
@@ -33,6 +34,7 @@ struct LiveRateView: View {
 
                     LiveRateControls(
                         floatingPanelEnabled: $floatingPanelEnabled,
+                        quotaSidebarEnabled: $quotaSidebarEnabled,
                         statusBarPanelEnabled: $statusBarPanelEnabled,
                         onOpenSettings: onOpenSettings
                     )
@@ -308,6 +310,7 @@ private struct RateFullScaleSlider: View {
 
 struct LiveRateControls: View {
     @Binding var floatingPanelEnabled: Bool
+    @Binding var quotaSidebarEnabled: Bool
     @Binding var statusBarPanelEnabled: Bool
     let onOpenSettings: () -> Void
 
@@ -327,6 +330,13 @@ struct LiveRateControls: View {
                     title: "悬浮窗",
                     systemImage: "rectangle.on.rectangle",
                     isOn: $floatingPanelEnabled
+                )
+                .frame(maxWidth: .infinity, minHeight: 34)
+
+                DisplaySurfaceToggleButton(
+                    title: "额度侧栏",
+                    systemImage: "sidebar.right",
+                    isOn: $quotaSidebarEnabled
                 )
                 .frame(maxWidth: .infinity, minHeight: 34)
 

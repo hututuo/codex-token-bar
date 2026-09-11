@@ -5,6 +5,7 @@ import { StatsStrip } from "../../components/StatsStrip";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
 import type {
   DashboardSnapshot,
+  CodexHomeSourceToken,
   DisplaySurfaceSettings,
   LiveRateSnapshot,
   LiveThreadOption,
@@ -13,6 +14,7 @@ import type {
 import type { SharedAccountAttributionResult } from "../../components/sharedAccountAttribution/model";
 
 interface DashboardSummarySectionProps {
+  sourceToken?: CodexHomeSourceToken | null;
   dashboard: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
@@ -36,6 +38,7 @@ interface DashboardSummarySectionProps {
   onAttributionSafetyRefreshNeeded: () => void;
   onAttributionChange: (result: SharedAccountAttributionResult | null) => void;
   onToggleLiveRate: () => void;
+  onQuotaSidebarChange: (patch: Pick<Partial<DisplaySurfaceSettings>, "quotaSidebarEnabled" | "quotaSidebarSide">) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   platform: PlatformCapabilities;
@@ -48,6 +51,7 @@ interface DashboardSummarySectionProps {
 }
 
 export function DashboardSummarySection({
+  sourceToken = null,
   dashboard,
   displaySurfaces,
   floatingSettings,
@@ -67,6 +71,7 @@ export function DashboardSummarySection({
   onAttributionSafetyRefreshNeeded,
   onAttributionChange,
   onToggleLiveRate,
+  onQuotaSidebarChange,
   onToggleFloating,
   onToggleStatusTray,
   platform,
@@ -113,6 +118,9 @@ export function DashboardSummarySection({
         warnings={dashboard.warnings}
       />
       <StatsStrip
+        sourceToken={sourceToken}
+        attributionIdentity={dashboard.attributionIdentity ?? null}
+        quotaUpdatedAt={dashboard.quotaUpdatedAt}
         planLabel={dashboard.account.planLabel}
         preciseDataFresh={dashboard.preciseRecentUsageFresh === true}
         stats={dashboard.stats}
@@ -126,6 +134,8 @@ export function DashboardSummarySection({
       <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />
       <LiveRateCard
         floatingEnabled={displaySurfaces.floatingWindowEnabled}
+        quotaSidebarEnabled={displaySurfaces.quotaSidebarEnabled}
+        onToggleQuotaSidebar={() => onQuotaSidebarChange({ quotaSidebarEnabled: !displaySurfaces.quotaSidebarEnabled })}
         floatingSettings={floatingSettings}
         statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
         liveRateEnabled={liveRateEnabled}

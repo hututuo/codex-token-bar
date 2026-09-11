@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 enum CodexRadarNetworkSession {
     static let shared: URLSession = {
@@ -238,6 +239,10 @@ final class CodexRadarStore: ObservableObject {
     private let detailRefreshCalendar: Calendar
     private let detailRetrySleep: UsageRefreshCadenceRecoveryScheduler.Sleep
     private let detailNow: @Sendable () -> Date
+    private var networkMonitor: NWPathMonitor?
+    private var networkWasUnavailable = false
+    private var recoveryTask: Task<Void, Never>?
+    private var recoveryAttempt = 0
     private var timer: Timer?
     private var detailTimer: Timer?
     private var refreshTask: Task<Void, Never>?
@@ -253,7 +258,7 @@ final class CodexRadarStore: ObservableObject {
         feedReader: any CodexRadarFeedReading = LiveCodexRadarFeedReader(),
         detailReader: any CodexRadarDetailReading = LiveCodexRadarDetailReader(),
         crowdReader: any CodexCrowdRadarReading = LiveCodexCrowdRadarReader(),
-        refreshInterval: TimeInterval = 600,
+        refreshInterval: TimeInterval = 300,
         detailRefreshDefaults: UserDefaults = .standard,
         detailRefreshCalendar: Calendar = .current,
         detailRetrySleep: @escaping UsageRefreshCadenceRecoveryScheduler.Sleep = { nanoseconds in
@@ -303,7 +308,21 @@ final class CodexRadarStore: ObservableObject {
 
     func start() {
         guard timer == nil else { return }
-        refresh()
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let available = path.status == .satisfied
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let recovered = available && self.networkWasUnavailable
+                self.networkWasUnavailable = !available
+                if recovered && self.timer != nil {
+                    self.recoveryAttempt = 0
+                    self.refresh()
+                }
+            }
+        }
+        networkMonitor = monitor
+        monitor.start(queue: DispatchQueue(label: "CodexRadar.network", qos: .utility))
         refreshScheduledDetailIfNeeded()
         scheduleNextDetailRefreshTimer()
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
@@ -312,9 +331,16 @@ final class CodexRadarStore: ObservableObject {
                 self?.refreshScheduledDetailIfNeeded()
             }
         }
+        refresh()
     }
 
     func stop() {
+        networkMonitor?.cancel()
+        networkMonitor = nil
+        networkWasUnavailable = false
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        recoveryAttempt = 0
         timer?.invalidate()
         timer = nil
         detailTimer?.invalidate()
@@ -341,6 +367,8 @@ final class CodexRadarStore: ObservableObject {
             trace?.end("skipped-refresh-in-flight")
             return
         }
+        recoveryTask?.cancel()
+        recoveryTask = nil
         refreshGeneration += 1
         let generation = refreshGeneration
         isRefreshing = true
@@ -400,6 +428,7 @@ final class CodexRadarStore: ObservableObject {
                     self.status = "Codex 雷达 · 更新于 \(DateFormatter.statusString(from: now))"
                     self.isRefreshing = false
                     self.refreshTask = nil
+                    self.scheduleRecoveryIfNeeded(crowdResult.failed || feedResult.diagnostic != nil)
                     return true
                 }
                 trace?.end(didPublish ? "ok" : "discarded-stale-generation")
@@ -429,6 +458,7 @@ final class CodexRadarStore: ObservableObject {
                     self.status = "Codex 雷达读取失败：\(error.localizedDescription)"
                     self.isRefreshing = false
                     self.refreshTask = nil
+                    self.scheduleRecoveryIfNeeded(true)
                     return true
                 }
                 trace?.end(
@@ -436,6 +466,19 @@ final class CodexRadarStore: ObservableObject {
                     metadata: ["error": error.localizedDescription]
                 )
             }
+        }
+    }
+
+    private func scheduleRecoveryIfNeeded(_ failed: Bool) {
+        if !failed { recoveryAttempt = 0; return }
+        guard timer != nil, recoveryAttempt < 3 else { return }
+        let delay = UInt64(30 * (1 << recoveryAttempt)) * 1_000_000_000
+        recoveryAttempt += 1
+        recoveryTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: delay) } catch { return }
+            guard let self, self.timer != nil else { return }
+            self.recoveryTask = nil
+            self.refresh()
         }
     }
 

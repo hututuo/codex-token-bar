@@ -61,7 +61,7 @@ test("floating Radar pauses hidden, refreshes once on show, and retains its last
         await waitFor(() => container.textContent === "radar-1");
         assert.equal(reads, 1);
         assert.equal(intervals.size, 1);
-        assert.equal(intervalDelays.get([...intervals.keys()][0]), 600_000);
+        assert.equal(intervalDelays.get([...intervals.keys()][0]), 300_000);
 
         await React.act(async () => {
           sharedListener?.({ snapshot: { testLabel: "radar-shared" } });
@@ -81,6 +81,12 @@ test("floating Radar pauses hidden, refreshes once on show, and retains its last
         await waitFor(() => container.textContent === "radar-2");
         assert.equal(reads, 2);
         assert.equal(intervals.size, 1);
+        await React.act(async () => window.dispatchEvent(new window.Event("online")));
+        await waitFor(() => container.textContent === "radar-3");
+        assert.equal(reads, 3);
+        await render(false);
+        await React.act(async () => window.dispatchEvent(new window.Event("online")));
+        assert.equal(reads, 3);
       } finally {
         await React.act(async () => root.unmount());
       }

@@ -61,6 +61,8 @@ struct DashboardView: View {
     private var sourceTransitionCoordinator: DashboardSourceTransitionCoordinator {
         runtime.sourceTransitionCoordinator
     }
+    @AppStorage(QuotaSidebarSettings.enabledKey) private var quotaSidebarEnabled = false
+    @AppStorage(QuotaSidebarSettings.edgeKey) private var quotaSidebarEdgeRaw = QuotaSidebarEdge.right.rawValue
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
     @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
     @AppStorage(StatusBarMetricConfiguration.versionKey) private var statusBarMetricConfigurationVersion = StatusBarMetricConfiguration.currentVersion
@@ -1115,6 +1117,8 @@ struct DashboardView: View {
             StatStrip(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
+                quotaCycleHistory: quotaHistoryStore.snapshot,
+                cycleCodexHome: store.currentDataSource?.codexHome,
                 todayUsageSummary: store.todayUsageSummary,
                 todayModelBreakdowns: store.todayModelBreakdowns,
                 todayModelBreakdownsFresh: store.todayModelBreakdownsFresh,
@@ -1153,6 +1157,7 @@ struct DashboardView: View {
             LiveRateView(
                 monitor: liveMonitor,
                 floatingPanelEnabled: $floatingPanelEnabled,
+                quotaSidebarEnabled: $quotaSidebarEnabled,
                 statusBarPanelEnabled: $statusBarPanelEnabled,
                 liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
                 floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
@@ -1324,6 +1329,8 @@ struct DashboardView: View {
 
     private var runtimeConfigurationSignature: String {
         [
+            quotaSidebarEnabled ? "1" : "0",
+            quotaSidebarEdgeRaw,
             floatingPanelEnabled ? "1" : "0",
             statusBarPanelEnabled ? "1" : "0",
             String(statusBarMetricConfigurationVersion),
@@ -1432,6 +1439,8 @@ struct DashboardView: View {
             radarDetailsVisible: showingCodexRadarDetails,
             statusBarMetricConfiguration: statusBarMetricConfiguration,
             statusSummaryConfiguration: statusSummaryConfiguration,
+            quotaSidebarEnabled: quotaSidebarEnabled,
+            quotaSidebarEdge: QuotaSidebarEdge(rawValue: quotaSidebarEdgeRaw) ?? .right,
             for: runtimeConsumerID
         )
     }

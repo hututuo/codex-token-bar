@@ -119,6 +119,38 @@ struct QuotaHistoryProtection {
         }
         if let c = candidate, now >= samples[c.start].at + 300 - epsilon { settle(c) }
 
+        // A provider excursion can go either way and last longer than the
+        // near-empty reset check. Require an abrupt return, not ordinary usage
+        // gradually reaching the old value. Keep raw observations intact.
+        let seven = samples.indices.filter { fresh.contains($0) && valid(samples[$0].sevenUsed) != nil }
+        var cursor = 1
+        while cursor < seven.count {
+            let base = seven[cursor - 1], first = seven[cursor]
+            let baseUsed = samples[base].sevenUsed!, firstUsed = samples[first].sevenUsed!
+            if !result.sevenRejected.contains(base), !result.sevenRejected.contains(first), abs(firstUsed - baseUsed) >= 5 {
+                var endpoint: Int?
+                for n in (cursor + 1)..<seven.count {
+                    let end = seven[n], prior = seven[n - 1]
+                    if samples[end].at - samples[first].at > 90 * 60 { break }
+                    let used = samples[end].sevenUsed!, previousUsed = samples[prior].sevenUsed!
+                    if abs(used - baseUsed) <= 3 && abs(used - previousUsed) >= 5
+                        && (firstUsed - baseUsed) * (used - previousUsed) < 0
+                        && sameReset(samples[end].sevenReset, samples[base].sevenReset) {
+                        endpoint = n
+                        break
+                    }
+                }
+                if let endpoint {
+                    let end = seven[endpoint]
+                    reject(Candidate(baseline: base, start: first, last: end,
+                        leftBand: true, resetLeft: false, resetUnchanged: false), .returnToBaseline)
+                    cursor = endpoint + 1
+                    continue
+                }
+            }
+            cursor += 1
+        }
+
         // A 5h event needs its own single-point A-B-A evidence and an exact
         // paired observation rejected by 7d; proximity within a bin is not pairing.
         let five = samples.indices.filter { fresh.contains($0) && valid(samples[$0].fiveUsed) != nil }

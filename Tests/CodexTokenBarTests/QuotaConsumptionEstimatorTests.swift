@@ -1501,6 +1501,23 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
+    func testSevenDayFineHistoryPreservesIntraHourLowAndTokenTotals() {
+        let start = Date(timeIntervalSince1970: 0)
+        let bins = (0..<12).map { BinUsage(start: start.addingTimeInterval(Double($0) * 300), tokens: 100, calls: 1) }
+        let quota = bins.enumerated().map { index, bin in
+            QuotaHistoryRecentBucket(start: bin.start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: index == 5 ? 7 : 17)
+        }
+        let prepared = RecentUsageChart.prepare(range: .sevenDays, recentBins: bins,
+            hourlyBins: [BinUsage(start: start, tokens: 1200, calls: 12)], cacheRecentBins: [], cacheHourlyBins: [],
+            quotaRecentBins: quota, quotaHourlyBins: [QuotaHistoryRecentBucket(start: start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 17)])
+        XCTAssertEqual(prepared.bucketInterval, 300)
+        XCTAssertEqual(prepared.sevenDayRemainingPercents.compactMap { $0 }.min(), 7)
+        XCTAssertEqual(prepared.sevenDayRemainingPercents[5], 7)
+        XCTAssertEqual(prepared.tokenTotal, 1200)
+        XCTAssertEqual(prepared.callTotal, 12)
+    }
+
+    @MainActor
     func testSevenDayRangeUsesHourlyBucketsAcrossFullScrollableHistory() {
         let start = Date(timeIntervalSince1970: 1_800)
         let hourlyBins = (0..<(21 * 24)).map { index in

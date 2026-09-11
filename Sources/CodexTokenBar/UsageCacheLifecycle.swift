@@ -73,23 +73,24 @@ enum UsageCacheLifecycle {
         }
         let legacySharedRoot = cacheRoot.appendingPathComponent("CodexTokenBar", isDirectory: true)
         for name in [
-            "session-token-events-v2.json",
-            "session-token-events-v3.json",
-            "session-token-events-v4.json",
-            "session-token-events-v5.json",
-            "session-token-events-v6",
             "session-token-snapshots-v6.json"
         ] {
-            try? FileManager.default.removeItem(
-                at: legacySharedRoot.appendingPathComponent(name)
-            )
+            removeDiscardableSnapshot(at: legacySharedRoot.appendingPathComponent(name))
         }
         let swiftCacheRoot = cacheRoot.appendingPathComponent(appDirectoryName, isDirectory: true)
         for retiredNamespace in retiredSwiftCacheNamespaces {
-            try? FileManager.default.removeItem(
-                at: swiftCacheRoot.appendingPathComponent(retiredNamespace, isDirectory: true)
-            )
+            // A retired namespace may contain the only surviving usage rows.
+            // Readiness of the new cache is not a verified ledger import.
+            removeDiscardableSnapshot(at: swiftCacheRoot
+                .appendingPathComponent(retiredNamespace, isDirectory: true)
+                .appendingPathComponent("session-token-snapshots-v6.json"))
         }
+    }
+
+    private static func removeDiscardableSnapshot(at url: URL) {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     private static var cacheRootURL: URL? {

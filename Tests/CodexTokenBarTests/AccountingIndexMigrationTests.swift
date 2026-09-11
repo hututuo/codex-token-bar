@@ -55,7 +55,7 @@ final class AccountingIndexMigrationTests: XCTestCase {
         )
         XCTAssertEqual(
             try schemaValue("schema_version", in: migrated),
-            "12"
+            "13"
         )
         XCTAssertEqual(
             try schemaValue("accounting_revision", in: migrated),
@@ -143,7 +143,7 @@ final class AccountingIndexMigrationTests: XCTestCase {
             try eventSnapshots(in: recovered),
             [EventSnapshot(tokens: 110, kind: 0, reported: nil, legacy: 999)]
         )
-        XCTAssertEqual(try schemaValue("schema_version", in: recovered), "12")
+        XCTAssertEqual(try schemaValue("schema_version", in: recovered), "13")
         XCTAssertEqual(
             try schemaValue("accounting_revision", in: recovered),
             "codex-components-v1"
@@ -282,6 +282,15 @@ final class AccountingIndexMigrationTests: XCTestCase {
     private func removeAccountingColumnsForDDLRollback(
         in database: SQLiteDatabaseDriver
     ) throws {
+        // This fixture models a pre-accounting release. It cannot retain the
+        // current writer's triggers referencing columns that did not exist.
+        try database.execute("""
+            DROP TRIGGER IF EXISTS retain_usage_before_event_update;
+            DROP TRIGGER IF EXISTS retain_usage_before_event_delete;
+            DROP TRIGGER IF EXISTS retain_usage_before_source_delete;
+            DROP TRIGGER IF EXISTS retain_usage_before_identity_update;
+            DROP TRIGGER IF EXISTS retain_usage_before_fingerprint_delete;
+            """)
         try database.execute(
             "DROP INDEX IF EXISTS events_unresolved_accounting;"
         )

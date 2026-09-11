@@ -144,11 +144,66 @@ private func isCompleteIndexedJSONLine(_ data: Data) -> Bool {
 }
 
 extension CodexUsageAnalyzer {
+    struct MessageLinkScan {
+        struct Link { let eventOffset: UInt64; let prompt: UInt64; let assistant: UInt64? }
+        let links: [Link]
+        let chunks: [IndexedChunkHash]
+        let prompt: UInt64?
+        let assistant: UInt64?
+    }
+
+    /// Reads message markers and matches already indexed byte positions only.
+    /// No token accounting, fingerprints, or conversation text is persisted.
+    func scanMessageLinks(file: URL, endOffset: UInt64, eventOffsets: Set<UInt64>) throws -> MessageLinkScan {
+        struct OrdinalEnvelope: Decodable { let ordinal: UInt64? }
+        let metadata = try PaginatedHistoryBoundary.metadata(file: file)
+        var ownership = UsageAccountingState.fresh
+        var fork: ForkSessionMetadata?
+        var replay = false
+        var lastReplayToken: Date?
+        var prompt: UInt64?
+        var assistant: UInt64?
+        var links: [MessageLinkScan.Link] = []
+        let stream = try streamIndexedSessionLines(from: file, endingAt: endOffset, chunkHashingFrom: 0) { offset, line in
+            if Task.isCancelled { throw CancellationError() }
+            PaginatedHistoryBoundary.observeOwnTurn(line, metadata: metadata, state: &ownership)
+            if fork == nil, let value = parseSessionMetaForkMetadata(line) { fork = value; replay = true }
+            if ownership.paginatedOwnStartOrdinal != nil { replay = false }
+            if replay, fork?.isExplicitSubagent == true, let context = parseTurnContext(line),
+               let timestamp = context.timestamp, let reference = lastReplayToken ?? fork?.timestamp,
+               timestamp.timeIntervalSince(reference) > Self.forkReplayExitGrace { replay = false }
+            if let metadata, !metadata.isMainFork || ownership.paginatedOwnStartOrdinal != nil {
+                let boundary = min(metadata.ordinal, ownership.paginatedOwnStartOrdinal ?? metadata.ordinal)
+                guard let data = line.data(using: .utf8),
+                      let object = try? JSONDecoder().decode(OrdinalEnvelope.self, from: data),
+                      let ordinal = object.ordinal, ordinal >= boundary else { return }
+            }
+            if let timestamp = parsePayloadHeaderTimestamp(line, expectedType: "user_message") {
+                if replay {
+                    guard let reference = lastReplayToken ?? fork?.timestamp,
+                          timestamp.timeIntervalSince(reference) > Self.forkReplayExitGrace else { return }
+                    replay = false
+                }
+                prompt = offset
+                assistant = nil
+            } else if parsePayloadHeaderTimestamp(line, expectedType: "agent_message") != nil {
+                guard !replay else { return }
+                if assistant == nil { assistant = offset }
+            } else if replay {
+                if let timestamp = parsePayloadHeaderTimestamp(line, expectedType: "token_count") { lastReplayToken = timestamp }
+            } else if eventOffsets.contains(offset), let prompt {
+                links.append(.init(eventOffset: offset, prompt: prompt, assistant: assistant))
+            }
+        }
+        return .init(links: links, chunks: stream.chunkHashes, prompt: prompt, assistant: assistant)
+    }
+
     private static let forkReplayExitGrace: TimeInterval = 2
 
     private struct PayloadHeader: Decodable {
         struct Payload: Decodable {
             let type: String
+            let message: String?
         }
 
         let timestamp: String
@@ -178,6 +233,7 @@ extension CodexUsageAnalyzer {
         insertFingerprint: (UsageSnapshotFingerprint) throws -> Bool,
         emit: (IndexedTokenEvent) throws -> Void
     ) throws -> IndexedSessionParseResult {
+        let paginatedMetadata = try PaginatedHistoryBoundary.metadata(file: file, handle: request.readHandle)
         var previousTotal = request.initialState.previousTotalTokens
         var currentUserPromptOffset = request.initialState.currentUserPromptOffset
         var assistantStartOffset = request.initialState.assistantStartOffset
@@ -203,6 +259,10 @@ extension CodexUsageAnalyzer {
                 throw CancellationError()
             }
             try autoreleasepool {
+                PaginatedHistoryBoundary.observeOwnTurn(lineString, metadata: paginatedMetadata, state: &accounting)
+                if paginatedMetadata != nil, accounting.paginatedOwnStartOrdinal != nil {
+                    isSkippingForkReplay = false
+                }
                 if forkReplayStartedAt == nil,
                    let metadata = parseSessionMetaForkMetadata(lineString) {
                     forkReplayStartedAt = metadata.timestamp
@@ -273,8 +333,8 @@ extension CodexUsageAnalyzer {
                     + "|" + (usageLine.last?.accounting.signature ?? "missing")
                     + "|" + usageLine.identityTimestamp
                 let adjacentDuplicate = accounting.lastSnapshot == signature
-                let isNewSnapshot = try usageSnapshotFingerprint(for: usageLine)
-                    .map(insertFingerprint) ?? true
+                let usageFingerprint = usageSnapshotFingerprint(for: usageLine)
+                let isNewSnapshot = try usageFingerprint.map(insertFingerprint) ?? true
                 if adjacentDuplicate { return }
                 var nextAccounting = accounting
                 let measured = nextAccounting.observe(
@@ -287,7 +347,18 @@ extension CodexUsageAnalyzer {
                 // is a new request; preserve the existing replay protection.
                 guard isNewSnapshot else { return }
                 accounting = nextAccounting
-                if isSkippingForkReplay {
+                let inherited: Bool
+                if let metadata = paginatedMetadata, !metadata.isMainFork || accounting.paginatedOwnStartOrdinal != nil {
+                    let declared = metadata.ordinal
+                    let boundary = min(declared, accounting.paginatedOwnStartOrdinal ?? declared)
+                    guard let ordinal = usageLine.ordinal else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    inherited = ordinal < boundary
+                } else {
+                    inherited = isSkippingForkReplay
+                }
+                if inherited {
                     lastSkippedForkReplayTokenAt = usageLine.timestamp
                     return
                 }
@@ -313,7 +384,8 @@ extension CodexUsageAnalyzer {
                         assistantStartOffset: assistantStartOffset,
                         accountingKind: measured.kind,
                         reportedTotalTokens: usageLine.last?.accounting.reportedTotal
-                            ?? usageLine.total?.accounting.reportedTotal
+                            ?? usageLine.total?.accounting.reportedTotal,
+                        usageFingerprint: try usageFingerprint?.databaseValue
                     )
                 )
                 eventCount += 1
@@ -848,6 +920,9 @@ extension CodexUsageAnalyzer {
     }
 
     private func parsePayloadHeaderTimestamp(_ line: String, expectedType: String) -> Date? {
+        if let message = parseResponseMessageLine(line, expectedType: expectedType) {
+            return message.timestamp
+        }
         guard line.contains(#""payload""#),
               line.contains(expectedType),
               let data = line.data(using: .utf8),
@@ -855,10 +930,17 @@ extension CodexUsageAnalyzer {
               header.payload.type == expectedType else {
             return nil
         }
+        if expectedType == "user_message" || expectedType == "agent_message" {
+            guard let message = header.payload.message,
+                  message.contains(where: { !$0.isWhitespace }) else { return nil }
+        }
         return parseDate(header.timestamp)
     }
 
     private func parsePayloadMessageLine(_ line: String, expectedType: String) -> (timestamp: Date, message: String)? {
+        if let message = parseResponseMessageLine(line, expectedType: expectedType) {
+            return message
+        }
         guard line.contains(#""payload""#),
               line.contains(expectedType),
               let data = line.data(using: .utf8),
@@ -872,6 +954,31 @@ extension CodexUsageAnalyzer {
         }
         let normalized = normalizeExcerptText(message)
         return normalized.isEmpty ? nil : (timestamp, normalized)
+    }
+
+    // New rollouts retain response_item messages even when the legacy
+    // user_message/agent_message mirrors have been removed by rewriting.
+    private func parseResponseMessageLine(_ line: String, expectedType: String) -> (timestamp: Date, message: String)? {
+        guard expectedType == "user_message" || expectedType == "agent_message" else { return nil }
+        let role = expectedType == "user_message" ? "user" : "assistant"
+        guard line.contains("\"response_item\""), line.contains("\"message\""),
+              line.contains("\"\(role)\""),
+              let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["type"] as? String == "response_item",
+              let timestampString = object["timestamp"] as? String,
+              let timestamp = parseDate(timestampString),
+              let payload = object["payload"] as? [String: Any],
+              payload["type"] as? String == "message", payload["role"] as? String == role,
+              let content = payload["content"] as? [[String: Any]] else { return nil }
+        let message = normalizeExcerptText(content.compactMap { part -> String? in
+            guard let type = part["type"] as? String,
+                  ["input_text", "output_text", "text"].contains(type) else { return nil }
+            return part["text"] as? String
+        }.joined(separator: "\n"))
+        // Image-only user messages still establish a real turn.
+        guard !message.isEmpty || (role == "user" && content.contains { ($0["type"] as? String) == "input_image" }) else { return nil }
+        return (timestamp, message)
     }
 
     private func parseTokenUsageLine(_ line: String) -> ParsedTokenUsageLine? {
@@ -891,7 +998,7 @@ extension CodexUsageAnalyzer {
         let total = parseTokenUsage(info["total_token_usage"] as? [String: Any], rejecting: negativeZeroFields["total_token_usage"] ?? [])
         let last = parseTokenUsage(info["last_token_usage"] as? [String: Any], rejecting: negativeZeroFields["last_token_usage"] ?? [])
         guard total != nil || last != nil else { return nil }
-        return ParsedTokenUsageLine(timestamp: timestamp, identityTimestamp: timestampString, total: total, last: last)
+        return ParsedTokenUsageLine(ordinal: PaginatedHistoryBoundary.unsigned(object["ordinal"]), timestamp: timestamp, identityTimestamp: timestampString, total: total, last: last)
     }
 
     private struct ParsedTurnContext {
@@ -1069,10 +1176,19 @@ extension CodexUsageAnalyzer {
         let needles = [
             Data(#""token_count""#.utf8),
             Data(#""turn_context""#.utf8),
+            Data(#""task_started""#.utf8),
             Data(#""user_message""#.utf8),
             Data(#""agent_message""#.utf8),
             Data(#""session_meta""#.utf8)
         ]
+        let responseNeedle = Data(#""response_item""#.utf8)
+        let roleNeedle = Data(#""role""#.utf8)
+        func needsMessageOrUsage(_ data: Data.SubSequence) -> Bool {
+            // Tool outputs and reasoning are also response_item records. Do
+            // not materialize those potentially huge bodies as Swift Strings.
+            needles.contains(where: { data.range(of: $0) != nil })
+                || (data.range(of: responseNeedle) != nil && data.range(of: roleNeedle) != nil)
+        }
         var reachedEnd = false
 
         while !reachedEnd {
@@ -1106,8 +1222,9 @@ extension CodexUsageAnalyzer {
                 let lineData = pending[lineRange]
                 let lineOffset = pendingStartOffset
                     + UInt64(pending.distance(from: pending.startIndex, to: searchStart))
-                if needles.contains(where: { lineData.range(of: $0) != nil }) {
-                    try handleLine(lineOffset, String(decoding: lineData, as: UTF8.self))
+                if needsMessageOrUsage(lineData) {
+                    guard let line = String(data: lineData, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+                    try handleLine(lineOffset, line)
                 }
                 let consumedBytes = pending.distance(
                     from: pending.startIndex,
@@ -1127,7 +1244,7 @@ extension CodexUsageAnalyzer {
         if !pending.isEmpty {
             let line = String(decoding: pending, as: UTF8.self)
             if isCompleteIndexedJSONLine(pending) {
-                if needles.contains(where: { pending.range(of: $0) != nil }) {
+                if needsMessageOrUsage(pending) {
                     try handleLine(pendingStartOffset, line)
                 }
                 resumeOffset = pendingStartOffset + UInt64(pending.count)

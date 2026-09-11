@@ -1063,9 +1063,10 @@ fn request_precise_refresh_inner(
             .clone();
         if let Some(existing) = existing {
             if existing.is_done() {
-                if intent == PreciseRefreshIntent::Full && existing.has_full_result() {
-                    return Ok(Some(existing));
-                }
+                // Completion can be visible just before the owner removes
+                // its coordinator slot. A new explicit request must not join
+                // that finished result: logs or a summary scan may have
+                // advanced since it was produced.
                 let mut current = coordinator
                     .flight
                     .lock()
@@ -4495,4 +4496,9 @@ pub(crate) fn reset_dashboard_scan_signature_count_for_testing() {
 #[cfg(test)]
 pub(crate) fn dashboard_scan_signature_count_for_testing() -> usize {
     DASHBOARD_SCAN_SIGNATURE_COUNT.load(Ordering::Relaxed)
+}
+
+/// Read existing published aggregates only; period navigation never scans logs.
+pub(crate) fn quota_cycle_model_ranges(codex_home: &Path, ranges: &[(i64, i64)]) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
+    exact_usage_index::cycle_range::read(codex_home, ranges)
 }

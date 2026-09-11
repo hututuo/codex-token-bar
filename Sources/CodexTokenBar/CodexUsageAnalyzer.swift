@@ -242,7 +242,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             )
             let synchronization = try historyIndex.synchronize(
                 files: sessionFiles,
-                sessionID: sessionID(from:)
+                sessionID: sessionID(from:),
+                messageScanner: { try self.scanMessageLinks(file: $0, endOffset: $1, eventOffsets: $2) }
             ) { [self] file, sessionID, request, insertFingerprint, emit in
                 try parseSessionIntoHistoryIndex(
                     file: file,
@@ -712,7 +713,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             } else {
                 synchronization = try historyIndex.synchronize(
                     files: sessionFiles,
-                    sessionID: sessionID(from:)
+                    sessionID: sessionID(from:),
+                messageScanner: { try self.scanMessageLinks(file: $0, endOffset: $1, eventOffsets: $2) }
                 ) { [self] file, sessionID, request, insertFingerprint, emit in
                     try parseSessionIntoHistoryIndex(
                         file: file,
@@ -820,8 +822,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         trace?.mark("threadInfo.end", metadata: ["count": String(threadInfo.count)])
         trace?.mark("cacheUsage.begin")
         let attributionCurrentScanUnsafeCauseDetected =
-            synchronization.rewrittenFiles > 0
-                || synchronization.lineageAmbiguityDetected
+            synchronization.lineageAmbiguityDetected
         let aggregatedCacheUsage = aggregation.cacheUsage(
             recentBins: recentBins,
             threadInfo: threadInfo,

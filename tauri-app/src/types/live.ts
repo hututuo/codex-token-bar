@@ -48,10 +48,12 @@ export interface FloatingPanelSnapshot {
   fiveHourLabel: string;
   fiveHourAvailability: "measured" | "unavailable" | "absent";
   fiveHourRemainingPercent: number | null;
+  /** Even-pace reference in percentage points (0–100), not the remaining ratio. */
   fiveHourExpectedRemainingPercent: number | null;
   sevenDayLabel: string;
   sevenDayAvailability: "measured" | "unavailable" | "absent";
   sevenDayRemainingPercent: number | null;
+  /** Even-pace reference in percentage points (0–100), not the remaining ratio. */
   sevenDayExpectedRemainingPercent: number | null;
   /** The displayed quota is last-good data after a prolonged read failure. */
   quotaDataStale?: boolean;

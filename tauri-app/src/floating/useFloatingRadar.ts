@@ -7,7 +7,7 @@ import {
   type CodexCrowdRadarSnapshot,
 } from "../api/codexCrowdRadarClient";
 
-const FLOATING_RADAR_REFRESH_INTERVAL_MS = 600_000;
+const FLOATING_RADAR_REFRESH_INTERVAL_MS = 300_000;
 
 type RadarReader = typeof readCodexRadarState;
 type RadarSubscriber = typeof subscribeCodexRadarState;
@@ -38,14 +38,29 @@ export function useFloatingRadar(
       snapshotRef.current = next.snapshot;
       setSnapshot(next.snapshot);
     });
+    let refreshing = false;
+    let recoveryAttempt = 0;
+    let recoveryTimer: number | null = null;
     const refresh = async () => {
-      const next = await readRadar(snapshotRef.current, { force: true });
-      if (cancelled) {
-        return;
+      if (cancelled || refreshing) return;
+      refreshing = true;
+      if (recoveryTimer !== null) { window.clearTimeout(recoveryTimer); recoveryTimer = null; }
+      let failed = false;
+      try {
+        const next = await readRadar(snapshotRef.current, { force: true });
+        if (cancelled) return;
+        snapshotRef.current = next.snapshot;
+        setSnapshot(next.snapshot);
+        failed = !next.snapshot || next.snapshot.staleDataDisplayed;
+      } catch { failed = true; }
+      finally { refreshing = false; }
+      if (!failed) recoveryAttempt = 0;
+      else if (!cancelled && recoveryAttempt < 3) {
+        recoveryTimer = window.setTimeout(() => { recoveryTimer = null; void refresh(); }, 30_000 * 2 ** recoveryAttempt++);
       }
-      snapshotRef.current = next.snapshot;
-      setSnapshot(next.snapshot);
     };
+    const online = () => { recoveryAttempt = 0; void refresh(); };
+    window.addEventListener("online", online);
 
     void refresh();
     const timer = window.setInterval(() => {
@@ -54,6 +69,8 @@ export function useFloatingRadar(
     return () => {
       cancelled = true;
       unsubscribe();
+      window.removeEventListener("online", online);
+      if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
       window.clearInterval(timer);
     };
   }, [active, readRadar, subscribeRadar]);
@@ -77,7 +94,7 @@ export function useFloatingCrowdRadar(
     let recoveryAttempt = 0;
     let recoveryTimer: number | null = null;
     const scheduleRecovery = () => {
-      if (cancelled || snapshotRef.current || recoveryTimer !== null) return;
+      if (cancelled || recoveryTimer !== null) return;
       const delay = nextCodexCrowdRadarRecoveryDelayMs(recoveryAttempt);
       if (delay === null) return;
       recoveryAttempt += 1;
@@ -86,10 +103,10 @@ export function useFloatingCrowdRadar(
         refresh();
       }, delay);
     };
-    const refresh = () => {
+    const refresh = (force = false) => {
       if (cancelled || refreshing) return;
       refreshing = true;
-      void readCrowdRadar()
+      void readCrowdRadar({ force })
         .then((next) => {
           if (cancelled) return;
           snapshotRef.current = next;
@@ -110,6 +127,8 @@ export function useFloatingCrowdRadar(
         })
         .finally(() => { refreshing = false; });
     };
+    const online = () => { recoveryAttempt = 0; refresh(true); };
+    window.addEventListener("online", online);
     refresh();
     const timer = window.setInterval(() => {
       if (!snapshotRef.current) recoveryAttempt = 0;
@@ -119,6 +138,7 @@ export function useFloatingCrowdRadar(
       cancelled = true;
       window.clearInterval(timer);
       if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
+      window.removeEventListener("online", online);
     };
   }, [active, clearOnError, readCrowdRadar]);
   return snapshot;

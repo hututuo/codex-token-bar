@@ -6,7 +6,7 @@ impl Drop for FixtureDirectory {
     fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
 }
 fn fixture(name: &str) -> (FixtureDirectory, QuotaHistoryDatabase, QuotaHistoryIdentity) {
-    let directory = FixtureDirectory(std::env::temp_dir().join(format!("quota-protection-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())));
+    let directory = FixtureDirectory(std::env::temp_dir().join(format!("quota-protection-{}-{}", std::process::id(), uuid::Uuid::new_v4())));
     std::fs::create_dir(&directory.0).unwrap();
     let database = QuotaHistoryDatabase { path: directory.0.join("quota.sqlite") };
     let identity = QuotaHistoryIdentity::from_canonical_parts(Path::new("/fixture/protection"), Some(name), "Plus", "codex").unwrap();

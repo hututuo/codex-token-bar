@@ -49,7 +49,7 @@ final class CodexRadarModelsTests: XCTestCase {
         )
         XCTAssertEqual(
             CodexRadarPresentationText.actionDisplay(snapshot: snapshot, now: now.addingTimeInterval(60)),
-            "速登窗口"
+            "等待"
         )
 
         window["closed_at"] = NSNull()

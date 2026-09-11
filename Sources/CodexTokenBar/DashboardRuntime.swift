@@ -112,6 +112,8 @@ final class DashboardRuntimeSideEffectCoordinator<Configuration: Equatable> {
 
 struct DashboardRuntimeConfiguration: Equatable {
     let floatingPanelEnabled: Bool
+    let quotaSidebarEnabled: Bool
+    let quotaSidebarEdge: QuotaSidebarEdge
     let statusBarPanelEnabled: Bool
     let floatingPanelScale: FloatingTokenPanelScale
     let floatingPanelVisibility: FloatingPanelContentVisibility
@@ -132,8 +134,12 @@ struct DashboardRuntimeConfiguration: Equatable {
         providerSyncVisible: Bool,
         radarDetailsVisible: Bool,
         statusBarMetricConfiguration: StatusBarMetricConfiguration = .default,
-        statusSummaryConfiguration: StatusSummaryConfiguration = .default
+        statusSummaryConfiguration: StatusSummaryConfiguration = .default,
+        quotaSidebarEnabled: Bool = false,
+        quotaSidebarEdge: QuotaSidebarEdge = .right
     ) {
+        self.quotaSidebarEnabled = quotaSidebarEnabled
+        self.quotaSidebarEdge = quotaSidebarEdge
         self.floatingPanelEnabled = floatingPanelEnabled
         self.statusBarPanelEnabled = statusBarPanelEnabled
         self.floatingPanelScale = floatingPanelScale
@@ -148,6 +154,8 @@ struct DashboardRuntimeConfiguration: Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.floatingPanelEnabled == rhs.floatingPanelEnabled
+            && lhs.quotaSidebarEnabled == rhs.quotaSidebarEnabled
+            && lhs.quotaSidebarEdge == rhs.quotaSidebarEdge
             && lhs.statusBarPanelEnabled == rhs.statusBarPanelEnabled
             && lhs.floatingPanelScale == rhs.floatingPanelScale
             && lhs.floatingPanelVisibility == rhs.floatingPanelVisibility
@@ -165,10 +173,12 @@ enum DashboardBackgroundOwnerActivity {
         dashboardVisible: Bool,
         floatingPanelEnabled: Bool,
         statusBarPanelEnabled: Bool,
-        statusSummaryPresented: Bool = false
+        statusSummaryPresented: Bool = false,
+        quotaSidebarEnabled: Bool = false
     ) -> Bool {
         dashboardVisible
             || floatingPanelEnabled
+            || quotaSidebarEnabled
             || statusBarPanelEnabled
             || statusSummaryPresented
     }
@@ -177,13 +187,14 @@ enum DashboardBackgroundOwnerActivity {
         dashboardVisible: Bool,
         floatingPanelEnabled: Bool,
         statusBarPanelEnabled: Bool,
-        statusSummaryPresented: Bool
+        statusSummaryPresented: Bool,
+        quotaSidebarEnabled: Bool = false
     ) -> Bool {
         // The status-bar summary is still a compact surface. Presenting its
         // popover must not promote the usage store to the dashboard's full
         // chart owner; it only adds a temporary compact consumer.
         !dashboardVisible
-            && (statusSummaryPresented || floatingPanelEnabled || statusBarPanelEnabled)
+            && (statusSummaryPresented || floatingPanelEnabled || statusBarPanelEnabled || quotaSidebarEnabled)
     }
 }
 
@@ -211,11 +222,13 @@ final class DashboardRuntime: ObservableObject {
     let sourceTransitionCoordinator: DashboardSourceTransitionCoordinator
 
     private let startupAction: (() -> Void)?
+    private let quotaSidebar = QuotaSidebarController()
     private let floatingPanel: FloatingTokenPanelController
     private let statusBarPanel: StatusBarTokenController
     private let settings: UserDefaults
     private let notificationCenter: NotificationCenter
     private let automaticInterfaceScaleProvider: @MainActor () -> Double
+    private let dashboardVisibilityProvider: (@MainActor () -> Bool)?
     private let surfaceApplyAction: ((DashboardRuntimeConfiguration) -> Void)?
     private let sideEffectStartAction: (() -> Void)?
     private let sideEffectStopAction: (() -> Void)?
@@ -248,6 +261,7 @@ final class DashboardRuntime: ObservableObject {
         },
         keepsAppOwnerActive: { [weak self] configuration in
             configuration.floatingPanelEnabled
+                || configuration.quotaSidebarEnabled
                 || configuration.statusBarPanelEnabled
                 || self?.statusBarSummaryPresented == true
         }
@@ -288,6 +302,7 @@ final class DashboardRuntime: ObservableObject {
         settings: UserDefaults = .standard,
         notificationCenter: NotificationCenter = .default,
         automaticInterfaceScaleProvider: (@MainActor () -> Double)? = nil,
+        dashboardVisibilityProvider: (@MainActor () -> Bool)? = nil,
         startupAction: (() -> Void)? = nil,
         surfaceApplyAction: ((DashboardRuntimeConfiguration) -> Void)? = nil,
         sideEffectStartAction: (() -> Void)? = nil,
@@ -310,6 +325,7 @@ final class DashboardRuntime: ObservableObject {
         self.statusBarPanel = statusBarPanel
         self.settings = settings
         self.notificationCenter = notificationCenter
+        self.dashboardVisibilityProvider = dashboardVisibilityProvider
         self.automaticInterfaceScaleProvider = automaticInterfaceScaleProvider ?? { [weak floatingPanel] in
             InterfaceScaleSettings.autoScale(
                 for: floatingPanel?.panel?.screen ?? InterfaceScaleSettings.activeScreen()
@@ -363,6 +379,8 @@ final class DashboardRuntime: ObservableObject {
         radarDetailsVisible: Bool,
         statusBarMetricConfiguration: StatusBarMetricConfiguration = .default,
         statusSummaryConfiguration: StatusSummaryConfiguration = .default,
+        quotaSidebarEnabled: Bool = false,
+        quotaSidebarEdge: QuotaSidebarEdge = .right,
         for id: UUID
     ) {
         sideEffects.reportConfiguration(
@@ -376,7 +394,9 @@ final class DashboardRuntime: ObservableObject {
                 providerSyncVisible: providerSyncVisible,
                 radarDetailsVisible: radarDetailsVisible,
                 statusBarMetricConfiguration: statusBarMetricConfiguration,
-                statusSummaryConfiguration: statusSummaryConfiguration
+                statusSummaryConfiguration: statusSummaryConfiguration,
+                quotaSidebarEnabled: quotaSidebarEnabled,
+                quotaSidebarEdge: quotaSidebarEdge
             ),
             for: id
         )
@@ -412,7 +432,7 @@ final class DashboardRuntime: ObservableObject {
         updateBackgroundOwnerActivity()
         if !presented {
             let keepsPersistentOwner = configuration.map {
-                $0.floatingPanelEnabled || $0.statusBarPanelEnabled
+                $0.floatingPanelEnabled || $0.statusBarPanelEnabled || $0.quotaSidebarEnabled
             } ?? false
             sideEffects.setAppOwnerActive(keepsPersistentOwner)
         }
@@ -548,7 +568,8 @@ final class DashboardRuntime: ObservableObject {
                 dashboardVisible: hasVisibleDashboardWindow(),
                 floatingPanelEnabled: configuration.floatingPanelEnabled,
                 statusBarPanelEnabled: configuration.statusBarPanelEnabled,
-                statusSummaryPresented: statusBarSummaryPresented
+                statusSummaryPresented: statusBarSummaryPresented,
+                quotaSidebarEnabled: configuration.quotaSidebarEnabled
             )
         )
     }
@@ -607,6 +628,12 @@ final class DashboardRuntime: ObservableObject {
         } else {
             floatingPanel.close()
         }
+        if configuration.quotaSidebarEnabled {
+            quotaSidebar.show(store: usageStore, monitor: liveMonitor, quota: quotaStore,
+                              tasks: taskCompletionMonitor, radar: radarStore, history: quotaHistoryStore, edge: configuration.quotaSidebarEdge, onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() })
+        } else {
+            quotaSidebar.close()
+        }
         statusBarPanel.show(
             store: usageStore,
             monitor: liveMonitor,
@@ -640,7 +667,8 @@ final class DashboardRuntime: ObservableObject {
             dashboardVisible: dashboardVisible,
             floatingPanelEnabled: configuration.floatingPanelEnabled,
             statusBarPanelEnabled: configuration.statusBarPanelEnabled,
-            statusSummaryPresented: statusBarSummaryPresented
+            statusSummaryPresented: statusBarSummaryPresented,
+            quotaSidebarEnabled: configuration.quotaSidebarEnabled
         )
         usageStore.setOnlyCompactSurfaceVisible(onlyCompactSurfaceVisible)
         usageStore.setUsageRefreshCadence(
@@ -703,7 +731,7 @@ final class DashboardRuntime: ObservableObject {
             providerSyncVisible: configuration.providerSyncVisible,
             appActive: NSApplication.shared.isActive,
             dashboardWindowVisible: hasVisibleDashboardWindow(),
-            floatingPanelEnabled: configuration.floatingPanelEnabled,
+            floatingPanelEnabled: configuration.floatingPanelEnabled || configuration.quotaSidebarEnabled,
             statusBarPanelEnabled: configuration.statusBarPanelEnabled,
             usageStale: usageStore.snapshot.preciseTimeSeriesGeneratedAt.map {
                 Date().timeIntervalSince($0) >= 5 * 60
@@ -716,6 +744,7 @@ final class DashboardRuntime: ObservableObject {
     }
 
     private func hasVisibleDashboardWindow() -> Bool {
+        if let dashboardVisibilityProvider { return dashboardVisibilityProvider() }
         let application = NSApplication.shared
         guard !application.isHidden else { return false }
         return application.windows.contains { window in
@@ -749,7 +778,9 @@ private extension DashboardRuntimeConfiguration {
             providerSyncVisible: providerSyncVisible,
             radarDetailsVisible: radarDetailsVisible,
             statusBarMetricConfiguration: statusBarMetricConfiguration,
-            statusSummaryConfiguration: statusSummaryConfiguration
+            statusSummaryConfiguration: statusSummaryConfiguration,
+            quotaSidebarEnabled: quotaSidebarEnabled,
+            quotaSidebarEdge: quotaSidebarEdge
         )
     }
 }

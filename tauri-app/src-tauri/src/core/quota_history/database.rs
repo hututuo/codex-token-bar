@@ -440,7 +440,7 @@ fn matching_stable_identity_rows(
     Ok(rows)
 }
 
-fn query_stable_identity_rows(
+pub(super) fn query_stable_identity_rows(
     connection: &Connection,
     identity: &QuotaHistoryIdentity,
     cutoff: Option<f64>,

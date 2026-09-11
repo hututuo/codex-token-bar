@@ -100,7 +100,7 @@ struct FloatingPanelPresentationModel: Equatable {
     }
 
     private static func radarFunUsageStatus(for snapshot: CodexRadarSnapshot?, base: String) -> String? {
-        guard CodexRadarPresentationText.effectiveAction(snapshot: snapshot) == "速登窗口" else {
+        guard CodexRadarPresentationText.isSpeedWindow(snapshot: snapshot) else {
             return nil
         }
         let normalized = base.trimmingCharacters(in: .whitespacesAndNewlines)

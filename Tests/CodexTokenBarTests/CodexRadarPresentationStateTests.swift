@@ -121,7 +121,7 @@ final class CodexRadarPresentationStateTests: XCTestCase {
         XCTAssertEqual(state.statusBadge, nil)
         XCTAssertEqual(state.detailWarning, nil)
         XCTAssertEqual(state.emptyState, nil)
-        XCTAssertTrue(state.stripStatusText.hasPrefix("10分钟刷新 · "))
+        XCTAssertTrue(state.stripStatusText.hasPrefix("5分钟刷新 · "))
 
         let tokenSnapshot = TokenDisplaySnapshot(
             title: "全会话实时",
@@ -157,7 +157,7 @@ final class CodexRadarPresentationStateTests: XCTestCase {
             status: "Codex 雷达 · 更新于 18:34:56"
         )
 
-        XCTAssertEqual(state.stripStatusText, "10分钟刷新 · 18:34:56")
+        XCTAssertEqual(state.stripStatusText, "5分钟刷新 · 18:34:56")
         XCTAssertFalse(state.stripStatusText.contains(snapshot.monitoredAt))
     }
 

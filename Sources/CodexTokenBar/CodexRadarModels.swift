@@ -42,6 +42,12 @@ enum CodexRadarPresentationText {
         return action(rawValue)
     }
 
+    static func isSpeedWindow(snapshot: CodexRadarSnapshot?, now: Date = Date()) -> Bool {
+        guard effectiveAction(snapshot: snapshot) == "速登窗口", let snapshot,
+              snapshot.window.open != false, snapshot.windowOpen != false else { return false }
+        return countdownDeadline(snapshot: snapshot).map { $0 > now } ?? true
+    }
+
     /// Shows a live countdown only when Radar provides a future window end.
     /// The fallback deliberately stays at the four-character window label;
     /// an inferred end time must never be presented as authoritative.
@@ -49,6 +55,7 @@ enum CodexRadarPresentationText {
         guard effectiveAction(snapshot: snapshot) == "速登窗口" else {
             return effectiveAction(snapshot: snapshot)
         }
+        guard isSpeedWindow(snapshot: snapshot, now: now) else { return "等待" }
         guard let endDate = countdownDeadline(snapshot: snapshot),
               endDate > now else {
             return "速登窗口"
@@ -712,6 +719,10 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
             return 3
         case "xhigh":
             return 4
+        case "max":
+            return 5
+        case "ultra":
+            return 6
         default:
             return Int.max
         }

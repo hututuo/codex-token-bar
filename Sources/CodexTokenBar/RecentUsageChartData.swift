@@ -11,9 +11,18 @@ extension RecentUsageChart {
         quotaRecentBins: [QuotaHistoryRecentBucket],
         quotaHourlyBins: [QuotaHistoryRecentBucket]
     ) -> RecentChartPreparedData {
-        let bins = usageBins(for: range, recentBins: recentBins, hourlyBins: hourlyBins)
+        // Keep intra-hour quota lows when the retained fine series covers the
+        // hourly history. Short legacy caches retain their available coverage.
+        let retainedHourly = Array(hourlyBins.suffix(30 * 24))
+        let fineCoversHistory = recentBins.first.map { first in
+            guard let coarseFirst = retainedHourly.first, let coarseLast = retainedHourly.last,
+                  let fineLast = recentBins.last else { return true }
+            return first.start < coarseFirst.start.addingTimeInterval(3600) && fineLast.start >= coarseLast.start
+        } ?? false
+        let dataRange: RecentChartRange = range == .sevenDays && fineCoversHistory ? .twentyFourHours : range
+        let bins = usageBins(for: dataRange, recentBins: recentBins, hourlyBins: hourlyBins)
         let cacheBreakdowns = cacheBreakdowns(
-            for: range,
+            for: dataRange,
             bins: bins,
             cacheRecentBins: cacheRecentBins,
             cacheHourlyBins: cacheHourlyBins
@@ -21,11 +30,11 @@ extension RecentUsageChart {
         let observedRates = observedCacheHitRates(cacheBreakdowns: cacheBreakdowns)
         let modelBreakdowns = modelBreakdowns(
             bins: bins,
-            interval: range.bucketInterval,
+            interval: dataRange.bucketInterval,
             attributionEvents: attributionEvents
         )
         let quotaBuckets = quotaBuckets(
-            for: range,
+            for: dataRange,
             bins: bins,
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins
@@ -40,12 +49,12 @@ extension RecentUsageChart {
             quotaBuckets,
             keyPath: \.sevenDayObservations
         )
-        let markerIndices = markerIndices(for: range, bins: bins, bucketInterval: range.bucketInterval)
+        let markerIndices = markerIndices(for: range, bins: bins, bucketInterval: dataRange.bucketInterval)
 
         return RecentChartPreparedData(
             range: range,
             bins: bins,
-            bucketInterval: range.bucketInterval,
+            bucketInterval: dataRange.bucketInterval,
             maxTokens: max(bins.map(\.tokens).max() ?? 1, 1),
             maxCalls: max(bins.map(\.calls).max() ?? 1, 1),
             tokenTotal: bins.reduce(0) { $0 + $1.tokens },

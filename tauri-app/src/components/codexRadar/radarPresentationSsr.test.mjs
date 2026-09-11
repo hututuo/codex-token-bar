@@ -62,8 +62,7 @@ test("Codex Radar diagnostics notice marks stale root and feed states", async ()
 
     assert.match(renderComponent(CodexRadarDiagnosticsNotice, { snapshot: staleRoot }), /雷达旧数据/);
     assert.match(renderComponent(CodexRadarDiagnosticsNotice, { snapshot: staleRoot }), /显示上次成功数据/);
-    assert.match(renderComponent(CodexRadarDiagnosticsNotice, { snapshot: staleFeed }), /RSS 旧数据/);
-    assert.match(renderComponent(CodexRadarDiagnosticsNotice, { snapshot: staleFeed }), /RSS 提醒暂用上次成功数据/);
+    assert.equal(renderComponent(CodexRadarDiagnosticsNotice, { snapshot: staleFeed }), "");
   });
 });
 

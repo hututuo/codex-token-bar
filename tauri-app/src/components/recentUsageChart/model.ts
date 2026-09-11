@@ -417,8 +417,14 @@ export function prepareRecentChartData(
   range: RecentChartRange,
   series: RecentUsageChartSeries,
 ): PreparedRecentChartData {
-  const config = RANGE_CONFIG[range];
-  const points = pointsForRange(range, series);
+  // The fine series retains 30 days. Widen the viewport without dropping
+  // intra-hour quota lows. Older short caches keep their hourly coverage.
+  const fine = series.recentUsage24h;
+  const hourly = series.recentUsage7d;
+  const useFine = range === "7d" && fine.length > 0 && (hourly.length === 0
+    || (fine[0].startUnix < hourly[0].startUnix + 3600 && fine[fine.length - 1].startUnix >= hourly[hourly.length - 1].startUnix));
+  const config = useFine ? { ...RANGE_CONFIG[range], subtitle: RANGE_CONFIG["24h"].subtitle, bucketSeconds: 300 } : RANGE_CONFIG[range];
+  const points = pointsForRange(useFine ? "24h" : range, series);
   const tokenTotal = points.reduce((total, point) => total + point.tokens, 0);
   const callTotal = points.reduce((total, point) => total + point.calls, 0);
   const inputWeightedCacheHit = weightedCacheHitRate(points);

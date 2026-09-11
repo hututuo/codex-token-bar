@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codexRadarRefreshTimestamp, codexRadarSnapshotHasContent, codexRadarSurfaceStatus, compactRadarModelName, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, parseCodexRadarWindowCountdownDeadline, primaryModelMeasurementRow, primaryModelRow, quotaChartSeries, quotaRadarAvailableWindows, radarActionDisplayText, radarActionDisplayTextForSnapshot, radarEffectiveActionDisplayText, radarSpeedWindowDeadlineMs, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
+import { codexRadarDiagnosticLabel, codexRadarRefreshTimestamp, codexRadarSnapshotHasContent, codexRadarSurfaceStatus, compactRadarModelName, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, parseCodexRadarWindowCountdownDeadline, primaryModelMeasurementRow, primaryModelRow, quotaChartSeries, quotaRadarAvailableWindows, radarActionDisplayText, radarActionDisplayTextForSnapshot, radarEffectiveActionDisplayText, radarSpeedWindowDeadlineMs, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
 
 const snapshot = {
   modelIq: {
@@ -132,7 +132,7 @@ test("Radar surface status prefers the local successful refresh time over monito
   });
 
   assert.match(codexRadarRefreshTimestamp(refreshed), /\d{2}:\d{2}:\d{2}/);
-  assert.match(codexRadarSurfaceStatus(refreshed), /^10分钟刷新 · \d{2}:\d{2}:\d{2}$/);
+  assert.match(codexRadarSurfaceStatus(refreshed), /^5分钟刷新 · \d{2}:\d{2}:\d{2}$/);
   assert.doesNotMatch(codexRadarSurfaceStatus(refreshed), /2026-07-22/);
 });
 
@@ -551,3 +551,21 @@ function radarSnapshotFixture(overrides = {}) {
     ...overrides,
   };
 }
+
+ test("reminder-history failure is not presented as failure of fresh live Radar", () => {
+ const current = normalizeCodexRadarSnapshot(snapshot);
+ const diagnostic = {source:"feed", category:"rss_failure", message:"reminder timeout", rawCause:"timeout", retryable:true};
+ current.feedStaleDataDisplayed = true;
+ current.diagnostics = [diagnostic];
+ assert.equal(codexRadarDiagnosticLabel(current, [diagnostic]), "");
+ assert.match(codexRadarSurfaceStatus(current, [diagnostic]), /^5分钟刷新/);
+ const detail = normalizeCodexRadarSnapshot(snapshot);
+ current.feedItems = [{title:"previous reminder",link:"https://example.com",guid:"history",pubDate:"today",description:"history"}];
+ const combined = selectCodexRadarDetailSnapshot(current, detail);
+ assert.deepEqual(combined.feedItems, current.feedItems);
+ assert.equal(combined.feedStaleDataDisplayed, true);
+ assert.deepEqual(combined.diagnostics, [diagnostic]);
+ current.staleDataDisplayed = true;
+ assert.equal(codexRadarDiagnosticLabel(current, [diagnostic]), "雷达旧数据");
+ assert.match(codexRadarSurfaceStatus(current, [diagnostic]), /雷达读取失败/);
+ });

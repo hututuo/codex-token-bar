@@ -463,14 +463,13 @@ export function codexRadarSurfaceStatus(snapshot: CodexRadarSnapshot | null, dia
     const diagnostic = snapshot.diagnostics.find((item) => item.source === "root") ?? diagnostics.find((item) => item.source === "root");
     return `Codex 雷达读取失败，显示上次成功数据${diagnostic?.rawCause ? `：${diagnostic.rawCause}` : ""}`;
   }
-  if (snapshot?.feedStaleDataDisplayed) {
-    return "Codex 雷达已更新，RSS 提醒暂用上次成功数据";
-  }
-  if (diagnostics.length > 0) {
-    return diagnostics[0].message;
+  // Reminder-history failures belong to that list, not the live Radar status.
+  const liveDiagnostics = diagnostics.filter(item => item.source !== "feed");
+  if (liveDiagnostics.length > 0) {
+    return liveDiagnostics[0].message;
   }
   if (snapshot) {
-    return `10分钟刷新 · ${codexRadarRefreshTimestamp(snapshot)}`;
+    return `5分钟刷新 · ${codexRadarRefreshTimestamp(snapshot)}`;
   }
   return "Codex 雷达待读取";
 }
@@ -502,10 +501,7 @@ export function codexRadarDiagnosticLabel(snapshot: CodexRadarSnapshot | null, d
   if (snapshot?.staleDataDisplayed) {
     return "雷达旧数据";
   }
-  if (snapshot?.feedStaleDataDisplayed) {
-    return "RSS 旧数据";
-  }
-  if (activeDiagnostics.length > 0) {
+  if (activeDiagnostics.some(item => item.source !== "feed")) {
     return "雷达读取失败";
   }
   return "";
@@ -542,7 +538,13 @@ export function selectCodexRadarDetailSnapshot(
   publicSnapshot: CodexRadarSnapshot | null,
   detailSnapshot: CodexRadarSnapshot | null,
 ): CodexRadarSnapshot | null {
-  return detailSnapshot ?? publicSnapshot;
+  if (!detailSnapshot || !publicSnapshot) return detailSnapshot ?? publicSnapshot;
+  // The optional full-detail endpoint does not fetch reminder history.
+  return { ...detailSnapshot, feedItems: publicSnapshot.feedItems,
+    feedStaleDataDisplayed: publicSnapshot.feedStaleDataDisplayed,
+    diagnostics: [...detailSnapshot.diagnostics.filter(item => item.source !== "feed"),
+      ...publicSnapshot.diagnostics.filter(item => item.source === "feed")],
+  };
 }
 
 export function primaryModelRow(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow {
@@ -689,6 +691,12 @@ export function radarEffectiveActionDisplayText(
   return radarActionDisplayText(recommended || snapshot?.window.action || null);
 }
 
+export function radarIsSpeedWindow(snapshot: CodexRadarSnapshot | null | undefined, nowMs = Date.now()): boolean {
+  if (!snapshot || radarEffectiveActionDisplayText(snapshot) !== "速登窗口" || snapshot.window.open === false || snapshot.windowOpen === false) return false;
+  const deadline = radarSpeedWindowDeadlineMs(snapshot);
+  return deadline === null || deadline > nowMs;
+}
+
 export function radarSpeedWindowDeadlineMs(
   snapshot: CodexRadarSnapshot | null | undefined,
 ): number | null {
@@ -724,6 +732,7 @@ export function radarActionDisplayTextForSnapshot(
   if (action !== "速登窗口") {
     return action;
   }
+  if (!radarIsSpeedWindow(snapshot, nowMs)) return "等待";
   const deadlineMs = radarSpeedWindowDeadlineMs(snapshot);
   if (deadlineMs === null || deadlineMs <= nowMs) {
     return "速登窗口";

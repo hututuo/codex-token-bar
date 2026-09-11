@@ -1,0 +1,20 @@
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {withSsrModules} from '../src/test/ssrHarness.mjs';
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+const output=new URL('../../runs/20260911-reset-page/',import.meta.url);
+await mkdir(output,{recursive:true});
+await withSsrModules(async load=>{
+ const {QuotaDetails,SidebarRailContent,ResetCreditDetails}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
+ const rows=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-5.6-terra','gpt-5.5'].map((model,i)=>({model,breakdown:{inputTokens:800000/(i+1),cachedInputTokens:600000/(i+1),outputTokens:100000/(i+1),totalTokens:900000/(i+1),calls:100}}));
+ const data={snapshot:{todayModelBreakdowns:rows,fiveHourAvailability:'absent',sevenDayAvailability:'measured',sevenDayRemainingPercent:.42,sevenDayExpectedRemainingPercent:70,tokensPerSecond:123,liveRateAvailable:true,todayTokensLabel:'205.5万',totalTokensLabel:'697亿',requestsLabel:'500',trendLabel:'额度使用平稳',resetCreditStandaloneLabel:'重置卡 1',unreadSummary:{source:'local',label:'2 个任务待查看'}},runningThreads:{status:'ready',total:12,mainThreads:3,subagents:9},quota:{quota:{fiveHour:{availability:'absent'},sevenDay:{availability:'measured',remainingPercent:.42,resetsAt:'2026-09-14T03:00:00Z'}}}};
+ data.trend=Array.from({length:288},(_,i)=>({at:1789000000+i*300,tokens:Math.round(5000+Math.abs(Math.sin(i*.13))*150000*(.5+.5*Math.sin(i*.03))),five:Math.max(0,1-(i%90)/100),seven:.85-i*.002}));
+ data.snapshot.trendLabel='先省着用 · 已超出均匀使用进度';
+ data.quota.quota.resetCredit={availableCount:2,updatedAt:'2026-09-10T12:00:00Z',status:'2张可用',credits:[1,2].map(n=>({cardId:String(n),status:'可用',issuedAt:`2026-09-0${n}T04:30:00Z`,expiresAt:`2026-10-0${n}T04:30:00Z`,expiresAtUnix:Date.parse(`2026-10-0${n}T04:30:00Z`)/1000,redeemedAt:''}))};
+ data.snapshot.fiveHourAvailability='measured';data.snapshot.fiveHourRemainingPercent=.8;data.quota.quota.fiveHour={availability:'measured',remainingPercent:.8,resetsAt:'2026-09-11T02:00:00Z'};
+ const radar={official:{available:true,stale:false,fresh:true,windowOpen:true,deadlineMs:Date.now()+600000,countdown:'09:59'},crowd:{rows:[{rank:1,model:'gpt-6-astra',effort:'ultra',iq:141},{rank:2,model:'gpt-5.6-sol',effort:'high',iq:135},{rank:3,model:'gpt-5.6-luna',effort:'max',iq:130}]}};
+ const css=(await readFile(new URL('../src/styles/global.css',import.meta.url),'utf8'))+(await readFile(new URL('../src/quota-sidebar/QuotaSidebar.css',import.meta.url),'utf8'));
+ const body=renderToStaticMarkup(React.createElement(ResetCreditDetails,{data}));
+ const rail=renderToStaticMarkup(React.createElement(SidebarRailContent,{data,radar,state:{mode:'hover'},onOpen(){}}));
+ await writeFile(new URL('full-preview.html',output),`<!doctype html><html><meta charset="utf-8"><style>${css}body{margin:0;padding:30px;display:flex;gap:30px;background:#273c42;font-family:system-ui;color:#edf1e9}*{box-sizing:border-box}button{font:inherit}.qs-detail{width:430px;height:600px;flex:none}.qs-rail{width:88px;height:560px;flex:none}.qs-summary{top:50%}h1{font-size:18px}</style><body class="quota-sidebar-document"><main class="qs-detail"><header><strong>Codex · 重置卡</strong></header><div class="qs-detail-content">${body}</div></main><aside class="qs-rail qs-mode-hover">${rail}</aside></body></html>`);
+});

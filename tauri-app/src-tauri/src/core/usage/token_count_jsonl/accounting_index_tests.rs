@@ -24,7 +24,7 @@ fn accounting_migration_reconciles_legacy_rows_and_is_idempotent() {
     drop(ExactUsageIndex::open(&root).unwrap());
 
     let first = Connection::open(&index_path).unwrap();
-    assert_eq!(metadata_value(&first, "schema_version"), Some("12".into()));
+    assert_eq!(metadata_value(&first, "schema_version"), Some("13".into()));
     assert_eq!(
         metadata_value(&first, "accounting_revision"),
         Some("codex-components-v1".into())
@@ -140,7 +140,7 @@ fn accounting_migration_rolls_back_event_updates_and_markers_then_retries() {
     drop(ExactUsageIndex::open(&root).unwrap());
 
     let recovered = Connection::open(&index_path).unwrap();
-    assert_eq!(metadata_value(&recovered, "schema_version"), Some("12".into()));
+    assert_eq!(metadata_value(&recovered, "schema_version"), Some("13".into()));
     assert_eq!(
         metadata_value(&recovered, "accounting_revision"),
         Some("codex-components-v1".into())

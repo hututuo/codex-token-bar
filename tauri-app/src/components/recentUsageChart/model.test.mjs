@@ -1321,3 +1321,22 @@ test("RecentUsageChart includes the two-step quota guide and calculation-card ca
   assert.match(css, /\.recent-chart-quota-guide\s*\{/);
   assert.match(css, /\.recent-chart-quota-guide__arrow\s*\{/);
 });
+
+
+test("7d preserves the same five-minute low and token totals as 24h", () => {
+  const fine = Array.from({length:12}, (_, i) => point(i*300, {tokens:100,calls:1,sevenDayRemainingPercent:i===5 ? .07 : .17}));
+  const series = {recentUsage24h:fine,recentUsage7d:[point(0,{tokens:1200,calls:12,sevenDayRemainingPercent:.17})],recentUsage30d:[]};
+  const day = prepareRecentChartData("24h",series);
+  const week = prepareRecentChartData("7d",series);
+  assert.equal(week.bucketSeconds,300);
+  assert.equal(Math.min(...week.points.map(p=>p.sevenDayRemainingPercent)),.07);
+  assert.deepEqual(week.points,day.points);
+  assert.equal(week.tokenTotal,1200);
+  assert.equal(week.callTotal,12);
+});
+
+test("short legacy fine cache retains the longer hourly history", () => {
+  const data=prepareRecentChartData("7d",{recentUsage24h:[point(86400)],recentUsage7d:[point(0),point(86400)],recentUsage30d:[]});
+  assert.equal(data.bucketSeconds,3600);
+  assert.equal(data.points[0].startUnix,0);
+});

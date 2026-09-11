@@ -1,3 +1,8 @@
+pub(super) mod cycle_range;
+mod retention;
+mod reconciler;
+mod ledger;
+mod message_links;
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -56,16 +61,23 @@ use uuid::Uuid;
 // v0.9.1 is the only forward-migration baseline for v0.9.2. Earlier and future
 // layouts are preserved read-only and rejected instead of being deleted.
 const INDEX_SCHEMA_VERSION: i64 = 11; // durable structural candidate contract
-const CURRENT_SCHEMA_VERSION: i64 = 12;
+const CURRENT_SCHEMA_VERSION: i64 = 13;
 const GITHUB_BASE_SCHEMA_VERSION: i64 = 9;
 const INDEX_INTEGRITY_RECEIPT_VERSION: u32 = 2;
 const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
 // Bump this whenever exact-session parsing changes event or checkpoint
 // semantics. The fork-boundary name remains for the main-index migration;
 // private staged databases bind the broader parser revision below.
-const EXACT_SESSION_PARSER_REVISION: &str = "explicit-subagent-delayed-context-v3";
+const LEGACY_SESSION_PARSER_REVISION: &str = "explicit-subagent-delayed-context-v3";
+const LEGACY_STAGED_PARSER_REVISION: &str = "components-v1-explicit-subagent-delayed-context-v3";
+const PAGINATED_V4_PARSER_REVISION: &str = "paginated-subagent-boundary-v4";
+const PAGINATED_V4_STAGED_REVISION: &str = "components-v1-paginated-subagent-boundary-v4";
+const PAGINATED_V5_PARSER_REVISION: &str = "paginated-owned-turn-v5";
+const PAGINATED_V5_STAGED_REVISION: &str = "components-v1-paginated-owned-turn-v5";
+const EXACT_SESSION_PARSER_REVISION: &str = "paginated-owned-turn-v6";
 const FORK_REPLAY_BOUNDARY_REVISION: &str = EXACT_SESSION_PARSER_REVISION;
-pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = "components-v1-explicit-subagent-delayed-context-v3";
+pub(super) const PARSER_REPAIR_VERIFY_KEY: &str = "parser_repair_verify_pending";
+pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = "components-v1-paginated-owned-turn-v6";
 // This marker is independent from the parser/schema revisions because it
 // records completion of a one-time logical repair for legacy databases that
 // were written with foreign-key enforcement disabled. Keep it separate so a
@@ -345,6 +357,16 @@ struct Schema11MigrationFacts {
     session_metadata_updated_at_total: i64,
     digests: Schema11MigrationDigests,
     lineage: Vec<Option<String>>,
+    #[serde(default)]
+    protected_tables: std::collections::BTreeMap<String,String>,
+}
+
+impl Schema11MigrationFacts {
+    fn preserves(&self, expected: &Self) -> bool {
+        let mut actual_base=self.clone(); let mut expected_base=expected.clone();
+        actual_base.protected_tables.clear(); expected_base.protected_tables.clear();
+        actual_base==expected_base && expected.protected_tables.iter().all(|(table,digest)|self.protected_tables.get(table)==Some(digest))
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1156,6 +1178,8 @@ fn assess_index_migration(
     if !existed_before {
         return Ok(MigrationAssessment::Compatible);
     }
+    retention::validate(connection)?;
+    ledger::validate(connection)?;
     let metadata_exists = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
@@ -1241,7 +1265,7 @@ fn assess_index_migration(
         ),
     ] {
         if let Some(stored) = metadata_text(connection, key)? {
-            if stored != supported {
+            if stored != supported && !(key == "fork_replay_boundary_revision" && [LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&stored.as_str())) {
                 return Ok(MigrationAssessment::UpgradeRequired {
                     component,
                     stored,
@@ -1390,10 +1414,20 @@ pub(super) fn maintain_exact_index_storage_for_testing(
 
 impl ExactUsageIndex {
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
+        let path=database_path(codex_home)?;
+        #[cfg(not(test))]
+        {
+            let legacy=app_paths::tauri_usage_cache_dir().ok_or("无法定位旧用量索引目录")?
+                .join("exact-token-index").join(format!("{}.sqlite3",stable_path_fingerprint(codex_home)));
+            relocate_legacy_index(codex_home,&legacy,&path)?;
+        }
+        Self::open_at(codex_home,path)
+    }
+
+    fn open_at(codex_home: &Path,path: PathBuf) -> Result<Self, String> {
         let mut preparation = IndexPreparationTrace::new("in_process_lock");
         let operation_lock = AppOperationGuard::acquire(codex_home)?;
         preparation.advance("file_lock");
-        let path = database_path(codex_home)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
                 format!(
@@ -1506,7 +1540,7 @@ impl ExactUsageIndex {
             ),
         ] {
             if let Some(revision) = metadata_text(&connection, key)? {
-                if revision != supported {
+                if revision != supported && !(key == "fork_replay_boundary_revision" && [LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&revision.as_str())) {
                     return Err(format!(
                         "精确 token {component} revision {revision} 高于或不同于当前支持版本 {supported}，需要升级软件，已拒绝覆盖"
                     ));
@@ -1783,8 +1817,14 @@ impl ExactUsageIndex {
                 metadata_i64(&connection, "revision")?.unwrap_or_else(fresh_revision_seed);
             set_metadata(&connection, DASHBOARD_REVISION_KEY, &revision.to_string())?;
         }
+        // Capture structural proof before the additive protection tables are
+        // installed. Those known writes do not change the validated events.
+        let accounting_receipt = accounting_structural_receipt(&connection,candidate_validation.as_ref())?;
+        retention::install(&connection)?;
+        ledger::install(&connection)?;
         preparation.advance("accounting_migration");
-        migrate_accounting(&mut connection, candidate_validation.as_ref())?;
+        apply_accounting_migration(&mut connection, accounting_receipt)?;
+        retention::install(&connection)?;
         preparation.advance("finalize_open");
         let migration_markers_complete = !should_report_migration
             || migration_markers_complete(&connection, replay_migration_complete)?;
@@ -2317,6 +2357,28 @@ impl ExactUsageIndex {
         scan_total_override: Option<u64>,
         mode: ExactSyncMode,
     ) -> Result<u64, String> {
+        let revision = self.sync_with_scan_plan_mode_once(codex_home, warnings, discovery, scan_total_override, mode)?;
+        if !self.migration_pending && metadata_text(&self.connection, PARSER_REPAIR_VERIFY_KEY)?.is_some() {
+            // One bounded metadata-fast pass after a planned parser repair.
+            // It clears a completed rewrite episode, but still detects genuine
+            // lineage/ledger faults. Never launch this from a period read.
+            let verified = self.sync_with_scan_plan_mode_once(codex_home, warnings, None, scan_total_override, mode)?;
+            self.connection.mark_receipt_dirty();
+            self.connection.execute("DELETE FROM metadata WHERE key=?1", [PARSER_REPAIR_VERIFY_KEY]).map_err(|e|e.to_string())?;
+            self.connection.mark_receipt_eligible();
+            return Ok(verified);
+        }
+        Ok(revision)
+    }
+
+    fn sync_with_scan_plan_mode_once(
+        &mut self,
+        codex_home: &Path,
+        warnings: &mut Vec<LocalDataWarning>,
+        discovery: Option<PreciseScanDiscovery>,
+        scan_total_override: Option<u64>,
+        mode: ExactSyncMode,
+    ) -> Result<u64, String> {
         let cleanup_index_path = database_path(codex_home)?;
         let result = (|| -> Result<u64, String> {
             // The derived aggregate layer is disposable, but a newer build may
@@ -2374,6 +2436,11 @@ impl ExactUsageIndex {
                 if !self.migration_pending {
                     self.connection.mark_receipt_eligible();
                 }
+            }
+
+            if !self.migration_pending && mode.builds_dashboard_derived_data()
+                && metadata_i64(&self.connection, "building_generation")?.is_none() {
+                message_links::repair(&mut self.connection, codex_home, warnings)?;
             }
 
             // A steady-state refresh is common: the source files and state
@@ -2722,8 +2789,11 @@ impl ExactUsageIndex {
             }
             if mode.builds_dashboard_derived_data() {
                 self.ensure_dashboard_aggregates(codex_home)?;
+                if !self.migration_pending {
+                    message_links::repair(&mut self.connection, codex_home, warnings)?;
+                }
             }
-            Ok(revision)
+            Ok(self.revision()?.max(revision))
         })();
         if result.is_ok() {
             // Excluded accounting rows are handled by the numeric policy, not a
@@ -3316,8 +3386,7 @@ impl ExactUsageIndex {
                 r#"
                 DROP TABLE IF EXISTS temp.published_files;
                 CREATE TEMP TABLE published_files AS
-                SELECT *
-                FROM main.published_files;
+                SELECT * FROM main.published_files;
                 CREATE UNIQUE INDEX published_files_path_snapshot_idx
                     ON published_files(path);
                 "#,
@@ -3328,7 +3397,7 @@ impl ExactUsageIndex {
     fn source_change_snapshot_signatures(&self) -> Result<HashMap<String, (u64, String)>, String> {
         let mut statement = self
             .connection
-            .prepare("SELECT path, size, modified_ns FROM temp.published_files")
+            .prepare("SELECT path,size,modified_ns FROM temp.published_files f WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=f.source_id AND l.missing=1)")
             .map_err(|error| format!("无法读取精确 token 源文件快照：{error}"))?;
         let rows = statement
             .query_map([], |row| {
@@ -4877,10 +4946,10 @@ impl ExactUsageIndex {
                 turn_rows.input_tokens,
                 turn_rows.cached_input_tokens,
                 turn_rows.output_tokens,
-                turn_rows.user_prompt_start,
-                turn_rows.user_prompt_end,
-                turn_rows.assistant_response_start,
-                turn_rows.assistant_response_end,
+                binding.user_prompt_start,
+                binding.user_prompt_end,
+                binding.assistant_response_start,
+                binding.assistant_response_end,
                 turn_rows.turn_index AS turn_index_in_session,
                 COALESCE(
                     NULLIF(TRIM(m.title), ''),
@@ -4889,6 +4958,8 @@ impl ExactUsageIndex {
                 f.size,
                 f.modified_ns
             FROM selected_turns AS turn_rows
+            LEFT JOIN usage_ledger_bindings binding ON binding.event_id=turn_rows.event_id AND binding.available=1
+                AND binding.raw_generation=(SELECT raw_generation FROM usage_ledger_sources ls WHERE ls.source_id=binding.source_id AND ls.missing=0)
             LEFT JOIN session_metadata m ON m.session_id = turn_rows.session_id
             JOIN files f
               ON f.generation = turn_rows.source_file_generation
@@ -4954,6 +5025,13 @@ pub(super) fn peek_startup_identity(
     codex_home: &Path,
 ) -> Result<Option<StartupIndexIdentity>, String> {
     let path = database_path(codex_home)?;
+    // Until the one-time copy is published, the old cache database still
+    // supplies a read-only last-good identity. No migration occurs here.
+    #[cfg(not(test))]
+    let path = if !path.exists() {
+        app_paths::tauri_usage_cache_dir().map(|root|root.join("exact-token-index").join(format!("{}.sqlite3",stable_path_fingerprint(codex_home))))
+            .filter(|legacy|legacy.is_file()).unwrap_or(path)
+    } else { path };
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(format!(
@@ -4995,7 +5073,7 @@ pub(super) fn peek_startup_identity(
     let parser_revision = metadata_text(&connection, "fork_replay_boundary_revision")?;
     if parser_revision
         .as_deref()
-        .is_some_and(|revision| revision != EXACT_SESSION_PARSER_REVISION)
+        .is_some_and(|revision| ![EXACT_SESSION_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION].contains(&revision))
     {
         return Err(format!(
             "精确 token 启动缓存 parser revision 不兼容：{}",
@@ -5485,6 +5563,7 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
                 ],
             )
             .map_err(|error| format!("无法写入精确 token 事件索引：{error}"))?;
+        ledger::record_append(self.transaction,self.file_path,self.ordinal,event)?;
         Ok(())
     }
 }
@@ -5526,8 +5605,8 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
-                    assistant_response_end, accounting_kind, reported_total_tokens, token_source_offset
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    assistant_response_end, accounting_kind, reported_total_tokens, token_source_offset, usage_fingerprint
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                 "#,
                 params![
                     checked_i64(self.ordinal, "暂存事件序号")?,
@@ -5563,6 +5642,7 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
                     event.accounting_kind,
                     checked_optional_i64(event.reported_total_tokens, "reported total")?,
                     checked_i64(event.token_source_offset, "token byte offset")?,
+                    event.usage_fingerprint,
                 ],
             )
             .map(|_| ())
@@ -5910,17 +5990,24 @@ fn stage_or_reuse_full_rebuild(
 ) -> Result<StagedFullRebuild, StagedFullRebuildError> {
     let primary_path = staging_database_path(index_path, &job.path);
     let existing_paths = staging_database_paths(index_path, &job.path)?;
+    let mut blocked = false;
     for database_path in &existing_paths {
+        if restartable_private_stage(database_path, job)? {
+            preserve_private_stage_family(database_path)?;
+            continue;
+        }
         if let Some(staged) = reusable_staged_full_rebuild(database_path, job, target_generation)? {
             return Ok(staged);
         }
+        blocked = true;
     }
-    if !existing_paths.is_empty() || primary_path.exists() {
+    if blocked || primary_path.exists() {
         return Err(StagedFullRebuildError::Fatal(format!(
-            "精确 token 现有暂存未通过内容与 checkpoint 验证，已保留暂存和上一代统计；需要修复后重试：{}",
-            primary_path.display()
+            "精确 token 现有暂存未通过内容与 checkpoint 验证，已保留暂存和上一代统计；需要修复后重试：{}", primary_path.display()
         )));
     }
+    // Also preserve sidecars left by interruption between family renames.
+    preserve_private_stage_family(&primary_path)?;
     let database_path = primary_path;
     build_staged_full_rebuild(job, database_path, target_generation, codex_home, warnings)
 }
@@ -6333,7 +6420,7 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
                 assistant_response_end INTEGER,
-                accounting_kind INTEGER NOT NULL DEFAULT 0, reported_total_tokens INTEGER, token_source_offset INTEGER
+                accounting_kind INTEGER NOT NULL DEFAULT 0, reported_total_tokens INTEGER, token_source_offset INTEGER, usage_fingerprint BLOB
             ) WITHOUT ROWID;
 
             CREATE TABLE chunks (
@@ -6520,13 +6607,17 @@ fn validated_staged_full_rebuild(
         (Ok(size), Ok(modified_ns)) => FileSignature { size, modified_ns },
         _ => return Ok(None),
     };
+    if [LEGACY_STAGED_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&manifest.parser_revision.as_str())
+        && super::session_parser::paginated_subagent_boundary(&mut fs::File::open(&job.file).map_err(|e| e.to_string())?)?.is_some() {
+        return Ok(None);
+    }
     let artifact_bytes = fs::metadata(database_path)
         .map_err(|error| format!("无法复核精确 token 暂存文件大小：{error}"))?
         .len();
     if manifest.path != job.path
         || manifest.session_id != job.session_id
         || manifest.migration_revision != expected_migration_revision
-        || (manifest.parser_revision != STAGED_FULL_REBUILD_PARSER_REVISION && manifest.parser_revision != EXACT_SESSION_PARSER_REVISION)
+        || ![STAGED_FULL_REBUILD_PARSER_REVISION, EXACT_SESSION_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&manifest.parser_revision.as_str())
         || manifest.target_building_generation != target_generation
         || manifest.artifact_id.trim().is_empty()
         || manifest.integrity != STAGING_MANIFEST_INTEGRITY
@@ -6686,7 +6777,7 @@ fn validated_staged_full_rebuild(
         resume_offset: nonnegative_u64(manifest.resume_offset),
         parser_state: ExactSessionParserState {
             previous_total_tokens: manifest.previous_total_tokens.map(nonnegative_u64),
-            accounting_state: if manifest.parser_revision == STAGED_FULL_REBUILD_PARSER_REVISION { AccountingState::decode(manifest.accounting_state)? } else { None },
+            accounting_state: if [STAGED_FULL_REBUILD_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&manifest.parser_revision.as_str()) { AccountingState::decode(manifest.accounting_state)? } else { None },
             fork_replay_started_at,
             fork_replay_active: manifest.fork_replay_active,
             is_explicit_subagent_fork: manifest.is_explicit_subagent_fork,
@@ -6862,6 +6953,7 @@ fn import_staged_full_rebuild(
                 validated.event_count, imported_events
             ));
         }
+        ledger::reconcile_full(&transaction, &validated)?;
         if mode.builds_dashboard_derived_data() {
             refresh_dashboard_file_aggregates(&transaction, generation, &validated.job.path)?;
         }
@@ -7792,6 +7884,12 @@ fn refresh_dashboard_turn_candidates_for_changed_generations(
     generation: i64,
     previous_generation: i64,
 ) -> Result<(), String> {
+    refresh_dashboard_turn_candidates_for_session(transaction, generation, previous_generation, None)
+}
+
+fn refresh_dashboard_turn_candidates_for_session(
+    transaction: &Transaction<'_>, generation: i64, previous_generation: i64, repaired_session: Option<&str>,
+) -> Result<(), String> {
     transaction
         .execute(
             r#"
@@ -7801,6 +7899,8 @@ fn refresh_dashboard_turn_candidates_for_changed_generations(
                 WHERE generation > ?2 AND generation <= ?1
             ),
             dirty_sessions AS (
+                SELECT ?3 AS session_id WHERE ?3 IS NOT NULL
+                UNION
                 SELECT DISTINCT session_id
                 FROM files touched_files
                 WHERE touched_files.session_id <> ''
@@ -7821,7 +7921,7 @@ fn refresh_dashboard_turn_candidates_for_changed_generations(
             WHERE aggregate_generation = ?1
               AND session_id IN (SELECT session_id FROM dirty_sessions)
             "#,
-            params![generation, previous_generation],
+            params![generation, previous_generation, repaired_session],
         )
         .map_err(|error| format!("无法清理受影响会话的轮次候选聚合：{error}"))?;
     transaction
@@ -7833,6 +7933,8 @@ fn refresh_dashboard_turn_candidates_for_changed_generations(
                 WHERE generation > ?2 AND generation <= ?1
             ),
             dirty_sessions AS (
+                SELECT ?3 AS session_id WHERE ?3 IS NOT NULL
+                UNION
                 SELECT DISTINCT session_id
                 FROM files touched_files
                 WHERE touched_files.session_id <> ''
@@ -7943,7 +8045,7 @@ fn refresh_dashboard_turn_candidates_for_changed_generations(
                 turn_index, session_calls
             FROM ranked
             "#,
-            params![generation, previous_generation],
+            params![generation, previous_generation, repaired_session],
         )
         .map(|_| ())
         .map_err(|error| format!("无法更新受影响会话的轮次候选聚合：{error}"))
@@ -8351,6 +8453,8 @@ fn publish_schema11_pending_generation(
         return Err("schema 11 单文件墓碑仍携带暂存子行，已停止发布并保留现场".into());
     }
 
+    ledger::publish_bindings(transaction, generation)?;
+
     // Full replacements and tombstones discard only the affected source's
     // published children. The transaction still exposes the old current layer
     // to every other connection until all replacements and the publication
@@ -8361,11 +8465,8 @@ fn publish_schema11_pending_generation(
             DELETE FROM event_rows
             WHERE source_id IN (
                 SELECT source_id FROM pending_sources WHERE mode IN ('full', 'tombstone')
-            );
-            DELETE FROM source_fingerprints
-            WHERE source_id IN (
-                SELECT source_id FROM pending_sources WHERE mode IN ('full', 'tombstone')
-            );
+            ) AND NOT EXISTS(SELECT 1 FROM pending_event_rows p WHERE p.id=event_rows.id);
+
             DELETE FROM source_chunks
             WHERE source_id IN (
                 SELECT source_id FROM pending_sources WHERE mode IN ('full', 'tombstone')
@@ -8398,7 +8499,16 @@ fn publish_schema11_pending_generation(
             WHERE p.target_generation = (
                 SELECT CAST(value AS INTEGER) FROM metadata
                 WHERE key = 'building_generation'
-            ) AND p.mode <> 'tombstone';
+            ) AND p.mode <> 'tombstone'
+            ON CONFLICT(id) DO UPDATE SET model=COALESCE(event_rows.model,excluded.model),
+                tokens=excluded.tokens,input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,
+                output_tokens=excluded.output_tokens,reasoning_output_tokens=excluded.reasoning_output_tokens,
+                accounting_kind=excluded.accounting_kind,reported_total_tokens=excluded.reported_total_tokens
+            WHERE (event_rows.model IS NULL AND excluded.model IS NOT NULL)
+                OR event_rows.tokens IS NOT excluded.tokens OR event_rows.input_tokens IS NOT excluded.input_tokens
+                OR event_rows.cached_input_tokens IS NOT excluded.cached_input_tokens OR event_rows.output_tokens IS NOT excluded.output_tokens
+                OR event_rows.reasoning_output_tokens IS NOT excluded.reasoning_output_tokens
+                OR event_rows.accounting_kind IS NOT excluded.accounting_kind OR event_rows.reported_total_tokens IS NOT excluded.reported_total_tokens;
 
             INSERT OR IGNORE INTO source_fingerprints(source_id, fingerprint)
             SELECT f.source_id, f.fingerprint
@@ -8668,12 +8778,21 @@ fn finalize_generation(
         return Ok(u64::try_from(revision).unwrap_or(0));
     }
 
+    // A previous summary-only generation may still own unprojected numeric
+    // changes. Do not certify those as covered merely because this full pass
+    // updated its own changed sources. The post-publish incremental repair
+    // must retain the older watermark until it consumes that gap.
+    let derived_was_current = metadata_i64(&transaction,DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?
+        == metadata_i64(&transaction,"published_generation")?;
+    ledger::preserve_pending_missing(&transaction)?;
+
     let missing_count = transaction
         .query_row(
             r#"
             SELECT COUNT(*)
             FROM sources s
             WHERE s.deleted = 0
+              AND NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=s.source_id AND l.missing=1)
               AND NOT EXISTS (
                   SELECT 1
                   FROM exact_seen_files seen
@@ -8685,61 +8804,16 @@ fn finalize_generation(
         )
         .map_err(|error| format!("无法检查本轮已删除的会话文件：{error}"))?;
     if missing_count > 0 {
-        let missing_dashboard_bounds = transaction
-            .query_row(
-                r#"
-                SELECT MIN(b.bucket_start), MAX(b.bucket_start)
-                FROM dashboard_source_5m b
-                JOIN sources s ON s.source_id = b.source_id
-                WHERE s.deleted = 0
-                  AND NOT EXISTS (
-                      SELECT 1 FROM exact_seen_files seen WHERE seen.path = s.path
-                  )
-                "#,
-                [],
-                |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
-            )
-            .map(|(start, end)| start.zip(end))
-            .map_err(|error| format!("无法读取已删除会话的聚合范围：{error}"))?;
-        transaction
-            .execute(
-                r#"
-                INSERT INTO pending_sources(
-                    source_id, target_generation, mode, deleted, size, modified_ns,
-                    prefix_sha256, append_ready, resume_offset, previous_total_tokens,
-                    fork_replay_started_ns, fork_replay_active,
-                    is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
-                    current_model, current_user_prompt_start, current_user_prompt_end,
-                    assistant_response_start, assistant_response_end, audit_chunk_index
-                )
-                SELECT s.source_id, ?1, 'tombstone', 1, 0, '0', X'', 0,
-                       NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, 0
-                FROM sources s
-                WHERE s.deleted = 0
-                  AND NOT EXISTS (
-                      SELECT 1 FROM exact_seen_files seen WHERE seen.path = s.path
-                  )
-                ON CONFLICT(source_id) DO UPDATE SET
-                    target_generation = excluded.target_generation,
-                    mode = 'tombstone', deleted = 1, size = 0,
-                    modified_ns = '0', prefix_sha256 = X'', append_ready = 0,
-                    resume_offset = NULL, previous_total_tokens = NULL,
-                    fork_replay_started_ns = NULL, fork_replay_active = 0,
-                    is_explicit_subagent_fork = 0,
-                    last_skipped_fork_replay_token_ns = NULL,
-                    current_model = NULL, current_user_prompt_start = NULL,
-                    current_user_prompt_end = NULL, assistant_response_start = NULL,
-                    assistant_response_end = NULL, audit_chunk_index = 0
-                "#,
-                params![generation],
-            )
-            .map_err(|error| format!("无法登记本轮已删除的会话文件：{error}"))?;
-        discard_schema11_tombstone_pending_children(&transaction)?;
-        if mode.builds_dashboard_derived_data() {
-            if let Some((start, end)) = missing_dashboard_bounds {
-                refresh_dashboard_5m_range(&transaction, generation, start, end)?;
-            }
-        }
+        // Losing a raw file revokes its excerpt binding, not its published
+        // consumption. Keep the checkpoint and ledger for a later restore.
+        transaction.execute_batch(r#"
+            UPDATE usage_ledger_bindings SET available=0 WHERE source_id IN(
+                SELECT s.source_id FROM sources s WHERE s.deleted=0
+                  AND NOT EXISTS(SELECT 1 FROM exact_seen_files f WHERE f.path=s.path));
+            UPDATE usage_ledger_sources SET missing=1 WHERE source_id IN(
+                SELECT s.source_id FROM sources s WHERE s.deleted=0
+                  AND NOT EXISTS(SELECT 1 FROM exact_seen_files f WHERE f.path=s.path));
+        "#).map_err(|e|format!("无法保留缺失来源的历史账本：{e}"))?;
         mark_dashboard_changed(&transaction)?;
     }
 
@@ -8879,7 +8953,7 @@ fn finalize_generation(
         DASHBOARD_REVISION_KEY,
         &dashboard_revision.to_string(),
     )?;
-    if mode.builds_dashboard_derived_data()
+    if mode.builds_dashboard_derived_data() && derived_was_current
         && metadata_i64(&transaction, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?
             == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
     {
@@ -8942,6 +9016,7 @@ fn visible_duplicate_session_lineage(
                  AND f.generation = latest.generation
                 WHERE f.deleted = 0
                   AND TRIM(f.session_id) <> ''
+                  AND NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=f.source_id AND l.missing=1)
             )
             SELECT EXISTS(
                 SELECT 1
@@ -9250,6 +9325,22 @@ fn reserve_staging_source(
     };
 
     let mut stored = read(connection)?;
+    // Archiving changes a path, not the owner of already observed usage. Only
+    // rebind a unique missing source; a still-present duplicate or an ambiguous
+    // legacy identity must never silently merge two histories.
+    if stored.is_none() && !session_id.is_empty() {
+        let candidates: Vec<(i64,String)> = connection.prepare(
+            "SELECT source_id,path FROM sources WHERE session_id=?1"
+        ).map_err(|e|e.to_string())?.query_map(params![session_id],|r|Ok((r.get(0)?,r.get(1)?)))
+            .map_err(|e|e.to_string())?.collect::<Result<_,_>>().map_err(|e|e.to_string())?;
+        if candidates.len()==1 {
+            let (source,old_path)=&candidates[0];
+            if fs::metadata(old_path).is_err_and(|e|e.kind()==std::io::ErrorKind::NotFound) {
+                connection.execute("UPDATE sources SET path=?2 WHERE source_id=?1",params![source,path]).map_err(|e|e.to_string())?;
+                stored=read(connection)?;
+            }
+        }
+    }
     if stored.is_none() {
         connection
             .execute(
@@ -9317,6 +9408,7 @@ fn process_session_file(
     expected_signature: Option<FileSignature>,
     mode: ExactSyncMode,
 ) -> Result<Option<FullRebuildJob>, String> {
+    if is_history_repair_workspace(file) { return Ok(None); }
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let path = canonical.to_string_lossy().into_owned();
 
@@ -9407,10 +9499,8 @@ fn process_session_file(
         )
         .optional()
         .map_err(|error| format!("无法读取会话文件索引签名：{error}"))?;
-    let had_existing_source = previous_signature
-        .as_ref()
-        .is_some_and(|(_, deleted, ..)| !deleted);
-    let unchanged = previous_signature
+    let source_missing: bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM usage_ledger_sources l JOIN sources s USING(source_id) WHERE s.path=?1 AND l.missing=1 AND NOT EXISTS(SELECT 1 FROM pending_sources p WHERE p.source_id=s.source_id AND p.mode<>'tombstone'))",params![&path],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let unchanged = !source_missing && previous_signature
         .as_ref()
         .is_some_and(|(_, deleted, size, modified_ns)| {
             !deleted && signature.matches_stored(nonnegative_u64(*size), modified_ns)
@@ -9419,7 +9509,7 @@ fn process_session_file(
         return Ok(None);
     }
 
-    if let Some(checkpoint) = indexed_file_checkpoint(connection, &path, generation)? {
+    if let Some(checkpoint) = if source_missing { None } else { indexed_file_checkpoint(connection, &path, generation)? } {
         let latest_generation = previous_signature
             .as_ref()
             .map(|(generation, ..)| *generation);
@@ -9457,12 +9547,8 @@ fn process_session_file(
         }
     }
 
-    // A previously published source that cannot be proven as a pure append may
-    // have reordered or replaced events. Rotate only when this generation is
-    // atomically published; new files and deletions keep the current lineage.
-    if had_existing_source {
-        set_metadata(connection, BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY, "1")?;
-    }
+    // Full scans reconcile against the retained numeric ledger. A raw rewrite
+    // alone no longer revokes attribution provenance.
 
     let session_id = session_id_from_file(file);
     let staging_base = reserve_staging_source(connection, &path, &session_id)?;
@@ -9663,7 +9749,7 @@ fn append_session_file(
         file_path: path,
         ordinal,
     };
-    let parsed = stream_session_file_exact_from(
+    let parse_result = stream_session_file_exact_from(
         file,
         handle,
         hashing_start_offset,
@@ -9674,7 +9760,7 @@ fn append_session_file(
         &session_id,
         &mut sink,
         warnings,
-    )?;
+    );
     #[cfg(test)]
     APPEND_SCAN_BYTES.fetch_add(
         signature.size.saturating_sub(hashing_start_offset),
@@ -9683,10 +9769,31 @@ fn append_session_file(
     diagnostics.append_scan_bytes = diagnostics
         .append_scan_bytes
         .saturating_add(signature.size.saturating_sub(hashing_start_offset));
+    drop(sink);
+    let parsed = match parse_result {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            // Only failed parsing needs an extra boundary check. Successful
+            // appends already validate the old tail with the streaming hash.
+            let mut boundaries = vec![checkpoint.resume_offset.saturating_sub(1) / EXACT_INDEX_CHUNK_SIZE];
+            if let Some(tail) = tail_chunk_index { boundaries.push(tail); }
+            boundaries.sort_unstable();
+            boundaries.dedup();
+            for index in boundaries {
+                if checkpoint.size == 0 { break; }
+                let Some(stored) = stored_file_chunk(&transaction, checkpoint.generation, path, index)? else {
+                    return Ok(false);
+                };
+                if hash_file_chunk(handle, file, index, stored.byte_count)? != stored {
+                    return Ok(false); // Transaction drop rolls back partial append rows.
+                }
+            }
+            return Err(error);
+        }
+    };
     diagnostics.pending_tail_bytes = diagnostics
         .pending_tail_bytes
         .saturating_add(signature.size.saturating_sub(parsed.resume_offset));
-    drop(sink);
     run_after_prefix_scan_hook_for_testing(file);
 
     if checkpoint.size > 0 && parsed.validation_chunk_hash.as_ref() != stored_tail.as_ref() {
@@ -10429,6 +10536,7 @@ fn visit_session_files(
                     }
                 };
                 let path = entry.path();
+                if is_history_repair_workspace(&path) { continue; }
                 let metadata = match fs::symlink_metadata(&path) {
                     Ok(metadata) => metadata,
                     Err(error) => {
@@ -10618,6 +10726,7 @@ fn estimate_session_directory(
                 )
             })?;
             let path = entry.path();
+                if is_history_repair_workspace(&path) { continue; }
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) => {
@@ -10811,6 +10920,7 @@ fn enqueue_directory(
     warnings: &mut Vec<LocalDataWarning>,
     scan_completeness: &mut ExactScanCompleteness,
 ) -> Result<(), String> {
+    if is_history_repair_workspace(directory) { return Ok(()); }
     let canonical = match fs::canonicalize(directory) {
         Ok(canonical) if canonical.starts_with(canonical_home) => canonical,
         Ok(canonical) => {
@@ -12139,6 +12249,7 @@ fn schema11_migration_facts(
             session_metadata_updated_at_total,
             digests,
             lineage: schema11_lineage(connection)?,
+            protected_tables: ledger::protected_table_digests(connection)?,
         });
     }
     if !matches!(schema_version, GITHUB_BASE_SCHEMA_VERSION | 10) {
@@ -12284,6 +12395,7 @@ fn schema11_migration_facts(
         session_metadata_updated_at_total,
         digests,
         lineage: schema11_lineage(connection)?,
+            protected_tables: ledger::protected_table_digests(connection)?,
     })
 }
 
@@ -13223,7 +13335,7 @@ fn schema11_resume_candidate(
                 .map_err(|error| format!("无法验证已有 schema 11 候选副本：{error}"))?;
             let candidate_facts =
                 schema11_migration_facts(&candidate, manifest.source_receipt.schema_version)?;
-            if candidate_facts != source_facts {
+            if !candidate_facts.preserves(&source_facts) {
                 return Err("已有 schema 11 候选库不是活动库的完整副本；已保留现场".into());
             }
         } else {
@@ -13420,10 +13532,11 @@ fn validate_schema11_storage(
     let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
         .map_err(|error| format!("无法只读打开 schema 11 候选库：{error}"))?;
     let storage_before = schema11_source_receipt_from_connection(index_path, &connection)?;
-    if metadata_i64(&connection, "schema_version")? == Some(CURRENT_SCHEMA_VERSION) {
+    if matches!(metadata_i64(&connection, "schema_version")?, Some(12) | Some(CURRENT_SCHEMA_VERSION)) {
+        // Resume manifests written by a previous schema-12 accounting build.
         let receipt=metadata_text(&connection,"accounting_structural_receipt")?.ok_or("Missing accounting structural receipt")?;
         let facts: Schema11MigrationFacts=serde_json::from_str(&receipt).map_err(|e|e.to_string())?;
-        if expected_facts.is_some_and(|expected| expected != &facts) { return Err("Accounting structural receipt mismatch".into()); }
+        if expected_facts.is_some_and(|expected| !facts.preserves(expected)) { return Err("Accounting structural receipt mismatch".into()); }
         quick_check_index(&connection, Some(index_path))?;
         if connection.query_row("PRAGMA foreign_key_check", [], |_| Ok(true))
             .optional().map_err(|e| e.to_string())?.unwrap_or(false) {
@@ -13540,7 +13653,7 @@ fn validate_schema11_storage(
     }
     if let Some(expected_facts) = expected_facts {
         let actual_facts = schema11_migration_facts(&connection, INDEX_SCHEMA_VERSION)?;
-        if actual_facts != *expected_facts {
+        if !actual_facts.preserves(expected_facts) {
             return Err(format!(
                 "schema 11 候选库事件、指纹、分块、聚合或 lineage 对账失败：expected={expected_facts:?}, actual={actual_facts:?}"
             ));
@@ -14704,8 +14817,8 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
     // Schema 9→10 changes only the statistics identity contract. A current
     // replay marker remains valid and must not trigger a JSONL pass merely
     // because the metadata table lost filesystem-object columns.
-    if metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
-        == Some(FORK_REPLAY_BOUNDARY_REVISION)
+    let stored_revision = metadata_text(connection, "fork_replay_boundary_revision")?;
+    if stored_revision.as_deref() == Some(FORK_REPLAY_BOUNDARY_REVISION)
     {
         return Ok(true);
     }
@@ -14713,16 +14826,14 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
     let mut statement = connection
         .prepare(
             r#"
-            SELECT DISTINCT path
+            SELECT DISTINCT path, (fork_replay_active = 1 AND is_explicit_subagent_fork = 0)
             FROM files
             WHERE deleted = 0
-              AND fork_replay_active = 1
-              AND is_explicit_subagent_fork = 0
             "#,
         )
         .map_err(|error| format!("无法准备子 Agent replay 兼容迁移：{error}"))?;
     let candidates = statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)))
         .map_err(|error| format!("无法读取子 Agent replay 兼容候选：{error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("无法解码子 Agent replay 兼容候选：{error}"))?;
@@ -14730,7 +14841,16 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
 
     let mut explicit_paths = Vec::new();
     let mut unresolved_candidate = false;
-    for path in candidates {
+    for (path, legacy_candidate) in candidates {
+        let boundary = fs::File::open(&path).map_err(|e| e.to_string())
+            .and_then(|mut f| super::session_parser::paginated_subagent_boundary(&mut f));
+        match boundary {
+            Ok(value) if stored_revision.as_deref() == Some(PAGINATED_V5_PARSER_REVISION) && value != Some(u64::MAX) => continue,
+            Ok(Some(_)) => { explicit_paths.push(path); continue; }
+            Err(_) => { unresolved_candidate = true; continue; }
+            Ok(None) if stored_revision.as_deref() == Some(PAGINATED_V4_PARSER_REVISION) || stored_revision.as_deref() == Some(PAGINATED_V5_PARSER_REVISION) || !legacy_candidate => continue,
+            Ok(None) => {}
+        }
         match probe_explicit_subagent_session_file(Path::new(&path)) {
             ExplicitSubagentSessionFileProbe::Explicit => explicit_paths.push(path),
             ExplicitSubagentSessionFileProbe::NonExplicit => {}
@@ -14755,7 +14875,8 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
                 UPDATE files
                 SET is_explicit_subagent_fork = 1,
                     append_ready = 0,
-                    resume_offset = NULL
+                    resume_offset = NULL,
+                    modified_ns = 'paginated-boundary-migration'
                 WHERE path = ?1 AND deleted = 0
                 "#,
                 params![path],
@@ -14763,6 +14884,15 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
             .map_err(|error| format!("无法标记子 Agent replay 定向修复：{error}"))?;
     }
 
+    if column_exists_checked(&transaction, "event_enrichment_sources", "parser_revision")? {
+        // Unaffected sources retain valid enrichment. Affected checkpoints
+        // above are invalid regardless of this receipt promotion.
+        transaction.execute("UPDATE event_enrichment_sources SET parser_revision=?1 WHERE parser_revision IN (?2,?3,?4,?5)",
+            params![STAGED_FULL_REBUILD_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION]).map_err(|e| e.to_string())?;
+    }
+    if !explicit_paths.is_empty() {
+        set_metadata(&transaction, PARSER_REPAIR_VERIFY_KEY, EXACT_SESSION_PARSER_REVISION)?;
+    }
     if !unresolved_candidate {
         set_metadata(
             &transaction,
@@ -14807,6 +14937,11 @@ fn migrate_accounting(
     connection: &mut Connection,
     validation: Option<&Schema11ValidatedStorage>,
 ) -> Result<(), String> {
+    let receipt=accounting_structural_receipt(connection,validation)?;
+    apply_accounting_migration(connection,receipt)
+}
+
+fn apply_accounting_migration(connection: &mut Connection,receipt: Option<String>) -> Result<(),String> {
     if let Some(revision) = metadata_text(connection, "accounting_revision")? {
         if revision != ACCOUNTING_REVISION {
             return Err(format!("Unknown accounting revision {revision}; preserved index"));
@@ -14815,7 +14950,6 @@ fn migrate_accounting(
             if !column_exists_checked(connection, "event_rows", "accounting_kind")? {
                 return Err("Accounting marker does not match event structure".into());
             }
-            let receipt = accounting_structural_receipt(connection, validation)?;
             let tx = connection.transaction().map_err(|e| e.to_string())?;
             if let Some(receipt) = receipt {
                 set_metadata(&tx, "accounting_structural_receipt", &receipt)?;
@@ -14825,7 +14959,6 @@ fn migrate_accounting(
         }
         return Ok(());
     }
-    let receipt = accounting_structural_receipt(connection, validation)?;
     let mut preparation = IndexPreparationTrace::new("accounting_schema");
     let tx = connection.transaction().map_err(|e| e.to_string())?;
     for (table, column, definition) in [
@@ -14864,8 +14997,8 @@ fn migrate_accounting(
     }
     // Existing model/reasoning coverage remains valid. Accounting gaps are
     // exposed separately; changing this receipt must not trigger a cold scan.
-    tx.execute("UPDATE event_enrichment_sources SET parser_revision=?1 WHERE parser_revision=?2",
-        params![STAGED_FULL_REBUILD_PARSER_REVISION, EXACT_SESSION_PARSER_REVISION]).map_err(|e| e.to_string())?;
+    tx.execute("UPDATE event_enrichment_sources SET parser_revision=?1 WHERE parser_revision IN (?2,?3,?4,?5,?6)",
+        params![STAGED_FULL_REBUILD_PARSER_REVISION, EXACT_SESSION_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION]).map_err(|e| e.to_string())?;
     preparation.advance("accounting_aggregates");
     rebuild_published_dashboard_aggregates(&tx)?;
     let pending = {
@@ -16731,6 +16864,7 @@ fn collect_session_catalog_observations(
                     )
                 })?;
                 let path = entry.path();
+                if is_history_repair_workspace(&path) { continue; }
                 let metadata = fs::symlink_metadata(&path).map_err(|error| {
                     format!(
                         "会话目录增量扫描无法读取 {} 的属性：{error}",
@@ -17046,6 +17180,42 @@ fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+// SQLite backup copies every table (including pending, retained evidence and
+// canonical bindings) from a WAL-consistent snapshot. Keep the upgraded legacy
+// DB as recovery material; schema 13 makes earlier releases refuse to write it.
+pub(super) fn relocate_legacy_index(home: &Path,legacy: &Path,destination: &Path) -> Result<(),String> {
+    if legacy==destination || existing_regular_index(destination)? ||
+        (!existing_regular_index(legacy)? && !schema11_manifest_path(legacy).exists()) { return Ok(()); }
+    let _legacy=ExactUsageIndex::open_at(home,legacy.to_path_buf())?;
+    let _legacy_file_lock=CrossProcessFileLock::acquire_wait_with_hook(
+        &sqlite_sidecar_path(legacy,".operation.lock"),"旧历史账本迁移",StdDuration::from_secs(30),||{})?;
+    let parent=destination.parent().ok_or("历史账本目标目录无效")?;
+    fs::create_dir_all(parent).map_err(|e|e.to_string())?;
+    let _destination_lock=CrossProcessFileLock::acquire_wait_with_hook(
+        &sqlite_sidecar_path(destination,".operation.lock"),"历史账本迁移",StdDuration::from_secs(30),||{})?;
+    if existing_regular_index(destination)? { return Ok(()); }
+    let required=file_signature(legacy)?.size
+        .saturating_add(optional_index_sidecar_signature(&sqlite_sidecar_path(legacy,"-wal"))?.map(|s|s.size).unwrap_or(0))
+        .saturating_add(SCHEMA11_MIGRATION_SPACE_RESERVE_BYTES);
+    if available_space(parent).map_err(|e|e.to_string())?<required { return Err("历史账本迁移空间不足；旧库已保留".into()); }
+    let candidate=sqlite_sidecar_path(destination,".ledger-copy");
+    schema11_copy_candidate(legacy,&candidate)?;
+    {
+        let copy=sqlite::open_read_only(&candidate,StdDuration::from_secs(5)).map_err(|e|e.to_string())?;
+        let checked:String=copy.query_row("PRAGMA quick_check",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if checked!="ok" { return Err("历史账本副本校验失败；旧库已保留".into()); }
+        retention::validate(&copy)?;
+        ledger::validate(&copy)?;
+    }
+    schema11_sync_file(&candidate)?;
+    fs::rename(&candidate,destination).map_err(|e|e.to_string())?;
+    // Windows cannot open a directory using std::fs::File. The file itself
+    // was flushed before the same-directory rename; keep legacy on all paths.
+    #[cfg(not(target_os="windows"))]
+    schema11_sync_parent(destination)?;
+    Ok(())
+}
+
 pub(super) fn database_path(codex_home: &Path) -> Result<PathBuf, String> {
     #[cfg(test)]
     {
@@ -17066,11 +17236,10 @@ pub(super) fn database_path(codex_home: &Path) -> Result<PathBuf, String> {
     }
 
     #[cfg(not(test))]
-    let root = app_paths::tauri_usage_cache_dir()
-        .ok_or_else(|| "无法定位 Tauri 用量缓存目录".to_string())?;
+    let root = app_paths::usage_history_dir()
+        .ok_or_else(|| "无法定位持久用量数据目录".to_string())?;
     #[cfg(not(test))]
     Ok(root
-        .join("exact-token-index")
         .join(format!("{}.sqlite3", stable_path_fingerprint(codex_home))))
 }
 
@@ -17100,6 +17269,8 @@ fn resolve_file_within_codex_home(
     source: &str,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> ResolvedSessionFile {
+    if is_history_repair_workspace(candidate) { return ResolvedSessionFile::Rejected; }
+
     let canonical = match fs::canonicalize(candidate) {
         Ok(canonical) => canonical,
         Err(error) => {
@@ -17441,9 +17612,12 @@ fn record_missing_event_enrichment_source(
 fn event_enrichment_pending_candidates(
     connection: &Connection,
 ) -> Result<Vec<EventEnrichmentCandidate>, String> {
+    let available = if table_exists_checked(connection,"usage_ledger_sources")? {
+        "AND NOT EXISTS(SELECT 1 FROM usage_ledger_sources l JOIN sources s USING(source_id) WHERE s.path=f.path AND l.missing=1) AND NOT EXISTS(SELECT 1 FROM usage_ledger_pending_missing m JOIN sources s USING(source_id) WHERE s.path=f.path)"
+    } else { "" };
     let mut statement = connection
         .prepare(
-            r#"
+            &format!(r#"
             SELECT
                 f.path,
                 f.session_id,
@@ -17458,8 +17632,9 @@ fn event_enrichment_pending_candidates(
              AND receipt.completed_size = f.size
              AND receipt.completed_prefix_sha256 = f.prefix_sha256
             WHERE receipt.path IS NULL
+            {available}
             ORDER BY f.path
-            "#,
+            "#),
         )
         .map_err(|error| format!("无法准备历史 model/reasoning 补全来源：{error}"))?;
     let rows = statement
@@ -17496,9 +17671,12 @@ fn event_enrichment_pending_candidates_for_generation(
     connection: &Connection,
     generation: i64,
 ) -> Result<Vec<EventEnrichmentCandidate>, String> {
+    let available = if table_exists_checked(connection,"usage_ledger_sources")? {
+        "AND NOT EXISTS(SELECT 1 FROM usage_ledger_sources l JOIN sources s USING(source_id) WHERE s.path=f.path AND l.missing=1) AND NOT EXISTS(SELECT 1 FROM usage_ledger_pending_missing m JOIN sources s USING(source_id) WHERE s.path=f.path)"
+    } else { "" };
     let mut statement = connection
         .prepare(
-            r#"
+            &format!(r#"
             SELECT
                 f.path,
                 f.session_id,
@@ -17515,8 +17693,9 @@ fn event_enrichment_pending_candidates_for_generation(
             WHERE f.generation = ?3
               AND f.deleted = 0
               AND receipt.path IS NULL
+            {available}
             ORDER BY f.path
-            "#,
+            "#),
         )
         .map_err(|error| format!("无法准备当前补全代次来源：{error}"))?;
     let rows = statement
@@ -17790,4 +17969,50 @@ fn excerpt_warning(message: String) -> LocalDataWarning {
         source: "thread_excerpt".into(),
         message,
     }
+}
+
+fn restartable_private_stage(path: &Path, job: &FullRebuildJob) -> Result<bool, String> {
+    let c = sqlite::open_read_only(path, StdDuration::from_secs(1)).map_err(|e| e.to_string())?;
+    if quick_check_index(&c, None).is_err() { return Ok(false); }
+    for column in ["manifest_schema_version", "parser_revision", "complete"] {
+        if !column_exists_checked(&c, "manifest", column)? { return Ok(false); }
+    }
+    let rows: i64 = c.query_row("SELECT COUNT(*) FROM manifest", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if rows == 0 {
+        if !column_exists_checked(&c, "manifest", "staging_mode")? || !column_exists_checked(&c, "manifest", "accounting_state")? { return Ok(false); }
+        for table in ["events", "fingerprints", "chunks"] {
+            let count: i64 = c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).map_err(|e| e.to_string())?;
+            if count != 0 { return Ok(false); }
+        }
+        return Ok(true);
+    }
+    if rows != 1 { return Ok(false); }
+    let (schema, parser, source, complete): (i64, String, String, i64) = c.query_row(
+        "SELECT manifest_schema_version, parser_revision, path, complete FROM manifest", [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).map_err(|e| e.to_string())?;
+    if ![1, 2, STAGING_MANIFEST_SCHEMA_VERSION].contains(&schema) || source != job.path { return Ok(false); }
+    if complete == 0 && parser == STAGED_FULL_REBUILD_PARSER_REVISION { return Ok(true); }
+    if [LEGACY_STAGED_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&parser.as_str()) {
+        return super::session_parser::paginated_subagent_boundary(&mut fs::File::open(&job.file).map_err(|e| e.to_string())?).map(|b| b.is_some());
+    }
+    Ok(false)
+}
+
+/// Preserve private recovery artifacts outside the active staging enumeration.
+/// Never discard an original session or the last published index.
+fn preserve_private_stage_family(path: &Path) -> Result<(), String> {
+    let members: Vec<PathBuf> = ["", "-journal", "-wal", "-shm"].iter()
+        .map(|suffix| PathBuf::from(format!("{}{suffix}", path.display())))
+        .filter(|p| p.exists()).collect();
+    if members.is_empty() { return Ok(()); }
+    let destination = path.parent().ok_or("暂存路径无父目录")?.join("preserved").join(Uuid::new_v4().to_string());
+    fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
+    for source in members {
+        fs::rename(&source, destination.join(source.file_name().ok_or("暂存路径无文件名")?)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn is_history_repair_workspace(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str().to_str().is_some_and(|name| name.starts_with(".codex-history-repair-stage.")))
 }

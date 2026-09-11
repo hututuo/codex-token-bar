@@ -34,6 +34,10 @@ pub fn settings_path() -> Option<PathBuf> {
     app_support_dir().map(|path| path.join("settings.json"))
 }
 
+pub fn usage_history_dir() -> Option<PathBuf> {
+    tauri_app_support_dir().map(|path| path.join("exact-token-index"))
+}
+
 pub fn quota_history_database_path() -> Option<PathBuf> {
     tauri_app_support_dir().map(|path| path.join("quota-history.sqlite"))
 }
@@ -99,18 +103,13 @@ pub fn tauri_usage_cache_dir() -> Option<PathBuf> {
     tauri_app_cache_dir().map(|path| path.join(TAURI_USAGE_CACHE_NAMESPACE))
 }
 
+// New cache readiness does not prove that older event/index records were
+// imported. Retire only regenerable summaries, never a whole old namespace.
 pub fn discardable_usage_cache_cleanup_targets() -> Vec<PathBuf> {
     let mut targets = Vec::new();
 
     if let Some(shared_cache) = app_cache_dir() {
-        targets.push(shared_cache.join("token-events-cache-v2.json"));
-        targets.push(shared_cache.join("token-events-cache-v3"));
         targets.push(shared_cache.join("token-aggregate-cache-v1.json"));
-        targets.push(shared_cache.join("session-token-events-v2"));
-        targets.push(shared_cache.join("session-token-events-v3"));
-        targets.push(shared_cache.join("session-token-events-v4"));
-        targets.push(shared_cache.join("session-token-events-v5"));
-        targets.push(shared_cache.join("session-token-events-v6"));
         targets.push(shared_cache.join("usage-snapshot-cache-v1.json"));
     }
 
@@ -118,7 +117,7 @@ pub fn discardable_usage_cache_cleanup_targets() -> Vec<PathBuf> {
         targets.extend(
             RETIRED_TAURI_USAGE_CACHE_NAMESPACES
                 .iter()
-                .map(|name| tauri_cache_root.join(name)),
+                .map(|name| tauri_cache_root.join(name).join("dashboard-aggregate.json")),
         );
     }
 

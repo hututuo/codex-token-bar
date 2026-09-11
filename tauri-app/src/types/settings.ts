@@ -208,6 +208,8 @@ export type StatusSummarySectionId =
 
 export interface DisplaySurfaceSettings {
   floatingWindowEnabled: boolean;
+  quotaSidebarEnabled: boolean;
+  quotaSidebarSide: "left" | "right";
   liveRateEnabled: boolean;
   statusTrayLiveTextEnabled: boolean;
   statusMetricOrder: StatusMetricId[];

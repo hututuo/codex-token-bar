@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "quota-sidebar",
+  "description": "Independent passive quota edge window with scoped native geometry and snapshot commands.",
+  "windows": ["quota-sidebar", "quota-sidebar-detail"],
+  "permissions": ["notification:allow-is-permission-granted", "core:event:allow-emit", "core:event:allow-emit-to", "core:event:allow-listen", "core:event:allow-unlisten"]
+}

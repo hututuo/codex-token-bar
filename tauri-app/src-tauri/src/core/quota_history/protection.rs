@@ -120,6 +120,32 @@ pub(super) fn project(samples: &[Sample], plan: Option<&str>, now: f64) -> Proje
     if let Some(c) = candidate {
         if now >= samples[c.start].at + 300.0 - EPSILON { result.settle(c, samples); }
     }
+    // Reject bidirectional provider excursions only on an abrupt return to
+    // the old level/reset. Gradual normal consumption is not a rebound.
+    let seven: Vec<_> = samples.iter().enumerate().filter(|(i,s)| fresh.contains(i) && valid(s.seven_used).is_some()).map(|(i,_)| i).collect();
+    let mut cursor = 1;
+    while cursor < seven.len() {
+        let (base, first) = (seven[cursor-1], seven[cursor]);
+        let (base_used, first_used) = (samples[base].seven_used.unwrap(), samples[first].seven_used.unwrap());
+        if !result.seven_rejected.contains(&base) && !result.seven_rejected.contains(&first) && (first_used-base_used).abs() >= 5 {
+            let mut endpoint = None;
+            for n in cursor+1..seven.len() {
+                let (end, prior) = (seven[n],seven[n-1]);
+                if samples[end].at-samples[first].at > 5400.0 { break; }
+                let (used, previous_used) = (samples[end].seven_used.unwrap(),samples[prior].seven_used.unwrap());
+                if (used-base_used).abs() <= 3 && (used-previous_used).abs() >= 5
+                    && (first_used-base_used)*(used-previous_used) < 0
+                    && same_reset(samples[end].seven_reset,samples[base].seven_reset) {
+                    endpoint = Some(n); break;
+                }
+            }
+            if let Some(endpoint) = endpoint {
+                result.reject(Candidate {baseline:base,start:first,last:seven[endpoint],left_band:true,reset_left:false,reset_unchanged:false},Reason::ReturnToBaseline,samples);
+                cursor=endpoint+1; continue;
+            }
+        }
+        cursor+=1;
+    }
     let five: Vec<usize> = samples.iter().enumerate().filter(|(i,s)| fresh.contains(i) && valid(s.five_used).is_some()).map(|(i,_)|i).collect();
     for triple in five.windows(3) {
         let (a,b,c) = (triple[0], triple[1], triple[2]);

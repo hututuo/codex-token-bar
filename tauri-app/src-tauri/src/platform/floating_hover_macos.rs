@@ -8,6 +8,8 @@ use tauri::{Emitter, Manager};
 
 pub struct HoverIvars {
     app: tauri::AppHandle,
+    label: String,
+    event: String,
     area: RefCell<Option<Retained<NSTrackingArea>>>,
 }
 
@@ -38,11 +40,11 @@ define_class!(
 
         #[unsafe(method(mouseEntered:))]
         fn mouse_entered(&self, _event: &NSEvent) {
-            let _ = self.ivars().app.emit_to("floating", "floating-native-hover", true);
+            let _ = self.ivars().app.emit_to(&self.ivars().label, &self.ivars().event, true);
         }
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, _event: &NSEvent) {
-            let _ = self.ivars().app.emit_to("floating", "floating-native-hover", false);
+            let _ = self.ivars().app.emit_to(&self.ivars().label, &self.ivars().event, false);
         }
     }
 );
@@ -53,7 +55,8 @@ pub fn install(window: &tauri::WebviewWindow) -> Result<(), String> {
     let native = unsafe { &*raw.cast::<NSWindow>() };
     let content = native.contentView().ok_or("Floating window has no content view")?;
     let allocated = FloatingHoverView::alloc(mtm).set_ivars(HoverIvars {
-        app: window.app_handle().clone(), area: RefCell::new(None),
+        app: window.app_handle().clone(), label: window.label().into(),
+        event: format!("{}-native-hover", window.label()), area: RefCell::new(None),
     });
     let view: Retained<FloatingHoverView> = unsafe { msg_send![super(allocated), initWithFrame: content.bounds()] };
     view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);

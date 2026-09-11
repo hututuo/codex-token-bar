@@ -1747,5 +1747,212 @@
     ],
     "sevenBridges": [],
     "fiveBridges": []
+  },
+  {
+    "name": "provider_44_minute_downward_excursion",
+    "plan": "pro",
+    "now": 2760,
+    "samples": [
+      {
+        "at": 0,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 36,
+        "sevenReset": 100000
+      },
+      {
+        "at": 60,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 93,
+        "sevenReset": 90000
+      },
+      {
+        "at": 2640,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 95,
+        "sevenReset": 90000
+      },
+      {
+        "at": 2700,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 36,
+        "sevenReset": 100000
+      },
+      {
+        "at": 2760,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 37,
+        "sevenReset": 100000
+      }
+    ],
+    "fiveRejected": [],
+    "sevenRejected": [
+      1,
+      2
+    ],
+    "fiveBridges": [],
+    "sevenBridges": [
+      [
+        0,
+        3
+      ]
+    ]
+  },
+  {
+    "name": "upward_quota_excursion_returns_to_baseline",
+    "plan": "pro",
+    "now": 2760,
+    "samples": [
+      {
+        "at": 0,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 50,
+        "sevenReset": 100000
+      },
+      {
+        "at": 60,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 30,
+        "sevenReset": 100000
+      },
+      {
+        "at": 120,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 31,
+        "sevenReset": 100000
+      },
+      {
+        "at": 2700,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 50,
+        "sevenReset": 100000
+      },
+      {
+        "at": 2760,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 51,
+        "sevenReset": 100000
+      }
+    ],
+    "fiveRejected": [],
+    "sevenRejected": [
+      1,
+      2
+    ],
+    "fiveBridges": [],
+    "sevenBridges": [
+      [
+        0,
+        3
+      ]
+    ]
+  },
+  {
+    "name": "real_replenishment_continues_consuming",
+    "plan": "pro",
+    "now": 17500,
+    "samples": [
+      {
+        "at": 0,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 93,
+        "sevenReset": 400000
+      },
+      {
+        "at": 16500,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 9,
+        "sevenReset": 700000
+      },
+      {
+        "at": 16700,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 10,
+        "sevenReset": 700000
+      },
+      {
+        "at": 17500,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 11,
+        "sevenReset": 700000
+      }
+    ],
+    "fiveRejected": [],
+    "sevenRejected": [],
+    "fiveBridges": [],
+    "sevenBridges": []
+  },
+  {
+    "name": "gradual_consumption_to_old_level_is_not_glitch",
+    "plan": "pro",
+    "now": 360,
+    "samples": [
+      {
+        "at": 0,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 50,
+        "sevenReset": 100000
+      },
+      {
+        "at": 60,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 45,
+        "sevenReset": 200000
+      },
+      {
+        "at": 120,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 46,
+        "sevenReset": 200000
+      },
+      {
+        "at": 180,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 47,
+        "sevenReset": 200000
+      },
+      {
+        "at": 240,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 48,
+        "sevenReset": 200000
+      },
+      {
+        "at": 300,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 49,
+        "sevenReset": 200000
+      },
+      {
+        "at": 360,
+        "fiveUsed": null,
+        "fiveReset": null,
+        "sevenUsed": 50,
+        "sevenReset": 200000
+      }
+    ],
+    "fiveRejected": [],
+    "sevenRejected": [],
+    "fiveBridges": [],
+    "sevenBridges": []
   }
 ]
