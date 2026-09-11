@@ -397,10 +397,14 @@ struct QuotaSidebarDetailView: View {
 
         return VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 12) {
-                if let fiveHour = snapshot.quota.fiveHour {
-                    quotaRow("5 小时额度", window: fiveHour, snapshot: snapshot.quota, color: SidebarPalette.green)
+                HStack(alignment: .top, spacing: 16) {
+                    if let fiveHour = snapshot.quota.fiveHour {
+                        quotaRow("5 小时额度", window: fiveHour, snapshot: snapshot.quota, color: SidebarPalette.green)
+                            .frame(maxWidth: .infinity)
+                    }
+                    quotaRow("7 天额度", window: snapshot.quota.sevenDay, snapshot: snapshot.quota, color: SidebarPalette.purple)
+                        .frame(maxWidth: .infinity)
                 }
-                quotaRow("7 天额度", window: snapshot.quota.sevenDay, snapshot: snapshot.quota, color: SidebarPalette.purple)
                 if let pace = snapshot.quota.sevenDayPaceStatus {
                     HStack(spacing: 8) {
                         Text(pace.compactTitle).font(.system(size: 11)).foregroundStyle(SidebarPalette.green)
@@ -418,7 +422,9 @@ struct QuotaSidebarDetailView: View {
                 }
             }.padding(11).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14)).id("top")
 
-            VStack(alignment: .leading, spacing: 10) {
+            modelUsage(snapshot).id("models")
+
+            VStack(alignment: .leading, spacing: 8) {
                 Color.clear.frame(height: 0).id("usage")
                 sectionTitle("用量", subtitle: "本地统计")
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), alignment: .leading, spacing: 7) {
@@ -434,7 +440,6 @@ struct QuotaSidebarDetailView: View {
                 }
                 Text("实时：\(snapshot.status)").font(.system(size: 9)).foregroundStyle(.gray).lineLimit(1).help(snapshot.status)
             }
-            modelUsage(snapshot).id("models")
             SidebarTrendView(bins: Array(store.snapshot.recentBins.suffix(288)), quota: Array(history.snapshot.recentBins.suffix(288)))
             tokenComposition(snapshot)
         }.padding(.bottom, 2)
@@ -499,7 +504,7 @@ struct QuotaSidebarDetailView: View {
 
     private func modelUsage(_ snapshot: TokenDisplaySnapshot) -> some View {
         let items = Array(FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 })
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 6) {
             sectionTitle("今日模型用量", subtitle: "Token 占比 · API 等值")
             if items.isEmpty {
                 Text("尚无可信的今日模型明细").font(.system(size: 11)).foregroundStyle(.gray)
@@ -512,12 +517,12 @@ struct QuotaSidebarDetailView: View {
                             Text(item.label).font(.system(size: 10, weight: .medium)).lineLimit(1).help(item.label)
                             Spacer(minLength: 0)
                             Text(item.tokens.abbreviatedTokens).foregroundStyle(.white.opacity(0.8))
-                            Text(String(format: "%.1f%%", item.share * 100)).foregroundStyle(.gray).frame(width: 42, alignment: .trailing)
+                                .frame(width: 58, alignment: .trailing)
+                            Text(item.valueText(for: .cost)).font(.system(size: 9)).foregroundStyle(.gray)
+                                .frame(width: 78, alignment: .trailing).lineLimit(1).minimumScaleFactor(0.8)
+                                .help("API 等值 " + item.valueText(for: .cost))
+                            Text(String(format: "%.1f%%", item.share * 100)).foregroundStyle(item.color).frame(width: 42, alignment: .trailing)
                         }.font(.system(size: 10)).monospacedDigit()
-                        HStack {
-                            Spacer()
-                            Text("API 等值 " + item.valueText(for: .cost)).font(.system(size: 9)).foregroundStyle(.gray)
-                        }
                         SidebarValueBar(fraction: item.share, color: item.color, emphasis: 0.7).frame(height: 3)
                     }
                 }
