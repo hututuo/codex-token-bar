@@ -207,7 +207,7 @@ test("StatsStrip defaults to current observed period and can switch to cumulativ
     assert.equal(scope[2].getAttribute("aria-pressed"), "true");
     assert.match(container.textContent, /Terra/);
     assert.match(container.textContent, /Spark 参考 \$1\.75/);
-    assert.match(container.textContent, /Spark\$1\.75（不计入总计）/);
+    assert.match(container.textContent, /Spark\$1\.75 · 均一化 \$1\.75（不计入总计）/);
     await React.act(async () => { scope[1].click(); await settle(); });
     assert.equal(scope[1].getAttribute("aria-pressed"), "true");
     assert.match(container.textContent, /Sol/);

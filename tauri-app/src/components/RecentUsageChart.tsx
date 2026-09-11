@@ -1,3 +1,4 @@
+import { normalizedMoneyText } from "../floating/floatingModelUsage.ts";
 import {
   useEffect,
   useLayoutEffect,
@@ -24,7 +25,7 @@ import {
   percentText,
   plotChartPoints,
   prepareRecentChartData,
-  recentChartBucketCosts,
+  recentChartBucketPrices,
   recentChartFixedScaleMap,
   quotaConsumptionSelection,
   quotaComparisonScopeText,
@@ -144,10 +145,13 @@ export function RecentUsageChart({
     () => recentChartVisibleWindowSummary(data, chartWidth, chartScrollLeft, chartViewportWidth),
     [data, chartWidth, chartScrollLeft, chartViewportWidth],
   );
-  const bucketCostsUSD = useMemo(
-    () => recentChartBucketCosts(data.points, quotaModel),
+  const bucketPrices = useMemo(
+    () => recentChartBucketPrices(data.points, quotaModel),
     [data.points, quotaModel],
   );
+  const bucketCostsUSD = useMemo(() => bucketPrices.map(price => price.costUSD), [bucketPrices]);
+  const normalizedBucketCosts = useMemo(() => bucketPrices.map(price => price.normalizedCostUSD), [bucketPrices]);
+  const normalizedWindowCost = useMemo(() => normalizedBucketCosts.slice(visibleWindowSummary.startIndex, visibleWindowSummary.endIndex + 1).reduce((sum, cost) => sum + cost, 0), [normalizedBucketCosts, visibleWindowSummary.startIndex, visibleWindowSummary.endIndex]);
   const visibleWindowCostUSD = useMemo(() => {
     if (visibleWindowSummary.endIndex < visibleWindowSummary.startIndex) return 0;
     return bucketCostsUSD
@@ -543,7 +547,7 @@ export function RecentUsageChart({
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(visibleWindowSummary.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${visibleWindowSummary.callTotal}`} />
             <LegendDot className="legend-dot--hit" label="命中率" value={percentText(visibleWindowSummary.cacheHitRate)} />
-            <LegendDot className="legend-dot--cost" label="金额" value={moneyText(visibleWindowCostUSD)} />
+            <LegendDot className="legend-dot--cost" label="金额" value={normalizedMoneyText(visibleWindowCostUSD, normalizedWindowCost)} />
             {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(visibleWindowSummary.latestFiveHourRemaining)} /> : null}
             {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(visibleWindowSummary.latestSevenDayRemaining)} /> : null}
           </div>
@@ -723,6 +727,7 @@ export function RecentUsageChart({
             <HoverBubble
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
+              normalizedCostUSD={activeIndex === null ? 0 : normalizedBucketCosts[activeIndex] ?? 0}
               costUSD={activeIndex === null ? 0 : plotData.bucketCostsUSD[activeIndex] ?? 0}
               fiveHourRemaining={fiveHourQuotaPresent ? activePoint.fiveHourRemainingPercent : null}
               onClose={() => setPreviewDismissed(true)}
@@ -884,6 +889,7 @@ function HoverBubble({
   bucketSeconds,
   cacheVisible,
   costUSD,
+  normalizedCostUSD,
   fiveHourRemaining,
   onClose,
   point,
@@ -894,6 +900,7 @@ function HoverBubble({
   bucketSeconds: number;
   cacheVisible: boolean;
   costUSD: number;
+  normalizedCostUSD: number;
   fiveHourRemaining: number | null;
   onClose: () => void;
   point: RecentUsagePoint;
@@ -918,7 +925,7 @@ function HoverBubble({
       </div>
       <b>{formatTokens(point.tokens)}</b>
       <span className="chart-hover-row">请求 {point.calls} 次 · avg {formatTokens(average)}</span>
-      <span className="chart-hover-row chart-hover-row--cost">金额 {moneyText(costUSD)}</span>
+      <span className="chart-hover-row chart-hover-row--cost">金额 {normalizedMoneyText(costUSD, normalizedCostUSD)}</span>
       {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
@@ -954,7 +961,7 @@ function SelectionSummaryBubble({
       </div>
       <b>{formatTokens(selection.totalTokens)}</b>
       <span className="chart-hover-row">请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
-      <span className="chart-hover-row chart-hover-row--cost">金额 {moneyText(selection.selectedCostUSD)}</span>
+      <span className="chart-hover-row chart-hover-row--cost">金额 {normalizedMoneyText(selection.selectedCostUSD, selection.normalizedCostUSD)}</span>
       {selection.calls > 0 ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(selection.cacheHitRate)} · 命中 {formatTokens(selection.cachedInputTokens)}
@@ -1041,7 +1048,7 @@ function RecentChartQuotaEstimateOverlay({
       <div className="quota-estimate-main">
         <div className="quota-estimate-row">
           <span>{pricesIncomplete ? "已知价格小计" : "本段消耗"}</span>
-          <strong>{moneyText(selection.selectedCostUSD)}</strong>
+          <strong>{normalizedMoneyText(selection.selectedCostUSD, selection.normalizedCostUSD)}</strong>
           <b>{quotaSelectionDurationText(selection)}</b>
           <em>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</em>
           <b>命中 {percentText(selection.cacheHitRate)}</b>
@@ -1095,7 +1102,7 @@ function RecentChartQuotaEstimateOverlay({
 function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelectionAttributionResult }) {
   if ((attribution.unpricedModels?.length ?? 0) > 0) {
     return <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="未知价格说明">
-      <span>已知价格小计 {moneyText(attribution.localCurrentAPIEquivalentUSD)}</span>
+      <span>已知价格小计 {normalizedMoneyText(attribution.localCurrentAPIEquivalentUSD, attribution.normalizedCurrentCostUSD ?? attribution.localCurrentAPIEquivalentUSD)}</span>
       <em>{attribution.unpricedModels.join("、")} 价格未知，暂不判断共享差额</em>
     </div>;
   }
@@ -1121,8 +1128,8 @@ function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelec
           : signedOneDecimalPercent(difference)}</strong>
       </div>
       <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="选区本机 API 等价金额">
-        <span>本机同基准 {moneyText(attribution.localComparableCostUSD)}</span>
-        <em>当前 API {moneyText(attribution.localCurrentAPIEquivalentUSD)}</em>
+        <span>本机同基准 {attribution.localComparableCostUSD === null ? "—" : normalizedMoneyText(attribution.localComparableCostUSD, attribution.normalizedComparableCostUSD ?? attribution.localComparableCostUSD)}</span>
+        <em>当前 API {normalizedMoneyText(attribution.localCurrentAPIEquivalentUSD, attribution.normalizedCurrentCostUSD ?? attribution.localCurrentAPIEquivalentUSD)}</em>
       </div>
       {attribution.excludedModels.length > 0 ? (
         <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="独立额度说明">
@@ -1304,7 +1311,7 @@ function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuota
     : "";
   switch (estimate.confidence) {
     case "measured":
-      return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}${boundaryNote}${excludedNote}`;
+      return `${estimate.impliedWindowBudgetUSD === null ? "—" : normalizedMoneyText(estimate.impliedWindowBudgetUSD, estimate.normalizedWindowBudgetUSD ?? estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}${boundaryNote}${excludedNote}`;
     case "insufficientQuotaMovement":
       return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推${boundaryNote}${excludedNote}`;
     case "noTokenUsage":

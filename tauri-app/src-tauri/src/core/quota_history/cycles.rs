@@ -68,7 +68,7 @@ fn project(samples: &[Observation], scope: &str, now: i64) -> Vec<QuotaCycle> {
         let advanced = sample.reset - current.expected_reset_unix > 900;
         let natural = advanced && accepted.at <= current.expected_reset_unix && sample.at >= current.expected_reset_unix;
         // Two apps can repeat one provider reading seconds apart. Require a
-        // near-empty period sustained across a minute, not just any decrease.
+        // clear replenishment followed by consumption, not just any decrease.
         let mut confirmed = false;
         if advanced && sample.at < current.expected_reset_unix && accepted.used - sample.used >= 5 {
             for next in samples.iter().skip(i + 1) {

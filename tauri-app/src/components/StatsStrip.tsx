@@ -1,3 +1,4 @@
+import { ModelAmountPair } from "./ModelAmountPair";
 import { memo, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { DashboardStats, LocalDataWarning, ModelTokenBreakdown, RecentUsagePoint } from "../types/dashboard";
 import { usagePrecisionWarnings } from "../state/dashboardWarnings";
@@ -14,7 +15,7 @@ import { readStoredQuotaPriceModel } from "../settings/quotaPriceModel";
 import {
   dashboardPrimaryModelUsageItems,
   dashboardSecondaryModelUsageItems,
-  floatingModelUsageMoneyText,
+  normalizedMoneyText,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
   hasUnknownModelPrices,
@@ -128,7 +129,7 @@ function StatsStripView({
     : "current";
   const independentReferenceSummary = modelCostItems
     .filter((item) => item.referenceCostUSD !== null)
-    .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
+    .map((item) => `${item.label} 参考 ${normalizedMoneyText(item.referenceCostUSD ?? 0, item.referenceCostUSD ?? 0)}`)
     .join(" · ");
   const boundaryTokens = cycleHistory.usage?.boundaryModelBreakdowns.reduce((sum,row)=>sum+row.breakdown.totalTokens,0) ?? 0;
   const boundaryTokenSummary = modelCostScope === "sevenDay" && boundaryTokens > 0
@@ -162,6 +163,7 @@ function StatsStripView({
           ))}
           <div className="stats-cell stats-cell--savings" title={lifetimeSavings.helpText}>
             <strong>{lifetimeSavings.valueText}</strong>
+            {lifetimeSavings.normalizedValueText ? <small className="stats-normalized-value">{lifetimeSavings.normalizedValueText}</small> : null}
             <span>{lifetimeSavings.labelText}</span>
           </div>
           {statsConfig.slice(1).map(([key, label, format]) => (
@@ -211,7 +213,7 @@ function StatsStripView({
             {modelCostDataAvailable && modelDetailAvailable && modelCostItems.length > 0 ? (
               <span className="stats-model-cost-total-wrap">
                 <strong className="stats-model-cost-total">
-                  {modelPricesIncomplete ? "已知价格小计" : modelCostScope === "sevenDay" && cycleHistory.selected?.incomplete ? "已观测部分" : "合计"} {floatingModelUsageMoneyText(modelCostTotal)}
+                  {modelPricesIncomplete ? "已知价格小计" : modelCostScope === "sevenDay" && cycleHistory.selected?.incomplete ? "已观测部分" : "合计"} {normalizedMoneyText(modelCostTotal, modelCostItems.reduce((total, item) => total + (item.normalizedCostUSD ?? 0), 0))}
                 </strong>
                 {modelPricesIncomplete ? <small className="stats-model-cost-reference">部分模型价格未知，未计入金额</small> : null}
                 {independentReferenceSummary ? (
@@ -257,7 +259,7 @@ function StatsStripView({
                     >
                       <i />
                       <em>{item.label}</em>
-                      <b>{floatingModelUsageValue(item, "cost")}</b>
+                      <b><ModelAmountPair item={item} /></b>
                       <small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item, "share")}</small>
                     </span>
                   ))}
@@ -271,7 +273,7 @@ function StatsStripView({
                       <span className="stats-model-cost-secondary-chip" key={item.key}>
                         <i style={{ backgroundColor: item.color }} />
                         <em>{item.label}</em>
-                        <b>{floatingModelUsageValue(item, "cost")}</b>
+                        <b><ModelAmountPair item={item} /></b>
                         <small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item, "share")}</small>
                       </span>
                     ))}

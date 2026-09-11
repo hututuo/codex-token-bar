@@ -11540,6 +11540,9 @@ fn schema11_load_manifest(manifest_path: &Path) -> Result<Schema11CandidateManif
 fn schema11_sync_file(path: &Path) -> Result<(), String> {
     fs::OpenOptions::new()
         .read(true)
+        // Windows FlushFileBuffers requires GENERIC_WRITE. This opens an
+        // existing candidate without creating or truncating its contents.
+        .write(true)
         .open(path)
         .and_then(|file| file.sync_all())
         .map_err(|error| format!("无法同步 schema 11 候选文件 {}：{error}", path.display()))
@@ -11547,8 +11550,7 @@ fn schema11_sync_file(path: &Path) -> Result<(), String> {
 
 fn schema11_sync_parent(path: &Path) -> Result<(), String> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
+    crate::core::atomic_file::sync_parent(parent)
         .map_err(|error| format!("无法同步 schema 11 候选目录 {}：{error}", parent.display()))
 }
 
@@ -11586,9 +11588,12 @@ fn schema11_migration_capacity(index_path: &Path) -> Result<(), String> {
         available_space(index_path.parent().unwrap_or_else(|| Path::new(".")))
             .map_err(|error| format!("无法检查 schema 11 迁移空间：{error}"))?
     };
+    // Free space already excludes the legacy database. Budget a candidate
+    // copy plus VACUUM's temporary database and rollback journal. WAL pages
+    // may enlarge the backup, so include them in each allocation estimate.
     let required = database_bytes
         .saturating_add(wal_bytes)
-        .saturating_add(database_bytes)
+        .saturating_mul(3)
         .saturating_add(SCHEMA11_MIGRATION_SPACE_RESERVE_BYTES);
     if available < required {
         return Err(format!(
@@ -13205,6 +13210,10 @@ fn prepare_schema11_candidate_if_needed(
         let source_facts_started = Instant::now();
         let source_facts =
             schema11_migration_facts(&source_connection, source_receipt.schema_version)?;
+        // The proof is owned data. Release the baseline connection before
+        // resume can rename the source: SQLite's Windows handle does not
+        // share delete access, so retaining it here blocks our own switch.
+        drop(source_connection);
         startup_trace::mark_performance(format!(
             "schema11_migration stage=source_facts elapsed_ms={}",
             source_facts_started.elapsed().as_millis()
@@ -17209,9 +17218,8 @@ pub(super) fn relocate_legacy_index(home: &Path,legacy: &Path,destination: &Path
     }
     schema11_sync_file(&candidate)?;
     fs::rename(&candidate,destination).map_err(|e|e.to_string())?;
-    // Windows cannot open a directory using std::fs::File. The file itself
-    // was flushed before the same-directory rename; keep legacy on all paths.
-    #[cfg(not(target_os="windows"))]
+    // Share the platform-aware directory synchronization used by candidate
+    // publication, including the Windows directory handle flags.
     schema11_sync_parent(destination)?;
     Ok(())
 }
@@ -18015,4 +18023,42 @@ fn preserve_private_stage_family(path: &Path) -> Result<(), String> {
 
 fn is_history_repair_workspace(path: &Path) -> bool {
     path.components().any(|part| part.as_os_str().to_str().is_some_and(|name| name.starts_with(".codex-history-repair-stage.")))
+}
+
+
+#[cfg(test)]
+mod candidate_durability_tests {
+    use super::*;
+
+    #[test]
+    fn candidate_capacity_includes_copy_and_both_vacuum_allocations() {
+        let root=std::env::temp_dir().join(format!("candidate-capacity-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path=root.join("index.sqlite");
+        let bytes=1024 * 1024 * 1024;
+        // Sparse metadata fixture: no gigabyte payload is allocated or read.
+        fs::File::create(&path).unwrap().set_len(bytes).unwrap();
+        MIGRATION_AVAILABLE_BYTES_OVERRIDE.with(|v|v.set(Some(2 * bytes + SCHEMA11_MIGRATION_SPACE_RESERVE_BYTES)));
+        assert!(schema11_migration_capacity(&path).unwrap_err().contains("空间不足"));
+        MIGRATION_AVAILABLE_BYTES_OVERRIDE.with(|v|v.set(Some(3 * bytes + SCHEMA11_MIGRATION_SPACE_RESERVE_BYTES)));
+        schema11_migration_capacity(&path).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(),bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn candidate_sync_preserves_bytes_and_flushes_parent() {
+        let root=std::env::temp_dir().join(format!("candidate-durability-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let candidate=root.join("candidate.sqlite");
+        let payload=b"candidate contents must survive flush unchanged";
+        fs::write(&candidate,payload).unwrap();
+        schema11_sync_file(&candidate).unwrap();
+        schema11_sync_parent(&candidate).unwrap();
+        assert_eq!(fs::read(&candidate).unwrap(),payload);
+        let missing=root.join("missing.sqlite");
+        assert!(schema11_sync_file(&missing).is_err());
+        assert!(!missing.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

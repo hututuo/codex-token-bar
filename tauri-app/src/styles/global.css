@@ -12715,3 +12715,10 @@ details.session-management-banner {
 .stats-quota-cycle-controls>.quota-cycle-calendar{flex-basis:100%}
 .stats-quota-boundary-detail:not([open]){margin:0}
 .stats-quota-boundary-detail[open] span{display:inline-block;margin:3px 14px 3px 0}
+/* Keep both price bases legible without stretching compact cards horizontally. */
+.model-amount-pair { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 2px; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.model-amount-pair-normalized { color: var(--muted); font-size: .82em; font-weight: 500; }
+.stats-model-cost-primary-card, .stats-model-cost-secondary-chip { padding-top: 5px; padding-bottom: 5px; }
+.floating-model-usage--cost .model-amount-pair-normalized { color: inherit; opacity: .76; }
+
+.stats-normalized-value { color: var(--muted); font-size: 10px; line-height: 1.2; font-variant-numeric: tabular-nums; }

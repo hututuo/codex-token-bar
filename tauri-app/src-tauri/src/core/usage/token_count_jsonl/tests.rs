@@ -995,6 +995,34 @@ fn release_upgrade_keeps_legacy_ledger_through_paginated_rewrite_and_append() {
 }
 
 #[test]
+fn release_offsetless_cumulative_fallback_preserves_evidence_and_counts_components_once() {
+    let _guard=app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();fs::create_dir_all(root.join("sessions")).unwrap();
+    let file=root.join("sessions/rollout-release-cumulative-only.jsonl");
+    let line=|age,total|serde_json::json!({"timestamp":recent_test_timestamp(age),"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":total,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":total}}}}).to_string();
+    write_lines(&file,&[line(30,100),line(29,120)]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,120);
+    let path=super::exact_usage_index::database_path(&root).unwrap();
+    convert_current_index_to_v091_schema9(&path);
+    // Release's parser stored cumulative deltas in tokens but took components
+    // only from last_token_usage (zero when absent). This is a semantic
+    // schema9 fixture, separate from the actual release-generated database.
+    let db=Connection::open(&path).unwrap();
+    db.execute_batch("UPDATE events SET input_tokens=0,cached_input_tokens=0,output_tokens=0,reasoning_output_tokens=0; UPDATE files SET append_ready=0,modified_ns='0'; DELETE FROM metadata WHERE key IN ('accounting_revision','accounting_coverage','accounting_structural_receipt')").unwrap();drop(db);
+    let upgraded=dashboard_snapshot(&root).unwrap();
+    assert_eq!(upgraded.stats.total_tokens,120);
+    assert_eq!(upgraded.stats.total_calls,2);
+    let db=Connection::open(&path).unwrap();
+    // Old source-level fingerprints were already present; they must not be
+    // treated as proof that these newly resolved component rows were billed.
+    assert_eq!(db.query_row("SELECT SUM(legacy_tokens) FROM event_rows WHERE legacy_tokens IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),120);
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),120);
+    drop(db);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,120);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn release_offsetless_ambiguous_calls_are_preserved_without_duplicate_admission() {
     let _guard=app_paths::app_path_test_env_guard(&[]);
     let root=temp_root();fs::create_dir_all(root.join("sessions")).unwrap();
@@ -12583,4 +12611,34 @@ fn actual_release_historical_database_upgrades_and_keeps_incremental_scan() {
     for name in ["sessions","archived_sessions"] {fs::rename(root.with_file_name(format!("tauri-missing-{name}")),root.join(name)).unwrap();}
     fs::remove_file(file).unwrap();
     println!("REAL HISTORY Rust rows {count}; structural total {structural_total}; refreshed total {baseline}; first scan bytes {after_first:?}; warm 0; append incremental; missing history retained");
+}
+
+
+#[test]
+#[ignore = "requires isolated v0.9.1 fixture and its original Codex Home identity"]
+fn actual_release_relocation_uses_supplied_cache_path() {
+    let _guard=app_paths::app_path_test_env_guard(&[]);
+    let home=PathBuf::from(std::env::var("CODEX_RELEASE_TAURI_HISTORICAL_HOME").unwrap());
+    let input=PathBuf::from(std::env::var("CODEX_RELEASE_TAURI_DATABASE").unwrap());
+    let root=temp_root();fs::create_dir_all(root.join("cache")).unwrap();
+    let legacy=root.join("cache/release.sqlite3");let destination=root.join("support/current.sqlite3");
+    fs::copy(input,&legacy).unwrap();
+    let old=Connection::open(&legacy).unwrap();old.execute_batch("PRAGMA journal_mode=DELETE").unwrap();
+    assert_eq!(old.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"9");
+    let count:i64=old.query_row("SELECT COUNT(*) FROM events",[],|r|r.get(0)).unwrap();assert!(count>1000);drop(old);
+    let unrelated=super::exact_usage_index::database_path(&home).unwrap();
+    assert_ne!(unrelated,legacy);assert_ne!(unrelated,destination);
+    let untouched=fs::read(&unrelated).unwrap();
+    let bytes=ExactUsageIndex::scan_bytes_for_testing();
+    super::exact_usage_index::relocate_legacy_index(&home,&legacy,&destination).unwrap();
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),bytes);
+    let db=Connection::open(&destination).unwrap();
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"13");
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),count);
+    let total:i64=db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get(0)).unwrap();
+    super::exact_usage_index::relocate_legacy_index(&home,&legacy,&destination).unwrap();
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),total);
+    assert_eq!(fs::read(unrelated).unwrap(),untouched,"relocation touched an index at a different path");
+    assert!(legacy.exists());drop(db);fs::remove_dir_all(root).unwrap();
+    println!("Actual release relocation: 13112 rows, non-default legacy path -> destination, no raw scan, unrelated index untouched");
 }

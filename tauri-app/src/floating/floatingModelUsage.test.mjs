@@ -24,8 +24,8 @@ test("today model usage combines aliases and computes cache-aware per-model pric
     { label: "Sol", tokens: 1_200_000 },
     { label: "Luna", tokens: 1_000_000 },
   ]);
-  assert.equal(floatingModelUsageValue(items[0], "cost"), "$4.60");
-  assert.equal(floatingModelUsageValue(items[1], "cost"), "$0.20");
+  assert.equal(floatingModelUsageValue(items[0], "cost"), "$4.60 · 均一化 $4.60");
+  assert.equal(floatingModelUsageValue(items[1], "cost"), "$0.20 · 均一化 $0.40");
   assert.equal(floatingModelUsageValue(items[0], "share"), "55%");
 });
 
@@ -39,7 +39,7 @@ test("Astra is shown and priced from the same shared model rows", () => {
     { label: "Astra", tokens: 1_100_000 },
     { label: "Sol", tokens: 1_000_000 },
   ]);
-  assert.equal(floatingModelUsageValue(items[0], "cost"), "$10.5");
+  assert.equal(floatingModelUsageValue(items[0], "cost"), "$10.5 · 均一化 $15.8");
 });
 
 test("Spark stays visible in share and shows its reference price in cost", () => {
@@ -50,12 +50,12 @@ test("Spark stays visible in share and shows its reference price in cost", () =>
   assert.deepEqual(items.map((item) => item.label), ["Luna", "Spark"]);
   const spark = items.find((item) => item.label === "Spark");
   assert.ok(spark);
-  assert.equal(floatingModelUsageValue(spark, "cost"), "$0.00（不计入总计）");
+  assert.equal(floatingModelUsageValue(spark, "cost"), "$0.00 · 均一化 $0.00（不计入总计）");
   assert.equal(spark.referenceCostUSD, 0.0042);
   assert.equal(floatingModelUsageValue({ ...spark, share: 0.0010916 }, "share"), "0.1%");
   assert.match(floatingModelUsageAccessibilityText("cost", [
     row("gpt-5.3-codex-spark", 800, 0, 200, 1_000, 1),
-  ], "gpt56Sol"), /Spark \$0\.00（不计入总计）/);
+  ], "gpt56Sol"), /Spark \$0\.00 · 均一化 \$0\.00（不计入总计）/);
 });
 
 test("today model usage keeps the compact four-model set and shares one cost order", () => {
@@ -104,7 +104,7 @@ test("used Astra Sol Terra Luna rows sort by amount with the default order as th
   ], "gpt56Sol");
 
   assert.deepEqual(items.map((item) => item.label), ["Sol", "Luna", "Astra", "Terra"]);
-  assert.deepEqual(items.map((item) => floatingModelUsageValue(item, "cost")), ["$4.00", "$1.20", "$1.00", "$1.00"]);
+  assert.deepEqual(items.map((item) => floatingModelUsageValue(item, "cost")), ["$4.00 · 均一化 $4.00", "$1.20 · 均一化 $2.40", "$1.00 · 均一化 $1.50", "$1.00 · 均一化 $1.00"]);
 });
 
 test("today model usage merges Sol aliases across the price cutover and sums both rates", () => {
@@ -118,7 +118,7 @@ test("today model usage merges Sol aliases across the price cutover and sums bot
   assert.equal(items.length, 1);
   assert.equal(items[0].label, "Sol");
   assert.equal(items[0].tokens, 2_000_000);
-  assert.equal(floatingModelUsageValue(items[0], "cost"), "$9.00");
+  assert.equal(floatingModelUsageValue(items[0], "cost"), "$9.00 · 均一化 $9.00");
 });
 
 test("model usage overflow explains every hidden model", () => {
@@ -134,7 +134,7 @@ test("model usage overflow explains every hidden model", () => {
   assert.equal(items.length, 5);
   assert.equal(
     floatingModelUsageOverflowText(items),
-    "更多模型\n5.4 · 0 tokens · 占比 0% · $0.00",
+    "更多模型\n5.4 · 0 tokens · 占比 0% · $0.00 · 均一化 $0.00",
   );
   assert.equal(floatingModelUsageOverflowText(items.slice(0, 4)), null);
 });

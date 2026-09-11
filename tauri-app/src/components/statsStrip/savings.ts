@@ -27,6 +27,7 @@ export interface LifetimeTokenBreakdown {
 
 export interface LifetimeSavingsEstimate {
   apiEquivalentUSD: number;
+  normalizedCostUSD?: number;
   subscriptionCostUSD: number | null;
   netSavingsUSD: number | null;
   billingMonths: number;
@@ -45,12 +46,14 @@ export interface LifetimeSavingsEstimate {
 
 export interface LifetimeSavingsPresentation {
   valueText: string;
+  normalizedValueText?: string;
   labelText: string;
   helpText: string;
 }
 
 export interface Recent7dSavingsEstimate {
   apiEquivalentUSD: number;
+  normalizedCostUSD?: number;
   /** Whether every non-empty five-minute point had model coverage. */
   quality: "measured" | "estimated";
   /** Human-readable source used while the precise model scan is pending. */
@@ -120,6 +123,7 @@ export function estimateLifetimeSavings({
 
   return {
     apiEquivalentUSD,
+    normalizedCostUSD: automaticPrice.normalizedCostUSD,
     subscriptionCostUSD,
     // `costUSD` is only the known-price subtotal when named model cards are
     // missing; do not turn it into an exact net-savings claim.
@@ -226,6 +230,7 @@ export function estimateRecent7dAPICost({
   const automaticPrice = modelAwareAPICostUSD(rows, aggregate, priceModel);
   return {
     apiEquivalentUSD: automaticPrice.costUSD,
+    normalizedCostUSD: automaticPrice.normalizedCostUSD,
     quality,
     ...(estimateSource ? { estimateSource } : {}),
     priceModel,
@@ -366,6 +371,7 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
   if (estimate.netSavingsUSD !== null && estimate.subscriptionCostUSD !== null && estimate.monthlyPlanUSD !== null) {
     return {
       valueText: compactMoney(estimate.netSavingsUSD),
+      normalizedValueText: `均一化 ${compactMoney((estimate.normalizedCostUSD ?? estimate.apiEquivalentUSD) - estimate.subscriptionCostUSD)}`,
       labelText: "累计净薅到（估）",
       helpText: `${priceBasis}${unpricedNote}${excludedNote}：API 等值 ${fullMoney(estimate.apiEquivalentUSD)} − ${estimate.normalizedPlanName} ${estimate.billingMonths} 个月套餐成本 ${fullMoney(estimate.subscriptionCostUSD)}（${fullMoney(estimate.monthlyPlanUSD)}/月）= ${fullMoney(estimate.netSavingsUSD)}。历史套餐或模型变化未计入。`,
     };
@@ -373,6 +379,7 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
 
   return {
     valueText: compactMoney(estimate.apiEquivalentUSD),
+    normalizedValueText: `均一化 ${compactMoney(estimate.normalizedCostUSD ?? estimate.apiEquivalentUSD)}`,
     labelText: hasUnpricedUsage ? "API 已知价小计（估）" : "API 等值（估）",
     helpText: hasUnpricedUsage
       ? `${priceBasis}${unpricedNote}${excludedNote}，已知价格 API 小计为 ${fullMoney(estimate.apiEquivalentUSD)}；${estimate.subscriptionCostUSD !== null && estimate.monthlyPlanUSD !== null

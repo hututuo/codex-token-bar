@@ -1317,8 +1317,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             available = UInt64(raw)
         }
         let activeFamily = main.addingClampingOnOverflow(wal)
+        // Free space excludes the existing source. The candidate copy and
+        // VACUUM's temporary database plus journal can coexist. WAL pages
+        // can enlarge the copied database as well.
         let required = activeFamily
-            .addingClampingOnOverflow(main)
+            .addingClampingOnOverflow(activeFamily)
+            .addingClampingOnOverflow(activeFamily)
             .addingClampingOnOverflow(512 * 1_024 * 1_024)
         guard available >= required else {
             throw NSError(

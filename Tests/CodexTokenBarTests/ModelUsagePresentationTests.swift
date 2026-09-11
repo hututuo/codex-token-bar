@@ -311,7 +311,7 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         XCTAssertEqual(sol.costUSD ?? -1, 3.12, accuracy: 0.0001)
         XCTAssertFalse(sol.usesIndependentQuota)
-        XCTAssertEqual(spark.valueText(for: .cost), "$0.44（不计入总计）")
+        XCTAssertEqual(spark.valueText(for: .cost), "$0.44 · 均一化 $0.44（不计入总计）")
         XCTAssertEqual(spark.referenceCostUSD ?? -1, 0.4375, accuracy: 0.0001)
         // A non-zero lifetime share must never be rounded down to a misleading
         // 0% label on the cumulative model-cost row.
@@ -386,7 +386,7 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         XCTAssertEqual(item.label, "Astra")
         XCTAssertEqual(item.costUSD ?? -1, 10.5, accuracy: 0.0001)
-        XCTAssertEqual(item.valueText(for: .cost), "$10.5")
+        XCTAssertEqual(item.valueText(for: .cost), "$10.5 · 均一化 $15.8")
         XCTAssertFalse(item.usesIndependentQuota)
     }
 
@@ -465,7 +465,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Astra", "Terra"])
-        XCTAssertEqual(items.map { $0.valueText(for: .cost) }, ["$4.00", "$1.20", "$1.00", "$1.00"])
+        XCTAssertEqual(items.map { $0.valueText(for: .cost) }, ["$4.00 · 均一化 $4.00", "$1.20 · 均一化 $2.40", "$1.00 · 均一化 $1.50", "$1.00 · 均一化 $1.00"])
     }
 
     func testFloatingTodayModelCostPaginatesBeyondTheCompactFourItemPage() {
@@ -533,7 +533,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(items.count, 5)
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.overflowDetailText(items: items),
-            "更多模型\n5.3 · 1 tokens · 占比 <0.1% · $0.00"
+            "更多模型\n5.3 · 1 tokens · 占比 <0.1% · $0.00 · 均一化 $0.00"
         )
         XCTAssertNil(
             FloatingTodayModelUsagePresentation.overflowDetailText(

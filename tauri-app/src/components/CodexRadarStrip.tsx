@@ -1,3 +1,5 @@
+import { detectedOfficialAPIPriceModel, planCostNormalizationFactor } from "../settings/quotaPriceModel.ts";
+import { normalizedMoneyText } from "../floating/floatingModelUsage.ts";
 import { memo, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { readCodexRadarFullSnapshot } from "../api/codexRadarDetailClient";
 import {
@@ -543,8 +545,8 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
             {quotaRows.slice(0, 3).map((row) => (
               <div className={hasBothQuotaWindows ? "radar-quota-row" : "radar-quota-row radar-quota-row--single"} key={row.tier}>
                 <b>{row.tier}</b>
-                {!hasFiveHourQuota || row.fiveH === null ? null : <span>5h ${displayRadarNumber(row.fiveH, 2)}</span>}
-                {!hasSevenDayQuota || row.sevenD === null ? null : <span>7d ${displayRadarNumber(row.sevenD, 2)}</span>}
+                {!hasFiveHourQuota || row.fiveH === null ? null : <span>5h {formatCost(row.fiveH)}</span>}
+                {!hasSevenDayQuota || row.sevenD === null ? null : <span>7d {formatCost(row.sevenD)}</span>}
               </div>
             ))}
             {snapshot?.modelIq.quotaRadar ? null : <span className="radar-muted">暂无额度雷达数据</span>}
@@ -822,7 +824,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
               displayRadarNumber(row.point.score),
               radarPassRatioText(row.point.passed, row.point.tasks),
               row.point.status || "--",
-              formatCost(row.point.costUsd),
+              formatCost(row.point.costUsd, row.point.model ?? row.model),
               row.point.wallTimeHuman || formatSeconds(row.point.wallSeconds),
               formatTokens(row.point.totalTokens),
             ])}
@@ -1504,11 +1506,12 @@ function radarPassRatioText(passed: number, tasks: number): string {
     : "--";
 }
 
-function formatCost(value: number | null | undefined): string {
+function formatCost(value: number | null | undefined, rawModel?: string | null): string {
   if (value === null || value === undefined || !Number.isFinite(value)) {
     return "--";
   }
-  return `$${displayRadarNumber(value, 2)}`;
+  const model = detectedOfficialAPIPriceModel(rawModel);
+  return model ? normalizedMoneyText(value, value * planCostNormalizationFactor(model)) : `$${displayRadarNumber(value, 2)} · 均一化待模型数据`;
 }
 
 function formatSeconds(value: number): string {

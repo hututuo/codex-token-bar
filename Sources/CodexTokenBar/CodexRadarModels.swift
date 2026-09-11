@@ -967,7 +967,10 @@ struct CodexRadarModelIQPoint: Decodable, Equatable, Sendable, Identifiable {
 
     var costDisplayText: String {
         guard let costUsd else { return "费用未知" }
-        return "$\(Self.display(costUsd, fractionDigits: 2))"
+        guard let model = OfficialAPIPriceModel.detected(from: model) else {
+            return "\(costUsd.quotaEstimatorMoneyText) · 均一化待模型数据"
+        }
+        return PlanCostNormalization.text(original: costUsd, normalized: costUsd * PlanCostNormalization.factor(for: model))
     }
 
     var totalTokensDisplayText: String {
@@ -1186,12 +1189,12 @@ struct CodexRadarQuotaRow: Decodable, Equatable, Sendable, Identifiable {
 
     var fiveHourDisplayText: String {
         guard let fiveH else { return "--" }
-        return "$\(CodexRadarModelIQPoint.display(fiveH, fractionDigits: 2))"
+        return "$\(CodexRadarModelIQPoint.display(fiveH, fractionDigits: 2)) · 均一化待模型数据"
     }
 
     var sevenDayDisplayText: String {
         guard let sevenD else { return "--" }
-        return "$\(CodexRadarModelIQPoint.display(sevenD, fractionDigits: 2))"
+        return "$\(CodexRadarModelIQPoint.display(sevenD, fractionDigits: 2)) · 均一化待模型数据"
     }
 }
 

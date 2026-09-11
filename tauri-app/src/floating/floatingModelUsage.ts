@@ -22,6 +22,7 @@ export interface FloatingModelUsageItem {
   tokens: number;
   share: number;
   costUSD: number | null;
+  normalizedCostUSD?: number | null;
   usesIndependentQuota: boolean;
   referenceCostUSD: number | null;
   color: string;
@@ -38,6 +39,7 @@ export const DASHBOARD_PRIMARY_MODEL_KEYS = [
 
 interface CombinedModelUsage {
   costUSD: number;
+  normalizedCostUSD: number;
   priceUnknown: boolean;
   model: string | null;
   eventStartUnix?: number;
@@ -109,6 +111,7 @@ export function floatingTodayModelUsageItems(
       : floatingModelUsageKey(row.model, row.eventStartUnix);
     const current = grouped.get(key) ?? {
       costUSD: 0,
+      normalizedCostUSD: 0,
       priceUnknown: false,
       model: row.model,
       eventStartUnix: row.eventStartUnix,
@@ -125,6 +128,7 @@ export function floatingTodayModelUsageItems(
     } };
     const price = modelAwareAPICostUSD([priceRow], priceRow.breakdown, fallbackModel);
     current.costUSD += price.costUSD;
+    current.normalizedCostUSD += price.normalizedCostUSD;
     current.priceUnknown ||= price.unpricedModels.length > 0;
     current.inputTokens += finiteNonnegative(row.breakdown.inputTokens);
     current.cachedInputTokens += finiteNonnegative(row.breakdown.cachedInputTokens);
@@ -143,6 +147,7 @@ export function floatingTodayModelUsageItems(
       if (!grouped.has(key)) {
         grouped.set(key, {
           costUSD: 0,
+      normalizedCostUSD: 0,
           priceUnknown: false,
           model: key,
           inputTokens: 0,
@@ -169,6 +174,7 @@ export function floatingTodayModelUsageItems(
       tokens: row.totalTokens,
       share: total > 0 ? row.totalTokens / total : 0,
       costUSD,
+      normalizedCostUSD: costUSD === null ? null : row.normalizedCostUSD,
       usesIndependentQuota,
       referenceCostUSD,
       color: modelUsageColor(key),
@@ -240,10 +246,10 @@ export function floatingModelUsageValue(
   if (item.usesIndependentQuota) {
     const referenceCost = item.referenceCostUSD === null
       ? "—"
-      : floatingModelUsageMoneyText(item.referenceCostUSD);
+      : normalizedMoneyText(item.referenceCostUSD, item.referenceCostUSD);
     return `${referenceCost}（不计入总计）`;
   }
-  return item.costUSD === null ? "价格未知" : floatingModelUsageMoneyText(item.costUSD);
+  return item.costUSD === null ? "价格未知" : normalizedMoneyText(item.costUSD, item.normalizedCostUSD ?? item.costUSD);
 }
 
 export function hasUnknownModelPrices(items: FloatingModelUsageItem[]): boolean {
@@ -286,8 +292,8 @@ export function floatingModelUsageOverflowText(
   if (hiddenItems.length === 0) return null;
   const details = hiddenItems.map((item) => {
     const cost = item.usesIndependentQuota
-      ? `${item.referenceCostUSD === null ? "—" : floatingModelUsageMoneyText(item.referenceCostUSD)}（不计入总计）`
-      : floatingModelUsageMoneyText(item.costUSD ?? 0);
+      ? `${item.referenceCostUSD === null ? "—" : normalizedMoneyText(item.referenceCostUSD, item.referenceCostUSD)}（不计入总计）`
+      : normalizedMoneyText(item.costUSD ?? 0, item.normalizedCostUSD ?? item.costUSD ?? 0);
     return `${item.label} · ${formatTokens(item.tokens)} tokens · 占比 ${detailedShareText(item.share)} · ${cost}`;
   });
   return ["更多模型", ...details].join("\n");
@@ -321,4 +327,8 @@ function dashboardModelUsagePlaceholder(key: string): FloatingModelUsageItem {
     referenceCostUSD: null,
     color: modelUsageColor(key),
   };
+}
+
+export function normalizedMoneyText(original: number, normalized: number): string {
+  return `${floatingModelUsageMoneyText(original)} · 均一化 ${floatingModelUsageMoneyText(normalized)}`;
 }

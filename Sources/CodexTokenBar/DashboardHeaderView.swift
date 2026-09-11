@@ -1022,7 +1022,8 @@ struct StatStrip: View, @preconcurrency Equatable {
                 StatCell(
                     value: savingsPresentation.valueText,
                     label: savingsPresentation.labelText,
-                    help: savingsPresentation.helpText
+                    help: savingsPresentation.helpText,
+                    secondaryValue: savingsPresentation.normalizedValueText
                 )
                 Divider().frame(height: 40)
                 StatCell(value: tokenValue(stats.peakDayTokens.abbreviatedTokens), label: "峰值 Token 数")
@@ -1284,7 +1285,7 @@ struct DashboardModelCostRow: View {
         let hasUnknownPrices = visibleItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
         let visibleReferenceEntries = visibleItems.compactMap { item -> String? in
             guard let referenceCostUSD = item.referenceCostUSD else { return nil }
-            return "\(item.label) 参考 \(referenceCostUSD.quotaEstimatorMoneyText)"
+            return "\(item.label) 参考 \(PlanCostNormalization.text(original: referenceCostUSD, normalized: referenceCostUSD))"
         }
         let visibleReferenceCostSummary = visibleReferenceEntries.isEmpty
             ? nil
@@ -1325,7 +1326,7 @@ struct DashboardModelCostRow: View {
 
                 if selectedAvailable, modelDetailAvailable, !visibleItems.isEmpty {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") \(visibleTotalCost.quotaEstimatorMoneyText)")
+                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") \(PlanCostNormalization.text(original: visibleTotalCost, normalized: visibleItems.compactMap(\.normalizedCostUSD).reduce(0, +)))")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(AppTheme.accentBlue)
                             .monospacedDigit()
@@ -1491,7 +1492,7 @@ private struct DashboardPrimaryModelCostCard: View {
 
             Spacer(minLength: 2)
 
-            Text(item.valueText(for: .cost))
+            ModelAmountPair(item: item)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.primary)
                 .monospacedDigit()
@@ -1577,7 +1578,7 @@ private struct DashboardSecondaryModelCostChip: View {
     }
 
     private var costText: some View {
-        Text(item.valueText(for: .cost))
+        ModelAmountPair(item: item)
             .foregroundStyle(.primary)
             .monospacedDigit()
     }
@@ -1593,6 +1594,7 @@ struct StatCell: View {
     let value: String
     let label: String
     var help: String? = nil
+    var secondaryValue: String? = nil
 
     var body: some View {
         VStack(spacing: 4) {
@@ -1602,6 +1604,9 @@ struct StatCell: View {
                 .minimumScaleFactor(0.72)
                 .lineLimit(1)
 
+            if let secondaryValue {
+                Text(secondaryValue).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+            }
             Text(label)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)

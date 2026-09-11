@@ -5916,9 +5916,16 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let factsBefore = try swiftSchemaMigrationFacts(database)
         let databaseBytesBefore = try Data(contentsOf: databaseURL)
 
-        CodexUsageHistoryIndex.overrideSchema6MigrationAvailableCapacityForTesting(0)
-        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: codexHome)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("空间不足"))
+        // The previous estimate allowed this second amount, but it lacks one
+        // of the two temporary allocations required while vacuuming a copy.
+        let previousEstimate = UInt64(databaseBytesBefore.count) * 2 + 512 * 1_024 * 1_024
+        for available in [0, previousEstimate] {
+            CodexUsageHistoryIndex.overrideSchema6MigrationAvailableCapacityForTesting(available)
+            XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: codexHome)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("空间不足"))
+            }
+            XCTAssertEqual(try Data(contentsOf: databaseURL), databaseBytesBefore)
+            XCTAssertEqual(try swiftSchemaMigrationFacts(database), factsBefore)
         }
         XCTAssertEqual(try Data(contentsOf: databaseURL), databaseBytesBefore)
         XCTAssertEqual(try swiftSchemaMigrationFacts(database), factsBefore)
