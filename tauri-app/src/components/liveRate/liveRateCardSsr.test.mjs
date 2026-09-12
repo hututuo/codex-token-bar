@@ -159,8 +159,8 @@ test("LiveRateCard status tray toggle relies on pressed styling without duplicat
     const enabled = renderComponent(LiveRateCard, cardProps({ statusTrayLiveTextEnabled: true }));
     const disabled = renderComponent(LiveRateCard, cardProps({ statusTrayLiveTextEnabled: false }));
 
-    assert.match(enabled, /aria-pressed="true"[^>]*>状态栏（实验）<\/button>/);
-    assert.match(disabled, /aria-pressed="false"[^>]*>状态栏（实验）<\/button>/);
+    assert.match(enabled, /aria-pressed="true" aria-label="状态栏（实验）"/);
+    assert.match(disabled, /aria-pressed="false" aria-label="状态栏（实验）"/);
     assert.doesNotMatch(enabled, /状态栏（实验）：(?:开|关)/);
     assert.doesNotMatch(disabled, /状态栏（实验）：(?:开|关)/);
   });

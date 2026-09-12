@@ -3807,26 +3807,35 @@ button.quota-side-card:hover {
   background: var(--panel-soft);
 }
 
-.settings-panel--quick {
-  grid-template-columns: minmax(150px, 0.72fr) minmax(260px, 1.28fr);
-  align-items: center;
-  min-height: 85px;
-  padding: 10px 12px;
+.settings-panel.settings-panel--quick {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
 }
 
-.settings-panel--quick > div:first-child {
-  display: grid;
-  gap: 4px;
+.quick-surface-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   min-width: 0;
 }
 
-.settings-panel--quick > div:first-child strong {
+.quick-surface-heading {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.quick-surface-heading strong {
   color: var(--text);
   font-size: 12px;
   font-weight: var(--weight-semibold);
 }
 
-.settings-panel--quick > div:first-child span {
+.quick-surface-heading > span {
   color: var(--muted);
   font-size: 10.5px;
   font-weight: var(--weight-regular);
@@ -3836,25 +3845,134 @@ button.quota-side-card:hover {
 .quick-surface-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
 }
 
 .quick-surface-actions button {
-  min-height: 36px;
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 60px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
-  color: var(--text);
+  color: var(--muted);
   cursor: pointer;
   font-size: 11px;
   font-weight: var(--weight-medium);
-  padding: 0 8px;
+  text-align: left;
+  padding: 9px 11px;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
 }
 
-.quick-surface-actions button[aria-pressed="true"],
-.quick-surface-actions .quick-settings-button {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+.quick-surface-actions button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  color: var(--accent-strong);
+}
+
+.quick-surface-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
   background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+}
+
+.quick-surface-actions button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.quick-surface-actions button:focus-visible,
+.quick-settings-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.quick-surface-symbols {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.quick-surface-symbols svg {
+  width: 19px;
+  height: 19px;
+  flex: none;
+}
+
+.quick-surface-switch {
+  width: 24px;
+  height: 14px;
+  flex: none;
+  padding: 2px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--muted) 35%, var(--panel));
+  transition: background-color 160ms ease;
+}
+
+.quick-surface-switch::after {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px #0000001f;
+  transition: transform 160ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.quick-surface-actions button[aria-pressed="true"] .quick-surface-switch {
+  background: var(--accent);
+}
+
+.quick-surface-actions button[aria-pressed="true"] .quick-surface-switch::after {
+  transform: translateX(10px);
+}
+
+.quick-surface-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.quick-surface-label small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: var(--weight-regular);
+}
+
+.quick-settings-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 5px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.quick-settings-button:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.quick-settings-button > span {
+  font-size: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quick-surface-actions button,
+  .quick-surface-switch,
+  .quick-surface-switch::after {
+    transition: none;
+  }
 }
 
 .app-settings-overlay {
