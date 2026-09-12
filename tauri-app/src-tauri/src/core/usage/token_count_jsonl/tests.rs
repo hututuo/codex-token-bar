@@ -987,10 +987,22 @@ fn release_upgrade_keeps_legacy_ledger_through_paginated_rewrite_and_append() {
     assert_eq!(copy.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),115);
     assert_eq!(copy.query_row("SELECT COUNT(*) FROM usage_ledger_bindings",[],|r|r.get::<_,i64>(0)).unwrap(),5);
     assert!(index_path.exists());
+    let pending: String = copy.query_row("SELECT value FROM metadata WHERE key='release_upgrade_retention_v1'", [], |r| r.get(0)).unwrap();
+    let pending: serde_json::Value = serde_json::from_str(&pending).unwrap();
+    assert_eq!(pending["status"], "copied");
+    assert_eq!(pending["sourcePath"], index_path.to_string_lossy().as_ref());
+    assert_eq!(pending["targetSchema"], 13);
     copy.execute_batch("CREATE TABLE relocation_noop(value INTEGER); INSERT INTO relocation_noop VALUES(42)").unwrap();
     super::exact_usage_index::relocate_legacy_index(&root,&index_path,&durable).unwrap();
     assert_eq!(copy.query_row("SELECT value FROM relocation_noop",[],|r|r.get::<_,i64>(0)).unwrap(),42);
     drop(copy);
+    let mut relocated = ExactUsageIndex::open_at_for_testing(&root, durable.clone()).unwrap();
+    relocated.sync(&root, &mut Vec::new()).unwrap();
+    let db = Connection::open(&durable).unwrap();
+    let success: String = db.query_row("SELECT value FROM metadata WHERE key='release_upgrade_retention_v1'", [], |r| r.get(0)).unwrap();
+    assert!(success.contains("succeeded"));
+    assert!(index_path.exists());
+    drop(db); drop(relocated);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -4674,10 +4686,19 @@ fn exact_index_schema11_switch_interruptions_resume_without_jsonl_reparse() {
         assert!(rollback_path.exists());
         assert!(manifest_path.exists());
 
+        let rollback_before = fs::read(&rollback_path).unwrap();
         resumed.sync(&root, &mut Vec::new()).unwrap();
         assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
-        assert!(!rollback_path.exists());
-        assert!(!manifest_path.exists());
+        assert_eq!(fs::read(&rollback_path).unwrap(), rollback_before);
+        assert!(fs::read_to_string(&manifest_path).unwrap().contains("Retained"));
+        let receipt: String = Connection::open(&index_path).unwrap().query_row(
+            "SELECT value FROM metadata WHERE key='release_upgrade_retention_v1'", [], |r| r.get(0)).unwrap();
+        assert!(receipt.contains("succeeded"));
+        drop(resumed);
+        let mut resumed = ExactUsageIndex::open(&root).unwrap();
+        resumed.sync(&root, &mut Vec::new()).unwrap();
+        assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+        assert_eq!(fs::read(&rollback_path).unwrap(), rollback_before);
         drop(resumed);
         fs::remove_dir_all(root).unwrap();
     }
@@ -12594,6 +12615,7 @@ fn actual_release_historical_database_upgrades_and_keeps_incremental_scan() {
     let structural_total:i64=db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get(0)).unwrap();drop(db);
     let first=dashboard_snapshot(&root).unwrap();
     let after_first=ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(after_first, before, "release first refresh reparsed unchanged JSONL");
     let warm=dashboard_snapshot(&root).unwrap();
     assert_eq!(first.stats.total_tokens,warm.stats.total_tokens);
     assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),after_first,"warm refresh reparsed JSONL");
@@ -12639,6 +12661,26 @@ fn actual_release_relocation_uses_supplied_cache_path() {
     super::exact_usage_index::relocate_legacy_index(&home,&legacy,&destination).unwrap();
     assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),total);
     assert_eq!(fs::read(unrelated).unwrap(),untouched,"relocation touched an index at a different path");
-    assert!(legacy.exists());drop(db);fs::remove_dir_all(root).unwrap();
+    assert!(legacy.exists());
+    let rollback = PathBuf::from(format!("{}.schema11-rollback",legacy.display()));
+    let preserved = fs::read(&rollback).unwrap();
+    let mut index = ExactUsageIndex::open_at_for_testing(&home, destination.clone()).unwrap();
+    index.sync(&home, &mut Vec::new()).unwrap();
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),bytes, "first migrated refresh reparsed JSONL");
+    let receipt: String = db.query_row("SELECT value FROM metadata WHERE key='release_upgrade_retention_v1'", [], |r| r.get(0)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+    assert_eq!(parsed["status"], "succeeded");
+    assert_eq!(parsed["sourceSchema"], 9);
+    assert_eq!(parsed["targetSchema"], 13);
+    assert_eq!(parsed["sourcePath"], legacy.to_string_lossy().as_ref());
+    assert_eq!(fs::read(&rollback).unwrap(), preserved);
+    drop(index);
+    let mut index = ExactUsageIndex::open_at_for_testing(&home, destination.clone()).unwrap();
+    index.sync(&home, &mut Vec::new()).unwrap();
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),bytes);
+    let repeated: String = db.query_row("SELECT value FROM metadata WHERE key='release_upgrade_retention_v1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(repeated, receipt);
+    assert_eq!(fs::read(&rollback).unwrap(), preserved);
+    drop(index); drop(db); fs::remove_dir_all(root).unwrap();
     println!("Actual release relocation: 13112 rows, non-default legacy path -> destination, no raw scan, unrelated index untouched");
 }

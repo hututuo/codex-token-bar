@@ -263,6 +263,7 @@ enum Schema11CandidatePhase {
     Validated,
     Switching,
     Switched,
+    Retained,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1422,6 +1423,11 @@ impl ExactUsageIndex {
             relocate_legacy_index(codex_home,&legacy,&path)?;
         }
         Self::open_at(codex_home,path)
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_at_for_testing(home: &Path, path: PathBuf) -> Result<Self, String> {
+        Self::open_at(home, path)
     }
 
     fn open_at(codex_home: &Path,path: PathBuf) -> Result<Self, String> {
@@ -2795,12 +2801,12 @@ impl ExactUsageIndex {
             }
             Ok(self.revision()?.max(revision))
         })();
-        if result.is_ok() {
+        if result.is_ok() && !self.migration_pending {
             // Excluded accounting rows are handled by the numeric policy, not a
             // permanent refresh warning. Actual scan/migration failures remain visible.
-            if let Err(error) = cleanup_successful_schema11_migration(&cleanup_index_path) {
+            if let Err(error) = record_successful_migration_retention(&self.connection, &cleanup_index_path) {
                 warnings.push(scan_warning(format!(
-                    "schema 11 已成功刷新，但受管回滚资料暂未清理，将保留并稍后重试：{error}"
+                    "索引已成功刷新，迁移成功标识暂未写入；旧数据保留，下次刷新重试：{error}"
                 )));
             }
         }
@@ -13249,6 +13255,12 @@ fn prepare_schema11_candidate_if_needed(
     {
         return Err("schema 11 候选迁移清单与当前索引路径不匹配，已保留全部现场".into());
     }
+    if manifest.phase == Schema11CandidatePhase::Retained {
+        if !existing_regular_index(index_path)? {
+            return Err("已迁移账本缺失；保留旧库并停止自动重建".into());
+        }
+        return Ok(None);
+    }
     let validation = schema11_resume_candidate(
         &mut manifest,
         &manifest_path,
@@ -13680,53 +13692,46 @@ pub(super) fn cleanup_schema11_migration_for_testing(codex_home: &Path) -> Resul
     cleanup_successful_schema11_migration(&index_path)
 }
 
-fn cleanup_successful_schema11_migration(index_path: &Path) -> Result<(), String> {
+const MIGRATION_RETENTION_KEY: &str = "release_upgrade_retention_v1";
+
+fn migration_retention_receipt(source: &Path, manifest: Option<&Schema11CandidateManifest>) -> serde_json::Value {
+    serde_json::json!({
+        "sourcePath": source.to_string_lossy(),
+        "rollbackPath": schema11_rollback_path(source).to_string_lossy(),
+        "manifestPath": schema11_manifest_path(source).to_string_lossy(),
+        "sourceSchema": manifest.map(|m| m.source_receipt.schema_version).unwrap_or(CURRENT_SCHEMA_VERSION),
+        "targetSchema": CURRENT_SCHEMA_VERSION, "status": "copied"
+    })
+}
+
+/// Metadata travels with relocation. Only a published ordinary sync marks it
+/// successful; old databases and all migration evidence remain for next release.
+fn record_successful_migration_retention(connection: &Connection, index_path: &Path) -> Result<(), String> {
+    let mut receipt: Option<serde_json::Value> = metadata_text(connection, MIGRATION_RETENTION_KEY)?
+        .map(|v| serde_json::from_str(&v).map_err(|e| format!("无法读取迁移保留标识：{e}")))
+        .transpose()?;
+    if receipt.as_ref().is_some_and(|r| r["status"] == "succeeded") { return Ok(()); }
     let manifest_path = schema11_manifest_path(index_path);
-    if !manifest_path.exists() {
-        return Ok(());
+    if manifest_path.exists() {
+        let mut manifest = schema11_load_manifest(&manifest_path)?;
+        if !matches!(manifest.phase, Schema11CandidatePhase::Switched | Schema11CandidatePhase::Retained)
+            || manifest.source_path != index_path.to_string_lossy()
+            || existing_regular_index(&schema11_candidate_path(index_path))? { return Ok(()); }
+        if receipt.is_none() { receipt = Some(migration_retention_receipt(index_path, Some(&manifest))); }
+        manifest.phase = Schema11CandidatePhase::Retained;
+        schema11_store_manifest(&manifest_path, &manifest)?;
     }
-    let manifest = schema11_load_manifest(&manifest_path)?;
-    if manifest.phase != Schema11CandidatePhase::Switched
-        || manifest.source_path != index_path.to_string_lossy()
-    {
-        return Ok(());
-    }
-    let candidate_path = schema11_candidate_path(index_path);
-    if existing_regular_index(&candidate_path)? {
-        // An unexpected main candidate is evidence, not garbage. Never remove
-        // it from an automatic success cleanup.
-        return Ok(());
-    }
-    for path in [
-        schema11_rollback_path(index_path),
-        sqlite_sidecar_path(&schema11_rollback_path(index_path), "-wal"),
-        sqlite_sidecar_path(&schema11_rollback_path(index_path), "-shm"),
-        sqlite_sidecar_path(&schema11_rollback_path(index_path), "-journal"),
-        sqlite_sidecar_path(&candidate_path, "-wal"),
-        sqlite_sidecar_path(&candidate_path, "-shm"),
-        sqlite_sidecar_path(&candidate_path, "-journal"),
-        sqlite_sidecar_path(&candidate_path, ".operation.lock"),
-    ] {
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => return Ok(()),
-            Ok(_) => fs::remove_file(&path).map_err(|error| {
-                format!(
-                    "无法清理 schema 11 已验证回滚文件 {}：{error}",
-                    path.display()
-                )
-            })?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "无法检查 schema 11 已验证回滚文件 {}：{error}",
-                    path.display()
-                ))
-            }
-        }
-    }
-    fs::remove_file(&manifest_path)
-        .map_err(|error| format!("无法清理 schema 11 迁移清单：{error}"))?;
-    schema11_sync_parent(index_path)
+    let Some(mut receipt) = receipt else { return Ok(()); };
+    receipt["status"] = serde_json::json!("succeeded");
+    receipt["publishedGeneration"] = serde_json::json!(metadata_i64(connection, "published_generation")?);
+    receipt["completedAtUnix"] = serde_json::json!(OffsetDateTime::now_utc().unix_timestamp());
+    set_metadata(connection, MIGRATION_RETENTION_KEY, &receipt.to_string())
+}
+
+#[cfg(test)]
+fn cleanup_successful_schema11_migration(index_path: &Path) -> Result<(), String> {
+    let connection = Connection::open(index_path).map_err(|e| e.to_string())?;
+    record_successful_migration_retention(&connection, index_path)
 }
 
 fn open_index_connection_with_recovery(
@@ -17215,6 +17220,12 @@ pub(super) fn relocate_legacy_index(home: &Path,legacy: &Path,destination: &Path
         if checked!="ok" { return Err("历史账本副本校验失败；旧库已保留".into()); }
         retention::validate(&copy)?;
         ledger::validate(&copy)?;
+    }
+    {
+        let copy = Connection::open(&candidate).map_err(|e| e.to_string())?;
+        let manifest_path = schema11_manifest_path(legacy);
+        let manifest = if manifest_path.exists() { Some(schema11_load_manifest(&manifest_path)?) } else { None };
+        set_metadata(&copy, MIGRATION_RETENTION_KEY, &migration_retention_receipt(legacy, manifest.as_ref()).to_string())?;
     }
     schema11_sync_file(&candidate)?;
     fs::rename(&candidate,destination).map_err(|e|e.to_string())?;

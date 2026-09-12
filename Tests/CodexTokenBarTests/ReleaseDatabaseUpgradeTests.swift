@@ -45,6 +45,7 @@ final class ReleaseDatabaseUpgradeTests: XCTestCase {
                 }
             }
             let first=try sync(files)
+            XCTAssertEqual(first.changedFiles,0, "Release upgrade must reuse unchanged source checkpoints")
             let baseline=try scalar("SELECT SUM(tokens) FROM events")
             let warm=try sync(files)
             XCTAssertEqual(warm.changedFiles,0)
@@ -163,6 +164,20 @@ extension ReleaseDatabaseUpgradeTests {
             let total=try migrated.readRows("SELECT SUM(tokens) FROM events"){$0.int64(0)}.first!
             _=try CodexUsageHistoryIndex(codexHome:home)
             XCTAssertEqual(try migrated.readRows("SELECT SUM(tokens) FROM events"){$0.int64(0)}.first!,total)
+            let index = try CodexUsageHistoryIndex(codexHome: home)
+            let publication = try index.synchronize(files: [], sessionID: { $0.lastPathComponent }) { _, _, _, _, _ in
+                XCTFail("Relocation must not parse unchanged history")
+                throw NSError(domain: "UnexpectedParse", code: 1)
+            }
+            let receipt = try XCTUnwrap(migrated.readRows("SELECT value FROM schema_meta WHERE key='release_upgrade_retention_v1'") { $0.text(0) }.first ?? nil)
+            let receiptJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(receipt.utf8)) as? [String: Any])
+            XCTAssertEqual(receiptJSON["status"] as? String, "succeeded")
+            XCTAssertEqual(receiptJSON["publishedGeneration"] as? String, String(publication.attributionGeneration))
+            XCTAssertEqual(receiptJSON["sourcePath"] as? String, old.path)
+            XCTAssertTrue(manager.fileExists(atPath: old.path + ".schema11-rollback"))
+            XCTAssertTrue(manager.fileExists(atPath: old.path + ".schema11-migration.json"))
+            _ = try CodexUsageHistoryIndex(codexHome: home)
+            XCTAssertEqual(try migrated.readRows("SELECT value FROM schema_meta WHERE key='release_upgrade_retention_v1'") { $0.text(0) }.first ?? nil, receipt)
             print("DEFAULT PATH actual release migration: old cache retained, Application Support schema13, count \(String(describing:count)), reopen unchanged")
         }
     }

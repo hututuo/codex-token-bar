@@ -4584,12 +4584,23 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(CodexUsageHistoryIndex.synchronizationInvocationCountForTesting, 0)
         XCTAssertEqual(try Data(contentsOf: sessionFile), sourceBefore)
         XCTAssertEqual(try index.attributionState(), stateBefore)
+        // A cached dashboard can be one publication behind after restart.
+        // Cycle browsing reads the newer committed ledger without starting a scan.
+        XCTAssertGreaterThan(first.attributionGeneration, 0)
+        let fromCachedDashboard = try CodexUsageHistoryIndex.quotaCycleSourceBuckets(codexHome: codexHome,
+            provenanceEpoch: first.provenanceEpoch, generation: first.attributionGeneration - 1,
+            from: now.addingTimeInterval(-1_200), before: now,
+            minuteBucketStarts: [now.addingTimeInterval(-900), now.addingTimeInterval(-300)],
+            useLatestPublishedGeneration: true)
+        XCTAssertEqual(fromCachedDashboard, refined)
+        XCTAssertEqual(CodexUsageHistoryIndex.synchronizationInvocationCountForTesting, 0)
+        XCTAssertEqual(try index.attributionState(), stateBefore)
         XCTAssertThrowsError(try CodexUsageHistoryIndex.quotaCycleSourceBuckets(codexHome: codexHome,
             provenanceEpoch: first.provenanceEpoch, generation: first.attributionGeneration + 1,
-            from: now.addingTimeInterval(-1_200), before: now, minuteBucketStarts: []))
+            from: now.addingTimeInterval(-1_200), before: now, minuteBucketStarts: [], useLatestPublishedGeneration: true))
         XCTAssertThrowsError(try CodexUsageHistoryIndex.quotaCycleSourceBuckets(codexHome: codexHome,
             provenanceEpoch: "superseded", generation: first.attributionGeneration,
-            from: now.addingTimeInterval(-1_200), before: now, minuteBucketStarts: []))
+            from: now.addingTimeInterval(-1_200), before: now, minuteBucketStarts: [], useLatestPublishedGeneration: true))
 
     }
 
@@ -5621,7 +5632,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 1)
     }
 
-    func testSchema7CandidateMigrationPreservesRowsAndCleansRollbackOnlyAfterRefresh() throws {
+    func testSchema7CandidateMigrationRetainsRollbackAndRecordsSuccessfulRefresh() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageSchema7Candidate")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -5686,37 +5697,19 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: rollbackURL), databaseBytesBefore)
         XCTAssertTrue(manifestURL.isFileURL && FileManager.default.fileExists(atPath: manifestURL.path))
 
-        // Recreate the old rollback-first cleanup window: the manifest has
-        // no switchedFacts extension and rollback has already disappeared.
-        var legacyManifest = try XCTUnwrap(
-            try JSONSerialization.jsonObject(
-                with: Data(contentsOf: manifestURL)
-            ) as? [String: Any]
-        )
-        legacyManifest.removeValue(forKey: "switchedFacts")
-        try JSONSerialization.data(
-            withJSONObject: legacyManifest,
-            options: [.sortedKeys]
-        ).write(to: manifestURL, options: [.atomic])
-        try FileManager.default.removeItem(at: rollbackURL)
-        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
-        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
-        XCTAssertTrue(
-            try String(contentsOf: manifestURL, encoding: .utf8).contains("\"switchedFacts\"")
-        )
-
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: rollbackURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: manifestURL.path))
-        for suffix in ["-wal", "-shm", "-journal", ".operation.lock"] {
-            XCTAssertFalse(
-                FileManager.default.fileExists(atPath: candidateURL.path + suffix),
-                "successful migration must remove only its exact candidate residue"
-            )
-        }
+        XCTAssertEqual(try Data(contentsOf: rollbackURL), databaseBytesBefore)
+        XCTAssertTrue(try String(contentsOf: manifestURL, encoding: .utf8).contains("\"retained\""))
+        let receipt = try XCTUnwrap(database.readRows("SELECT value FROM schema_meta WHERE key='release_upgrade_retention_v1'") { $0.text(0) }.first ?? nil)
+        XCTAssertTrue(receipt.contains("succeeded"))
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        XCTAssertEqual(try Data(contentsOf: rollbackURL), databaseBytesBefore)
+        XCTAssertEqual(try database.readRows("SELECT value FROM schema_meta WHERE key='release_upgrade_retention_v1'") { $0.text(0) }.first ?? nil, receipt)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: candidateURL.path))
     }
 
     func testSchema7CandidateRetirementResumesAfterInterruptedCleanup() throws {
@@ -5762,15 +5755,14 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: rollbackURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
         XCTAssertTrue(
-            try String(contentsOf: manifestURL, encoding: .utf8).contains("\"retiring\"")
+            try String(contentsOf: manifestURL, encoding: .utf8).contains("\"switched\"")
         )
 
-        // A fresh open resumes the durable retirement phase and does not need
-        // the rollback database to validate the already published active copy.
+        // A fresh open retries successful receipt publication, preserving backup.
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: rollbackURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: manifestURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rollbackURL.path))
+        XCTAssertTrue(try String(contentsOf: manifestURL, encoding: .utf8).contains("\"retained\""))
     }
 
     func testSchema7RetirementPreservesRollbackWhenActiveIsDamagedOrMissing() throws {
