@@ -3,7 +3,7 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withSsrModules } from "../test/ssrHarness.mjs";
-import { sidebarRadarSnapshot, sidebarRadarCompact, sidebarRadarIsActive } from "./radarModel.ts";
+import { sidebarRadarSnapshot, sidebarRadarAtTime, sidebarRadarCompact, sidebarRadarIsActive } from "./radarModel.ts";
 import { rankedCodexCrowdRadarModels } from "../api/codexCrowdRadarClient.ts";
 import { normalizeCodexRadarSnapshot } from "../domain/codexRadar/model.ts";
 import { initialSidebarState, sidebarReducer, isSidebarAction } from "./model.ts";
@@ -87,4 +87,24 @@ test("open flag cannot override waiting action or elapsed countdown", () => {
  official.recommendedAction = "use window"; official.window.countdownDeadline = new Date(now + 1000).toISOString();
  assert.equal(sidebarRadarIsActive(sidebarRadarSnapshot(official, null, now)), true);
  assert.equal(sidebarRadarIsActive(sidebarRadarSnapshot(official, null, now + 1000)), false);
+});
+
+
+test("countdown clock refresh reuses ranking arrays and matches a full rebuild through expiry and staleness", () => {
+  const official = officialSnapshot();
+  const now = Date.now();
+  official.lastSuccessfulRefreshAt = new Date(now).toISOString();
+  official.window.countdownDeadline = new Date(now + 65_000).toISOString();
+  const crowd = crowdSnapshot([crowdModel("sol", .9), crowdModel("astra", .8)]);
+  const base = sidebarRadarSnapshot(official, crowd, now);
+  for (const elapsed of [0, 5_000, 60_000, 65_000, 15 * 60_000 + 1]) {
+    const tick = sidebarRadarAtTime(base, official, now + elapsed);
+    assert.deepEqual(tick, sidebarRadarSnapshot(official, crowd, now + elapsed));
+    assert.equal(tick.crowd, base.crowd);
+    assert.equal(tick.official.rows, base.official.rows);
+    assert.equal(tick.official.primary, base.official.primary);
+    assert.equal(sidebarRadarIsActive(tick), elapsed < 65_000);
+  }
+  assert.equal(base.official.windowOpen, true, "clock refresh must not mutate cached source presentation");
+  assert.deepEqual(sidebarRadarAtTime(sidebarRadarSnapshot(null, null, now), null, now + 1), sidebarRadarSnapshot(null, null, now + 1));
 });

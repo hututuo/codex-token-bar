@@ -5,7 +5,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {Window} from 'happy-dom';
 import {withSsrModules} from '../test/ssrHarness.mjs';
 
-test('collapsing preserves both content layers but removes summary actions from input and accessibility', async () => {
+test('both positioning layers persist; an initially hidden summary has no mounted controls', async () => {
   await withSsrModules(async load => {
     const {SidebarRailContent}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
     const data={snapshot:{fiveHourAvailability:'absent',fiveHourRemainingPercent:null,sevenDayAvailability:'measured',sevenDayRemainingPercent:.42},runningThreads:{total:4,status:'ready'}};
@@ -19,7 +19,7 @@ test('collapsing preserves both content layers but removes summary actions from 
         assert.equal(summary.dataset.visible,String(mode!=='rest'));
         assert.equal(summary.hasAttribute('inert'),mode==='rest');
         assert.equal(summary.getAttribute('aria-hidden'),String(mode==='rest'));
-        assert.equal(summary.querySelectorAll('.qs-ring').length,2);
+        assert.equal(summary.querySelectorAll('.qs-ring').length,mode==='rest'?0:2);
       }
     } finally {dom.close();}
   });

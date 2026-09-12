@@ -19,9 +19,24 @@ export interface SidebarRadar {
     rows: { rank: number; model: string; effort: string; iq: number; passed: number; samples: number }[];
   };
 }
-export function sidebarRadarSnapshot(official: CodexRadarSnapshot | null, crowd: CodexCrowdRadarSnapshot | null, nowMs = Date.now()): SidebarRadar {
+function sidebarRadarClockFields(official: CodexRadarSnapshot | null, nowMs: number) {
   const lastSuccessMs = Date.parse(official?.lastSuccessfulRefreshAt || "");
   const fresh = official !== null && !official.staleDataDisplayed && Number.isFinite(lastSuccessMs) && nowMs >= lastSuccessMs && nowMs - lastSuccessMs <= 15 * 60_000;
+  const action = radarActionDisplayTextForSnapshot(official, nowMs);
+  return {
+    fresh,
+    windowOpen: official ? radarIsSpeedWindow(official, nowMs) : null,
+    countdown: action.replace(/^速登 /, ""),
+    action: official ? sidebarRadarWording(action) : "建议动作暂不可用",
+  };
+}
+
+/** Countdown ticks update only time-dependent fields; ranking rows stay shared. */
+export function sidebarRadarAtTime(base: SidebarRadar, official: CodexRadarSnapshot | null, nowMs = Date.now()): SidebarRadar {
+  return { ...base, official: { ...base.official, ...sidebarRadarClockFields(official, nowMs) } };
+}
+
+export function sidebarRadarSnapshot(official: CodexRadarSnapshot | null, crowd: CodexCrowdRadarSnapshot | null, nowMs = Date.now()): SidebarRadar {
   const primary = official ? primaryModelMeasurementRow(official.modelIq) : null;
   const provenance = crowd?.provenance?.table;
   const stale = provenance?.stale === true || provenance?.fresh === false ? true
@@ -31,11 +46,9 @@ export function sidebarRadarSnapshot(official: CodexRadarSnapshot | null, crowd:
     .map((row, index) => ({ rank: index + 1, model: row.model, effort: row.effort,
       iq: row.passRate * 150, passed: row.scorePassed, samples: row.scoreSamples }));
   return {
-    official: { available: official !== null, fresh, stale: official?.staleDataDisplayed ?? false,
-      windowOpen: official ? radarIsSpeedWindow(official, nowMs) : null,
-      deadlineMs: radarSpeedWindowDeadlineMs(official), countdown: radarActionDisplayTextForSnapshot(official, nowMs).replace(/^速登 /, ""),
+    official: { available: official !== null, ...sidebarRadarClockFields(official, nowMs), stale: official?.staleDataDisplayed ?? false,
+      deadlineMs: radarSpeedWindowDeadlineMs(official),
       windowSummary: official ? sidebarRadarWording(radarWindowSummaryDisplayText(official)) : "雷达待读取",
-      action: official ? sidebarRadarWording(radarActionDisplayTextForSnapshot(official)) : "建议动作暂不可用",
       updatedAt: official?.monitoredAt || "", source: official?.links.html || "https://codexradar.com/",
       rows: official ? rankedModelRows(official.modelIq).filter(row => modelPointHasMeasurement(row.point)).map((row,index) => ({rank:index+1,model:row.model || row.point.model || row.label,effort:row.reasoningEffort || row.point.reasoningEffort || "未知",iq:row.point.score,passed:row.point.passed,samples:row.point.tasks})) : [],
       primary: primary ? { model: primary.model || primary.point.model || primary.label,

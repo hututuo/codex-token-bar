@@ -13,7 +13,7 @@ import { useCompactPanelSource } from "../surfaces/useCompactPanelSource";
 import type { DisplaySurfaceSettings, RunningThreadMember } from "../types/dashboard";
 import { initialSidebarState, sidebarRailClassName, hasFiveHourQuota, isSidebarAction, quotaPercent, quotaText, sidebarReducer, type SidebarAction, type SidebarState } from "./model";
 import { useFloatingRadar, useFloatingCrowdRadar } from "../floating/useFloatingRadar";
-import { sidebarRadarSnapshot, sidebarRadarCompact, sidebarRadarIsActive, type SidebarRadar } from "./radarModel";
+import { sidebarRadarSnapshot, sidebarRadarAtTime, sidebarRadarCompact, sidebarRadarIsActive, type SidebarRadar } from "./radarModel";
 import { sidebarLocalTime, sidebarMetricValue } from "./detailsModel";
 import { formatTokens } from "../utils/format";
 import { isSidebarDragTarget, createSidebarDragSession } from "./drag";
@@ -23,7 +23,8 @@ import { createSidebarPublisher, sidebarVisualPercent } from "./presentation";
 import { createSidebarNativeCoordinator } from "./nativeCoordinator";
 import { monitorSidebarPresence } from "./presence";
 import { floatingTodayModelUsageItems, floatingModelUsageValue } from "../floating/floatingModelUsage";
-import { sidebarExpectedFraction, flashSidebarButton } from "./meterFeedback";
+import { sidebarExpectedFraction } from "./meterFeedback";
+import { SidebarSummaryLayer } from "./SidebarSummaryLayer";
 
 import { prepareResetCreditsForDisplay } from "../components/quota/resetCredits";
 import type { SidebarSection } from "./model";
@@ -88,7 +89,8 @@ function RailSurface() {
     const timer = setInterval(() => setRadarNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, [display.quotaSidebarEnabled]);
-  const radar = useMemo(() => sidebarRadarSnapshot(officialRadar, crowdRadar, Math.max(radarNow, Date.now())), [officialRadar, crowdRadar, radarNow]);
+  const radarBase = useMemo(() => sidebarRadarSnapshot(officialRadar, crowdRadar), [officialRadar, crowdRadar]);
+  const radar = useMemo(() => sidebarRadarAtTime(radarBase, officialRadar, Math.max(radarNow, Date.now())), [radarBase, officialRadar, radarNow]);
   const compactData = useMemo(() => ({ ...sidebarData(data), trend }), [data.snapshot, data.runningThreads, data.quota.updatedAt, data.quota.account, data.quota.quota, trend]);
   const showsFiveHour = hasFiveHourQuota(data.snapshot.fiveHourAvailability, data.snapshot.fiveHourRemainingPercent);
   const coordinator = useRef<ReturnType<typeof createSidebarNativeCoordinator> | null>(null);
@@ -211,7 +213,6 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = 200, li
   const expectedFive = sidebarExpectedFraction(five, data.snapshot.fiveHourExpectedRemainingPercent, data.snapshot.quotaDataStale);
   const expectedSeven = sidebarExpectedFraction(seven, data.snapshot.sevenDayExpectedRemainingPercent, data.snapshot.quotaDataStale);
   const models = useMemo(() => floatingTodayModelUsageItems(data.snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false }).filter(item => item.share > 0), [data.snapshot.todayModelBreakdowns]);
-  const nearestCredit = prepareResetCreditsForDisplay(data.quota?.quota?.resetCredit?.credits ?? []).find(item => item.isCountdownEligible)?.credit;
   const modelTitle = models.length ? `今日模型 Token 占比：${models.map(item => `${item.label} ${(item.share * 100).toFixed(1)}%`).join("，")}` : "今日模型占比待读取";
   const modelStrip = (vertical: boolean) => <div className={`qs-model-strip ${vertical ? "qs-model-strip-vertical" : ""}`} title={modelTitle} aria-label={modelTitle}>{models.map(item => <i key={item.key} style={{ flexGrow: item.share, background: item.color }} />)}</div>;
   return <>
@@ -219,7 +220,9 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = 200, li
     <div className="qs-bars" data-visible={state.mode === "rest"} aria-hidden={state.mode !== "rest"} aria-label="悬停查看额度">
       <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ transform: `scaleY(${(ratePercent ?? 0) / 100})`, background: "#78b7ff" }} /></span>
       {showsFiveHour && <Bar percent={five} color="#b6ef75" expected={expectedFive} />}<Bar percent={seven} color="#b4acff" expected={expectedSeven} />{modelStrip(true)}
-    </div><div className="qs-summary" onClickCapture={event => flashSidebarButton(event.target)} data-visible={state.mode !== "rest"} aria-hidden={state.mode === "rest"} inert={state.mode === "rest"}>
+    </div><SidebarSummaryLayer visible={state.mode !== "rest"}>{() => {
+      const nearestCredit = prepareResetCreditsForDisplay(data.quota?.quota?.resetCredit?.credits ?? []).find(item => item.isCountdownEligible)?.credit;
+      return <>
       <span className="qs-caption">速览</span>
             <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
       {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} /><Value value={quotaText(five)} /></button>}
@@ -233,7 +236,8 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = 200, li
       {data.quota?.quota?.resetCredit?.updatedAt && <button className="qs-reset-count" onClick={() => onOpen("credits", "top")}>重置卡 {data.quota.quota.resetCredit.availableCount} 张{nearestCredit && <small>{sidebarLocalTime(nearestCredit.expiresAt, nearestCredit.expiresAtUnix)}</small>}</button>}
       {data.snapshot.quotaDataStale && <span className="qs-warning">额度已过期</span>}
       {error && <span className="qs-warning" title={error}>窗口异常</span>}
-    </div>
+      </>;
+    }}</SidebarSummaryLayer>
   </>;
 }
 
