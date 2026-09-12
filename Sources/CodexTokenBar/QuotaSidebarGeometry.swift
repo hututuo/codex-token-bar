@@ -31,7 +31,7 @@ struct QuotaSidebarInteraction: Equatable {
         self.detail = detail
     }
     mutating func beginDrag() { detail = nil; pinned = false }
-    mutating func togglePin() { if detail != nil { pinned.toggle() } }
+    mutating func togglePin() { if expanded { pinned.toggle() } }
     mutating func leaveAfterGrace() { if !pinned { dismiss() } }
     mutating func dismiss() { expanded = false; detail = nil; pinned = false }
 }

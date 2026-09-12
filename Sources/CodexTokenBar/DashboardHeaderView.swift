@@ -1205,6 +1205,11 @@ struct DashboardModelCostRow: View {
     let sevenDayModelDisplayState: ModelAttributionDisplayState
     let sevenDayEstimateSource: String?
     var periodLabel = "本期"
+    var cycles: [QuotaActualCycle] = []
+    var selectedCycle: QuotaActualCycle?
+    var cycleSummary = ""
+    var onSelectCycle: ((String?) -> Void)?
+    @State private var calendarExpanded = false
 
     private var sourceRows: [ModelTokenBreakdown] {
         switch scope {
@@ -1287,12 +1292,24 @@ struct DashboardModelCostRow: View {
 
         VStack(spacing: 6) {
             HStack(spacing: 9) {
-                DashboardModelCostScopePicker(scope: $scope)
-
-                Text("各模型 API 等值费用")
+                Text("模型费用")
                     .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
                     .fixedSize()
+
+                DashboardModelCostScopePicker(scope: $scope,
+                    periodLabel: selectedCycle?.isCurrent == false ? "历史" : "本期",
+                    onCurrent: {
+                        if let current = cycles.first(where: \.isCurrent) { onSelectCycle?(current.id) }
+                        calendarExpanded = false
+                    })
+
+                if scope == .sevenDay, onSelectCycle != nil {
+                    DashboardQuotaCycleControls(cycles: cycles, selected: selectedCycle,
+                        expanded: $calendarExpanded, summary: cycleSummary) { id in
+                        onSelectCycle?(id)
+                        calendarExpanded = false
+                    }
+                }
 
                 if selectedModelDisplayState != .current {
                     HStack(spacing: 4) {
@@ -1316,7 +1333,7 @@ struct DashboardModelCostRow: View {
 
                 if selectedAvailable, modelDetailAvailable, !visibleItems.isEmpty {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") \(PlanCostNormalization.text(original: visibleTotalCost, normalized: visibleItems.compactMap(\.normalizedCostUSD).reduce(0, +)))")
+                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") API \(PlanCostNormalization.text(original: visibleTotalCost, normalized: visibleItems.compactMap(\.normalizedCostUSD).reduce(0, +)))")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(AppTheme.accentBlue)
                             .monospacedDigit()
@@ -1343,6 +1360,15 @@ struct DashboardModelCostRow: View {
                         }
                     }
                 }
+            }
+
+            if scope == .sevenDay, calendarExpanded {
+                QuotaCycleCalendar(cycles: cycles, selectedID: selectedCycle?.id) { id in
+                    onSelectCycle?(id)
+                    calendarExpanded = false
+                }
+                Text(cycleSummary).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if !selectedAvailable {
@@ -1422,23 +1448,26 @@ struct DashboardModelCostRow: View {
         )
         .padding(.horizontal, 8)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(scope.rawValue)各模型 API 等值费用")
+        .accessibilityLabel("\(scope == .sevenDay ? periodLabel : scope.rawValue)模型费用")
     }
 }
 
 private struct DashboardModelCostScopePicker: View {
     @Binding var scope: DashboardModelCostScope
+    var periodLabel = "本期"
+    var onCurrent: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(DashboardModelCostScope.allCases) { option in
                 Button {
+                    if option == .sevenDay { onCurrent?() }
                     scope = option
                 } label: {
-                    Text(option == .sevenDay ? "本期" : option.rawValue)
+                    Text(option == .sevenDay ? periodLabel : option.rawValue)
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(scope == option ? AppTheme.accentBlue : .secondary)
-                        .frame(maxWidth: .infinity, minHeight: 22)
+                        .frame(maxWidth: .infinity, minHeight: 28)
                         .background(
                             scope == option
                                 ? AppTheme.selectedControlBackground
@@ -1451,7 +1480,7 @@ private struct DashboardModelCostScopePicker: View {
             }
         }
         .padding(2)
-        .frame(width: 104, height: 26)
+        .frame(width: 104, height: 32)
         .background(
             AppTheme.solidControlBackground,
             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -1463,7 +1492,7 @@ private struct DashboardModelCostScopePicker: View {
         .clipped()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("模型费用范围")
-        .accessibilityValue(scope.rawValue)
+        .accessibilityValue(scope == .sevenDay ? periodLabel : scope.rawValue)
     }
 }
 

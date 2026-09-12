@@ -2377,12 +2377,14 @@ button.quota-side-card:hover {
 
 .stats-model-cost-header {
   display: flex;
-  gap: 9px;
+  gap: 6px 9px;
+  flex-wrap: wrap;
   align-items: center;
   min-width: 0;
 }
 
 .stats-model-cost-scope {
+  flex: none;
   display: inline-flex;
   gap: 2px;
   border-radius: 7px;
@@ -2391,7 +2393,7 @@ button.quota-side-card:hover {
 }
 
 .stats-model-cost-scope button {
-  height: 22px;
+  height: 28px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -2408,8 +2410,8 @@ button.quota-side-card:hover {
 }
 
 .stats-model-cost-title {
-  flex: 1 1 auto;
-  color: var(--muted);
+  flex: none;
+  color: var(--text);
   font-size: 11.5px;
   font-weight: var(--weight-semibold);
   white-space: nowrap;
@@ -3805,26 +3807,35 @@ button.quota-side-card:hover {
   background: var(--panel-soft);
 }
 
-.settings-panel--quick {
-  grid-template-columns: minmax(150px, 0.72fr) minmax(260px, 1.28fr);
-  align-items: center;
-  min-height: 85px;
-  padding: 10px 12px;
+.settings-panel.settings-panel--quick {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
 }
 
-.settings-panel--quick > div:first-child {
-  display: grid;
-  gap: 4px;
+.quick-surface-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   min-width: 0;
 }
 
-.settings-panel--quick > div:first-child strong {
+.quick-surface-heading {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.quick-surface-heading strong {
   color: var(--text);
   font-size: 12px;
   font-weight: var(--weight-semibold);
 }
 
-.settings-panel--quick > div:first-child span {
+.quick-surface-heading > span {
   color: var(--muted);
   font-size: 10.5px;
   font-weight: var(--weight-regular);
@@ -3834,25 +3845,134 @@ button.quota-side-card:hover {
 .quick-surface-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
 }
 
 .quick-surface-actions button {
-  min-height: 36px;
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 60px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
-  color: var(--text);
+  color: var(--muted);
   cursor: pointer;
   font-size: 11px;
   font-weight: var(--weight-medium);
-  padding: 0 8px;
+  text-align: left;
+  padding: 9px 11px;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
 }
 
-.quick-surface-actions button[aria-pressed="true"],
-.quick-surface-actions .quick-settings-button {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+.quick-surface-actions button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  color: var(--accent-strong);
+}
+
+.quick-surface-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
   background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+}
+
+.quick-surface-actions button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.quick-surface-actions button:focus-visible,
+.quick-settings-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.quick-surface-symbols {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.quick-surface-symbols svg {
+  width: 19px;
+  height: 19px;
+  flex: none;
+}
+
+.quick-surface-switch {
+  width: 24px;
+  height: 14px;
+  flex: none;
+  padding: 2px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--muted) 35%, var(--panel));
+  transition: background-color 160ms ease;
+}
+
+.quick-surface-switch::after {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px #0000001f;
+  transition: transform 160ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.quick-surface-actions button[aria-pressed="true"] .quick-surface-switch {
+  background: var(--accent);
+}
+
+.quick-surface-actions button[aria-pressed="true"] .quick-surface-switch::after {
+  transform: translateX(10px);
+}
+
+.quick-surface-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.quick-surface-label small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: var(--weight-regular);
+}
+
+.quick-settings-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 5px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.quick-settings-button:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.quick-settings-button > span {
+  font-size: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quick-surface-actions button,
+  .quick-surface-switch,
+  .quick-surface-switch::after {
+    transition: none;
+  }
 }
 
 .app-settings-overlay {
@@ -12680,9 +12800,8 @@ details.session-management-banner {
 .floating-edge-quota .floating-quota-fill { min-width: 0; border-radius: 2px; }
 .floating-edge-quota-empty { flex: 1; background: #ffffff29; border-radius: 2px; }
 
-.stats-quota-cycle-controls { display: block; width: 100%; margin-bottom: 10px; }
-.stats-quota-cycle-controls small { color: var(--text-muted); font-size: 11px; }
-.stats-quota-cycle-controls select { max-width: min(420px, 60vw); border: 0; background: transparent; color: inherit; font: inherit; padding: 4px 6px; }
+.stats-quota-cycle-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.stats-quota-cycle-controls small { color: var(--muted); font-size: 11px; }
 .stats-quota-cycle-controls button:disabled { opacity: .4; cursor: default; }
 
 .stats-quota-boundary-detail { font-size: 11px; color: var(--text-muted); margin: 8px 0; }
@@ -12704,15 +12823,14 @@ details.session-management-banner {
 .quota-calendar-bands button[aria-pressed="true"] { background:color-mix(in srgb,var(--cycle-color) 42%,transparent); border-color:var(--cycle-color); }
 .quota-calendar-bands button:hover { background:color-mix(in srgb,var(--cycle-color) 38%,transparent); }
 .quota-calendar-bands button:focus-visible { outline:2px solid var(--cycle-color); outline-offset:1px; }
-.quota-calendar-selection { display:block; padding:3px 2px 7px; }
-
-.quota-calendar-disclosure { display:block; border:0; background:transparent; color:inherit; padding:5px 0; font-size:11px; font-weight:600; cursor:pointer; }
-
-/* The collapsed cycle selector is a single horizontal summary; only the calendar expands. */
-.stats-quota-cycle-controls{display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap;margin-bottom:0;min-width:0}
-.stats-quota-cycle-controls>.quota-calendar-disclosure{flex:none}
-.stats-quota-cycle-controls>.quota-calendar-selection{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0}
-.stats-quota-cycle-controls>.quota-cycle-calendar{flex-basis:100%}
+.stats-quota-cycle-controls button { min-height:28px; border:0; border-radius:6px; background:transparent; color:var(--muted); padding:0 4px; font-size:10.5px; font-weight:500; cursor:pointer; }
+.stats-quota-cycle-controls .quota-calendar-disclosure { flex:none; padding:0 8px; background:var(--panel-soft); color:var(--text); }
+.stats-quota-cycle-controls .quota-calendar-selection { min-width:0; max-width:210px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.stats-quota-cycle-controls .quota-calendar-return { flex:none; color:var(--accent-strong); }
+.stats-quota-cycle-controls button:hover { background:var(--accent-soft); color:var(--accent-strong); }
+.stats-quota-cycle-controls button:focus-visible, .stats-model-cost-scope button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.stats-model-cost-header .stats-model-cost-total-wrap { margin-left:auto; }
+.stats-model-cost-row > .quota-cycle-calendar { min-width:0; margin:0; }
 .stats-quota-boundary-detail:not([open]){margin:0}
 .stats-quota-boundary-detail[open] span{display:inline-block;margin:3px 14px 3px 0}
 /* Keep both price bases legible without stretching compact cards horizontally. */

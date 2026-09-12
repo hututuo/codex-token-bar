@@ -151,46 +151,13 @@ pub fn usage_cache_persistence_warning() -> Option<LocalDataWarning> {
 
 pub fn mark_usage_cache_ready_after_success() -> Result<(), String> {
     mark_usage_cache_initialized()?;
-    cleanup_old_discardable_usage_caches_async();
+    // Preserve old caches this release; cleanup is deferred to a later release.
     Ok(())
-}
-
-pub fn cleanup_old_discardable_usage_caches_async() {
-    let targets = app_paths::discardable_usage_cache_cleanup_targets();
-    if targets.is_empty() {
-        return;
-    }
-
-    #[cfg(test)]
-    {
-        cleanup_old_discardable_usage_caches_now();
-    }
-
-    #[cfg(not(test))]
-    {
-        let _ = std::thread::Builder::new()
-            .name("codex-token-bar-cache-cleanup".into())
-            .spawn(move || {
-                for target in targets {
-                    remove_cache_path(&target);
-                }
-            });
-    }
 }
 
 #[cfg(test)]
 pub fn cleanup_old_discardable_usage_caches_now() {
-    for target in app_paths::discardable_usage_cache_cleanup_targets() {
-        remove_cache_path(&target);
-    }
-}
-
-fn remove_cache_path(path: &std::path::Path) {
-    // The allowlist contains summary files only. An unexpected directory or
-    // unreadable entry must never turn cleanup into a recursive deletion.
-    if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file() || m.file_type().is_symlink()) {
-        let _ = fs::remove_file(path);
-    }
+    // Intentionally disabled for the release that migrates the durable ledger.
 }
 
 #[cfg(test)]
@@ -373,7 +340,7 @@ mod tests {
         assert!(unknown_file.exists());
         assert!(quota.exists());
         assert_eq!(fs::read(&old_index).unwrap(),b"unique historical events");
-        assert!(!old_summary.exists());
+        assert!(old_summary.exists());
         assert!(unexpected_directory.join("evidence.sqlite3").exists());
 
         let _ = fs::remove_dir_all(root);

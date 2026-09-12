@@ -77,3 +77,12 @@ test("5h presence changes share the pending mode queue without resetting detail 
   assert.deepEqual(state, { mode: "detail", tab: "running", pinned: true });
   releases.shift()(); await tick(); queue.setEnabled(false);
 });
+
+test("summary pin keeps the second level open without opening details", () => {
+  let state = sidebarReducer(initialSidebarState, { type: "enter" });
+  state = sidebarReducer(state, { type: "pin" });
+  assert.equal(state.pinned, true);
+  assert.equal(sidebarReducer(state, { type: "leave" }).mode, "hover");
+  state = sidebarReducer(state, { type: "pin" });
+  assert.equal(sidebarReducer(state, { type: "leave" }).mode, "rest");
+});

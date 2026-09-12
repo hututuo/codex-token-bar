@@ -126,33 +126,62 @@ export function LiveRateCard({
         </div>
 
         <div className="settings-panel settings-panel--quick" aria-label="快捷显示设置">
-          <div>
-            <strong>显示面</strong>
-            <span>常用开关留在这里，其他选项集中到总体设置。</span>
+          <div className="quick-surface-header">
+            <div className="quick-surface-heading">
+              <strong>显示面</strong>
+              <span>可独立开启，也可同时显示</span>
+            </div>
+            <button className="quick-settings-button" onClick={onOpenSettings} type="button">
+              总体设置 <span aria-hidden="true">›</span>
+            </button>
           </div>
-          <div className="quick-surface-actions">
+          <div className="quick-surface-actions" role="group" aria-label="显示面开关">
             <button
               aria-pressed={floatingEnabled}
               disabled={!platform.floatingWindow.available}
               onClick={onToggleFloating}
               title={platform.floatingWindow.note}
               type="button"
-            >悬浮窗：{floatingEnabled ? "开" : "关"}</button>
+            >
+              <span className="quick-surface-symbols" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="4" width="18" height="16" rx="3" /><path d="M3 9h18" /><rect x="11" y="12" width="7" height="5" rx="1" />
+                </svg>
+                <span className="quick-surface-switch" />
+              </span>
+              <span className="quick-surface-label">悬浮窗</span>
+            </button>
             <button
               aria-pressed={quotaSidebarEnabled}
               disabled={!platform.floatingWindow.available}
               onClick={onToggleQuotaSidebar}
               title="独立额度侧栏：悬停查看额度，点击展开详情"
               type="button"
-            >额度侧栏：{quotaSidebarEnabled ? "开" : "关"}</button>
+            >
+              <span className="quick-surface-symbols" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="4" width="18" height="16" rx="3" /><path d="M15 4v16M18 8v3m0 3v2" />
+                </svg>
+                <span className="quick-surface-switch" />
+              </span>
+              <span className="quick-surface-label">额度侧栏</span>
+            </button>
             <button
               aria-pressed={statusTrayLiveTextEnabled}
+              aria-label="状态栏（实验）"
               disabled={!platform.statusTray.available || !platform.statusTrayLiveText.available}
               onClick={onToggleStatusTray}
               title={platform.statusTrayLiveText.note || platform.statusTray.note}
               type="button"
-            >状态栏（实验）</button>
-            <button className="quick-settings-button" onClick={onOpenSettings} type="button">总体设置</button>
+            >
+              <span className="quick-surface-symbols" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="4" width="18" height="16" rx="3" /><path d="M3 9h18M13 6.5h1m3 0h1" />
+                </svg>
+                <span className="quick-surface-switch" />
+              </span>
+              <span className="quick-surface-label">状态栏<small>实验</small></span>
+            </button>
           </div>
         </div>
       </div>

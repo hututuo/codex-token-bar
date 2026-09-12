@@ -11,7 +11,7 @@ export function sidebarReducer(state: SidebarState, action: SidebarAction): Side
       const { section: _section, focusRevision: _revision, ...rest } = state;
       return { ...rest, mode: "detail", tab: action.tab, ...(action.section ? { section: action.section, focusRevision: (state.focusRevision ?? 0) + 1 } : {}) };
     }
-    case "pin": return state.mode === "detail" ? { ...state, pinned: !state.pinned } : state;
+    case "pin": return state.mode !== "rest" ? { ...state, pinned: !state.pinned } : state;
     case "close": return { ...state, mode: "hover", pinned: false };
     case "drag": return { ...state, mode: state.mode === "detail" ? "hover" : state.mode, pinned: false };
     case "disable": return initialSidebarState;

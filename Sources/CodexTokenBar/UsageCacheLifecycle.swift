@@ -5,10 +5,6 @@ enum UsageCacheLifecycle {
     static let namespace = CodexUsageAnalyzer.SessionEventCache.cacheNamespace
 
     private static let stateDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR"
-    private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
-    private static let retiredSwiftCacheNamespaces = [
-        CodexUsageAnalyzer.SessionEventCache.previousCacheNamespace
-    ]
 
     private struct CacheState: Codable {
         let usageCacheNamespace: String
@@ -37,7 +33,7 @@ enum UsageCacheLifecycle {
             )
             let data = try JSONEncoder().encode(state)
             try data.write(to: url, options: [.atomic])
-            cleanOldDiscardableCaches()
+            // Keep prior caches for this release; cleanup follows a later release.
         } catch {
             // Cache state only controls the UI hint; failure should not block usage stats.
         }
@@ -67,37 +63,4 @@ enum UsageCacheLifecycle {
             .appendingPathComponent("cache-state.json")
     }
 
-    private static func cleanOldDiscardableCaches() {
-        guard let cacheRoot = cacheRootURL else {
-            return
-        }
-        let legacySharedRoot = cacheRoot.appendingPathComponent("CodexTokenBar", isDirectory: true)
-        for name in [
-            "session-token-snapshots-v6.json"
-        ] {
-            removeDiscardableSnapshot(at: legacySharedRoot.appendingPathComponent(name))
-        }
-        let swiftCacheRoot = cacheRoot.appendingPathComponent(appDirectoryName, isDirectory: true)
-        for retiredNamespace in retiredSwiftCacheNamespaces {
-            // A retired namespace may contain the only surviving usage rows.
-            // Readiness of the new cache is not a verified ledger import.
-            removeDiscardableSnapshot(at: swiftCacheRoot
-                .appendingPathComponent(retiredNamespace, isDirectory: true)
-                .appendingPathComponent("session-token-snapshots-v6.json"))
-        }
-    }
-
-    private static func removeDiscardableSnapshot(at url: URL) {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              attributes[.type] as? FileAttributeType == .typeRegular else { return }
-        try? FileManager.default.removeItem(at: url)
-    }
-
-    private static var cacheRootURL: URL? {
-        if let override = ProcessInfo.processInfo.environment[cacheDirectoryEnvironmentKey],
-           !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
-        }
-        return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-    }
 }

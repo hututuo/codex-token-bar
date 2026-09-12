@@ -1,5 +1,60 @@
 import SwiftUI
 
+enum QuotaCycleHeaderPresentation {
+    static func label(for cycle: QuotaActualCycle) -> String {
+        let start = cycle.start.map { $0.earliest.addingTimeInterval($0.latest.timeIntervalSince($0.earliest) / 2) }
+            ?? cycle.firstObservedAt
+        let approximate = cycle.start?.isExact != true ? "约 " : ""
+        let day = start.formatted(.dateTime.month(.defaultDigits).day(.defaultDigits))
+        if cycle.isCurrent { return "\(approximate)\(day) 起" }
+        let end = cycle.end.map { $0.earliest.addingTimeInterval($0.latest.timeIntervalSince($0.earliest) / 2) }
+            ?? cycle.lastObservedAt
+        let endApproximate = cycle.end?.isExact != true ? "约 " : ""
+        if Calendar.current.isDate(start, inSameDayAs: end) {
+            let time: Date.FormatStyle = .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)
+            return "\(approximate)\(day) \(start.formatted(time))–\(endApproximate)\(end.formatted(time))"
+        }
+        return "\(approximate)\(day)–\(endApproximate)\(end.formatted(.dateTime.month(.defaultDigits).day(.defaultDigits)))"
+    }
+}
+
+struct DashboardQuotaCycleControls: View {
+    let cycles: [QuotaActualCycle]
+    let selected: QuotaActualCycle?
+    @Binding var expanded: Bool
+    let summary: String
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button { expanded.toggle() } label: {
+                Label(expanded ? "收起日历" : "历史周期", systemImage: "calendar")
+                    .padding(.horizontal, 7).frame(minHeight: 28)
+                    .background(AppTheme.solidControlBackground,
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .contentShape(Rectangle())
+            }
+            .accessibilityHint("选择周期，查看该周期的模型费用")
+            .accessibilityValue(expanded ? "已展开" : "已折叠")
+            .fixedSize()
+            if let selected {
+                Button { expanded.toggle() } label: {
+                    Text(QuotaCycleHeaderPresentation.label(for: selected))
+                        .lineLimit(1).truncationMode(.middle)
+                        .frame(minHeight: 28).contentShape(Rectangle())
+                }.help(summary).foregroundStyle(.secondary)
+                if !selected.isCurrent, let current = cycles.first(where: \.isCurrent) {
+                    Button { onSelect(current.id) } label: {
+                        Text("回到本期").frame(minHeight: 28).contentShape(Rectangle())
+                    }.foregroundStyle(AppTheme.accentBlue).fixedSize()
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 10.5, weight: .medium))
+    }
+}
+
 struct QuotaCycleUsage: Sendable {
     let rows: [ModelTokenBreakdown]
     let total: TokenCacheBreakdown
@@ -29,7 +84,6 @@ struct DashboardQuotaCycleBrowser: View {
     let fallbackModel: OfficialAPIPriceModel
     let preciseFresh: Bool
     @State private var selectedID: String?
-    @State private var calendarExpanded = false
     @State private var result: QuotaCycleUsage?
     @State private var resultKey: Request?
     @State private var errorText: String?
@@ -45,17 +99,18 @@ struct DashboardQuotaCycleBrowser: View {
         let outerEnd: Date
         let epoch: String
         let generation: Int64
+
+        func canDisplay(_ previous: Request) -> Bool {
+            identity == previous.identity && home == previous.home && cycleID == previous.cycleID
+                && epoch == previous.epoch && start == previous.start && outerStart == previous.outerStart
+                && end >= previous.end && outerEnd >= previous.outerEnd
+        }
     }
     private var cycles: [QuotaActualCycle] {
         guard identity != nil, history.cycleIdentity == identity else { return [] }
         return history.actualCycles
     }
     private var selected: QuotaActualCycle? { cycles.first { $0.id == selectedID } ?? cycles.first }
-    private var previousCycle: QuotaActualCycle? {
-        guard let selected, let index = cycles.firstIndex(where: { $0.id == selected.id }),
-              index + 1 < cycles.count else { return nil }
-        return cycles[index + 1]
-    }
     private var request: Request? {
         guard let selected, let identity, let codexHome,
               identity.homeIdentity == codexHome.standardizedFileURL.path,
@@ -72,7 +127,10 @@ struct DashboardQuotaCycleBrowser: View {
             outerEnd: min(selected.end?.latest ?? selected.lastObservedAt, coverage),
             epoch: epoch, generation: generation)
     }
-    private var visibleResult: QuotaCycleUsage? { request == resultKey ? result : nil }
+    private var visibleResult: QuotaCycleUsage? {
+        guard let request, let resultKey, request.canDisplay(resultKey) else { return nil }
+        return result
+    }
     private func dateText(_ date: Date) -> String {
         date.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
     }
@@ -97,27 +155,17 @@ struct DashboardQuotaCycleBrowser: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                Button { calendarExpanded.toggle() } label: {
-                    Label(calendarExpanded ? "收起日历" : "选择周期", systemImage: calendarExpanded ? "chevron.down" : "chevron.right")
-                }.buttonStyle(.plain).font(.system(size: 11, weight: .medium)).fixedSize()
-                Text(cycleSummary).font(.system(size: 10)).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.tail).help(cycleSummary)
-                Spacer(minLength: 0)
-            }.padding(.horizontal, 12)
-            if calendarExpanded {
-                QuotaCycleCalendar(cycles: cycles, selectedID: selected?.id) { selectedID = $0 }
-                Text(cycleSummary).font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 12)
-            }
+        VStack(alignment: .leading, spacing: 0) {
             DashboardModelCostRow(scope: $scope, todayRows: [], lifetimeRows: [],
                 sevenDayRows: visibleResult?.rows ?? [], todayTokens: 0, lifetimeTokens: 0,
                 sevenDayTokens: visibleResult?.total.totalTokens ?? 0,
                 sevenDayBoundaryTokens: visibleResult?.unassignedTokens ?? 0,
                 fallbackModel: fallbackModel, dataAvailable: visibleResult != nil,
                 todayModelDisplayState: .pending, sevenDayDataAvailable: visibleResult != nil,
-                sevenDayModelDisplayState: visibleResult == nil ? .pending : (preciseFresh ? .current : .stale),
-                sevenDayEstimateSource: "该周期本机记录", periodLabel: "所选周期")
+                sevenDayModelDisplayState: visibleResult == nil ? .pending : (preciseFresh && resultKey == request ? .current : .stale),
+                sevenDayEstimateSource: "该周期本机记录", periodLabel: selected?.isCurrent == false ? "所选周期" : "本期",
+                cycles: cycles, selectedCycle: selected, cycleSummary: cycleSummary,
+                onSelectCycle: { id in selectedID = cycles.first(where: { $0.id == id })?.isCurrent == true ? nil : id })
         }
         .task(id: request) { await load() }
         .onChange(of: identity) { _, _ in
@@ -131,14 +179,14 @@ struct DashboardQuotaCycleBrowser: View {
         }
         errorText = nil
         if let existing = cache[key] { result = existing; resultKey = key; return }
-        result = nil; resultKey = nil
+        if resultKey.map({ !key.canDisplay($0) }) ?? true { result = nil; resultKey = nil }
         do {
             let value = try await Task.detached(priority: .utility) {
                 let start = Date(timeIntervalSince1970: floor(key.outerStart.timeIntervalSince1970 / 300) * 300)
                 let end = Date(timeIntervalSince1970: ceil(key.outerEnd.timeIntervalSince1970 / 300) * 300)
                 let events = try CodexUsageHistoryIndex.quotaCycleSourceBuckets(codexHome: key.home,
                     provenanceEpoch: key.epoch, generation: key.generation, from: start, before: end,
-                    minuteBucketStarts: [key.start, key.end])
+                    minuteBucketStarts: [key.start, key.end], useLatestPublishedGeneration: true)
                 return QuotaCycleUsage(events: events, cycle: cycle, coverageEnd: key.outerEnd)
             }.value
             guard !Task.isCancelled, request == key else { return }
@@ -147,6 +195,9 @@ struct DashboardQuotaCycleBrowser: View {
             cache[key] = value; result = value; resultKey = key
         } catch {
             guard !Task.isCancelled, request == key else { return }
+            // An actual validation failure invalidates the display; normal refreshes
+            // retain the same cycle until a newer committed result arrives.
+            result = nil; resultKey = nil
             DiagnosticLogHistory.shared.record(summary: "周期明细读取失败", logs: error.localizedDescription, source: "quota-cycle")
             errorText = "周期明细待更新"
         }
