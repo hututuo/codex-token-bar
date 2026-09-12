@@ -4,7 +4,7 @@ import { subscribeRadarCountdown } from "../domain/codexRadar/countdown";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
-import { readAppSettings } from "../api/client";
+import { readAppSettings, readAccountQuota, readAccountResetCredits } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
 import { sanitizeDisplaySurfaces, INACTIVE_DISPLAY_SURFACES } from "../settings/displaySettings";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
@@ -198,11 +198,18 @@ function RailSurface() {
   }, [display.quotaSidebarEnabled, display.quotaSidebarSide]);
   useEffect(() => { publisher.current?.update(presentation, display.quotaSidebarEnabled && state.mode === "detail"); }, [presentation, display.quotaSidebarEnabled, state.mode]);
   if (!display.quotaSidebarEnabled) return null;
-  const handleRefresh = useCallback(() => {
-    void invoke("refresh_quota_sidebar_data").catch((reason) => {
+  const handleRefresh = useCallback(async () => {
+    if (!sourceToken) return;
+    try {
+      await Promise.all([
+        readAccountQuota(sourceToken, true),
+        readAccountResetCredits(sourceToken, true)
+      ]);
+      setError(null);
+    } catch (reason) {
       setError(`刷新失败：${String(reason)}`);
-    });
-  }, []);
+    }
+  }, [sourceToken]);
   return <main className={sidebarRailClassName(display.quotaSidebarSide, state.mode)} onPointerDown={startDrag} onPointerEnter={enter} onPointerLeave={leave} data-dragging={dragging} aria-label="额度侧栏">
     <SidebarRailContent data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error} onPin={() => dispatch({ type: "pin" })} onRefresh={handleRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })} />
   </main>;
