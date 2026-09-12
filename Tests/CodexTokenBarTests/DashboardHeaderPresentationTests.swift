@@ -325,7 +325,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
 
         XCTAssertTrue(rowSource.contains("LazyVGrid("))
         XCTAssertTrue(rowSource.contains(".layoutPriority(1)"))
-        XCTAssertTrue(rowSource.contains("DashboardModelCostScopePicker(scope: $scope)"))
+        XCTAssertTrue(rowSource.contains("DashboardModelCostScopePicker(scope: $scope"))
         XCTAssertFalse(rowSource.contains("pickerStyle(.segmented)"))
         XCTAssertTrue(chipSource.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(chipSource.contains(".fixedSize(horizontal: true, vertical: false)"))
@@ -348,6 +348,52 @@ final class DashboardHeaderPresentationTests: XCTestCase {
 
         XCTAssertTrue(stripSource.contains(".padding(.vertical, 7)"))
         XCTAssertFalse(stripSource.contains(".padding(.bottom, 7)"))
+    }
+
+    @MainActor
+    func testCompactCycleHeaderKeepsHistoricalRangeAndAmountsInsideCard() throws {
+        let start = Calendar.current.startOfDay(for: Date()).addingTimeInterval(-86_400)
+        let current = QuotaActualCycle(id: "current", start: .exact(start), end: nil,
+            scheduledResetAt: start.addingTimeInterval(604_800), firstObservedAt: start,
+            lastObservedAt: Date(), endedEarly: false, resetChangePending: false, isCurrent: true)
+        let pastStart = start.addingTimeInterval(-86_400)
+        let historical = QuotaActualCycle(id: "past", start: .exact(pastStart),
+            end: .exact(pastStart.addingTimeInterval(3_600)), scheduledResetAt: start,
+            firstObservedAt: pastStart, lastObservedAt: pastStart.addingTimeInterval(3_600),
+            endedEarly: true, resetChangePending: false, isCurrent: false)
+        XCTAssertTrue(QuotaCycleHeaderPresentation.label(for: current).hasSuffix(" 起"))
+        // A short, early-reset cycle must retain its time range in the compact header.
+        XCTAssertTrue(QuotaCycleHeaderPresentation.label(for: historical).contains(":"))
+        let usage = TokenCacheBreakdown(inputTokens: 80_000_000, cachedInputTokens: 70_000_000,
+            outputTokens: 2_000_000, reasoningOutputTokens: 0, totalTokens: 82_000_000, calls: 200)
+        let rows = [ModelTokenBreakdown(model: "gpt-6-astra", breakdown: usage),
+            ModelTokenBreakdown(model: "gpt-5.6-luna", breakdown: usage)]
+        for selected in [current, historical] {
+            let root = DashboardModelCostRow(scope: .constant(.sevenDay), todayRows: [], lifetimeRows: [],
+                sevenDayRows: rows, todayTokens: 0, lifetimeTokens: 0, sevenDayTokens: 164_000_000,
+                sevenDayBoundaryTokens: 0, fallbackModel: .gpt56Sol, dataAvailable: true,
+                todayModelDisplayState: .current, sevenDayDataAvailable: true,
+                sevenDayModelDisplayState: .current, sevenDayEstimateSource: nil,
+                periodLabel: selected.isCurrent ? "本期" : "所选周期", cycles: [current, historical],
+                selectedCycle: selected, cycleSummary: "周期完整时间", onSelectCycle: { _ in })
+                .frame(width: 980).padding(10).environment(\.locale, Locale(identifier: "zh_CN"))
+            let host = NSHostingView(rootView: root)
+            host.frame = NSRect(x: 0, y: 0, width: 1000, height: host.fittingSize.height)
+            let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = host
+            window.orderFrontRegardless()
+            defer { window.orderOut(nil) }
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            XCTAssertEqual(host.fittingSize.width, 1000, accuracy: 1)
+            XCTAssertLessThan(host.fittingSize.height, 150, "Collapsed cycle controls should share the amount header")
+            if let output = ProcessInfo.processInfo.environment["CODEX_CYCLE_LAYOUT_OUTPUT"] {
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                try data.write(to: URL(fileURLWithPath: output).appendingPathComponent("swift-\(selected.id).png"))
+            }
+        }
     }
 
     @MainActor

@@ -53,7 +53,9 @@ test("observed cycle models preserve unknown prices, independent review, Tokens 
         boundaryModelBreakdowns:[breakdown("gpt-6-astra",500)],observedStartUnix:1788220800,observedEndUnix:1788307200};
     }};
     await React.act(async()=>{root.render(React.createElement(StatsStrip,{stats,planLabel:"Pro",sourceToken:source,attributionIdentity:identity,preciseDataFresh:true}));await settle();});
-    assert.match(container.textContent,/开始记录/);
+    assert.match(container.querySelector('.quota-calendar-selection').title,/开始记录/);
+    assert.equal(container.querySelector('.stats-model-cost-header .quota-calendar-disclosure').textContent,"历史周期");
+    assert.equal(container.querySelector('.quota-cycle-calendar'),null);
     assert.match(container.textContent,/Auto Review（Luna）/);assert.match(container.textContent,/GPT-5.6-NewLane/);
     assert.match(container.textContent,/价格未知/);assert.match(container.textContent,/已知价格小计[^$]*\$0\.40/);
     assert.match(container.textContent,/未确定所属周期 · 500 Token/);
@@ -61,7 +63,14 @@ test("observed cycle models preserve unknown prices, independent review, Tokens 
     await React.act(async()=>{container.querySelector('.quota-calendar-disclosure').click();await settle();});
     const previous=container.querySelector('.quota-calendar-bands button[aria-label^="第 1 期"]');
     await React.act(async()=>{previous.click();await settle();});
-    assert.equal(calls.at(-1)[1].cycleId,"previous");assert.match(container.textContent,/提前重置（推测）/);
+    assert.equal(calls.at(-1)[1].cycleId,"previous");
+    assert.match(container.querySelector('.quota-calendar-selection').title,/提前重置（推测）/);
+    assert.equal(container.querySelector('.quota-cycle-calendar'),null);
+    assert.equal(container.querySelector('[aria-label="模型费用范围"] button').textContent,"历史");
+    await React.act(async()=>{container.querySelector('.quota-calendar-return').click();await settle();});
+    assert.equal(calls.at(-1)[1].cycleId,"a");
+    assert.equal(container.querySelector('.quota-calendar-return'),null);
+    assert.equal(container.querySelector('[aria-label="模型费用范围"] button').textContent,"本期");
     const scope=container.querySelector('[aria-label="模型费用范围"]');
     await React.act(async()=>{scope.querySelectorAll("button")[2].click();await settle();});
     assert.match(container.textContent,/Terra/);assert.equal(container.querySelector('[aria-label="周期列表"]'),null);
@@ -103,7 +112,8 @@ test("StatsStrip keeps model costs pending while precise usage is unavailable", 
     }));
     assert.match(html, /本期模型明细待读取/);
     assert.doesNotMatch(html, /今日暂无模型用量/);
-    assert.match(html, /精确统计准备中/);
+    assert.match(html, /用量统计暂不完整/);
+    assert.match(html, /查看日志/);
   });
 });
 
@@ -223,7 +233,7 @@ test("cycle controls distinguish unresolved source validation from a running upd
       ["周期明细资料正在更新，请等待精准统计更新", "资料正在更新"],
       ["无法读取周期历史", "周期明细读取失败"],
     ]) {
-      const html = renderToStaticMarkup(React.createElement(QuotaCycleControls, { cycles: [cycle("a")], selected: cycle("a"), onSelect() {}, error }));
+      const html = renderToStaticMarkup(React.createElement(QuotaCycleControls, { cycles: [cycle("a")], selected: cycle("a"), onSelect() {}, error, expanded: false, onToggle() {} }));
       assert.match(html, new RegExp(`role="status" title="${error}">${label}`));
       assert.doesNotMatch(html, />周期明细待读取</);
     }
@@ -311,5 +321,38 @@ test("planned index repair waits and retries after publication", async () => {
     assert.equal(reads, 2);
     assert.doesNotMatch(container.textContent, /资料正在更新|周期明细读取失败/);
     assert.match(container.textContent, /Sol/);
+  });
+});
+
+test("period refresh keeps committed amounts visible and equivalent source objects do not restart reads", async () => {
+  await withDom(async ({window,container,root,StatsStrip}) => {
+    let reads = 0;
+    let release;
+    window.__TAURI_INTERNALS__ = {invoke: async (command,args) => {
+      if (command === "read_quota_cycles") return [cycle("a")];
+      reads += 1;
+      if (reads > 1) return new Promise(resolve => {release = resolve;});
+      return {cycleId:args.cycleId,modelBreakdowns:[breakdown("gpt-5.6-sol")],boundaryModelBreakdowns:[]};
+    }};
+    const render = updated => root.render(React.createElement(StatsStrip, {
+      stats, planLabel:"Pro", sourceToken:{...source}, attributionIdentity:{...identity},
+      preciseDataFresh:true, quotaUpdatedAt:updated,
+    }));
+    await React.act(async () => {render("first"); await settle();});
+    const amount = container.querySelector('.stats-model-cost-total').textContent;
+    assert.equal(reads,1);
+    await React.act(async () => {render("first"); await settle();});
+    assert.equal(reads,1, "an equivalent source object is not a new data source");
+    await React.act(async () => {render("second"); await settle();});
+    assert.equal(reads,2);
+    assert.equal(container.querySelector('.stats-model-cost-total').textContent,amount);
+    assert.match(container.textContent,/显示上次可信结果/);
+    assert.doesNotMatch(container.textContent,/本期模型明细待读取/);
+    await React.act(async () => {
+      release({cycleId:"a",modelBreakdowns:[breakdown("gpt-6-astra")],boundaryModelBreakdowns:[]});
+      await settle();
+    });
+    assert.notEqual(container.querySelector('.stats-model-cost-total').textContent,amount);
+    assert.doesNotMatch(container.textContent,/显示上次可信结果/);
   });
 });
