@@ -83,8 +83,18 @@ struct QuotaSidebarRail: View {
         ZStack(alignment: controller.edge == .right ? .trailing : .leading) {
             if controller.interaction.expanded {
                 VStack(spacing: 7) {
-                    Text("速览").font(.system(size: 10)).foregroundStyle(.gray)
-                        .help("拖动侧栏调整位置，松手吸附边缘")
+                    HStack(spacing: 4) {
+                        Button { controller.togglePin() } label: {
+                            Image(systemName: controller.interaction.pinned ? "pin.fill" : "pin")
+                                .foregroundStyle(controller.interaction.pinned ? SidebarPalette.green : .gray)
+                                .frame(width: 30, height: 24).contentShape(Rectangle())
+                        }.help(controller.interaction.pinned ? "取消固定" : "固定")
+                            .accessibilityLabel(controller.interaction.pinned ? "取消固定" : "固定")
+                        Button { controller.openDashboard() } label: {
+                            Image(systemName: "macwindow").foregroundStyle(.gray)
+                                .frame(width: 30, height: 24).contentShape(Rectangle())
+                        }.help("打开主页面").accessibilityLabel("打开主页面")
+                    }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
                     rateRing
                     if let fiveHour = quota.snapshot.fiveHour {
                         ring(label: "5h", window: fiveHour, color: SidebarPalette.green)
