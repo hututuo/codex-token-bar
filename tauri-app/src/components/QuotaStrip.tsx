@@ -1,3 +1,4 @@
+import { DiagnosticNotice } from "./DiagnosticNotice";
 import { normalizedMoneyText } from "../floating/floatingModelUsage.ts";
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type {
@@ -1708,11 +1709,8 @@ function QuotaStripView({
       {quotaWarnings.length > 0 ? (
         <div className="quota-read-warning" role="status">
           <div className="quota-read-warning-main">
-            <strong>读取失败原因</strong>
-            <span>
-              {quotaWarnings.join("；")}
-              {quotaAttemptStatus ? <><br /><small>{quotaAttemptStatus}</small></> : null}
-            </span>
+            <DiagnosticNotice summary={quotaDataStale ? "额度更新失败，暂显示上次数据" : "额度读取失败"}
+              logs={JSON.stringify({ diagnostics, warnings: quotaWarnings, attempt: quotaAttemptStatus }, null, 2)} />
           </div>
           {onRetryQuotaRefresh ? (
             <button

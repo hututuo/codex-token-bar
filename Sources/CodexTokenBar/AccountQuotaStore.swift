@@ -312,6 +312,7 @@ final class AccountQuotaStore: ObservableObject {
                     self.cancelQuotaFailureNotice(resetTracking: true)
                     self.cancelQuotaRetry(resetBackoff: true)
                     published.status = quota.status
+                    DiagnosticLogHistory.shared.record(summary: "额度读取提示", logs: quota.diagnostics.filter { $0.source != .resetCredit }.map { String(reflecting: $0) }.joined(separator: "\n"), source: "account-quota")
                     self.snapshot = published
                     if let home = self.currentDataSourcePath {
                         QuotaPeriodBoundaryContext.shared.set(resetAt: published.sevenDay?.resetsAt, home: home)
@@ -353,6 +354,7 @@ final class AccountQuotaStore: ObservableObject {
                         error: error,
                         occurredAt: occurredAt
                     )
+                    DiagnosticLogHistory.shared.record(summary: "额度读取失败", logs: String(reflecting: diagnostic), source: "account-quota", at: occurredAt)
                     if retainsSameSourceQuota {
                         self.quotaFailureStartedAt = self.quotaFailureStartedAt ?? occurredAt
                         self.lastQuotaFailureDiagnostic = diagnostic
@@ -444,6 +446,7 @@ final class AccountQuotaStore: ObservableObject {
                 self.resetCreditStatusBeforeRefresh = nil
                 switch result {
                 case .success(let reset):
+                    DiagnosticLogHistory.shared.record(summary: "重置卡读取", logs: "", source: "reset-credit")
                     self.snapshot.resetCreditsAvailableCount = reset.availableCount
                     self.snapshot.resetCredits = reset.credits
                     self.snapshot.resetCreditStatus = reset.status
@@ -453,6 +456,7 @@ final class AccountQuotaStore: ObservableObject {
                     self.cancelResetCreditRetry(resetBackoff: true)
 
                 case .failure(let diagnostic):
+                    DiagnosticLogHistory.shared.record(summary: "重置卡读取失败", logs: String(reflecting: diagnostic), source: "reset-credit")
                     let retainsSameSourceReset = self.resetCreditSnapshotSourceID == sourceID
                         && (self.snapshot.resetCreditsAvailableCount != nil || !self.snapshot.resetCredits.isEmpty)
                     var resetDiagnostics = [diagnostic]

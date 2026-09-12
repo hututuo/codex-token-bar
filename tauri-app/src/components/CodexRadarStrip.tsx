@@ -1,3 +1,4 @@
+import { DiagnosticNotice } from "./DiagnosticNotice";
 import { detectedOfficialAPIPriceModel, planCostNormalizationFactor } from "../settings/quotaPriceModel.ts";
 import { normalizedMoneyText } from "../floating/floatingModelUsage.ts";
 import { memo, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -987,7 +988,7 @@ function CrowdRadarDetail({
   return (
     <RadarDetailSection icon="antenna.radiowaves.left.and.right" title="众测雷达">
       {error ? (
-        <p className="codex-radar-fallback-note" role="status">众测来源诊断：{error}</p>
+        <DiagnosticNotice summary="众测雷达更新失败" logs={error} />
       ) : null}
       {snapshot ? (
         <>
@@ -1062,8 +1063,8 @@ export function CodexRadarDiagnosticsNotice({
 
   return (
     <div className="codex-radar-diagnostics" role="status">
-      <strong>{label}</strong>
-      <span>{codexRadarSurfaceStatus(snapshot, diagnostics)}</span>
+      <DiagnosticNotice summary="雷达数据暂未完整更新"
+        logs={JSON.stringify({ diagnostics, status: codexRadarSurfaceStatus(snapshot, diagnostics) }, null, 2)} />
     </div>
   );
 }

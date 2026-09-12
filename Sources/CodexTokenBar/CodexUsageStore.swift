@@ -1033,6 +1033,9 @@ final class CodexUsageStore: ObservableObject {
                         }
                     }
                 }
+                if effectiveIncludePreciseScan && self.preciseTimeSeriesFresh && self.todayModelBreakdownsFresh {
+                    DiagnosticLogHistory.shared.record(summary: "用量读取", logs: "", source: "usage")
+                }
                 completedWithoutError = true
                 self.lastCheckedAt = Date()
                 trace?.end("ok")
@@ -1045,6 +1048,7 @@ final class CodexUsageStore: ObservableObject {
                     trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
                     return
                 }
+                DiagnosticLogHistory.shared.record(summary: sawNumericPrecisePhase ? "会话明细读取失败" : "用量读取失败", logs: error.localizedDescription, source: "usage")
                 if let upgrade = Self.indexUpgradeRequiredError(from: error) {
                     self.indexUpgradeRequired = upgrade
                     self.isDetailHydrating = false

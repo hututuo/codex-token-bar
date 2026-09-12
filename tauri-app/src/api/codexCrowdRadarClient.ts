@@ -1,3 +1,4 @@
+import { diagnosticJournal } from "../diagnostics/diagnosticJournal.ts";
 import { compactRadarModelName } from "../domain/codexRadar/model.ts";
 import { isTauriRuntimeAvailable } from "../platform/runtime.ts";
 
@@ -94,6 +95,7 @@ export function readCodexCrowdRadarSnapshot(options: { force?: boolean } = {}): 
   crowdRadarReadInFlight = promise;
   void promise.then(
     (snapshot) => {
+      diagnosticJournal.update("crowd-radar", "众测雷达读取提示", snapshot.endpointErrors?.length ? JSON.stringify(snapshot.endpointErrors) : "");
       traceCrowdRadarPerformance(
         `crowd_radar success elapsed_ms=${Math.round(performance.now() - startedAt)} models=${snapshot.models.length} recent_models=${snapshot.recentModels.length} endpoint_errors=${snapshot.endpointErrors?.length ?? 0}`,
       );
@@ -101,6 +103,7 @@ export function readCodexCrowdRadarSnapshot(options: { force?: boolean } = {}): 
       crowdRadarReadFailure = null;
     },
     (error) => {
+      diagnosticJournal.update("crowd-radar", "众测雷达读取失败", String(error));
       traceCrowdRadarPerformance(
         `crowd_radar failure elapsed_ms=${Math.round(performance.now() - startedAt)} kind=${error instanceof Error ? error.name : "unknown"}`,
       );

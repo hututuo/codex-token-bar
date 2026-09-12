@@ -18,7 +18,7 @@ export {
 };
 
 export function clearCommandDiagnostic(command: string) {
-  clearCommandFailure(command);
+  clearCommandFailure(command, undefined, undefined, false);
 }
 
 export async function callCommand<T>(
@@ -35,14 +35,14 @@ export async function callCommand<T>(
   const attempt = beginCommandAttempt(command);
   const invocation = invoke<T>(command, args);
   void invocation.then(
-    () => clearCommandFailure(command, attempt),
+    (result) => clearCommandFailure(command, attempt, result),
     (error) => recordCommandFailure(command, error, attempt),
   );
   try {
     const result = await (timeoutMs === null
       ? invocation
       : withTimeout(invocation, timeoutMs));
-    clearCommandFailure(command, attempt);
+    clearCommandFailure(command, attempt, result);
     return result;
   } catch (error) {
     recordCommandFailure(command, error, attempt);
@@ -63,14 +63,14 @@ export async function callCommandOptional<T>(
   const attempt = beginCommandAttempt(command);
   const invocation = invoke<T>(command, args);
   void invocation.then(
-    () => clearCommandFailure(command, attempt),
+    (result) => clearCommandFailure(command, attempt, result),
     (error) => recordCommandFailure(command, error, attempt),
   );
   try {
     const result = await (timeoutMs === null
       ? invocation
       : withTimeout(invocation, timeoutMs));
-    clearCommandFailure(command, attempt);
+    clearCommandFailure(command, attempt, result);
     return result;
   } catch (error) {
     recordCommandFailure(command, error, attempt);
@@ -92,14 +92,14 @@ export async function callCommandStrict<T>(
   const attempt = beginCommandAttempt(command);
   const invocation = invoke<T>(command, args);
   void invocation.then(
-    () => clearCommandFailure(command, attempt),
+    (result) => clearCommandFailure(command, attempt, result),
     (error) => recordCommandFailure(command, normalizeCommandError(error), attempt),
   );
   try {
     const result = await (timeoutMs === null
       ? invocation
       : withTimeout(invocation, timeoutMs));
-    clearCommandFailure(command, attempt);
+    clearCommandFailure(command, attempt, result);
     return result;
   } catch (error) {
     const normalized = normalizeCommandError(error);

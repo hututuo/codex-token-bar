@@ -1,3 +1,4 @@
+import { diagnosticJournal } from "../diagnostics/diagnosticJournal.ts";
 import {
   codexRadarSnapshotHasContent,
   codexRadarSurfaceStatus,
@@ -157,6 +158,7 @@ async function fetchCodexRadarAnnouncementDeadline(
       throw new Error(`Codex Radar HTML HTTP ${response.status}`);
     }
     const deadline = parseCodexRadarWindowCountdownDeadline(await response.text());
+    diagnosticJournal.update("radar-countdown", "", "");
     traceRadarPerformance(
       `radar_html success elapsed_ms=${Math.round(performance.now() - startedAt)} has_deadline=${deadline ? 1 : 0}`,
     );
@@ -165,6 +167,7 @@ async function fetchCodexRadarAnnouncementDeadline(
     traceRadarPerformance(
       `radar_html failure elapsed_ms=${Math.round(performance.now() - startedAt)} cause=${error instanceof Error ? error.message : String(error)}`,
     );
+    diagnosticJournal.update("radar-countdown", "雷达倒计时补充读取失败", String(error));
     // The page clock is supplemental. Keep a JSON-provided deadline if the
     // optional HTML request is unavailable rather than failing Radar itself.
     return undefined;
@@ -194,6 +197,7 @@ async function fetchCodexRadarAnnouncementDeadlineNative(): Promise<string | nul
 }
 
 function publishState(state: CodexRadarReadState): CodexRadarReadState {
+  diagnosticJournal.update("radar", "雷达更新提示", state.diagnostics.length ? JSON.stringify(state.diagnostics, null, 2) : "");
   for (const listener of [...stateListeners]) {
     listener(state);
   }

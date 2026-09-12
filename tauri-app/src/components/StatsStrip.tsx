@@ -1,3 +1,4 @@
+import { DiagnosticNotice } from "./DiagnosticNotice";
 import { ModelAmountPair } from "./ModelAmountPair";
 import { memo, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { DashboardStats, LocalDataWarning, ModelTokenBreakdown, RecentUsagePoint } from "../types/dashboard";
@@ -286,8 +287,7 @@ function StatsStripView({
       </section>
       {usageWarnings.length > 0 ? (
         <section className="usage-precision-note" aria-label="Token 统计读取提示" role="status">
-          <strong>Token 统计准备中</strong>
-          <span>{usageWarnings.map((warning) => warning.message).join("；")}</span>
+          <DiagnosticNotice summary="用量统计暂不完整" logs={JSON.stringify(usageWarnings, null, 2)} />
         </section>
       ) : null}
     </>

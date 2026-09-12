@@ -88,16 +88,22 @@ struct LiveCodexRadarReader: CodexRadarReading, Sendable {
         homepageRequest.cachePolicy = .reloadIgnoringLocalCacheData
         homepageRequest.setValue("CodexTokenBar", forHTTPHeaderField: "User-Agent")
         homepageRequest.setValue("text/html", forHTTPHeaderField: "Accept")
-        guard let (homepageData, homepageResponse) = try? await announcementTransport(homepageRequest),
-              (200..<300).contains(homepageResponse.statusCode),
-              let html = String(data: homepageData, encoding: .utf8),
-              let deadline = CodexRadarWindowCountdownParser.deadline(in: html) else {
+        do {
+            let (homepageData, homepageResponse) = try await announcementTransport(homepageRequest)
+            guard (200..<300).contains(homepageResponse.statusCode) else { throw CodexRadarReaderError.httpStatus(homepageResponse.statusCode) }
+            guard let html = String(data: homepageData, encoding: .utf8) else { throw CodexRadarReaderError.invalidResponse }
+            try Task.checkCancellation()
+            await MainActor.run { DiagnosticLogHistory.shared.record(summary: "雷达倒计时读取", logs: "", source: "radar-countdown") }
+            guard let deadline = CodexRadarWindowCountdownParser.deadline(in: html) else { return snapshot }
+            var enriched = snapshot
+            enriched.window.countdownDeadline = deadline
+            return enriched
+        } catch {
+            if !(error is CancellationError), (error as? URLError)?.code != .cancelled, !Task.isCancelled {
+                await MainActor.run { DiagnosticLogHistory.shared.record(summary: "雷达倒计时补充读取失败", logs: error.localizedDescription, source: "radar-countdown") }
+            }
             return snapshot
         }
-
-        var enriched = snapshot
-        enriched.window.countdownDeadline = deadline
-        return enriched
     }
 }
 
@@ -401,6 +407,7 @@ final class CodexRadarStore: ObservableObject {
                     }
                     let now = Date()
                     self.snapshot = snapshot
+                    DiagnosticLogHistory.shared.record(summary: "众测雷达读取失败", logs: crowdResult.error ?? crowdResult.snapshot?.sourceDiagnostics.joined(separator: "\n") ?? "", source: "crowd-radar")
                     if let crowdSnapshot = crowdResult.snapshot {
                         self.crowdSnapshot = crowdSnapshot
                         self.crowdStaleDataDisplayed = false
@@ -425,6 +432,8 @@ final class CodexRadarStore: ObservableObject {
                         self.feedItems = []
                     }
 
+                    DiagnosticLogHistory.shared.record(summary: "雷达读取", logs: "", source: "radar")
+                    DiagnosticLogHistory.shared.record(summary: "雷达 RSS 读取失败", logs: feedResult.diagnostic.map { String(reflecting: $0) } ?? "", source: "radar-rss")
                     self.status = "Codex 雷达 · 更新于 \(DateFormatter.statusString(from: now))"
                     self.isRefreshing = false
                     self.refreshTask = nil
@@ -439,6 +448,7 @@ final class CodexRadarStore: ObservableObject {
                         return false
                     }
                     let now = Date()
+                    DiagnosticLogHistory.shared.record(summary: "众测雷达读取失败", logs: crowdResult.error ?? crowdResult.snapshot?.sourceDiagnostics.joined(separator: "\n") ?? "", source: "crowd-radar")
                     if let crowdSnapshot = crowdResult.snapshot {
                         self.crowdSnapshot = crowdSnapshot
                         self.crowdStaleDataDisplayed = false
@@ -455,6 +465,7 @@ final class CodexRadarStore: ObservableObject {
                             .staleCachedData(source: .current, rawCause: diagnostic.rawCause, occurredAt: now)
                         ]
                         : [diagnostic]
+                    DiagnosticLogHistory.shared.record(summary: "雷达读取失败", logs: String(reflecting: diagnostic), source: "radar", at: now)
                     self.status = "Codex 雷达读取失败：\(error.localizedDescription)"
                     self.isRefreshing = false
                     self.refreshTask = nil
@@ -541,6 +552,7 @@ final class CodexRadarStore: ObservableObject {
                     self.detailSnapshot = snapshot
                     self.lastSuccessfulDetailRefreshAt = completedAt
                     self.detailRefreshDefaults.set(completedAt.timeIntervalSince1970, forKey: Self.detailRefreshDefaultsKey)
+                    DiagnosticLogHistory.shared.record(summary: "雷达详情读取", logs: "", source: "radar-detail")
                     self.detailDiagnostics = []
                     self.detailStaleDataDisplayed = false
                     self.detailStatus = "Codex 雷达详情 · 更新于 \(DateFormatter.statusString(from: completedAt))"
@@ -555,15 +567,17 @@ final class CodexRadarStore: ObservableObject {
                     guard self.detailRefreshGeneration == generation else {
                         return
                     }
-                    let diagnostic = CodexRadarDiagnostic.classify(source: .current, error: error, occurredAt: recordedAt)
-                    self.lastDetailFailureAt = recordedAt
+                    let failureAt = self.detailNow()
+                    let diagnostic = CodexRadarDiagnostic.classify(source: .current, error: error, occurredAt: failureAt)
+                    self.lastDetailFailureAt = failureAt
                     self.detailStaleDataDisplayed = self.detailSnapshot != nil
                     self.detailDiagnostics = self.detailStaleDataDisplayed
                         ? [
                             diagnostic,
-                            .staleCachedData(source: .current, rawCause: diagnostic.rawCause, occurredAt: recordedAt)
+                            .staleCachedData(source: .current, rawCause: diagnostic.rawCause, occurredAt: failureAt)
                         ]
                         : [diagnostic]
+                    DiagnosticLogHistory.shared.record(summary: "雷达详情读取失败", logs: String(reflecting: diagnostic), source: "radar-detail", at: failureAt)
                     self.detailStatus = "Codex 雷达详情读取失败：\(error.localizedDescription)"
                     self.isDetailRefreshing = false
                     self.detailRefreshTask = nil
@@ -606,11 +620,11 @@ final class CodexRadarStore: ObservableObject {
 
     private nonisolated static func readCrowdRadarIndependently(
         _ crowdReader: any CodexCrowdRadarReading
-    ) async -> (snapshot: CodexCrowdRadarSnapshot?, failed: Bool) {
+    ) async -> (snapshot: CodexCrowdRadarSnapshot?, failed: Bool, error: String?) {
         do {
-            return (try await crowdReader.readCrowdRadar(), false)
+            return (try await crowdReader.readCrowdRadar(), false, nil)
         } catch {
-            return (nil, true)
+            return (nil, true, error.localizedDescription)
         }
     }
 
@@ -618,7 +632,11 @@ final class CodexRadarStore: ObservableObject {
         _ url: URL?,
         feedReader: any CodexRadarFeedReading
     ) async -> CodexRadarFeedRefreshResult {
-        guard let url else { return CodexRadarFeedRefreshResult(items: [], diagnostic: nil) }
+        guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
+            return CodexRadarFeedRefreshResult(items: nil, diagnostic: CodexRadarDiagnostic(
+                source: .rss, category: .parseFailure, severity: .warning,
+                message: "RSS 地址缺失或无效，未发起读取", rawCause: url?.absoluteString, occurredAt: Date()))
+        }
         do {
             let items = try await feedReader.readFeed(from: url)
             return CodexRadarFeedRefreshResult(items: items, diagnostic: nil)

@@ -45,11 +45,14 @@ struct CodexRadarStrip: View {
                 Text("Codex 雷达")
                     .font(.system(size: 15, weight: .semibold))
 
-                Text(statusText)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if diagnostics.isEmpty {
+                    Text(statusText)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    DiagnosticNotice(summary: "雷达更新失败", logs: diagnostics.map { String(reflecting: $0) }.joined(separator: "\n"))
+                }
 
                 if let badge = presentation.statusBadge {
                     CodexRadarStatusBadgeView(badge: badge)
@@ -465,7 +468,7 @@ struct CodexRadarDetailCard: View {
                 if let snapshot {
                     VStack(alignment: .leading, spacing: 14) {
                         if let warning = presentation.detailWarning {
-                            CodexRadarDiagnosticBanner(warning: warning)
+                            CodexRadarDiagnosticBanner(warning: warning, diagnostics: diagnostics)
                         }
                         CodexCrowdRadarDetail(
                             snapshot: crowdSnapshot,
@@ -581,6 +584,7 @@ private struct CodexCrowdRadarDetail: View {
 
 private struct CodexRadarDiagnosticBanner: View {
     let warning: CodexRadarDetailWarning
+    var diagnostics: [CodexRadarDiagnostic] = []
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -590,10 +594,7 @@ private struct CodexRadarDiagnosticBanner: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(warning.title)
                     .font(.system(size: 12, weight: .semibold))
-                Text(warning.message)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                DiagnosticNotice(summary: "雷达数据暂未完整更新", logs: warning.message + "\n" + diagnostics.map { String(reflecting: $0) }.joined(separator: "\n"))
             }
         }
         .padding(.horizontal, 12)
@@ -607,8 +608,7 @@ private struct CodexRadarDiagnosticBanner: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.orange.opacity(0.2), lineWidth: 1)
         )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(warning.accessibilityText)
+        .accessibilityElement(children: .contain)
     }
 }
 

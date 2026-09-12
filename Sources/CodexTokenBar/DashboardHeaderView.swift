@@ -743,6 +743,8 @@ struct HeaderView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("总体设置")
+
+                            DiagnosticNotice(summary: "", logs: "", buttonOnly: true)
                         }
                         .padding(4)
                         .background(
@@ -1035,20 +1037,8 @@ struct StatStrip: View, @preconcurrency Equatable {
                 StatCell(value: tokenValue("\(stats.longestStreakDays) 天"), label: "最长连续天数")
             }
 
-            if let statusLine {
-                HStack(spacing: 5) {
-                    if statusLine.showsProgress {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .progressViewStyle(.circular)
-                    }
-                    Text(statusLine.text)
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
+            if cacheStatus.hasPrefix("读取失败") || cacheStatus.contains("用量已陈旧") {
+                DiagnosticNotice(summary: "用量读取失败", logs: cacheStatus)
             }
 
             if showsModelCostRow, modelCostScopeBinding.wrappedValue == .sevenDay {

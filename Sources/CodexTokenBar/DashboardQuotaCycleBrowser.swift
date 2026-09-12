@@ -143,9 +143,11 @@ struct DashboardQuotaCycleBrowser: View {
             }.value
             guard !Task.isCancelled, request == key else { return }
             if cache.count >= 12 { cache.removeAll() }
+            DiagnosticLogHistory.shared.record(summary: "周期明细读取", logs: "", source: "quota-cycle")
             cache[key] = value; result = value; resultKey = key
         } catch {
             guard !Task.isCancelled, request == key else { return }
+            DiagnosticLogHistory.shared.record(summary: "周期明细读取失败", logs: error.localizedDescription, source: "quota-cycle")
             errorText = "周期明细待更新"
         }
     }

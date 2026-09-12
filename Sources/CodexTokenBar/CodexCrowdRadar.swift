@@ -79,6 +79,7 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
     let realtimeModels: [CodexCrowdRadarModel]
     let recentModels: [CodexCrowdRadarModel]
     let realtimeAvailable: Bool
+    var sourceDiagnostics: [String] = []
 
     init(
         generatedAt: String,
@@ -191,46 +192,45 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
     ]
 
     func readCrowdRadar() async throws -> CodexCrowdRadarSnapshot {
-        async let tableData: Data? = try? readFirstAvailable(
-            Self.tableSources,
-            signalKeys: ["combos", "tasks", "cells", "baselineGeneratedAt"]
-        )
-        async let leaderboardData: Data? = try? readFirstAvailable(
-            Self.leaderboardSources,
-            signalKeys: ["points", "models", "rankings", "modelStats"]
-        )
+        async let tableData = readSourceResult(Self.tableSources, signalKeys: ["combos", "tasks", "cells", "baselineGeneratedAt"])
+        async let leaderboardData = readSourceResult(Self.leaderboardSources, signalKeys: ["points", "models", "rankings", "modelStats"])
         let payloads = await (tableData, leaderboardData)
         try Task.checkCancellation()
-        guard payloads.0 != nil || payloads.1 != nil else {
-            throw CodexRadarReaderError.invalidResponse
+        let failures = [payloads.0.failure, payloads.1.failure].compactMap { $0 }
+        guard payloads.0.data != nil || payloads.1.data != nil else {
+            throw NSError(domain: "CodexCrowdRadar", code: 1, userInfo: [NSLocalizedDescriptionKey: failures.joined(separator: "\n")])
         }
-        return try CodexCrowdRadarParser.decode(
-            tableData: payloads.0,
-            leaderboardData: payloads.1
-        )
+        var snapshot = try CodexCrowdRadarParser.decode(tableData: payloads.0.data, leaderboardData: payloads.1.data)
+        snapshot.sourceDiagnostics = failures
+        return snapshot
+    }
+
+    private func readSourceResult(_ sources: [(url: URL, budget: TimeInterval)], signalKeys: [String]) async -> (data: Data?, failure: String?) {
+        do { return (try await readFirstAvailable(sources, signalKeys: signalKeys), nil) }
+        catch { return (nil, "来源：\(sources.map { $0.url.absoluteString }.joined(separator: ", "))\n\(error.localizedDescription)") }
     }
 
     private func readFirstAvailable(
         _ sources: [(url: URL, budget: TimeInterval)],
         signalKeys: [String]
     ) async throws -> Data {
-        var lastError: Error = CodexRadarReaderError.invalidResponse
+        var failures: [String] = []
         for source in sources {
             try Task.checkCancellation()
             do {
                 let data = try await readWithRetries(source.url, budget: source.budget)
                 guard Self.payloadContainsSignal(data, signalKeys: signalKeys) else {
                     try Task.checkCancellation()
-                    lastError = CodexRadarReaderError.invalidResponse
+                    failures.append("\(source.url.absoluteString)：响应不含所需数据字段")
                     continue
                 }
                 return data
             } catch {
                 if Self.isCancellation(error) { throw error }
-                lastError = error
+                failures.append("\(source.url.absoluteString)：\(error.localizedDescription)")
             }
         }
-        throw lastError
+        throw NSError(domain: "CodexCrowdRadar.Sources", code: 1, userInfo: [NSLocalizedDescriptionKey: failures.joined(separator: "\n")])
     }
 
     private static func isCancellation(_ error: Error) -> Bool {

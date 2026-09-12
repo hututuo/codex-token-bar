@@ -198,12 +198,13 @@ struct AccountQuotaStrip: View {
                 )
             }
 
-            if shouldShowRetryHint {
-                Text("可能由于网络等原因读取失败，点击“立即刷新”进行重试。")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(AppTheme.accentBlue)
-                    .lineLimit(1)
-                    .padding(.leading, 122)
+            if shouldShowRetryHint || snapshot.diagnostics.contains(where: { $0.severity != .info }) {
+                DiagnosticNotice(
+                    summary: snapshot.status.contains("自动重试") ? "额度读取失败，正在重试" : (snapshot.staleDataDisplayed ? "额度更新失败，暂显示上次数据" : "额度或重置卡读取失败"),
+                    logs: ([snapshot.status] + snapshot.diagnostics.map { diagnostic in
+                        "时间：\(diagnostic.occurredAt?.description ?? "未知")\n来源：\(diagnostic.source.rawValue)\n类别：\(diagnostic.category.rawValue)\n\(diagnostic.message)\n\(diagnostic.rawCause ?? "")"
+                    }).joined(separator: "\n\n")
+                )
             }
         }
         .padding(.horizontal, AccountQuotaStripLayout.horizontalPadding)

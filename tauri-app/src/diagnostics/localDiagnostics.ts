@@ -1,3 +1,4 @@
+import { diagnosticJournal } from "./diagnosticJournal.ts";
 const WARNING_THROTTLE_MS = 5_000;
 const MAX_LOCAL_DIAGNOSTICS = 50;
 const SILENT_FAILURE_COMMANDS = new Set([
@@ -48,9 +49,11 @@ export function recordCommandFailure(command: string, error: unknown, attempt?: 
     return;
   }
   if (SILENT_FAILURE_COMMANDS.has(command)) {
+    if (command !== "record_startup_event") diagnosticJournal.update(`command:${command}`, "窗口操作失败", commandFailureMessage(error));
     return;
   }
 
+  diagnosticJournal.update(`command:${command}`, "本地操作失败", commandFailureMessage(error));
   const now = Date.now();
   const lastWarningAt = lastWarningAtByKey.get(command) ?? 0;
   const throttled = now - lastWarningAt < WARNING_THROTTLE_MS;
@@ -80,9 +83,15 @@ export function recordCommandFailure(command: string, error: unknown, attempt?: 
   }
 }
 
-export function clearCommandFailure(command: string, attempt?: number) {
+export function clearCommandFailure(command: string, attempt?: number, result?: unknown, recovered = true) {
   if (!isCurrentCommandAttempt(command, attempt)) {
     return;
+  }
+  diagnosticJournal.update(`command:${command}`, "", "", undefined, recovered ? "recovered" : "handled");
+  if (result !== undefined) {
+    const value = result && typeof result === "object" ? result as Record<string, unknown> : {};
+    const issues = [value.diagnostics, value.warnings].flatMap(items => Array.isArray(items) ? items : []);
+    diagnosticJournal.update(`data:${command}`, "数据读取提示", issues.length ? JSON.stringify(issues, null, 2) : "");
   }
   if (attempt === undefined) {
     latestAttemptByCommand.delete(command);

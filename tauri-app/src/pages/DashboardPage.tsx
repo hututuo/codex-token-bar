@@ -1,3 +1,4 @@
+import { DiagnosticNotice } from "../components/DiagnosticNotice";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { AppSettingsDialog, type AppSettingsCategory } from "../components/settings/AppSettingsDialog";
@@ -518,17 +519,13 @@ function LocalCommandFailureNotice({
   diagnostics: CommandFailureDiagnostic[];
 }) {
   const lines = buildLocalCommandNoticeLines(settingsError, diagnostics);
-  if (lines.length === 0) {
-    return null;
-  }
+  if (!lines.length) return null;
   return (
-    <section className="local-command-notice" role="alert" aria-label="本地操作失败提示">
-      <span className="local-command-notice-dot" aria-hidden="true" />
-      <div className="local-command-notice-lines">
-        {lines.map((line) => (
-          <span key={line.key}>{line.text}</span>
-        ))}
-      </div>
+    <section className="local-command-notice" role="status" aria-label="运行状态与日志"
+      style={lines.length ? undefined : { background: "transparent", borderColor: "transparent", boxShadow: "none" }}>
+      {lines.length > 0 && <span className="local-command-notice-dot" aria-hidden="true" />}
+      <DiagnosticNotice summary={settingsError ? "设置读取失败" : diagnostics.length ? "部分本地数据读取失败" : "运行日志"}
+        logs={lines.length ? JSON.stringify({ settingsError, diagnostics }, null, 2) : ""} />
     </section>
   );
 }

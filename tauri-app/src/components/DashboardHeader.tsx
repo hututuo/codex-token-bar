@@ -1,3 +1,4 @@
+import { DiagnosticNotice } from "./DiagnosticNotice";
 import type {
   AccountInfo,
   AutostartStatus,
@@ -395,6 +396,7 @@ export function DashboardHeader({
             </div>
             <div className="dash-head__action-group">
               <button className="dash-head__action dash-head__action--accent" onClick={() => onOpenSettings("general")} type="button">设置</button>
+              <DiagnosticNotice summary="" logs="" buttonOnly />
               <div className="dash-head__more" ref={moreMenuRef}>
                 <button
                   aria-expanded={moreMenuOpen}
