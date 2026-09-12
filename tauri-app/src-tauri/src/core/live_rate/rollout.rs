@@ -14,7 +14,10 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 const RECENT_ROLLOUT_LIMIT: usize = 20;
-const RECENT_ROLLOUT_TTL: Duration = Duration::from_secs(3);
+// Main/WAL signatures are still checked on each poll and invalidate immediately.
+// Only the fallback reload for an unchanged database is infrequent: repeatedly
+// sorting the same threads every three seconds adds idle CPU without new data.
+const RECENT_ROLLOUT_TTL: Duration = Duration::from_secs(60);
 const ROLLOUT_SCOPE_LIMIT: usize = 64;
 
 static ROLLOUT_STATE: OnceLock<Mutex<RolloutState>> = OnceLock::new();
@@ -275,6 +278,13 @@ pub(super) fn recent_thread_ids_for_test(
 #[cfg(test)]
 pub(super) fn cache_load_count_for_test(scope: &LiveRateSourceScope) -> usize {
     rollout_state().load_counts.get(scope).copied().unwrap_or(0)
+}
+
+#[cfg(test)]
+pub(super) fn age_cache_for_test(scope: &LiveRateSourceScope, age: Duration) {
+    if let Some(cached) = rollout_state().recent_threads.get_mut(scope) {
+        cached.refreshed_at = Instant::now() - age;
+    }
 }
 
 #[cfg(test)]

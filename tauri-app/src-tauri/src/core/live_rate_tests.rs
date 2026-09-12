@@ -1261,6 +1261,8 @@ fn recent_rollout_threads_refresh_on_wal_change_and_ttl() {
     let first = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
     assert_eq!(first, vec!["thread-a"]);
     assert_eq!(rollout::cache_load_count_for_test(&scope), 1);
+    // A quiet database must not be queried again at the old three-second TTL.
+    rollout::age_cache_for_test(&scope, std::time::Duration::from_secs(10));
     let cached = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
     assert_eq!(cached, first);
     assert_eq!(rollout::cache_load_count_for_test(&scope), 1);

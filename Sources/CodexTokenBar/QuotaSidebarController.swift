@@ -71,7 +71,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         dashboardOpenAction = onOpenDashboard
         let resolvedEdge = QuotaSidebarPlacement.resolvedEdge(requested: edge, defaults: settings)
         let changedEdge = self.edge != resolvedEdge
-        self.edge = resolvedEdge
+        if changedEdge { self.edge = resolvedEdge }
         if railPanel == nil {
             screen = NSScreen.screens.first { Self.displayID($0) == placement?.displayID }
                 ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
@@ -424,7 +424,7 @@ private final class QuotaSidebarFrameClock: NSObject {
 final class QuotaSidebarCanvasView: NSView {
     let host: NSView
     let signal: NSView?
-    var edge: QuotaSidebarEdge { didSet { layoutCanvas() } }
+    var edge: QuotaSidebarEdge { didSet { if oldValue != edge { layoutCanvas() } } }
     init(host: NSView, edge: QuotaSidebarEdge, signal: NSView? = nil) {
         self.host = host; self.edge = edge; self.signal = signal
         super.init(frame: .zero)
@@ -438,9 +438,10 @@ final class QuotaSidebarCanvasView: NSView {
     override func layout() { super.layout(); layoutCanvas() }
     private func layoutCanvas() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        host.frame = CGRect(x: edge == .right ? bounds.width - 88 : 0,
-                            y: (bounds.height - 560) / 2, width: 88, height: 560)
-        signal?.frame = bounds
+        let hostFrame = CGRect(x: edge == .right ? bounds.width - 88 : 0,
+                               y: (bounds.height - 560) / 2, width: 88, height: 560)
+        if host.frame != hostFrame { host.frame = hostFrame }
+        if let signal, signal.frame != bounds { signal.frame = bounds }
         layer?.cornerRadius = min(22, max(8, 8 + (bounds.width - 16) * 14 / 72))
         layer?.maskedCorners = edge == .right ? [.layerMinXMinYCorner, .layerMinXMaxYCorner] : [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
         CATransaction.commit()

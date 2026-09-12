@@ -77,41 +77,40 @@ enum CodexBinaryLocator {
         knownCLIPaths: [String],
         fileManager: FileManager = .default
     ) throws -> String {
-        var candidates: [URL] = []
-
-        if let override = environment[overrideEnvironmentKey], !override.isEmpty {
-            candidates.append(URL(fileURLWithPath: (override as NSString).expandingTildeInPath))
-        }
-
-        candidates.append(contentsOf: registeredApplications
-            .filter { $0.bundleIdentifier == CodexApplicationLocator.bundleIdentifier }
-            .map { codexBinaryURL(in: $0.url) })
-        for root in applicationRoots {
-            candidates.append(contentsOf: scannedApplicationBinaryURLs(in: root, fileManager: fileManager))
-        }
-        candidates.append(contentsOf: knownApplicationURLs
-            .filter {
-                applicationBundleIdentifier(at: $0, fileManager: fileManager)
-                    == CodexApplicationLocator.bundleIdentifier
-            }
-            .map(codexBinaryURL(in:)))
-
-        if let path = environment["PATH"] {
-            candidates.append(contentsOf: path
-                .split(separator: ":", omittingEmptySubsequences: true)
-                .map { URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("codex") })
-        }
-        candidates.append(contentsOf: knownCLIPaths.map { URL(fileURLWithPath: $0) })
-
+        // Resolve each priority tier before discovering the next. Building the
+        // entire candidate array scanned every app bundle on every quota poll,
+        // even when the explicit or registered executable was already usable.
         var checked = Set<String>()
-        for candidate in candidates {
+        func usable(_ candidate: URL) -> String? {
             let resolved = candidate.standardizedFileURL.resolvingSymlinksInPath()
             guard checked.insert(resolved.path).inserted,
-                  isRegularExecutable(resolved, fileManager: fileManager)
-            else {
-                continue
-            }
+                  isRegularExecutable(resolved, fileManager: fileManager) else { return nil }
             return resolved.path
+        }
+
+        if let override = environment[overrideEnvironmentKey], !override.isEmpty,
+           let found = usable(URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: false)) {
+            return found
+        }
+        for app in registeredApplications where app.bundleIdentifier == CodexApplicationLocator.bundleIdentifier {
+            if let found = usable(codexBinaryURL(in: app.url)) { return found }
+        }
+        for root in applicationRoots {
+            for candidate in scannedApplicationBinaryURLs(in: root, fileManager: fileManager) {
+                if let found = usable(candidate) { return found }
+            }
+        }
+        for app in knownApplicationURLs {
+            guard applicationBundleIdentifier(at: app, fileManager: fileManager) == CodexApplicationLocator.bundleIdentifier else { continue }
+            if let found = usable(codexBinaryURL(in: app)) { return found }
+        }
+        if let path = environment["PATH"] {
+            for directory in path.split(separator: ":", omittingEmptySubsequences: true) {
+                if let found = usable(URL(fileURLWithPath: String(directory), isDirectory: true).appendingPathComponent("codex", isDirectory: false)) { return found }
+            }
+        }
+        for path in knownCLIPaths {
+            if let found = usable(URL(fileURLWithPath: path, isDirectory: false)) { return found }
         }
         throw AccountQuotaReaderError.codexBinaryNotFound
     }

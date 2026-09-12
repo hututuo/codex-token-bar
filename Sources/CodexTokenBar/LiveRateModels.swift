@@ -69,11 +69,11 @@ struct LiveThreadOption: Identifiable, Hashable {
     var normalizedRolloutPath: String? {
         let trimmed = rolloutPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        return URL(fileURLWithPath: trimmed, isDirectory: false).standardizedFileURL.path
     }
 
     var hasRolloutPath: Bool {
-        normalizedRolloutPath != nil
+        !rolloutPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 

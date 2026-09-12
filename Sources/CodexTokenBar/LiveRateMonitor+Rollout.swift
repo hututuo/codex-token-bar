@@ -35,7 +35,7 @@ extension LiveRateMonitor {
             return (RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil), [])
         }
 
-        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path, isDirectory: false))
         defer { try? handle.close() }
         let metadata = try rolloutFileMetadata(handle: handle)
         let boundaryChanged: Bool
@@ -144,7 +144,7 @@ extension LiveRateMonitor {
     }
 
     nonisolated static func initialRolloutReadState(path: String) -> RolloutReadState {
-        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path, isDirectory: false)) else {
             return RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil)
         }
         defer { try? handle.close() }
@@ -160,7 +160,7 @@ extension LiveRateMonitor {
         offset: UInt64,
         currentTurnID: String?
     ) -> RolloutReadState {
-        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path, isDirectory: false)) else {
             return RolloutReadState(offset: offset, currentTurnID: currentTurnID, fileIdentity: nil)
         }
         defer { try? handle.close() }
@@ -474,7 +474,7 @@ extension LiveRateMonitor {
     ) throws -> [T] {
         try SQLiteReadRecovery.run {
             let driver = SQLiteDatabaseDriver(
-                url: URL(fileURLWithPath: path),
+                url: URL(fileURLWithPath: path, isDirectory: false),
                 readOnly: true,
                 createsFileIfMissing: false,
                 busyTimeoutMilliseconds: 3_000,
