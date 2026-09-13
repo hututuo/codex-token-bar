@@ -85,7 +85,7 @@ function StatsStripView({
   const cycleHistory = useQuotaCycleHistory(sourceToken, attributionIdentity,
     `${quotaUpdatedAt ?? ""}|${preciseDataFresh}|${stats.totalTokens}`, modelCostScope === "sevenDay");
   const periodLabel = cycleHistory.selected?.current === false ? "历史周期" : "本期";
-  const selectCycle = (id: string) => { cycleHistory.select(id); setCalendarExpanded(false); };
+  const selectCycle = (id: string) => { cycleHistory.select(id); };
   useEffect(() => { setCalendarExpanded(false); }, [modelCostScope, sourceToken?.canonicalHomeKey, attributionIdentity?.scopeKey]);
   const cycleModelsIncomplete = cycleHistory.usage?.modelBreakdowns.some(row =>
     row.breakdown.totalTokens > 0 && (typeof row.model !== "string" || !row.model.trim()),

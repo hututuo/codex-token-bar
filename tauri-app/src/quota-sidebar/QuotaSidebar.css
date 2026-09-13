@@ -145,4 +145,4 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 
 .qs-pin{display:inline-flex;align-items:center;justify-content:center}.qs-pin[aria-pressed="true"]{color:#b9d6a3}.qs-pin svg{display:block}
 
-.qs-rail-actions{display:flex;justify-content:center;gap:4px;flex-shrink:0;height:24px}.qs-rail-actions button{display:flex;align-items:center;justify-content:center;width:30px;height:24px;padding:0;border:0;border-radius:5px;background:transparent;color:#929c8c}.qs-rail-actions button:hover{background:#ffffff12;color:#edf1e9}.qs-rail-actions button[aria-pressed=true]{color:#b6ef75}
+.qs-rail-actions{display:flex;justify-content:center;gap:4px;flex-shrink:0;height:24px}.qs-rail-actions button{display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:5px;background:transparent;color:#929c8c}.qs-rail-actions button:hover{background:#ffffff12;color:#edf1e9}.qs-rail-actions button[aria-pressed=true]{color:#b6ef75}

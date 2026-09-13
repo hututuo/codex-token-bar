@@ -24,6 +24,7 @@ interface CompactPanelDataOptions {
   quotaEnabled?: boolean;
   quotaInitialDelayMs?: number;
   quotaIntervalMs?: number;
+  quotaRefreshRevision?: number;
   quotaSource?: "dashboard" | "direct";
   backgroundAggregateEnabled?: boolean;
   runningEnabled?: boolean;
@@ -75,6 +76,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
     initialDelayMs: quotaInitialDelayMs,
     intervalMs: quotaIntervalMs,
     followDashboardUpdates: quotaSource === "dashboard",
+    refreshRevision: options.quotaRefreshRevision,
     sourceToken,
   });
   const runningThreads = useRunningThreadSummary({

@@ -40,7 +40,7 @@ struct QuotaCycleCalendar: View {
         }
     }
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 4) {
             HStack {
                 Button { month = calendar.date(byAdding: .month, value: -1, to: first) ?? first } label: { Image(systemName: "chevron.left") }
                     .accessibilityLabel("上个月")
@@ -65,7 +65,7 @@ struct QuotaCycleCalendar: View {
                                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? color : .clear, lineWidth: 1))
                             }
                             .buttonStyle(.plain)
-                            .frame(width: max(0, geometry.size.width / 7 * (item.right - item.left)), height: 32)
+                            .frame(width: max(0, geometry.size.width / 7 * (item.right - item.left)), height: 26)
                             .offset(x: geometry.size.width / 7 * item.left)
                             .accessibilityLabel(item.cycle.isCurrent ? "本期" : "第 \(item.index + 1) 期")
                             .help("点击查看这一期的用量与模型明细")
@@ -78,12 +78,12 @@ struct QuotaCycleCalendar: View {
                                     .opacity(calendar.isDate(date, equalTo: first, toGranularity: .month) ? 1 : 0.3)
                             }
                         }.allowsHitTesting(false)
-                    }.frame(height: 32)
-                }.frame(height: 32)
+                    }.frame(height: 26)
+                }.frame(height: 26)
             }
             if cycles.isEmpty { Text("暂无周期记录").foregroundStyle(.secondary) }
         }
-        .font(.system(size: 10)).padding(12)
+        .font(.system(size: 10)).padding(8)
         .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.primary.opacity(0.1)))
         .padding(.horizontal, 12)

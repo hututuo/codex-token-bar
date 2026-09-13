@@ -12807,14 +12807,14 @@ details.session-management-banner {
 .stats-quota-boundary-detail { font-size: 11px; color: var(--text-muted); margin: 8px 0; }
 .stats-quota-boundary-detail span { display: block; margin: 5px 0; }
 
-.quota-cycle-calendar { box-sizing: border-box; width: 100%; margin: 10px 0; padding: 12px; border: 1px solid var(--border-color, #8883); border-radius: 14px; background: var(--surface-secondary, #88808); }
-.quota-calendar-header { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.quota-cycle-calendar { box-sizing: border-box; width: 100%; margin: 8px 0; padding: 8px; border: 1px solid var(--border-color, #8883); border-radius: 14px; background: var(--surface-secondary, #88808); }
+.quota-calendar-header { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
 .quota-calendar-header button { border:0; border-radius:7px; padding:5px 10px; background:#8881; color:inherit; cursor:pointer; }
 .quota-calendar-header strong { font-size:13px; }
 .quota-calendar-current { margin-left:auto; font-size:11px; }
 .quota-calendar-weekdays,.quota-calendar-dates,.quota-calendar-bands { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); }
-.quota-calendar-weekdays span { text-align:center; color:var(--text-muted); font-size:10px; padding-bottom:7px; }
-.quota-calendar-week { position:relative; height:34px; margin:4px 0; }
+.quota-calendar-weekdays span { text-align:center; color:var(--text-muted); font-size:10px; padding-bottom:4px; }
+.quota-calendar-week { position:relative; height:26px; margin:3px 0; }
 .quota-calendar-dates { position:absolute; inset:0; pointer-events:none; align-items:center; }
 .quota-calendar-dates span { text-align:center; font-size:11px; font-variant-numeric:tabular-nums; }
 .quota-calendar-dates .outside { opacity:.3; }

@@ -87,12 +87,16 @@ struct QuotaSidebarRail: View {
                         Button { controller.togglePin() } label: {
                             Image(systemName: controller.interaction.pinned ? "pin.fill" : "pin")
                                 .foregroundStyle(controller.interaction.pinned ? SidebarPalette.green : .gray)
-                                .frame(width: 30, height: 24).contentShape(Rectangle())
+                                .frame(width: 24, height: 24).contentShape(Rectangle())
                         }.help(controller.interaction.pinned ? "取消固定" : "固定")
                             .accessibilityLabel(controller.interaction.pinned ? "取消固定" : "固定")
+                        Button { quota.refresh(force: true) } label: {
+                            Image(systemName: "arrow.clockwise").foregroundStyle(.gray)
+                                .frame(width: 24, height: 24).contentShape(Rectangle())
+                        }.help("刷新额度与重置卡").accessibilityLabel("刷新数据")
                         Button { controller.openDashboard() } label: {
                             Image(systemName: "macwindow").foregroundStyle(.gray)
-                                .frame(width: 30, height: 24).contentShape(Rectangle())
+                                .frame(width: 24, height: 24).contentShape(Rectangle())
                         }.help("打开主页面").accessibilityLabel("打开主页面")
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
                     rateRing

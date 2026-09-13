@@ -24,6 +24,8 @@ test("main display-surface shortcut exposes an independent sidebar toggle", asyn
     assert.ok(sidebar); assert.equal(sidebar.props["aria-pressed"], true); assert.equal(sidebar.props.disabled, false);
     sidebar.props.onClick(); assert.equal(sidebarCalls, 1); assert.equal(floatingCalls, 0);
     const html = renderToStaticMarkup(React.createElement(LiveRateCard, props));
-    assert.match(html, /额度侧栏：开/); assert.match(html, /悬浮窗：关/);
+    assert.match(html, /quick-surface-label">额度侧栏/); assert.match(html, /quick-surface-label">悬浮窗/);
+    const floating = elements(tree).find(node => node.type === "button" && node.props.onClick === props.onToggleFloating);
+    assert.equal(floating.props["aria-pressed"], false);
   });
 });

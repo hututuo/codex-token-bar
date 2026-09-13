@@ -1307,7 +1307,6 @@ struct DashboardModelCostRow: View {
                     DashboardQuotaCycleControls(cycles: cycles, selected: selectedCycle,
                         expanded: $calendarExpanded, summary: cycleSummary) { id in
                         onSelectCycle?(id)
-                        calendarExpanded = false
                     }
                 }
 
@@ -1365,7 +1364,6 @@ struct DashboardModelCostRow: View {
             if scope == .sevenDay, calendarExpanded {
                 QuotaCycleCalendar(cycles: cycles, selectedID: selectedCycle?.id) { id in
                     onSelectCycle?(id)
-                    calendarExpanded = false
                 }
                 Text(cycleSummary).font(.system(size: 10)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

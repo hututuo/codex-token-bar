@@ -600,3 +600,47 @@ async function waitForAct(React, predicate) {
 function tick() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+test("manual compact refresh publishes fresh quota and credits and coalesces repeated clicks", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async load => {
+      const { emptyAccountQuotaBundle } = await load("/src/api/fallback/quotaFallback.ts");
+      const { useCompactPanelQuota } = await load("/src/surfaces/useCompactPanelQuota.ts");
+      const source = sourceToken("manual", 1);
+      const pending = deferred();
+      const quotaReads = [];
+      const resetReads = [];
+      const readQuota = force => { quotaReads.push(force); return pending.promise; };
+      const readReset = force => { resetReads.push(force); return Promise.resolve(resetCreditBundle()); };
+      const container = window.document.createElement("div");
+      const root = createRoot(container);
+      function Probe({ revision, active = true }) {
+        const quota = useCompactPanelQuota({ active, enabled: true, sourceToken: source,
+          initialDelayMs: 60_000, intervalMs: 60_000, refreshRevision: revision }, readQuota, readReset);
+        return React.createElement("output", null, `${quota.testLabel ?? "initial"}|${quota.quota.resetCredit.status}`);
+      }
+      const render = async (revision, active = true) => React.act(async () => {
+        root.render(React.createElement(Probe, { revision, active })); await tick();
+      });
+      try {
+        await render(0);
+        assert.equal(quotaReads.length, 0);
+        await render(1);
+        await render(2);
+        assert.deepEqual(quotaReads, [true]);
+        assert.equal(resetReads[0], true);
+        await React.act(async () => { pending.resolve(quotaBundle(emptyAccountQuotaBundle, "manual-result")); await tick(); });
+        assert.match(container.textContent, /manual-result/);
+        assert.match(container.textContent, /重置卡已更新/);
+        await render(2, false);
+        await render(3, false);
+        assert.equal(quotaReads.length, 1);
+      } finally { await React.act(async () => root.unmount()); }
+    });
+  } finally { delete globalThis.IS_REACT_ACT_ENVIRONMENT; restoreGlobals(); window.close(); }
+});

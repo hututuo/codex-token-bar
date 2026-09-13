@@ -25,6 +25,7 @@ import { useWakeRefresh } from "../utils/useWakeRefresh";
 import { codexHomeSourceTokenKey } from "./useCompactPanelSource";
 
 interface CompactPanelQuotaOptions {
+  refreshRevision?: number;
   active: boolean;
   enabled: boolean;
   followDashboardUpdates?: boolean;
@@ -65,6 +66,7 @@ export function useCompactPanelQuota({
   active,
   enabled,
   followDashboardUpdates = false,
+  refreshRevision = 0,
   initialDelayMs,
   intervalMs,
   sourceToken,
@@ -374,6 +376,14 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
     quota.quota.sevenDay.resetsAtUnix,
     refreshQuota,
   ]);
+
+  const handledRefreshRevision = useRef(refreshRevision);
+  useEffect(() => {
+    if (handledRefreshRevision.current === refreshRevision) return;
+    handledRefreshRevision.current = refreshRevision;
+    void refreshQuota(true);
+    void refreshResetCredits(true);
+  }, [refreshRevision, refreshQuota, refreshResetCredits]);
 
   useWakeRefresh({
     active: active && enabled && !followDashboardUpdates,
