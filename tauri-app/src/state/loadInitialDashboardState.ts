@@ -10,10 +10,7 @@ import {
 } from "./dashboardState";
 
 interface InitialDashboardLoadOptions {
-  source: Pick<
-    DashboardDataSource,
-    "readPlatformCapabilities" | "readDashboardSnapshot"
-  >;
+  source: Pick<DashboardDataSource, "readDashboardSnapshot">;
   sourceToken: DashboardSourceToken;
   isCancelled: () => boolean;
   isSourceCurrent: (token: DashboardSourceToken) => boolean;
@@ -33,15 +30,6 @@ export async function loadInitialDashboardState({
   onDashboardAvailable,
   onDashboardUnavailable,
 }: InitialDashboardLoadOptions): Promise<void> {
-  void source.readPlatformCapabilities().then((platform) => {
-    if (!isCancelled() && isSourceCurrent(sourceToken)) {
-      setState((current) => isSourceCurrent(sourceToken)
-        ? { ...current, platform }
-        : current);
-      void recordStartupEvent("platform ready");
-    }
-  });
-
   try {
     const raw = await source.readDashboardSnapshot(sourceToken);
     // Keep compatibility with small test/in-process sources that still return

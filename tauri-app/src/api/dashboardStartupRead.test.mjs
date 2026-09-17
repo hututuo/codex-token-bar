@@ -85,7 +85,6 @@ test("a native startup rejection stays unavailable and never publishes ready", a
     let readyCalls = 0;
     await loadInitialDashboardState({
       source: {
-        readPlatformCapabilities: () => Promise.resolve({}),
         readDashboardSnapshot: () => Promise.resolve({
           status: "unavailable",
           snapshot: null,

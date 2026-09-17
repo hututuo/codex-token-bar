@@ -12,9 +12,6 @@ import type {
 } from "../types/dashboard";
 import type { ResetCreditBundle } from "../types/quota";
 import {
-  fallbackPlatformCapabilities,
-} from "./fallback";
-import {
   callCommand,
   callCommandOptional,
   callCommandStrict,
@@ -39,14 +36,7 @@ export function resetCodexHome(): Promise<CodexHomeSourceEnvelope> {
 }
 
 export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
-  // Capability support is stable for the process. Do not turn a temporarily busy
-  // native executor into a sticky all-disabled UI by timing out to the fallback.
-  return callCommand(
-    "read_platform_capabilities",
-    fallbackPlatformCapabilities,
-    undefined,
-    null,
-  );
+  return callCommandStrict<PlatformCapabilities>("read_platform_capabilities");
 }
 
 export function readDashboardSnapshot(

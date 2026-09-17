@@ -274,6 +274,29 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     setState((current) => ({ ...current, diagnostics }));
   }), []);
 
+  // Platform capabilities describe the desktop shell, not the current Codex Home.
+  // Keep this hydration independent from source discovery so a missing/unreadable
+  // .codex directory cannot leave display-surface controls permanently disabled.
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    const hydrate = () => {
+      void source.readPlatformCapabilities().then((platform) => {
+        if (cancelled) return;
+        setState((current) => ({ ...current, platform }));
+        void recordStartupEvent("platform ready");
+      }).catch(() => {
+        if (cancelled) return;
+        retryTimer = window.setTimeout(hydrate, 1_000);
+      });
+    };
+    hydrate();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [source]);
+
   const captureSourceToken = useCallback(
     () => sourceTransitionRef.current.sourceToken,
     [],

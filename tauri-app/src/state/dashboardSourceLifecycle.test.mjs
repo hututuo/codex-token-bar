@@ -98,6 +98,35 @@ test("precise dashboard client forwards a bounded refresh reason without source 
   }
 });
 
+test("platform capabilities hydrate even when Codex Home discovery is unavailable", async () => {
+  await withMountedDashboard(async ({ React, container, load, render }) => {
+    const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
+    const ready = { available: true, status: "ready", label: "悬浮窗", note: "ready" };
+    const windowsPlatform = {
+      ...fallbackPlatformCapabilities,
+      platform: "windows",
+      floatingWindow: ready,
+    };
+    let platformReads = 0;
+    const source = dashboardSource({
+      emptyDashboardSnapshot,
+      fallbackPlatformCapabilities,
+      getCodexHome: () => Promise.resolve(null),
+      readPlatformCapabilities() {
+        platformReads += 1;
+        return Promise.resolve(windowsPlatform);
+      },
+      readDashboardSnapshot: () => Promise.resolve({ status: "unavailable", snapshot: null }),
+    });
+
+    await render(source, {
+      subscribeToSourceChanges: () => Promise.resolve({ ok: true, unlisten: () => {} }),
+    });
+    await waitForAct(React, () => JSON.parse(container.textContent).platform === "windows");
+    assert.equal(platformReads, 1);
+  });
+});
+
 test("mounted main forwards exact tokens and never publishes a delayed snapshot from source A", async () => {
   await withMountedDashboard(async ({ React, container, load, render }) => {
     const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
@@ -425,6 +454,7 @@ async function withMountedDashboard(run) {
           return React.createElement("output", null, JSON.stringify({
             progress: result.preciseProgress?.phase ?? null,
             physical: result.providerSourceKey.split(":").at(-1),
+            platform: result.state.platform?.platform ?? null,
             generatedAt: result.state.dashboard?.generatedAt ?? null,
           }));
         }
@@ -454,7 +484,8 @@ function dashboardSource(options) {
     getCodexHome: options.getCodexHome,
     setCodexHome: async () => { throw new Error("unused"); },
     resetCodexHome: async () => { throw new Error("unused"); },
-    readPlatformCapabilities: () => Promise.resolve(options.fallbackPlatformCapabilities),
+    readPlatformCapabilities: options.readPlatformCapabilities
+      ?? (() => Promise.resolve(options.fallbackPlatformCapabilities)),
     readDashboardSnapshot: options.readDashboardSnapshot,
     readPreciseDashboardSnapshot: options.readPreciseDashboardSnapshot ?? (() => Promise.resolve(null)),
     readPreciseDashboardSourceProbe: options.readPreciseDashboardSourceProbe
