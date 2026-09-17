@@ -130,9 +130,15 @@ export function visibleDashboardState(state: DashboardAppState): DashboardReadyS
   }
 
   const pending = pendingDashboardReadyState();
-  return state.codexHome === null
-    ? pending
-    : { ...pending, codexHome: state.codexHome };
+  return {
+    ...pending,
+    codexHome: state.codexHome ?? pending.codexHome,
+    platform: state.platform ?? pending.platform,
+    liveRate: state.liveRate ?? pending.liveRate,
+    liveThreadOptions: state.liveThreadOptions,
+    repair: state.repair ?? pending.repair,
+    diagnostics: state.diagnostics,
+  };
 }
 
 export function pendingDashboardReadyState(): DashboardReadyState {

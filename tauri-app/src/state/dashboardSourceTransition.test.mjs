@@ -227,6 +227,38 @@ test("failed getCodexHome leaves source uninitialized so real generation one rem
   assert.equal(real.transition.sourceToken.canonicalHomeKey, "/source/real");
 });
 
+test("pending dashboard projection preserves independently hydrated platform capabilities", async () => {
+  await withSsrModules(async (load) => {
+    const { visibleDashboardState } = await load("/src/state/dashboardState.ts");
+    const ready = { available: true, status: "ready", label: "悬浮窗", note: "ready" };
+    const platform = {
+      platform: "windows",
+      shell: "Tauri desktop",
+      floatingWindow: ready,
+      floatingTransparency: ready,
+      floatingDrag: ready,
+      floatingLock: ready,
+      statusTray: ready,
+      statusTrayLiveText: ready,
+      autostart: ready,
+      notifications: ready,
+    };
+    const visible = visibleDashboardState({
+      codexHome: { path: "无法读取 Codex Home", exists: false, source: "读取失败" },
+      platform,
+      dashboard: null,
+      liveRate: null,
+      liveThreadOptions: [],
+      repair: null,
+      diagnostics: [],
+      loading: false,
+    });
+
+    assert.equal(visible.platform.platform, "windows");
+    assert.equal(visible.platform.floatingWindow.available, true);
+  });
+});
+
 test("failed getCodexHome remains visible while dashboard data is still unavailable", async () => {
   await withSsrModules(async (load) => {
     const { visibleDashboardState } = await load("/src/state/dashboardState.ts");
