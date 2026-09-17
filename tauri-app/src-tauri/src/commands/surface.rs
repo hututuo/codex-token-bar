@@ -134,7 +134,20 @@ pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: Floati
         let result = apply_floating_dock_frame(&native, frame, viewport, webview.inner()).map(|_| viewport.is_some());
         let _ = sender.send(result);
     }).map_err(|error| error.to_string())?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    window.with_webview(move |webview| {
+        let result = (|| {
+            apply_floating_dock_frame(&native, frame)?;
+            if let Some(viewport) = viewport {
+                apply_windows_floating_viewport(frame, viewport, webview)?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })();
+        let _ = sender.send(result);
+    }).map_err(|error| error.to_string())?;
+    #[cfg(not(any(target_os = "macos", windows)))]
     window.run_on_main_thread(move || {
         let _ = sender.send(apply_floating_dock_frame(&native, frame).map(|_| false));
     }).map_err(|error| error.to_string())?;
@@ -150,6 +163,19 @@ fn dock_viewport_offset(frame: FloatingDockFrame, viewport: FloatingDockFrame) -
         return Err("Dock clip must be contained in its viewport".into());
     }
     Ok((viewport.x - frame.x, frame.y + frame.height - viewport.y - viewport.height))
+}
+
+// Windows uses a top-left origin for child HWND coordinates. Keep the full
+// WebView2 viewport at its original desktop-space origin while the outer window
+// shrinks to the visible edge lip.
+#[cfg(any(windows, test))]
+fn windows_dock_viewport_offset(frame: FloatingDockFrame, viewport: FloatingDockFrame) -> Result<(f64, f64), String> {
+    if frame.x < viewport.x - 1.0 || frame.y < viewport.y - 1.0
+        || frame.x + frame.width > viewport.x + viewport.width + 1.0
+        || frame.y + frame.height > viewport.y + viewport.height + 1.0 {
+        return Err("Dock clip must be contained in its viewport".into());
+    }
+    Ok((viewport.x - frame.x, viewport.y - frame.y))
 }
 
 #[cfg(target_os = "macos")]
@@ -200,6 +226,51 @@ pub(super) fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: Fl
     Ok(())
 }
 
+#[cfg(windows)]
+fn apply_windows_floating_viewport(
+    frame: FloatingDockFrame,
+    viewport: FloatingDockFrame,
+    webview: tauri::webview::PlatformWebview,
+) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+
+    let (offset_x, offset_y) = windows_dock_viewport_offset(frame, viewport)?;
+    let width = viewport.width.round() as i32;
+    let height = viewport.height.round() as i32;
+    let controller = webview.controller();
+
+    // Wry normally mirrors every outer HWND WM_SIZE into the WebView2
+    // controller and its WRY_WEBVIEW child. Undo that resize after the outer
+    // clip is committed: the page keeps the full viewport and the parent HWND
+    // clips only the edge lip. This matches the AppKit implementation and
+    // avoids a 12px <-> full-width browser reflow on every hover.
+    let mut bounds = Default::default();
+    unsafe { controller.Bounds(&mut bounds) }.map_err(|error| error.to_string())?;
+    bounds.left = 0;
+    bounds.top = 0;
+    bounds.right = width;
+    bounds.bottom = height;
+    unsafe { controller.SetBounds(bounds) }.map_err(|error| error.to_string())?;
+
+    let mut webview_parent = Default::default();
+    unsafe { controller.ParentWindow(&mut webview_parent) }.map_err(|error| error.to_string())?;
+    let success = unsafe {
+        SetWindowPos(
+            webview_parent.0 as _,
+            std::ptr::null_mut(),
+            offset_x.round() as i32,
+            offset_y.round() as i32,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+    };
+    if success == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
 #[cfg(not(any(target_os = "macos", windows)))]
 pub(super) fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: FloatingDockFrame) -> Result<(), String> {
     window.set_size(tauri::PhysicalSize::new(frame.width.round() as u32, frame.height.round() as u32)).map_err(|e| e.to_string())?;
@@ -208,7 +279,7 @@ pub(super) fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: Fl
 
 #[cfg(test)]
 mod dock_frame_tests {
-    use super::{FloatingDockFrame, dock_viewport_offset};
+    use super::{FloatingDockFrame, dock_viewport_offset, windows_dock_viewport_offset};
     #[test]
     fn clipping_preserves_global_viewport_coordinates_on_every_edge() {
         let full = FloatingDockFrame { x: -800.0, y: 200.0, width: 600.0, height: 240.0 };
@@ -221,6 +292,20 @@ mod dock_frame_tests {
         for (clip, expected) in clips { assert_eq!(dock_viewport_offset(clip, full).unwrap(), expected); }
         assert_eq!(dock_viewport_offset(full, full).unwrap(), (0.0, 0.0));
         assert!(dock_viewport_offset(FloatingDockFrame { x: -900.0, ..full }, full).is_err());
+    }
+
+    #[test]
+    fn windows_clipping_preserves_top_left_viewport_coordinates_on_every_edge() {
+        let full = FloatingDockFrame { x: -800.0, y: 200.0, width: 600.0, height: 240.0 };
+        let clips = [
+            (FloatingDockFrame { width: 24.0, ..full }, (0.0, 0.0)),
+            (FloatingDockFrame { x: -224.0, width: 24.0, ..full }, (-576.0, 0.0)),
+            (FloatingDockFrame { x: -592.0, width: 184.0, height: 24.0, ..full }, (-208.0, 0.0)),
+            (FloatingDockFrame { x: -592.0, y: 416.0, width: 184.0, height: 24.0 }, (-208.0, -216.0)),
+        ];
+        for (clip, expected) in clips { assert_eq!(windows_dock_viewport_offset(clip, full).unwrap(), expected); }
+        assert_eq!(windows_dock_viewport_offset(full, full).unwrap(), (0.0, 0.0));
+        assert!(windows_dock_viewport_offset(FloatingDockFrame { x: -900.0, ..full }, full).is_err());
     }
 
     #[test]
