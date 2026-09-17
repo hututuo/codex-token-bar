@@ -13,15 +13,19 @@ Codex Token Bar carries narrowly scoped Windows patches in
 - x86/x64 retain Wry 0.55.1's original `mpsc` plus `wait_with_pump` behavior.
 - The event handle is owned by an RAII guard so early errors do not leak it.
 
-The desktop floating dock also carries a per-window WebView2 resize gate:
+The desktop floating window also carries a per-window WebView2 resize gate:
 
-- While Codex Token Bar clips its floating outer HWND to an edge handle, the
-  app sets the `CodexTokenBar::PinnedWebViewViewport` HWND property.
+- Before every programmatic floating-frame change, Codex Token Bar sets the
+  `CodexTokenBar::PinnedWebViewViewport` HWND property, resizes/repositions the
+  outer HWND, and then explicitly commits the matching WebView2 controller and
+  child HWND bounds in the same UI-thread turn.
 - Wry's parent `WM_SIZE` hook skips its automatic `SetBounds`/child resize only
-  while that property is present. This prevents the otherwise unavoidable
-  full-width -> 12px -> full-width browser reflow during dock collapse/reveal.
-- The property is scoped to the floating HWND and is removed again at the full
-  expanded frame; every other Wry window keeps the upstream resize path.
+  while that property is present. This prevents both the full-width -> 12px ->
+  full-width edge-dock reflow and the primary-card -> details-drawer intermediate
+  viewport that otherwise appears during ordinary floating-window resizes.
+- The property stays present while an edge lip intentionally clips a larger
+  viewport, and is removed immediately after normal full-frame resizes. Every
+  other Wry window keeps the upstream resize path.
 
 The root cause and initial approach were reported in upstream Wry issue
 `tauri-apps/wry#1665` and pull request `tauri-apps/wry#1666` (commit

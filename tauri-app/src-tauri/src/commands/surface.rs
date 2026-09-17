@@ -136,25 +136,25 @@ pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: Floati
     }).map_err(|error| error.to_string())?;
     #[cfg(windows)]
     window.with_webview(move |webview| {
-        let pinned = viewport.is_some();
+        let requested_viewport = viewport.unwrap_or(frame);
+        let keep_pinned = viewport.is_some() && !floating_dock_frames_match(frame, requested_viewport);
         let result = (|| {
-            // Keep Wry from mirroring the temporary outer HWND size into
-            // WebView2 while the dock is clipped. macOS disables WKWebView
-            // autoresizing before it shrinks NSWindow; this Win32 property is
-            // the equivalent gate consumed by our vendored Wry WM_SIZE hook.
-            set_windows_floating_viewport_pinned(&native, pinned)?;
+            // Match the macOS path for every native frame change, not only the
+            // compact edge lip. AppKit disables WKWebView autoresizing before
+            // resizing NSWindow, then explicitly commits the requested webview
+            // frame in the same main-thread turn. Windows must do the same for
+            // ordinary primary <-> details resizes as well; otherwise Wry's
+            // WM_SIZE hook publishes an intermediate WebView2 viewport and the
+            // primary card visibly reflows before the details frame settles.
+            set_windows_floating_viewport_pinned(&native, true)?;
             apply_floating_dock_frame(&native, frame)?;
-            if let Some(viewport) = viewport {
-                apply_windows_floating_viewport(frame, viewport, webview)?;
-                if floating_dock_frames_match(frame, viewport) {
-                    set_windows_floating_viewport_pinned(&native, false)?;
-                }
-                Ok(true)
-            } else {
-                Ok(false)
+            apply_windows_floating_viewport(frame, requested_viewport, webview)?;
+            if !keep_pinned {
+                set_windows_floating_viewport_pinned(&native, false)?;
             }
+            Ok(viewport.is_some())
         })();
-        if result.is_err() && pinned {
+        if result.is_err() {
             // Never strand the HWND with Wry's ordinary resize path disabled.
             // Frontend recovery will restore the full frame after this call.
             let _ = set_windows_floating_viewport_pinned(&native, false);
