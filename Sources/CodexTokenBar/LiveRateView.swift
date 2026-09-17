@@ -19,6 +19,7 @@ struct LiveRateView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             LiveRateHeader(monitor: monitor, onReset: monitor.reset)
+            if liveRateMonitoringEnabled { CacheUsageAdviceView(monitor: monitor) }
 
             GeometryReader { proxy in
                 let columnWidth = max(0, (proxy.size.width - LiveRatePanelLayout.contentSpacing) / 2)

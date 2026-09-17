@@ -1,3 +1,4 @@
+import { CacheUsageNotice } from "../components/liveRate/CacheUsageNotice";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { radarSpeedWindowDeadlineMs } from "../domain/codexRadar/model";
 import { subscribeRadarCountdown } from "../domain/codexRadar/countdown";
@@ -332,6 +333,7 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
   const unread = snapshot.unreadSummary;
   const unreadLabel = unread.source.includes("pending") ? "未读状态未知" : unread.label || "未读状态未知";
   return <>
+    {snapshot.liveRateAvailable && <CacheUsageNotice advice={snapshot.cacheAdvice} />}
     {snapshot.quotaDataStale && <p className="qs-warning">额度已过期 · 显示上次成功读取的结果</p>}
     <div className="qs-quota-group" id="qs-section-top">
       {([ ["5 小时额度", quota.quota.fiveHour, "#b6ef75"], ["7 天额度", quota.quota.sevenDay, "#b4acff"] ] as const)

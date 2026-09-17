@@ -55,6 +55,7 @@ export function floatingSnapshotForLiveRate(
   const snapshot: FloatingPanelSnapshot = {
     ...baseFloatingPanelSnapshot,
     tokensPerSecond: liveRate.tokensPerSecond,
+    cacheAdvice: liveRate.cacheAdvice ?? null,
     maxTokensPerSecond: liveRate.maxTokensPerSecond,
     liveRateAvailable: liveRateStatus?.kind !== "failure",
     liveRateStatusKind: liveRateStatus?.kind,

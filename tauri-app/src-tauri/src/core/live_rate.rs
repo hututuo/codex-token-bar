@@ -155,6 +155,7 @@ fn idle_snapshot_with_warnings(
         requests_today: summary.today_requests,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        cache_advice: None,
         unread_summary,
         warnings,
     }
@@ -180,6 +181,7 @@ pub(super) fn pending_snapshot_with_unread(
         requests_today: 0,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        cache_advice: None,
         unread_summary,
         warnings: Vec::new(),
     }
@@ -223,6 +225,7 @@ fn read_snapshot_result_at(
     let rollout_metrics = match read_rollout_metrics(codex_home, source_scope, now) {
         Ok(metrics) => metrics,
         Err(error) => {
+            rollout::clear_cache_advice(source_scope);
             warnings.push(live_rate_warning(format!(
                 "读取新版 rollout 会话索引失败：{}（{}）",
                 codex_home.join("state_5.sqlite").display(),
@@ -255,6 +258,7 @@ fn read_snapshot_result_at(
     let selected_thread_title = selected_thread_id
         .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "选择会话查看单会话速率".into());
+    let cache_advice = rollout::latest_cache_advice(source_scope, now);
 
     Ok(LiveRateSnapshot {
         scope_label: "全会话".into(),
@@ -268,6 +272,7 @@ fn read_snapshot_result_at(
         requests_today: summary.today_requests,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        cache_advice,
         unread_summary: empty_unread_summary(),
         warnings,
     })
@@ -291,6 +296,7 @@ pub fn read_floating_snapshot_from_live(
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
         max_tokens_per_second: live.max_tokens_per_second,
+        cache_advice: live.cache_advice.clone(),
         trend_label: String::new(),
         total_tokens_label: summary
             .as_ref()

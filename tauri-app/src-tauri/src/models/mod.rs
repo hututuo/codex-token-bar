@@ -26,7 +26,7 @@ pub use dashboard::{
     PreciseDashboardProgress, RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage,
     TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
 };
-pub use live::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary};
+pub use live::{CacheAdvice, FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary};
 pub use platform::{
     AutostartStatus, CodexHomeStatus, PlatformCapabilities, PlatformFeatureCapability,
 };

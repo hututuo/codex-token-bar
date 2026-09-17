@@ -1,6 +1,7 @@
 import Foundation
 
 struct LiveRateSnapshot: Equatable {
+    var cacheAdvice: CacheUsageAdvice? = nil
     var threadID: String = ""
     var threadTitle: String = "等待当前会话"
     var sourceLabel: String = "logs_2.sqlite"

@@ -19,6 +19,8 @@ extension LiveRateMonitor {
                 path: path,
                 newOffset: result.state.offset,
                 events: result.events,
+                cacheSamples: result.cacheSamples,
+                cacheReset: result.cacheReset,
                 currentTurnID: result.state.currentTurnID,
                 fileIdentity: result.state.fileIdentity,
                 boundarySignature: result.state.boundarySignature,
@@ -30,9 +32,9 @@ extension LiveRateMonitor {
     nonisolated static func rolloutEvents(
         path: String,
         state: RolloutReadState
-    ) throws -> (state: RolloutReadState, events: [RolloutMetricEvent]) {
+    ) throws -> (state: RolloutReadState, events: [RolloutMetricEvent], cacheSamples: [CacheUsageSample], cacheReset: Bool) {
         guard FileManager.default.fileExists(atPath: path) else {
-            return (RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil), [])
+            return (RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil), [], [], true)
         }
 
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path, isDirectory: false))
@@ -59,7 +61,7 @@ extension LiveRateMonitor {
                     fileIdentity: metadata.identity,
                     discardLeadingPartialLine: discardLeadingPartialLine
                 ),
-                []
+                [], [], restarted
             )
         }
         try handle.seek(toOffset: readOffset)
@@ -73,7 +75,7 @@ extension LiveRateMonitor {
                     fileIdentity: metadata.identity,
                     discardLeadingPartialLine: discardLeadingPartialLine
                 ),
-                []
+                [], [], restarted
             )
         }
 
@@ -88,7 +90,7 @@ extension LiveRateMonitor {
                         fileIdentity: metadata.identity,
                         discardLeadingPartialLine: true
                     ),
-                    []
+                    [], [], restarted
                 )
             }
             skippedByteCount = data.distance(from: data.startIndex, to: data.index(after: firstNewline))
@@ -106,7 +108,7 @@ extension LiveRateMonitor {
                     fileIdentity: metadata.identity,
                     discardLeadingPartialLine: false
                 ),
-                []
+                [], [], restarted
             )
         }
         let completeEnd = remaining.index(after: lastNewline)
@@ -122,14 +124,14 @@ extension LiveRateMonitor {
                     fileIdentity: metadata.identity,
                     discardLeadingPartialLine: false
                 ),
-                []
+                [], [], restarted
             )
         }
 
         let newOffset = readOffset + UInt64(skippedByteCount + completeByteCount)
         let parsed = rolloutEvents(
             fromLines: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init),
-            previousTurnID: previousTurnID
+            previousTurnID: previousTurnID, includeCacheSamples: !restarted
         )
         return (
             try rolloutReadState(
@@ -139,7 +141,7 @@ extension LiveRateMonitor {
                 fileIdentity: metadata.identity,
                 discardLeadingPartialLine: false
             ),
-            parsed.events
+            parsed.events, restarted ? [] : parsed.cacheSamples, restarted
         )
     }
 
@@ -186,16 +188,17 @@ extension LiveRateMonitor {
 
     nonisolated static func rolloutEvents(
         fromLines lines: [String],
-        previousTurnID: String?
-    ) -> (events: [RolloutMetricEvent], currentTurnID: String?) {
+        previousTurnID: String?, includeCacheSamples: Bool = true
+    ) -> (events: [RolloutMetricEvent], currentTurnID: String?, cacheSamples: [CacheUsageSample]) {
         var callStarts: [String: TimeInterval] = [:]
         var currentTurnID = previousTurnID
+        var cacheSamples: [CacheUsageSample] = []
         let events = suppressDuplicateVisibleMessages(
             lines.enumerated().flatMap { lineIndex, line in
                 if let turnID = rolloutTurnID(fromLine: line) {
                     currentTurnID = turnID
                 }
-                return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: currentTurnID).map { event in
+                return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: currentTurnID, cacheSamples: &cacheSamples, includeCacheSamples: includeCacheSamples).map { event in
                     guard event.category == .visibleText, event.itemID == nil else { return event }
                     return RolloutMetricEvent(
                         timestamp: event.timestamp,
@@ -212,7 +215,7 @@ extension LiveRateMonitor {
                 }
             }
         )
-        return (events, currentTurnID)
+        return (events, currentTurnID, cacheSamples)
     }
 
     nonisolated static func rolloutEvents(fromLine line: String) -> [RolloutMetricEvent] {
@@ -225,15 +228,25 @@ extension LiveRateMonitor {
         callStarts: inout [String: TimeInterval],
         currentTurnID: String? = nil
     ) -> [RolloutMetricEvent] {
+        var cacheSamples: [CacheUsageSample] = []
+        return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: currentTurnID, cacheSamples: &cacheSamples)
+    }
+
+    nonisolated static func rolloutEvents(
+        fromLine line: String, callStarts: inout [String: TimeInterval], currentTurnID: String?,
+        cacheSamples: inout [CacheUsageSample], includeCacheSamples: Bool = true
+    ) -> [RolloutMetricEvent] {
         guard let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let payload = object["payload"] as? [String: Any] else {
             return []
         }
 
-        guard let timestamp = parseTimestamp(object["timestamp"] as? String) else {
-            return []
+        let parsedTimestamp = parseTimestamp(object["timestamp"] as? String)
+        if includeCacheSamples, let sample = CacheUsageSample.parse(object: object, payload: payload, timestamp: parsedTimestamp ?? .nan) {
+            cacheSamples.append(sample)
         }
+        guard let timestamp = parsedTimestamp else { return [] }
         let recordType = object["type"] as? String
         let payloadType = payload["type"] as? String
         let keyPrefix = (payload["call_id"] as? String) ?? (payload["id"] as? String) ?? UUID().uuidString

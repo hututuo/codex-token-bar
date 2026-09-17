@@ -329,6 +329,7 @@ struct QuotaSidebarDetailView: View {
                                                   runningThreads: tasks.runningThreadSummary)
         VStack(alignment: .leading, spacing: 6) {
             header(snapshot.quota)
+            if monitor.monitoringEnabled { CacheUsageAdviceView(monitor: monitor) }
             HStack(spacing: 22) {
                 tab("额度概览", detail: .overview)
                 tab("任务", detail: .tasks)

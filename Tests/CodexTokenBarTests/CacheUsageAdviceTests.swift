@@ -1,0 +1,146 @@
+import XCTest
+@testable import CodexTokenBar
+
+final class CacheUsageAdviceTests: XCTestCase {
+    func testSharedCrossPlatformFixtures() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/cache-usage-advice.json"))
+        let cases = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        for fixture in cases {
+            var tracker = CacheUsageAdviceTracker()
+            for row in try XCTUnwrap(fixture["steps"] as? [[String: Any]]) {
+                let at = try XCTUnwrap(row["at"] as? Double)
+                tracker.consume(CacheUsageSample(timestamp: at,
+                    input: (row["input"] as? NSNumber)?.uint64Value,
+                    cached: (row["cached"] as? NSNumber)?.uint64Value,
+                    total: (row["total"] as? NSNumber)?.uint64Value),
+                    threadID: row["thread"] as? String ?? "a", now: at, monotonic: at)
+                XCTAssertEqual(tracker.latest(now: at)?.low, row["low"] as? Bool, "\(fixture["name"] ?? "") at \(at)")
+            }
+        }
+    }
+
+    @MainActor
+    func testAdvicePublishesWithoutAnyRateEventAndClearsOnSourceChange() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "a")
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: [
+            LiveRateMonitor.RolloutRead(threadID: "a", path: "/test", newOffset: 100, events: [],
+                cacheSamples: [sample(100, total: 20_000)])
+        ], now: 101)
+        XCTAssertEqual(monitor.snapshot.cacheAdvice?.low, true)
+        XCTAssertEqual(monitor.snapshot.outputTokens, 0)
+        XCTAssertEqual(monitor.snapshot.rollingTokensPerSecond, 0)
+        monitor.testActivatePollingWithoutScheduling()
+        monitor.setMonitoringEnabled(false)
+        XCTAssertNil(monitor.snapshot.cacheAdvice)
+        XCTAssertNil(monitor.totalSnapshot.cacheAdvice)
+        monitor.resetSourceLocalState(for: nil)
+        XCTAssertNil(monitor.snapshot.cacheAdvice)
+        XCTAssertNil(monitor.totalSnapshot.cacheAdvice)
+    }
+
+    func testIncrementalReadDoesNotReplayOnRewriteOrRevisit() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        try Data().write(to: path)
+        let initial = LiveRateMonitor.initialRolloutReadState(path: path.path)
+        let line = "{\"timestamp\":\"2026-09-16T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":20000,\"cached_input_tokens\":100}}}}\n"
+        try Data(line.utf8).write(to: path)
+        let first = try LiveRateMonitor.rolloutEvents(path: path.path, state: initial)
+        XCTAssertEqual(first.cacheSamples.count, 1)
+        let second = try LiveRateMonitor.rolloutEvents(path: path.path, state: first.state)
+        XCTAssertTrue(second.cacheSamples.isEmpty)
+        // Atomic replacement has a new inode even if the file grows.
+        try Data((line + line).utf8).write(to: path, options: .atomic)
+        let rewritten = try LiveRateMonitor.rolloutEvents(path: path.path, state: second.state)
+        XCTAssertTrue(rewritten.cacheReset)
+        XCTAssertTrue(rewritten.cacheSamples.isEmpty)
+    }
+
+    private func sample(_ at: Double, total: UInt64? = nil, cached: UInt64 = 100,
+                        input: UInt64 = 20_000) -> CacheUsageSample {
+        CacheUsageSample(timestamp: at, input: input, cached: cached, total: total)
+    }
+
+    func testFirstLowRequestAlertsImmediatelyAndDuplicateDoesNotRepublish() {
+        var tracker = CacheUsageAdviceTracker()
+        tracker.consume(sample(100, total: 20_000), threadID: "a", now: 100, monotonic: 100)
+        XCTAssertEqual(tracker.latest(now: 100)?.low, true)
+        tracker.consume(sample(101, total: 20_000), threadID: "a", now: 101, monotonic: 101)
+        XCTAssertEqual(tracker.latest(now: 101)?.low, true)
+        XCTAssertEqual(tracker.latest(now: 101)?.timestamp, 100)
+        tracker.consume(CacheUsageSample(timestamp: 102, context: true), threadID: "a", now: 102)
+        tracker.consume(sample(103, total: 40_000), threadID: "a", now: 103, monotonic: 103)
+        XCTAssertEqual(tracker.latest(now: 103)?.low, true)
+    }
+
+    func testUnknownAndTinyInputDoNotDelayNextLowRequest() {
+        for interruption in [CacheUsageSample(timestamp: 101), sample(101, total: 25_000, input: 200)] {
+            var tracker = CacheUsageAdviceTracker()
+            tracker.consume(sample(100, total: 20_000), threadID: "a", now: 100)
+            tracker.consume(interruption, threadID: "a", now: 101)
+            tracker.consume(sample(102, total: 40_000), threadID: "a", now: 102)
+            XCTAssertEqual(tracker.latest(now: 102)?.low, true)
+        }
+    }
+
+    func testIndependentSessionsModelResetAndExpiry() {
+        var tracker = CacheUsageAdviceTracker()
+        tracker.consume(sample(100, total: 20_000), threadID: "a", now: 100)
+        tracker.consume(sample(101, total: 40_000), threadID: "b", now: 101)
+        XCTAssertEqual(tracker.latest(now: 101)?.low, true)
+        tracker.consume(CacheUsageSample(timestamp: 102, model: "new-model", context: true), threadID: "a", now: 102)
+        tracker.consume(sample(103, total: 60_000), threadID: "a", now: 103)
+        XCTAssertEqual(tracker.latest(now: 103)?.low, true)
+        XCTAssertNil(tracker.latest(now: 224))
+    }
+
+    func testValidLastUsageDoesNotWaitForRequestIdentity() {
+        var tracker = CacheUsageAdviceTracker()
+        for at in [100.0, 101.0, 102.0] { tracker.consume(sample(at), threadID: "a", now: at) }
+        XCTAssertEqual(tracker.latest(now: 102)?.low, true)
+        XCTAssertEqual(tracker.latest(now: 102)?.hitRate, 0.005)
+    }
+
+    func testRecoveryDoesNotDelayNextLowRequest() {
+        var tracker = CacheUsageAdviceTracker()
+        for (at, total, cached) in [(100.0, 20_000, 100), (101, 40_000, 100), (102, 60_000, 19_000), (103, 80_000, 100), (104, 100_000, 100)] {
+            tracker.consume(sample(at, total: UInt64(total), cached: UInt64(cached)), threadID: "a", now: at, monotonic: at)
+        }
+        XCTAssertEqual(tracker.latest(now: 104)?.low, true)
+        tracker.consume(sample(702, total: 120_000), threadID: "a", now: 702, monotonic: 702)
+        tracker.consume(sample(703, total: 140_000), threadID: "a", now: 703, monotonic: 703)
+        XCTAssertEqual(tracker.latest(now: 703)?.low, true)
+    }
+
+    func testFutureStaleAndRegressionCannotAlert() {
+        var tracker = CacheUsageAdviceTracker()
+        tracker.consume(sample(200, total: 20_000), threadID: "a", now: 100)
+        XCTAssertNil(tracker.latest(now: 100))
+        tracker.consume(sample(100, total: 20_000), threadID: "a", now: 221)
+        XCTAssertNil(tracker.latest(now: 221))
+        tracker.consume(sample(300, total: 20_000), threadID: "a", now: 300)
+        tracker.consume(sample(301, total: 10_000), threadID: "a", now: 301)
+        XCTAssertNil(tracker.latest(now: 301))
+        tracker.consume(sample(302, total: 30_000), threadID: "a", now: 302)
+        XCTAssertEqual(tracker.latest(now: 302)?.low, true)
+    }
+
+    func testParserHandlesZeroReasoningAndRejectsInvalidNumbers() throws {
+        for input in ["true", "-1", "2.5", "null", "\"20000\""] {
+            let parsed = try parse(input: input, cached: "0")
+            XCTAssertNil(parsed.input)
+        }
+        let parsed = try parse(input: "20000", cached: "0")
+        XCTAssertEqual(parsed.input, 20_000)
+        XCTAssertEqual(parsed.cached, 0)
+    }
+
+    private func parse(input: String, cached: String) throws -> CacheUsageSample {
+        let line = "{\"timestamp\":\"2026-09-16T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":\(input),\"cached_input_tokens\":\(cached),\"reasoning_output_tokens\":0}}}}"
+        let result = LiveRateMonitor.rolloutEvents(fromLines: [line], previousTurnID: nil)
+        XCTAssertTrue(result.events.isEmpty, "Cache input must never enter rate accounting")
+        return try XCTUnwrap(result.cacheSamples.first)
+    }
+}

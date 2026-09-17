@@ -1,0 +1,147 @@
+[
+  {
+    "name": "first-low-immediate",
+    "steps": [
+      {
+        "at": 100,
+        "total": 20000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      },
+      {
+        "at": 101,
+        "total": 40000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      }
+    ]
+  },
+  {
+    "name": "duplicate",
+    "steps": [
+      {
+        "at": 100,
+        "total": 20000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      },
+      {
+        "at": 101,
+        "total": 20000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      }
+    ]
+  },
+  {
+    "name": "unknown-breaks",
+    "steps": [
+      {
+        "at": 100,
+        "total": 20000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      },
+      {
+        "at": 101,
+        "total": 20000,
+        "low": null
+      },
+      {
+        "at": 102,
+        "total": 40000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      }
+    ]
+  },
+  {
+    "name": "unidentified",
+    "steps": [
+      {
+        "at": 100,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      },
+      {
+        "at": 101,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      }
+    ]
+  },
+  {
+    "name": "watermark-regression",
+    "steps": [
+      {
+        "at": 100,
+        "total": 40000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      },
+      {
+        "at": 101,
+        "total": 20000,
+        "input": 20000,
+        "cached": 100,
+        "low": null
+      },
+      {
+        "at": 102,
+        "total": 40000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      }
+    ]
+  },
+  {
+    "name": "freshness-boundary",
+    "steps": [
+      {
+        "at": 100,
+        "total": 20000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      },
+      {
+        "at": 220,
+        "total": 40000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      }
+    ]
+  },
+  {
+    "name": "different-agent",
+    "steps": [
+      {
+        "at": 100,
+        "thread": "a",
+        "total": 20000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      },
+      {
+        "at": 101,
+        "thread": "b",
+        "total": 40000,
+        "input": 20000,
+        "cached": 100,
+        "low": true
+      }
+    ]
+  }
+]

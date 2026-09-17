@@ -1,3 +1,4 @@
+import { CacheUsageNotice } from "./liveRate/CacheUsageNotice";
 import type { LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { LiveRateMeter } from "./liveRate/LiveRateMeter";
@@ -112,6 +113,7 @@ export function LiveRateCard({
         </div>
       ) : null}
 
+      {liveRateEnabled && <CacheUsageNotice advice={snapshot.cacheAdvice} />}
       <div className="live-grid">
         <div className={liveRateEnabled ? "live-left" : "live-left is-live-disabled"}>
           <LiveRateMeter
