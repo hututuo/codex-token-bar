@@ -39,7 +39,14 @@ export function resetCodexHome(): Promise<CodexHomeSourceEnvelope> {
 }
 
 export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
-  return callCommand("read_platform_capabilities", fallbackPlatformCapabilities);
+  // Capability support is stable for the process. Do not turn a temporarily busy
+  // native executor into a sticky all-disabled UI by timing out to the fallback.
+  return callCommand(
+    "read_platform_capabilities",
+    fallbackPlatformCapabilities,
+    undefined,
+    null,
+  );
 }
 
 export function readDashboardSnapshot(

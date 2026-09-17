@@ -63,18 +63,16 @@ fn floating_window_capability(
     platform: DesktopPlatform,
     setup_error: Option<&str>,
 ) -> PlatformFeatureCapability {
-    if let Some(error) = setup_error {
-        return setup_unavailable("悬浮窗", error);
-    }
-
     match platform {
-        DesktopPlatform::Macos => ready(
+        DesktopPlatform::Macos => retryable_ready(
             "悬浮窗",
             "macOS 调试窗口与 Windows 基础悬浮窗均已接入；透明、拖动等平台细节见独立能力状态。",
+            setup_error,
         ),
-        DesktopPlatform::Windows => ready(
+        DesktopPlatform::Windows => retryable_ready(
             "悬浮窗",
             "Windows 真机已接入基础悬浮窗；透明、拖动和多屏细节继续验收。",
+            setup_error,
         ),
         DesktopPlatform::Linux | DesktopPlatform::Other => {
             unavailable("悬浮窗", "当前平台暂未接入桌面悬浮窗。")
@@ -170,6 +168,22 @@ fn ready(label: &str, note: &str) -> PlatformFeatureCapability {
     feature(label, "ready", note, true)
 }
 
+fn retryable_ready(
+    label: &str,
+    note: &str,
+    setup_error: Option<&str>,
+) -> PlatformFeatureCapability {
+    match setup_error {
+        Some(error) => feature(
+            label,
+            "ready",
+            &format!("{note}；上次窗口创建失败：{error}。仍可再次开启重试。"),
+            true,
+        ),
+        None => ready(label, note),
+    }
+}
+
 fn pending(label: &str, note: &str) -> PlatformFeatureCapability {
     feature(label, "pending", note, false)
 }
@@ -244,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_errors_make_related_surface_capabilities_unavailable() {
+    fn setup_errors_keep_retryable_floating_support_available() {
         let capabilities = platform_capabilities_for(
             DesktopPlatform::Macos,
             SurfaceSetupStatus {
@@ -254,7 +268,9 @@ mod tests {
             },
         );
 
-        assert_unavailable_with(&capabilities.floating_window, "floating failed");
+        assert_ready(&capabilities.floating_window);
+        assert!(capabilities.floating_window.note.contains("floating failed"));
+        assert!(capabilities.floating_window.note.contains("再次开启重试"));
         assert_unavailable_with(&capabilities.floating_transparency, "floating failed");
         assert_unavailable_with(&capabilities.floating_drag, "floating failed");
         assert_unavailable_with(&capabilities.status_tray, "panel failed");

@@ -99,6 +99,29 @@ test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and En
   });
 });
 
+test("display surfaces keep quota sidebar available when floating startup health is degraded", async () => {
+  const platform = platformCapabilities();
+  platform.platform = "windows";
+  platform.floatingWindow = {
+    available: false,
+    status: "unavailable",
+    label: "悬浮窗",
+    note: "上次窗口创建失败",
+  };
+
+  await withMountedSettings(async ({ act, container, window }) => {
+    await click(act, tabByName(container, "显示面"), window);
+    const panel = activePanel(container);
+    const sidebarButton = panel.querySelector('button[aria-label^="额度侧栏："]');
+    const floatingButton = panel.querySelector('button[aria-label^="桌面悬浮窗："]');
+
+    assert.ok(sidebarButton);
+    assert.ok(floatingButton);
+    assert.equal(sidebarButton.disabled, false);
+    assert.equal(floatingButton.disabled, true);
+  }, { platform });
+});
+
 test("floating settings combine appearance, content, paging, and the real preview", async () => {
   await withMountedSettings(async ({ act, calls, container, window }) => {
     await click(act, tabByName(container, "悬浮窗"), window);

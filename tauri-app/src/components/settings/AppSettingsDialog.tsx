@@ -12,6 +12,7 @@ import type { ThreadDeleteBridgeStatus } from "../../api/threadDeleteClient";
 import { sanitizeFloatingContentVisibility } from "../../floating/floatingContent";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
 import {
+  canUseQuotaSidebar,
   DEFAULT_STATUS_METRIC_ORDER,
   DEFAULT_STATUS_SUMMARY_ORDER,
 } from "../../settings/displaySettings";
@@ -698,10 +699,11 @@ function SurfaceSettings({
   onOpenStatusSettings: () => void;
 }) {
   const floatingAvailable = platform.floatingWindow.available;
+  const quotaSidebarAvailable = canUseQuotaSidebar(platform);
   return (
     <SettingsGroup title="可见位置" description="选择速率与额度信息出现在哪些显示面。">
       <SettingRow title="额度侧栏" description="独立贴在屏幕边缘；悬停看额度，点击展开详情。默认关闭。">
-        <ToggleButton active={displaySurfaces.quotaSidebarEnabled} disabled={!floatingAvailable} label="额度侧栏" onClick={() => onQuotaSidebarChange({ quotaSidebarEnabled: !displaySurfaces.quotaSidebarEnabled })} />
+        <ToggleButton active={displaySurfaces.quotaSidebarEnabled} disabled={!quotaSidebarAvailable} label="额度侧栏" onClick={() => onQuotaSidebarChange({ quotaSidebarEnabled: !displaySurfaces.quotaSidebarEnabled })} />
       </SettingRow>
       <SettingRow title="侧栏位置" description="固定在可用屏幕的垂直中心，向屏幕内侧展开。">
         <select aria-label="侧栏位置" value={displaySurfaces.quotaSidebarSide} onChange={(event) => onQuotaSidebarChange({ quotaSidebarSide: event.target.value === "left" ? "left" : "right" })}>

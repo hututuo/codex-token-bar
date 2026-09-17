@@ -141,6 +141,14 @@ export function canUseFloatingWindow(platform: PlatformCapabilities | null): boo
   return platform !== null && platform.platform !== "loading" && platform.floatingWindow.available;
 }
 
+export function canUseQuotaSidebar(platform: PlatformCapabilities | null): boolean {
+  return (
+    platform !== null
+    && platform.platform !== "loading"
+    && (platform.platform === "windows" || platform.platform === "macos")
+  );
+}
+
 export function canUseStatusTray(platform: PlatformCapabilities | null): boolean {
   return platform !== null && platform.platform !== "loading" && platform.statusTray.available;
 }

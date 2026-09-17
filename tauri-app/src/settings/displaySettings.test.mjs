@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   DEFAULT_STATUS_METRIC_ORDER,
   DEFAULT_STATUS_SUMMARY_ORDER,
+  canUseQuotaSidebar,
   sanitizeDisplaySurfaces,
   sanitizeStatusMetricLabelStyle,
   sanitizeStatusMetricOrder,
@@ -61,4 +62,24 @@ test("status summary order sanitizes raw ids and preserves an explicit empty sel
     ["radar", "overview", "quota"],
   );
   assert.deepEqual(sanitizeStatusSummaryOrder([]), []);
+});
+
+test("quota sidebar capability is independent from floating-window runtime health", () => {
+  const unavailableFloating = { available: false, status: "unavailable", label: "悬浮窗", note: "startup failed" };
+  const base = {
+    shell: "Tauri desktop",
+    floatingWindow: unavailableFloating,
+    floatingTransparency: unavailableFloating,
+    floatingDrag: unavailableFloating,
+    floatingLock: unavailableFloating,
+    statusTray: unavailableFloating,
+    statusTrayLiveText: unavailableFloating,
+    autostart: unavailableFloating,
+    notifications: unavailableFloating,
+  };
+
+  assert.equal(canUseQuotaSidebar({ ...base, platform: "windows" }), true);
+  assert.equal(canUseQuotaSidebar({ ...base, platform: "macos" }), true);
+  assert.equal(canUseQuotaSidebar({ ...base, platform: "linux" }), false);
+  assert.equal(canUseQuotaSidebar({ ...base, platform: "loading" }), false);
 });

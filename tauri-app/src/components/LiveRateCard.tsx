@@ -1,4 +1,5 @@
 import { CacheUsageNotice } from "./liveRate/CacheUsageNotice";
+import { canUseQuotaSidebar } from "../settings/displaySettings";
 import type { LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { LiveRateMeter } from "./liveRate/LiveRateMeter";
@@ -155,7 +156,7 @@ export function LiveRateCard({
             </button>
             <button
               aria-pressed={quotaSidebarEnabled}
-              disabled={!platform.floatingWindow.available}
+              disabled={!canUseQuotaSidebar(platform)}
               onClick={onToggleQuotaSidebar}
               title="独立额度侧栏：悬停查看额度，点击展开详情"
               type="button"
