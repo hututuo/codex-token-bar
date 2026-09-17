@@ -147,8 +147,7 @@ pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: Floati
             // WM_SIZE hook publishes an intermediate WebView2 viewport and the
             // primary card visibly reflows before the details frame settles.
             set_windows_floating_viewport_pinned(&native, true)?;
-            apply_floating_dock_frame(&native, frame)?;
-            apply_windows_floating_viewport(frame, requested_viewport, webview)?;
+            apply_windows_floating_frame_and_viewport(&native, frame, requested_viewport, webview)?;
             if !keep_pinned {
                 set_windows_floating_viewport_pinned(&native, false)?;
             }
@@ -276,23 +275,29 @@ fn set_windows_floating_viewport_pinned(window: &tauri::WebviewWindow, pinned: b
 }
 
 #[cfg(windows)]
-fn apply_windows_floating_viewport(
+fn apply_windows_floating_frame_and_viewport(
+    window: &tauri::WebviewWindow,
     frame: FloatingDockFrame,
     viewport: FloatingDockFrame,
     webview: tauri::webview::PlatformWebview,
 ) -> Result<(), String> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+    };
 
     let (offset_x, offset_y) = windows_dock_viewport_offset(frame, viewport)?;
     let width = viewport.width.round() as i32;
     let height = viewport.height.round() as i32;
+    let outer = window.hwnd().map_err(|error| error.to_string())?;
     let controller = webview.controller();
 
-    // Wry normally mirrors every outer HWND WM_SIZE into the WebView2
-    // controller and its WRY_WEBVIEW child. Undo that resize after the outer
-    // clip is committed: the page keeps the full viewport and the parent HWND
-    // clips only the edge lip. This matches the AppKit implementation and
-    // avoids a 12px <-> full-width browser reflow on every hover.
+    // Keep the controller viewport fixed, then commit the outer HWND and Wry's
+    // child HWND in one batch. A right/bottom compact handle has both a shifted
+    // outer origin and a compensating negative child offset; applying those in
+    // separate visible calls exposes an intermediate screen-space origin even
+    // when the browser viewport size itself is pinned. AppKit avoids that with
+    // NSWindow.setFrame(display: false) and publishes only after the WKWebView
+    // origin is corrected. DeferWindowPos is the matching Win32 transaction.
     let mut bounds = Default::default();
     unsafe { controller.Bounds(&mut bounds) }.map_err(|error| error.to_string())?;
     bounds.left = 0;
@@ -303,8 +308,28 @@ fn apply_windows_floating_viewport(
 
     let mut webview_parent = Default::default();
     unsafe { controller.ParentWindow(&mut webview_parent) }.map_err(|error| error.to_string())?;
-    let success = unsafe {
-        SetWindowPos(
+    let deferred = unsafe { BeginDeferWindowPos(2) };
+    if deferred.is_null() {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let deferred = unsafe {
+        DeferWindowPos(
+            deferred,
+            outer.0,
+            std::ptr::null_mut(),
+            frame.x.round() as i32,
+            frame.y.round() as i32,
+            frame.width.round() as i32,
+            frame.height.round() as i32,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+    };
+    if deferred.is_null() {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let deferred = unsafe {
+        DeferWindowPos(
+            deferred,
             webview_parent.0 as _,
             std::ptr::null_mut(),
             offset_x.round() as i32,
@@ -314,7 +339,10 @@ fn apply_windows_floating_viewport(
             SWP_NOACTIVATE | SWP_NOZORDER,
         )
     };
-    if success == 0 {
+    if deferred.is_null() {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    if unsafe { EndDeferWindowPos(deferred) } == 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
     unsafe { controller.NotifyParentWindowPositionChanged() }.map_err(|error| error.to_string())?;

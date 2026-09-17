@@ -23,6 +23,11 @@ The desktop floating window also carries a per-window WebView2 resize gate:
   while that property is present. This prevents both the full-width -> 12px ->
   full-width edge-dock reflow and the primary-card -> details-drawer intermediate
   viewport that otherwise appears during ordinary floating-window resizes.
+- While pinned, Wry also suppresses its parent `WM_MOVE` position notification.
+  Codex Token Bar commits the outer HWND and WRY_WEBVIEW child in one
+  `DeferWindowPos` batch, then notifies WebView2 once at the final screen-space
+  origin. This mirrors macOS `setFrame(display: false)` instead of exposing the
+  right/bottom edge between two separately visible positioning calls.
 - The property stays present while an edge lip intentionally clips a larger
   viewport, and is removed immediately after normal full-frame resizes. Every
   other Wry window keeps the upstream resize path.

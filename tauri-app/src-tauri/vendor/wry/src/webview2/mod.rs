@@ -1372,8 +1372,17 @@ impl InnerWebView {
       }
 
       msg if msg == WM_MOVE || msg == WM_MOVING => {
-        let controller = dwrefdata as *mut ICoreWebView2Controller;
-        let _ = (*controller).NotifyParentWindowPositionChanged();
+        // The floating dock may move the outer HWND and WRY_WEBVIEW child in
+        // one deferred geometry transaction. Do not notify WebView2 about the
+        // parent's intermediate move while the child still has the compact
+        // viewport offset; the app sends one explicit notification after both
+        // final positions have been committed.
+        let pinned_viewport =
+          GetPropW(hwnd, w!("CodexTokenBar::PinnedWebViewViewport")).0 != std::ptr::null_mut();
+        if !pinned_viewport {
+          let controller = dwrefdata as *mut ICoreWebView2Controller;
+          let _ = (*controller).NotifyParentWindowPositionChanged();
+        }
       }
 
       msg if msg == WM_DESTROY || msg == PARENT_DESTROY_MESSAGE => {
