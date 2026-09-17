@@ -1327,7 +1327,17 @@ impl InnerWebView {
   ) -> LRESULT {
     match msg {
       WM_SIZE => {
-        if wparam.0 != SIZE_MINIMIZED as usize {
+        // Codex Token Bar keeps the browser viewport full-sized while its
+        // floating outer HWND is clipped down to an edge handle. AppKit can
+        // disable WKWebView autoresizing before changing NSWindow; on Windows
+        // Wry normally observes WM_SIZE first and commits the narrow bounds to
+        // WebView2, causing a real 12px -> full browser reflow before the app
+        // can restore them. The per-HWND property is set only around/persisted
+        // through that native dock clip, so all ordinary Wry windows retain
+        // the upstream autoresize behavior.
+        let pinned_viewport =
+          GetPropW(hwnd, w!("CodexTokenBar::PinnedWebViewViewport")).0 != std::ptr::null_mut();
+        if wparam.0 != SIZE_MINIMIZED as usize && !pinned_viewport {
           let controller = dwrefdata as *mut ICoreWebView2Controller;
 
           let Ok(PhysicalSize { width, height }) = Self::parent_bounds(hwnd) else {

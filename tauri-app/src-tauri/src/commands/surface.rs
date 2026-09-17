@@ -136,15 +136,29 @@ pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: Floati
     }).map_err(|error| error.to_string())?;
     #[cfg(windows)]
     window.with_webview(move |webview| {
+        let pinned = viewport.is_some();
         let result = (|| {
+            // Keep Wry from mirroring the temporary outer HWND size into
+            // WebView2 while the dock is clipped. macOS disables WKWebView
+            // autoresizing before it shrinks NSWindow; this Win32 property is
+            // the equivalent gate consumed by our vendored Wry WM_SIZE hook.
+            set_windows_floating_viewport_pinned(&native, pinned)?;
             apply_floating_dock_frame(&native, frame)?;
             if let Some(viewport) = viewport {
                 apply_windows_floating_viewport(frame, viewport, webview)?;
+                if floating_dock_frames_match(frame, viewport) {
+                    set_windows_floating_viewport_pinned(&native, false)?;
+                }
                 Ok(true)
             } else {
                 Ok(false)
             }
         })();
+        if result.is_err() && pinned {
+            // Never strand the HWND with Wry's ordinary resize path disabled.
+            // Frontend recovery will restore the full frame after this call.
+            let _ = set_windows_floating_viewport_pinned(&native, false);
+        }
         let _ = sender.send(result);
     }).map_err(|error| error.to_string())?;
     #[cfg(not(any(target_os = "macos", windows)))]
@@ -176,6 +190,18 @@ fn windows_dock_viewport_offset(frame: FloatingDockFrame, viewport: FloatingDock
         return Err("Dock clip must be contained in its viewport".into());
     }
     Ok((viewport.x - frame.x, viewport.y - frame.y))
+}
+
+#[cfg(any(windows, test))]
+fn floating_dock_frames_match(frame: FloatingDockFrame, viewport: FloatingDockFrame) -> bool {
+    [
+        (frame.x, viewport.x),
+        (frame.y, viewport.y),
+        (frame.width, viewport.width),
+        (frame.height, viewport.height),
+    ]
+    .into_iter()
+    .all(|(left, right)| (left - right).abs() < 0.5)
 }
 
 #[cfg(target_os = "macos")]
@@ -227,6 +253,29 @@ pub(super) fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: Fl
 }
 
 #[cfg(windows)]
+fn set_windows_floating_viewport_pinned(window: &tauri::WebviewWindow, pinned: bool) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{RemovePropW, SetPropW};
+
+    // Must stay byte-for-byte aligned with Wry's WM_SIZE guard in the vendored
+    // webview2 backend. A window property avoids global state and applies only
+    // to this floating HWND.
+    const PROPERTY: &[u16] = &[
+        67, 111, 100, 101, 120, 84, 111, 107, 101, 110, 66, 97, 114, 58, 58, 80, 105, 110, 110,
+        101, 100, 87, 101, 98, 86, 105, 101, 119, 86, 105, 101, 119, 112, 111, 114, 116, 0,
+    ]; // "CodexTokenBar::PinnedWebViewViewport\0"
+    let handle = window.hwnd().map_err(|error| error.to_string())?;
+    if pinned {
+        let success = unsafe { SetPropW(handle.0, PROPERTY.as_ptr(), 1usize as _) };
+        if success == 0 { return Err(std::io::Error::last_os_error().to_string()); }
+    } else {
+        // Removal is idempotent; a null return also means the property was not
+        // present, which is already the desired state.
+        unsafe { RemovePropW(handle.0, PROPERTY.as_ptr()); }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn apply_windows_floating_viewport(
     frame: FloatingDockFrame,
     viewport: FloatingDockFrame,
@@ -268,6 +317,7 @@ fn apply_windows_floating_viewport(
     if success == 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
+    unsafe { controller.NotifyParentWindowPositionChanged() }.map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -279,7 +329,7 @@ pub(super) fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: Fl
 
 #[cfg(test)]
 mod dock_frame_tests {
-    use super::{FloatingDockFrame, dock_viewport_offset, windows_dock_viewport_offset};
+    use super::{FloatingDockFrame, dock_viewport_offset, floating_dock_frames_match, windows_dock_viewport_offset};
     #[test]
     fn clipping_preserves_global_viewport_coordinates_on_every_edge() {
         let full = FloatingDockFrame { x: -800.0, y: 200.0, width: 600.0, height: 240.0 };
@@ -316,5 +366,14 @@ mod dock_frame_tests {
             FloatingDockFrame { y: f64::INFINITY, ..valid }, FloatingDockFrame { width: i32::MAX as f64 + 1.0, ..valid }] {
             assert!(invalid.validate().is_err());
         }
+    }
+
+    #[test]
+    fn full_viewport_detection_only_unpins_at_the_expanded_frame() {
+        let full = FloatingDockFrame { x: 0.0, y: 120.0, width: 600.0, height: 240.0 };
+        assert!(floating_dock_frames_match(full, full));
+        assert!(floating_dock_frames_match(FloatingDockFrame { x: 0.2, ..full }, full));
+        assert!(!floating_dock_frames_match(FloatingDockFrame { width: 24.0, ..full }, full));
+        assert!(!floating_dock_frames_match(FloatingDockFrame { x: 576.0, width: 24.0, ..full }, full));
     }
 }
