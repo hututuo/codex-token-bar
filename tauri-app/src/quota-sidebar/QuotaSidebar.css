@@ -90,6 +90,8 @@ html.quota-sidebar-document,html.quota-sidebar-document body,html.quota-sidebar-
    smaller than its NSView during clipping; vh/vw must not drive content. */
 html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-sidebar-fixed-canvas #root{width:88px!important;height:560px!important;min-width:88px!important;min-height:560px!important}
 .quota-sidebar-fixed-canvas .qs-rail{width:88px;height:560px;border-radius:0;background:transparent}
+/* Windows clips the painted canvas with the native rounded window region. */
+.quota-sidebar-windows-canvas .qs-rail{background:#080a09}
 .quota-sidebar-fixed-canvas .qs-summary{top:280px}
 .quota-sidebar-fixed-canvas .qs-bars{height:560px}
 .quota-sidebar-fixed-canvas .qs-radar-edge{top:calc((560px - var(--qs-native-height,560px))/2);width:var(--qs-native-width,88px);height:var(--qs-native-height,560px);border-radius:8px}

@@ -17,7 +17,7 @@ test("main display-surface shortcut exposes an independent sidebar toggle", asyn
     let sidebarCalls = 0; let floatingCalls = 0;
     const props = { floatingSettings: DEFAULT_FLOATING_SETTINGS, floatingEnabled: false,
       quotaSidebarEnabled: true, onToggleQuotaSidebar: () => sidebarCalls++,
-      onToggleFloating: () => floatingCalls++, platform: { floatingWindow: { available: true, note: "" }, statusTray: { available: true }, statusTrayLiveText: { available: true } },
+      onToggleFloating: () => floatingCalls++, platform: { platform: "windows", floatingWindow: { available: true, note: "" }, statusTray: { available: true }, statusTrayLiveText: { available: true } },
       liveRateEnabled: false, snapshot: emptyLiveRateSnapshot(), statusTrayLiveTextEnabled: false };
     const tree = LiveRateCard(props);
     const sidebar = elements(tree).find(node => node.type === "button" && node.props.onClick === props.onToggleQuotaSidebar);
@@ -27,5 +27,7 @@ test("main display-surface shortcut exposes an independent sidebar toggle", asyn
     assert.match(html, /quick-surface-label">额度侧栏/); assert.match(html, /quick-surface-label">悬浮窗/);
     const floating = elements(tree).find(node => node.type === "button" && node.props.onClick === props.onToggleFloating);
     assert.equal(floating.props["aria-pressed"], false);
+    const pending = LiveRateCard({ ...props, platform: { ...props.platform, platform: "loading" } });
+    assert.equal(elements(pending).find(node => node.type === "button" && node.props.onClick === props.onToggleQuotaSidebar).props.disabled, true);
   });
 });

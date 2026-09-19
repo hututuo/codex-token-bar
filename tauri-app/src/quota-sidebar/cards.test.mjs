@@ -6,7 +6,7 @@ import {Window} from 'happy-dom';
 import {withSsrModules} from '../test/ssrHarness.mjs';
 
 test('radar tabs select independent official and crowd rankings',async()=>{
- const window=new Window();const keys=['window','document','navigator','HTMLElement','IS_REACT_ACT_ENVIRONMENT'];
+ const window=new Window();const keys=['window','document','navigator','Element','HTMLElement','IS_REACT_ACT_ENVIRONMENT'];
  const prev=keys.map(k=>[k,Object.getOwnPropertyDescriptor(globalThis,k)]);
  for(const key of keys)Object.defineProperty(globalThis,key,{value:key==='IS_REACT_ACT_ENVIRONMENT'?true:window[key]??window,configurable:true,writable:true});
  try{await withSsrModules(async load=>{

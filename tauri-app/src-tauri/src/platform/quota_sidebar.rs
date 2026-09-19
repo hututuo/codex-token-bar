@@ -8,6 +8,10 @@ mod placement;
 mod motion;
 #[cfg(target_os = "macos")]
 mod canvas_macos;
+#[cfg(any(windows, test))]
+mod canvas_geometry;
+#[cfg(windows)]
+mod canvas_windows;
 use placement::apply_frames;
 
 const LABEL: &str = "quota-sidebar";
@@ -67,7 +71,7 @@ fn create_window(app: &tauri::AppHandle, label: &str) -> Result<WebviewWindow, S
     #[cfg(target_os = "macos")]
     { configure_macos(&window)?; super::floating_hover_macos::install(&window)?; }
     if label == LABEL {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         <WebviewWindow as AsRef<tauri::Webview>>::as_ref(&window).set_auto_resize(false).map_err(|error| error.to_string())?;
         let watched = window.clone();
         window.on_window_event(move |event| {
@@ -144,6 +148,13 @@ pub fn quota_sidebar_pointer_inside(window: WebviewWindow) -> Result<bool, Strin
     for label in [LABEL, DETAIL] {
         if let Some(candidate) = window.app_handle().get_webview_window(label) {
             if !candidate.is_visible().map_err(|e| e.to_string())? { continue; }
+            #[cfg(windows)]
+            if label == LABEL {
+                let frame = canvas_windows::window_frame(&candidate)?;
+                if pointer.x >= frame.x && pointer.x < frame.x + frame.width
+                    && pointer.y >= frame.y && pointer.y < frame.y + frame.height { return Ok(true); }
+                continue;
+            }
             let origin = candidate.outer_position().map_err(|e| e.to_string())?;
             let size = candidate.outer_size().map_err(|e| e.to_string())?;
             if pointer.x >= origin.x as f64 && pointer.x < origin.x as f64 + size.width as f64

@@ -41,3 +41,12 @@ project's own dual-architecture compile and Windows runtime tests.
 
 Remove the `[patch.crates-io]` entry from the application's `Cargo.toml` when an
 upstream Wry release contains an equivalent verified fix.
+
+The Windows **quota sidebar** (not the floating dock) also keeps the per-HWND
+viewport gate set for the rail's lifetime. Its native host and WebView2 canvas
+stay 88x560 logical pixels; `SetWindowRgn` animates only the visible/input region.
+Normal black-strip-to-rings expansion does not move either HWND or resize the
+browser. Setup, drag, workarea clamping and DPI changes can reposition the host.
+The separate quota detail window retains ordinary Wry resizing. Keep this gate
+until an upstream API can pin the parent resize/move callbacks as well as the
+Tauri `auto_resize` setting; removing only the vendor patch restores reflow.

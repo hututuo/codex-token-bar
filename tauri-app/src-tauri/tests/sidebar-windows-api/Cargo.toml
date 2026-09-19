@@ -1,0 +1,17 @@
+[package]
+name = "sidebar-windows-api-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+# Compile the production HWND/WebView2 adapter with real Windows types without
+# the main app's SQLite/ring C builds. This is not an application/runtime test.
+[dependencies]
+tauri = { version = "=2.11.3", default-features = false, features = ["wry"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[patch.crates-io]
+wry = { path = "../../vendor/wry" }

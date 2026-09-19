@@ -87,7 +87,7 @@ pub(super) fn apply_frames(rail: &WebviewWindow, detail: &WebviewWindow, side: &
     if is_dragging() { return window_frame(rail); }
     super::motion::cancel();
     let target = geometry(rail, side, mode, five)?;
-    set_frame(rail, target.rail)?; set_frame(detail, target.card)?;
+    set_rail_frame(rail, target.rail, &target.side, target.scale)?; set_frame(detail, target.card)?;
     Ok(target.rail)
 }
 
@@ -132,7 +132,7 @@ fn step(rail: &WebviewWindow) -> Result<(bool, Option<Finished>), String> {
     frame.width = (drag.size.0 * screen.scale).clamp(1.0, screen.work.width.max(1.0));
     frame.height = (drag.size.1 * screen.scale).clamp(1.0, screen.work.height.max(1.0));
     frame.x = x - drag.anchor.0 * frame.width; frame.y = y - drag.anchor.1 * frame.height;
-    set_frame(rail, frame)?;
+    set_rail_frame(rail, frame, &display.quota_sidebar_side, screen.scale)?;
     if pressed { return Ok((false, None)); }
     let side = snap_side(screen.work, x).to_string();
     let saved = Position { screen: screen.id.clone(), center_y: normalized_center(frame, screen.work) };
@@ -234,6 +234,8 @@ pub(super) fn window_frame(window: &WebviewWindow) -> Result<SidebarFrame, Strin
 }
 #[cfg(not(target_os = "macos"))]
 pub(super) fn window_frame(window: &WebviewWindow) -> Result<SidebarFrame, String> {
+    #[cfg(windows)]
+    if window.label() == super::LABEL { return super::canvas_windows::window_frame(window); }
     let origin = window.outer_position().map_err(|e| e.to_string())?; let size = window.outer_size().map_err(|e| e.to_string())?;
     Ok(SidebarFrame { x: origin.x as f64, y: origin.y as f64, width: size.width as f64, height: size.height as f64 })
 }
@@ -247,7 +249,23 @@ pub(super) fn set_frame(window: &WebviewWindow, frame: SidebarFrame) -> Result<(
     } else if native.frame() != rect { native.setFrame_display(rect, true); }
     Ok(())
 }
-#[cfg(not(target_os = "macos"))]
+pub(super) fn set_rail_frame(window: &WebviewWindow, frame: SidebarFrame, side: &str, scale: f64) -> Result<(), String> {
+    #[cfg(windows)]
+    { super::canvas_windows::set_frame(window, frame, side == "left", scale) }
+    #[cfg(not(windows))]
+    { let _ = (side, scale); set_frame(window, frame) }
+}
+#[cfg(windows)]
+pub(super) fn set_frame(window: &WebviewWindow, frame: SidebarFrame) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    if unsafe { SetWindowPos(hwnd.0, std::ptr::null_mut(), frame.x.round() as i32, frame.y.round() as i32,
+        frame.width.round() as i32, frame.height.round() as i32, SWP_NOACTIVATE | SWP_NOZORDER) } == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+#[cfg(not(any(target_os = "macos", windows)))]
 pub(super) fn set_frame(window: &WebviewWindow, frame: SidebarFrame) -> Result<(), String> {
     let current = window_frame(window)?;
     if current.width != frame.width.round() || current.height != frame.height.round() {
@@ -329,4 +347,3 @@ pub(super) fn frame_period(window: &WebviewWindow) -> std::time::Duration {
     let hz = { let _ = window; 60.0 };
     std::time::Duration::from_secs_f64(1.0 / hz)
 }
-

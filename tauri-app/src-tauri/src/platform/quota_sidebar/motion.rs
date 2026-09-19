@@ -100,7 +100,7 @@ fn begin(rail: &WebviewWindow, target: Geometry, reduced: bool, refresh: bool, s
             }
         });
     } else if motion.active.is_none() {
-        placement::set_frame(rail, target.rail)?;
+        placement::set_rail_frame(rail, target.rail, &target.side, target.scale)?;
     }
     Ok(target.rail)
 }
@@ -116,7 +116,7 @@ fn tick(rail: &WebviewWindow, revision: u64) -> Result<bool, String> {
         // Quantization avoids subpixel tail writes; the last frame is exact.
         let changed = [frame.x-current.x, frame.y-current.y, frame.width-current.width, frame.height-current.height]
             .iter().any(|d| d.abs() >= 0.25);
-        if changed || motion.active.is_none() { placement::set_frame(rail, frame)?; }
+        if changed || motion.active.is_none() { placement::set_rail_frame(rail, frame, &target.side, target.scale)?; }
     }
     Ok(motion.active.is_some())
 }

@@ -174,8 +174,15 @@ function RailSurface() {
       document.documentElement.style.setProperty("--qs-native-width", `${size.width / scale}px`);
       document.documentElement.style.setProperty("--qs-native-height", `${size.height / scale}px`);
     };
-    add(getCurrentWindow().onResized(event => clip(event.payload)));
-    void getCurrentWindow().innerSize().then(size => { if (!disposed) clip(size); }).catch(() => {});
+    if (document.documentElement.classList.contains("quota-sidebar-windows-canvas")) {
+      add(listen<[number, number]>("quota-sidebar-clip-changed", e => {
+        document.documentElement.style.setProperty("--qs-native-width", `${e.payload[0]}px`);
+        document.documentElement.style.setProperty("--qs-native-height", `${e.payload[1]}px`);
+      }).then(unlisten => { if (!disposed) coordinator.current?.refresh(); return unlisten; }));
+    } else {
+      add(getCurrentWindow().onResized(event => clip(event.payload)));
+      void getCurrentWindow().innerSize().then(size => { if (!disposed) clip(size); }).catch(() => {});
+    }
     void refresh(); const timer = setInterval(() => void refresh(), 15_000);
     return () => { disposed = true; cleanup.forEach(fn => fn()); clearInterval(timer); cancelLeave(); };
   }, [cancelLeave, enter, leave]);
