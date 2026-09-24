@@ -3,13 +3,14 @@ use super::{placement, SidebarFrame, WebviewWindow, STATE};
 use placement::Geometry;
 use std::sync::{Mutex, OnceLock, atomic::{AtomicBool, Ordering}};
 use std::time::Instant;
+use tauri::{Emitter, Manager};
 
 #[derive(Clone)]
 struct Animation { from: SidebarFrame, target: Geometry, started_ms: f64, duration_ms: f64, snapping: bool }
 #[derive(Default)]
-struct Controller { revision: u64, active: Option<Animation> }
+struct Controller { revision: u64, active: Option<Animation>, request_id: Option<u64> }
 static REDUCED: AtomicBool = AtomicBool::new(false);
-static MOTION: Mutex<Controller> = Mutex::new(Controller { revision: 0, active: None });
+static MOTION: Mutex<Controller> = Mutex::new(Controller { revision: 0, active: None, request_id: None });
 fn clock_ms() -> f64 { static START: OnceLock<Instant> = OnceLock::new(); START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0 }
 
 fn environment_matches(a: &Geometry, b: &Geometry) -> bool {
@@ -42,6 +43,12 @@ fn animated_frame(animation: &Animation, now_ms: f64) -> SidebarFrame {
 }
 impl Controller {
     fn cancel(&mut self) { self.revision = self.revision.wrapping_add(1); self.active = None; }
+    fn fail(&mut self, revision: u64) -> Option<Option<u64>> {
+        if self.revision != revision { return None; }
+        let request_id = self.request_id;
+        self.cancel();
+        Some(request_id)
+    }
     fn request(&mut self, current: SidebarFrame, target: Geometry, reduced: bool, now_ms: f64) -> Option<u64> {
         if !reduced && self.active.as_ref().is_some_and(|a| a.target == target) { return None; }
         self.cancel();
@@ -61,30 +68,32 @@ impl Controller {
 }
 pub(super) fn cancel() { if let Ok(mut motion) = MOTION.lock() { motion.cancel(); } }
 
-pub(super) fn start(rail: &WebviewWindow, detail: &WebviewWindow, side: &str, mode: super::SidebarMode, five: bool, reduced: bool, refresh_geometry: bool) -> Result<SidebarFrame, String> {
+pub(super) fn start(rail: &WebviewWindow, detail: &WebviewWindow, side: &str, mode: super::SidebarMode, five: bool, reduced: bool, refresh_geometry: bool, request_id: u64) -> Result<SidebarFrame, String> {
     REDUCED.store(reduced, Ordering::Relaxed);
     // Capture monitor/workarea once per intent or explicit environment refresh.
     // No disk reads or monitor enumeration occur in the frame loop.
     let target = placement::geometry(rail, side, mode, five)?;
     if mode == super::SidebarMode::Detail { placement::set_frame(detail, target.card)?; }
-    begin(rail, target, reduced, refresh_geometry, false)
+    begin(rail, target, reduced, refresh_geometry, false, Some(request_id))
 }
 
 pub(super) fn snap(rail: &WebviewWindow, target: Geometry) -> Result<(), String> {
     let current = placement::window_frame(rail)?;
     let near = (current.x - target.rail.x).abs() <= 160.0 * target.scale;
-    begin(rail, target, REDUCED.load(Ordering::Relaxed) || !near, false, true)?;
+    begin(rail, target, REDUCED.load(Ordering::Relaxed) || !near, false, true, None)?;
     Ok(())
 }
 
-fn begin(rail: &WebviewWindow, target: Geometry, reduced: bool, refresh: bool, snapping: bool) -> Result<SidebarFrame, String> {
+fn begin(rail: &WebviewWindow, target: Geometry, reduced: bool, refresh: bool, snapping: bool, request_id: Option<u64>) -> Result<SidebarFrame, String> {
     let current = placement::window_frame(rail)?;
     let mut motion = MOTION.lock().map_err(|e| e.to_string())?;
     let environment_changed = refresh && motion.active.as_ref().is_some_and(|a| !environment_matches(&a.target, &target));
     let revision = motion.request(current, target.clone(), reduced || environment_changed, clock_ms());
+    motion.request_id = request_id;
     if let Some(revision) = revision {
         if snapping { if let Some(animation) = motion.active.as_mut() { animation.snapping = true; animation.duration_ms = 220.0; } }
         let native = rail.clone();
+        let recovery_target = target.clone();
         let period = placement::frame_period(rail);
         tauri::async_runtime::spawn(async move {
             let mut cadence = tokio::time::interval(period);
@@ -95,12 +104,19 @@ fn begin(rail: &WebviewWindow, target: Geometry, reduced: bool, refresh: bool, s
                 match placement::on_main(&native, move || tick(&frame_window, revision)).await {
                     Ok(true) => continue,
                     Ok(false) => break,
-                    Err(error) => { if let Ok(mut motion) = MOTION.lock() { if motion.revision == revision { motion.cancel(); } } eprintln!("Quota sidebar animation failed: {error}"); break; }
+                    Err(error) => {
+                        let failed_window = native.clone();
+                        let target = recovery_target.clone();
+                        let recovery = placement::on_main(&native, move || recover_failed_motion(&failed_window, revision, &target, &error)).await;
+                        if let Err(error) = recovery { eprintln!("Quota sidebar animation recovery failed: {error}"); }
+                        break;
+                    }
                 }
             }
         });
     } else if motion.active.is_none() {
         placement::set_rail_frame(rail, target.rail, &target.side, target.scale)?;
+        acknowledge(rail, request_id, None);
     }
     Ok(target.rail)
 }
@@ -118,7 +134,50 @@ fn tick(rail: &WebviewWindow, revision: u64) -> Result<bool, String> {
             .iter().any(|d| d.abs() >= 0.25);
         if changed || motion.active.is_none() { placement::set_rail_frame(rail, frame, &target.side, target.scale)?; }
     }
-    Ok(motion.active.is_some())
+    let active = motion.active.is_some();
+    let request_id = motion.request_id;
+    drop(motion);
+    if !active { acknowledge(rail, request_id, None); }
+    Ok(active)
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MotionResult { request_id: u64, error: Option<String> }
+
+fn acknowledge(rail: &WebviewWindow, request_id: Option<u64>, error: Option<String>) {
+    if let Some(request_id) = request_id {
+        let _ = rail.emit("quota-sidebar-motion-result", MotionResult { request_id, error });
+    }
+}
+
+fn recover_failed_motion(rail: &WebviewWindow, revision: u64, target: &Geometry, error: &str) -> Result<(), String> {
+    // Runs on the same UI queue as disable and new intents. A late failure may
+    // never restore an older animation over a newer window configuration.
+    let enabled = STATE.lock().map_err(|e| e.to_string())?.as_ref()
+        .is_some_and(|(display, _, _)| display.quota_sidebar_enabled);
+    if !enabled || placement::is_dragging() { return Ok(()); }
+    let mut motion = MOTION.lock().map_err(|e| e.to_string())?;
+    let Some(request_id) = motion.fail(revision) else { return Ok(()); };
+    drop(motion);
+    let message = settle_failed_frame(error,
+        || placement::set_rail_frame(rail, target.rail, &target.side, target.scale),
+        || {
+            let rail_hide = rail.hide();
+            let detail_hide = rail.app_handle().get_webview_window(super::DETAIL).map(|detail| detail.hide());
+            format!("hidden={} detail_hidden={}",
+                rail_hide.is_ok(), detail_hide.is_none_or(|result| result.is_ok()))
+        });
+    acknowledge(rail, request_id, Some(message.clone()));
+    eprintln!("Quota sidebar animation failed: {message}");
+    Ok(())
+}
+
+fn settle_failed_frame(error: &str, restore: impl FnOnce() -> Result<(), String>, hide: impl FnOnce() -> String) -> String {
+    match restore() {
+        Ok(()) => format!("{error}; animation stopped at its requested final frame"),
+        Err(recovery_error) => format!("{error}; final frame failed: {recovery_error}; {}", hide()),
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +188,29 @@ mod tests {
         Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, side: side.into(), rail, card }
     }
     fn work() -> SidebarFrame { SidebarFrame { x: -1440.0, y: 24.0, width: 1440.0, height: 1000.0 } }
+    #[test]
+    fn mid_animation_failure_cancels_samples_and_restores_once_or_hides() {
+        let end = target("right", super::super::SidebarMode::Hover, work(), 0.5);
+        let start = target("right", super::super::SidebarMode::Rest, work(), 0.5).rail;
+        let mut controller = Controller::default();
+        let revision = controller.request(start, end.clone(), false, 0.0).unwrap();
+        controller.request_id = Some(41);
+        let halfway = controller.sample(revision, 140.0, &end).unwrap();
+        assert_ne!(halfway, end.rail);
+        assert_eq!(controller.fail(revision), Some(Some(41)));
+        assert_eq!(controller.sample(revision, 200.0, &end), None);
+        let mut restored = 0;
+        let detail = settle_failed_frame("injected per-frame failure", || { restored += 1; Ok(()) }, || panic!("must not hide restored frame"));
+        assert_eq!(restored, 1); assert!(detail.contains("requested final frame"));
+        let mut hidden = false;
+        let detail = settle_failed_frame("injected per-frame failure", || Err("still failing".into()), || { hidden = true; "hidden=true".into() });
+        assert!(hidden); assert!(detail.contains("still failing"));
+        let next = controller.request(halfway, end.clone(), false, 210.0).unwrap();
+        controller.request_id = Some(42);
+        assert_eq!(controller.fail(revision), None);
+        assert_eq!(controller.revision, next);
+        assert!(controller.active.is_some());
+    }
     #[test]
     fn snap_preserves_partly_offscreen_release_and_finishes_exactly() {
         let end = target("right", super::super::SidebarMode::Rest, work(), 0.5);

@@ -97,7 +97,7 @@ function RailSurface() {
   const showsFiveHour = hasFiveHourQuota(data.snapshot.fiveHourAvailability, data.snapshot.fiveHourRemainingPercent);
   const coordinator = useRef<ReturnType<typeof createSidebarNativeCoordinator> | null>(null);
   if (coordinator.current === null) coordinator.current = createSidebarNativeCoordinator(
-    (mode, showsFiveHour, refreshGeometry) => invoke("set_quota_sidebar_mode", { mode, showsFiveHour, refreshGeometry, reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches }),
+    (mode, showsFiveHour, refreshGeometry, requestId) => invoke("set_quota_sidebar_mode", { mode, showsFiveHour, refreshGeometry, requestId, reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches }),
     reason => setError(reason === null ? null : `窗口更新失败：${String(reason)}`),
   );
   const dragSession = useRef<ReturnType<typeof createSidebarDragSession> | null>(null);
@@ -169,6 +169,8 @@ function RailSurface() {
     add(listen<SidebarAction>("quota-sidebar-action", e => { if (isSidebarAction(e.payload)) dispatch(e.payload); }));
     add(listen("quota-sidebar-detail-ready", () => publisher.current?.ready()));
     add(listen("quota-sidebar-environment-changed", () => coordinator.current?.refresh()));
+    add(listen<{ requestId: number; error: string | null }>("quota-sidebar-motion-result", e =>
+      coordinator.current?.complete(e.payload.requestId, e.payload.error)));
     const clip = (size: { width: number; height: number }) => {
       const scale = window.devicePixelRatio || 1;
       document.documentElement.style.setProperty("--qs-native-width", `${size.width / scale}px`);

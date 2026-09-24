@@ -308,9 +308,12 @@ fn apply_windows_floating_frame_and_viewport(
     webview: tauri::webview::PlatformWebview,
 ) -> Result<(), String> {
     use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{
+        RedrawWindow, RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BeginDeferWindowPos, ClientToScreen, DeferWindowPos, EndDeferWindowPos,
-        GetClientRect, GetWindowRect, SWP_NOACTIVATE, SWP_NOZORDER,
+        ClientToScreen, GetClientRect, GetParent, GetWindowRect, SetWindowPos,
+        SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOREDRAW, SWP_NOZORDER,
     };
 
     let (offset_x, offset_y) = windows_dock_viewport_offset(frame, viewport)?;
@@ -319,22 +322,19 @@ fn apply_windows_floating_frame_and_viewport(
     let outer = window.hwnd().map_err(|error| error.to_string())?;
     let controller = webview.controller();
 
-    // Keep the controller viewport fixed, then commit the outer HWND and Wry's
-    // child HWND in one batch. A right/bottom compact handle has both a shifted
-    // outer origin and a compensating negative child offset; applying those in
-    // separate visible calls exposes an intermediate screen-space origin even
-    // when the browser viewport size itself is pinned. AppKit avoids that with
-    // NSWindow.setFrame(display: false) and publishes only after the WKWebView
-    // origin is corrected. DeferWindowPos is the matching Win32 transaction.
+    // These HWNDs are parent and child, not siblings: DeferWindowPos cannot
+    // batch them. The caller pins Wry's WM_SIZE path; suppress native redraw
+    // while committing both frames, then release painting once they agree.
+    // WebView2's separate compositor still requires the frontend paint barrier.
     let mut bounds = Default::default();
     unsafe { controller.Bounds(&mut bounds) }.map_err(|error| error.to_string())?;
+    let previous_bounds = bounds;
     let bounds_changed = bounds.left != 0 || bounds.top != 0 || bounds.right != width || bounds.bottom != height;
     if bounds_changed {
         bounds.left = 0;
         bounds.top = 0;
         bounds.right = width;
         bounds.bottom = height;
-        unsafe { controller.SetBounds(bounds) }.map_err(|error| error.to_string())?;
     }
     startup_trace::mark_performance(format!(
         "floating_native_controller_bounds changed={} target={}x{}",
@@ -343,6 +343,9 @@ fn apply_windows_floating_frame_and_viewport(
 
     let mut webview_parent = Default::default();
     unsafe { controller.ParentWindow(&mut webview_parent) }.map_err(|error| error.to_string())?;
+    if unsafe { GetParent(webview_parent.0 as _) } != outer.0 {
+        return Err("Floating WebView container is not a child of its window".into());
+    }
 
     let trace_geometry = |stage: &str| {
         let mut outer_rect = RECT::default();
@@ -397,45 +400,47 @@ fn apply_windows_floating_frame_and_viewport(
     };
 
     trace_geometry("before");
-    let deferred = unsafe { BeginDeferWindowPos(2) };
-    if deferred.is_null() {
+    let mut previous_outer = RECT::default();
+    let mut previous_child = RECT::default();
+    let mut previous_origin = POINT::default();
+    if unsafe { GetWindowRect(outer.0, &mut previous_outer) } == 0
+        || unsafe { GetWindowRect(webview_parent.0 as _, &mut previous_child) } == 0
+        || unsafe { ClientToScreen(outer.0, &mut previous_origin) } == 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
-    let deferred = unsafe {
-        DeferWindowPos(
-            deferred,
-            outer.0,
-            std::ptr::null_mut(),
-            frame.x.round() as i32,
-            frame.y.round() as i32,
-            frame.width.round() as i32,
-            frame.height.round() as i32,
-            SWP_NOACTIVATE | SWP_NOZORDER,
-        )
+    let flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW | SWP_NOCOPYBITS;
+    let set_frame = |hwnd, x, y, width, height| -> Result<(), String> {
+        if unsafe { SetWindowPos(hwnd, std::ptr::null_mut(), x, y, width, height, flags) } == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(())
     };
-    if deferred.is_null() {
-        return Err(std::io::Error::last_os_error().to_string());
+    let result = (|| {
+        set_frame(outer.0, frame.x.round() as i32, frame.y.round() as i32,
+            frame.width.round() as i32, frame.height.round() as i32)?;
+        set_frame(webview_parent.0 as _, offset_x.round() as i32, offset_y.round() as i32, width, height)?;
+        if bounds_changed { unsafe { controller.SetBounds(bounds) }.map_err(|error| error.to_string())?; }
+        unsafe { controller.NotifyParentWindowPositionChanged() }.map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        // Restore the last native frame before publishing any partial update.
+        // The caller also releases the pin and the frontend retains its anchor.
+        let restored_outer = set_frame(outer.0, previous_outer.left, previous_outer.top,
+            previous_outer.right - previous_outer.left, previous_outer.bottom - previous_outer.top);
+        let restored_child = set_frame(webview_parent.0 as _, previous_child.left - previous_origin.x,
+            previous_child.top - previous_origin.y, previous_child.right - previous_child.left,
+            previous_child.bottom - previous_child.top);
+        let restored_bounds = unsafe { controller.SetBounds(previous_bounds) };
+        let _ = unsafe { controller.NotifyParentWindowPositionChanged() };
+        startup_trace::mark_performance(format!("floating_native_restore outer={} child={} controller={}",
+            restored_outer.is_ok(), restored_child.is_ok(), restored_bounds.is_ok()));
     }
-    let deferred = unsafe {
-        DeferWindowPos(
-            deferred,
-            webview_parent.0 as _,
-            std::ptr::null_mut(),
-            offset_x.round() as i32,
-            offset_y.round() as i32,
-            width,
-            height,
-            SWP_NOACTIVATE | SWP_NOZORDER,
-        )
-    };
-    if deferred.is_null() {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    if unsafe { EndDeferWindowPos(deferred) } == 0 {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    unsafe { controller.NotifyParentWindowPositionChanged() }.map_err(|error| error.to_string())?;
-    // EndDeferWindowPos commits HWND geometry, but WebView2/DWM composition can
+    let repainted = unsafe { RedrawWindow(outer.0, std::ptr::null(), std::ptr::null_mut(),
+        RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW) };
+    result?;
+    if repainted == 0 { return Err("Floating window redraw failed".into()); }
+    // SetWindowPos commits HWND geometry, but WebView2/DWM composition can
     // lag that API boundary. Flush the desktop compositor before returning;
     // the frontend still holds the page in its collapsed mask and will wait for
     // its own paint boundary before exposing the expanded content.

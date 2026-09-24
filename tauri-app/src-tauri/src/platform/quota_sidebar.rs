@@ -110,7 +110,7 @@ fn sync_on_main(app: &tauri::AppHandle, display: &DisplaySurfaceSettingsSnapshot
 }
 
 #[tauri::command]
-pub async fn set_quota_sidebar_mode(window: WebviewWindow, mode: SidebarMode, shows_five_hour: bool, reduced_motion: bool, refresh_geometry: bool) -> Result<SidebarFrame, String> {
+pub async fn set_quota_sidebar_mode(window: WebviewWindow, mode: SidebarMode, shows_five_hour: bool, reduced_motion: bool, refresh_geometry: bool, request_id: u64) -> Result<SidebarFrame, String> {
     crate::commands::window_auth::require_window_label(&window, "set_quota_sidebar_mode")?;
     let native = window.clone();
     let (send, receive) = tokio::sync::oneshot::channel();
@@ -123,7 +123,8 @@ pub async fn set_quota_sidebar_mode(window: WebviewWindow, mode: SidebarMode, sh
             if !display.quota_sidebar_enabled { return Err("Quota sidebar is disabled".into()); }
             let detail = native.app_handle().get_webview_window(DETAIL).ok_or("Quota detail window unavailable")?;
             if placement::is_dragging() { return apply_frames(&native, &detail, &display.quota_sidebar_side, mode, shows_five_hour); }
-            let frame = motion::start(&native, &detail, &display.quota_sidebar_side, mode, shows_five_hour, reduced_motion, refresh_geometry)?;
+            let frame = motion::start(&native, &detail, &display.quota_sidebar_side, mode, shows_five_hour, reduced_motion, refresh_geometry, request_id)?;
+            show_passive(&native)?;
             if mode == SidebarMode::Detail { show_passive(&detail)?; }
             else { detail.hide().map_err(|e| e.to_string())?; }
             *current_mode = mode;
@@ -188,9 +189,11 @@ fn configure_macos(window: &WebviewWindow) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
-    fn persisted_sidebar_defaults_off_and_roundtrips_independently() {
+    fn persisted_sidebar_defaults_on_and_roundtrips_independently() {
         let old: DisplaySurfaceSettingsSnapshot = serde_json::from_str(r#"{"floatingWindowEnabled":false,"liveRateEnabled":false}"#).unwrap();
-        assert!(!old.quota_sidebar_enabled); assert_eq!(old.quota_sidebar_side, "right");
+        assert!(old.quota_sidebar_enabled); assert_eq!(old.quota_sidebar_side, "right");
+        let opted_out: DisplaySurfaceSettingsSnapshot = serde_json::from_str(r#"{"quotaSidebarEnabled":false}"#).unwrap();
+        assert!(!opted_out.quota_sidebar_enabled); assert!(!opted_out.floating_window_enabled);
         let mut enabled = old; enabled.quota_sidebar_enabled = true; enabled.quota_sidebar_side = "left".into();
         let restored: DisplaySurfaceSettingsSnapshot = serde_json::from_str(&serde_json::to_string(&enabled).unwrap()).unwrap();
         assert!(restored.quota_sidebar_enabled); assert!(!restored.floating_window_enabled); assert!(!restored.live_rate_enabled);

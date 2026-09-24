@@ -14,7 +14,7 @@ test('hidden updates send nothing; opening and ready receive the latest snapshot
   publisher.update(latest, true); assert.equal(sent.length, 3);
 });
 test('unchanged render intents issue one native call; explicit environment refresh issues one more', async () => {
-  const calls = []; const queue = createSidebarNativeCoordinator(async (...args) => calls.push(args), () => {});
+  const calls = []; const queue = createSidebarNativeCoordinator(async (...args) => calls.push(args.slice(0, 3)), () => {});
   queue.setEnabled(true); await tick();
   for (let i = 0; i < 100; i++) queue.update('rest', false);
   await tick(); assert.deepEqual(calls, [['rest', false, false]]);
