@@ -3337,7 +3337,8 @@ mod tests {
 
         assert!(settings.codex_home.is_none());
         assert_eq!(settings.quota_refresh_interval_ms, 60_000);
-        assert!(settings.display_surfaces.floating_window_enabled);
+        assert!(!settings.display_surfaces.floating_window_enabled);
+        assert!(settings.display_surfaces.quota_sidebar_enabled);
         assert!(settings.display_surfaces.live_rate_enabled);
         assert!(!settings.display_surfaces.status_tray_live_text_enabled);
         assert!(!settings.setup_guide_completed);

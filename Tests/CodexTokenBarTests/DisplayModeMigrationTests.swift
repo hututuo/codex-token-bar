@@ -2,14 +2,32 @@ import XCTest
 @testable import CodexTokenBar
 
 final class DisplayModeMigrationTests: XCTestCase {
-    func testStartupRepairDefaultsUnsetOrOffModeToFloatingOnFirstLaunch() {
+    func testStartupPreservesOffAndIntroducesOnlyQuotaSidebar() {
         let defaults = makeDefaults()
         defaults.set(TokenDisplayMode.off.rawValue, forKey: "tokenDisplayMode")
 
         DisplayModeMigration.repairStartup(defaults: defaults)
 
-        XCTAssertEqual(defaults.string(forKey: "tokenDisplayMode"), TokenDisplayMode.floating.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "tokenDisplayMode"), TokenDisplayMode.off.rawValue)
         XCTAssertTrue(defaults.bool(forKey: "tokenDisplayModeInitialDefaultAppliedV03"))
+        XCTAssertTrue(defaults.bool(forKey: QuotaSidebarSettings.enabledKey))
+    }
+
+    func testNewInstallOnlyEnablesSidebarAndNeverResetsExplicitSurfaceChoices() {
+        let defaults = makeDefaults()
+        var floating = true, status = true
+        DisplayModeMigration.applyViewDefaults(floatingPanelEnabled: &floating, statusBarPanelEnabled: &status, defaults: defaults)
+        XCTAssertFalse(floating); XCTAssertFalse(status)
+        XCTAssertTrue(QuotaSidebarSettings.load(defaults: defaults).enabled)
+        defaults.set(false, forKey: QuotaSidebarSettings.enabledKey)
+        defaults.set(true, forKey: "floatingPanelEnabled")
+        defaults.set(true, forKey: "statusBarPanelEnabled")
+        defaults.removeObject(forKey: "displaySurfacePairMigrationV01")
+        DisplayModeMigration.applyViewDefaults(floatingPanelEnabled: &floating, statusBarPanelEnabled: &status, defaults: defaults)
+        XCTAssertTrue(floating); XCTAssertTrue(status)
+        XCTAssertFalse(QuotaSidebarSettings.load(defaults: defaults).enabled)
+        DisplayModeMigration.repairStartup(defaults: defaults)
+        XCTAssertFalse(QuotaSidebarSettings.load(defaults: defaults).enabled)
     }
 
     func testViewDefaultsMigratesLegacyStatusBarModeToSeparateSurfaceFlags() {

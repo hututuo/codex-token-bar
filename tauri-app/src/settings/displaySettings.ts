@@ -42,9 +42,9 @@ export const DEFAULT_STATUS_SUMMARY_ORDER: StatusSummarySectionId[] = [
 ];
 
 export const DEFAULT_DISPLAY_SURFACES: DisplaySurfaceSettings = {
-  quotaSidebarEnabled: false,
+  quotaSidebarEnabled: true,
   quotaSidebarSide: "right",
-  floatingWindowEnabled: true,
+  floatingWindowEnabled: false,
   liveRateEnabled: true,
   statusTrayLiveTextEnabled: false,
   statusMetricOrder: [...DEFAULT_STATUS_METRIC_ORDER],
@@ -67,7 +67,8 @@ export function sanitizeDisplaySurfaces(
   settings: Partial<DisplaySurfaceSettings>,
 ): DisplaySurfaceSettings {
   return {
-    quotaSidebarEnabled: settings.quotaSidebarEnabled === true,
+    quotaSidebarEnabled: typeof settings.quotaSidebarEnabled === "boolean"
+      ? settings.quotaSidebarEnabled : DEFAULT_DISPLAY_SURFACES.quotaSidebarEnabled,
     quotaSidebarSide: settings.quotaSidebarSide === "left" ? "left" : "right",
     floatingWindowEnabled:
       typeof settings.floatingWindowEnabled === "boolean"

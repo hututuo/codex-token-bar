@@ -5,9 +5,12 @@ import { createSidebarNativeCoordinator } from "./nativeCoordinator.ts";
 import { sanitizeDisplaySurfaces } from "../settings/displaySettings.ts";
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
-test("old settings migrate to a disabled independent sidebar, preserving floating", () => {
+test("old settings introduce the independent sidebar while preserving floating and explicit opt-out", () => {
   const old = sanitizeDisplaySurfaces({ floatingWindowEnabled: true, liveRateEnabled: false });
-  assert.equal(old.quotaSidebarEnabled, false); assert.equal(old.quotaSidebarSide, "right");
+  assert.equal(old.quotaSidebarEnabled, true); assert.equal(old.quotaSidebarSide, "right");
+  assert.equal(old.floatingWindowEnabled, true);
+  assert.equal(sanitizeDisplaySurfaces({}).floatingWindowEnabled, false);
+  assert.equal(sanitizeDisplaySurfaces({ quotaSidebarEnabled: false }).quotaSidebarEnabled, false);
   const sidebarOnly = sanitizeDisplaySurfaces({ floatingWindowEnabled: false, statusTrayLiveTextEnabled: false, quotaSidebarEnabled: true, quotaSidebarSide: "left" });
   assert.equal(sidebarOnly.quotaSidebarEnabled, true); assert.equal(sidebarOnly.floatingWindowEnabled, false);
   assert.equal(sidebarOnly.quotaSidebarSide, "left");

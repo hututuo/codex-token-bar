@@ -9,11 +9,11 @@ enum QuotaSidebarEdge: String, CaseIterable, Sendable {
 struct QuotaSidebarSettings: Equatable {
     static let enabledKey = "quotaSidebarEnabled"
     static let edgeKey = "quotaSidebarEdge"
-    var enabled = false
+    var enabled = true
     var edge: QuotaSidebarEdge = .right
 
     static func load(defaults: UserDefaults) -> Self {
-        Self(enabled: defaults.bool(forKey: enabledKey),
+        Self(enabled: defaults.object(forKey: enabledKey) as? Bool ?? true,
              edge: QuotaSidebarEdge(rawValue: defaults.string(forKey: edgeKey) ?? "") ?? .right)
     }
 }

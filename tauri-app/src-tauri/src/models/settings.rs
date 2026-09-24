@@ -661,9 +661,9 @@ pub struct FloatingWindowPositionSnapshot {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplaySurfaceSettingsSnapshot {
-    #[serde(default = "default_enabled")]
+    #[serde(default = "default_disabled")]
     pub floating_window_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_enabled")]
     pub quota_sidebar_enabled: bool,
     #[serde(default = "default_quota_sidebar_side")]
     pub quota_sidebar_side: String,
@@ -682,8 +682,8 @@ pub struct DisplaySurfaceSettingsSnapshot {
 impl Default for DisplaySurfaceSettingsSnapshot {
     fn default() -> Self {
         Self {
-            floating_window_enabled: default_enabled(),
-            quota_sidebar_enabled: false,
+            floating_window_enabled: default_disabled(),
+            quota_sidebar_enabled: true,
             quota_sidebar_side: default_quota_sidebar_side(),
             live_rate_enabled: default_enabled(),
             status_tray_live_text_enabled: default_disabled(),

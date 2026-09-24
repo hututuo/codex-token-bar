@@ -30,7 +30,7 @@ final class QuotaSidebarTests: XCTestCase {
         XCTAssertEqual(fraction(100, 200, false), 0)
     }
 
-    func testSettingsDefaultOffAndIndependentFromFloating() {
+    func testSettingsDefaultOnAndIndependentFromFloating() {
         let suite = "QuotaSidebarTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -42,6 +42,8 @@ final class QuotaSidebarTests: XCTestCase {
         defaults.set("invalid", forKey: QuotaSidebarSettings.edgeKey)
         XCTAssertEqual(QuotaSidebarSettings.load(defaults: defaults).edge, .right)
         XCTAssertTrue(defaults.bool(forKey: "floatingPanelEnabled"))
+        defaults.set(false, forKey: QuotaSidebarSettings.enabledKey)
+        XCTAssertFalse(QuotaSidebarSettings.load(defaults: defaults).enabled)
     }
 
     func testHoverNeverOpensDetailAndPinSurvivesGrace() {

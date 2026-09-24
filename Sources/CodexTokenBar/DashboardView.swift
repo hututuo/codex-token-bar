@@ -62,9 +62,9 @@ struct DashboardView: View {
         runtime.sourceTransitionCoordinator
     }
     @AppStorage(QuotaHistoryFilterSettings.enabledKey) private var filterQuotaHistoryAnomalies = true
-    @AppStorage(QuotaSidebarSettings.enabledKey) private var quotaSidebarEnabled = false
+    @AppStorage(QuotaSidebarSettings.enabledKey) private var quotaSidebarEnabled = true
     @AppStorage(QuotaSidebarSettings.edgeKey) private var quotaSidebarEdgeRaw = QuotaSidebarEdge.right.rawValue
-    @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
+    @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = false
     @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
     @AppStorage(StatusBarMetricConfiguration.versionKey) private var statusBarMetricConfigurationVersion = StatusBarMetricConfiguration.currentVersion
     @AppStorage(StatusBarMetricConfiguration.orderKey) private var statusBarMetricOrderRaw = StatusBarMetricConfiguration.defaultOrderRaw

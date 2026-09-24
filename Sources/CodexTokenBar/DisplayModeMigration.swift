@@ -17,21 +17,11 @@ enum DisplayModeMigration {
     private static let legacyFloatingPanelGradientEndHex = "#D4E8FF"
 
     static func repairStartup(defaults: UserDefaults = .standard) {
-        let rawMode = defaults.string(forKey: tokenDisplayModeKey)
-        let mode = rawMode.flatMap(TokenDisplayMode.init(rawValue:))
-
-        if !defaults.bool(forKey: initialDefaultAppliedKey), !defaults.bool(forKey: userSelectedKey) {
-            if mode == nil || mode == .off {
-                defaults.set(TokenDisplayMode.floating.rawValue, forKey: tokenDisplayModeKey)
-            }
-            defaults.set(true, forKey: initialDefaultAppliedKey)
-            return
-        }
-
-        if !defaults.bool(forKey: panelCloseRepairKey), mode == nil || mode == .off {
-            defaults.set(TokenDisplayMode.floating.rawValue, forKey: tokenDisplayModeKey)
-            defaults.set(false, forKey: userSelectedKey)
-        }
+        // New installs show the independent quota sidebar only. An explicit
+        // legacy "off" or modern surface flag is a preference, not corruption.
+        setIfAbsent(TokenDisplayMode.off.rawValue, forKey: tokenDisplayModeKey, defaults: defaults)
+        setIfAbsent(true, forKey: QuotaSidebarSettings.enabledKey, defaults: defaults)
+        defaults.set(true, forKey: initialDefaultAppliedKey)
         defaults.set(true, forKey: panelCloseRepairKey)
     }
 
@@ -44,37 +34,17 @@ enum DisplayModeMigration {
         defaults.set(true, forKey: defaultedToFloatingQuotaKey)
         defaults.set(true, forKey: defaultedToFloatingQuotaV02Key)
 
-        var mode = storedMode(defaults: defaults)
-        if !defaults.bool(forKey: initialDefaultAppliedKey),
-           !defaults.bool(forKey: userSelectedKey),
-           mode == nil || mode == .off {
-            defaults.set(TokenDisplayMode.floating.rawValue, forKey: tokenDisplayModeKey)
-            mode = .floating
-        }
-        defaults.set(true, forKey: initialDefaultAppliedKey)
-
-        if !defaults.bool(forKey: panelCloseRepairKey),
-           mode == nil || mode == .off {
-            defaults.set(TokenDisplayMode.floating.rawValue, forKey: tokenDisplayModeKey)
-            defaults.set(false, forKey: userSelectedKey)
-            mode = .floating
-        }
-        defaults.set(true, forKey: panelCloseRepairKey)
+        repairStartup(defaults: defaults)
 
         applyFloatingPanelColorDefaultMigration(defaults: defaults)
         applyFloatingPanelContentDefaultsMigration(defaults: defaults)
 
         if !defaults.bool(forKey: pairMigrationKey) {
-            mode = storedMode(defaults: defaults) ?? .floating
-            if mode == .statusBar {
-                floatingPanelEnabled = false
-                statusBarPanelEnabled = true
-            } else if mode == .off {
-                floatingPanelEnabled = false
-                statusBarPanelEnabled = false
-            } else {
-                floatingPanelEnabled = true
-            }
+            let mode = storedMode(defaults: defaults) ?? .off
+            floatingPanelEnabled = defaults.object(forKey: "floatingPanelEnabled") as? Bool ?? (mode == .floating)
+            statusBarPanelEnabled = defaults.object(forKey: statusBarPanelEnabledKey) as? Bool ?? (mode == .statusBar)
+            setIfAbsent(floatingPanelEnabled, forKey: "floatingPanelEnabled", defaults: defaults)
+            setIfAbsent(statusBarPanelEnabled, forKey: statusBarPanelEnabledKey, defaults: defaults)
             defaults.set(true, forKey: pairMigrationKey)
         }
         applyStatusBarMetricsDefaultsMigration(

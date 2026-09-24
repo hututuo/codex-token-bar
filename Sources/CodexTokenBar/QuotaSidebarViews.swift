@@ -90,14 +90,17 @@ struct QuotaSidebarRail: View {
                                 .frame(width: 24, height: 24).contentShape(Rectangle())
                         }.help(controller.interaction.pinned ? "取消固定" : "固定")
                             .accessibilityLabel(controller.interaction.pinned ? "取消固定" : "固定")
+                            .accessibilityIdentifier("quota-sidebar-pin")
                         Button { quota.refresh(force: true) } label: {
                             Image(systemName: "arrow.clockwise").foregroundStyle(.gray)
                                 .frame(width: 24, height: 24).contentShape(Rectangle())
                         }.help("刷新额度与重置卡").accessibilityLabel("刷新数据")
+                            .accessibilityIdentifier("quota-sidebar-refresh")
                         Button { controller.openDashboard() } label: {
                             Image(systemName: "macwindow").foregroundStyle(.gray)
                                 .frame(width: 24, height: 24).contentShape(Rectangle())
                         }.help("打开主页面").accessibilityLabel("打开主页面")
+                            .accessibilityIdentifier("quota-sidebar-dashboard")
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
                     rateRing
                     if let fiveHour = quota.snapshot.fiveHour {
