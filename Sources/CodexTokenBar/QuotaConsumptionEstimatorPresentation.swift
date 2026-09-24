@@ -321,6 +321,8 @@ extension OfficialAPIPriceModel {
     var quotaEstimateShortTitle: String {
         switch self {
         case .gpt6Astra: "Astra"
+        case .gpt6Sol: "GPT-6 Sol"
+        case .gpt6Luna: "GPT-6 Luna"
         case .gpt56Sol: "Sol"
         case .gpt55: "5.5"
         case .gpt56Terra: "Terra"

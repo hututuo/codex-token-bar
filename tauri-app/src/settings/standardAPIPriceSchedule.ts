@@ -1,5 +1,6 @@
-/** Rates for one million standard API tokens, kept local to this module so
- * the historical schedule has no runtime dependency on quotaPriceModel.ts. */
+/** Input, cached-input, and output rates for one million standard API tokens.
+ * Local Codex usage does not expose cache writes separately. This module keeps
+ * historical prices independent from quotaPriceModel.ts. */
 export interface StandardAPIPriceRates {
   inputUSDPerMillion: number;
   cachedInputUSDPerMillion: number;
@@ -15,6 +16,8 @@ export interface StandardAPIPriceQuote {
 
 export type StandardAPIEventTime = Date | number | string;
 
+export const STANDARD_API_PRICE_SCHEDULE_REVISION = "standard-api-dated-v2";
+const GPT6_SOL_AND_LUNA_CUTOVER_UNIX = Date.UTC(2026, 8, 22) / 1000;
 const SOL_CUTOVER_UNIX = Date.UTC(2026, 7, 21) / 1000;
 const TERRA_AND_LUNA_CUTOVER_UNIX = Date.UTC(2026, 6, 30) / 1000;
 
@@ -31,6 +34,14 @@ export function canonicalStandardAPIModelKey(value: string | null | undefined): 
     case "gpt6-astra":
     case "gpt6astra":
       return "gpt-6-astra";
+    case "gpt-6-sol":
+    case "gpt6-sol":
+    case "gpt6sol":
+      return "gpt-6-sol";
+    case "gpt-6-luna":
+    case "gpt6-luna":
+    case "gpt6luna":
+      return "gpt-6-luna";
     case "gpt-5.6-sol":
     case "gpt5.6-sol":
     case "gpt56-sol":
@@ -87,6 +98,14 @@ export function standardAPIPriceQuote(
   switch (modelKey) {
     case "gpt-6-astra":
       return fixedQuote(modelKey, { inputUSDPerMillion: 10, cachedInputUSDPerMillion: 1, outputUSDPerMillion: 50 }, "standard-api-gpt-6-astra");
+    case "gpt-6-sol":
+      return eventUnix < GPT6_SOL_AND_LUNA_CUTOVER_UNIX
+        ? null
+        : fixedQuote(modelKey, { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 10 }, "standard-api-gpt-6-sol-from-2026-09-22");
+    case "gpt-6-luna":
+      return eventUnix < GPT6_SOL_AND_LUNA_CUTOVER_UNIX
+        ? null
+        : fixedQuote(modelKey, { inputUSDPerMillion: 0.1, cachedInputUSDPerMillion: 0.01, outputUSDPerMillion: 0.5 }, "standard-api-gpt-6-luna-from-2026-09-22");
     case "gpt-5.5":
       return fixedQuote(modelKey, { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 }, "standard-api-gpt-5.5");
     case "gpt-5.6-sol":
@@ -118,6 +137,9 @@ export function currentStandardAPIPriceQuote(rawModel: string | null | undefined
   const modelKey = canonicalStandardAPIModelKey(rawModel);
   if (!modelKey) return null;
   switch (modelKey) {
+    case "gpt-6-sol":
+    case "gpt-6-luna":
+      return standardAPIPriceQuote(modelKey, GPT6_SOL_AND_LUNA_CUTOVER_UNIX);
     case "gpt-5.6-sol":
       return fixedQuote(modelKey, { inputUSDPerMillion: 4, cachedInputUSDPerMillion: 0.4, outputUSDPerMillion: 20 }, "standard-api-gpt-5.6-sol-from-2026-08-21");
     case "gpt-5.6-terra":

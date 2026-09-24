@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+import { recordPerformanceEvent } from "../api/startupClient";
 import { isDesktopRuntimeAvailable, warnPlatformFailure } from "../platform/desktopBridge";
 import {
   isFloatingGeometryTransient,
@@ -23,7 +24,8 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOp
     if (!enabled || !isDesktopRuntimeAvailable()) return;
     let disposed = false;
     const appWindow = getCurrentWindow();
-    let pinnedViewport = false;
+    const nativeProbe = new URLSearchParams(window.location.search).get("dockProbe") === "1";
+    let frameCommit = { viewportPinned: false, waitForPaint: true };
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
     const dock = createFloatingEdgeDockController({
       async geometry() {
@@ -47,7 +49,7 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOp
         const matches = (target: typeof rect) => ["x", "y", "width", "height"].every(key =>
           Math.abs(rect[key as keyof typeof rect] - target[key as keyof typeof rect]) < 1);
         const viewport = anchor && (matches(anchor.frame) || matches(anchor.lip)) ? anchor.frame : null;
-        pinnedViewport = await invoke<boolean>("set_floating_dock_frame", {
+        frameCommit = await invoke<{ viewportPinned: boolean; waitForPaint: boolean }>("set_floating_dock_frame", {
           frame: { x: Math.round(rect.x), y: Math.round(rect.y), ...size }, viewport,
         });
         const actual = await appWindow.outerSize();
@@ -58,10 +60,34 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOp
       persist: publishFloatingSettledPosition,
       present(value) { if (!disposed) flushSync(() => setPresentation(value)); },
       reducedMotion: () => reduced.matches,
+      probe(phase, state) {
+        if (!nativeProbe) return;
+        const snapshot = (paintPhase: string) => {
+          const host = document.querySelector<HTMLElement>(".floating-edge-host")?.getBoundingClientRect();
+          const shell = document.querySelector<HTMLElement>(".floating-edge-shell");
+          const shellRect = shell?.getBoundingClientRect();
+          const base = document.querySelector<HTMLElement>(".floating-edge-base")?.getBoundingClientRect();
+          const transform = shell ? getComputedStyle(shell).transform : "none";
+          void recordPerformanceEvent(
+            `floating_probe phase=${phase}/${paintPhase} inner=${window.innerWidth}x${window.innerHeight}`
+            + ` state=${state.collapsed ? 1 : 0},${state.compact ? 1 : 0},${state.railReady ? 1 : 0},${state.motion}`
+            + ` commit=${frameCommit.viewportPinned ? 1 : 0},${frameCommit.waitForPaint ? 1 : 0}`
+            + ` host=${host ? `${host.x.toFixed(1)},${host.y.toFixed(1)},${host.width.toFixed(1)},${host.height.toFixed(1)}` : "missing"}`
+            + ` shell=${shellRect ? `${shellRect.x.toFixed(1)},${shellRect.y.toFixed(1)},${shellRect.width.toFixed(1)},${shellRect.height.toFixed(1)}` : "missing"}`
+            + ` base=${base ? `${base.x.toFixed(1)},${base.y.toFixed(1)},${base.width.toFixed(1)},${base.height.toFixed(1)}` : "missing"}`
+            + ` transform=${transform}`,
+          );
+        };
+        snapshot("return");
+        requestAnimationFrame(() => {
+          snapshot("raf1");
+          requestAnimationFrame(() => snapshot("raf2"));
+        });
+      },
       async prepareCompact(anchor) {
-        const viewport = pinnedViewport ? anchor.frame : anchor.lip;
+        const viewport = frameCommit.viewportPinned ? anchor.frame : anchor.lip;
         await waitForDockViewport(viewport.width / anchor.scaleFactor, viewport.height / anchor.scaleFactor);
-        if (!pinnedViewport) await waitForDockPaint();
+        if (frameCommit.waitForPaint) await waitForDockPaint();
       },
       async prepareReveal() {
         const anchor = dock.state().anchor;
@@ -70,9 +96,11 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOp
         // starting its transition, without introducing a hover-delay timer.
         const shell = document.querySelector(".floating-edge-shell");
         if (shell) void getComputedStyle(shell).transform;
-        // A pinned WKWebView keeps its viewport and painted coordinates, so
-        // the existing collapsed frame can start expanding immediately.
-        if (!pinnedViewport) await waitForDockPaint();
+        // A pinned viewport only proves layout size. WebView2 can still publish
+        // the newly moved backing surface later than the Win32 geometry call,
+        // so the native command explicitly tells us whether to hold the rail
+        // mask through an additional paint boundary.
+        if (frameCommit.waitForPaint) await waitForDockPaint();
       },
       startDrag: startFloatingWindowDrag,
       report: (error) => warnPlatformFailure("floating-edge-dock", error),
@@ -91,7 +119,16 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOp
     const release = () => dock.interactionEnded();
     window.addEventListener("pointerup", release);
     void dock.suspend(suspendedRef.current).catch((error) => warnPlatformFailure("floating-edge-dock", error));
-    if (!suspendedRef.current) dock.initialize();
+    if (!suspendedRef.current && !nativeProbe) dock.initialize();
+    if (!suspendedRef.current && nativeProbe) {
+      window.setTimeout(() => {
+        void recordPerformanceEvent("floating_probe begin");
+        void dock.runRightEdgeProbe().then(
+          () => recordPerformanceEvent("floating_probe complete"),
+          error => recordPerformanceEvent(`floating_probe failed ${error instanceof Error ? error.message : String(error)}`),
+        );
+      }, 450);
+    }
     return () => {
       disposed = true;
       dock.dispose();

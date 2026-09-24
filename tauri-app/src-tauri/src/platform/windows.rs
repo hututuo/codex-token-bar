@@ -14,6 +14,12 @@ const SINGLE_INSTANCE_ACTIVATION_EVENT_NAME: &str =
     "Local\\CodexTokenBarTauriSingleInstanceActivation";
 const SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_NAME: &str =
     "Local\\CodexTokenBarTauriSingleInstanceActivationAck";
+const DOCK_PROBE_SINGLE_INSTANCE_MUTEX_NAME: &str =
+    "Local\\CodexTokenBarTauriDockProbeSingleInstance";
+const DOCK_PROBE_SINGLE_INSTANCE_ACTIVATION_EVENT_NAME: &str =
+    "Local\\CodexTokenBarTauriDockProbeSingleInstanceActivation";
+const DOCK_PROBE_SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_NAME: &str =
+    "Local\\CodexTokenBarTauriDockProbeSingleInstanceActivationAck";
 const SINGLE_INSTANCE_ACTIVATION_ACK_TIMEOUT_MS: u32 = 1_000;
 
 static SINGLE_INSTANCE_MUTEX_HANDLE: OnceLock<usize> = OnceLock::new();
@@ -35,6 +41,13 @@ pub fn default_codex_home() -> PathBuf {
         .join(".codex")
 }
 
+pub(crate) fn dock_probe_mode() -> bool {
+    std::env::current_exe()
+        .ok()
+        .map(|path| path.with_file_name("dock-probe.flag").exists())
+        .unwrap_or(false)
+}
+
 pub fn prepare_single_instance(mode: StartupLaunchMode) -> SingleInstanceLaunchOutcome {
     use std::ptr::null;
     use windows_sys::Win32::{
@@ -46,9 +59,22 @@ pub fn prepare_single_instance(mode: StartupLaunchMode) -> SingleInstanceLaunchO
         },
     };
 
-    let event_name = wide_null(SINGLE_INSTANCE_ACTIVATION_EVENT_NAME);
-    let ack_event_name = wide_null(SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_NAME);
-    let mutex_name = wide_null(SINGLE_INSTANCE_MUTEX_NAME);
+    let probe = dock_probe_mode();
+    let event_name = wide_null(if probe {
+        DOCK_PROBE_SINGLE_INSTANCE_ACTIVATION_EVENT_NAME
+    } else {
+        SINGLE_INSTANCE_ACTIVATION_EVENT_NAME
+    });
+    let ack_event_name = wide_null(if probe {
+        DOCK_PROBE_SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_NAME
+    } else {
+        SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_NAME
+    });
+    let mutex_name = wide_null(if probe {
+        DOCK_PROBE_SINGLE_INSTANCE_MUTEX_NAME
+    } else {
+        SINGLE_INSTANCE_MUTEX_NAME
+    });
     unsafe {
         // Create/open the auto-reset event before claiming the mutex. A secondary arriving in
         // the primary's setup gap can signal it immediately; the signal remains pending until

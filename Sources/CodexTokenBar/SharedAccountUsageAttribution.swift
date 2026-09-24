@@ -73,6 +73,10 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
             switch model {
             case .gpt6Astra:
                 return APIPriceRates(inputUSDPerMillion: 10.00, cachedInputUSDPerMillion: 1.00, outputUSDPerMillion: 50.00)
+            case .gpt6Sol, .gpt6Luna:
+                // These models were released after the Radar 2026-07-30
+                // reference card; callers use their first published rates.
+                return nil
             case .gpt56Sol, .gpt55:
                 return APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
             case .gpt56Terra:

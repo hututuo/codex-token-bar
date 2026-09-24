@@ -246,6 +246,21 @@ test("native expansion keeps quota visible until the shell is ready to grow", as
   assert.equal(f.dock.state().motion, "expand");
 });
 
+test("native reveal rechecks the real pointer after transient DOM leave noise", async () => {
+  const f = fixture();
+  f.dock.initialize();
+  await f.advance(1200);
+  assert.equal(f.dock.state().compact, true);
+  f.pointer({ x: 2, y: 210, leftButtonDown: false });
+  f.onFrame(() => f.dock.hover(false));
+  f.dock.hover(true);
+  await drain();
+  assert.equal(f.dock.state().collapsed, false);
+  assert.equal(f.dock.state().compact, false);
+  await f.advance(700);
+  assert.equal(f.dock.state().collapsed, false);
+});
+
 test("cancelled viewport preparation cannot revive a suspended dock", async () => {
   let viewport;
   const f = fixture({ prepareReveal: () => new Promise(resolve => { viewport = resolve; }) });

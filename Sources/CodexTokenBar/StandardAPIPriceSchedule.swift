@@ -19,20 +19,26 @@ struct StandardAPIPriceQuote: Equatable, Sendable {
 }
 
 /// Historical standard API prices used for event-time cost estimates.
+/// Rates cover input, cached input, and output; local Codex usage does not
+/// expose cache writes as a separate token field. GPT-6 rates follow the
+/// models' 2026-09-22 release boundary.
+/// https://developers.openai.com/api/docs/pricing
 ///
 /// Callers must pass an event date to `quote(for:at:)`. A missing date is not
 /// silently treated as "now"; use `currentQuote(for:)` when current pricing
 /// is explicitly intended. Auto-review aliases and the independent Spark
 /// quota are intentionally outside this table.
 enum StandardAPIPriceSchedule {
+    private static let gpt6SolAndLunaCutover = utcDate(year: 2026, month: 9, day: 22)
     private static let solCutover = utcDate(year: 2026, month: 8, day: 21)
     private static let terraAndLunaCutover = utcDate(year: 2026, month: 7, day: 30)
 
-    static let revision = "standard-api-dated-v1"
+    static let revision = "standard-api-dated-v2"
     static func sqlPartitionExpression(timestamp: String) -> String {
-        "CASE WHEN \(timestamp) >= \(Int(solCutover.timeIntervalSince1970)) THEN 2 WHEN \(timestamp) >= \(Int(terraAndLunaCutover.timeIntervalSince1970)) THEN 1 ELSE 0 END"
+        "CASE WHEN \(timestamp) >= \(Int(gpt6SolAndLunaCutover.timeIntervalSince1970)) THEN 3 WHEN \(timestamp) >= \(Int(solCutover.timeIntervalSince1970)) THEN 2 WHEN \(timestamp) >= \(Int(terraAndLunaCutover.timeIntervalSince1970)) THEN 1 ELSE 0 END"
     }
     static func partitionStart(at date: Date) -> Date {
+        if date >= gpt6SolAndLunaCutover { return gpt6SolAndLunaCutover }
         if date >= solCutover { return solCutover }
         if date >= terraAndLunaCutover { return terraAndLunaCutover }
         return Date(timeIntervalSince1970: 0)
@@ -52,6 +58,10 @@ enum StandardAPIPriceSchedule {
         switch key {
         case "gpt-6-astra", "gpt6-astra", "gpt6astra":
             return "gpt-6-astra"
+        case "gpt-6-sol", "gpt6-sol", "gpt6sol":
+            return "gpt-6-sol"
+        case "gpt-6-luna", "gpt6-luna", "gpt6luna":
+            return "gpt-6-luna"
         case "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol":
             return "gpt-5.6-sol"
         case "gpt-5.5", "gpt5.5", "gpt55":
@@ -103,6 +113,20 @@ enum StandardAPIPriceSchedule {
                 cachedInputUSDPerMillion: 1,
                 outputUSDPerMillion: 50
             ), revision: "standard-api-gpt-6-astra")
+        case "gpt-6-sol":
+            guard eventDate >= gpt6SolAndLunaCutover else { return nil }
+            return fixedQuote(modelKey, rates: APIPriceRates(
+                inputUSDPerMillion: 2,
+                cachedInputUSDPerMillion: 0.2,
+                outputUSDPerMillion: 10
+            ), revision: "standard-api-gpt-6-sol-from-2026-09-22")
+        case "gpt-6-luna":
+            guard eventDate >= gpt6SolAndLunaCutover else { return nil }
+            return fixedQuote(modelKey, rates: APIPriceRates(
+                inputUSDPerMillion: 0.1,
+                cachedInputUSDPerMillion: 0.01,
+                outputUSDPerMillion: 0.5
+            ), revision: "standard-api-gpt-6-luna-from-2026-09-22")
         case "gpt-5.5":
             return fixedQuote(modelKey, rates: APIPriceRates(
                 inputUSDPerMillion: 5,
@@ -175,6 +199,8 @@ enum StandardAPIPriceSchedule {
         // Current is intentionally independent of the historical API. A
         // future cutover must update this branch without changing old events.
         switch modelKey {
+        case "gpt-6-sol", "gpt-6-luna":
+            return quote(forCanonicalKey: modelKey, at: .distantFuture)
         case "gpt-5.6-sol":
             return fixedQuote(modelKey, rates: APIPriceRates(
                 inputUSDPerMillion: 4,

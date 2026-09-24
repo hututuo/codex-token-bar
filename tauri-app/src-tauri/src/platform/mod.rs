@@ -95,6 +95,16 @@ pub fn prepare_single_instance(mode: StartupLaunchMode) -> SingleInstanceLaunchO
     windows::prepare_single_instance(mode)
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn dock_probe_mode() -> bool {
+    windows::dock_probe_mode()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn dock_probe_mode() -> bool {
+    false
+}
+
 #[cfg(not(target_os = "windows"))]
 pub fn prepare_single_instance(_mode: StartupLaunchMode) -> SingleInstanceLaunchOutcome {
     SingleInstanceLaunchOutcome::ContinueAsPrimary

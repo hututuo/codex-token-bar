@@ -1,5 +1,7 @@
 use super::window_auth::require_window_label;
 use crate::platform;
+#[cfg(windows)]
+use crate::core::startup_trace;
 
 #[tauri::command]
 pub async fn show_floating_window(
@@ -109,6 +111,13 @@ pub struct FloatingDockFrame {
     height: f64,
 }
 
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloatingDockFrameCommit {
+    viewport_pinned: bool,
+    wait_for_paint: bool,
+}
+
 impl FloatingDockFrame {
     pub(super) fn validate(self) -> Result<Self, String> {
         if [self.x, self.y, self.width, self.height].iter().any(|v| !v.is_finite() || v.abs() > i32::MAX as f64)
@@ -122,7 +131,7 @@ impl FloatingDockFrame {
 /// Commit position and size together so a right/bottom handle never paints at
 /// the previous full window's origin between two separate native API calls.
 #[tauri::command]
-pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: FloatingDockFrame, viewport: Option<FloatingDockFrame>) -> Result<bool, String> {
+pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: FloatingDockFrame, viewport: Option<FloatingDockFrame>) -> Result<FloatingDockFrameCommit, String> {
     require_window_label(&window, "set_floating_dock_frame")?;
     let frame = frame.validate()?;
     let viewport = viewport.map(|value| value.validate()).transpose()?;
@@ -131,7 +140,14 @@ pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: Floati
     let native = window.clone();
     #[cfg(target_os = "macos")]
     window.with_webview(move |webview| {
-        let result = apply_floating_dock_frame(&native, frame, viewport, webview.inner()).map(|_| viewport.is_some());
+        let result = apply_floating_dock_frame(&native, frame, viewport, webview.inner()).map(|_| FloatingDockFrameCommit {
+            viewport_pinned: viewport.is_some(),
+            // AppKit commits the outer frame and WKWebView origin with drawing
+            // suppressed, then displayIfNeeded() publishes that final geometry.
+            // A pinned viewport therefore does not need an extra browser paint
+            // handoff before the CSS reveal can begin.
+            wait_for_paint: viewport.is_none(),
+        });
         let _ = sender.send(result);
     }).map_err(|error| error.to_string())?;
     #[cfg(windows)]
@@ -151,7 +167,14 @@ pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: Floati
             if !keep_pinned {
                 set_windows_floating_viewport_pinned(&native, false)?;
             }
-            Ok(viewport.is_some())
+            Ok(FloatingDockFrameCommit {
+                viewport_pinned: viewport.is_some(),
+                // WebView2 owns an asynchronous compositor even when its
+                // layout viewport never changes. Do not equate "pinned" with
+                // "painted": keep the collapsed rail masking the page until a
+                // browser paint boundary has passed on Windows.
+                wait_for_paint: true,
+            })
         })();
         if result.is_err() {
             // Never strand the HWND with Wry's ordinary resize path disabled.
@@ -162,7 +185,10 @@ pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: Floati
     }).map_err(|error| error.to_string())?;
     #[cfg(not(any(target_os = "macos", windows)))]
     window.run_on_main_thread(move || {
-        let _ = sender.send(apply_floating_dock_frame(&native, frame).map(|_| false));
+        let _ = sender.send(apply_floating_dock_frame(&native, frame).map(|_| FloatingDockFrameCommit {
+            viewport_pinned: false,
+            wait_for_paint: true,
+        }));
     }).map_err(|error| error.to_string())?;
     receiver.await.map_err(|_| "Floating frame update was cancelled".to_string())?
 }
@@ -281,8 +307,10 @@ fn apply_windows_floating_frame_and_viewport(
     viewport: FloatingDockFrame,
     webview: tauri::webview::PlatformWebview,
 ) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+        BeginDeferWindowPos, ClientToScreen, DeferWindowPos, EndDeferWindowPos,
+        GetClientRect, GetWindowRect, SWP_NOACTIVATE, SWP_NOZORDER,
     };
 
     let (offset_x, offset_y) = windows_dock_viewport_offset(frame, viewport)?;
@@ -300,14 +328,75 @@ fn apply_windows_floating_frame_and_viewport(
     // origin is corrected. DeferWindowPos is the matching Win32 transaction.
     let mut bounds = Default::default();
     unsafe { controller.Bounds(&mut bounds) }.map_err(|error| error.to_string())?;
-    bounds.left = 0;
-    bounds.top = 0;
-    bounds.right = width;
-    bounds.bottom = height;
-    unsafe { controller.SetBounds(bounds) }.map_err(|error| error.to_string())?;
+    let bounds_changed = bounds.left != 0 || bounds.top != 0 || bounds.right != width || bounds.bottom != height;
+    if bounds_changed {
+        bounds.left = 0;
+        bounds.top = 0;
+        bounds.right = width;
+        bounds.bottom = height;
+        unsafe { controller.SetBounds(bounds) }.map_err(|error| error.to_string())?;
+    }
+    startup_trace::mark_performance(format!(
+        "floating_native_controller_bounds changed={} target={}x{}",
+        bounds_changed as u8, width, height,
+    ));
 
     let mut webview_parent = Default::default();
     unsafe { controller.ParentWindow(&mut webview_parent) }.map_err(|error| error.to_string())?;
+
+    let trace_geometry = |stage: &str| {
+        let mut outer_rect = RECT::default();
+        let mut client_rect = RECT::default();
+        let mut client_origin = POINT::default();
+        let mut child_rect = RECT::default();
+        let mut controller_bounds = Default::default();
+        let outer_ok = unsafe { GetWindowRect(outer.0, &mut outer_rect) } != 0;
+        let client_ok = unsafe { GetClientRect(outer.0, &mut client_rect) } != 0
+            && unsafe { ClientToScreen(outer.0, &mut client_origin) } != 0;
+        let child_ok = unsafe { GetWindowRect(webview_parent.0 as _, &mut child_rect) } != 0;
+        let controller_ok = unsafe { controller.Bounds(&mut controller_bounds) }.is_ok();
+
+        #[link(name = "dwmapi")]
+        extern "system" {
+            fn DwmGetWindowAttribute(
+                hwnd: *mut std::ffi::c_void,
+                attribute: u32,
+                value: *mut std::ffi::c_void,
+                size: u32,
+            ) -> i32;
+        }
+        const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
+        let mut dwm_rect = RECT::default();
+        let dwm_ok = unsafe {
+            DwmGetWindowAttribute(
+                outer.0,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                (&mut dwm_rect as *mut RECT).cast(),
+                std::mem::size_of::<RECT>() as u32,
+            )
+        } == 0;
+
+        let target_right = (frame.x + frame.width).round() as i32;
+        let outer_right_delta = if outer_ok { outer_rect.right - target_right } else { i32::MIN };
+        let dwm_right_delta = if dwm_ok { dwm_rect.right - target_right } else { i32::MIN };
+        startup_trace::mark_performance(format!(
+            "floating_native_geometry stage={stage} target={:.0},{:.0},{:.0},{:.0} viewport={:.0},{:.0},{:.0},{:.0} outer_ok={} outer={},{},{},{} outer_right_delta={} client_ok={} client={},{},{},{} child_ok={} child={},{},{},{} controller_ok={} controller={},{},{},{} dwm_ok={} dwm={},{},{},{} dwm_right_delta={}",
+            frame.x, frame.y, frame.width, frame.height,
+            viewport.x, viewport.y, viewport.width, viewport.height,
+            outer_ok as u8, outer_rect.left, outer_rect.top, outer_rect.right, outer_rect.bottom,
+            outer_right_delta,
+            client_ok as u8, client_origin.x, client_origin.y,
+            client_origin.x + (client_rect.right - client_rect.left),
+            client_origin.y + (client_rect.bottom - client_rect.top),
+            child_ok as u8, child_rect.left, child_rect.top, child_rect.right, child_rect.bottom,
+            controller_ok as u8, controller_bounds.left, controller_bounds.top,
+            controller_bounds.right, controller_bounds.bottom,
+            dwm_ok as u8, dwm_rect.left, dwm_rect.top, dwm_rect.right, dwm_rect.bottom,
+            dwm_right_delta,
+        ));
+    };
+
+    trace_geometry("before");
     let deferred = unsafe { BeginDeferWindowPos(2) };
     if deferred.is_null() {
         return Err(std::io::Error::last_os_error().to_string());
@@ -346,6 +435,17 @@ fn apply_windows_floating_frame_and_viewport(
         return Err(std::io::Error::last_os_error().to_string());
     }
     unsafe { controller.NotifyParentWindowPositionChanged() }.map_err(|error| error.to_string())?;
+    // EndDeferWindowPos commits HWND geometry, but WebView2/DWM composition can
+    // lag that API boundary. Flush the desktop compositor before returning;
+    // the frontend still holds the page in its collapsed mask and will wait for
+    // its own paint boundary before exposing the expanded content.
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmFlush() -> i32;
+    }
+    let dwm_flush = unsafe { DwmFlush() };
+    startup_trace::mark_performance(format!("floating_native_dwm_flush hresult={dwm_flush}"));
+    trace_geometry("after");
     Ok(())
 }
 

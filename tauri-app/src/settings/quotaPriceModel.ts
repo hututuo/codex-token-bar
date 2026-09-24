@@ -4,6 +4,8 @@ import {
 
 export type OfficialAPIPriceModel =
   | "gpt6Astra"
+  | "gpt6Sol"
+  | "gpt6Luna"
   | "gpt56Sol"
   | "gpt56Terra"
   | "gpt56Luna"
@@ -102,6 +104,8 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
   label: string;
 }> = [
   { value: "gpt6Astra", label: "GPT-6 Astra" },
+  { value: "gpt6Sol", label: "GPT-6 Sol" },
+  { value: "gpt6Luna", label: "GPT-6 Luna" },
   { value: "gpt56Sol", label: "GPT-5.6 Sol" },
   { value: "gpt56Terra", label: "GPT-5.6 Terra" },
   { value: "gpt56Luna", label: "GPT-5.6 Luna" },
@@ -109,9 +113,12 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
 
 // Standard short-context prices published by OpenAI. Long-context, cache-write,
 // priority/service-tier and regional multipliers remain outside this estimate.
-// https://developers.openai.com/api/docs/models/compare
+// Local Codex usage does not expose cache writes separately.
+// https://developers.openai.com/api/docs/pricing
 const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
   gpt6Astra: { inputUSDPerMillion: 10, cachedInputUSDPerMillion: 1, outputUSDPerMillion: 50 },
+  gpt6Sol: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 10 },
+  gpt6Luna: { inputUSDPerMillion: 0.1, cachedInputUSDPerMillion: 0.01, outputUSDPerMillion: 0.5 },
   gpt56Sol: { inputUSDPerMillion: 4, cachedInputUSDPerMillion: 0.4, outputUSDPerMillion: 20 },
   gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
   gpt56Luna: { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 },
@@ -129,8 +136,10 @@ const GPT55_API_PRICES: APIPriceRates = {
 
 // Codex Radar's public 2026-07-30 quota basis uses the then-published model
 // price card. Keep this separate from current OpenAI prices so both sides of
-// the attribution division use one vintage. Source: https://codexradar.com/
-const RADAR_2026_07_30_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
+// the attribution division use one vintage. GPT-6 Sol/Luna were released
+// later, so only their first published rates are available for those rows.
+// Source: https://codexradar.com/
+const RADAR_2026_07_30_PRICES: Partial<Record<OfficialAPIPriceModel, APIPriceRates>> = {
   gpt6Astra: { inputUSDPerMillion: 10, cachedInputUSDPerMillion: 1, outputUSDPerMillion: 50 },
   gpt56Sol: { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 },
   gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
@@ -149,6 +158,8 @@ const LEGACY_PRICE_MODEL_MIGRATIONS: Record<string, OfficialAPIPriceModel> = {
 
 export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPriceModel | null {
   if (value === "gpt6Astra"
+    || value === "gpt6Sol"
+    || value === "gpt6Luna"
     || value === "gpt56Sol"
     || value === "gpt56Terra"
     || value === "gpt56Luna"
@@ -163,6 +174,8 @@ export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPrice
 
 export function isOfficialAPIPriceModel(value: unknown): value is OfficialAPIPriceModel {
   return value === "gpt6Astra"
+    || value === "gpt6Sol"
+    || value === "gpt6Luna"
     || value === "gpt56Sol"
     || value === "gpt56Terra"
     || value === "gpt56Luna"
@@ -196,7 +209,7 @@ export function officialAPIPrices(
   if (priceModel === "gpt55") return GPT55_API_PRICES;
   const normalized = normalizeOfficialAPIPriceModel(priceModel) ?? "gpt56Sol";
   return basis === "radar20260730"
-    ? RADAR_2026_07_30_PRICES[normalized]
+    ? RADAR_2026_07_30_PRICES[normalized] ?? CURRENT_API_PRICES[normalized]
     : CURRENT_API_PRICES[normalized];
 }
 
@@ -245,6 +258,16 @@ export function detectedOfficialAPIPriceModel(
     case "gpt6astra":
     case "gpt 6 astra":
       return "gpt6Astra";
+    case "gpt-6-sol":
+    case "gpt6-sol":
+    case "gpt6sol":
+    case "gpt 6 sol":
+      return "gpt6Sol";
+    case "gpt-6-luna":
+    case "gpt6-luna":
+    case "gpt6luna":
+    case "gpt 6 luna":
+      return "gpt6Luna";
     case "gpt-5.6-sol":
     case "gpt5.6-sol":
     case "gpt56-sol":
@@ -420,6 +443,8 @@ export function modelAwareAPICostUSD(
   }
   const detectedModelKeys = ([
     "gpt6Astra",
+    "gpt6Sol",
+    "gpt6Luna",
     "gpt56Sol",
     "gpt55",
     "gpt56Terra",
@@ -473,6 +498,8 @@ export function priceModelTitle(model: DetectedOfficialAPIPriceModel): string {
   if (model === "gpt55") return "GPT-5.5";
   switch (normalizeOfficialAPIPriceModel(model) ?? "gpt56Sol") {
     case "gpt6Astra": return "GPT-6 Astra";
+    case "gpt6Sol": return "GPT-6 Sol";
+    case "gpt6Luna": return "GPT-6 Luna";
     case "gpt56Sol": return "GPT-5.6 Sol";
     case "gpt56Terra": return "GPT-5.6 Terra";
     case "gpt56Luna": return "GPT-5.6 Luna";

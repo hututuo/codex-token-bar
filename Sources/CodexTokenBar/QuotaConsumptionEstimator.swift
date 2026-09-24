@@ -436,6 +436,8 @@ private extension TokenCacheBreakdown {
 
 enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case gpt6Astra
+    case gpt6Sol
+    case gpt6Luna
     case gpt56Sol
     /// The real GPT-5.5 model is separate from GPT-5.6 Sol. The legacy
     /// preference value `gpt55` is still migrated to `.gpt56Sol` below.
@@ -449,6 +451,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
 
     static let selectableCases: [OfficialAPIPriceModel] = [
         .gpt6Astra,
+        .gpt6Sol,
+        .gpt6Luna,
         .gpt56Sol,
         .gpt56Terra,
         .gpt56Luna
@@ -459,6 +463,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     var title: String {
         switch self {
         case .gpt6Astra: "GPT-6 Astra"
+        case .gpt6Sol: "GPT-6 Sol"
+        case .gpt6Luna: "GPT-6 Luna"
         case .gpt56Sol: "GPT-5.6 Sol"
         case .gpt55: "GPT-5.5"
         case .gpt56Terra: "GPT-5.6 Terra"
@@ -473,10 +479,15 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     var currentPriceRates: APIPriceRates {
         // Standard short-context prices published by OpenAI. Long-context,
         // cache-write, priority/service-tier and regional multipliers remain
-        // outside this estimate.
+        // outside this estimate. Local Codex usage does not expose cache
+        // writes separately, so only input, cached input, and output are priced.
         switch self {
         case .gpt6Astra:
             APIPriceRates(inputUSDPerMillion: 10.00, cachedInputUSDPerMillion: 1.00, outputUSDPerMillion: 50.00)
+        case .gpt6Sol:
+            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 10.00)
+        case .gpt6Luna:
+            APIPriceRates(inputUSDPerMillion: 0.10, cachedInputUSDPerMillion: 0.01, outputUSDPerMillion: 0.50)
         case .gpt56Sol:
             APIPriceRates(inputUSDPerMillion: 4.00, cachedInputUSDPerMillion: 0.40, outputUSDPerMillion: 20.00)
         case .gpt55:
@@ -548,6 +559,10 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         switch key {
         case "gpt-6-astra", "gpt6-astra", "gpt6astra", "gpt 6 astra":
             return .gpt6Astra
+        case "gpt-6-sol", "gpt6-sol", "gpt6sol", "gpt 6 sol":
+            return .gpt6Sol
+        case "gpt-6-luna", "gpt6-luna", "gpt6luna", "gpt 6 luna":
+            return .gpt6Luna
         case "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol":
             return .gpt56Sol
         case "gpt-5.5", "gpt5.5", "gpt55", "gpt 5.5":

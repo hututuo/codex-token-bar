@@ -405,7 +405,15 @@ pub fn setup_desktop_surfaces(
     floating_enabled: bool,
 ) -> tauri::Result<()> {
     startup_trace::mark("rust setup start");
-    let plan = surface_startup_plan(mode, floating_enabled);
+    let probe_mode = super::dock_probe_mode();
+    let plan = if probe_mode {
+        SurfaceStartupPlan {
+            create_dashboard: false,
+            floating: FloatingStartupAction::CreateAndShow,
+        }
+    } else {
+        surface_startup_plan(mode, floating_enabled)
+    };
 
     let status = execute_surface_startup_plan(
         plan,
@@ -423,8 +431,13 @@ pub fn setup_desktop_surfaces(
         },
         || show_floating_window(app.handle()).map(|_| ()),
         || {
-            startup_trace::mark("status tray create deferred");
-            schedule_status_tray_creation(app.handle().clone())
+            if probe_mode {
+                startup_trace::mark("status tray skipped for dock probe");
+                Ok(())
+            } else {
+                startup_trace::mark("status tray create deferred");
+                schedule_status_tray_creation(app.handle().clone())
+            }
         },
     )
     .map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?;
@@ -2211,10 +2224,19 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
+    let floating_probe = std::env::current_exe()
+        .ok()
+        .map(|path| path.with_file_name("dock-probe.flag").exists())
+        .unwrap_or(false);
+    let floating_url = if floating_probe {
+        "/index.html?surface=floating&dockProbe=1"
+    } else {
+        "/index.html?surface=floating"
+    };
     let builder = WebviewWindowBuilder::new(
         app,
         "floating",
-        WebviewUrl::App("/index.html?surface=floating".into()),
+        WebviewUrl::App(floating_url.into()),
     )
     .title("Codex Token Bar Floating");
 

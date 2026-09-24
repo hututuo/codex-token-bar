@@ -69,6 +69,7 @@ export interface DockPorts {
   reducedMotion(): boolean;
   prepareCompact?(anchor: DockAnchor): void | Promise<void>;
   prepareReveal?(): void | Promise<void>;
+  probe?(phase: string, state: DockPresentation): void;
   startDrag(): Promise<boolean>;
   report(error: unknown): void;
   timer?(callback: () => void, delay: number): ReturnType<typeof setTimeout>;
@@ -217,6 +218,16 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
         publish({ ...state, compact: false, motion: "none" });
         await ports.prepareReveal?.();
         if (!current(token)) return;
+        // DOM enter/leave delivery can be noisy while a native child window is
+        // being repositioned. Verify the real desktop pointer after the native
+        // reveal boundary, matching the macOS tracking path's pointer check.
+        try {
+          const pointer = await readPointer();
+          if (current(token) && state.anchor) pointerInside = containsDockPoint(state.anchor.frame, pointer);
+        } catch (error) {
+          ports.report(error);
+        }
+        if (!current(token)) return;
       }
       publish({ ...state, collapsed: false, railReady: false, motion: ports.reducedMotion() ? "none" : "expand" });
       if (!pointerInside) scheduleHide();
@@ -361,6 +372,51 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
       } else if (!blocked()) later(180, settle);
     },
     interactionEnded() { if (!pointerInside) scheduleHide(); },
+    async runRightEdgeProbe(cycles = 8) {
+      const original = await ports.geometry();
+      const wasGuiding = guiding;
+      guiding = true;
+      const width = original.frame.width;
+      const height = original.frame.height;
+      const area = original.workArea;
+      const full = {
+        x: area.x + area.width - width,
+        y: Math.min(Math.max(original.frame.y, area.y), area.y + area.height - height),
+        width,
+        height,
+      };
+      const anchor = makeDockAnchor("right", full, original.scaleFactor);
+      const token = cancel();
+      const wait = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
+      try {
+        publish({ anchor, collapsed: false, compact: false, railReady: false, motion: "none" });
+        await frame(anchor.frame, token);
+        ports.probe?.("attached", state);
+        for (let cycle = 0; cycle < Math.max(1, cycles); cycle += 1) {
+          publish({ ...state, collapsed: true, compact: false, railReady: false, motion: "none" });
+          ports.probe?.(`cycle-${cycle}-collapse-css`, state);
+          await frame(anchor.lip, token);
+          publish({ ...state, compact: true, railReady: false, motion: "none" });
+          await ports.prepareCompact?.(anchor);
+          ports.probe?.(`cycle-${cycle}-compact`, state);
+          await wait(34);
+
+          await frame(anchor.frame, token);
+          publish({ ...state, compact: false, collapsed: true, railReady: false, motion: "none" });
+          await ports.prepareReveal?.();
+          ports.probe?.(`cycle-${cycle}-pre-reveal`, state);
+          publish({ ...state, collapsed: false, railReady: false, motion: "expand" });
+          ports.probe?.(`cycle-${cycle}-revealing`, state);
+          await wait(320);
+          ports.probe?.(`cycle-${cycle}-expanded`, state);
+        }
+      } finally {
+        await frame(original.frame, token);
+        publish({ ...FREE_DOCK_PRESENTATION });
+        ports.probe?.("restored", state);
+        guiding = wasGuiding;
+      }
+    },
     dispose() { disposed = true; cancel(); },
   };
 }

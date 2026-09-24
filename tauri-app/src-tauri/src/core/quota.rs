@@ -674,7 +674,7 @@ fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, Strin
                     warnings: Vec::new(),
                     diagnostics: Vec::new(),
                 },
-                Some(limit_id),
+                (!limit_id.trim().is_empty()).then_some(limit_id),
             )
         }
         Err(error) => (quota_failure_bundle(codex_home, error), None),

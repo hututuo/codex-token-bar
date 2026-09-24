@@ -23,6 +23,8 @@ export interface ModelUsageSlice {
 
 const FIXED_COLORS: Record<string, string> = {
   "gpt-6-astra": "#d4512c",
+  "gpt-6-sol": "#2e6bfa",
+  "gpt-6-luna": "#00a3ad",
   "gpt-5.6-sol": "#2e6bfa",
   "gpt-5.6-terra": "#9252e6",
   "gpt-5.6-luna": "#00a3ad",
@@ -97,6 +99,8 @@ export function modelUsageKey(model: string | null | undefined, eventStartUnix?:
   // Only explicit, known aliases may collapse. Future model IDs retain their
   // source spelling; sharing a family prefix is not proof of a model identity.
   switch (detectedOfficialAPIPriceModel(model)) {
+    case "gpt6Sol": return "gpt-6-sol";
+    case "gpt6Luna": return "gpt-6-luna";
     case "gpt56Sol":
       return ["gpt-5.6", "gpt5.6", "gpt56"].includes(normalized) ? original : "gpt-5.6-sol";
     case "gpt56Terra": return "gpt-5.6-terra";
@@ -119,6 +123,8 @@ export function floatingModelUsageKey(model: string | null | undefined, eventSta
 export function modelUsageLabel(model: string | null | undefined): string {
   switch (modelUsageKey(model)) {
     case "gpt-6-astra": return "Astra";
+    case "gpt-6-sol": return "GPT-6 Sol";
+    case "gpt-6-luna": return "GPT-6 Luna";
     case "gpt-5.6-sol": return "Sol";
     case "gpt-5.6-terra": return "Terra";
     case "gpt-5.6-luna": return "Luna";

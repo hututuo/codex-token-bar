@@ -20,6 +20,14 @@ enum ModelUsagePresentation {
         "gpt6-astra": "gpt-6-astra",
         "gpt6astra": "gpt-6-astra",
         "gpt 6 astra": "gpt-6-astra",
+        "gpt-6-sol": "gpt-6-sol",
+        "gpt6-sol": "gpt-6-sol",
+        "gpt6sol": "gpt-6-sol",
+        "gpt 6 sol": "gpt-6-sol",
+        "gpt-6-luna": "gpt-6-luna",
+        "gpt6-luna": "gpt-6-luna",
+        "gpt6luna": "gpt-6-luna",
+        "gpt 6 luna": "gpt-6-luna",
 
         "gpt-5.6-sol": "gpt-5.6-sol",
         "gpt5.6-sol": "gpt-5.6-sol",
@@ -162,6 +170,8 @@ enum ModelUsagePresentation {
     static func label(for model: String?) -> String {
         switch key(for: model) {
         case "gpt-6-astra": return "Astra"
+        case "gpt-6-sol": return "GPT-6 Sol"
+        case "gpt-6-luna": return "GPT-6 Luna"
         case "gpt-5.6-sol": return "Sol"
         case "gpt-5.6-terra": return "Terra"
         case "gpt-5.6-luna": return "Luna"
@@ -290,6 +300,8 @@ enum ModelUsagePresentation {
     private static func color(forKey key: String) -> Color {
         switch key {
         case "gpt-6-astra": return Color(red: 0.83, green: 0.32, blue: 0.17)
+        case "gpt-6-sol": return Color(red: 0.18, green: 0.42, blue: 0.98)
+        case "gpt-6-luna": return Color(red: 0.00, green: 0.64, blue: 0.68)
         case "gpt-5.6-sol": return Color(red: 0.18, green: 0.42, blue: 0.98)
         case "gpt-5.6-terra": return Color(red: 0.57, green: 0.32, blue: 0.90)
         case "gpt-5.6-luna": return Color(red: 0.00, green: 0.64, blue: 0.68)
@@ -379,6 +391,8 @@ enum ModelUsagePresentation {
     private static func canonicalPresentationKey(for model: OfficialAPIPriceModel) -> String {
         switch model {
         case .gpt6Astra: return "gpt-6-astra"
+        case .gpt6Sol: return "gpt-6-sol"
+        case .gpt6Luna: return "gpt-6-luna"
         case .gpt56Sol: return "gpt-5.6-sol"
         case .gpt55: return "gpt-5.5"
         case .gpt56Terra: return "gpt-5.6-terra"
