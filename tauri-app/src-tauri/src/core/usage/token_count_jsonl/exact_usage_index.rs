@@ -692,6 +692,23 @@ pub(super) struct ExactDashboardData {
 struct FileSignature {
     size: u64,
     modified_ns: u128,
+    physical: Option<PhysicalFileStamp>,
+}
+
+// A change detector, never a ledger/source identity. Reading this uses only
+// filesystem metadata; unchanged JSONL bodies are neither opened for parsing
+// nor hashed. Old indexes acquire this optional baseline on their next sync.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PhysicalFileStamp { volume: u64, file_id: u64, changed_ns: i128 }
+
+impl PhysicalFileStamp {
+    fn encode(self) -> String { format!("{}:{}:{}", self.volume, self.file_id, self.changed_ns) }
+    fn decode(value: &str) -> Option<Self> {
+        let mut parts = value.split(':');
+        let stamp = Self { volume: parts.next()?.parse().ok()?, file_id: parts.next()?.parse().ok()?,
+            changed_ns: parts.next()?.parse().ok()? };
+        if parts.next().is_some() { None } else { Some(stamp) }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -821,7 +838,10 @@ pub(super) fn read_only_source_probe(
             |row| row.get::<_, bool>(0),
         )
         .map_err(|error| format!("无法只读检查精确 token 已发布文件视图：{error}"))?;
-    if !published_view_exists {
+    let observations_exist = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_observations')",
+        [], |row| row.get::<_, bool>(0)).map_err(|error| error.to_string())?;
+    if !published_view_exists || !observations_exist {
         return Ok(ReadOnlySourceProbe {
             published_generation,
             changed: Some(true),
@@ -829,7 +849,7 @@ pub(super) fn read_only_source_probe(
     }
 
     let mut statement = connection
-        .prepare("SELECT path, size, modified_ns FROM published_files")
+        .prepare("SELECT f.path, f.size, f.modified_ns, o.physical_stamp FROM published_files f LEFT JOIN source_observations o ON o.path=f.path AND o.size=f.size AND o.modified_ns=f.modified_ns")
         .map_err(|error| format!("无法准备精确 token 源探针文件检查点：{error}"))?;
     let rows = statement
         .query_map([], |row| {
@@ -838,6 +858,7 @@ pub(super) fn read_only_source_probe(
                 (
                     nonnegative_u64(row.get::<_, i64>(1)?),
                     row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ),
             ))
         })
@@ -875,8 +896,9 @@ pub(super) fn read_only_source_probe(
         }
         let unchanged = published_files
             .get(&path)
-            .is_some_and(|(size, modified_ns)| {
+            .is_some_and(|(size, modified_ns, physical)| {
                 candidate.signature.matches_stored(*size, modified_ns)
+                    && candidate.signature.matches_physical(physical.as_deref())
             });
         changed |= !unchanged;
     }
@@ -1786,6 +1808,7 @@ impl ExactUsageIndex {
         if stored_identity.is_none() {
             set_metadata(&connection, "codex_home_identity", &identity)?;
         }
+        ensure_source_observations(&connection)?;
         if metadata_text(&connection, "codex_home_physical_identity")?.is_some() {
             connection
                 .execute(
@@ -3342,8 +3365,9 @@ impl ExactUsageIndex {
                 };
                 let unchanged = published_files
                     .get(&path)
-                    .is_some_and(|(size, modified_ns)| {
+                    .is_some_and(|(size, modified_ns, physical)| {
                         signature.matches_stored(*size, modified_ns)
+                            && signature.matches_physical(physical.as_deref())
                     });
                 changed |= !unchanged;
                 Ok(())
@@ -3377,8 +3401,9 @@ impl ExactUsageIndex {
             }
             let unchanged = published_files
                 .get(&path)
-                .is_some_and(|(size, modified_ns)| {
+                .is_some_and(|(size, modified_ns, physical)| {
                     candidate.signature.matches_stored(*size, modified_ns)
+                        && candidate.signature.matches_physical(physical.as_deref())
                 });
             changed |= !unchanged;
         }
@@ -3400,10 +3425,10 @@ impl ExactUsageIndex {
             .map_err(|error| format!("无法建立精确 token 源文件快照：{error}"))
     }
 
-    fn source_change_snapshot_signatures(&self) -> Result<HashMap<String, (u64, String)>, String> {
+    fn source_change_snapshot_signatures(&self) -> Result<HashMap<String, (u64, String, Option<String>)>, String> {
         let mut statement = self
             .connection
-            .prepare("SELECT path,size,modified_ns FROM temp.published_files f WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=f.source_id AND l.missing=1)")
+            .prepare("SELECT f.path,f.size,f.modified_ns,o.physical_stamp FROM temp.published_files f LEFT JOIN source_observations o ON o.path=f.path AND o.size=f.size AND o.modified_ns=f.modified_ns WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=f.source_id AND l.missing=1)")
             .map_err(|error| format!("无法读取精确 token 源文件快照：{error}"))?;
         let rows = statement
             .query_map([], |row| {
@@ -3412,6 +3437,7 @@ impl ExactUsageIndex {
                     (
                         nonnegative_u64(row.get::<_, i64>(1)?),
                         row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ),
                 ))
             })
@@ -5956,6 +5982,7 @@ pub(super) fn staging_batch_shape_for_testing(sizes: &[u64]) -> Vec<Vec<u64>> {
             signature: FileSignature {
                 size: *size,
                 modified_ns: 0,
+                physical: None,
             },
             event_enrichment: false,
             expected_published_prefix_sha256: None,
@@ -6167,8 +6194,8 @@ fn build_staged_full_rebuild(
                 assistant_response_end,
                 event_count,
                 fingerprint_count,
-                chunk_count, accounting_state
-            ) VALUES (0, ?1, 'full', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, '', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
+                chunk_count, accounting_state, physical_stamp
+            ) VALUES (0, ?1, 'full', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, '', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
             "#,
             params![
                 STAGING_MANIFEST_SCHEMA_VERSION,
@@ -6215,6 +6242,7 @@ fn build_staged_full_rebuild(
                 fingerprint_count,
                 checked_i64(parsed.chunk_hashes.len() as u64, "暂存分块数量")?,
                 state.accounting_state.as_ref().map(AccountingState::encode),
+                committed_signature.physical.map(PhysicalFileStamp::encode),
             ],
         )
         .map_err(|error| format!("无法完成精确 token 单文件暂存清单：{error}"))?;
@@ -6406,7 +6434,8 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 event_count INTEGER NOT NULL,
                 fingerprint_count INTEGER NOT NULL,
                 chunk_count INTEGER NOT NULL,
-                accounting_state TEXT
+                accounting_state TEXT,
+                physical_stamp TEXT
             ) WITHOUT ROWID;
 
             CREATE TABLE fingerprints (
@@ -6492,6 +6521,10 @@ fn validated_staged_full_rebuild(
         return Ok(None);
     }
     let accounting_column = if column_exists_checked(connection,"manifest","accounting_state")? { "accounting_state" } else { "NULL" };
+    let physical_stamp = if column_exists_checked(connection, "manifest", "physical_stamp")? {
+        connection.query_row("SELECT physical_stamp FROM manifest WHERE complete=1 LIMIT 1", [],
+            |row| row.get::<_, Option<String>>(0)).optional().map_err(|error| error.to_string())?.flatten()
+    } else { None };
     let manifest = connection
         .query_row(
             &format!(r#"
@@ -6610,7 +6643,8 @@ fn validated_staged_full_rebuild(
         u64::try_from(manifest.size),
         manifest.modified_ns.parse::<u128>(),
     ) {
-        (Ok(size), Ok(modified_ns)) => FileSignature { size, modified_ns },
+        (Ok(size), Ok(modified_ns)) => FileSignature { size, modified_ns,
+            physical: physical_stamp.as_deref().and_then(PhysicalFileStamp::decode) },
         _ => return Ok(None),
     };
     if [LEGACY_STAGED_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&manifest.parser_revision.as_str())
@@ -6636,7 +6670,7 @@ fn validated_staged_full_rebuild(
         || manifest_signature.size < job.signature.size
         || (job.event_enrichment
             && job.expected_published_prefix_sha256.is_some()
-            && manifest_signature != job.signature)
+            && !manifest_signature.matches_stored(job.signature.size, &job.signature.modified_ns.to_string()))
         || manifest.size < 0
         || manifest.resume_offset < 0
         || nonnegative_u64(manifest.resume_offset) > manifest_signature.size
@@ -9487,10 +9521,11 @@ fn process_session_file(
     let previous_signature = connection
         .query_row(
             r#"
-            SELECT generation, deleted, size, modified_ns
-            FROM files
-            WHERE path = ?1 AND generation <= ?2
-            ORDER BY generation DESC
+            SELECT f.generation, f.deleted, f.size, f.modified_ns, o.physical_stamp
+            FROM files f LEFT JOIN source_observations o
+              ON o.path=f.path AND o.size=f.size AND o.modified_ns=f.modified_ns
+            WHERE f.path = ?1 AND f.generation <= ?2
+            ORDER BY f.generation DESC
             LIMIT 1
             "#,
             params![&path, generation],
@@ -9500,6 +9535,7 @@ fn process_session_file(
                     row.get::<_, bool>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )
@@ -9508,10 +9544,16 @@ fn process_session_file(
     let source_missing: bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM usage_ledger_sources l JOIN sources s USING(source_id) WHERE s.path=?1 AND l.missing=1 AND NOT EXISTS(SELECT 1 FROM pending_sources p WHERE p.source_id=s.source_id AND p.mode<>'tombstone'))",params![&path],|r|r.get(0)).map_err(|e|e.to_string())?;
     let unchanged = !source_missing && previous_signature
         .as_ref()
-        .is_some_and(|(_, deleted, size, modified_ns)| {
+        .is_some_and(|(_, deleted, size, modified_ns, physical)| {
             !deleted && signature.matches_stored(nonnegative_u64(*size), modified_ns)
+                && (physical.is_none() || signature.matches_physical(physical.as_deref()))
         });
     if unchanged {
+        if previous_signature.as_ref().is_some_and(|(_, _, _, _, physical)| physical.is_none()) {
+            // Metadata-only adoption of an old index. Do not cold-hash all
+            // historical files just to populate a newly introduced detector.
+            record_source_observation(connection, &path, signature)?;
+        }
         return Ok(None);
     }
 
@@ -10029,6 +10071,7 @@ fn revalidate_metadata_only_file(
             file.display()
         ));
     }
+    record_source_observation(&transaction, path, signature)?;
     transaction
         .commit()
         .map_err(|error| format!("无法提交会话文件内容复核结果：{error}"))?;
@@ -10376,6 +10419,7 @@ fn save_file_checkpoint(
             ],
         )
         .map_err(|error| format!("无法保存会话文件追加检查点：{error}"))?;
+    record_source_observation(transaction, path, signature)?;
     Ok(())
 }
 
@@ -15077,6 +15121,7 @@ fn apply_accounting_migration(connection: &mut Connection,receipt: Option<String
 }
 
 fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
+    ensure_source_observations(connection)?;
     connection
         .execute_batch(
             r#"
@@ -17356,7 +17401,66 @@ impl FileSignature {
     fn matches_stored(self, size: u64, modified_ns: &str) -> bool {
         size == self.size && modified_ns.parse::<u128>().ok() == Some(self.modified_ns)
     }
+
+    fn matches_physical(self, stored: Option<&str>) -> bool {
+        match self.physical {
+            Some(observed) => stored.and_then(PhysicalFileStamp::decode) == Some(observed),
+            None => true, // Only for platforms without a physical metadata API.
+        }
+    }
 }
+
+fn ensure_source_observations(connection: &Connection) -> Result<(), String> {
+    let exists = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_observations')",
+        [], |row| row.get::<_, bool>(0)).map_err(|error| error.to_string())?;
+    if !exists {
+        connection.execute_batch("CREATE TABLE source_observations (
+            path TEXT PRIMARY KEY, size INTEGER NOT NULL, modified_ns TEXT NOT NULL,
+            physical_stamp TEXT NOT NULL) WITHOUT ROWID;")
+            .map_err(|error| format!("无法建立源文件元数据观察表：{error}"))?;
+    }
+    Ok(())
+}
+
+fn record_source_observation(connection: &Connection, path: &str, signature: FileSignature) -> Result<(), String> {
+    if let Some(stamp) = signature.physical {
+        connection.execute("INSERT INTO source_observations(path,size,modified_ns,physical_stamp)
+            VALUES (?1,?2,?3,?4) ON CONFLICT(path) DO UPDATE SET size=excluded.size,
+            modified_ns=excluded.modified_ns,physical_stamp=excluded.physical_stamp",
+            params![path, checked_i64(signature.size, "源文件观察大小")?,
+                signature.modified_ns.to_string(), stamp.encode()])
+            .map_err(|error| format!("无法保存源文件元数据观察：{error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn physical_file_stamp(_handle: &fs::File, metadata: &fs::Metadata) -> Result<Option<PhysicalFileStamp>, String> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(Some(PhysicalFileStamp { volume: metadata.dev(), file_id: metadata.ino(),
+        changed_ns: i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()) }))
+}
+
+#[cfg(windows)]
+fn physical_file_stamp(handle: &fs::File, _metadata: &fs::Metadata) -> Result<Option<PhysicalFileStamp>, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FileBasicInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx, BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO};
+    let mut identity = BY_HANDLE_FILE_INFORMATION::default();
+    let mut basic = FILE_BASIC_INFO::default();
+    if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &mut identity) } == 0
+        || unsafe { GetFileInformationByHandleEx(handle.as_raw_handle(), FileBasicInfo,
+            (&mut basic as *mut FILE_BASIC_INFO).cast(), std::mem::size_of::<FILE_BASIC_INFO>() as u32) } == 0 {
+        return Err(format!("读取源文件变化元数据失败：{}", std::io::Error::last_os_error()));
+    }
+    Ok(Some(PhysicalFileStamp { volume: u64::from(identity.dwVolumeSerialNumber),
+        file_id: (u64::from(identity.nFileIndexHigh) << 32) | u64::from(identity.nFileIndexLow),
+        changed_ns: i128::from(basic.ChangeTime) * 100 }))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn physical_file_stamp(_handle: &fs::File, _metadata: &fs::Metadata) -> Result<Option<PhysicalFileStamp>, String> { Ok(None) }
 
 fn file_signature(path: &Path) -> Result<FileSignature, String> {
     let handle = fs::File::open(path)
@@ -17392,6 +17496,7 @@ fn file_signature_from_handle(handle: &fs::File, path: &Path) -> Result<FileSign
     Ok(FileSignature {
         size: metadata.len(),
         modified_ns,
+        physical: physical_file_stamp(handle, &metadata)?,
     })
 }
 
@@ -17676,7 +17781,7 @@ fn event_enrichment_pending_candidates(
                 Ok(EventEnrichmentCandidate {
                     path: row.get(0)?,
                     session_id: row.get(1)?,
-                    signature: FileSignature { size, modified_ns },
+                    signature: FileSignature { size, modified_ns, physical: None },
                     prefix_sha256,
                 })
             },
@@ -17738,7 +17843,7 @@ fn event_enrichment_pending_candidates_for_generation(
                 Ok(EventEnrichmentCandidate {
                     path: row.get(0)?,
                     session_id: row.get(1)?,
-                    signature: FileSignature { size, modified_ns },
+                    signature: FileSignature { size, modified_ns, physical: None },
                     prefix_sha256,
                 })
             },

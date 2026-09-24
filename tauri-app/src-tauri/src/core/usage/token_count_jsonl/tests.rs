@@ -3480,7 +3480,7 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
     let cold_scan_bytes = ExactUsageIndex::scan_bytes_for_testing();
     let cold_metadata_validation_bytes = ExactUsageIndex::metadata_validation_bytes_for_testing();
     let after_cold = facts(&copied_index);
-    assert_eq!(after_cold.0, 11);
+    assert_eq!(after_cold.0, 13);
     assert_eq!(
         after_cold.1, -1,
         "building generation must be atomically published"
@@ -6903,7 +6903,7 @@ fn exact_index_rolls_back_when_the_scanned_prefix_is_rewritten() {
 }
 
 #[test]
-fn exact_index_same_path_size_and_mtime_uses_the_metadata_fast_path() {
+fn exact_index_same_inode_rewrite_preserving_mtime_records_conflict() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
@@ -6940,15 +6940,74 @@ fn exact_index_same_path_size_and_mtime_uses_the_metadata_fast_path() {
     let cached = dashboard_snapshot(&root).unwrap();
     assert_eq!(cached.stats.total_tokens, 120);
     assert_eq!(cached.stats.total_calls, 1);
-    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert!(ExactUsageIndex::scan_bytes_for_testing().0 > 0);
+    let database = Connection::open(root.join(".codex-token-bar-test-cache/exact-token-index.sqlite3")).unwrap();
+    let conflicts: i64 = database.query_row("SELECT COUNT(*) FROM usage_ledger_unresolved", [], |r| r.get(0)).unwrap();
+    assert!(conflicts > 0, "a preserved timestamp must not suppress a rewrite conflict");
+    drop(database);
     assert_eq!(
         cached.recent_usage_24h[0]
             .source_contribution_epoch
             .as_deref(),
         Some(initial_epoch.as_str()),
-        "unchanged path, size and mtime must not rotate attribution provenance"
+        "detecting a rewrite does not discard retained attribution provenance"
     );
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_physical_observations_survive_reopen_and_adopt_old_index_without_body_reads() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl");
+    let line = |tokens| serde_json::json!({"timestamp":"2026-07-20T01:00:00Z","type":"event_msg",
+        "payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":tokens,
+        "cached_input_tokens":0,"output_tokens":0,"total_tokens":tokens}}}}).to_string();
+    write_lines(&file, &[line(100)]);
+    let db_path = root.join(".codex-token-bar-test-cache/exact-token-index.sqlite3");
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let revision = index.sync(&root, &mut Vec::new()).unwrap();
+    drop(index);
+    // The optional metadata cache is the only addition to the old schema.
+    // Removing it here emulates its absence, not a fabricated old database.
+    Connection::open(&db_path).unwrap().execute_batch("DROP TABLE source_observations").unwrap();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(index.sync(&root, &mut Vec::new()).unwrap(), revision);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(ExactUsageIndex::metadata_validation_bytes_for_testing(), 0);
+    drop(index);
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    assert!(!index.sources_changed(&root, &mut Vec::new()).unwrap());
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    drop(index);
+
+    let before = fs::metadata(&file).unwrap();
+    let replacement = root.join("replacement.jsonl");
+    write_lines(&replacement, &[line(900)]);
+    fs::File::options().write(true).open(&replacement).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(before.modified().unwrap())).unwrap();
+    assert_eq!(before.len(), fs::metadata(&replacement).unwrap().len());
+    #[cfg(unix)] assert_ne!(before.ino(), fs::metadata(&replacement).unwrap().ino());
+    fs::rename(&replacement, &file).unwrap();
+    assert_eq!(before.modified().unwrap(), fs::metadata(&file).unwrap().modified().unwrap());
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    assert!(index.sources_changed(&root, &mut Vec::new()).unwrap());
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 100);
+    drop(index);
+    let db = Connection::open(&db_path).unwrap();
+    assert!(db.query_row("SELECT COUNT(*) FROM usage_ledger_unresolved", [], |r| r.get::<_, i64>(0)).unwrap() > 0);
+    drop(db);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(ExactUsageIndex::metadata_validation_bytes_for_testing(), 0);
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -366,6 +366,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let size: UInt64
         let modifiedAt: TimeInterval
         let contentProbe: String
+        var physicalStamp: String? = nil
     }
 
     private struct IndexedSource {
@@ -673,6 +674,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 try driver.withConnection { try UsageHistoryRetention.install(on: $0) }
                 try driver.withConnection { try UsageEventLedger.install(on: $0) }
                 try migrateAccounting()
+                try driver.withConnection { connection in
+                    let exists = try connection.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_observations';") { $0.int(0) }.first == 1
+                    if !exists {
+                        try connection.execute("CREATE TABLE source_observations(source_id INTEGER PRIMARY KEY, size_bytes INTEGER NOT NULL, modified_at REAL NOT NULL, physical_stamp TEXT NOT NULL);")
+                    }
+                }
                 // Accounting may have added optional evidence columns.
                 try driver.withConnection { try UsageHistoryRetention.install(on: $0) }
             }
@@ -2445,6 +2452,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     if let existing,
                        isTrustedContentProbe(existing.signature.contentProbe) {
                         if sourceMetadataMatches(existing.signature, observedMetadata) {
+                            if existing.signature.physicalStamp == nil {
+                                // Adopt the old index's metadata baseline once,
+                                // without hashing every historical JSONL body.
+                                try saveSourceObservation(sourceID: existing.id, signature: observedMetadata, connection: connection)
+                            }
                             unchangedFiles += 1
                             return
                         }
@@ -5676,7 +5688,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 current_model,
                 audit_chunk_index,
                 session_id,
-                accounting_state
+                accounting_state,
+                (SELECT o.physical_stamp FROM source_observations o WHERE o.source_id=sources.source_id AND o.size_bytes=sources.size_bytes AND o.modified_at=sources.modified_at)
             FROM sources
             WHERE path = ?
             LIMIT 1;
@@ -5714,7 +5727,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 current_model,
                 audit_chunk_index,
                 session_id,
-                accounting_state
+                accounting_state,
+                (SELECT o.physical_stamp FROM source_observations o WHERE o.source_id=sources.source_id AND o.size_bytes=sources.size_bytes AND o.modified_at=sources.modified_at)
             FROM sources
             WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=sources.source_id AND l.missing=1)
             ORDER BY source_id;
@@ -5778,7 +5792,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             signature: SourceSignature(
                 size: UInt64(rawSize),
                 modifiedAt: modifiedAt,
-                contentProbe: probe
+                contentProbe: probe,
+                physicalStamp: row.text(offset + 17)
             ),
             checkpoint: checkpoint
         )
@@ -6398,6 +6413,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 .int64(sourceID)
             ]
         )
+        try saveSourceObservation(sourceID: sourceID, signature: signature, connection: connection)
     }
 
     private func updateSourceFingerprint(
@@ -6417,6 +6433,20 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 .int64(sourceID),
             ]
         )
+        try saveSourceObservation(sourceID: sourceID, signature: signature, connection: connection)
+    }
+
+    // Physical metadata is only an invalidation hint. It never changes the
+    // numeric ledger's identity, and an unchanged refresh performs no writes.
+    private func saveSourceObservation(sourceID: Int64, signature: SourceSignature,
+                                       connection: SQLiteDatabaseConnection) throws {
+        guard let stamp = signature.physicalStamp else { return }
+        try connection.execute("""
+            INSERT INTO source_observations(source_id,size_bytes,modified_at,physical_stamp) VALUES (?,?,?,?)
+            ON CONFLICT(source_id) DO UPDATE SET size_bytes=excluded.size_bytes,
+                modified_at=excluded.modified_at,physical_stamp=excluded.physical_stamp;
+            """, bindings: [.int64(sourceID), .int64(try sqliteInt64(signature.size)),
+                            .double(signature.modifiedAt), .text(stamp)])
     }
 
     private final class StageCollector: @unchecked Sendable {
@@ -6780,7 +6810,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     current_model TEXT,
                     fingerprint_count INTEGER NOT NULL,
                     chunk_count INTEGER NOT NULL,
-                    accounting_state TEXT
+                    accounting_state TEXT,
+                    physical_stamp TEXT
                 );
 
                 CREATE TABLE fingerprints (
@@ -6939,8 +6970,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         current_model,
                         fingerprint_count,
                         chunk_count,
-                        accounting_state
-                    ) VALUES (0, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        accounting_state,
+                        physical_stamp
+                    ) VALUES (0, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     bindings: [
                         .int(Self.stagingManifestSchemaVersion),
@@ -6965,7 +6997,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         state.currentModel.map(SQLiteBinding.text) ?? .null,
                         .int(fingerprintCount),
                         .int(result.chunkHashes.count),
-                        state.accountingState.map { .text($0.encoded) } ?? .null
+                        state.accountingState.map { .text($0.encoded) } ?? .null,
+                        committedSignature.physicalStamp.map(SQLiteBinding.text) ?? .null
                     ]
                 )
                 return StagedFullRebuild(
@@ -7314,7 +7347,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     current_model,
                     fingerprint_count,
                     chunk_count,
-                    \(manifestColumns.contains("accounting_state") ? "accounting_state" : "NULL")
+                    \(manifestColumns.contains("accounting_state") ? "accounting_state" : "NULL"),
+                    \(manifestColumns.contains("physical_stamp") ? "physical_stamp" : "NULL")
                 FROM manifest
                 WHERE complete = 1
                 LIMIT 1;
@@ -7350,7 +7384,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 let signature = SourceSignature(
                     size: UInt64(rawSize),
                     modifiedAt: modifiedAt,
-                    contentProbe: contentProbe
+                    contentProbe: contentProbe,
+                    physicalStamp: row.text(25)
                 )
                 let actualBytes = UInt64(rawActualBytes)
                 let databaseAttributes = try? self.fileManager.attributesOfItem(
@@ -8005,7 +8040,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             size: size,
             modifiedAt: TimeInterval(fileStatus.st_mtimespec.tv_sec)
                 + TimeInterval(fileStatus.st_mtimespec.tv_nsec) / 1_000_000_000,
-            contentProbe: ""
+            contentProbe: "",
+            physicalStamp: "\(fileStatus.st_dev):\(fileStatus.st_ino):\(fileStatus.st_ctimespec.tv_sec):\(fileStatus.st_ctimespec.tv_nsec)"
         )
     }
 
@@ -8016,7 +8052,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         SourceSignature(
             size: metadata.size,
             modifiedAt: metadata.modifiedAt,
-            contentProbe: try contentProbe(for: file, size: metadata.size)
+            contentProbe: try contentProbe(for: file, size: metadata.size),
+            physicalStamp: metadata.physicalStamp
         )
     }
 
@@ -8035,7 +8072,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return SourceSignature(
             size: metadata.size,
             modifiedAt: metadata.modifiedAt,
-            contentProbe: try contentProbe(forOpenHandle: handle, size: metadata.size)
+            contentProbe: try contentProbe(forOpenHandle: handle, size: metadata.size),
+            physicalStamp: metadata.physicalStamp
         )
     }
 
@@ -8053,7 +8091,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             size: UInt64(status.st_size),
             modifiedAt: TimeInterval(status.st_mtimespec.tv_sec)
                 + TimeInterval(status.st_mtimespec.tv_nsec) / 1_000_000_000,
-            contentProbe: ""
+            contentProbe: "",
+            physicalStamp: "\(status.st_dev):\(status.st_ino):\(status.st_ctimespec.tv_sec):\(status.st_ctimespec.tv_nsec)"
         )
     }
 
@@ -8063,6 +8102,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ) -> Bool {
         stored.size == observed.size
             && stored.modifiedAt == observed.modifiedAt
+            && (stored.physicalStamp == nil || stored.physicalStamp == observed.physicalStamp)
     }
 
     private func isTrustedContentProbe(_ value: String) -> Bool {
