@@ -2,6 +2,22 @@ import XCTest
 @testable import CodexTokenBar
 
 final class StandardAPIPriceScheduleTests: XCTestCase {
+    func testAggregatePreservesUnpricedRowsBeforeFirstQuoteWithoutChangingNoDateEstimates() {
+        let breakdown = TokenCacheBreakdown(inputTokens: 1_000_000, cachedInputTokens: 0,
+            outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 1_000_000, calls: 1)
+        for (model, expected) in [("gpt-6-sol", 2.0), ("gpt-6-luna", 0.1)] {
+            let rows = [ModelTokenBreakdown(model: model, breakdown: breakdown)]
+            let before = ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: rows,
+                eventDate: date("2026-09-21T23:59:59Z"), fallbackBreakdown: breakdown, fallbackModel: .gpt56Sol)
+            XCTAssertEqual(before.costUSD, 0); XCTAssertEqual(before.unpricedModels, [model]); XCTAssertEqual(before.unpricedCalls, 1)
+            let after = ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: rows,
+                eventDate: date("2026-09-22T00:00:00Z"), fallbackBreakdown: breakdown, fallbackModel: .gpt56Sol)
+            XCTAssertEqual(after.costUSD, expected); XCTAssertTrue(after.unpricedModels.isEmpty)
+            let noDate = ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: rows,
+                timestamp: nil, fallbackBreakdown: breakdown, fallbackModel: .gpt56Sol)
+            XCTAssertEqual(noDate.costUSD, expected); XCTAssertTrue(noDate.unpricedModels.isEmpty)
+        }
+    }
     func testSolUsesOldPriceBeforeCutoverAndNewPriceAtUTCBoundary() throws {
         let before = try XCTUnwrap(StandardAPIPriceSchedule.quote(
             for: "gpt-5.6-sol",

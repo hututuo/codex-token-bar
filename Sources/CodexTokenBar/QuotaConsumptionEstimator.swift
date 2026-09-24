@@ -161,6 +161,12 @@ enum ModelAwareAPIPriceEstimator {
         /// historical-estimate overload. Existing current and Radar callers
         /// keep using their supplied `rates` closure.
         let historicalQuote: StandardAPIPriceQuote?
+        let requiresHistoricalQuote: Bool
+        var isUnpriced: Bool {
+            OfficialAPIPriceModel.independentQuotaModelName(from: model) == nil
+                && ((requiresHistoricalQuote && historicalQuote == nil)
+                    || (detectedModel == nil && !(model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)))
+        }
     }
 
     static func estimate(
@@ -186,7 +192,8 @@ enum ModelAwareAPIPriceEstimator {
                         from: event.model,
                         at: event.start
                     ),
-                    historicalQuote: standardAPI ? historicalQuote(model: event.model, at: event.start, fallbackModel: fallbackModel) : nil
+                    historicalQuote: standardAPI ? historicalQuote(model: event.model, at: event.start, fallbackModel: fallbackModel) : nil,
+                    requiresHistoricalQuote: standardAPI && event.start.timeIntervalSince1970.isFinite
                 )
             },
             fallbackBreakdown: fallbackBreakdown,
@@ -208,7 +215,8 @@ enum ModelAwareAPIPriceEstimator {
                     model: row.model,
                     breakdown: row.breakdown,
                     detectedModel: OfficialAPIPriceModel.detected(from: row.model, at: row.start),
-                    historicalQuote: standardAPI ? historicalQuote(model: row.model, at: row.start, fallbackModel: fallbackModel) : nil
+                    historicalQuote: standardAPI ? historicalQuote(model: row.model, at: row.start, fallbackModel: fallbackModel) : nil,
+                    requiresHistoricalQuote: standardAPI && row.start?.timeIntervalSince1970.isFinite == true
                 )
             },
             fallbackBreakdown: fallbackBreakdown,
@@ -236,7 +244,8 @@ enum ModelAwareAPIPriceEstimator {
                         from: row.model,
                         at: row.start ?? eventDate
                     ),
-                    historicalQuote: historicalQuote(model: row.model, at: row.start ?? eventDate, fallbackModel: fallbackModel)
+                    historicalQuote: historicalQuote(model: row.model, at: row.start ?? eventDate, fallbackModel: fallbackModel),
+                    requiresHistoricalQuote: (row.start ?? eventDate).timeIntervalSince1970.isFinite
                 )
             },
             fallbackBreakdown: fallbackBreakdown,
@@ -318,13 +327,8 @@ enum ModelAwareAPIPriceEstimator {
             total + max(row.1.calls, 0)
         }
         let explicitlyUnpricedRows = rows.compactMap { row -> (String, TokenCacheBreakdown)? in
-            guard row.detectedModel == nil,
-                  OfficialAPIPriceModel.independentQuotaModelName(from: row.model) == nil,
-                  let model = row.model,
-                  !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return nil
-            }
-            return (model, row.breakdown)
+            guard row.isUnpriced else { return nil }
+            return (row.model ?? "未标注模型（\(fallbackModel.title)）", row.breakdown)
         }
         let unpricedBreakdown = explicitlyUnpricedRows.map(\.1).combined
         let unpricedModels = explicitlyUnpricedRows.reduce(into: [String]()) { names, row in
@@ -353,6 +357,7 @@ enum ModelAwareAPIPriceEstimator {
         var grouped: [OfficialAPIPriceModel: [TokenCacheBreakdown]] = [:]
         var fallbackRows: [PricingRow] = []
         for row in rows {
+            if row.isUnpriced { continue }
             if OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil {
                 // Collected above so incomplete model rows can also fail closed
                 // without charging this independent quota to the fallback.
@@ -368,6 +373,7 @@ enum ModelAwareAPIPriceEstimator {
         }
         let knownCost = rows.reduce(0.0) { partial, row in
             guard let detected = row.detectedModel,
+                  !row.isUnpriced,
                   OfficialAPIPriceModel.independentQuotaModelName(from: row.model) == nil else {
                 return partial
             }

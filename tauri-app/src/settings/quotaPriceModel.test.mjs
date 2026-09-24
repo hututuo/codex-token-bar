@@ -13,6 +13,20 @@ import {
   readStoredQuotaPriceModel,
 } from "./quotaPriceModel.ts";
 
+test("before a known model's first dated quote, tokens stay unpriced instead of taking today's price", () => {
+  const breakdown = { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 1 };
+  const boundary = Date.parse("2026-09-22T00:00:00Z") / 1000;
+  for (const [model, expected] of [["gpt-6-sol", 2], ["gpt-6-luna", 0.1]]) {
+    const before = modelAwareAPICostUSD([{ model, eventStartUnix: boundary - 1, breakdown }], breakdown, "gpt56Sol");
+    assert.equal(before.costUSD, 0); assert.deepEqual(before.unpricedModels, [model]);
+    assert.equal(before.unpricedCalls, 1);
+    const after = modelAwareAPICostUSD([{ model, eventStartUnix: boundary, breakdown }], breakdown, "gpt56Sol");
+    assert.equal(after.costUSD, expected); assert.deepEqual(after.unpricedModels, []);
+    const noDate = modelAwareAPICostUSD([{ model, breakdown }], breakdown, "gpt56Sol");
+    assert.equal(noDate.costUSD, expected); assert.deepEqual(noDate.unpricedModels, []);
+  }
+});
+
 test("historical model rows price known cards while explicit unknown rows remain unpriced", () => {
   const estimate = modelAwareAPICostUSD([
     { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 2 } },

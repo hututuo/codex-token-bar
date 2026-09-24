@@ -73,9 +73,11 @@ export function canonicalStandardAPIModelKey(value: string | null | undefined): 
       return "gpt-5.2-codex";
     case "gpt-5.4":
     case "gpt54":
+    case "gpt54legacy":
       return "gpt-5.4";
     case "gpt-5.4-mini":
     case "gpt54mini":
+    case "gpt54minilegacy":
       return "gpt-5.4-mini";
     default:
       return null;

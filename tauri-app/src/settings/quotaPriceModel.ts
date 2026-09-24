@@ -347,9 +347,15 @@ export function modelAwareAPICostUSD(
   }, { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 });
   const unpricedModels: string[] = [];
   let unpricedCalls = 0;
+  const unpricedRows = new Set<ModelTokenCostRow>();
   const unpricedBreakdown = rows.reduce((total, row) => {
-    if (!isExplicitUnknownModel(row.model, row.eventStartUnix)) return total;
-    if (!unpricedModels.includes(row.model)) unpricedModels.push(row.model);
+    if (independentQuotaModelName(row.model)) return total;
+    const missingDatedPrice = basis === "current" && Number.isFinite(row.eventStartUnix)
+      && standardAPIPriceQuote(detectedOfficialAPIPriceModel(row.model, row.eventStartUnix) ?? fallbackModel, row.eventStartUnix) === null;
+    if (!isExplicitUnknownModel(row.model, row.eventStartUnix) && !missingDatedPrice) return total;
+    unpricedRows.add(row);
+    const name = row.model?.trim() || `未标注模型（${fallbackModel}）`;
+    if (!unpricedModels.includes(name)) unpricedModels.push(name);
     unpricedCalls += finiteNonnegative(row.breakdown.calls);
     return {
       inputTokens: total.inputTokens + finiteNonnegative(row.breakdown.inputTokens),
@@ -392,7 +398,7 @@ export function modelAwareAPICostUSD(
       continue;
     }
     const detected = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix);
-    if (!detected && isExplicitUnknownModel(row.model, row.eventStartUnix)) continue;
+    if (unpricedRows.has(row)) continue;
     const target = detected
       ? grouped.get(detected) ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 }
       : unknown;
@@ -410,7 +416,7 @@ export function modelAwareAPICostUSD(
   for (const row of rows) {
     if (independentQuotaModelName(row.model)) continue;
     const detected = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix);
-    if (!detected && isExplicitUnknownModel(row.model, row.eventStartUnix)) continue;
+    if (unpricedRows.has(row)) continue;
     const model = detected ?? fallbackModel;
     const datedRates = basis === "current" && row.eventStartUnix !== undefined
       ? standardAPIPriceQuote(model, row.eventStartUnix)?.rates
