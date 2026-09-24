@@ -309,10 +309,10 @@ fn apply_windows_floating_frame_and_viewport(
 ) -> Result<(), String> {
     use windows_sys::Win32::Foundation::{POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
-        RedrawWindow, RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
+        ClientToScreen, RedrawWindow, RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        ClientToScreen, GetClientRect, GetParent, GetWindowRect, SetWindowPos,
+        GetClientRect, GetParent, GetWindowRect, SetWindowPos,
         SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOREDRAW, SWP_NOZORDER,
     };
 

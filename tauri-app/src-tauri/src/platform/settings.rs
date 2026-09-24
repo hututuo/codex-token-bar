@@ -3185,7 +3185,8 @@ mod tests {
                 vec!["crowdRadar".to_string(), "radar".to_string()]
             ]
         );
-        assert!(sanitized.display_surfaces.floating_window_enabled);
+        assert!(!sanitized.display_surfaces.floating_window_enabled);
+        assert!(sanitized.display_surfaces.quota_sidebar_enabled);
         assert!(sanitized.display_surfaces.live_rate_enabled);
         assert!(!sanitized.display_surfaces.status_tray_live_text_enabled);
         assert_eq!(
