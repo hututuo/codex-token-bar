@@ -90,6 +90,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
   const persist = (point: { x: number; y: number }) => { if (!guiding) ports.persist(point); };
   let resizing = 0;
   let dragging = false;
+  let dragRevision = 0;
   let dragDeadline = 0;
   let pointerInside = false;
   let revealing = false;
@@ -272,14 +273,30 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     }
   }
   async function startDrag() {
+    if (disposed || suspended || dragging) return;
+    const attempt = ++dragRevision;
     dragging = true;
-    await detach();
-    if (disposed) return;
-    dragDeadline = Date.now() + 120_000;
-    // The native drag command may resolve before mouse-up. Poll only for this
-    // active gesture (single-flight, 60ms); no idle mouse-position polling.
-    later(60, pollDrag);
-    try { await ports.startDrag(); } catch (error) { ports.report(error); }
+    try {
+      await detach();
+      if (disposed || suspended || attempt !== dragRevision) return;
+      dragDeadline = Date.now() + 120_000;
+      // The native drag command may resolve before mouse-up. Poll only for this
+      // active gesture (single-flight, 60ms); no idle mouse-position polling.
+      later(60, pollDrag);
+      if (!await ports.startDrag() && attempt === dragRevision && !disposed && !suspended) {
+        dragging = false;
+        later(100, settle);
+      }
+    } catch (error) {
+      // Detaching is part of drag preparation too. A failed frame write must
+      // not leave a phantom drag with no native gesture or mouse-up poll.
+      if (attempt === dragRevision) {
+        dragging = false;
+        cancel();
+        if (!disposed && !suspended) later(100, settle);
+      }
+      throw error;
+    }
   }
   async function recoverDisplayGeometry() {
     const anchor = state.anchor;
@@ -329,7 +346,8 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     startDrag,
     async suspend(value: boolean) {
       suspended = value;
-      if (value) await detach(); else later(100, settle);
+      if (value) { dragRevision++; dragging = false; await detach(); }
+      else later(100, settle);
     },
     async holdOpen(value: boolean) {
       heldOpen = value;
@@ -417,6 +435,6 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
         guiding = wasGuiding;
       }
     },
-    dispose() { disposed = true; cancel(); },
+    dispose() { disposed = true; dragRevision++; dragging = false; cancel(); },
   };
 }

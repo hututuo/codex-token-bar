@@ -3,6 +3,7 @@ import { isFloatingGeometryRehearsal } from "../platform/floatingGeometryLifecyc
 import "./FloatingEdgeDockGuide.css";
 import { FloatingEdgeQuotaStrip } from "./FloatingPanelPreview";
 import { useFloatingEdgeDock } from "./useFloatingEdgeDock";
+import { restoreFloatingWindowFrame } from "./floatingResizeRecovery";
 import { type CSSProperties, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
@@ -410,11 +411,17 @@ export function FloatingWindowApp() {
       // Keep the same attachment edge until the native close resize finishes.
       if (effectiveRunningModelDetailsExpanded) setRunningModelDetailsSide(placement);
       setDrawerMetrics(current => current.height === nextMetrics.height && current.offset === nextMetrics.offset ? current : nextMetrics);
-      const resized = await desktopPlatform.resizeFloatingWindow(targetWidth, targetHeight, { targetPosition });
+      const resize = () => desktopPlatform.resizeFloatingWindow(targetWidth, targetHeight, { targetPosition });
+      const restoringBase = !effectiveRunningModelDetailsExpanded && basePosition !== null;
+      const resized = restoringBase ? await restoreFloatingWindowFrame(resize, () => !cancelled) : await resize();
       if (!resized && effectiveRunningModelDetailsExpanded && !cancelled) setRunningModelDetailsExpanded(false);
-      if (!effectiveRunningModelDetailsExpanded && !cancelled) {
+      if (resized && !effectiveRunningModelDetailsExpanded && !cancelled) {
         runningModelDetailsBasePositionRef.current = null;
         setRunningModelDetailsSide("below");
+      } else if (!resized && restoringBase && !cancelled) {
+        // Keep the recovery anchor for the next real layout operation. Never
+        // mistake afterResize's live (possibly expanded) frame for the base.
+        console.warn("Floating drawer restore failed; retaining base position");
       }
     };
     void reconcileWindowGeometry().catch(error => console.warn("Floating details layout failed", error));

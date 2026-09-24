@@ -49,7 +49,7 @@ function fixture(options = {}) {
     frame: async (frame) => { frames.push(frame); current = { ...current, frame }; onFrame?.(); },
     persist: (position) => saved.push(position),
     present: (state) => states.push(state), reducedMotion: () => reducedMotion,
-    startDrag: async () => true,
+    startDrag: options.startDrag ?? (async () => true),
     prepareReveal: async () => { prepared.push({ ...dock.state() }); await options.prepareReveal?.(); },
     prepareCompact: options.prepareCompact,
     report: (error) => errors.push(error),
@@ -127,6 +127,52 @@ test("native drag waits for mouse release even after startDragging resolves", as
   assert.equal(f.dock.state().anchor, null);
   f.pointer({ x: 40, y: 200, leftButtonDown: false }); await f.advance(60);
   assert.equal(f.dock.state().anchor.edge, "left");
+});
+
+test("failed drag preparation restores docking without waiting for a nonexistent mouse-up", async () => {
+  let nativeDrags = 0;
+  const f = fixture({ startDrag: async () => { nativeDrags++; return true; } });
+  f.dock.initialize(); await f.advance(350);
+  let failed = false;
+  f.onFrame(() => { if (!failed) { failed = true; throw new Error("detach failed"); } });
+  await assert.rejects(f.dock.startDrag(), /detach failed/);
+  assert.equal(nativeDrags, 0);
+  await f.advance(100);
+  assert.equal(f.dock.state().anchor?.edge, "left");
+  await f.advance(1000);
+  assert.equal(f.dock.state().compact, true);
+  assert.equal(f.timers.size, 0);
+  f.dock.dispose();
+});
+
+test("a declined native drag and a disposed preparation release drag ownership", async () => {
+  const f = fixture({ startDrag: async () => false });
+  f.dock.initialize(); await f.advance(350);
+  await f.dock.startDrag(); await f.advance(100);
+  assert.equal(f.dock.state().anchor?.edge, "left");
+  f.onFrame(() => { f.dock.dispose(); throw new Error("window closed"); });
+  await assert.rejects(f.dock.startDrag(), /window closed/);
+  assert.equal(f.timers.size, 0);
+});
+
+test("native drag failure releases ownership and re-enabling after an in-flight drag still docks", async () => {
+  const failed = fixture({ startDrag: async () => { throw new Error("native drag failed"); } });
+  failed.dock.initialize(); await failed.advance(350);
+  await assert.rejects(failed.dock.startDrag(), /native drag failed/);
+  await failed.advance(1100);
+  assert.equal(failed.dock.state().compact, true);
+  failed.dock.dispose();
+
+  let finish;
+  const f = fixture({ startDrag: () => new Promise(resolve => { finish = resolve; }) });
+  f.dock.initialize(); await f.advance(350);
+  const drag = f.dock.startDrag(); await drain();
+  await f.dock.suspend(true);
+  finish(false); await drag;
+  assert.equal(f.timers.size, 0);
+  await f.dock.suspend(false); await f.advance(1100);
+  assert.equal(f.dock.state().compact, true);
+  f.dock.dispose();
 });
 
 test("monitor changes restore and clamp the full frame in the new work area", async () => {
