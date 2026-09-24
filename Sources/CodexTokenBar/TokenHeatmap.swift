@@ -240,7 +240,7 @@ struct TokenHeatmap: View {
                 return "\(summary.title)，模型明细待读取"
             }
             let detail = modelCostAccessibilityText(summary.modelBreakdowns)
-            return "\(summary.title)，\(summary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(PlanCostNormalization.text(original: cost, normalized: summary.normalizedModelCostUSD ?? cost))，\(detail)"
+            return "\(summary.title)，\(summary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(cost.quotaEstimatorMoneyText)，\(detail)"
         }
         return "\(summary.title)，\(summary.tokens.abbreviatedTokens) token，\(summary.calls) 次调用，平均 \(summary.average.abbreviatedTokens)"
     }
@@ -256,7 +256,7 @@ struct TokenHeatmap: View {
             guard let cost = rangeSummary.modelCostUSD else {
                 return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，模型明细待读取"
             }
-            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，\(rangeSummary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(PlanCostNormalization.text(original: cost, normalized: rangeSummary.normalizedModelCostUSD ?? cost))，\(modelCostAccessibilityText(rangeSummary.modelBreakdowns))"
+            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，\(rangeSummary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(cost.quotaEstimatorMoneyText)，\(modelCostAccessibilityText(rangeSummary.modelBreakdowns))"
         }
         if !rangeSummary.modelBreakdowns.isEmpty {
             let models = ModelUsagePresentation.compactText(from: rangeSummary.modelBreakdowns) ?? "暂无模型明细"
@@ -483,7 +483,6 @@ struct TokenHeatmap: View {
                 quotaAverageRemainingPercent: nil,
                 modelBreakdowns: rows,
                 modelCostUSD: cost,
-                normalizedModelCostUSD: costItems.compactMap(\.normalizedCostUSD).reduce(0, +),
                 isModelCost: mode == .modelCost,
                 hasUnknownPrices: costItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
             )

@@ -929,7 +929,7 @@ private struct CodexRadarQuotaDetail: View {
 
     private func moneyText(_ value: Double?, fractionDigits: Int = 2) -> String {
         guard let value else { return "--" }
-        return "$\(CodexRadarModelIQPoint.display(value, fractionDigits: fractionDigits)) · 均一化待模型数据"
+        return "$\(CodexRadarModelIQPoint.display(value, fractionDigits: fractionDigits))"
     }
 
     private func quotaTierSelectionBinding(for id: String, in series: [CodexRadarChartSeries]) -> Binding<Bool> {

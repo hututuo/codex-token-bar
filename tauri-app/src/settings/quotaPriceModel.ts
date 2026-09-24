@@ -82,7 +82,6 @@ export interface ModelTokenCostRow {
 
 export interface ModelAwareAPICostEstimate {
   costUSD: number;
-  normalizedCostUSD: number;
   /** Actual parsed models; stored fallback preference migration is separate. */
   detectedModels: DetectedOfficialAPIPriceModel[];
   /** Exact parsed model keys, including the distinct `gpt55` card. */
@@ -316,7 +315,7 @@ export function modelAwareAPICostUSD(
   basis: QuotaPriceBasis = "current",
 ): ModelAwareAPICostEstimate {
   if (!rows || rows.length === 0) {
-    return normalizedFallback({
+    return {
       costUSD: officialAPICostUSD(fallback.inputTokens, fallback.cachedInputTokens, fallback.outputTokens, fallbackModel, basis),
       detectedModels: [],
       fallbackCalls: fallback.calls,
@@ -324,7 +323,7 @@ export function modelAwareAPICostUSD(
       excludedCalls: 0,
       unpricedModels: [],
       unpricedCalls: 0,
-    }, fallbackModel);
+    };
   }
   const covered = rows.reduce((total, row) => ({
     inputTokens: total.inputTokens + finiteNonnegative(row.breakdown.inputTokens),
@@ -369,7 +368,7 @@ export function modelAwareAPICostUSD(
     || covered.cachedInputTokens !== expected.cachedInputTokens
     || covered.outputTokens !== expected.outputTokens
     || covered.calls !== expected.calls) {
-    return normalizedFallback({
+    return {
       costUSD: officialAPICostUSD(
         Math.max(expected.inputTokens - excludedBreakdown.inputTokens - unpricedBreakdown.inputTokens, 0),
         Math.max(expected.cachedInputTokens - excludedBreakdown.cachedInputTokens - unpricedBreakdown.cachedInputTokens, 0),
@@ -383,7 +382,7 @@ export function modelAwareAPICostUSD(
       excludedCalls,
       unpricedModels,
       unpricedCalls,
-    }, fallbackModel);
+    };
   }
   const grouped = new Map<DetectedOfficialAPIPriceModel, ModelTokenCostRow["breakdown"]>();
   const unknown = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 };
@@ -404,10 +403,8 @@ export function modelAwareAPICostUSD(
     if (detected) grouped.set(detected, target);
   }
   let costUSD = 0;
-  let normalizedCostUSD = 0;
   const pricedGroups = new Map<string, {
     rates: APIPriceRates;
-    factor: number;
     breakdown: ModelTokenCostRow["breakdown"];
   }>();
   for (const row of rows) {
@@ -422,7 +419,6 @@ export function modelAwareAPICostUSD(
     const key = `${model}:${rates.inputUSDPerMillion}:${rates.cachedInputUSDPerMillion}:${rates.outputUSDPerMillion}`;
     const priced = pricedGroups.get(key) ?? {
       rates,
-      factor: planCostNormalizationFactor(model),
       breakdown: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 },
     };
     priced.breakdown.inputTokens += row.breakdown.inputTokens;
@@ -431,15 +427,13 @@ export function modelAwareAPICostUSD(
     priced.breakdown.calls += row.breakdown.calls;
     pricedGroups.set(key, priced);
   }
-  for (const { rates, breakdown, factor } of pricedGroups.values()) {
-    const amount = costUSDForRates(
+  for (const { rates, breakdown } of pricedGroups.values()) {
+    costUSD += costUSDForRates(
       breakdown.inputTokens,
       breakdown.cachedInputTokens,
       breakdown.outputTokens,
       rates,
     );
-    costUSD += amount;
-    normalizedCostUSD += amount * factor;
   }
   const detectedModelKeys = ([
     "gpt6Astra",
@@ -457,7 +451,6 @@ export function modelAwareAPICostUSD(
   const detectedModels = detectedModelKeys;
   return {
     costUSD,
-    normalizedCostUSD,
     detectedModels,
     detectedModelKeys,
     fallbackCalls: unknown.calls,
@@ -595,12 +588,4 @@ function costUSDForRates(
     + cachedInput * prices.cachedInputUSDPerMillion
     + finiteNonnegative(outputTokens) * prices.outputUSDPerMillion
   ) / 1_000_000;
-}
-
-export const PLAN_COST_NORMALIZATION_EXPLANATION = "均一化估算：Sol ×1.0 · Astra ×1.5 · Luna ×2.0；其他模型暂按 ×1.0。基于原金额估算，并非实际账单。";
-export function planCostNormalizationFactor(model: DetectedOfficialAPIPriceModel): number {
-  return model === "gpt6Astra" ? 1.5 : model === "gpt56Luna" ? 2 : 1;
-}
-function normalizedFallback(estimate: Omit<ModelAwareAPICostEstimate, "normalizedCostUSD">, model: DetectedOfficialAPIPriceModel): ModelAwareAPICostEstimate {
-  return { ...estimate, normalizedCostUSD: estimate.costUSD * planCostNormalizationFactor(model) };
 }

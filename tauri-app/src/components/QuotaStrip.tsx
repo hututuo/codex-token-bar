@@ -1,5 +1,4 @@
 import { DiagnosticNotice } from "./DiagnosticNotice";
-import { normalizedMoneyText } from "../floating/floatingModelUsage.ts";
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type {
   LocalDataWarning,
@@ -301,7 +300,6 @@ function SharedAccountAttributionDetail({
             <div className="shared-attribution-formula" aria-label="归因计算公式">
               <span>本机占比</span>
               <code>{money(attribution.localComparableUSD)} ÷ {money(attribution.radarPlanTotalUSD)} × 100 = {plainPercent(attribution.localSharePercent)}</code>
-              <small>本机均一化 {money(attribution.normalizedComparableCostUSD ?? null)}</small>
               <span>差额</span>
               <code>{hasResidualCalculation
                 ? `${plainPercent(attribution.accountUsedPercent)} − ${plainPercent(attribution.localSharePercent)} = ${signedPercent(attribution.residualPercent)}`
@@ -311,7 +309,7 @@ function SharedAccountAttributionDetail({
             <dl className="shared-attribution-details">
               <div>
                 <dt>{pricesIncomplete ? "已知价格小计" : "当前 API 等值"}</dt>
-                <dd>{attribution.localCurrentAPIEquivalentUSD === null ? "—" : normalizedMoneyText(attribution.localCurrentAPIEquivalentUSD, attribution.normalizedCurrentCostUSD ?? attribution.localCurrentAPIEquivalentUSD)} · {priceModelTitle(attribution.priceModel)}</dd>
+                <dd>{money(attribution.localCurrentAPIEquivalentUSD)} · {priceModelTitle(attribution.priceModel)}</dd>
               </div>
               {attribution.excludedModels.length > 0 ? (
                 <div>
@@ -386,7 +384,7 @@ function SharedAccountAttributionDetail({
         {attribution.historyChangedLowConfidence ? (
           <div className="shared-attribution-note shared-attribution-note--warning">
             本地历史发生变化，可能有会话被归档或移出当前扫描范围。当前扫描为
-            {` ${money(attribution.scannedLocalComparableUSD)} · 均一化 ${money(attribution.normalizedScannedComparableUSD ?? null)}（当前 API ${money(attribution.scannedLocalCurrentAPIEquivalentUSD)} · 均一化 ${money(attribution.normalizedScannedCurrentUSD ?? null)}）`}
+            {` ${money(attribution.scannedLocalComparableUSD)}（当前 API ${money(attribution.scannedLocalCurrentAPIEquivalentUSD)}）`}
             ，本周期已按每个 5 分钟桶的匿名来源贡献恢复历史累计；若来源身份无法证明完整，归因会直接停止而不是继续给出正差额。
           </div>
         ) : null}

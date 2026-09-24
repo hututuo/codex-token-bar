@@ -127,6 +127,7 @@ mod tests {
             "set_autostart_enabled",
             "complete_floating_paging_guide",
             "save_usage_refresh_settings",
+            "save_quota_history_filter",
         ] {
             assert_async_command_uses_blocking_pool(settings_source, command);
         }
@@ -211,6 +212,15 @@ pub async fn save_quota_refresh_interval_ms(
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_quota_refresh_interval_ms")?;
     run_blocking_command(move || platform::save_quota_refresh_interval_ms(interval_ms)).await
+}
+
+#[tauri::command]
+pub async fn save_quota_history_filter(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+) -> Result<AppSettingsSnapshot, String> {
+    require_window_label(&window, "save_quota_history_filter")?;
+    run_blocking_command(move || platform::save_quota_history_filter(enabled)).await
 }
 
 #[tauri::command]

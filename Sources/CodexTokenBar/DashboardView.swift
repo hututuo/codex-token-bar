@@ -61,6 +61,7 @@ struct DashboardView: View {
     private var sourceTransitionCoordinator: DashboardSourceTransitionCoordinator {
         runtime.sourceTransitionCoordinator
     }
+    @AppStorage(QuotaHistoryFilterSettings.enabledKey) private var filterQuotaHistoryAnomalies = true
     @AppStorage(QuotaSidebarSettings.enabledKey) private var quotaSidebarEnabled = false
     @AppStorage(QuotaSidebarSettings.edgeKey) private var quotaSidebarEdgeRaw = QuotaSidebarEdge.right.rawValue
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
@@ -413,6 +414,9 @@ struct DashboardView: View {
         }
         .onChange(of: runtimeConfigurationSignature) {
             reportRuntimeConfiguration()
+        }
+        .onChange(of: filterQuotaHistoryAnomalies) {
+            quotaHistoryStore.reload()
         }
         .onChange(of: sharedAccountAttributionInputSignature) {
             refreshSharedAccountAttribution()

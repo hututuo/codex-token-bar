@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettingsSnapshot {
+    #[serde(default = "default_enabled")]
+    pub filter_quota_history_anomalies: bool,
     #[serde(default, alias = "codex_home")]
     pub codex_home: Option<String>,
     #[serde(default)]
@@ -41,6 +43,7 @@ pub struct AppSettingsSnapshot {
 impl Default for AppSettingsSnapshot {
     fn default() -> Self {
         Self {
+            filter_quota_history_anomalies: true,
             codex_home: None,
             custom_account_display_name: String::new(),
             quota_refresh_interval_ms: default_quota_refresh_interval_ms(),

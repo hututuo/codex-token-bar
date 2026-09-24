@@ -35,7 +35,8 @@ pub(crate) fn read(identity: &QuotaHistoryIdentity) -> Result<Vec<QuotaCycle>, S
             Err(error) => return Err(format!("读取周期历史失败：{error}")),
         }
     }
-    let rows = series::sanitized_rows(merge_history_rows(rows, Vec::new()));
+    let filter_anomalies = crate::platform::read_app_settings()?.filter_quota_history_anomalies;
+    let rows = series::sanitized_rows_with_filter(merge_history_rows(rows, Vec::new()), filter_anomalies);
     let samples: Vec<_> = rows.iter().filter_map(|r| Some(Observation {
         at: r.created_at.floor() as i64,
         upper: r.created_at.ceil() as i64,

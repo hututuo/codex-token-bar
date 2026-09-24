@@ -65,6 +65,12 @@ pub(super) fn make_interval_history_at(
     interval_seconds: i64,
     now: f64,
 ) -> Vec<QuotaHistoryPoint> {
+    make_interval_history_with_filter(rows, count, interval_seconds, now, true)
+}
+
+pub(super) fn make_interval_history_with_filter(
+    rows: Vec<QuotaHistoryRow>, count: usize, interval_seconds: i64, now: f64, filter_anomalies: bool,
+) -> Vec<QuotaHistoryPoint> {
     let interval_seconds = interval_seconds.max(LONG_RECENT_INTERVAL_SECONDS);
     let bin_starts = aligned_bin_starts(now as i64, interval_seconds, count as i64);
     let sorted = projected_rows(
@@ -72,6 +78,7 @@ pub(super) fn make_interval_history_at(
             .filter(|row| row.created_at <= now)
             .collect(),
         now,
+        filter_anomalies,
     );
     let five_rows: Vec<&ProjectedRow> = sorted.iter().filter(|r| !r.five_rejected).collect();
     let seven_rows: Vec<&ProjectedRow> = sorted.iter().filter(|r| !r.seven_rejected).collect();
@@ -147,7 +154,11 @@ pub(super) fn make_daily_history(
 }
 
 pub(super) fn make_daily_history_at(rows: Vec<QuotaHistoryRow>, now: f64) -> HashMap<String, DailyQuotaHistory> {
-    let sorted = projected_rows(rows, now);
+    make_daily_history_with_filter(rows, now, true)
+}
+
+pub(super) fn make_daily_history_with_filter(rows: Vec<QuotaHistoryRow>, now: f64, filter_anomalies: bool) -> HashMap<String, DailyQuotaHistory> {
+    let sorted = projected_rows(rows, now, filter_anomalies);
     let local_offset = crate::core::localtime::local_offset();
     let mut grouped: HashMap<String, DailyQuotaAccumulator> = HashMap::new();
 
@@ -182,11 +193,15 @@ impl std::ops::Deref for ProjectedRow {
 }
 
 pub(super) fn sanitized_rows(rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
-    let now = rows.iter().map(|r| r.created_at).filter(|at| at.is_finite()).fold(0.0_f64, f64::max);
-    projected_rows(rows, now).into_iter().map(|r| r.row).collect()
+    sanitized_rows_with_filter(rows, true)
 }
 
-fn projected_rows(rows: Vec<QuotaHistoryRow>, now: f64) -> Vec<ProjectedRow> {
+pub(super) fn sanitized_rows_with_filter(rows: Vec<QuotaHistoryRow>, filter_anomalies: bool) -> Vec<QuotaHistoryRow> {
+    let now = rows.iter().map(|r| r.created_at).filter(|at| at.is_finite()).fold(0.0_f64, f64::max);
+    projected_rows(rows, now, filter_anomalies).into_iter().map(|r| r.row).collect()
+}
+
+fn projected_rows(rows: Vec<QuotaHistoryRow>, now: f64, filter_anomalies: bool) -> Vec<ProjectedRow> {
     let mut rows = reclassify_legacy_seven_day_only_rows(super::merge_history_rows(rows, Vec::new()));
     rows.retain(|r| r.created_at.is_finite() && r.created_at <= now + 0.000_001);
     rows.sort_by(|a,b| a.created_at.total_cmp(&b.created_at));
@@ -205,7 +220,8 @@ fn projected_rows(rows: Vec<QuotaHistoryRow>, now: f64) -> Vec<ProjectedRow> {
             seven_used: r.seven_day_used_percent, seven_reset: r.seven_day_resets_at,
         }).collect();
         let plan = timeline.iter().find_map(|r| r.identity_plan_type.as_deref()).or_else(|| timeline.first().and_then(|r| r.plan_type.as_deref()));
-        let projection = super::protection::project(&samples, plan, now);
+        let projection = if filter_anomalies { super::protection::project(&samples, plan, now) }
+            else { super::protection::Projection::default() };
         for (i,row) in timeline.iter_mut().enumerate() {
             row.five_hour_used_percent = if projection.five_rejected.contains(&i) { None } else { super::protection::valid(row.five_hour_used_percent) };
             row.seven_day_used_percent = if projection.seven_rejected.contains(&i) { None } else { super::protection::valid(row.seven_day_used_percent) };

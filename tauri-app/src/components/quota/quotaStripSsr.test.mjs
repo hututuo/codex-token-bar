@@ -210,8 +210,9 @@ test("QuotaStrip renders quota read warnings and retry affordance from filtered 
     });
 
     assert.match(html, /role="status"/);
-    assert.match(html, />读取失败原因</);
-    assert.match(html, /账户额度读取失败；重置卡读取失败/);
+    assert.match(html, />额度读取失败</);
+    assert.match(html, /查看日志/);
+    assert.doesNotMatch(html, /账户额度读取失败；重置卡读取失败/);
     assert.doesNotMatch(html, /缓存还在初始化/);
     assert.doesNotMatch(html, /重复账户额度读取失败/);
     assert.match(html, /aria-label="只刷新额度"/);
@@ -234,9 +235,9 @@ test("QuotaStrip distinguishes a failed refresh attempt from the retained succes
       warnings: [],
     });
 
-    assert.match(html, /自动重试中（最长 2 分钟）/);
-    assert.match(html, /上次尝试/);
-    assert.match(html, /上次成功/);
+    assert.match(html, /额度更新失败，暂显示上次数据/);
+    assert.match(html, /查看日志/);
+    assert.doesNotMatch(html, /自动重试中（最长 2 分钟）|上次尝试|上次成功/);
   });
 });
 
@@ -341,7 +342,9 @@ test("QuotaStrip omits the retry button when no retry handler is provided", asyn
       warnings: quotaWarnings,
     });
 
-    assert.match(html, /账户额度读取失败；重置卡读取失败/);
+    assert.match(html, />额度读取失败</);
+    assert.match(html, /查看日志/);
+    assert.doesNotMatch(html, /账户额度读取失败；重置卡读取失败/);
     assert.doesNotMatch(html, /aria-label="只刷新额度"/);
     assert.doesNotMatch(html, /class="quota-warning-refresh"/);
   });
@@ -433,7 +436,9 @@ test("DashboardSummarySection passes dashboard warnings through to QuotaStrip re
       selectedLiveThreadId: "",
     });
 
-    assert.match(html, /账户额度读取失败；重置卡读取失败/);
+    assert.match(html, />额度读取失败</);
+    assert.match(html, /查看日志/);
+    assert.doesNotMatch(html, /账户额度读取失败；重置卡读取失败/);
     assert.match(html, /aria-label="只刷新额度"/);
     assert.match(html, /全会话实时速度/);
   });
@@ -487,9 +492,9 @@ test("DashboardSummarySection renders usage precision warning as a wait note out
       selectedLiveThreadId: "",
     });
 
-    assert.match(html, /Token 统计准备中/);
-    assert.match(html, /当前仅显示会话元数据/);
-    assert.match(html, /请稍后刷新/);
+    assert.match(html, /用量统计暂不完整/);
+    assert.match(html, /查看日志/);
+    assert.doesNotMatch(html, /当前仅显示会话元数据|请稍后刷新/);
     assert.doesNotMatch(html, /读取失败原因/);
     assert.doesNotMatch(html, /aria-label="只刷新额度"/);
     assert.doesNotMatch(html, /实时速率准备中/);
@@ -497,7 +502,7 @@ test("DashboardSummarySection renders usage precision warning as a wait note out
   });
 });
 
-test("DashboardSummarySection renders only the primary structured quota diagnostic", async () => {
+test("DashboardSummarySection keeps structured quota diagnostics behind the log entry", async () => {
   await withSsrModules(async (load) => {
     const { DashboardSummarySection } = await load("/src/pages/dashboard/DashboardSummarySection.tsx");
     const dashboard = dashboardFixture();
@@ -560,7 +565,9 @@ test("DashboardSummarySection renders only the primary structured quota diagnost
       selectedLiveThreadId: "",
     });
 
-    assert.match(html, /登录凭证缺失/);
+    assert.match(html, />额度读取失败</);
+    assert.match(html, /查看日志/);
+    assert.doesNotMatch(html, /登录凭证缺失/);
     assert.doesNotMatch(html, /Codex Home 与额度登录来源不一致/);
     assert.doesNotMatch(html, /重置卡读取失败：网络连接失败/);
     assert.doesNotMatch(html, /旧账户额度读取失败/);

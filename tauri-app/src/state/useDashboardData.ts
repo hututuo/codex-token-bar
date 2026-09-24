@@ -888,6 +888,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   ]);
 
   const dashboardReady = state.dashboard !== null;
+  const historyFilterRef = useRef<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -895,6 +896,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
 
     void readAppSettings().then((settings) => {
       if (!cancelled && settings !== null) {
+        historyFilterRef.current ??= settings.filterQuotaHistoryAnomalies !== false;
         setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
         setUsageRefreshSettings(sanitizeUsageRefreshSettings(settings));
       }
@@ -903,6 +905,13 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
 
     void desktopPlatform.onAppSettingsChanged((settings) => {
+      const filter = settings.filterQuotaHistoryAnomalies !== false;
+      const changed = historyFilterRef.current !== filter;
+      historyFilterRef.current = filter;
+      if (changed) {
+        // Reuse current quota when available; only historical projection changed.
+        setQuotaLoadGeneration((current) => current + 1);
+      }
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
       setUsageRefreshSettings(sanitizeUsageRefreshSettings(settings));
     }).then((listener) => {

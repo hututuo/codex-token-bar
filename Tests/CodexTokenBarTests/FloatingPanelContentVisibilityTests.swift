@@ -672,6 +672,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         var window = try XCTUnwrap(root["window"] as? [String: Any])
         window["open"] = true
         window["action"] = "use_remaining_tokens"
+        window["closed_at"] = NSNull()
         root["window"] = window
         let radarSnapshot = try JSONDecoder.codexRadar.decode(
             CodexRadarSnapshot.self,

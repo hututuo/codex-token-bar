@@ -25,8 +25,10 @@ test("Codex Radar diagnostics notice renders root failure without fake radar val
     });
 
     assert.match(html, /role="status"/);
-    assert.match(html, /雷达读取失败/);
-    assert.match(html, /Codex Radar HTTP 503/);
+    assert.match(html, /雷达数据暂未完整更新/);
+    assert.match(html, /查看日志/);
+    assert.match(html, /aria-expanded="false"/);
+    assert.doesNotMatch(html, /Codex Radar HTTP 503/);
     assert.doesNotMatch(html, /IQ --/);
     assert.doesNotMatch(html, /动作 --/);
   });
@@ -60,8 +62,10 @@ test("Codex Radar diagnostics notice marks stale root and feed states", async ()
       feedStaleDataDisplayed: true,
     };
 
-    assert.match(renderComponent(CodexRadarDiagnosticsNotice, { snapshot: staleRoot }), /雷达旧数据/);
-    assert.match(renderComponent(CodexRadarDiagnosticsNotice, { snapshot: staleRoot }), /显示上次成功数据/);
+    const html = renderComponent(CodexRadarDiagnosticsNotice, { snapshot: staleRoot });
+    assert.match(html, /雷达数据暂未完整更新/);
+    assert.match(html, /查看日志/);
+    assert.doesNotMatch(html, /Codex Radar HTTP 502/);
     assert.equal(renderComponent(CodexRadarDiagnosticsNotice, { snapshot: staleFeed }), "");
   });
 });

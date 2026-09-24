@@ -656,7 +656,7 @@ struct QuotaConsumptionSelectionDetailView: View {
                 value: snapshot.attribution?.localSharePercent
                     .map(QuotaSelectionAttributionPresentation.percent) ?? "--",
                 detail: snapshot.attribution?.localComparableCostUSD
-                    .map { PlanCostNormalization.text(original: $0, normalized: snapshot.attribution?.normalizedComparableCostUSD ?? $0) }
+                    .map(QuotaSelectionAttributionPresentation.money)
                     ?? "等待 Radar 同口径",
                 color: AppTheme.accentGreen
             )
@@ -695,7 +695,7 @@ struct QuotaConsumptionSelectionDetailView: View {
                 Divider().frame(height: 30)
                 compactValue(
                     "当前 API 等值",
-                    PlanCostNormalization.text(original: selection.fullCurrentAPIPriceEstimate.costUSD, normalized: selection.fullCurrentAPIPriceEstimate.normalizedCostUSD)
+                    selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText
                 )
             }
         }
@@ -723,8 +723,10 @@ struct QuotaConsumptionSelectionDetailView: View {
                     compactValue(
                         selection.sevenDayCurrentAPIPriceEstimate.unpricedModels.isEmpty ? "当前 API 等值" : "已知价格小计",
                         snapshot.attribution.map {
-                            PlanCostNormalization.text(original: $0.localCurrentOfficialCostUSD, normalized: $0.normalizedCurrentCostUSD ?? $0.localCurrentOfficialCostUSD)
-                        } ?? PlanCostNormalization.text(original: selection.sevenDayCurrentAPIPriceEstimate.costUSD, normalized: selection.sevenDayCurrentAPIPriceEstimate.normalizedCostUSD)
+                            QuotaSelectionAttributionPresentation.money(
+                                $0.localCurrentOfficialCostUSD
+                            )
+                        } ?? selection.sevenDayCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText
                     )
                 }
             }
@@ -1006,7 +1008,6 @@ struct ChartHoverBubble: View {
     let cacheBreakdown: TokenCacheBreakdown?
     let modelBreakdowns: [ModelTokenBreakdown]
     let costUSD: Double
-    let normalizedCostUSD: Double
     let fiveHourRemaining: Double?
     let sevenDayRemaining: Double?
     let bucketInterval: TimeInterval
@@ -1018,7 +1019,6 @@ struct ChartHoverBubble: View {
         cacheBreakdown: TokenCacheBreakdown?,
         modelBreakdowns: [ModelTokenBreakdown] = [],
         costUSD: Double = 0,
-        normalizedCostUSD: Double? = nil,
         fiveHourRemaining: Double?,
         sevenDayRemaining: Double?,
         bucketInterval: TimeInterval,
@@ -1029,7 +1029,6 @@ struct ChartHoverBubble: View {
         self.cacheBreakdown = cacheBreakdown
         self.modelBreakdowns = modelBreakdowns
         self.costUSD = costUSD
-        self.normalizedCostUSD = normalizedCostUSD ?? costUSD
         self.fiveHourRemaining = fiveHourRemaining
         self.sevenDayRemaining = sevenDayRemaining
         self.bucketInterval = bucketInterval
@@ -1067,7 +1066,7 @@ struct ChartHoverBubble: View {
             Text("请求 \(bin.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text("金额 \(PlanCostNormalization.text(original: costUSD, normalized: normalizedCostUSD))")
+            Text("金额 \(costUSD.quotaEstimatorMoneyText)")
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
             Text("缓存命中 \(displayCacheBreakdown.cacheHitRate.percentString) · 命中 \(displayCacheBreakdown.cachedInputTokens.abbreviatedTokens)")
@@ -1106,7 +1105,7 @@ struct ChartHoverBubble: View {
             "\(bin.tokens.abbreviatedTokens) token",
             "\(bin.calls) 次请求",
             "平均 \(average.abbreviatedTokens)",
-            "金额 \(PlanCostNormalization.text(original: costUSD, normalized: normalizedCostUSD))"
+            "金额 \(costUSD.quotaEstimatorMoneyText)"
         ]
         let displayCacheBreakdown = cacheBreakdown ?? .empty
         parts.append("缓存命中率 \(displayCacheBreakdown.cacheHitRate.percentString)")
@@ -1176,7 +1175,7 @@ struct ChartSelectionSummaryBubble: View {
             Text("请求 \(selection.breakdown.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text("金额 \(PlanCostNormalization.text(original: selection.fullCurrentAPIPriceEstimate.costUSD, normalized: selection.fullCurrentAPIPriceEstimate.normalizedCostUSD))")
+            Text("金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)")
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
             Text("缓存命中 \(selection.breakdown.cacheHitRate.percentString) · 命中 \(selection.breakdown.cachedInputTokens.abbreviatedTokens)")
@@ -1214,7 +1213,7 @@ struct ChartSelectionSummaryBubble: View {
             timeRange,
             "\(selection.breakdown.totalTokens.abbreviatedTokens) token",
             "\(selection.breakdown.calls) 次请求",
-            "金额 \(PlanCostNormalization.text(original: selection.fullCurrentAPIPriceEstimate.costUSD, normalized: selection.fullCurrentAPIPriceEstimate.normalizedCostUSD))",
+            "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)",
             "缓存命中率 \(selection.breakdown.cacheHitRate.percentString)"
         ]
         if let models = ModelUsagePresentation.compactText(

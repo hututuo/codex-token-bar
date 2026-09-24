@@ -156,6 +156,10 @@ pub fn save_quota_refresh_interval_ms(interval_ms: u64) -> Result<AppSettingsSna
     })
 }
 
+pub fn save_quota_history_filter(enabled: bool) -> Result<AppSettingsSnapshot, String> {
+    mutate_app_settings(|settings| settings.filter_quota_history_anomalies = enabled)
+}
+
 pub fn save_usage_refresh_settings(
     usage: UsageRefreshSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
@@ -3463,6 +3467,24 @@ mod tests {
             reread.usage_background_aggregate_interval_minutes,
             saved.usage_background_aggregate_interval_minutes
         );
+    }
+
+    #[test]
+    fn quota_history_filter_defaults_on_and_persists_off_without_changing_other_settings() {
+        let old: AppSettingsSnapshot = serde_json::from_str("{}").unwrap();
+        assert!(old.filter_quota_history_anomalies);
+        assert!(AppSettingsSnapshot::default().filter_quota_history_anomalies);
+        let root = TestSettingsRoot::new("quota-history-filter");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot { quota_refresh_interval_ms: 30_000, ..old });
+        mutate_app_settings_at(&path, |settings| settings.filter_quota_history_anomalies = false).unwrap();
+        let reread = read_app_settings_at(&path).unwrap();
+        assert!(!reread.filter_quota_history_anomalies);
+        assert_eq!(reread.quota_refresh_interval_ms, 30_000);
+        let json = serde_json::to_value(&reread).unwrap();
+        assert_eq!(json["filterQuotaHistoryAnomalies"], false);
+        mutate_app_settings_at(&path, |settings| settings.filter_quota_history_anomalies = true).unwrap();
+        assert!(read_app_settings_at(&path).unwrap().filter_quota_history_anomalies);
     }
 
     #[test]

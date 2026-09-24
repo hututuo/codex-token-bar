@@ -11,7 +11,6 @@ struct HeatmapUsageSummary {
     let isQuotaRemaining: Bool
     let modelBreakdowns: [ModelTokenBreakdown]
     let isModelShare: Bool
-    var normalizedModelCostUSD: Double? = nil
     let modelCostUSD: Double?
     let isModelCost: Bool
     let hasUnknownPrices: Bool
@@ -28,7 +27,6 @@ struct HeatmapUsageSummary {
         modelBreakdowns: [ModelTokenBreakdown] = [],
         isModelShare: Bool = false,
         modelCostUSD: Double? = nil,
-        normalizedModelCostUSD: Double? = nil,
         isModelCost: Bool = false,
         hasUnknownPrices: Bool = false
     ) {
@@ -43,7 +41,6 @@ struct HeatmapUsageSummary {
         self.modelBreakdowns = modelBreakdowns
         self.isModelShare = isModelShare
         self.modelCostUSD = modelCostUSD
-        self.normalizedModelCostUSD = normalizedModelCostUSD
         self.isModelCost = isModelCost
         self.hasUnknownPrices = hasUnknownPrices
     }
@@ -61,7 +58,6 @@ struct HeatmapRangeSummary {
     let cacheBreakdown: TokenCacheBreakdown?
     let quotaAverageRemainingPercent: Double?
     let modelBreakdowns: [ModelTokenBreakdown]
-    var normalizedModelCostUSD: Double? = nil
     let modelCostUSD: Double?
     let isModelCost: Bool
     let hasUnknownPrices: Bool
@@ -75,7 +71,6 @@ struct HeatmapRangeSummary {
         quotaAverageRemainingPercent: Double?,
         modelBreakdowns: [ModelTokenBreakdown] = [],
         modelCostUSD: Double? = nil,
-        normalizedModelCostUSD: Double? = nil,
         isModelCost: Bool = false,
         hasUnknownPrices: Bool = false
     ) {
@@ -87,7 +82,6 @@ struct HeatmapRangeSummary {
         self.quotaAverageRemainingPercent = quotaAverageRemainingPercent
         self.modelBreakdowns = modelBreakdowns
         self.modelCostUSD = modelCostUSD
-        self.normalizedModelCostUSD = normalizedModelCostUSD
         self.isModelCost = isModelCost
         self.hasUnknownPrices = hasUnknownPrices
     }
@@ -168,7 +162,7 @@ struct HeatmapHoverInfo: View {
                         .foregroundStyle(.secondary)
                 } else if summary.isModelCost {
                     if let cost = summary.modelCostUSD {
-                        Text("\(summary.hasUnknownPrices ? "已知价格小计 " : "")\(PlanCostNormalization.text(original: cost, normalized: summary.normalizedModelCostUSD ?? cost))")
+                        Text("\(summary.hasUnknownPrices ? "已知价格小计 " : "")\(cost.quotaEstimatorMoneyText)")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(ModelUsagePresentation.dominantColor(from: summary.modelBreakdowns) ?? .secondary)
                         ModelCostInlineSummary(
@@ -248,7 +242,7 @@ struct HeatmapHoverInfo: View {
                         .foregroundStyle(.secondary)
                 } else if rangeSummary.isModelCost {
                     if let cost = rangeSummary.modelCostUSD {
-                        Text("\(rangeSummary.hasUnknownPrices ? "已知价格小计 " : "")\(PlanCostNormalization.text(original: cost, normalized: rangeSummary.normalizedModelCostUSD ?? cost))")
+                        Text("\(rangeSummary.hasUnknownPrices ? "已知价格小计 " : "")\(cost.quotaEstimatorMoneyText)")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(ModelUsagePresentation.dominantColor(from: rangeSummary.modelBreakdowns) ?? .secondary)
                         ModelCostInlineSummary(

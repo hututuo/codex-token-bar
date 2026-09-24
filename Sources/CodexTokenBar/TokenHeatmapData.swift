@@ -114,7 +114,6 @@ extension TokenHeatmap {
                 iconName: "dollarsign.circle.fill",
                 modelBreakdowns: rows,
                 modelCostUSD: cost,
-                normalizedModelCostUSD: items.compactMap(\.normalizedCostUSD).reduce(0, +),
                 isModelCost: true,
                 hasUnknownPrices: items.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
             )

@@ -101,6 +101,7 @@ enum AppSettingsRouteRequest {
 }
 
 struct AppSettingsView: View {
+    @AppStorage(QuotaHistoryFilterSettings.enabledKey) private var filterQuotaHistoryAnomalies = true
     @AppStorage(QuotaSidebarSettings.enabledKey) private var quotaSidebarEnabled = false
     @AppStorage(QuotaSidebarSettings.edgeKey) private var quotaSidebarEdgeRaw = QuotaSidebarEdge.right.rawValue
     @ObservedObject var loginItemStore: LoginItemStore
@@ -590,6 +591,10 @@ struct AppSettingsView: View {
             }
 
             settingsSection(title: "额度", subtitle: "设置官方额度数据的自动刷新频率") {
+                settingsToggle("过滤异常点", systemImage: "line.3.horizontal.decrease.circle", isOn: $filterQuotaHistoryAnomalies)
+                Text("默认开启。过滤额度历史中的异常跳变；关闭后显示原始记录。不会删除数据或改变实时额度。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 settingsPicker(
                     "额度刷新",
                     systemImage: "clock.arrow.circlepath",

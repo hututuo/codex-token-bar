@@ -125,6 +125,7 @@ struct ResetCreditCacheEntry {
 struct QuotaHistoryCacheEntry {
     bundle: quota_history::QuotaHistoryBundle,
     cached_at: Instant,
+    filter_anomalies: bool,
 }
 
 #[derive(Default)]
@@ -139,6 +140,7 @@ struct QuotaHistoryCacheCoordinator {
 }
 
 impl QuotaHistoryCacheCoordinator {
+    #[cfg(test)]
     fn load_or_refresh<F>(
         &self,
         identity: &quota_history::QuotaHistoryIdentity,
@@ -148,11 +150,20 @@ impl QuotaHistoryCacheCoordinator {
     where
         F: FnOnce() -> Result<quota_history::QuotaHistoryBundle, String>,
     {
+        self.load_or_refresh_with_filter(identity, force_refresh, true, loader)
+    }
+
+    fn load_or_refresh_with_filter<F>(
+        &self, identity: &quota_history::QuotaHistoryIdentity,
+        force_refresh: bool, filter_anomalies: bool, loader: F,
+    ) -> Result<quota_history::QuotaHistoryBundle, String>
+    where F: FnOnce() -> Result<quota_history::QuotaHistoryBundle, String>,
+    {
         let requested_at = Instant::now();
         if !force_refresh {
             let cache = self.cache.lock().map_err(|error| error.to_string())?;
             if let Some(entry) = cache.entries.get(identity) {
-                if entry.cached_at.elapsed() <= HISTORY_CACHE_TTL {
+                if entry.filter_anomalies == filter_anomalies && entry.cached_at.elapsed() <= HISTORY_CACHE_TTL {
                     return Ok(entry.bundle.clone());
                 }
             }
@@ -173,7 +184,7 @@ impl QuotaHistoryCacheCoordinator {
             if let Some(entry) = cache.entries.get(identity) {
                 let fresh = entry.cached_at.elapsed() <= HISTORY_CACHE_TTL;
                 let completed_for_request = entry.cached_at >= requested_at;
-                if (!force_refresh && fresh) || completed_for_request {
+                if entry.filter_anomalies == filter_anomalies && ((!force_refresh && fresh) || completed_for_request) {
                     return Ok(entry.bundle.clone());
                 }
             }
@@ -189,6 +200,7 @@ impl QuotaHistoryCacheCoordinator {
                 QuotaHistoryCacheEntry {
                     bundle: bundle.clone(),
                     cached_at: Instant::now(),
+                    filter_anomalies,
                 },
             );
         Ok(bundle)
@@ -204,11 +216,23 @@ pub fn read_account_quota(
         // proof; elapsed sleep time must never count as observation evidence.
         quota_history::reset_stability_tracking();
     }
-    read_account_quota_with_policy(codex_home, force_refresh, || {
+    let scope = observed_quota_cache_scope(codex_home);
+    let mut bundle = read_account_quota_with_policy(codex_home, force_refresh, || {
         crate::platform::read_app_settings()
             .map(|settings| settings.quota_refresh_interval_ms)
             .unwrap_or(DEFAULT_QUOTA_REFRESH_CADENCE_MS)
-    })
+    })?;
+    // Cached/stale realtime values may outlive a presentation preference.
+    // Reproject only history, without recording the cached sample as new data.
+    if let Some(attribution) = bundle.attribution_identity.as_ref() {
+        if let Some(identity) = scope.history_identity(&bundle, Some(&attribution.limit)) {
+            if identity.attribution_identity() == *attribution
+                && scope.allows_success_reuse(&observed_quota_cache_scope(codex_home)) {
+                refresh_quota_histories(&mut bundle, &identity, false);
+            }
+        }
+    }
+    Ok(bundle)
 }
 
 pub fn read_account_reset_credits(
@@ -847,8 +871,11 @@ fn refresh_quota_histories(
 ) {
     let cache = QUOTA_HISTORY_CACHE.get_or_init(QuotaHistoryCacheCoordinator::default);
     let history_request = bundle.clone();
-    let history = cache.load_or_refresh(identity, force_refresh, || {
-        quota_history::history_bundle_for(identity, &history_request, 365)
+    let history = crate::platform::read_app_settings().and_then(|settings| {
+        let filter_anomalies = settings.filter_quota_history_anomalies;
+        cache.load_or_refresh_with_filter(identity, force_refresh, filter_anomalies, || {
+            quota_history::history_bundle_for(identity, &history_request, 365, filter_anomalies)
+        })
     });
 
     match history {
@@ -2012,6 +2039,22 @@ mod tests {
             })
             .unwrap();
         assert_eq!(preserved.recent_24h[0].label, "load-2");
+    }
+
+    #[test]
+    fn quota_history_cache_does_not_reuse_opposite_filter_mode() {
+        let cache = QuotaHistoryCacheCoordinator::default();
+        let identity = quota_cache_scope(Path::new("filter-home"), Some("sub:filter".into()))
+            .history_identity(&measured_quota_bundle("Filter User"), Some("codex")).unwrap();
+        let count = std::cell::Cell::new(0);
+        for filter in [true, false, true] {
+            cache.load_or_refresh_with_filter(&identity, false, filter, || {
+                count.set(count.get() + 1);
+                Ok(quota_history::QuotaHistoryBundle::default())
+            }).unwrap();
+            cache.load_or_refresh_with_filter(&identity, false, filter, || panic!("same-mode cache should be reused")).unwrap();
+        }
+        assert_eq!(count.get(), 3);
     }
 
     #[test]

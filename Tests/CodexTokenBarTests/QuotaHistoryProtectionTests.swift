@@ -3,6 +3,17 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaHistoryProtectionTests: XCTestCase {
+    func testFilterPreferenceDefaultsOnAndPersistsExplicitOff() throws {
+        let suite = "quota-history-filter-tests-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(QuotaHistoryFilterSettings.isEnabled(defaults: defaults))
+        defaults.set(false, forKey: QuotaHistoryFilterSettings.enabledKey)
+        XCTAssertFalse(QuotaHistoryFilterSettings.isEnabled(defaults: try XCTUnwrap(UserDefaults(suiteName: suite))))
+        defaults.set(true, forKey: QuotaHistoryFilterSettings.enabledKey)
+        XCTAssertTrue(QuotaHistoryFilterSettings.isEnabled(defaults: defaults))
+    }
+
     private struct Case: Decodable {
         let name: String
         let plan: String?

@@ -19,6 +19,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "save_display_surfaces",
     "save_custom_account_display_name",
     "save_quota_refresh_interval_ms",
+    "save_quota_history_filter",
     "save_usage_refresh_settings",
     "save_auto_resume_settings",
     "save_session_enhancement_settings",

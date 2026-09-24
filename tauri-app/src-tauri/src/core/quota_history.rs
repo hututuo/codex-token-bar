@@ -29,9 +29,8 @@ use database::{
 };
 #[cfg(test)]
 use database::{maintenance_metadata, recent_rows, rows_since, rows_since_for_row};
-use series::{make_daily_history, make_interval_history, make_recent_history};
 #[cfg(test)]
-use series::DailyQuotaHistory;
+use series::{make_daily_history, make_interval_history, make_recent_history, DailyQuotaHistory};
 
 #[cfg(test)]
 use series::format_date;
@@ -167,6 +166,7 @@ pub fn history_bundle_for(
     identity: &QuotaHistoryIdentity,
     bundle: &AccountQuotaBundle,
     day_count: usize,
+    filter_anomalies: bool,
 ) -> Result<QuotaHistoryBundle, String> {
     QuotaHistoryDatabase::default()?
         .history_bundle_for_identity(
@@ -174,6 +174,7 @@ pub fn history_bundle_for(
             bundle,
             day_count,
             LONG_RECENT_POINT_COUNT as usize,
+            filter_anomalies,
         )
         .map_err(|error| format!("读取额度历史失败：{error}"))
 }
@@ -327,6 +328,7 @@ impl QuotaHistoryDatabase {
         bundle: &AccountQuotaBundle,
         day_count: usize,
         recent_count: usize,
+        filter_anomalies: bool,
     ) -> SqlResult<QuotaHistoryBundle> {
         let Some(identity) = identity else {
             return Ok(QuotaHistoryBundle::default());
@@ -342,7 +344,7 @@ impl QuotaHistoryDatabase {
             &filter_row,
             day_count.max(31) as f64 * 24.0 * 60.0 * 60.0,
         )?;
-        Ok(history_bundle_from_rows(rows, recent_count, Some(identity)))
+        Ok(history_bundle_from_rows_with_filter(rows, recent_count, Some(identity), filter_anomalies))
     }
 
     fn history_rows_for_identity(
@@ -391,7 +393,7 @@ impl QuotaHistoryDatabase {
             bundle,
             Some("codex"),
         );
-        self.history_bundle_for_identity(identity.as_ref(), bundle, day_count, recent_count)
+        self.history_bundle_for_identity(identity.as_ref(), bundle, day_count, recent_count, true)
     }
 
     #[cfg(test)]
@@ -610,6 +612,13 @@ fn history_bundle_from_rows(
     recent_count: usize,
     fallback_identity: Option<&QuotaHistoryIdentity>,
 ) -> QuotaHistoryBundle {
+    history_bundle_from_rows_with_filter(rows, recent_count, fallback_identity, true)
+}
+
+fn history_bundle_from_rows_with_filter(
+    rows: Vec<QuotaHistoryRow>, recent_count: usize,
+    fallback_identity: Option<&QuotaHistoryIdentity>, filter_anomalies: bool,
+) -> QuotaHistoryBundle {
     let mut rows = rows;
     if let Some(identity) = fallback_identity {
         for row in &mut rows {
@@ -624,7 +633,7 @@ fn history_bundle_from_rows(
     }
     let now = now_unix();
     QuotaHistoryBundle {
-        daily: series::make_daily_history_at(rows.clone(), now)
+        daily: series::make_daily_history_with_filter(rows.clone(), now, filter_anomalies)
             .into_iter()
             .map(|(date, history)| QuotaHistoryDailyPoint {
                 date,
@@ -632,9 +641,9 @@ fn history_bundle_from_rows(
                 seven_day_remaining_percent: history.seven_day_remaining_percent,
             })
             .collect(),
-        recent_24h: series::make_interval_history_at(rows.clone(), recent_count.max(1), 300, now),
-        recent_7d: series::make_interval_history_at(rows.clone(), 30 * 24, 60 * 60, now),
-        recent_30d: series::make_interval_history_at(rows, 30 * 4, 6 * 60 * 60, now),
+        recent_24h: series::make_interval_history_with_filter(rows.clone(), recent_count.max(1), 300, now, filter_anomalies),
+        recent_7d: series::make_interval_history_with_filter(rows.clone(), 30 * 24, 60 * 60, now, filter_anomalies),
+        recent_30d: series::make_interval_history_with_filter(rows, 30 * 4, 6 * 60 * 60, now, filter_anomalies),
     }
 }
 

@@ -17,6 +17,49 @@ fn input(used: f64, reset: i64) -> AccountQuotaBundle {
     bundle_with_plan("protection", "Plus", used, reset, 0.5, reset + 500_000)
 }
 
+#[test]
+fn anomaly_filter_toggle_restores_raw_exhaustion_without_mutating_history() {
+    let (_directory, database, identity) = fixture("sub:filter-toggle");
+    let now = (now_unix() / 300.0).floor() * 300.0;
+    let reset = (now + 10_800.0) as i64;
+    let make = |used| bundle_with_plan("filter-toggle", "Plus", 0.1, reset, used, reset + 500_000);
+    for (minutes, used) in [(20.0, 0.0), (15.0, 1.0), (5.0, 0.02)] {
+        database.record_for_identity_at(Some(&identity), &make(used), now - minutes * 60.0).unwrap();
+    }
+    let rows = raw(&database, &identity, &make(0.02));
+    let original: Vec<_> = rows.iter().map(|r| (r.created_at, r.seven_day_used_percent)).collect();
+    let filtered = series::sanitized_rows_with_filter(rows.clone(), true);
+    assert_eq!(filtered[1].seven_day_used_percent, None);
+    let unfiltered = series::sanitized_rows_with_filter(rows.clone(), false);
+    assert_eq!(unfiltered[1].seven_day_used_percent, Some(100));
+    for enabled in [true, false, true, false] {
+        let points = series::make_interval_history_with_filter(rows.clone(), 8, 300, now, enabled);
+        assert_eq!(points.iter().any(|p| p.seven_day_remaining_percent == Some(0.0)), !enabled);
+    }
+    let filtered_daily = series::make_daily_history_with_filter(rows.clone(), now, true);
+    let raw_daily = series::make_daily_history_with_filter(rows, now, false);
+    let minimum = |daily: &std::collections::HashMap<String, series::DailyQuotaHistory>| {
+        daily.values().filter_map(|day| day.seven_day_remaining_percent).reduce(f64::min).unwrap()
+    };
+    assert!(minimum(&raw_daily) < minimum(&filtered_daily));
+    let reopened = QuotaHistoryDatabase { path: database.path.clone() };
+    assert_eq!(raw(&reopened, &identity, &make(0.02)).iter().map(|r| (r.created_at, r.seven_day_used_percent)).collect::<Vec<_>>(), original);
+}
+
+#[test]
+fn enabled_anomaly_filter_preserves_sustained_exhaustion() {
+    let (_directory, database, identity) = fixture("sub:sustained-exhaustion");
+    let now = now_unix();
+    let reset = (now + 10_800.0) as i64;
+    let make = |used| bundle_with_plan("sustained", "Plus", 0.1, reset, used, reset + 500_000);
+    for (minutes, used) in [(20.0, 0.98), (15.0, 1.0), (5.0, 1.0)] {
+        database.record_for_identity_at(Some(&identity), &make(used), now - minutes * 60.0).unwrap();
+    }
+    let rows = series::sanitized_rows(raw(&database, &identity, &make(1.0)));
+    assert_eq!(rows[1].seven_day_used_percent, Some(100));
+    assert_eq!(rows[2].seven_day_used_percent, Some(100));
+}
+
 fn raw(database: &QuotaHistoryDatabase, identity: &QuotaHistoryIdentity, bundle: &AccountQuotaBundle) -> Vec<QuotaHistoryRow> {
     let connection = database.open().unwrap();
     database::all_rows_for_row(&connection, &QuotaHistoryRow::from_bundle(identity, bundle, now_unix())).unwrap()

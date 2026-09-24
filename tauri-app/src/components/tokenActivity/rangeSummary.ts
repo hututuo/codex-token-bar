@@ -4,7 +4,7 @@ import type { ActivityMode } from "./types";
 import { modelUsageCompactText } from "../modelUsagePresentation.ts";
 import type { ModelTokenBreakdown } from "../../types/dashboard";
 import {
-  normalizedMoneyText,
+  floatingModelUsageMoneyText,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
   hasUnknownModelPrices,
@@ -75,7 +75,7 @@ export function summarizeRange(
     return {
       hint: `${rangeStart} - ${rangeEnd}`,
       value: [
-        `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${normalizedMoneyText(total, items.reduce((sum, item) => sum + (item.normalizedCostUSD ?? 0), 0))}`,
+        `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${floatingModelUsageMoneyText(total)}`,
         ...items.map((item) => `${item.label} ${floatingModelUsageValue(item, "cost")}`),
       ].join(" · "),
     };

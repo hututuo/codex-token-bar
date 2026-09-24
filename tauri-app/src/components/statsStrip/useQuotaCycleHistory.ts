@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CodexHomeSourceToken, QuotaAttributionIdentity, QuotaCycle, QuotaCycleUsage } from "../../types/dashboard";
 import { readQuotaCycles, readQuotaCycleUsage } from "../../api/dashboardClient";
+import { desktopPlatform } from "../../platform/desktop";
 
 export function quotaCycleScopeKey(identity: QuotaAttributionIdentity | null | undefined): string | null {
   return identity ? `${identity.scopeKey}|${identity.plan}|${identity.limit}` : null;
@@ -13,6 +14,15 @@ function cycleBoundaryKey(cycle: QuotaCycle | undefined): string {
 export function useQuotaCycleHistory(sourceToken: CodexHomeSourceToken | null, identity: QuotaAttributionIdentity | null,
   refreshKey: string, enabled: boolean) {
   const scope = quotaCycleScopeKey(identity);
+  const [historySettingsGeneration, setHistorySettingsGeneration] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    let stop: (() => void) | undefined;
+    void desktopPlatform.onAppSettingsChanged(() => {
+      if (!cancelled) setHistorySettingsGeneration(value => value + 1);
+    }).then(unlisten => { if (cancelled) unlisten(); else stop = unlisten; });
+    return () => { cancelled = true; stop?.(); };
+  }, []);
   const key = useMemo(() => JSON.stringify([sourceToken, scope]), [sourceToken, scope]);
   const [list, setList] = useState<{key: string; cycles: QuotaCycle[]}>();
   const [selection, setSelection] = useState<{key: string; id: string}>();
@@ -32,7 +42,7 @@ export function useQuotaCycleHistory(sourceToken: CodexHomeSourceToken | null, i
       if (!cancelled) setList({key, cycles});
     }).catch(error => { if (!cancelled) setError({key, message: String(error)}); });
     return () => { cancelled = true; };
-  }, [key, scope, refreshKey, enabled]);
+  }, [key, scope, refreshKey, enabled, historySettingsGeneration]);
   useEffect(() => {
     if (!sourceToken || !scope || !selected || !enabled) return;
     let cancelled = false;

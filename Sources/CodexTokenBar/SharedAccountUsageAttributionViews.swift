@@ -333,7 +333,7 @@ struct SharedAccountUsageAttributionDetailView: View {
             metricCard(
                 title: "本机折算",
                 value: result.localSharePercent.map(SharedAccountUsageAttributionPresentation.percent) ?? "--",
-                detail: result.localComparableCostUSD.map { PlanCostNormalization.text(original: $0, normalized: result.normalizedComparableCostUSD ?? $0) } ?? "等待同基准金额",
+                detail: result.localComparableCostUSD.map(SharedAccountUsageAttributionPresentation.money) ?? "等待同基准金额",
                 color: AppTheme.accentGreen
             )
             metricCard(
@@ -383,7 +383,7 @@ struct SharedAccountUsageAttributionDetailView: View {
                 HStack(spacing: 12) {
                     sourceValue("Radar \(result.tier.title) 7 天总额", result.radarSevenDayTotalUSD.map(SharedAccountUsageAttributionPresentation.money) ?? "--")
                     sourceValue("归因价格", result.priceRevision.title)
-                    sourceValue(result.unpricedModels.isEmpty ? "当前 API 等值" : "已知价格小计", result.localCurrentOfficialCostUSD.map { PlanCostNormalization.text(original: $0, normalized: result.normalizedCurrentCostUSD ?? $0) } ?? "--")
+                    sourceValue(result.unpricedModels.isEmpty ? "当前 API 等值" : "已知价格小计", result.localCurrentOfficialCostUSD.map(SharedAccountUsageAttributionPresentation.money) ?? "--")
                     Link(destination: URL(string: "https://codexradar.com")!) {
                         Label("Codex 雷达", systemImage: "arrow.up.right")
                             .font(.system(size: 9.5, weight: .semibold))

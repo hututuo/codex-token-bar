@@ -53,6 +53,10 @@ export function saveQuotaRefreshIntervalMs(intervalMs: number): Promise<AppSetti
   return callCommandStrict<AppSettingsSnapshot>("save_quota_refresh_interval_ms", { intervalMs });
 }
 
+export function saveQuotaHistoryFilter(enabled: boolean): Promise<AppSettingsSnapshot> {
+  return callCommandStrict<AppSettingsSnapshot>("save_quota_history_filter", { enabled });
+}
+
 export function saveUsageRefreshSettings(
   settings: UsageRefreshSettings,
 ): Promise<AppSettingsSnapshot> {

@@ -1478,7 +1478,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertNil(loaded.recentBins[sevenBoundary + 1].sevenDayRemainingPercent)
     }
 
-    func testRecentHistoryRetainsLegitimateSevenDayExhaustionBeforePendingDrop() throws {
+    func testRecentHistoryFiltersIsolatedExhaustionAndToggleRestoresRawRecords() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1492,8 +1492,32 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
 
-        XCTAssertTrue(recentValues.contains(0), "used=100 is a legitimate seven-day exhaustion observation")
-        XCTAssertEqual(recentValues.min(), 0)
+        XCTAssertFalse(recentValues.contains(0), "0 -> 100 -> 2 with unchanged reset is an anomalous excursion")
+        XCTAssertEqual(recentValues.min(), 98)
+
+        let unfiltered = QuotaHistoryDatabase(databaseURL: url, filterAnomalies: { false })
+        let raw = try unfiltered.loadSnapshot(for: historyContext(at: now), now: now)
+        XCTAssertTrue(raw.recentBins.contains { $0.sevenDayRemainingPercent == 0 })
+        XCTAssertLessThan(raw.daily.compactMap(\.sevenDayRemainingPercent).min()!, loaded.daily.compactMap(\.sevenDayRemainingPercent).min()!)
+        // Toggling affects projection only. Reopening with protection restores
+        // the filtered series without losing the raw exhaustion observation.
+        let filteredAgain = try database.loadSnapshot(for: historyContext(at: now), now: now)
+        XCTAssertEqual(filteredAgain.recentBins.compactMap(\.sevenDayRemainingPercent), recentValues)
+        let rawAgain = try unfiltered.loadSnapshot(for: historyContext(at: now), now: now)
+        XCTAssertEqual(rawAgain.recentBins.compactMap(\.sevenDayRemainingPercent), raw.recentBins.compactMap(\.sevenDayRemainingPercent))
+    }
+
+    func testHistoryFilteringKeepsSustainedExhaustion() throws {
+        let database = QuotaHistoryDatabase(databaseURL: try makeDatabaseURL())
+        let now = Date()
+        for (minutes, used) in [(20, 98), (15, 100), (5, 100)] {
+            let at = now.addingTimeInterval(Double(-minutes * 60))
+            try database.record(snapshot(usedPercent: 10, sevenDayUsedPercent: used,
+                reset: now.addingTimeInterval(10800), sevenDayReset: now.addingTimeInterval(345600),
+                planType: "Pro", limitName: "codex", at: at), createdAt: at)
+        }
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
+        XCTAssertTrue(loaded.recentBins.contains { $0.sevenDayRemainingPercent == 0 })
     }
 
     func testHistoryReclassifiesLegacySevenDayOnlyRowsWrittenIntoFiveHourColumns() throws {

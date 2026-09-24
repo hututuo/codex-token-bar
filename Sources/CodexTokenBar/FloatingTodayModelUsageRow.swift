@@ -19,7 +19,6 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
     let tokens: Int
     let share: Double
     let costUSD: Double?
-    var normalizedCostUSD: Double? = nil
     let usesIndependentQuota: Bool
     let referenceCostUSD: Double?
     let color: Color
@@ -33,11 +32,11 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
             return "\(Int(percent.rounded()))%"
         case .cost:
             if usesIndependentQuota {
-                let referenceCost = referenceCostUSD.map { PlanCostNormalization.text(original: $0, normalized: $0) } ?? "—"
+                let referenceCost = referenceCostUSD?.quotaEstimatorMoneyText ?? "—"
                 return "\(referenceCost)（不计入总计）"
             }
             guard let costUSD else { return "价格未知" }
-            return PlanCostNormalization.text(original: costUSD, normalized: normalizedCostUSD ?? costUSD)
+            return costUSD.quotaEstimatorMoneyText
         }
     }
 }
@@ -159,10 +158,8 @@ enum FloatingTodayModelUsagePresentation {
         return rowsByKey.map { key, row in
             let independent = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil
             let costUSD: Double?
-            let normalizedCostUSD: Double?
             if independent {
                 costUSD = nil
-                normalizedCostUSD = nil
             } else {
                 let estimate = ModelAwareAPIPriceEstimator.estimate(
                     modelBreakdowns: [row],
@@ -172,7 +169,6 @@ enum FloatingTodayModelUsagePresentation {
                     rates: { $0.currentPriceRates }
                 )
                 costUSD = estimate.unpricedModels.isEmpty ? estimate.costUSD : nil
-                normalizedCostUSD = estimate.unpricedModels.isEmpty ? estimate.normalizedCostUSD : nil
             }
             let referenceCostUSD = IndependentQuotaReferencePricing.costUSD(
                 for: row.model,
@@ -185,7 +181,6 @@ enum FloatingTodayModelUsagePresentation {
                     tokens: row.breakdown.totalTokens,
                     share: total > 0 ? Double(row.breakdown.totalTokens) / Double(total) : 0,
                     costUSD: costUSD,
-                    normalizedCostUSD: normalizedCostUSD,
                     usesIndependentQuota: independent,
                     referenceCostUSD: referenceCostUSD,
                     color: ModelUsagePresentation.color(for: row.model)
@@ -320,8 +315,8 @@ enum FloatingTodayModelUsagePresentation {
 
         let details = hiddenItems.map { item in
             let cost = item.usesIndependentQuota
-                ? "\(item.referenceCostUSD.map { PlanCostNormalization.text(original: $0, normalized: $0) } ?? "—")（不计入总计）"
-                : item.valueText(for: .cost)
+                ? "\(item.referenceCostUSD?.quotaEstimatorMoneyText ?? "—")（不计入总计）"
+                : (item.costUSD ?? 0).quotaEstimatorMoneyText
             return "\(item.label) · \(item.tokens.abbreviatedTokens) tokens · 占比 \(detailedShareText(item.share)) · \(cost)"
         }
         return (["更多模型"] + details).joined(separator: "\n")
@@ -438,14 +433,9 @@ struct FloatingTodayModelUsageRow: View {
                 )
             Text(item.label)
                 .foregroundStyle(textPalette.secondaryColor)
-            if page == .cost {
-                ModelAmountPair(item: item)
-                    .foregroundStyle(textPalette.primaryColor)
-            } else {
-                Text(item.valueText(for: page))
-                    .foregroundStyle(textPalette.primaryColor)
-                    .monospacedDigit()
-            }
+            Text(item.valueText(for: page))
+                .foregroundStyle(textPalette.primaryColor)
+                .monospacedDigit()
         }
         .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
         .lineLimit(1)
@@ -482,23 +472,5 @@ struct ModelCostInlineSummary: View {
             }
         }
         .lineLimit(1)
-    }
-}
-
-struct ModelAmountPair: View {
-    let item: FloatingTodayModelUsageItem
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            if let original = item.costUSD {
-                Text(original.quotaEstimatorMoneyText)
-                Text("均一化 \((item.normalizedCostUSD ?? original).quotaEstimatorMoneyText)")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(item.valueText(for: .cost))
-            }
-        }
-        .monospacedDigit()
-        .help(PlanCostNormalization.explanation)
     }
 }

@@ -32,7 +32,7 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(overlaySource.contains("radarStore.isDetailRefreshing || radarStore.isRefreshing"))
     }
 
-    func testRadarStoreDefaultsToTenMinuteRefresh() throws {
+    func testRadarStoreDefaultsToFiveMinuteRefresh() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -40,7 +40,7 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         let storeFile = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarStore.swift")
         let source = try String(contentsOf: storeFile, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("refreshInterval: TimeInterval = 600"))
+        XCTAssertTrue(source.contains("refreshInterval: TimeInterval = 300"))
     }
 
     func testSharedAccountRefreshSignatureIncludesRadarSourceKind() throws {

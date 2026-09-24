@@ -17,6 +17,7 @@ import {
   DEFAULT_STATUS_SUMMARY_ORDER,
 } from "../../settings/displaySettings";
 import { QUOTA_REFRESH_CADENCE_OPTIONS } from "../../settings/quotaRefreshCadence";
+import { QuotaHistoryFilterSetting } from "./QuotaHistoryFilterSetting";
 import {
   USAGE_AGGREGATE_INTERVAL_OPTIONS,
   USAGE_LIGHT_REFRESH_INTERVAL_OPTIONS,
@@ -1043,6 +1044,7 @@ function MonitoringSettings({
         </label>
       </SettingsGroup>
       <SettingsGroup title="额度刷新" description="控制当前可用额度窗口自动重读的频率。">
+        <QuotaHistoryFilterSetting />
         <SettingRow title="自动刷新频率" description="额度仍可在主界面随时手动刷新。">
           <select
             aria-label="额度刷新频率"

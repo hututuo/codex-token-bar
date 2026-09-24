@@ -505,12 +505,21 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private let recentInterval: TimeInterval = 5 * 60
     private let maxCarryGap: TimeInterval = 90 * 60
     private let legacyClaimRefreshInterval: TimeInterval = 60 * 60
+    private let filterAnomalies: @Sendable () -> Bool
     init(
         databaseURL: URL? = nil,
         peerDatabaseURL: URL? = nil,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        filterAnomalies: (@Sendable () -> Bool)? = nil
     ) {
         self.databaseURL = databaseURL
+        if let filterAnomalies {
+            self.filterAnomalies = filterAnomalies
+        } else if databaseURL == nil {
+            self.filterAnomalies = { QuotaHistoryFilterSettings.isEnabled() }
+        } else {
+            self.filterAnomalies = { true }
+        }
         // Custom database URLs are used by tests and migrations. Do not silently
         // read the user's live Tauri database in those isolated instances.
         let configuredPeerURL = peerDatabaseURL ?? (databaseURL == nil ? Self.defaultPeerDatabaseURL : nil)
@@ -570,7 +579,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 cutoff: nil,
                 now: now
             )
-            let history = Self.sanitizedRows(mergedRows(localRows + peerRows), now: now)
+            let history = Self.sanitizedRows(mergedRows(localRows + peerRows), now: now, filterAnomalies: filterAnomalies())
             let annotatedRow = Self.annotatedCurrentRow(row, after: history)
             // This compatibility API may decorate cycle IDs but never filters
             // the realtime response through the historical accepted sequence.
@@ -600,7 +609,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             rows: mergedRows(localRows + peerRows),
             recentInterval: recentInterval,
             maxCarryGap: maxCarryGap,
-            now: now
+            now: now,
+            filterAnomalies: filterAnomalies()
         )
     }
 
@@ -751,14 +761,14 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return ordered
     }
 
-    private static func makeSnapshot(rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval, now: Date = Date()) -> QuotaHistorySnapshot {
+    private static func makeSnapshot(rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval, now: Date = Date(), filterAnomalies: Bool = true) -> QuotaHistorySnapshot {
         let calendar = Calendar.current
         guard let recentStart = calendar.date(byAdding: .day, value: -30, to: now) else {
             return .empty
         }
 
         let intervalCount = 30 * 24 * 12
-        let sorted = sanitizedRows(rows.filter { $0.createdAt <= now.addingTimeInterval(0.000_001) }, now: now)
+        let sorted = sanitizedRows(rows.filter { $0.createdAt <= now.addingTimeInterval(0.000_001) }, now: now, filterAnomalies: filterAnomalies)
         let recentBins = makeCarriedBins(
             rows: sorted,
             start: recentStart,
@@ -812,7 +822,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             actualCycles: QuotaActualCycleProjector.project(observations, now: now), cycleIdentity: identity)
     }
 
-    private static func sanitizedRows(_ rows: [QuotaHistoryRow], now: Date) -> [QuotaHistoryRow] {
+    private static func sanitizedRows(_ rows: [QuotaHistoryRow], now: Date, filterAnomalies: Bool = true) -> [QuotaHistoryRow] {
         var groups: [[String]: [QuotaHistoryRow]] = [:]
         var seenAt: [[String]: Date] = [:]
         var legacyScopes: [String: Set<[String]>] = [:]
@@ -840,7 +850,9 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                     sevenUsed: row.sevenDayUsedPercent, sevenReset: row.sevenDayResetsAt?.timeIntervalSince1970)
             }
             let plan = timeline.first(where: { $0.identityPlanType != nil })?.identityPlanType ?? timeline.first?.planType
-            let projection = QuotaHistoryProtection.project(samples, plan: plan, now: now.timeIntervalSince1970)
+            let projection = filterAnomalies
+                ? QuotaHistoryProtection.project(samples, plan: plan, now: now.timeIntervalSince1970)
+                : QuotaHistoryProtection.Projection()
             let filtered = timeline.enumerated().map { i, row in
                 row.projecting(
                     fiveUsed: projection.fiveRejected.contains(i) ? nil : QuotaHistoryProtection.valid(row.fiveHourUsedPercent),
@@ -1437,7 +1449,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         if !additionalRows.isEmpty {
             rawRows = mergedRows(rawRows + additionalRows)
         }
-        return Self.sanitizedRows(rawRows, now: now).last
+        return Self.sanitizedRows(rawRows, now: now, filterAnomalies: filterAnomalies()).last
     }
 
     private func matchingRows(

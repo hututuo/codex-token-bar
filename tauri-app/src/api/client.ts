@@ -48,6 +48,7 @@ export {
   saveFloatingPosition,
   saveFloatingSettings,
   saveQuotaRefreshIntervalMs,
+  saveQuotaHistoryFilter,
   saveUsageRefreshSettings,
   saveSessionEnhancementSettings,
   saveSetupGuideCompleted,

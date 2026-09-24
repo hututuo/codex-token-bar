@@ -12823,7 +12823,7 @@ details.session-management-banner {
 .quota-calendar-bands button[aria-pressed="true"] { background:color-mix(in srgb,var(--cycle-color) 42%,transparent); border-color:var(--cycle-color); }
 .quota-calendar-bands button:hover { background:color-mix(in srgb,var(--cycle-color) 38%,transparent); }
 .quota-calendar-bands button:focus-visible { outline:2px solid var(--cycle-color); outline-offset:1px; }
-.stats-quota-cycle-controls button { min-height:28px; border:0; border-radius:6px; background:transparent; color:var(--muted); padding:0 4px; font-size:10.5px; font-weight:500; cursor:pointer; }
+.stats-quota-cycle-controls button { min-height:28px; border:0; border-radius:6px; background:transparent; color:var(--muted); padding:0 4px; font-size:10.5px; font-weight:var(--weight-medium); cursor:pointer; }
 .stats-quota-cycle-controls .quota-calendar-disclosure { flex:none; padding:0 8px; background:var(--panel-soft); color:var(--text); }
 .stats-quota-cycle-controls .quota-calendar-selection { min-width:0; max-width:210px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .stats-quota-cycle-controls .quota-calendar-return { flex:none; color:var(--accent-strong); }
@@ -12833,10 +12833,3 @@ details.session-management-banner {
 .stats-model-cost-row > .quota-cycle-calendar { min-width:0; margin:0; }
 .stats-quota-boundary-detail:not([open]){margin:0}
 .stats-quota-boundary-detail[open] span{display:inline-block;margin:3px 14px 3px 0}
-/* Keep both price bases legible without stretching compact cards horizontally. */
-.model-amount-pair { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 2px; font-variant-numeric: tabular-nums; line-height: 1.2; }
-.model-amount-pair-normalized { color: var(--muted); font-size: .82em; font-weight: 500; }
-.stats-model-cost-primary-card, .stats-model-cost-secondary-chip { padding-top: 5px; padding-bottom: 5px; }
-.floating-model-usage--cost .model-amount-pair-normalized { color: inherit; opacity: .76; }
-
-.stats-normalized-value { color: var(--muted); font-size: 10px; line-height: 1.2; font-variant-numeric: tabular-nums; }

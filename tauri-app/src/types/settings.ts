@@ -52,6 +52,7 @@ export interface FloatingContentVisibility {
 export type FloatingContentPagePair = [FloatingContentGroup, FloatingContentGroup];
 
 export interface AppSettingsSnapshot {
+  filterQuotaHistoryAnomalies: boolean;
   codexHome: string | null;
   customAccountDisplayName: string;
   quotaRefreshIntervalMs: number;

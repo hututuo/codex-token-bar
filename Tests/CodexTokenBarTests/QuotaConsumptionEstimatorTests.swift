@@ -71,7 +71,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertFalse(presentation.showsBudgetRatio)
         XCTAssertEqual(
             presentation.accessibilityValue,
-            "选区 \(presentation.timeRangeText)，持续 10分钟，本段消耗 $1.18 · 均一化 $1.18，5 小时 当前无 5 小时额度，7 天 反推总额度 $552 · 均一化 $552，下降 1.1%"
+            "选区 \(presentation.timeRangeText)，持续 10分钟，本段消耗 $1.18，5 小时 当前无 5 小时额度，7 天 反推总额度 $552，下降 1.1%"
         )
     }
 
@@ -465,7 +465,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(2.5 / OfficialAPIPriceModel.gpt56Terra.currentPriceRates.inputUSDPerMillion, 1.25, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt54MiniLegacy.currentPriceRates.costUSD(for: breakdown), 1.2, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt6Astra.currentPriceRates.costUSD(for: breakdown), 15, accuracy: 0.0001)
-        XCTAssertEqual(OfficialAPIPriceModel.selectableCases, [.gpt6Astra, .gpt56Sol, .gpt56Terra, .gpt56Luna])
+        XCTAssertEqual(OfficialAPIPriceModel.selectableCases, [.gpt6Astra, .gpt6Sol, .gpt6Luna, .gpt56Sol, .gpt56Terra, .gpt56Luna])
     }
 
     func testAutoReviewPricingRulesUseUTC20260730CutoverAndRemainAppendOnly() throws {
@@ -2240,7 +2240,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(componentSource.contains("onClose:"))
         XCTAssertFalse(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
-        XCTAssertTrue(componentSource.contains("PlanCostNormalization.text(original: selection.fullCurrentAPIPriceEstimate.costUSD"))
+        XCTAssertTrue(componentSource.contains("selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText"))
         let chartStart = try XCTUnwrap(dashboardSource.range(of: "            RecentUsageChart(")).lowerBound
         let nextSection = try XCTUnwrap(
             dashboardSource.range(of: "            CacheHitRankingSection", range: chartStart..<dashboardSource.endIndex)
@@ -2367,15 +2367,15 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let expectedRange = "\(DateFormatter.hourMinute.string(from: selection.startDate))-\(DateFormatter.hourMinute.string(from: selection.endDate))"
 
         XCTAssertEqual(presentation.costTitle, "本段消耗")
-        XCTAssertEqual(presentation.costText, "$1.18 · 均一化 $1.18")
+        XCTAssertEqual(presentation.costText, "$1.18")
         XCTAssertEqual(presentation.timeRangeText, expectedRange)
         XCTAssertEqual(presentation.durationText, "持续 10分钟")
         XCTAssertEqual(presentation.cacheHitText, "命中 40%")
         XCTAssertEqual(presentation.estimateTitle, "反推总额度")
         XCTAssertEqual(presentation.fiveHourChip.title, "5h")
-        XCTAssertEqual(presentation.fiveHourChip.detail, "$92.0 · 均一化 $92.0 · 降 10%")
+        XCTAssertEqual(presentation.fiveHourChip.detail, "$92.0 · 降 10%")
         XCTAssertEqual(presentation.sevenDayChip.title, "7d")
-        XCTAssertEqual(presentation.sevenDayChip.detail, "$552 · 均一化 $552 · 降 1.1%")
+        XCTAssertEqual(presentation.sevenDayChip.detail, "$552 · 降 1.1%")
         XCTAssertEqual(presentation.ratioTitle, "倍率")
         XCTAssertEqual(presentation.budgetRatioText, "6.0x")
         XCTAssertEqual(presentation.ratioHelpText, "7d/5h，正常约 6x")
@@ -2385,7 +2385,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(presentation.accessibilityLabel, "额度估算")
         XCTAssertEqual(
             presentation.accessibilityValue,
-            "选区 \(expectedRange)，持续 10分钟，本段消耗 $1.18 · 均一化 $1.18，5 小时 反推总额度 $92.0 · 均一化 $92.0，下降 10%，7 天 反推总额度 $552 · 均一化 $552，下降 1.1%，倍率 6.0x"
+            "选区 \(expectedRange)，持续 10分钟，本段消耗 $1.18，5 小时 反推总额度 $92.0，下降 10%，7 天 反推总额度 $552，下降 1.1%，倍率 6.0x"
         )
     }
 
@@ -2482,7 +2482,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
         XCTAssertEqual(
             QuotaConsumptionEstimatePresentation(title: "7d", estimate: estimatedQuotaDrop).detail,
-            "≈$20.0 · 均一化 $20.0 · 暂算降 5%"
+            "≈$20.0 · 暂算降 5%"
         )
         XCTAssertTrue(
             QuotaConsumptionEstimatePresentation(title: "7d", estimate: estimatedQuotaDrop)
@@ -2490,7 +2490,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
         XCTAssertEqual(
             QuotaConsumptionEstimatePresentation(title: "7d", estimate: conservativeBoundary).detail,
-            "≈$20.0 · 均一化 $20.0 · 边界暂算降 5%"
+            "≈$20.0 · 边界暂算降 5%"
         )
         XCTAssertTrue(
             QuotaConsumptionEstimatePresentation(title: "7d", estimate: conservativeBoundary)

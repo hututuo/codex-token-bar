@@ -1,4 +1,3 @@
-import { ModelAmountPair } from "../components/ModelAmountPair";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import {
   codexRadarDiagnosticLabel,
@@ -715,7 +714,7 @@ function FloatingTodayModelUsageRow({
             <span className="floating-model-usage-item" key={item.key}>
               <i aria-hidden="true" style={{ background: item.color }} />
               <em>{item.label}</em>
-              <strong>{page === "cost" ? <ModelAmountPair item={item} /> : floatingModelUsageValue(item, page)}</strong>
+              <strong>{floatingModelUsageValue(item, page)}</strong>
             </span>
           ))}
           {overflowText ? (

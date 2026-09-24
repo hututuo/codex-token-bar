@@ -3,7 +3,7 @@ import { clamp, formatPercent, formatTokens } from "../../utils/format.ts";
 import type { ActivityMode, HeatmapDay } from "./types";
 import { dominantModelColor, modelUsageCompactText } from "../modelUsagePresentation.ts";
 import {
-  normalizedMoneyText,
+  floatingModelUsageMoneyText,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
   hasUnknownModelPrices,
@@ -146,7 +146,7 @@ export function modelCostSummaryText(
   const items = floatingTodayModelUsageItems(dayModelRows(day), fallbackModel, { mergeAutoReview: false });
   if (items.length === 0) return "模型费用 $0.00 · 暂无模型用量";
   return [
-    `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${normalizedMoneyText(cost, items.reduce((sum, item) => sum + (item.normalizedCostUSD ?? 0), 0))}`,
+    `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${floatingModelUsageMoneyText(cost)}`,
     ...items.map((item) => `${item.label} ${floatingModelUsageValue(item, "cost")}`),
   ].join(" · ");
 }

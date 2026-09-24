@@ -13,6 +13,7 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
   codexHome: null,
   customAccountDisplayName: "",
   quotaRefreshIntervalMs: DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
+  filterQuotaHistoryAnomalies: true,
   usageLightRefreshIntervalSeconds: DEFAULT_USAGE_LIGHT_REFRESH_INTERVAL_SECONDS,
   usageVisibleAggregateIntervalMinutes: DEFAULT_USAGE_VISIBLE_AGGREGATE_INTERVAL_MINUTES,
   usageBackgroundAggregateIntervalMinutes: DEFAULT_USAGE_BACKGROUND_AGGREGATE_INTERVAL_MINUTES,
