@@ -250,6 +250,17 @@ if (-not (Test-Path -LiteralPath $TauriConfigPath)) {
     throw "Tracked tauri config not found: $TauriConfigPath"
 }
 
+# A requested filename is not an installer version override. Reject mismatched
+# source metadata before npm, tests, toolchain setup or either costly build.
+$TrackedVersion = (Get-Content -LiteralPath $TauriConfigPath -Raw | ConvertFrom-Json).version
+$PackageVersion = (Get-Content -LiteralPath (Join-Path $TauriDir "package.json") -Raw | ConvertFrom-Json).version
+$CargoText = Get-Content -LiteralPath (Join-Path $TauriDir "src-tauri\Cargo.toml") -Raw
+$CargoPackage = [regex]::Match($CargoText, '(?ms)^\[package\]\s*(.*?)(?=^\[|\z)').Groups[1].Value
+$CargoVersion = [regex]::Match($CargoPackage, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+if ($TrackedVersion -ne $Version -or $PackageVersion -ne $Version -or $CargoVersion -ne $Version) {
+    throw "Version preflight failed: requested=$Version, tauri=$TrackedVersion, npm=$PackageVersion, cargo=$CargoVersion. Update the tracked versions before building."
+}
+
 Assert-Command "node"
 Assert-Command "npm"
 Assert-Command "rustc"

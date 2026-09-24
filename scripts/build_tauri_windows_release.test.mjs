@@ -180,6 +180,15 @@ test("Windows installer version matching is anchored and rejects a superstring v
   assert.match(source, /\[regex\]::Escape\(\$Version\)/);
 });
 
+test("Windows version preflight checks every tracked version before invoking build tools", async () => {
+  const source = await readFile(windowsScript, "utf8");
+  const preflight = source.indexOf("Version preflight failed");
+  assert.ok(preflight > 0 && preflight < source.indexOf('Assert-Command "node"'));
+  for (const name of ["TrackedVersion", "PackageVersion", "CargoVersion"]) {
+    assert.match(source, new RegExp(`\\$${name} -ne \\$Version`));
+  }
+});
+
 test("Windows build manifest remains stable and secret-free", async () => {
   const source = await readFile(windowsScript, "utf8");
   assert.match(source, /build-manifest\.json/);

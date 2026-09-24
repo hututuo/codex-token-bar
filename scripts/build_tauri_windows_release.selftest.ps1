@@ -83,7 +83,9 @@ function Initialize-FixtureProject {
     $TauriConfigDir = Join-Path $Root "tauri-app\src-tauri"
     New-Item -ItemType Directory -Force -Path $TauriConfigDir | Out-Null
     $TauriConfig = Join-Path $TauriConfigDir "tauri.conf.json"
-    [IO.File]::WriteAllText($TauriConfig, '{"bundle":{"createUpdaterArtifacts":true}}', (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($TauriConfig, '{"version":"0.7.2","bundle":{"createUpdaterArtifacts":true}}', (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $Root "tauri-app\package.json"), '{"version":"0.7.2"}')
+    [IO.File]::WriteAllText((Join-Path $TauriConfigDir "Cargo.toml"), "[package]`nname = `"fixture`"`nversion = `"0.7.2`"`n")
     foreach ($Target in @("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")) {
         New-Item -ItemType Directory -Force -Path (Join-Path $Root ("fake-sysroot\lib\rustlib\{0}" -f $Target)) | Out-Null
         $StaleBundle = Join-Path $Root ("tauri-app\src-tauri\target\{0}\release\bundle\nsis" -f $Target)
@@ -96,6 +98,12 @@ function Initialize-FixtureProject {
 
 try {
     $TauriConfig = Initialize-FixtureProject $FixtureRoot
+
+    $VersionRejected = $false
+    try { & $BuildScript -Version "0.7.3" -Arch both -SkipNpmCi -ProjectRoot $FixtureRoot }
+    catch { $VersionRejected = $_.Exception.Message -match "Version preflight failed" }
+    Assert-True $VersionRejected "mismatched tracked version was not rejected"
+    Assert-True ($global:ReleaseSelfTestCalls.Count -eq 0) "npm ran before version mismatch rejection"
 
     $ConfigHashBefore = (Get-FileHash -Algorithm SHA256 $TauriConfig).Hash
     & $BuildScript -Version "0.7.2" -Arch both -SkipNpmCi -ProjectRoot $FixtureRoot
