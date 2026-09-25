@@ -1,0 +1,125 @@
+name: Sign approved hosted candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Exact candidate source SHA'
+        required: true
+        type: string
+      build_run_id:
+        description: 'Successful Prepare hosted installers run'
+        required: true
+        type: string
+      ci_run_id:
+        description: 'Successful Hosted project checks run for the same source'
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      build_run_id:
+        required: true
+        type: string
+      ci_run_id:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: signing-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate request syntax
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          BUILD_RUN: ${{ inputs.build_run_id }}
+          CI_RUN: ${{ inputs.ci_run_id }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$BUILD_RUN" =~ ^[1-9][0-9]*$ && "$CI_RUN" =~ ^[1-9][0-9]*$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: Verify the build and CI run origins
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          BUILD_RUN: ${{ inputs.build_run_id }}
+          CI_RUN: ${{ inputs.ci_run_id }}
+        run: |
+          python3 scripts/cloud/run-guard.py build "$BUILD_RUN" "$SOURCE_SHA"
+          python3 scripts/cloud/run-guard.py ci "$CI_RUN" "$SOURCE_SHA"
+
+  sign:
+    needs: guard
+    runs-on: macos-15
+    timeout-minutes: 20
+    environment: release-signing
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
+      GIT_LFS_SKIP_SMUDGE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Prepare signing tools without release secrets
+        run: |
+          set -euo pipefail
+          npm ci --prefix tauri-app --ignore-scripts --registry=https://registry.npmjs.org
+          command -v git-lfs >/dev/null || brew install git-lfs
+          bash scripts/prepare_tiktoken_lfs.sh
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run_id }}
+          name: candidate-macos-${{ inputs.source_sha }}
+          path: downloaded/macos
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run_id }}
+          name: candidate-windows-${{ inputs.source_sha }}
+          path: downloaded/windows
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.ci_run_id }}
+          name: ci-passed-${{ inputs.source_sha }}
+          path: downloaded/ci
+      - name: Sign verified bytes and verify against the existing public keys
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          BUILD_RUN: ${{ inputs.build_run_id }}
+          CI_RUN: ${{ inputs.ci_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          TAURI_UPDATER_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          python3 scripts/cloud/release_packet.py sign --macos downloaded/macos --windows downloaded/windows \
+            --ci-evidence downloaded/ci/checked-source.json --output signed-packet \
+            --source-sha "$SOURCE_SHA" --build-run "$BUILD_RUN" --ci-run "$CI_RUN"
+          python3 scripts/cloud/release_packet.py verify signed-packet --source-sha "$SOURCE_SHA"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-release-${{ inputs.source_sha }}
+          path: signed-packet/*
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: error
+      - run: echo 'Signed candidate is sealed. No public Release, tag or live feed was changed.' >> "$GITHUB_STEP_SUMMARY"

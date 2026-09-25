@@ -23,7 +23,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_PROFILE_TEST_DEBUG: '0'
@@ -75,6 +75,7 @@ jobs:
     env:
       GIT_LFS_SKIP_SMUDGE: '1'
       DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
+      SWIFT_BACKTRACE: 'enable=yes'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,11 +104,18 @@ jobs:
           swift test 2>&1 | tee swift-tests.log
           npm ci --prefix tauri-app --registry=https://registry.npmjs.org
           node scripts/cloud/run-node-tests.mjs scripts 2>&1 | tee release-script-tests.log
+      - name: Preserve hosted crash diagnostics on failure
+        if: failure()
+        run: |
+          mkdir -p hosted-diagnostics
+          find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -name '*xctest*' -o -name '*CodexTokenBar*' \) -exec cp {} hosted-diagnostics/ \; 2>/dev/null || true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: swift-check-logs-${{ github.run_id }}
-          path: '*.log'
+          path: |
+            *.log
+            hosted-diagnostics/
           retention-days: 7
 
   native:
@@ -135,6 +143,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      - name: Native compilation cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tauri-app/src-tauri/target
+          key: rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ needs.source.outputs.sha }}
+          restore-keys: |
+            rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
       - name: Prepare Rust and frontend
         shell: bash
         run: |
@@ -159,3 +174,23 @@ jobs:
           name: native-check-logs-${{ matrix.os }}-${{ github.run_id }}
           path: '*.log'
           retention-days: 7
+
+  evidence:
+    needs: [source, frontend, swift, native]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Seal successful check identity
+        env:
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          pathlib.Path('checked-source.json').write_text(json.dumps({
+            'source_sha':os.environ['SOURCE_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'passed':True
+          })+'\n')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-passed-${{ needs.source.outputs.sha }}
+          path: checked-source.json
+          retention-days: 30

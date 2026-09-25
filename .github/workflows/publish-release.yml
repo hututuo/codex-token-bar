@@ -1,0 +1,84 @@
+name: Publish approved hosted release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      signed_run_id:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      confirmation:
+        description: 'Type publish-vVERSION, then approve the production environment'
+        type: string
+        required: true
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      signed_run_id:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      confirmation:
+        type: string
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: public-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production-release
+    steps:
+      - name: Require exact publication request
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SIGNED_RUN: ${{ inputs.signed_run_id }}
+          VERSION: ${{ inputs.version }}
+          CONFIRM: ${{ inputs.confirmation }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$SIGNED_RUN" =~ ^[1-9][0-9]*$ && "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$CONFIRM" = "publish-v$VERSION"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Validate signing-run origin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SIGNED_RUN: ${{ inputs.signed_run_id }}
+        run: python3 scripts/cloud/run-guard.py sign "$SIGNED_RUN" "$SOURCE_SHA"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.signed_run_id }}
+          name: signed-release-${{ inputs.source_sha }}
+          path: signed-packet
+      - name: Publish existing approved bytes, then activate the feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          CONFIRM: ${{ inputs.confirmation }}
+        run: |
+          python3 scripts/cloud/publish_packet.py signed-packet --source-sha "$SOURCE_SHA" \
+            --version "$VERSION" --confirm "$CONFIRM"

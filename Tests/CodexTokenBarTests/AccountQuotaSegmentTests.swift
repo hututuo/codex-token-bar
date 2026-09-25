@@ -231,7 +231,9 @@ final class AccountQuotaSegmentTests: XCTestCase {
         let window = AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: resetAt)
 
         XCTAssertTrue(window.compactResetText.hasSuffix(DateFormatter.hourMinute.string(from: resetAt)))
-        XCTAssertTrue(window.compactResetText.contains("月") || window.compactResetText.contains("/"))
+        // The hosted runner can use an English locale (for example "Oct 5").
+        // Require the actual month/day, not a locale-specific separator.
+        XCTAssertTrue(window.compactResetText.contains(resetAt.formatted(.dateTime.month().day())))
     }
 
     @MainActor

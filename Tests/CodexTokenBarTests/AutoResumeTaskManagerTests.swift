@@ -4,7 +4,9 @@ import XCTest
 
 @MainActor
 final class AutoResumeTaskManagerTests: XCTestCase {
-    func testLegacySingleTaskMigratesIntoPersistentTaskCollection() throws {
+    // Use XCTest's async entry point so older hosted XCTest runtimes dispatch
+    // class-level MainActor tests through an executor-aware thunk.
+    func testLegacySingleTaskMigratesIntoPersistentTaskCollection() async throws {
         let suiteName = "AutoResumeTaskManagerMigrationTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -53,7 +55,7 @@ final class AutoResumeTaskManagerTests: XCTestCase {
         XCTAssertEqual(collection.tasks[0].configuration.target?.id, target.id)
     }
 
-    func testTaskCreationDeduplicatesThreadsAndDeletionKeepsSelectionValid() throws {
+    func testTaskCreationDeduplicatesThreadsAndDeletionKeepsSelectionValid() async throws {
         let suiteName = "AutoResumeTaskManagerCRUDTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -94,7 +96,7 @@ final class AutoResumeTaskManagerTests: XCTestCase {
         XCTAssertFalse(manager.deleteTask(id: "missing"))
     }
 
-    func testSchedulerTimerFollowsEnabledTaskPresence() throws {
+    func testSchedulerTimerFollowsEnabledTaskPresence() async throws {
         let suiteName = "AutoResumeTaskManagerSchedulerTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -124,7 +126,7 @@ final class AutoResumeTaskManagerTests: XCTestCase {
         XCTAssertFalse(schedulerTimerIsInstalled(in: manager))
     }
 
-    func testAutoResumeNeedsRunningStateCoversAutomaticTriggersOnly() throws {
+    func testAutoResumeNeedsRunningStateCoversAutomaticTriggersOnly() async throws {
         let suiteName = "AutoResumeTaskManagerRunningLeaseTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -164,7 +166,7 @@ final class AutoResumeTaskManagerTests: XCTestCase {
         XCTAssertFalse(manager.autoResumeNeedsRunningState)
     }
 
-    func testCorruptProtectedTaskWithoutAnyTriggerFailsClosed() {
+    func testCorruptProtectedTaskWithoutAnyTriggerFailsClosed() async {
         var configuration = AutoResumeConfiguration.default
         configuration.enabled = true
         configuration.target = AutoResumeThreadDescriptor(

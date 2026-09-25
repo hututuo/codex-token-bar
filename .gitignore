@@ -33,3 +33,12 @@ backups/
 # Xcode/editor user state
 *.xcuserstate
 xcuserdata/
+
+# Hosted-pipeline scratch output (never release credentials)
+__pycache__/
+*.py[cod]
+/candidate-macos/
+/candidate-windows/
+/downloaded/
+/signed-packet/
+/hosted-diagnostics/
