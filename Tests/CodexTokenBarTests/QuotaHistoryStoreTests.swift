@@ -508,16 +508,33 @@ final class QuotaHistoryStoreTests: XCTestCase {
             }
         }
         XCTAssertNotNil(locked)
+        let peerReader = SQLitePeerDatabaseReader(url: peerURL)
+        XCTAssertEqual(
+            try peerReader.readRows("PRAGMA busy_timeout;") { $0.int(0) },
+            [250],
+            "peer reads must retain the short SQLite lock-wait budget"
+        )
         XCTAssertEqual(sqlite3_exec(locked, "BEGIN EXCLUSIVE;", nil, nil, nil), SQLITE_OK)
 
-        let start = Date()
+        // Time the peer boundary directly. The history API also opens and
+        // maintains the local database, whose disk latency is unrelated to
+        // the peer lock budget on a shared hosted runner.
+        let start = ProcessInfo.processInfo.systemUptime
+        XCTAssertThrowsError(
+            try peerReader.readRows("SELECT * FROM quota_snapshots;") { _ in true }
+        ) { error in
+            XCTAssertEqual((error as? SQLiteDatabaseError)?.primaryCode, SQLITE_BUSY)
+        }
+        XCTAssertLessThan(
+            ProcessInfo.processInfo.systemUptime - start,
+            1.0,
+            "peer busy downgrade should stay bounded"
+        )
         XCTAssertEqual(
             try database.recordedFiveHourUsedPercents(for: localQuota, now: now),
             [82],
             "a locked peer must not hide local history"
         )
-        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0, "peer busy downgrade should stay bounded")
-
         XCTAssertEqual(sqlite3_exec(locked, "ROLLBACK;", nil, nil, nil), SQLITE_OK)
         XCTAssertEqual(
             try database.recordedFiveHourUsedPercents(for: localQuota, now: now),

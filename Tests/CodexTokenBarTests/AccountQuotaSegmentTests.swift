@@ -226,11 +226,19 @@ final class AccountQuotaSegmentTests: XCTestCase {
         XCTAssertLessThanOrEqual(ceil(progressWidth), AccountQuotaSegmentLayout.progressBarWidth)
     }
 
-    func testFloatingFutureSevenDayResetKeepsMinutePrecision() {
-        let resetAt = Date().addingTimeInterval(10 * 24 * 60 * 60 + 13 * 60)
+    func testFloatingFutureSevenDayResetKeepsMinutePrecision() throws {
+        let futureDay = Date().addingTimeInterval(10 * 24 * 60 * 60)
+        let resetAt = try XCTUnwrap(Calendar.current.date(
+            bySettingHour: 15, minute: 13, second: 0, of: futureDay
+        ))
         let window = AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: resetAt)
 
-        XCTAssertTrue(window.compactResetText.hasSuffix(DateFormatter.hourMinute.string(from: resetAt)))
+        // Omitting AM/PM keeps the locale's hour cycle; en_US can render
+        // 15:13 as 03:13. Compare the localized hour/minute, not fixed HH:mm.
+        let expectedTime = resetAt.formatted(
+            .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)
+        )
+        XCTAssertTrue(window.compactResetText.hasSuffix(expectedTime))
         // The hosted runner can use an English locale (for example "Oct 5").
         // Require the actual month/day, not a locale-specific separator.
         XCTAssertTrue(window.compactResetText.contains(resetAt.formatted(.dateTime.month().day())))

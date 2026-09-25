@@ -238,21 +238,16 @@ fn live_rate_ticks_leave_precise_summary_rebuild_to_usage_refresh() {
         Ok(None)
     ));
     crate::core::usage::token_count_jsonl::schedule_usage_summary_refresh(&root).unwrap();
-    for _ in 0..50 {
-        std::thread::sleep(Duration::from_millis(20));
-        if let Ok(Some(summary)) =
-            crate::core::usage::token_count_jsonl::usage_summary_snapshot(&root)
-        {
-            assert_eq!(summary.today_tokens, 40);
-            assert_eq!(summary.today_requests, 1);
-            assert_eq!(summary.total_tokens, 1_040);
-            crate::core::usage::token_count_jsonl::wait_for_usage_summary_refreshes_for_testing();
-            fs::remove_dir_all(root).unwrap();
-            return;
-        }
-    }
-
-    panic!("usage refresh did not make the precise summary available");
+    // Synchronize with the scheduled owner before reading its result. A
+    // one-second polling window races hosted Windows disk and thread startup.
+    crate::core::usage::token_count_jsonl::wait_for_usage_summary_refreshes_for_testing();
+    let summary = crate::core::usage::token_count_jsonl::usage_summary_snapshot(&root)
+        .expect("usage refresh summary should be readable")
+        .expect("usage refresh did not make the precise summary available");
+    assert_eq!(summary.today_tokens, 40);
+    assert_eq!(summary.today_requests, 1);
+    assert_eq!(summary.total_tokens, 1_040);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
