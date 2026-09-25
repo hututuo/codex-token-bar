@@ -1,0 +1,132 @@
+name: Hosted project checks
+
+on:
+  push:
+    branches: [main, 'cloud/**', 'fix/**', 'codex/**']
+    paths-ignore: ['docs/**', '**/*.md']
+  pull_request:
+    paths-ignore: ['docs/**', '**/*.md']
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_BUILD_JOBS: '3'
+  CARGO_INCREMENTAL: '0'
+  RUSTUP_TOOLCHAIN: '1.93.1'
+
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+      - run: npm ci --registry=https://registry.npmjs.org
+        working-directory: tauri-app
+      - run: node scripts/cloud/run-node-tests.mjs tauri-app/src
+      - run: node --test scripts/cloud/*.test.mjs
+      - run: npm run build
+        working-directory: tauri-app
+      - run: npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+        working-directory: tauri-app
+
+  swift:
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      GIT_LFS_SKIP_SMUDGE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Swift dependency cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/artifacts
+            .build/checkouts
+            .build/repositories
+          key: swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-v1
+      - name: Prepare clean macOS host
+        run: |
+          swift --version
+          xcodebuild -version
+          command -v git-lfs >/dev/null || brew install git-lfs
+          bash scripts/prepare_tiktoken_lfs.sh
+      - name: Swift tests and release-script contracts
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee swift-tests.log
+          node scripts/cloud/run-node-tests.mjs scripts 2>&1 | tee release-script-tests.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: swift-check-logs-${{ github.run_id }}
+          path: '*.log'
+          retention-days: 7
+
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+      - name: Rust registry cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      - name: Prepare Rust and frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.93.1 --profile minimal
+          rustc --version
+          cd tauri-app
+          npm ci --registry=https://registry.npmjs.org
+          npm run build
+      - name: Full native regression including original pressure case
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee native-library.log
+      - name: Windows packaging self-test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build_tauri_windows_release.selftest.ps1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: native-check-logs-${{ matrix.os }}-${{ github.run_id }}
+          path: '*.log'
+          retention-days: 7

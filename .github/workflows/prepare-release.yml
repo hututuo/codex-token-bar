@@ -1,0 +1,137 @@
+name: Prepare hosted installers
+
+on:
+  push:
+    branches: [cloud/github-hosted-20260925]
+    paths:
+      - '.github/workflows/prepare-release.yml'
+      - 'scripts/cloud/**'
+      - 'scripts/build_release.sh'
+      - 'scripts/package_app.sh'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTUP_TOOLCHAIN: '1.93.1'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_BUILD_JOBS: '3'
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 50
+    env:
+      GIT_LFS_SKIP_SMUDGE: '1'
+      RELEASE_SIGN_UPDATES: '0'
+      RELEASE_STAGE_ONLY: '1'
+      RELEASE_HEADLESS: '1'
+      NOTARIZE_RELEASE: '0'
+      ARCH_LABEL: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/artifacts
+            .build/checkouts
+            .build/repositories
+          key: swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-v1
+      - name: Build, ad-hoc sign and verify headless DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v git-lfs >/dev/null || brew install git-lfs
+          test "$(uname -m)" = arm64
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('tauri-app/package.json')).version")
+          bash scripts/build_release.sh "$VERSION" 2>&1 | tee macos-package.log
+          mkdir candidate-macos
+          cp "dist/release/v$VERSION/"*.dmg "dist/release/v$VERSION/"*.app.zip "dist/release/v$VERSION/SHA256SUMS-v$VERSION-macos.txt" candidate-macos/
+          python3 scripts/cloud/manifest.py write candidate-macos --lane macos-arm64
+          python3 scripts/cloud/manifest.py verify candidate-macos
+          git diff --exit-code -- appcast.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-macos-${{ github.sha }}
+          path: candidate-macos/*
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: package-macos-logs-${{ github.run_id }}
+          path: '*.log'
+          retention-days: 7
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      - name: Build both architectures and verify manifests
+        shell: pwsh
+        run: |
+          . ./scripts/cloud/prepare-windows.ps1
+          $version = (Get-Content tauri-app/package.json -Raw | ConvertFrom-Json).version
+          ./scripts/build_tauri_windows_release.ps1 -Version $version -Arch both 2>&1 | Tee-Object windows-package.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory candidate-windows | Out-Null
+          Copy-Item "dist/release/v$version/windows-build/*" candidate-windows/
+          python scripts/cloud/manifest.py write candidate-windows --lane windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/cloud/manifest.py verify candidate-windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-windows-${{ github.sha }}
+          path: candidate-windows/*
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: package-windows-logs-${{ github.run_id }}
+          path: '*.log'
+          retention-days: 7
+
+  summary:
+    needs: [macos, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Candidate handoff
+        run: |
+          {
+            echo '## Cloud-built candidate — not a public release'
+            echo 'Source commit: `${{ github.sha }}`'
+            echo 'Download the candidate-macos / candidate-windows artifacts from this run.'
+            echo 'macOS is ad-hoc signed. Automatic-update signatures are intentionally absent until protected signing is configured.'
+            echo 'No tag, public Release, updater feed change, or local application installation was performed.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -33,6 +33,12 @@ APPLE_ID="${APPLE_ID:-}"
 APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
 APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-}"
 CODE_SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-${CODESIGN_IDENTITY:--}}"
+RELEASE_SIGN_UPDATES="${RELEASE_SIGN_UPDATES:-1}"
+RELEASE_HEADLESS="${RELEASE_HEADLESS:-0}"
+RELEASE_STAGE_ONLY="${RELEASE_STAGE_ONLY:-0}"
+for value in "$RELEASE_SIGN_UPDATES" "$RELEASE_HEADLESS" "$RELEASE_STAGE_ONLY"; do
+  case "$value" in 0|1) ;; *) echo "Release switches must be 0 or 1" >&2; exit 64 ;; esac
+done
 
 case "$RELEASE_SECURITY_STRICT" in
   0|1) ;;
@@ -53,6 +59,8 @@ PY
 )"
 fi
 
+SPARKLE_SIGN_ARGS=()
+if [[ "$RELEASE_SIGN_UPDATES" == "1" ]]; then
 case "$SPARKLE_KEY_SOURCE" in
   keychain)
     SPARKLE_SIGN_ARGS=(--account "$SPARKLE_KEY_ACCOUNT")
@@ -76,6 +84,7 @@ case "$SPARKLE_KEY_SOURCE" in
     exit 1
     ;;
 esac
+fi
 
 if [[ ! -f "$RELEASE_NOTES_FILE" ]]; then
   echo "Missing release notes: $RELEASE_NOTES_FILE" >&2
@@ -85,6 +94,8 @@ fi
 cd "$ROOT_DIR"
 
 echo "==> Running macOS release quality gates"
+# A hosted runner starts without the binary target cached on the release Mac.
+"$ROOT_DIR/scripts/prepare_tiktoken_lfs.sh"
 GIT_LFS_SKIP_SMUDGE=1 swift test
 node --check "$ROOT_DIR/Resources/CodexThreadDeleteInjection.js"
 node --check "$ROOT_DIR/Resources/CodexSessionEnhancementsInjection.js"
@@ -424,6 +435,10 @@ if [[ -f "$DMG_LAYOUT_TEMPLATE" ]]; then
 fi
 
 if [[ "$FINDER_STYLE_PERSISTED" != "1" ]]; then
+  if [[ "$RELEASE_HEADLESS" == "1" ]]; then
+    echo "Headless build requires a valid committed DMG layout; refusing interactive Finder fallback." >&2
+    exit 1
+  fi
   for attempt in 1 2 3; do
     if ! apply_finder_dmg_style; then
       echo "Finder DMG styling attempt $attempt failed; retrying." >&2
@@ -463,7 +478,9 @@ fi
 hdiutil detach "$RW_CHECK_MOUNT" >/dev/null
 rmdir "$RW_CHECK_MOUNT" >/dev/null 2>&1 || true
 RW_CHECK_MOUNT=""
-open -g -a Finder >/dev/null 2>&1 || true
+if [[ "$RELEASE_HEADLESS" != "1" ]]; then
+  open -g -a Finder >/dev/null 2>&1 || true
+fi
 
 hdiutil convert \
   "$RW_DMG" \
@@ -497,6 +514,7 @@ if notary_available; then
   notarize_artifact "$RELEASE_DIR/$DMG_NAME"
 fi
 
+if [[ "$RELEASE_SIGN_UPDATES" == "1" ]]; then
 cp "$RELEASE_DIR/$VERSIONED_ZIP" "$APPCAST_SOURCE_DIR/$VERSIONED_ZIP"
 cp "$RELEASE_NOTES_FILE" "$APPCAST_SOURCE_DIR/${VERSIONED_ZIP%.zip}.md"
 
@@ -525,6 +543,7 @@ UPDATE_SIGNATURE="$(
   "${SPARKLE_SIGN_ARGS[@]}" \
   "$RELEASE_DIR/$VERSIONED_ZIP" \
   "$UPDATE_SIGNATURE"
+fi
 
 (
   cd "$RELEASE_DIR"
@@ -539,10 +558,12 @@ spctl --assess --type execute -vv "$APP_DIR" >/dev/null 2>&1 || true
 # Only publish repository history after every build, archive, Sparkle and
 # signature gate above has succeeded. The helper also refuses a destination
 # changed or deleted since EXISTING_APPCAST was captured.
-python3 "$ROOT_DIR/scripts/publish_appcast.py" \
-  "$MERGED_APPCAST" \
-  "$EXISTING_APPCAST" \
-  "$ROOT_DIR/appcast.xml"
+if [[ "$RELEASE_SIGN_UPDATES" == "1" && "$RELEASE_STAGE_ONLY" != "1" ]]; then
+  python3 "$ROOT_DIR/scripts/publish_appcast.py" \
+    "$MERGED_APPCAST" \
+    "$EXISTING_APPCAST" \
+    "$ROOT_DIR/appcast.xml"
+fi
 
 cat <<REPORT
 Release build complete.
@@ -557,5 +578,7 @@ Unified checksums ($UNIFIED_CHECKSUM_FILE): pending Windows assets.
   Stage the Windows installers, .sig files, latest-windows.json and
   $WINDOWS_CHECKSUM_FILE into $RELEASE_DIR, then run:
   node "$ROOT_DIR/scripts/merge_release_checksums.mjs" --version "$VERSION" --release-dir "$RELEASE_DIR"
-Appcast: $ROOT_DIR/appcast.xml
+Update signing enabled: $RELEASE_SIGN_UPDATES
+Stage only (repository feed left unchanged): $RELEASE_STAGE_ONLY
+Candidate appcast (only when signed): $MERGED_APPCAST
 REPORT
