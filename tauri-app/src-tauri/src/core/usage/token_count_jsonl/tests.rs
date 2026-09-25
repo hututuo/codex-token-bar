@@ -665,7 +665,11 @@ fn precise_refresh_full_after_promotion_cutoff_attaches_without_second_sync() {
 
     let summary_flight = request_precise_refresh(&root, PreciseRefreshIntent::Summary).unwrap();
     let summary_handle = std::thread::spawn(move || summary_flight.wait().summary);
-    let reached_cutoff = cutoff_rx.recv_timeout(StdDuration::from_secs(5)).is_ok();
+    // The cutoff is reached after cold index/database setup. This timeout
+    // guards test coordination, not refresh performance; hosted Windows can
+    // spend more than five seconds preparing that state. Keep the full
+    // request behind the actual cutoff notification.
+    let reached_cutoff = cutoff_rx.recv_timeout(StdDuration::from_secs(30)).is_ok();
     set_precise_refresh_promotion_hook_for_testing(Some(Arc::new(move |promoted| {
         if promoted {
             return Err("cutoff test unexpectedly promoted full request".into());
@@ -684,7 +688,12 @@ fn precise_refresh_full_after_promotion_cutoff_attaches_without_second_sync() {
     set_precise_refresh_after_cutoff_hook_for_testing(None);
     set_precise_refresh_promotion_hook_for_testing(None);
 
-    assert!(reached_cutoff);
+    assert!(
+        reached_cutoff,
+        "owner did not reach the promotion cutoff: summary_error={:?}, full_error={:?}",
+        summary.as_ref().err(),
+        full.as_ref().err()
+    );
     assert!(observed_rejection);
     assert_eq!(summary.unwrap().total_tokens, 120);
     assert_eq!(full.unwrap().stats.total_tokens, 120);

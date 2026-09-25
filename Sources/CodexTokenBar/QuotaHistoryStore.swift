@@ -498,6 +498,7 @@ private struct QuotaHistoryRow {
 }
 
 final class QuotaHistoryDatabase: @unchecked Sendable {
+    static let peerReadBusyTimeoutMilliseconds: Int32 = 250
     private static let maintenancePolicyVersion = 3
     private let fileManager: FileManager
     private let databaseURL: URL?
@@ -1218,7 +1219,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             // main identity and WAL family before and after the read.
             let driver = SQLitePeerDatabaseReader(
                 url: peerURL,
-                busyTimeoutMilliseconds: 250,
+                busyTimeoutMilliseconds: Self.peerReadBusyTimeoutMilliseconds,
                 fileManager: fileManager
             )
             guard try peerSupportsStableIdentitySchema(driver) else { return [] }
