@@ -264,7 +264,15 @@ const pwsh = ["pwsh", "powershell"].find(command => {
   }
 });
 
-test("PowerShell fixture captures npm argv and preserves an existing build set", { skip: pwsh ? false : "pwsh/powershell unavailable on this Mac" }, () => {
+// Having pwsh installed on macOS does not provide Windows registry paths,
+// ProgramFiles or MSVC discovery. The hosted Windows lane runs this same
+// fixture after native-toolchain/NSIS setup; keep portable source contracts
+// above enabled on every operating system.
+test("PowerShell fixture captures npm argv and preserves an existing build set", {
+  skip: process.platform !== "win32"
+    ? "Windows-specific environment fixture; executed by the hosted Windows lane"
+    : pwsh ? false : "PowerShell unavailable on this Windows host",
+}, () => {
   const result = spawnSync(pwsh, ["-NoProfile", "-File", windowsSelfTest], { encoding: "utf8" });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /PASS: Windows release build self-test/);
