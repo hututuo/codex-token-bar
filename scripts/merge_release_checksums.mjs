@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 // 统一 SHA256SUMS 合并器（发布资产完整性门禁）。
 //
-// 决策（decisions.md 2026-07-21）：GitHub Release 固定九项资产，第九项
+// 默认双架构沿用 decisions.md 2026-07-21 的九项资产；显式单架构按选择生成。
+// 双架构的第九项
 // 统一 SHA256SUMS 覆盖前八项、不自包含：
 //   mac DMG、版本 zip、兼容 zip、
 //   Windows x64/ARM64 安装器及各自 .sig、latest-windows.json。
 // mac / Windows 构建各自产出中间清单（SHA256SUMS-vX-macos.txt /
 // SHA256SUMS-vX-windows.txt）；本脚本把两份中间清单按决策顺序合并成
-// 统一 8 行清单，并对账集合与磁盘上的真实文件：
+// 按明确的 Windows 架构生成清单，并对账集合与磁盘上的真实文件：
 //   ① 两份中间清单的资产集合必须与期望完全一致（缺失/多余/重复都失败）；
-//   ② 八项资产必须都在 release 目录里、是常规文件，重新哈希后与清单一致；
+//   ② 所选资产必须都在 release 目录里、是常规文件，重新哈希后与清单一致；
 //   ③ 非 Release 资产（build-manifest.json、appcast.xml）不得进入统一清单；
 //   ④ 已存在的统一清单视为不可变发布历史：内容一致幂等通过，不一致报错。
 import { createHash, randomUUID } from "node:crypto";
@@ -226,7 +227,7 @@ async function main(argv) {
     windowsArch,
   });
 
-  // ② 对账磁盘：八项资产必须在场且哈希一致，抓拷贝损坏与漏拷；
+  // ② 对账磁盘：所选资产必须在场且哈希一致，抓拷贝损坏与漏拷；
   // build-manifest.json 只是 Windows 中间产物，不要求出现在 release 目录。
   for (const line of unified.lines) {
     const digest = line.slice(0, 64);

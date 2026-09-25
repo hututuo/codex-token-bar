@@ -2133,11 +2133,30 @@ fn exact_index_scans_more_than_20_000_session_files_without_truncation() {
         ],
     );
 
+    ExactUsageIndex::reset_empty_source_work_for_testing();
+    let started = Instant::now();
     let summary = usage_summary(&root).unwrap();
 
     assert_eq!(summary.total_tokens, 120);
     assert_eq!(summary.today_requests, 0);
 
+    let work = ExactUsageIndex::empty_source_work_for_testing();
+    assert_eq!(work, (1, 157, 20_000),
+        "only the nonempty source should build a private staging database");
+    let cold_seconds = started.elapsed().as_secs_f64();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    ExactUsageIndex::reset_empty_source_work_for_testing();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let warm = Instant::now();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(ExactUsageIndex::empty_source_work_for_testing(), (0, 0, 0));
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(ExactUsageIndex::metadata_validation_bytes_for_testing(), 0);
+    drop(index);
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM published_files", [], |r| r.get::<_, i64>(0)).unwrap(), 20_001);
+    println!("EMPTY_SOURCE_PRESSURE files=20001 staged={} batch_commits={} empty_sources={} cold_seconds={cold_seconds:.3} warm_seconds={:.3}", work.0, work.1, work.2, warm.elapsed().as_secs_f64());
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }
 

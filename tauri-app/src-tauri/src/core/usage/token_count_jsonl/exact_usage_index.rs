@@ -3,6 +3,7 @@ mod retention;
 mod reconciler;
 mod ledger;
 mod message_links;
+mod empty_sources;
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -2245,6 +2246,16 @@ impl ExactUsageIndex {
     }
 
     #[cfg(test)]
+    pub(super) fn reset_empty_source_work_for_testing() {
+        empty_sources::reset_test_counters();
+    }
+
+    #[cfg(test)]
+    pub(super) fn empty_source_work_for_testing() -> (u64, u64, u64) {
+        empty_sources::test_counters()
+    }
+
+    #[cfg(test)]
     pub(super) fn reset_stage_concurrency_for_testing(delay_milliseconds: u64) {
         STAGE_ACTIVE_WORKERS.store(0, Ordering::SeqCst);
         STAGE_PEAK_WORKERS.store(0, Ordering::SeqCst);
@@ -2598,6 +2609,7 @@ impl ExactUsageIndex {
             prepare_scan_temp_tables(&self.connection)?;
             let generation = begin_or_resume_generation(&mut self.connection, mode)?;
             let mut full_rebuild_jobs = Vec::new();
+            let mut empty_source_jobs = Vec::new();
             let mut scanned_files = 0_u64;
             let mut scanned_paths = HashSet::new();
             super::update_precise_dashboard_progress(
@@ -2623,6 +2635,7 @@ impl ExactUsageIndex {
                         warnings,
                         &mut scan_completeness,
                         &mut full_rebuild_jobs,
+                        &mut empty_source_jobs,
                         &mut scanned_files,
                         &mut scanned_paths,
                         scan_total,
@@ -2645,6 +2658,7 @@ impl ExactUsageIndex {
                         warnings,
                         scan_completeness,
                         &mut full_rebuild_jobs,
+                        &mut empty_source_jobs,
                         &mut scanned_files,
                         &mut scanned_paths,
                         scan_total,
@@ -2661,6 +2675,10 @@ impl ExactUsageIndex {
                     &mut visit,
                 )?;
             }
+            empty_sources::import_new_sources(
+                &mut self.connection, generation, &empty_source_jobs,
+                &mut full_rebuild_jobs, warnings, &mut scan_completeness, &mut diagnostics,
+            )?;
             diagnostics.scanned_files = scanned_files;
             diagnostics.full_rebuild_files = diagnostics
                 .full_rebuild_files
@@ -6053,6 +6071,8 @@ fn build_staged_full_rebuild(
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<StagedFullRebuild, StagedFullRebuildError> {
     let _activity = StageActivityGuard::begin();
+    #[cfg(test)]
+    empty_sources::STAGED_DATABASE_BUILDS.fetch_add(1, Ordering::SeqCst);
     run_before_staging_open_hook_for_testing(&job.file);
     let mut handle = fs::File::open(&job.file).map_err(|error| {
         StagedFullRebuildError::IncompleteSource(format!(
@@ -9300,6 +9320,7 @@ fn process_scan_file_with_progress(
     warnings: &mut Vec<LocalDataWarning>,
     scan_completeness: &mut ExactScanCompleteness,
     full_rebuild_jobs: &mut Vec<FullRebuildJob>,
+    empty_source_jobs: &mut Vec<empty_sources::EmptySourceJob>,
     scanned_files: &mut u64,
     scanned_paths: &mut HashSet<PathBuf>,
     scan_total: Option<u64>,
@@ -9321,6 +9342,7 @@ fn process_scan_file_with_progress(
         diagnostics,
         expected_signature,
         mode,
+        empty_source_jobs,
     )? {
         full_rebuild_jobs.push(job);
     }
@@ -9447,6 +9469,7 @@ fn process_session_file(
     diagnostics: &mut ExactScanDiagnostics,
     expected_signature: Option<FileSignature>,
     mode: ExactSyncMode,
+    empty_source_jobs: &mut Vec<empty_sources::EmptySourceJob>,
 ) -> Result<Option<FullRebuildJob>, String> {
     if is_history_repair_workspace(file) { return Ok(None); }
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
@@ -9515,6 +9538,12 @@ fn process_session_file(
         .map_err(|error| format!("无法记录会话文件扫描状态：{error}"))?
         > 0;
     if !newly_seen {
+        return Ok(None);
+    }
+    // An unindexed zero-byte source has neither parser output nor historical
+    // facts to stage. Defer ONLY these new sources to bounded main-index
+    // transactions; existing/truncated sources still use ledger reconciliation.
+    if empty_sources::queue_if_new(connection, &canonical, &path, signature, empty_source_jobs)? {
         return Ok(None);
     }
     prune_obsolete_file_versions(connection, &path)?;
@@ -9601,7 +9630,7 @@ fn process_session_file(
     let session_id = session_id_from_file(file);
     let staging_base = reserve_staging_source(connection, &path, &session_id)?;
 
-    // Full rebuilds of every size use the bounded private-staging pool. The
+    // All nonempty or previously indexed rebuilds use the private-staging pool. The
     // workers never write the main index; imports remain deterministic and
     // single-writer, while small files can finally make use of the available
     // parser lanes instead of serializing on the scan thread.

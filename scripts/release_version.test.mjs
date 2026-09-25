@@ -20,7 +20,9 @@ test("all tracked application versions agree before a release can be packaged", 
   assert.ok(read("scripts/build_release.sh").includes(`APP_VERSION:-${version}`));
   assert.ok(read("scripts/package_app.sh").includes(`APP_VERSION:-${version}`));
 });
-test("Swift bundle metadata uses the same version without building or opening the app", () => {
+test("Swift bundle metadata uses the same version without building or opening the app", {
+  skip: process.platform === "win32" ? "Swift bundle packaging requires the Unix shell lane" : false,
+}, () => {
   const folder = mkdtempSync(join(tmpdir(), "tokenbar-version-"));
   try {
     const path = join(folder, "Info.plist");
