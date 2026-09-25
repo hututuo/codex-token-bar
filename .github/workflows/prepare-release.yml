@@ -9,14 +9,23 @@ on:
       - 'scripts/build_release.sh'
       - 'scripts/package_app.sh'
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Optional exact 40-character source commit; empty means this workflow commit'
+        type: string
+        default: ''
   workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
   group: prepare-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   RUSTUP_TOOLCHAIN: '1.93.1'
@@ -26,7 +35,20 @@ env:
   CARGO_INCREMENTAL: '0'
 
 jobs:
+  source:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - id: resolve
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact source SHA is required'; exit 1; }
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
   macos:
+    needs: source
     runs-on: macos-15
     timeout-minutes: 50
     env:
@@ -36,10 +58,12 @@ jobs:
       RELEASE_HEADLESS: '1'
       NOTARIZE_RELEASE: '0'
       ARCH_LABEL: arm64
+      DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -65,7 +89,7 @@ jobs:
           git diff --exit-code -- appcast.xml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: candidate-macos-${{ github.sha }}
+          name: candidate-macos-${{ needs.source.outputs.sha }}
           path: candidate-macos/*
           compression-level: 0
           retention-days: 14
@@ -78,12 +102,14 @@ jobs:
           retention-days: 7
 
   windows:
+    needs: source
     runs-on: windows-2025
     timeout-minutes: 80
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -110,7 +136,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: candidate-windows-${{ github.sha }}
+          name: candidate-windows-${{ needs.source.outputs.sha }}
           path: candidate-windows/*
           compression-level: 0
           retention-days: 14
@@ -123,14 +149,14 @@ jobs:
           retention-days: 7
 
   summary:
-    needs: [macos, windows]
+    needs: [source, macos, windows]
     runs-on: ubuntu-24.04
     steps:
       - name: Candidate handoff
         run: |
           {
             echo '## Cloud-built candidate — not a public release'
-            echo 'Source commit: `${{ github.sha }}`'
+            echo 'Source commit: `${{ needs.source.outputs.sha }}`'
             echo 'Download the candidate-macos / candidate-windows artifacts from this run.'
             echo 'macOS is ad-hoc signed. Automatic-update signatures are intentionally absent until protected signing is configured.'
             echo 'No tag, public Release, updater feed change, or local application installation was performed.'

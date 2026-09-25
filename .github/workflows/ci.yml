@@ -7,7 +7,16 @@ on:
   pull_request:
     paths-ignore: ['docs/**', '**/*.md']
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Optional exact 40-character source commit; empty means this workflow commit'
+        type: string
+        default: ''
   workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -24,13 +33,27 @@ env:
   RUSTUP_TOOLCHAIN: '1.93.1'
 
 jobs:
+  source:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - id: resolve
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact source SHA is required'; exit 1; }
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
   frontend:
+    needs: source
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -46,14 +69,17 @@ jobs:
         working-directory: tauri-app
 
   swift:
+    needs: source
     runs-on: macos-15
     timeout-minutes: 35
     env:
       GIT_LFS_SKIP_SMUDGE: '1'
+      DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -75,6 +101,7 @@ jobs:
         run: |
           set -o pipefail
           swift test 2>&1 | tee swift-tests.log
+          npm ci --prefix tauri-app --registry=https://registry.npmjs.org
           node scripts/cloud/run-node-tests.mjs scripts 2>&1 | tee release-script-tests.log
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -84,6 +111,7 @@ jobs:
           retention-days: 7
 
   native:
+    needs: source
     strategy:
       fail-fast: false
       matrix:
@@ -94,6 +122,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
