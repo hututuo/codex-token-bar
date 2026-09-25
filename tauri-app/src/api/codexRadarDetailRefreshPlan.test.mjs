@@ -8,32 +8,36 @@ import {
   shouldRefreshCodexRadarDetail,
 } from "./codexRadarDetailRefreshPlan.ts";
 
+// These are local-calendar scheduling tests, not fixed UTC+08:00 instants.
+// Use local constructors so a clean UTC runner tests the same contract.
+const local = (day, hour, minute = 0, second = 0) => new Date(2026, 6, day, hour, minute, second);
+
 test("latestCodexRadarDetailSlot follows local 08:00 and 18:00 boundaries", () => {
   assert.equal(
-    latestCodexRadarDetailSlot(new Date("2026-07-07T07:59:00+08:00")).toISOString(),
-    "2026-07-06T10:00:00.000Z",
+    latestCodexRadarDetailSlot(local(7, 7, 59)).getTime(),
+    local(6, 18).getTime(),
   );
   assert.equal(
-    latestCodexRadarDetailSlot(new Date("2026-07-07T08:00:00+08:00")).toISOString(),
-    "2026-07-07T00:00:00.000Z",
+    latestCodexRadarDetailSlot(local(7, 8)).getTime(),
+    local(7, 8).getTime(),
   );
   assert.equal(
-    latestCodexRadarDetailSlot(new Date("2026-07-07T18:00:00+08:00")).toISOString(),
-    "2026-07-07T10:00:00.000Z",
+    latestCodexRadarDetailSlot(local(7, 18)).getTime(),
+    local(7, 18).getTime(),
   );
 });
 
 test("shouldRefreshCodexRadarDetail catches up once after a missed slot", () => {
-  const now = new Date("2026-07-07T08:05:00+08:00");
+  const now = local(7, 8, 5);
 
   assert.equal(shouldRefreshCodexRadarDetail({
     lastAttemptedSlotAt: null,
-    lastSuccessfulRefreshAt: "2026-07-06T18:01:00+08:00",
+    lastSuccessfulRefreshAt: local(6, 18, 1).toISOString(),
     now,
   }), true);
   assert.equal(shouldRefreshCodexRadarDetail({
     lastAttemptedSlotAt: null,
-    lastSuccessfulRefreshAt: "2026-07-07T08:00:30+08:00",
+    lastSuccessfulRefreshAt: local(7, 8, 0, 30).toISOString(),
     now,
   }), false);
   assert.equal(shouldRefreshCodexRadarDetail({
@@ -44,7 +48,7 @@ test("shouldRefreshCodexRadarDetail catches up once after a missed slot", () => 
 });
 
 test("shouldRefreshCodexRadarDetail keeps a failed automatic slot eligible for recovery", () => {
-  const morningNow = new Date("2026-07-07T08:05:00+08:00");
+  const morningNow = local(7, 8, 5);
   const morningSlot = latestCodexRadarDetailSlot(morningNow).toISOString();
 
   assert.equal(shouldRefreshCodexRadarDetail({
@@ -60,11 +64,11 @@ test("shouldRefreshCodexRadarDetail keeps a failed automatic slot eligible for r
   assert.equal(shouldRefreshCodexRadarDetail({
     lastAttemptedSlotAt: morningSlot,
     lastSuccessfulRefreshAt: null,
-    now: new Date("2026-07-07T18:05:00+08:00"),
+    now: local(7, 18, 5),
   }), true);
   assert.equal(shouldRefreshCodexRadarDetail({
     lastAttemptedSlotAt: morningSlot,
-    lastSuccessfulRefreshAt: "2026-07-07T08:02:00+08:00",
+    lastSuccessfulRefreshAt: local(7, 8, 2).toISOString(),
     now: morningNow,
   }), false);
 });
@@ -79,7 +83,7 @@ test("Codex Radar detail recovery progresses to ten minutes and never stops", ()
 });
 
 test("manual Codex Radar detail refresh ignores the automatic attempt guard", () => {
-  const now = new Date("2026-07-07T08:05:00+08:00");
+  const now = local(7, 8, 5);
 
   assert.equal(shouldRefreshCodexRadarDetail({
     lastAttemptedSlotAt: latestCodexRadarDetailSlot(now).toISOString(),
@@ -91,15 +95,15 @@ test("manual Codex Radar detail refresh ignores the automatic attempt guard", ()
 
 test("millisecondsUntilNextCodexRadarDetailSlot points to the next local schedule", () => {
   assert.equal(
-    millisecondsUntilNextCodexRadarDetailSlot(new Date("2026-07-07T07:30:00+08:00")),
+    millisecondsUntilNextCodexRadarDetailSlot(local(7, 7, 30)),
     30 * 60 * 1000,
   );
   assert.equal(
-    millisecondsUntilNextCodexRadarDetailSlot(new Date("2026-07-07T17:45:00+08:00")),
+    millisecondsUntilNextCodexRadarDetailSlot(local(7, 17, 45)),
     15 * 60 * 1000,
   );
   assert.equal(
-    millisecondsUntilNextCodexRadarDetailSlot(new Date("2026-07-07T18:30:00+08:00")),
+    millisecondsUntilNextCodexRadarDetailSlot(local(7, 18, 30)),
     13.5 * 60 * 60 * 1000,
   );
 });
