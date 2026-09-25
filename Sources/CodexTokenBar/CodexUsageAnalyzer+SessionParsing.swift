@@ -1101,15 +1101,13 @@ extension CodexUsageAnalyzer {
     }
 
     private func sessionCacheKey(for file: URL) -> SessionCacheKey? {
-        guard let attributes = try? fileManager.attributesOfItem(atPath: file.path) else { return nil }
-        let size = (attributes[.size] as? NSNumber)?.uint64Value
-            ?? attributes[.size] as? UInt64
-            ?? 0
-        let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let canonical = file.resolvingSymlinksInPath()
+        guard let observation = try? SourceFileObservation.read(at: canonical) else { return nil }
         return SessionCacheKey(
-            path: file.resolvingSymlinksInPath().path,
-            size: size,
-            modifiedAt: modifiedAt
+            path: canonical.path,
+            size: observation.size,
+            modifiedAt: observation.modifiedAt,
+            physicalStamp: observation.physicalStamp
         )
     }
 

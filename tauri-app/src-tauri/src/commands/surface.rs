@@ -415,7 +415,7 @@ fn apply_windows_floating_frame_and_viewport(
         }
         Ok(())
     };
-    let result = (|| {
+    let result: Result<(), String> = (|| {
         set_frame(outer.0, frame.x.round() as i32, frame.y.round() as i32,
             frame.width.round() as i32, frame.height.round() as i32)?;
         set_frame(webview_parent.0 as _, offset_x.round() as i32, offset_y.round() as i32, width, height)?;

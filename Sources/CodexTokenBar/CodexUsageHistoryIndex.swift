@@ -8026,22 +8026,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func sourceSignatureMetadata(for file: URL) throws -> SourceSignature {
-        var fileStatus = Darwin.stat()
-        guard lstat(file.path, &fileStatus) == 0,
-              (fileStatus.st_mode & S_IFMT) == S_IFREG,
-              fileStatus.st_size >= 0 else {
-            throw CocoaError(.fileReadUnknown)
-        }
-        // Use the same stat representation as the worker-open fstat boundary.
-        // Mixing URLResourceValues' rounded timestamp with nanosecond fstat
-        // makes an unchanged file look rewritten on the very next cadence.
-        let size = UInt64(fileStatus.st_size)
+        let observation = try SourceFileObservation.read(at: file)
         return SourceSignature(
-            size: size,
-            modifiedAt: TimeInterval(fileStatus.st_mtimespec.tv_sec)
-                + TimeInterval(fileStatus.st_mtimespec.tv_nsec) / 1_000_000_000,
+            size: observation.size,
+            modifiedAt: observation.modifiedAt,
             contentProbe: "",
-            physicalStamp: "\(fileStatus.st_dev):\(fileStatus.st_ino):\(fileStatus.st_ctimespec.tv_sec):\(fileStatus.st_ctimespec.tv_nsec)"
+            physicalStamp: observation.physicalStamp
         )
     }
 
@@ -8081,18 +8071,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         forOpenHandle handle: FileHandle,
         file: URL
     ) throws -> SourceSignature {
-        var status = Darwin.stat()
-        guard fstat(handle.fileDescriptor, &status) == 0,
-              (status.st_mode & S_IFMT) == S_IFREG,
-              status.st_size >= 0 else {
-            throw CocoaError(.fileReadUnknown)
-        }
+        let observation = try SourceFileObservation.read(handle: handle)
         return SourceSignature(
-            size: UInt64(status.st_size),
-            modifiedAt: TimeInterval(status.st_mtimespec.tv_sec)
-                + TimeInterval(status.st_mtimespec.tv_nsec) / 1_000_000_000,
+            size: observation.size,
+            modifiedAt: observation.modifiedAt,
             contentProbe: "",
-            physicalStamp: "\(status.st_dev):\(status.st_ino):\(status.st_ctimespec.tv_sec):\(status.st_ctimespec.tv_nsec)"
+            physicalStamp: observation.physicalStamp
         )
     }
 

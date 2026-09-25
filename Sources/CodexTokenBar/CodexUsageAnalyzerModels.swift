@@ -90,17 +90,22 @@ extension CodexUsageAnalyzer {
         let path: String
         let size: UInt64
         let modifiedAt: TimeInterval
+        // Optional keeps older persisted snapshots readable as last-good data.
+        // Missing receipts invalidate only the upper cache, not the ledger.
+        let physicalStamp: String?
 
         private enum CodingKeys: String, CodingKey {
             case path
             case size
             case modifiedAt
+            case physicalStamp
         }
 
-        init(path: String, size: UInt64, modifiedAt: TimeInterval) {
+        init(path: String, size: UInt64, modifiedAt: TimeInterval, physicalStamp: String? = nil) {
             self.path = path
             self.size = size
             self.modifiedAt = modifiedAt
+            self.physicalStamp = physicalStamp
         }
     }
 
