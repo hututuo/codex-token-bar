@@ -33,4 +33,4 @@ node scripts/merge_release_checksums.mjs --version 0.9.2 --release-dir PATH --wi
 
 正式仓库之外的日志、合成数据与本地验证包保存在 `~/tmp/ctb-finish-fixes-20260925/`。验证包通过独立且不可覆盖的 `APP_OUTPUT_DIR` 输出；未要求用户删除账本，也未增加降级兼容。
 
-最终运行结果在本轮验证结束后追加；本文件本身不表示正式发行放行。
+后续空文件压力回归的 Git 历史原因、已提交的批处理修复、自动回归与最终接手清单见同目录 `2026-09-25-empty-source-performance-repair.md`。旧 `0d60821d` 验证包不含后续索引修复，接手时应按最终代码候选重新构建；本文件本身不表示正式发行放行。
