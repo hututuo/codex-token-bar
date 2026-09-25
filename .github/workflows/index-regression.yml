@@ -5,6 +5,9 @@ on:
     paths:
       - '.github/workflows/index-regression.yml'
       - 'tauri-app/src-tauri/src/core/usage/token_count_jsonl/**'
+      - 'tauri-app/src-tauri/src/core/coordination_fs.rs'
+      - 'tauri-app/src-tauri/Cargo.toml'
+      - 'tauri-app/src-tauri/Cargo.lock'
       - 'tauri-app/src/floating/floatingGuide*.test.mjs'
       - 'scripts/release_version.test.mjs'
   workflow_dispatch:

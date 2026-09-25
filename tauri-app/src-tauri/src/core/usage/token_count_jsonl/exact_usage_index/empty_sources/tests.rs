@@ -54,6 +54,55 @@ fn new_empty_sources_publish_checkpoints_without_staging_and_append_after_reopen
 }
 
 #[test]
+fn append_after_empty_batch_commit_is_observed_on_the_next_scan() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let fixture = Fixture::new();
+    let file = fixture.file("rollout-append-after-commit.jsonl");
+    fs::write(&file, "").unwrap();
+    ExactUsageIndex::set_after_file_commit_hook_for_testing(|path| {
+        fs::write(path, token(29)).map_err(|error| error.to_string())
+    });
+    // The fixed observation boundary was empty, even though the writer has
+    // appended by the time this generation finishes publication.
+    assert_eq!(fixture.sync(), 0);
+    reset_test_counters();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    assert_eq!(fixture.sync(), 29);
+    assert_eq!(test_counters(), (0, 0, 0));
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0, 0);
+    assert_eq!(fixture.scalar("SELECT COUNT(*) FROM event_rows"), 1);
+    fs::remove_file(file).unwrap();
+    assert_eq!(fixture.sync(), 29, "deleting the source must retain its published usage");
+}
+
+#[test]
+fn queued_empty_deleted_before_import_does_not_reserve_a_phantom_source() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let fixture = Fixture::new();
+    let file = fixture.file("rollout-disappearing-empty.jsonl");
+    fs::write(&file, "").unwrap();
+    let file = fs::canonicalize(file).unwrap();
+    let mut index = ExactUsageIndex::open(&fixture.root).unwrap();
+    let generation = begin_or_resume_generation(&mut index.connection, ExactSyncMode::Full).unwrap();
+    let mut jobs = Vec::new();
+    assert!(queue_if_new(&index.connection, &file, &file.to_string_lossy(),
+        file_signature(&file).unwrap(), &mut jobs).unwrap());
+    fs::remove_file(&file).unwrap();
+    let mut full = Vec::new();
+    import_new_sources(&mut index.connection, generation, &jobs, &mut full,
+        &mut Vec::new(), &mut ExactScanCompleteness::default(),
+        &mut ExactScanDiagnostics::default()).unwrap();
+    assert!(full.is_empty());
+    for table in ["sources", "pending_sources", "source_observations"] {
+        assert_eq!(index.connection.query_row(&format!("SELECT COUNT(*) FROM {table}"),
+            [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+    drop(index);
+    fs::write(file, token(31)).unwrap();
+    assert_eq!(fixture.sync(), 31);
+}
+
+#[test]
 fn empty_truncation_and_archived_identity_keep_existing_ledger_reconciliation() {
     let _guard = app_paths::app_path_test_env_guard(&[]);
     let fixture = Fixture::new();

@@ -1337,7 +1337,15 @@ mod tests {
 
     #[test]
     fn windows_backend_is_root_relative_and_reparse_aware() {
-        let source = include_str!("coordination_fs.rs");
+        for source in source_contract_variants() {
+            assert_windows_backend_contract(&source);
+        }
+    }
+
+    fn assert_windows_backend_contract(source: &str) {
+        // include_str! preserves Git's checkout line endings. Normalize text
+        // only for inspection; keep every filesystem safety assertion intact.
+        let source = source.replace("\r\n", "\n");
         assert!(source.contains("#[cfg(windows)]\nfn windows_nt_open_relative"));
         assert!(source.contains("NtCreateFile"));
         assert!(source.contains("RootDirectory: parent.as_raw_handle()"));
@@ -1357,7 +1365,13 @@ mod tests {
 
     #[test]
     fn windows_lock_open_uses_non_delete_access_and_shared_open() {
-        let source = include_str!("coordination_fs.rs");
+        for source in source_contract_variants() {
+            assert_windows_lock_open_contract(&source);
+        }
+    }
+
+    fn assert_windows_lock_open_contract(source: &str) {
+        let source = source.replace("\r\n", "\n");
         let access = source
             .split("fn windows_lock_file_access()")
             .nth(1)
@@ -1381,6 +1395,14 @@ mod tests {
         assert!(lock_open.contains("FILE_SHARE_READ | FILE_SHARE_WRITE"));
         assert!(!lock_open.contains("FILE_SHARE_DELETE"));
         assert!(!lock_open.contains("windows_regular_access()"));
+    }
+
+    // Exercise both checkout representations even when tests run on macOS.
+    // Exclude the assertions themselves so they cannot satisfy the contract.
+    fn source_contract_variants() -> [String; 2] {
+        let source = include_str!("coordination_fs.rs").replace("\r\n", "\n");
+        let production = source.split("\n#[cfg(test)]\nmod tests {").next().unwrap();
+        [production.into(), production.replace('\n', "\r\n")]
     }
 
     #[test]
