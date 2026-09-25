@@ -98,21 +98,21 @@ jobs:
   checks:
     needs: resolve
     if: needs.resolve.outputs.operation == 'checks'
-    uses: hututuo/codex-token-bar/.github/workflows/ci.yml@c543626c84aa242fd2e6542aa24c64d84e90956e
+    uses: hututuo/codex-token-bar/.github/workflows/ci.yml@29092c80203dedcb72e33be9999594ca476bf5d3
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
 
   build:
     needs: resolve
     if: needs.resolve.outputs.operation == 'build'
-    uses: hututuo/codex-token-bar/.github/workflows/prepare-release.yml@c543626c84aa242fd2e6542aa24c64d84e90956e
+    uses: hututuo/codex-token-bar/.github/workflows/prepare-release.yml@29092c80203dedcb72e33be9999594ca476bf5d3
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
 
   sign:
     needs: resolve
     if: needs.resolve.outputs.operation == 'sign'
-    uses: hututuo/codex-token-bar/.github/workflows/sign-release.yml@c543626c84aa242fd2e6542aa24c64d84e90956e
+    uses: hututuo/codex-token-bar/.github/workflows/sign-release.yml@29092c80203dedcb72e33be9999594ca476bf5d3
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
       build_run_id: ${{ needs.resolve.outputs.build_run_id }}
@@ -124,7 +124,7 @@ jobs:
     permissions:
       contents: write
       actions: read
-    uses: hututuo/codex-token-bar/.github/workflows/publish-release.yml@c543626c84aa242fd2e6542aa24c64d84e90956e
+    uses: hututuo/codex-token-bar/.github/workflows/publish-release.yml@29092c80203dedcb72e33be9999594ca476bf5d3
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
       signed_run_id: ${{ needs.resolve.outputs.signed_run_id }}
