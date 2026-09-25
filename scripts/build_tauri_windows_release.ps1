@@ -3,6 +3,7 @@ param(
     [ValidateSet("x64", "arm64", "both")]
     [string]$Arch = "both",
     [switch]$SkipNpmCi,
+    [switch]$ReuseCargoTestCache,
     [string]$ProjectRoot = ""
 )
 
@@ -31,7 +32,13 @@ $BuildDir = Join-Path $VersionDir "windows-build"
 $RunId = [Guid]::NewGuid().ToString("N")
 $StagingDir = Join-Path $VersionDir (".windows-build.staging.{0}" -f $RunId)
 $ConfigPath = Join-Path $VersionDir (".windows-build.config.{0}.json" -f $RunId)
-$CargoTestDir = Join-Path $VersionDir (".windows-build.cargo-test.{0}" -f $RunId)
+# Hosted builds may reuse Cargo's fingerprinted test output. Tests still run;
+# only the cache directory is reused. The default local lane stays disposable.
+$CargoTestDir = if ($ReuseCargoTestCache) {
+    Join-Path $TauriDir "src-tauri\target"
+} else {
+    Join-Path $VersionDir (".windows-build.cargo-test.{0}" -f $RunId)
+}
 $UserCargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
 if (Test-Path $UserCargoBin) {
     $env:PATH = "$UserCargoBin;$env:PATH"
@@ -314,7 +321,9 @@ try {
         } else {
             Remove-Item Env:\CARGO_TARGET_DIR -ErrorAction SilentlyContinue
         }
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $CargoTestDir
+        if (-not $ReuseCargoTestCache) {
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $CargoTestDir
+        }
     }
 
     foreach ($Target in $SelectedTargets) {
@@ -354,7 +363,9 @@ try {
     $Published = $true
 } finally {
     Remove-Item -Force -ErrorAction SilentlyContinue $ConfigPath
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $CargoTestDir
+    if (-not $ReuseCargoTestCache) {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $CargoTestDir
+    }
     if (-not $Published) {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $StagingDir
     }

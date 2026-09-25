@@ -182,6 +182,17 @@ try {
         Assert-True ($SingleManifest.assets[0].arch -eq $SelectedArch) "single-architecture build selected the wrong target"
         Assert-True (@(Get-ChildItem -File $SingleBuild).Count -eq 2) "single-architecture output contains undeclared files"
     }
+    $CacheRoot = Join-Path $FixtureRoot "cache-reuse"
+    $global:ReleaseSelfTestRoot = $CacheRoot
+    $global:FailArm64 = $false
+    $global:FailManifest = $false
+    $global:FinalConflict = $false
+    $null = Initialize-FixtureProject $CacheRoot
+    $CacheSentinel = Join-Path $CacheRoot "tauri-app\src-tauri\target\existing-test-cache.txt"
+    [IO.File]::WriteAllText($CacheSentinel, "PRESERVE_FINGERPRINTED_CACHE")
+    & $BuildScript -Version "0.7.2" -Arch x64 -SkipNpmCi -ReuseCargoTestCache -ProjectRoot $CacheRoot
+    Assert-True (Test-Path -LiteralPath $CacheSentinel) "reusable test cache was deleted"
+    Assert-True (([IO.File]::ReadAllText($CacheSentinel)) -eq "PRESERVE_FINGERPRINTED_CACHE") "test cache sentinel changed"
     Write-Host "PASS: Windows release build self-test"
 } finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $FixtureRoot

@@ -121,12 +121,20 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      - name: Reuse native test and installer compilation
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tauri-app/src-tauri/target
+          key: rust-package-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ needs.source.outputs.sha }}
+          restore-keys: |
+            rust-package-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+            rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
       - name: Build both architectures and verify manifests
         shell: pwsh
         run: |
           . ./scripts/cloud/prepare-windows.ps1
           $version = (Get-Content tauri-app/package.json -Raw | ConvertFrom-Json).version
-          ./scripts/build_tauri_windows_release.ps1 -Version $version -Arch both 2>&1 | Tee-Object windows-package.log
+          ./scripts/build_tauri_windows_release.ps1 -Version $version -Arch both -ReuseCargoTestCache 2>&1 | Tee-Object windows-package.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory candidate-windows | Out-Null
           Copy-Item "dist/release/v$version/windows-build/*" candidate-windows/
