@@ -167,7 +167,9 @@ jobs:
       - name: Windows packaging self-test
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/build_tauri_windows_release.selftest.ps1
+        run: |
+          . ./scripts/cloud/prepare-windows.ps1
+          ./scripts/build_tauri_windows_release.selftest.ps1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
