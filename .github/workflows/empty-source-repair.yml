@@ -1,0 +1,114 @@
+name: Empty source performance repair
+on:
+  push:
+    branches: [fix/v092-audit-sidebar]
+    paths: [.github/workflows/empty-source-repair.yml, '.github/index-repair-transfer/**']
+permissions:
+  contents: read
+jobs:
+  apply:
+    if: github.repository == 'hututuo/codex-token-bar' && github.ref == 'refs/heads/fix/v092-audit-sidebar'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      revision: ${{ steps.commit.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: false
+      - name: Apply reviewed patch and remove temporary transfer files
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, gzip, hashlib, os
+          from pathlib import Path
+          data = b''.join(Path(f'.github/index-repair-transfer/part-{n}').read_bytes() for n in (1, 2, 3))
+          patch = gzip.decompress(base64.b64decode(data))
+          assert hashlib.sha256(patch).hexdigest() == '70b1d896d2066eb748de7ce684dba1a21224765736613ad78105bc9f0f19198b'
+          Path(os.environ['RUNNER_TEMP'], 'reviewed.patch').write_bytes(patch)
+          PY
+          git apply --check "$RUNNER_TEMP/reviewed.patch"
+          git apply --index "$RUNNER_TEMP/reviewed.patch"
+          git diff --cached --check
+          git diff --cached --stat
+          git rm -r .github/index-repair-transfer .github/workflows/empty-source-repair.yml .github/workflows/index-repair-diagnostics.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: batch fresh empty source checkpoints without per-file staging' -m 'Preserve existing-source reconciliation and generation publication. Keep the 20,001-file test and add bounded-work, interruption, append and identity regressions. Include the outstanding guide integration and release-script follow-ups.'
+          remote=$(git ls-remote origin refs/heads/fix/v092-audit-sidebar | cut -f1)
+          test "$remote" = "$GITHUB_SHA"
+          git push origin HEAD:refs/heads/fix/v092-audit-sidebar
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git bundle create "$RUNNER_TEMP/repaired-source.bundle" HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repaired-source
+          path: |
+            ${{ runner.temp }}/reviewed.patch
+            ${{ runner.temp }}/repaired-source.bundle
+          retention-days: 3
+  windows:
+    needs: apply
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_BUILD_JOBS: 3
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.apply.outputs.revision }}
+          persist-credentials: false
+          lfs: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tauri-app/src-tauri/target
+          key: windows-empty-source-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      - name: Build frontend and run guide regression
+        working-directory: tauri-app
+        shell: pwsh
+        run: |
+          npm ci --registry=https://registry.npmjs.org
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test src/floating/floatingGuideExtent.test.mjs src/floating/floatingGuideMeasurement.test.mjs ../scripts/release_version.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile and test empty-source safety cases
+        shell: pwsh
+        run: |
+          rustc --version
+          cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib empty_sources::tests -- --test-threads=1 --nocapture 2>&1 | Tee-Object -FilePath empty-sources.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run unchanged-size pressure case without skipping
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib exact_index_scans_more_than_20_000_session_files_without_truncation -- --test-threads=1 --nocapture 2>&1 | Tee-Object -FilePath pressure.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Full native library regression
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | Tee-Object -FilePath native-library.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-empty-source-regression
+          path: '*.log'
+          if-no-files-found: warn
+          retention-days: 7
