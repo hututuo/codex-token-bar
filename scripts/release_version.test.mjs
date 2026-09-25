@@ -7,7 +7,8 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const read = path => readFileSync(join(root, path), "utf8");
+// Git may check text out as CRLF on Windows; version identity is unchanged.
+const read = path => readFileSync(join(root, path), "utf8").replace(/\r\n/g, "\n");
 test("all tracked application versions agree before a release can be packaged", () => {
   const version = JSON.parse(read("tauri-app/package.json")).version;
   const lock = JSON.parse(read("tauri-app/package-lock.json"));
