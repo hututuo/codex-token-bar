@@ -77,6 +77,20 @@ test("buildUnifiedChecksums emits the eight decision-ordered release assets", ()
   assert.ok(!unified.lines.some((line) => line.includes("appcast.xml")));
 });
 
+for (const windowsArch of ["x64", "arm64"]) {
+  test(`checksum merge accepts explicit ${windowsArch} but rejects accidentally missing architectures`, () => {
+    const names = [...expectedWindowsReleaseAssetNames(version, windowsArch), "build-manifest.json"];
+    const windowsText = manifestText(names.map(name => [fakeDigest(name), name]));
+    const unified = buildUnifiedChecksums({ version, macText: macManifest(), windowsText, windowsArch });
+    assert.equal(unified.lines.length, 6);
+    assert.deepEqual(unified.assetNames.slice(3), expectedWindowsReleaseAssetNames(version, windowsArch));
+    assert.throws(() => buildUnifiedChecksums({ version, macText: macManifest(), windowsText }), /asset set mismatch/);
+  });
+}
+test("checksum merge rejects unknown Windows architecture selections", () => {
+  assert.throws(() => expectedWindowsReleaseAssetNames(version, "x86"), /Invalid Windows architecture/);
+});
+
 test("buildUnifiedChecksums accepts an x86_64 macOS build", () => {
   const unified = buildUnifiedChecksums({
     version,

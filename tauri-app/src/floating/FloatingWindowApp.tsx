@@ -336,6 +336,12 @@ export function FloatingWindowApp() {
     }
   }, [contentHasRunningThreadDetailsTarget]);
 
+  const [pagingGuideHeight, setPagingGuideHeight] = useState(0);
+  const handlePagingGuideHeightChange = useCallback((height: number) => {
+    if (Number.isFinite(height) && height > 0) setPagingGuideHeight(current => current === height ? current : height);
+  }, []);
+  useEffect(() => { if (!overlayGuidePresented) setPagingGuideHeight(0); }, [overlayGuidePresented]);
+
   const handleRunningModelDetailsHeightChange = useCallback((height: number) => {
     const next = Math.max(1, Math.ceil(height));
     setRunningModelDetailsHeight((current) => current === next ? current : next);
@@ -380,7 +386,7 @@ export function FloatingWindowApp() {
       let basePosition = runningModelDetailsBasePositionRef.current;
       let targetPosition = basePosition ?? undefined;
       let targetWidth = baseWidth;
-      let targetHeight = Math.max(surfaceHeight, overlayGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT * scale : 0);
+      let targetHeight = Math.max(surfaceHeight, overlayGuidePresented ? Math.max(FLOATING_PAGING_GUIDE_HEIGHT * scale, pagingGuideHeight) : 0);
       let placement: FloatingRunningModelDetailsPlacement = "below";
       let nextMetrics = { height: FLOATING_RUNNING_MODEL_DETAILS_MIN_HEIGHT * scale, offset: 0 };
       if (effectiveRunningModelDetailsExpanded) {
@@ -429,6 +435,7 @@ export function FloatingWindowApp() {
   }, [
     effectiveRunningModelDetailsExpanded,
     overlayGuidePresented,
+    pagingGuideHeight,
     presentedSettings.contentVisibility,
     presentedSettings.scale,
     runningModelDetailsHeight,
@@ -641,6 +648,7 @@ export function FloatingWindowApp() {
             modelTargetWidth={runningModelsTargetWidth}
             onArrowVisibilityChange={setPagingGuideShowsArrowGlyphs}
             onAdvance={advancePagingGuide}
+            onHeightChange={handlePagingGuideHeightChange}
           />
         ) : effectiveRunningModelDetailsExpanded ? (
           <FloatingRunningThreadModelDetails

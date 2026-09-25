@@ -68,7 +68,7 @@ async function makeFixture(options = {}) {
   const assets = [
     ["windows-x86_64", "x64", installerNames[1], "fixture-x64"],
     ["windows-aarch64", "arm64", installerNames[0], "fixture-arm64"],
-  ];
+  ].filter(([, arch]) => !options.windowsArch || options.windowsArch === "both" || options.windowsArch === arch);
   const manifestAssets = [];
   for (const [platform, arch, filename, content] of assets) {
     const file = path.join(buildDir, filename);
@@ -86,7 +86,7 @@ async function makeFixture(options = {}) {
   if (options.missingArch) manifestAssets.pop();
   await writeFile(
     path.join(buildDir, "build-manifest.json"),
-    `${JSON.stringify({ version, assets: manifestAssets }, null, 2)}\n`,
+    `${JSON.stringify({ version, ...(options.windowsArch ? { windowsArch: options.windowsArch } : {}), assets: manifestAssets }, null, 2)}\n`,
   );
   if (options.missingFile) {
     const { rm } = await import("node:fs/promises");
@@ -331,6 +331,25 @@ macSigningRuntimeTest("Mac signing treats installer bytes as opaque while manife
   assert.doesNotMatch(published.join("") + result.stdout + result.stderr, /TEST_PRIVATE_KEY_DO_NOT_LEAK/);
 });
 
+for (const windowsArch of ["x64", "arm64"]) {
+  macSigningRuntimeTest(`explicit ${windowsArch}-only build signs and publishes exactly its declared platform`, async () => {
+    const result = await runSignerFixture({ windowsArch });
+    assert.equal(result.ok, true, result.stderr);
+    const latest = JSON.parse(await readFile(path.join(result.releaseDir, "latest-windows.json"), "utf8"));
+    const platform = windowsArch === "x64" ? "windows-x86_64" : "windows-aarch64";
+    assert.deepEqual(Object.keys(latest.platforms), [platform]);
+    const names = await readdir(result.releaseDir);
+    assert.equal(names.length, 5);
+    const checksums = (await readFile(path.join(result.releaseDir, `SHA256SUMS-v${version}-windows.txt`), "utf8")).trim().split("\n");
+    assert.equal(checksums.length, 4);
+    assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
+    for (const line of checksums) {
+      const [hash, name] = line.split("  ");
+      assert.equal(sha256(await readFile(path.join(result.releaseDir, name))), hash);
+    }
+  });
+}
+
 macSigningRuntimeTest("npm signer distinguishes unset, empty, and nonempty password environments without exposing secrets", async () => {
   for (const passwordMode of ["unset", "empty", "nonempty"]) {
     const result = await runSignerFixture({ useNpmSigner: true, passwordMode });
@@ -402,7 +421,7 @@ for (const [name, options, expectedError] of [
   ["checksum generation failure", { failChecksum: true }, /Checksum generation failed/],
   ["source replacement after validation", { swapAfterValidate: true }, /staged.*mismatch|mismatch.*staged/i],
   ["symlink installer", { symlinkInstaller: true }, /symbolic link|regular file/i],
-  ["extra build input", { extraFile: true }, /exactly two installers and build-manifest/i],
+  ["extra build input", { extraFile: true }, /exactly its declared installers and manifest files/i],
   ["final publication conflict", { finalConflict: true }, /appeared|already exists|publish/i],
 ]) {
   macSigningRuntimeTest(`Mac signing rejects ${name} without creating the output directory`, async () => {

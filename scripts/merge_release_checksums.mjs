@@ -27,8 +27,9 @@ import {
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { windowsReleaseArchitectures } from "./windows_release_architectures.mjs";
 
-const USAGE = "Usage: merge_release_checksums.mjs --version VERSION --release-dir DIR";
+const USAGE = "Usage: merge_release_checksums.mjs --version VERSION --release-dir DIR [--windows-arch x64|arm64|both]";
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$/;
 const CHECKSUM_LINE_PATTERN = /^([a-f0-9]{64})  ([^\s/\\]+)$/;
 // Windows 中间清单必须列出但不属于九项 Release 资产的条目。
@@ -58,12 +59,12 @@ export function expectedMacAssetNames(version, archLabel) {
   ];
 }
 
-export function expectedWindowsReleaseAssetNames(version) {
+export function expectedWindowsReleaseAssetNames(version, windowsArch = "both") {
   return [
-    `CodexTokenBar-v${version}-windows-x64-setup.exe`,
-    `CodexTokenBar-v${version}-windows-x64-setup.exe.sig`,
-    `CodexTokenBar-v${version}-windows-arm64-setup.exe`,
-    `CodexTokenBar-v${version}-windows-arm64-setup.exe.sig`,
+    ...windowsReleaseArchitectures(windowsArch).flatMap(({ arch }) => [
+      `CodexTokenBar-v${version}-windows-${arch}-setup.exe`,
+      `CodexTokenBar-v${version}-windows-${arch}-setup.exe.sig`,
+    ]),
     "latest-windows.json",
   ];
 }
@@ -109,7 +110,7 @@ function assertNameSet(entries, expectedNames, label) {
 // 纯函数：由两份中间清单文本产出统一清单的 8 行内容（决策顺序：
 // DMG、版本 zip、兼容 zip、x64 安装器、x64 .sig、arm64 安装器、
 // arm64 .sig、latest-windows.json）。
-export function buildUnifiedChecksums({ version, macText, windowsText }) {
+export function buildUnifiedChecksums({ version, macText, windowsText, windowsArch = "both" }) {
   if (!VERSION_PATTERN.test(version)) fail(`Invalid version: ${JSON.stringify(version)}`);
   const macEntries = parseChecksumManifest(macText, "macOS checksum manifest");
   const windowsEntries = parseChecksumManifest(windowsText, "Windows checksum manifest");
@@ -117,12 +118,12 @@ export function buildUnifiedChecksums({ version, macText, windowsText }) {
   assertNameSet(macEntries, expectedMacAssetNames(version, archLabel), "macOS checksum manifest");
   assertNameSet(
     windowsEntries,
-    [...expectedWindowsReleaseAssetNames(version), ...WINDOWS_INTERMEDIATE_ONLY_NAMES],
+    [...expectedWindowsReleaseAssetNames(version, windowsArch), ...WINDOWS_INTERMEDIATE_ONLY_NAMES],
     "Windows checksum manifest",
   );
   const assetNames = [
     ...expectedMacAssetNames(version, archLabel),
-    ...expectedWindowsReleaseAssetNames(version),
+    ...expectedWindowsReleaseAssetNames(version, windowsArch),
   ];
   const lines = assetNames.map((name) => {
     const digest = macEntries.get(name) ?? windowsEntries.get(name);
@@ -202,11 +203,13 @@ export function publishImmutableFile(output, content) {
 async function main(argv) {
   let version = "";
   let releaseDir = "";
+  let windowsArch = "both";
   const rest = [...argv];
   while (rest.length > 0) {
     const flag = rest.shift();
     if (flag === "--version") version = rest.shift() ?? "";
     else if (flag === "--release-dir") releaseDir = rest.shift() ?? "";
+    else if (flag === "--windows-arch") windowsArch = rest.shift() ?? "";
     else fail(`Unknown argument: ${flag}\n${USAGE}`);
   }
   if (version === "" || releaseDir === "") fail(USAGE);
@@ -220,6 +223,7 @@ async function main(argv) {
     version,
     macText: readFileSync(macPath, "utf8"),
     windowsText: readFileSync(windowsPath, "utf8"),
+    windowsArch,
   });
 
   // ② 对账磁盘：八项资产必须在场且哈希一致，抓拷贝损坏与漏拷；

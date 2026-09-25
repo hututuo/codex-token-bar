@@ -45,7 +45,9 @@ const FLOATING_WINDOW_DEFAULT_HEIGHT: f64 = 142.0;
 // running-model card. Keep the native constraints above both temporary
 // layouts so WebView resizing cannot silently clip their content.
 const FLOATING_WINDOW_MAX_WIDTH: f64 = 620.0;
-const FLOATING_WINDOW_MAX_HEIGHT: f64 = 284.0;
+// This is a native safety ceiling, not the onboarding viewport height. The
+// frontend measures temporary guide cards and drawers, including custom rows.
+const FLOATING_WINDOW_MAX_HEIGHT: f64 = 640.0;
 const FLOATING_WINDOW_MAX_SCALE: f64 = 1.38;
 const FLOATING_WINDOW_VISIBILITY_CHANGED_EVENT: &str = "floating-window-visibility-changed";
 const DASHBOARD_WINDOW_WIDTH: f64 = 1180.0;
@@ -2574,7 +2576,7 @@ mod tests {
         assert_eq!(FLOATING_WINDOW_DOCK_HANDLE_SIZE, 6.0);
         assert_eq!(FLOATING_WINDOW_DEFAULT_HEIGHT, 142.0);
         assert_eq!(FLOATING_WINDOW_MAX_WIDTH, 620.0);
-        assert_eq!(FLOATING_WINDOW_MAX_HEIGHT, 284.0);
+        assert_eq!(FLOATING_WINDOW_MAX_HEIGHT, 640.0);
         assert!(FLOATING_WINDOW_MAX_WIDTH >= 586.0);
         assert!(FLOATING_WINDOW_MAX_HEIGHT >= 284.0);
     }

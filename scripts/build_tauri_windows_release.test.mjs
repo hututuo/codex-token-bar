@@ -213,7 +213,7 @@ test("release builds run source tests and injection syntax gates before packagin
   assert.ok(mac.indexOf("swift test") < mac.indexOf("package_app.sh"));
 });
 
-test("Windows release preflight checks native toolchain, both Rust targets, NSIS and WebView2", async () => {
+test("Windows release preflight checks native toolchain, selected Rust targets, NSIS and WebView2", async () => {
   const source = await readFile(windowsScript, "utf8");
   assert.match(source, /Assert-WindowsNativeToolchain/);
   assert.match(source, /Assert-RustTargetsPreflight/);
@@ -221,6 +221,9 @@ test("Windows release preflight checks native toolchain, both Rust targets, NSIS
   assert.match(source, /x86_64-pc-windows-msvc/);
   assert.match(source, /aarch64-pc-windows-msvc/);
   assert.match(source, /WebView2 runtime/);
+  assert.match(source, /windowsArch = \$Arch/);
+  assert.match(source, /foreach \(\$Target in \$SelectedTargets\)/);
+  assert.doesNotMatch(source, /Windows release builds require both/);
 });
 
 test("mac release verifies staged appcast data before publishing history", async () => {

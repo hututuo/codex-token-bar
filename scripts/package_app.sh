@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Codex Token Bar"
 PRODUCT_NAME="CodexTokenBar"
 CONFIGURATION="${1:-debug}"
-APP_VERSION="${APP_VERSION:-0.9.1}"
-APP_BUILD="${APP_BUILD:-901}"
+APP_VERSION="${APP_VERSION:-0.9.2}"
+APP_BUILD="${APP_BUILD:-902}"
 BUNDLE_ID="local.codex.token-bar"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://raw.githubusercontent.com/hututuo/codex-token-bar/main/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-gzOiRKuKM4MkXj1OaYuL40U39RvfEWavuB8PaOdMDq0=}"
@@ -78,12 +78,25 @@ if [[ "$CONFIGURATION" == "--write-info-plist" ]]; then
   exit 0
 fi
 
+if [[ -n "${APP_OUTPUT_DIR:-}" ]]; then
+  # A verification package is create-only; never remove an existing app or
+  # accept an arbitrary directory through the optional output override.
+  case "$APP_OUTPUT_DIR" in
+    /*.app) ;;
+    *) echo "APP_OUTPUT_DIR must be an absolute .app path" >&2; exit 64 ;;
+  esac
+  if [[ -e "$APP_OUTPUT_DIR" || -L "$APP_OUTPUT_DIR" ]]; then
+    echo "Verification app output already exists: $APP_OUTPUT_DIR" >&2
+    exit 1
+  fi
+fi
+
 cd "$ROOT_DIR"
 "$ROOT_DIR/scripts/prepare_tiktoken_lfs.sh"
 swift build ${CONFIGURATION:+-c "$CONFIGURATION"}
 
 BUILD_DIR="$ROOT_DIR/.build/$CONFIGURATION"
-APP_DIR="$ROOT_DIR/dist/$APP_NAME.app"
+APP_DIR="${APP_OUTPUT_DIR:-$ROOT_DIR/dist/$APP_NAME.app}"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"

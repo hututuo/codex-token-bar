@@ -167,6 +167,21 @@ try {
         }
         Assert-True ((Get-FileHash -Algorithm SHA256 $ScenarioConfig).Hash -eq $ScenarioConfigHash) "$($Scenario.Name): tracked config changed"
     }
+    foreach ($SelectedArch in @("x64", "arm64")) {
+        $ScenarioRoot = Join-Path $FixtureRoot ("explicit-" + $SelectedArch)
+        $global:ReleaseSelfTestRoot = $ScenarioRoot
+        $global:FailArm64 = ($SelectedArch -eq "x64")
+        $global:FailManifest = $false
+        $global:FinalConflict = $false
+        $null = Initialize-FixtureProject $ScenarioRoot
+        & $BuildScript -Version "0.7.2" -Arch $SelectedArch -SkipNpmCi -ProjectRoot $ScenarioRoot
+        $SingleBuild = Join-Path $ScenarioRoot "dist\release\v0.7.2\windows-build"
+        $SingleManifest = Get-Content -Raw (Join-Path $SingleBuild "build-manifest.json") | ConvertFrom-Json
+        Assert-True ($SingleManifest.windowsArch -eq $SelectedArch) "explicit architecture was not retained"
+        Assert-True (@($SingleManifest.assets).Count -eq 1) "single-architecture build has the wrong asset count"
+        Assert-True ($SingleManifest.assets[0].arch -eq $SelectedArch) "single-architecture build selected the wrong target"
+        Assert-True (@(Get-ChildItem -File $SingleBuild).Count -eq 2) "single-architecture output contains undeclared files"
+    }
     Write-Host "PASS: Windows release build self-test"
 } finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $FixtureRoot

@@ -3,6 +3,7 @@ import { createHash, createPublicKey, verify as verifyEd25519 } from "node:crypt
 import { createReadStream, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { windowsReleaseArchitectures } from "./windows_release_architectures.mjs";
 
 function fail(message) {
   throw new Error(message);
@@ -51,7 +52,9 @@ function validateSignatureEnvelope(envelope, filename) {
 
 function loadAssets(assetList) {
   const assets = readJson(assetList);
-  if (!Array.isArray(assets) || assets.length !== 2) fail("Asset list is invalid");
+  const allowed = new Set(windowsReleaseArchitectures().map(item => item.platform));
+  if (!Array.isArray(assets) || assets.length < 1 || assets.length > 2
+    || assets.some(asset => !allowed.delete(asset.platform))) fail("Asset list is invalid");
   return assets;
 }
 
@@ -65,7 +68,7 @@ function assertRegularFile(file, label) {
 function assertExactDirectory(directory, expectedNames, label) {
   const actual = readdirSync(directory).sort();
   const expected = [...expectedNames].sort();
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`${label} must contain exactly two installers and build-manifest.json`);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`${label} must contain exactly its declared installers and manifest files`);
   for (const name of actual) assertRegularFile(path.join(directory, name), `${label} entry ${name}`);
 }
 
@@ -73,11 +76,12 @@ function validateBuild([manifestPath, buildDir, version, assetList]) {
   assertRegularFile(manifestPath, "Build manifest");
   const manifest = readJson(manifestPath);
   if (manifest.version !== version || !Array.isArray(manifest.assets)) fail("Build manifest version or assets are invalid");
-  const expected = new Map([
-    ["windows-aarch64", { arch: "arm64", filename: `CodexTokenBar-v${version}-windows-arm64-setup.exe` }],
-    ["windows-x86_64", { arch: "x64", filename: `CodexTokenBar-v${version}-windows-x64-setup.exe` }],
-  ]);
-  if (manifest.assets.length !== expected.size) fail("Build manifest must contain exactly x64 and arm64 installers");
+  const selection = manifest.windowsArch ?? "both";
+  const selected = windowsReleaseArchitectures(selection);
+  const expected = new Map(selected.map(({ arch, platform }) =>
+    [platform, { arch, filename: `CodexTokenBar-v${version}-windows-${arch}-setup.exe` }]));
+  const requirement = selection === "both" ? "exactly x64 and arm64" : `exactly ${selection}`;
+  if (manifest.assets.length !== expected.size) fail(`Build manifest must contain ${requirement} installers`);
   const assets = [];
   const expectedNames = ["build-manifest.json"];
   for (const asset of [...manifest.assets].sort((a, b) => a.platform.localeCompare(b.platform))) {
@@ -95,7 +99,7 @@ function validateBuild([manifestPath, buildDir, version, assetList]) {
     assets.push(asset);
     expectedNames.push(asset.filename);
   }
-  if (expected.size) fail("Build manifest must contain exactly x64 and arm64 installers");
+  if (expected.size) fail(`Build manifest must contain ${requirement} installers`);
   assertExactDirectory(buildDir, expectedNames, "Unsigned build directory");
   writeFileSync(assetList, `${JSON.stringify(assets, null, 2)}\n`);
 }
@@ -108,6 +112,10 @@ function validateStagedBuild([assetList, staging, version]) {
     : null;
   if (stagedManifest.version !== version || JSON.stringify(stagedAssets) !== JSON.stringify(assets)) {
     fail("Staged build manifest does not match the validated manifest");
+  }
+  const declared = windowsReleaseArchitectures(stagedManifest.windowsArch ?? "both").map(item => item.platform).sort();
+  if (JSON.stringify(declared) !== JSON.stringify(assets.map(asset => asset.platform).sort())) {
+    fail("Staged architecture declaration does not match validated assets");
   }
   const expectedNames = [path.basename(assetList), "build-manifest.json", ...assets.map(asset => asset.filename)];
   for (const asset of assets) {
@@ -223,7 +231,7 @@ function validateRelease([assetList, staging, version]) {
   const expectedNames = [...payloadNames, checksumName].sort();
   if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) fail("Signed release staging contains unexpected files");
   const lines = readFileSync(path.join(staging, checksumName), "utf8").trim().split("\n");
-  if (lines.length !== 6) fail("Checksum manifest must contain exactly six payloads");
+  if (lines.length !== payloadNames.length) fail("Checksum manifest must contain exactly the declared payloads");
   const names = [];
   for (const line of lines) {
     const match = /^([a-f0-9]{64})  ([^/\\]+)$/.exec(line);
@@ -234,6 +242,8 @@ function validateRelease([assetList, staging, version]) {
   }
   if (JSON.stringify(names) !== JSON.stringify(payloadNames)) fail("Checksum payload set or order is invalid");
   const metadata = readJson(path.join(staging, "latest-windows.json"));
+  if (metadata.version !== version || JSON.stringify(Object.keys(metadata.platforms ?? {}).sort())
+    !== JSON.stringify(assets.map(asset => asset.platform).sort())) fail("Updater platform set or version does not match the release");
   for (const asset of assets) {
     const signature = readFileSync(path.join(staging, `${asset.filename}.sig`), "utf8").trim();
     if (metadata.platforms?.[asset.platform]?.signature !== signature) fail(`Metadata signature mismatch: ${asset.platform}`);

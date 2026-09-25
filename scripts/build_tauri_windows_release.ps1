@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.9.1",
+    [string]$Version = "0.9.2",
     [ValidateSet("x64", "arm64", "both")]
     [string]$Arch = "both",
     [switch]$SkipNpmCi,
@@ -13,9 +13,10 @@ $ErrorActionPreference = "Stop"
 # installer integrity, so load the built-in utility module explicitly.
 Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 
-if ($Arch -ne "both") {
-    throw "Windows release builds require both x64 and arm64 installers."
-}
+$SelectedTargets = @(
+    @{ Label = "x64"; RustTarget = "x86_64-pc-windows-msvc"; UpdaterPlatform = "windows-x86_64" },
+    @{ Label = "arm64"; RustTarget = "aarch64-pc-windows-msvc"; UpdaterPlatform = "windows-aarch64" }
+) | Where-Object { $Arch -eq "both" -or $_.Label -eq $Arch }
 
 if ($ProjectRoot) {
     $RootDir = Resolve-Path $ProjectRoot
@@ -88,7 +89,7 @@ function Assert-RustTargetsPreflight {
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to enumerate installed Rust targets."
     }
-    foreach ($Target in @("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")) {
+    foreach ($Target in @($SelectedTargets | ForEach-Object { $_.RustTarget })) {
         if ($Installed -contains $Target) {
             Write-Host "Rust target available: $Target"
         } else {
@@ -316,12 +317,14 @@ try {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $CargoTestDir
     }
 
-    Build-Target -Label "x64" -RustTarget "x86_64-pc-windows-msvc" -UpdaterPlatform "windows-x86_64"
-    Build-Target -Label "arm64" -RustTarget "aarch64-pc-windows-msvc" -UpdaterPlatform "windows-aarch64"
+    foreach ($Target in $SelectedTargets) {
+        Build-Target -Label $Target.Label -RustTarget $Target.RustTarget -UpdaterPlatform $Target.UpdaterPlatform
+    }
 
     $ManifestPath = Join-Path $StagingDir "build-manifest.json"
     $Manifest = [ordered]@{
         version = $Version
+        windowsArch = $Arch
         assets = @($BuiltAssets | Sort-Object Platform)
     }
     Write-Utf8NoBom -Path $ManifestPath -Content (($Manifest | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
@@ -336,7 +339,7 @@ try {
     }
 
     $StagedFiles = @(Get-ChildItem -Path $StagingDir -File)
-    if ($BuiltAssets.Count -ne 2 -or $StagedFiles.Count -ne 3) {
+    if ($BuiltAssets.Count -ne @($SelectedTargets).Count -or $StagedFiles.Count -ne ($BuiltAssets.Count + 1)) {
         throw "Unsigned build staging is incomplete."
     }
     if (Test-Path -LiteralPath $BuildDir) {
@@ -346,11 +349,7 @@ try {
     if ($TauriConfigHashBeforePublish -ne $TauriConfigHashBefore) {
         throw "Tracked tauri config changed before build publication: $TauriConfigPath"
     }
-    $ExpectedBuildNames = @(
-        "CodexTokenBar-v$Version-windows-x64-setup.exe",
-        "CodexTokenBar-v$Version-windows-arm64-setup.exe",
-        "build-manifest.json"
-    )
+    $ExpectedBuildNames = @($BuiltAssets | ForEach-Object { $_.filename }) + @("build-manifest.json")
     Publish-NoClobber -Source $StagingDir -Destination $BuildDir -ExpectedNames $ExpectedBuildNames
     $Published = $true
 } finally {

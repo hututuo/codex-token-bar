@@ -1,4 +1,5 @@
-import type { CSSProperties } from "react";
+import { useLayoutEffect, useRef, type CSSProperties } from "react";
+import { floatingGuideRequiredHeight } from "./floatingGuideExtent";
 import type { FloatingGuidePage } from "./floatingSettings";
 import {
   FLOATING_RUNNING_MODEL_GUIDE_DEMO,
@@ -24,6 +25,7 @@ interface FloatingPagingGuideProps {
   modelTargetWidth: number;
   onArrowVisibilityChange: (visible: boolean) => void;
   onAdvance: () => void;
+  onHeightChange?: (height: number) => void;
 }
 
 export function FloatingPagingGuide({
@@ -45,12 +47,35 @@ export function FloatingPagingGuide({
   modelTargetWidth,
   onArrowVisibilityChange,
   onAdvance,
+  onHeightChange,
 }: FloatingPagingGuideProps) {
+  const guideRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const guide = guideRef.current;
+    const host = guide?.closest<HTMLElement>(".floating-window-shell");
+    if (!guide || !host || !onHeightChange) return;
+    const cards = Array.from(guide.querySelectorAll<HTMLElement>(
+      ".floating-paging-guide-card, .floating-paging-guide-callout, .floating-running-model-details--guide",
+    ));
+    const panel = guide.closest<HTMLElement>(".floating-panel-surface");
+    if (panel) cards.push(panel);
+    const measure = () => {
+      const scale = Number.parseFloat(getComputedStyle(guide).getPropertyValue("--floating-scale")) || 1;
+      onHeightChange(floatingGuideRequiredHeight(host.getBoundingClientRect().top,
+        cards.map(card => card.getBoundingClientRect().bottom), scale));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    cards.forEach(card => observer.observe(card));
+    return () => observer.disconnect();
+  }, [page, error, onHeightChange]);
+
   if (page === "edgeDock") return null;
 
   if (page === "runningModels") {
     return (
-      <div className="floating-paging-guide floating-paging-guide--running-models" role="dialog" aria-label="运行模型详情引导">
+      <div ref={guideRef} className="floating-paging-guide floating-paging-guide--running-models" role="dialog" aria-label="运行模型详情引导">
         <span
           className="floating-running-model-guide-target"
           aria-hidden="true"
@@ -102,7 +127,7 @@ export function FloatingPagingGuide({
   }
 
   return (
-    <div className="floating-paging-guide" role="dialog" aria-label="悬浮窗翻页引导">
+    <div ref={guideRef} className="floating-paging-guide" role="dialog" aria-label="悬浮窗翻页引导">
       <span className="floating-paging-guide-edge floating-paging-guide-edge--left" aria-hidden="true" />
       <span className="floating-paging-guide-edge floating-paging-guide-edge--right" aria-hidden="true" />
       {showsArrowGlyphs ? targetYs.map((rowY) => (
