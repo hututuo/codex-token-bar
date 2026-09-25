@@ -1,0 +1,132 @@
+name: Cloud project console
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/cloud-requests/*.json']
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Checks/build never publish; signing and publishing require environment approval'
+        type: choice
+        options: [checks, build, sign, publish]
+        default: checks
+        required: true
+      source_ref:
+        description: 'Branch or exact commit containing the hosted adapters'
+        type: string
+        default: cloud/github-hosted-20260925
+        required: true
+      build_run_id:
+        type: string
+        default: ''
+      ci_run_id:
+        type: string
+        default: ''
+      signed_run_id:
+        type: string
+        default: ''
+      version:
+        type: string
+        default: ''
+      confirmation:
+        description: 'Publishing only: type publish-vVERSION'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.request.outputs.sha }}
+      operation: ${{ steps.request.outputs.operation }}
+      build_run_id: ${{ steps.request.outputs.build_run_id }}
+      ci_run_id: ${{ steps.request.outputs.ci_run_id }}
+      signed_run_id: ${{ steps.request.outputs.signed_run_id }}
+      version: ${{ steps.request.outputs.version }}
+      confirmation: ${{ steps.request.outputs.confirmation }}
+    steps:
+      - id: request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+          SIGNED_RUN_ID: ${{ inputs.signed_run_id }}
+          VERSION: ${{ inputs.version }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          python3 - <<'PY'
+          import base64,json,os,re,subprocess,urllib.parse
+          repo=os.environ['GITHUB_REPOSITORY']
+          def api(path):
+              return json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/{path}'],text=True))
+          keys=['operation','source_ref','build_run_id','ci_run_id','signed_run_id','version','confirmation']
+          request={k:os.environ.get(k.upper(),'') for k in keys}
+          if os.environ['GITHUB_EVENT_NAME']=='push':
+              files=api('commits/'+os.environ['GITHUB_SHA'])['files']
+              if len(files)!=1 or files[0]['status']!='added' or not re.fullmatch(r'\.github/cloud-requests/[A-Za-z0-9_-]+\.json',files[0]['filename']):
+                  raise SystemExit('Create one new request JSON per commit; source changes belong on a separate branch')
+              obj=api('contents/'+files[0]['filename']+'?ref='+os.environ['GITHUB_SHA'])
+              if obj['size']>4096: raise SystemExit('Request is too large')
+              request=json.loads(base64.b64decode(obj['content']))
+              if set(request)!={'operation','source_ref'} or request['operation'] not in ('checks','build'):
+                  raise SystemExit('File requests can only run secret-free checks or candidate builds')
+          if request['operation'] not in ('checks','build','sign','publish'): raise SystemExit('Unknown operation')
+          ref=request['source_ref']
+          if not isinstance(ref,str) or not 1<=len(ref)<=200 or any(c in ref for c in '\r\n\0'):
+              raise SystemExit('Invalid source reference')
+          sha=api('commits/'+urllib.parse.quote(ref,safe=''))['sha']
+          if not re.fullmatch('[0-9a-f]{40}',sha): raise SystemExit('Invalid resolved source identity')
+          api('contents/scripts/cloud/manifest.py?ref='+sha)
+          result={k:request.get(k,'') for k in keys if k!='source_ref'}
+          result['sha']=sha
+          for k,v in result.items():
+              if not isinstance(v,str) or any(c in v for c in '\r\n\0'): raise SystemExit('Invalid request output')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              for k,v in result.items(): f.write(f'{k}={v}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write(f"Operation: **{result['operation']}**\n\nExact source: `{sha}`\n")
+          PY
+
+  checks:
+    needs: resolve
+    if: needs.resolve.outputs.operation == 'checks'
+    uses: hututuo/codex-token-bar/.github/workflows/ci.yml@c543626c84aa242fd2e6542aa24c64d84e90956e
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.operation == 'build'
+    uses: hututuo/codex-token-bar/.github/workflows/prepare-release.yml@c543626c84aa242fd2e6542aa24c64d84e90956e
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  sign:
+    needs: resolve
+    if: needs.resolve.outputs.operation == 'sign'
+    uses: hututuo/codex-token-bar/.github/workflows/sign-release.yml@c543626c84aa242fd2e6542aa24c64d84e90956e
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+      build_run_id: ${{ needs.resolve.outputs.build_run_id }}
+      ci_run_id: ${{ needs.resolve.outputs.ci_run_id }}
+
+  publish:
+    needs: resolve
+    if: needs.resolve.outputs.operation == 'publish'
+    permissions:
+      contents: write
+      actions: read
+    uses: hututuo/codex-token-bar/.github/workflows/publish-release.yml@c543626c84aa242fd2e6542aa24c64d84e90956e
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+      signed_run_id: ${{ needs.resolve.outputs.signed_run_id }}
+      version: ${{ needs.resolve.outputs.version }}
+      confirmation: ${{ needs.resolve.outputs.confirmation }}
