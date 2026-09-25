@@ -75,7 +75,7 @@ jobs:
     env:
       GIT_LFS_SKIP_SMUDGE: '1'
       DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
-      SWIFT_BACKTRACE: 'enable=yes'
+      CODEX_CYCLE_LAYOUT_OUTPUT: ${{ github.workspace }}/visual-previews
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -101,6 +101,7 @@ jobs:
       - name: Swift tests and release-script contracts
         run: |
           set -o pipefail
+          mkdir -p visual-previews
           swift test 2>&1 | tee swift-tests.log
           npm ci --prefix tauri-app --registry=https://registry.npmjs.org
           node scripts/cloud/run-node-tests.mjs scripts 2>&1 | tee release-script-tests.log
@@ -117,6 +118,14 @@ jobs:
             *.log
             hosted-diagnostics/
           retention-days: 7
+      - name: Upload production-view visual previews
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swift-visual-previews-${{ needs.source.outputs.sha }}
+          path: visual-previews/*.png
+          if-no-files-found: warn
+          retention-days: 14
 
   native:
     needs: source

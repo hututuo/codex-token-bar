@@ -104,7 +104,14 @@ final class FloatingDetailsDrawerTests: XCTestCase {
             let state = FloatingRunningModelDetailsSessionState()
             let dock = FloatingEdgeDockPresentation()
             let marker = NSView(frame: .zero)
-            let base = NSRect(x: 600, y: 300, width: normal.size.width, height: normal.size.height)
+            // A hard-coded x=600 forces a right-opening drawer off a small
+            // hosted display, correctly invoking production screen clamping.
+            // Center the fixture so this test isolates resize stability; the
+            // separate edge-policy cases above continue to verify clamping.
+            let screen = try XCTUnwrap(NSScreen.main?.visibleFrame)
+            let base = NSRect(x: screen.midX - normal.size.width / 2,
+                              y: screen.midY - normal.size.height / 2,
+                              width: normal.size.width, height: normal.size.height)
             let panel = NSPanel(contentRect: base, styleMask: [.borderless], backing: .buffered, defer: false)
             panel.isReleasedWhenClosed = false
             defer { panel.contentViewController = nil; panel.close() }

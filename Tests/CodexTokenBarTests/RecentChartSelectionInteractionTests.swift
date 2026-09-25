@@ -627,7 +627,13 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
             openedDetailWindow,
             at: NSPoint(x: detailBounds.maxX - 32, y: detailBounds.maxY - 31)
         )
-        runRecentChartMainLoop()
+        // Sheet dismissal is asynchronous and can animate longer than the
+        // ordinary 60ms layout tick on a hosted Mac. Keep the real mouse click
+        // and the final visibility assertion, but wait for its completion.
+        let closeDeadline = Date().addingTimeInterval(2)
+        while openedDetailWindow.isVisible && Date() < closeDeadline {
+            runRecentChartMainLoop()
+        }
         XCTAssertFalse(openedDetailWindow.isVisible)
 
         try clickRecentChartWindow(

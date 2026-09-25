@@ -39,7 +39,9 @@ final class TaskCompletionMonitorTests: XCTestCase {
             defaults: isolatedDefaults(),
             pollLoader: loader,
             pollInterval: 0.01,
-            pollTimeout: 0.05
+            // This fixture tests cancellation/reactivation, not a 50ms race
+            // against an oversubscribed host. Timeout behavior has its own test.
+            pollTimeout: 10
         )
 
         monitor.start(dataSource: source)
@@ -116,7 +118,7 @@ final class TaskCompletionMonitorTests: XCTestCase {
             defaults: isolatedDefaults(),
             pollLoader: loader,
             pollInterval: 0.01,
-            pollTimeout: 0.05
+            pollTimeout: 10
         )
 
         monitor.start(dataSource: source)
