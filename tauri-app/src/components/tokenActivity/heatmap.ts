@@ -4,6 +4,7 @@ import type { ActivityMode, HeatmapDay } from "./types";
 import { dominantModelColor, modelUsageCompactText } from "../modelUsagePresentation.ts";
 import {
   floatingModelUsageMoneyText,
+  floatingModelUsageKnownCostUSD,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
   hasUnknownModelPrices,
@@ -132,8 +133,9 @@ export function modelCostUSD(
   if (day.tokens > 0 && (!day.modelBreakdowns || day.modelBreakdowns.length === 0)) {
     return null;
   }
-  return floatingTodayModelUsageItems(dayModelRows(day), fallbackModel, { mergeAutoReview: false })
-    .reduce((total, item) => total + (item.costUSD ?? 0), 0);
+  return floatingModelUsageKnownCostUSD(
+    floatingTodayModelUsageItems(dayModelRows(day), fallbackModel, { mergeAutoReview: false }),
+  );
 }
 
 export function modelCostSummaryText(
@@ -141,12 +143,17 @@ export function modelCostSummaryText(
   fallbackModel: OfficialAPIPriceModel,
   modelCostDataAvailable = true,
 ): string {
+  if (!modelCostDataAvailable || (day.tokens > 0 && !day.modelBreakdowns?.length)) {
+    return "模型明细待读取";
+  }
   const cost = modelCostUSD(day, fallbackModel, modelCostDataAvailable);
-  if (cost === null) return "模型明细待读取";
   const items = floatingTodayModelUsageItems(dayModelRows(day), fallbackModel, { mergeAutoReview: false });
   if (items.length === 0) return "模型费用 $0.00 · 暂无模型用量";
+  const totalText = cost === null
+    ? "已知价格小计 —"
+    : `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${floatingModelUsageMoneyText(cost)}`;
   return [
-    `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${floatingModelUsageMoneyText(cost)}`,
+    totalText,
     ...items.map((item) => `${item.label} ${floatingModelUsageValue(item, "cost")}`),
   ].join(" · ");
 }

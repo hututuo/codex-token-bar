@@ -410,7 +410,7 @@ struct QuotaSidebarDetailView: View {
     private func overview(_ snapshot: TokenDisplaySnapshot) -> some View {
         let total = snapshot.todayModelBreakdowns.map(\.breakdown).combined
         let models = FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
-        let cost = models.compactMap(\.costUSD).reduce(0, +)
+        let cost = FloatingTodayModelUsagePresentation.knownCostUSD(in: models)
         let costLabel = models.contains { !$0.usesIndependentQuota && $0.costUSD == nil } ? "今日 API 等值 · 已知小计" : "今日 API 等值"
 
         return VStack(alignment: .leading, spacing: 6) {
@@ -443,7 +443,7 @@ struct QuotaSidebarDetailView: View {
                     metric("今日 Tokens", snapshot.todayTokensText, color: SidebarPalette.green)
                     metric("累计 Tokens", snapshot.consumedTokensText, color: .white)
                     metric("今日缓存命中", total.inputTokens > 0 ? String(format: "%.1f%%", Double(total.cachedInputTokens) / Double(total.inputTokens) * 100) : "—", color: SidebarPalette.purple)
-                    metric(costLabel, models.isEmpty ? "—" : cost.quotaEstimatorMoneyText, color: SidebarPalette.green)
+                    metric(costLabel, models.isEmpty ? "—" : (cost?.quotaEstimatorMoneyText ?? "—"), color: SidebarPalette.green)
                     metric("今日请求", snapshot.todayRequestsText, color: .white)
                     metric("实时 Tokens / 秒", LiveRateSnapshot.rateDisplayText(snapshot.rate), color: SidebarPalette.amber)
                 }

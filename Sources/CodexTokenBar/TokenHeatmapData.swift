@@ -106,7 +106,7 @@ extension TokenHeatmap {
             // of being silently reported as a real $0 day.
             let cost = day.tokens > 0 && recordedRows == nil
                 ? nil
-                : items.compactMap(\.costUSD).reduce(0, +)
+                : FloatingTodayModelUsagePresentation.knownCostUSD(in: items)
             return HeatmapUsageSummary(
                 title: DateFormatter.fullDay.string(from: day.date),
                 tokens: day.tokens,

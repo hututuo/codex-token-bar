@@ -236,11 +236,11 @@ struct TokenHeatmap: View {
             return "\(summary.title)，\(summary.tokens.abbreviatedTokens) token，模型占比 \(models)"
         }
         if summary.isModelCost {
-            guard let cost = summary.modelCostUSD else {
+            guard summary.modelCostUSD != nil || summary.hasUnknownPrices else {
                 return "\(summary.title)，模型明细待读取"
             }
             let detail = modelCostAccessibilityText(summary.modelBreakdowns)
-            return "\(summary.title)，\(summary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(cost.quotaEstimatorMoneyText)，\(detail)"
+            return "\(summary.title)，\(summary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(summary.modelCostUSD?.quotaEstimatorMoneyText ?? "—")，\(detail)"
         }
         return "\(summary.title)，\(summary.tokens.abbreviatedTokens) token，\(summary.calls) 次调用，平均 \(summary.average.abbreviatedTokens)"
     }
@@ -253,10 +253,10 @@ struct TokenHeatmap: View {
             return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，7 天额度平均剩余 \(Int(quotaAverage.rounded()))%，\(rangeSummary.calls) 个采样"
         }
         if rangeSummary.isModelCost {
-            guard let cost = rangeSummary.modelCostUSD else {
+            guard rangeSummary.modelCostUSD != nil || rangeSummary.hasUnknownPrices else {
                 return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，模型明细待读取"
             }
-            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，\(rangeSummary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(cost.quotaEstimatorMoneyText)，\(modelCostAccessibilityText(rangeSummary.modelBreakdowns))"
+            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，\(rangeSummary.hasUnknownPrices ? "已知价格小计" : "模型费用") \(rangeSummary.modelCostUSD?.quotaEstimatorMoneyText ?? "—")，\(modelCostAccessibilityText(rangeSummary.modelBreakdowns))"
         }
         if !rangeSummary.modelBreakdowns.isEmpty {
             let models = ModelUsagePresentation.compactText(from: rangeSummary.modelBreakdowns) ?? "暂无模型明细"
@@ -473,7 +473,7 @@ struct TokenHeatmap: View {
                     fallbackModel: fallbackModel
                 ) : []
             let cost = mode == .modelCost && !hasMissingModelDetail
-                ? costItems.compactMap(\.costUSD).reduce(0, +) : nil
+                ? FloatingTodayModelUsagePresentation.knownCostUSD(in: costItems) : nil
             return HeatmapRangeSummary(
                 title: title,
                 dayCount: days.count,

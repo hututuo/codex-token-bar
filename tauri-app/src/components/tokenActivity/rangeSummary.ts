@@ -5,6 +5,7 @@ import { modelUsageCompactText } from "../modelUsagePresentation.ts";
 import type { ModelTokenBreakdown } from "../../types/dashboard";
 import {
   floatingModelUsageMoneyText,
+  floatingModelUsageKnownCostUSD,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
   hasUnknownModelPrices,
@@ -71,11 +72,13 @@ export function summarizeRange(
       };
     }
     const items = floatingTodayModelUsageItems(combineModelRows(selectedDays), fallbackModel, { mergeAutoReview: false });
-    const total = items.reduce((sum, item) => sum + (item.costUSD ?? 0), 0);
+    const total = floatingModelUsageKnownCostUSD(items);
     return {
       hint: `${rangeStart} - ${rangeEnd}`,
       value: [
-        `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${floatingModelUsageMoneyText(total)}`,
+        total === null
+          ? "已知价格小计 —"
+          : `${hasUnknownModelPrices(items) ? "已知价格小计" : "模型费用"} ${floatingModelUsageMoneyText(total)}`,
         ...items.map((item) => `${item.label} ${floatingModelUsageValue(item, "cost")}`),
       ].join(" · "),
     };

@@ -4,6 +4,7 @@ import {
   dashboardPrimaryModelUsageItems,
   dashboardSecondaryModelUsageItems,
   floatingModelUsageAccessibilityText,
+  floatingModelUsageKnownCostUSD,
   floatingModelUsageOverflowText,
   floatingModelUsagePageCount,
   floatingModelUsagePageItems,
@@ -219,4 +220,40 @@ test("unpriced future models retain names and token shares without showing a zer
   assert.equal(floatingModelUsageValue(unknown, "cost"), "价格未知");
   assert.equal(hasUnknownModelPrices(items), true);
   assert.equal(items.reduce((sum, item) => sum + (item.costUSD ?? 0), 0), 10);
+  assert.equal(floatingModelUsageKnownCostUSD(items), 10);
+});
+
+test("anonymous model rows keep tokens and cannot overwrite a known model subtotal", () => {
+  for (const model of [null, "", "  	"]) {
+    const items = floatingTodayModelUsageItems([
+      row(model, 1_000_000, 0, 0, 1_000_000, 1),
+      row("gpt-6-astra", 1_000_000, 0, 0, 1_000_000, 1),
+    ], "gpt56Sol");
+    const unknown = items.find(item => item.key === "unknown");
+    assert.equal(unknown.tokens, 1_000_000);
+    assert.equal(unknown.share, 0.5);
+    assert.equal(floatingModelUsageValue(unknown, "cost"), "价格未知");
+    assert.equal(floatingModelUsageKnownCostUSD(items), 10);
+    assert.match(floatingModelUsageOverflowText([unknown], 0), /价格未知/);
+    assert.doesNotMatch(floatingModelUsageOverflowText([unknown], 0), /\$/);
+  }
+});
+
+test("all unknown usage stays unavailable even with zero placeholders or Spark reference prices", () => {
+  const unknown = row("future-model", 1_000_000, 0, 0, 1_000_000, 1);
+  const spark = row("gpt-5.3-codex-spark", 1_000_000, 0, 0, 1_000_000, 1);
+  for (const rows of [[unknown], [unknown, spark]]) {
+    for (const showPlaceholders of [false, true]) {
+      const items = floatingTodayModelUsageItems(rows, "gpt56Sol", { showPlaceholders });
+      assert.equal(floatingModelUsageKnownCostUSD(items), null);
+      assert.equal(hasUnknownModelPrices(items), true);
+    }
+  }
+  assert.equal(floatingModelUsageKnownCostUSD([]), 0);
+  const sparkItems = floatingTodayModelUsageItems([spark], "gpt56Sol");
+  assert.equal(floatingModelUsageKnownCostUSD(sparkItems), 0);
+  assert.equal(hasUnknownModelPrices(sparkItems), false);
+  const tiny = floatingTodayModelUsageItems([row("gpt-6-astra", 1, 0, 0, 1, 1)], "gpt56Sol");
+  assert.ok(floatingModelUsageKnownCostUSD(tiny) > 0);
+  assert.equal(floatingModelUsageValue(tiny[0], "cost"), "$0.00");
 });

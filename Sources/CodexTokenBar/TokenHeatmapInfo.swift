@@ -161,8 +161,8 @@ struct HeatmapHoverInfo: View {
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 } else if summary.isModelCost {
-                    if let cost = summary.modelCostUSD {
-                        Text("\(summary.hasUnknownPrices ? "已知价格小计 " : "")\(cost.quotaEstimatorMoneyText)")
+                    if summary.modelCostUSD != nil || summary.hasUnknownPrices {
+                        Text("\(summary.hasUnknownPrices ? "已知价格小计 " : "")\(summary.modelCostUSD?.quotaEstimatorMoneyText ?? "—")")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(ModelUsagePresentation.dominantColor(from: summary.modelBreakdowns) ?? .secondary)
                         ModelCostInlineSummary(
@@ -241,8 +241,8 @@ struct HeatmapHoverInfo: View {
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 } else if rangeSummary.isModelCost {
-                    if let cost = rangeSummary.modelCostUSD {
-                        Text("\(rangeSummary.hasUnknownPrices ? "已知价格小计 " : "")\(cost.quotaEstimatorMoneyText)")
+                    if rangeSummary.modelCostUSD != nil || rangeSummary.hasUnknownPrices {
+                        Text("\(rangeSummary.hasUnknownPrices ? "已知价格小计 " : "")\(rangeSummary.modelCostUSD?.quotaEstimatorMoneyText ?? "—")")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(ModelUsagePresentation.dominantColor(from: rangeSummary.modelBreakdowns) ?? .secondary)
                         ModelCostInlineSummary(

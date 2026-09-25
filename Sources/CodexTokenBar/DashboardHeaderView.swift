@@ -1275,7 +1275,8 @@ struct DashboardModelCostRow: View {
         // transaction instead of re-normalizing the same rows for every
         // conditional and every card section below.
         let visibleItems = items
-        let visibleTotalCost = visibleItems.compactMap(\.costUSD).reduce(0, +)
+        let visibleTotalCost = FloatingTodayModelUsagePresentation.knownCostUSD(in: visibleItems)
+        let visibleTotalCostText = visibleTotalCost.map { "API \($0.quotaEstimatorMoneyText)" } ?? "—"
         let hasUnknownPrices = visibleItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
         let visibleReferenceEntries = visibleItems.compactMap { item -> String? in
             guard let referenceCostUSD = item.referenceCostUSD else { return nil }
@@ -1331,7 +1332,7 @@ struct DashboardModelCostRow: View {
 
                 if selectedAvailable, modelDetailAvailable, !visibleItems.isEmpty {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") API \(visibleTotalCost.quotaEstimatorMoneyText)")
+                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") \(visibleTotalCostText)")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(AppTheme.accentBlue)
                             .monospacedDigit()

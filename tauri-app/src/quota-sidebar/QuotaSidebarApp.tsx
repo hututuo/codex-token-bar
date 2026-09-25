@@ -23,7 +23,12 @@ import { sidebarRatePercent } from "./rateModel";
 import { createSidebarPublisher, sidebarVisualPercent } from "./presentation";
 import { createSidebarNativeCoordinator } from "./nativeCoordinator";
 import { monitorSidebarPresence } from "./presence";
-import { floatingTodayModelUsageItems, floatingModelUsageValue } from "../floating/floatingModelUsage";
+import {
+  floatingModelUsageKnownCostUSD,
+  floatingTodayModelUsageItems,
+  floatingModelUsageValue,
+  hasUnknownModelPrices,
+} from "../floating/floatingModelUsage";
 import { sidebarExpectedFraction } from "./meterFeedback";
 import { SidebarSummaryLayer } from "./SidebarSummaryLayer";
 
@@ -323,6 +328,10 @@ export function ResetCreditDetails({ data }: { data: SidebarData }) {
 export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpenRunning?: () => void }) {
   const { quota, snapshot, runningThreads } = data;
   const models = floatingTodayModelUsageItems(snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false }).filter(item => item.share > 0);
+  const modelCostUSD = floatingModelUsageKnownCostUSD(models);
+  const modelPricesIncomplete = hasUnknownModelPrices(models);
+  const modelCostLabel = modelPricesIncomplete ? "今日 API 等值 · 已知小计" : "今日 API 等值";
+  const modelCostText = models.length === 0 || modelCostUSD === null ? "—" : `$${modelCostUSD.toFixed(2)}`;
   const expectedSeven = sidebarExpectedFraction(
     quotaPercent(snapshot.sevenDayAvailability, snapshot.sevenDayRemainingPercent),
     snapshot.sevenDayExpectedRemainingPercent, snapshot.quotaDataStale,
@@ -367,8 +376,8 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
         <Metric label="累计 Tokens" value={snapshot.totalTokensLabel} />
         <Metric label="今日请求" value={snapshot.requestsLabel} />
         <Metric label="实时速率 · 估算" value={snapshot.liveRateStatusLabel || (snapshot.liveRateAvailable ? `${snapshot.tokensPerSecond.toFixed(1)} t/s` : "不可用")} />
-      <Metric label="今日缓存命中 · 按输入" value={breakdownKnown && tokenParts.input > 0 ? `${(tokenParts.cached / tokenParts.input * 100).toFixed(1)}%` : "—"} />
-      <Metric label={models.some(model => !model.usesIndependentQuota && model.costUSD === null) ? "今日 API 等值 · 已知小计" : "今日 API 等值"} value={models.length ? `$${models.reduce((sum, model) => sum + (model.costUSD ?? 0), 0).toFixed(2)}` : "—"} />
+        <Metric label="今日缓存命中 · 按输入" value={breakdownKnown && tokenParts.input > 0 ? `${(tokenParts.cached / tokenParts.input * 100).toFixed(1)}%` : "—"} />
+        <Metric label={modelCostLabel} value={modelCostText} />
       </div>
     </section>
     <section className="qs-model-usage" id="qs-section-models"><div className="qs-section-heading"><h3>今日模型用量</h3><span>今日占比 · 全部模型为分母</span></div>

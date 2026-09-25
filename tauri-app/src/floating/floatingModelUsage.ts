@@ -125,7 +125,9 @@ export function floatingTodayModelUsageItems(
     } };
     const price = modelAwareAPICostUSD([priceRow], priceRow.breakdown, fallbackModel);
     current.costUSD += price.costUSD;
-    current.priceUnknown ||= price.unpricedModels.length > 0;
+    // An anonymous row still carries real tokens, but has no model price.
+    // Keep the accounting fallback out of per-model presentation.
+    current.priceUnknown ||= !row.model?.trim() || price.unpricedModels.length > 0;
     current.inputTokens += finiteNonnegative(row.breakdown.inputTokens);
     current.cachedInputTokens += finiteNonnegative(row.breakdown.cachedInputTokens);
     current.outputTokens += finiteNonnegative(row.breakdown.outputTokens);
@@ -247,7 +249,25 @@ export function floatingModelUsageValue(
 }
 
 export function hasUnknownModelPrices(items: FloatingModelUsageItem[]): boolean {
-  return items.some((item) => !item.usesIndependentQuota && item.costUSD === null);
+  return items.some((item) => item.tokens > 0 && !item.usesIndependentQuota && item.costUSD === null);
+}
+
+/**
+ * Return the known-price subtotal without turning an all-unknown set into
+ * `$0.00`.  A null result means that at least one billable model is present,
+ * but none of the billable models has a compatible price. Independent-quota
+ * models (for example Spark) remain outside the API subtotal and therefore do
+ * not make an otherwise empty subtotal unknown.
+ */
+export function floatingModelUsageKnownCostUSD(
+  items: FloatingModelUsageItem[],
+): number | null {
+  const billable = items.filter((item) => item.tokens > 0 && !item.usesIndependentQuota);
+  const known = billable.filter((item) => item.costUSD !== null);
+  if (billable.some((item) => item.costUSD === null) && known.length === 0) {
+    return null;
+  }
+  return known.reduce((sum, item) => sum + (item.costUSD ?? 0), 0);
 }
 
 export function floatingModelUsageAccessibilityText(
@@ -285,9 +305,7 @@ export function floatingModelUsageOverflowText(
   const hiddenItems = items.slice(Math.max(visibleLimit, 0));
   if (hiddenItems.length === 0) return null;
   const details = hiddenItems.map((item) => {
-    const cost = item.usesIndependentQuota
-      ? `${item.referenceCostUSD === null ? "—" : floatingModelUsageMoneyText(item.referenceCostUSD)}（不计入总计）`
-      : floatingModelUsageMoneyText(item.costUSD ?? 0);
+    const cost = floatingModelUsageValue(item, "cost");
     return `${item.label} · ${formatTokens(item.tokens)} tokens · 占比 ${detailedShareText(item.share)} · ${cost}`;
   });
   return ["更多模型", ...details].join("\n");

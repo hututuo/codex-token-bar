@@ -16,6 +16,7 @@ import {
   dashboardPrimaryModelUsageItems,
   dashboardSecondaryModelUsageItems,
   floatingModelUsageMoneyText,
+  floatingModelUsageKnownCostUSD,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
   hasUnknownModelPrices,
@@ -86,10 +87,7 @@ function StatsStripView({
   const periodLabel = cycleHistory.selected?.current === false ? "历史周期" : "本期";
   const selectCycle = (id: string) => { cycleHistory.select(id); };
   useEffect(() => { setCalendarExpanded(false); }, [modelCostScope, sourceToken?.canonicalHomeKey, attributionIdentity?.scopeKey]);
-  const cycleModelsIncomplete = cycleHistory.usage?.modelBreakdowns.some(row =>
-    row.breakdown.totalTokens > 0 && (typeof row.model !== "string" || !row.model.trim()),
-  ) ?? false;
-  const sevenDayModelDisplayState: ModelAttributionDisplayState = cycleHistory.usage && !cycleModelsIncomplete
+  const sevenDayModelDisplayState: ModelAttributionDisplayState = cycleHistory.usage
     ? (preciseDataFresh && !cycleHistory.refreshing ? "current" : "stale") : "pending";
   const todayModelDisplayState: ModelAttributionDisplayState = !usageSummaryFresh
     ? (todayModelBreakdowns.length > 0 ? "stale" : "pending")
@@ -125,7 +123,7 @@ function StatsStripView({
       ? floatingTodayModelUsageItems(modelCostRows, priceModel, { mergeAutoReview: false })
       : []
   ), [modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel]);
-  const modelCostTotal = modelCostItems.reduce((total, item) => total + (item.costUSD ?? 0), 0);
+  const modelCostTotal = floatingModelUsageKnownCostUSD(modelCostItems);
   const modelPricesIncomplete = hasUnknownModelPrices(modelCostItems);
   const selectedModelDisplayState = modelCostScope === "sevenDay"
     ? sevenDayModelDisplayState
@@ -212,13 +210,13 @@ function StatsStripView({
               expanded={calendarExpanded} onToggle={() => setCalendarExpanded(value => !value)} /> : null}
             {selectedModelDisplayState !== "current" ? (
               <span className="stats-model-cost-status" role="status">
-                {modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : cycleModelsIncomplete ? "模型身份待补全" : "周期明细待读取") : "正在精准计算中…"}{selectedModelDisplayState === "stale" ? " 显示上次可信结果" : ""}
+                {modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : "周期明细待读取") : "正在精准计算中…"}{selectedModelDisplayState === "stale" ? " 显示上次可信结果" : ""}
               </span>
             ) : null}
             {modelCostDataAvailable && modelDetailAvailable && modelCostItems.length > 0 ? (
               <span className="stats-model-cost-total-wrap">
                 <strong className="stats-model-cost-total">
-                  {modelPricesIncomplete ? "已知价格小计" : modelCostScope === "sevenDay" && cycleHistory.selected?.incomplete ? "已观测部分" : "合计"} API {floatingModelUsageMoneyText(modelCostTotal)}
+                  {modelPricesIncomplete ? "已知价格小计" : modelCostScope === "sevenDay" && cycleHistory.selected?.incomplete ? "已观测部分" : "合计"} {modelCostTotal === null ? "—" : `API ${floatingModelUsageMoneyText(modelCostTotal)}`}
                 </strong>
                 {modelPricesIncomplete ? <small className="stats-model-cost-reference">部分模型价格未知，未计入金额</small> : null}
                 {independentReferenceSummary ? (
@@ -240,7 +238,7 @@ function StatsStripView({
             </details>
           ) : null}
           {modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (
-            <span className="stats-model-cost-empty">{cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : cycleModelsIncomplete ? `${formatTokens(expectedModelTokens)} Token · 模型身份待补全` : `${periodLabel}模型明细待读取`}</span>
+            <span className="stats-model-cost-empty">{cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : `${periodLabel}模型明细待读取`}</span>
           ) : modelCostScope === "today" && selectedModelDisplayState === "pending" ? (
             <span className="stats-model-cost-empty">今日模型明细待读取</span>
           ) : !modelCostDataAvailable ? (

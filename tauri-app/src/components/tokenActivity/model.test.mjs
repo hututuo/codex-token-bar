@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildCalendarDays } from "./calendar.ts";
 import { hoverSummary } from "./hoverSummary.ts";
-import { buildHeatmapDays, modelCostCellBackground } from "./heatmap.ts";
+import { buildHeatmapDays, modelCostCellBackground, modelCostUSD } from "./heatmap.ts";
 import { summarizeRange } from "./rangeSummary.ts";
 import { modelCostProjectionAvailable, modelCostRowsAvailable } from "./modelCostAvailability.ts";
 
@@ -22,6 +22,26 @@ test("model cost heatmap labels unknown prices as a subtotal and retains Review 
   const range = summarizeRange([day], day.date, day.date, "modelCost", "gpt56Sol");
   assert.match(range.value, /已知价格小计 \$0\.40/);
   assert.match(range.value, /GPT-5\.6-NewLane 价格未知/);
+});
+
+test("unknown-only days retain model detail and do not become a zero or loading state", () => {
+  for (const model of ["future-model", null]) {
+    const day = {
+      date: "2026-08-30", tokens: 1_000_000, calls: 1, cacheHitRate: 0,
+      fiveHourRemainingPercent: null, sevenDayRemainingPercent: null,
+      modelBreakdowns: [{ model, breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } }],
+    };
+    assert.equal(modelCostUSD(day, "gpt56Sol"), null);
+    for (const summary of [hoverSummary(day, "modelCost"), summarizeRange([day], day.date, day.date, "modelCost").value]) {
+      assert.match(summary, /已知价格小计 —/);
+      assert.match(summary, /价格未知/);
+      assert.doesNotMatch(summary, /待读取|\$/);
+    }
+    const knownDay = { ...day, date: "2026-08-31", modelBreakdowns: [{ ...day.modelBreakdowns[0], model: "gpt-6-astra" }] };
+    const range = summarizeRange([day, knownDay], day.date, knownDay.date, "modelCost");
+    assert.match(range.value, /已知价格小计 \$10\.0/);
+    assert.match(range.value, /价格未知/);
+  }
 });
 
 test("buildCalendarDays keeps a 365-day window ending at the latest activity date", () => {

@@ -136,7 +136,7 @@ test("StatsStrip does not render an anonymous canvas fallback before native cycl
   });
 });
 
-test("StatsStrip keeps a native null model pending without inventing money and preserves its Tokens", async () => {
+test("StatsStrip confines an anonymous model warning to its row without inventing a zero subtotal", async () => {
   await withDom(async ({ window, container, root, StatsStrip }) => {
     mockCycleRows(window, [breakdown(null)]);
     await React.act(async () => {
@@ -145,12 +145,33 @@ test("StatsStrip keeps a native null model pending without inventing money and p
       }));
       await settle();
     });
-    assert.match(container.textContent, /模型身份待补全/);
-    assert.match(container.querySelector(".stats-model-cost-empty").textContent, /100\.0万 Token/);
-    assert.doesNotMatch(container.textContent, /未知模型/);
-    assert.equal(container.querySelector(".stats-model-cost-total"), null);
-    assert.equal(container.querySelector(".stats-model-cost-primary-card"), null);
+    assert.match(container.textContent, /未知模型/);
+    assert.match(container.textContent, /100\.0万/);
+    assert.match(container.textContent, /价格未知/);
+    assert.equal(container.querySelector(".stats-model-cost-empty"), null);
+    assert.equal(container.querySelector(".stats-model-cost-total").textContent, "已知价格小计 —");
+    assert.equal(container.querySelectorAll(".stats-model-cost-primary-card").length, 4);
   });
+});
+
+test("one anonymous model cannot hide the known cycle prices or total", async () => {
+  for (const model of [null, "  ", "future-model"]) {
+    await withDom(async ({ window, container, root, StatsStrip }) => {
+      mockCycleRows(window, [breakdown("gpt-6-astra"), breakdown(model)]);
+      await React.act(async () => {
+        root.render(React.createElement(StatsStrip, {
+          stats, planLabel: "Pro", sourceToken: source, attributionIdentity: identity, preciseDataFresh: true,
+        }));
+        await settle();
+      });
+      assert.equal(container.querySelector(".stats-model-cost-empty"), null);
+      assert.equal(container.querySelector(".stats-model-cost-total").textContent, "已知价格小计 API $10.0");
+      const astra = [...container.querySelectorAll(".stats-model-cost-primary-card")].find(card => card.querySelector("em").textContent === "Astra");
+      assert.equal(astra.querySelector("b").textContent, "$10.0");
+      assert.match(container.textContent, /价格未知/);
+      assert.doesNotMatch(container.textContent, /模型身份待补全|本期模型明细待读取/);
+    });
+  }
 });
 
 test("unknown boundary model retains its Tokens without a default-model price", async () => {

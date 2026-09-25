@@ -158,7 +158,7 @@ enum FloatingTodayModelUsagePresentation {
         return rowsByKey.map { key, row in
             let independent = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil
             let costUSD: Double?
-            if independent {
+            if independent || (row.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
                 costUSD = nil
             } else {
                 let estimate = ModelAwareAPIPriceEstimator.estimate(
@@ -275,6 +275,17 @@ enum FloatingTodayModelUsagePresentation {
         return "今日模型\(page.compactTitle)：\(detail)"
     }
 
+    /// Ignore display-only zero rows and independently metered models.
+    /// No priced usage is different from a measured zero-dollar subtotal.
+    static func knownCostUSD(in items: [FloatingTodayModelUsageItem]) -> Double? {
+        let billable = items.filter { $0.tokens > 0 && !$0.usesIndependentQuota }
+        let knownCosts = billable.compactMap(\.costUSD)
+        if knownCosts.isEmpty && billable.contains(where: { $0.costUSD == nil }) {
+            return nil
+        }
+        return knownCosts.reduce(0, +)
+    }
+
     static func dashboardPrimaryItems(
         from items: [FloatingTodayModelUsageItem]
     ) -> [FloatingTodayModelUsageItem] {
@@ -314,9 +325,7 @@ enum FloatingTodayModelUsagePresentation {
         guard !hiddenItems.isEmpty else { return nil }
 
         let details = hiddenItems.map { item in
-            let cost = item.usesIndependentQuota
-                ? "\(item.referenceCostUSD?.quotaEstimatorMoneyText ?? "—")（不计入总计）"
-                : (item.costUSD ?? 0).quotaEstimatorMoneyText
+            let cost = item.valueText(for: .cost)
             return "\(item.label) · \(item.tokens.abbreviatedTokens) tokens · 占比 \(detailedShareText(item.share)) · \(cost)"
         }
         return (["更多模型"] + details).joined(separator: "\n")
