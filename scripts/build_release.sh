@@ -264,7 +264,9 @@ import Foundation
 
 let outputURL = URL(fileURLWithPath: CommandLine.arguments[1])
 let appName = CommandLine.arguments[2]
-let size = NSSize(width: 1000, height: 560)
+// Finder's saved DMG window is 1000x560 points, but its 200-point sidebar
+// leaves an 800x560-point content canvas for the background picture.
+let size = NSSize(width: 800, height: 560)
 let backingScale: CGFloat = 2
 let bitmap = NSBitmapImageRep(
     bitmapDataPlanes: nil,
@@ -300,16 +302,16 @@ func roundedPanel(_ rect: NSRect, alpha: CGFloat) {
     path.stroke()
 }
 
-roundedPanel(NSRect(x: 112, y: 190, width: 220, height: 170), alpha: 0.52)
-roundedPanel(NSRect(x: 668, y: 190, width: 220, height: 170), alpha: 0.52)
-roundedPanel(NSRect(x: 100, y: 400, width: 800, height: 80), alpha: 0.48)
+roundedPanel(NSRect(x: 56, y: 190, width: 220, height: 170), alpha: 0.52)
+roundedPanel(NSRect(x: 524, y: 190, width: 220, height: 170), alpha: 0.52)
+roundedPanel(NSRect(x: 20, y: 400, width: 760, height: 80), alpha: 0.48)
 
 let arrowPath = NSBezierPath()
-arrowPath.move(to: NSPoint(x: 402, y: 275))
-arrowPath.line(to: NSPoint(x: 598, y: 275))
-arrowPath.move(to: NSPoint(x: 560, y: 312))
-arrowPath.line(to: NSPoint(x: 604, y: 275))
-arrowPath.line(to: NSPoint(x: 560, y: 238))
+arrowPath.move(to: NSPoint(x: 306, y: 275))
+arrowPath.line(to: NSPoint(x: 494, y: 275))
+arrowPath.move(to: NSPoint(x: 458, y: 312))
+arrowPath.line(to: NSPoint(x: 502, y: 275))
+arrowPath.line(to: NSPoint(x: 458, y: 238))
 NSColor(calibratedRed: 0.03, green: 0.50, blue: 0.95, alpha: 0.80).setStroke()
 arrowPath.lineWidth = 8
 arrowPath.lineCapStyle = .round
@@ -345,15 +347,15 @@ title.draw(
 )
 
 "提示“未知开发者”时不要删除 App".draw(
-    in: NSRect(x: 120, y: 454, width: 760, height: 20),
+    in: NSRect(x: 20, y: 454, width: 760, height: 20),
     withAttributes: warningStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 "系统设置 -> 隐私与安全 -> 滑到最底下找到 \(appName)".draw(
-    in: NSRect(x: 120, y: 431, width: 760, height: 20),
+    in: NSRect(x: 20, y: 431, width: 760, height: 20),
     withAttributes: smallStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 "点“仍要打开”，再确认“打开”".draw(
-    in: NSRect(x: 120, y: 408, width: 760, height: 20),
+    in: NSRect(x: 20, y: 408, width: 760, height: 20),
     withAttributes: smallStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
@@ -373,8 +375,8 @@ func centeredParagraph() -> NSParagraphStyle {
 }
 SWIFT
 
-# Finder lays out this window at 1000x560 logical points. Keep the packaged
-# background at a 2x Retina backing size so it is not interpolated on macOS.
+# Finder lays out this window at 1000x560 points with a 200-point sidebar.
+# Keep the 800x560-point content background at a 2x Retina backing size.
 /usr/bin/sips -s dpiWidth 144 -s dpiHeight 144 \
   "$DMG_STAGING/.background/dmg-background.png" >/dev/null
 
