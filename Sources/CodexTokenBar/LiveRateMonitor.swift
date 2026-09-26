@@ -1342,6 +1342,9 @@ final class LiveRateMonitor: ObservableObject {
         updated.breakdown = breakdown
         updated.status = status
         updated.cacheAdvice = cacheAdviceTracker.latest(now: now, threadID: snapshot.scopeLabel == "全会话" ? nil : snapshot.threadID)
+        if let advice = updated.cacheAdvice {
+            updated.cacheAdvice?.threadTitle = threadOptions.first { $0.id == advice.threadID }?.title
+        }
 
         guard Self.displayBucket(snapshot.rollingTokensPerSecond) != Self.displayBucket(updated.rollingTokensPerSecond)
             || Self.displayBucket(snapshot.averageTokensPerSecond) != Self.displayBucket(updated.averageTokensPerSecond)

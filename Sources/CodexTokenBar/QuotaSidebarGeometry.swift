@@ -24,16 +24,22 @@ struct QuotaSidebarInteraction: Equatable {
     private(set) var expanded = false
     private(set) var detail: QuotaSidebarDetail?
     private(set) var pinned = false
+    private(set) var cacheNoticeID: String?
+
+    mutating func presentCacheAdvice(_ id: String?) {
+        cacheNoticeID = id
+        if id != nil { expanded = true }
+    }
 
     mutating func enter() { expanded = true }
     mutating func select(_ detail: QuotaSidebarDetail) {
         expanded = true
         self.detail = detail
     }
-    mutating func beginDrag() { detail = nil; pinned = false }
+    mutating func beginDrag() { detail = nil; pinned = false; cacheNoticeID = nil }
     mutating func togglePin() { if expanded { pinned.toggle() } }
-    mutating func leaveAfterGrace() { if !pinned { dismiss() } }
-    mutating func dismiss() { expanded = false; detail = nil; pinned = false }
+    mutating func leaveAfterGrace() { if !pinned && cacheNoticeID == nil { dismiss() } }
+    mutating func dismiss() { expanded = false; detail = nil; pinned = false; cacheNoticeID = nil }
 }
 
 struct QuotaSidebarFrames: Equatable {

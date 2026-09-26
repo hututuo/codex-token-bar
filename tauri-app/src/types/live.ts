@@ -4,6 +4,7 @@ import type { ModelTokenBreakdown } from "./usage";
 
 export interface CacheUsageAdvice {
   threadId: string;
+  threadTitle?: string | null;
   hitRate: number;
   affectedThreads?: number;
   low: boolean;

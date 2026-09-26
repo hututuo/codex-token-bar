@@ -2,6 +2,43 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CacheUsageAdviceTests: XCTestCase {
+    func testReminderPresentationRequiresFreshValidRequestAndDismissesOnlyThatRequest() {
+        var advice = CacheUsageAdvice(threadID: "private-id", hitRate: 0, low: true, timestamp: 100, threadTitle: "  修复\n 金额显示  ")
+        XCTAssertEqual(advice.displayTitle, "修复 金额显示")
+        XCTAssertTrue(advice.shouldRemind(enabled: true, now: 100))
+        XCTAssertFalse(advice.shouldRemind(enabled: false, now: 100))
+        let dismissedID = advice.presentationID
+        XCTAssertFalse(advice.shouldRemind(enabled: true, dismissedID: dismissedID, now: 100))
+        advice.timestamp = 101
+        XCTAssertTrue(advice.shouldRemind(enabled: true, dismissedID: dismissedID, now: 101))
+        XCTAssertFalse(advice.shouldRemind(enabled: true, now: 100))
+        XCTAssertFalse(advice.shouldRemind(enabled: true, now: 222))
+        advice.threadTitle = "  \n "
+        XCTAssertEqual(advice.displayTitle, "无标题会话")
+        advice.threadTitle = nil
+        XCTAssertEqual(advice.displayTitle, "无标题会话")
+        for rate in [Double.nan, .infinity, -1, 2] {
+            advice.hitRate = rate
+            XCTAssertFalse(advice.shouldRemind(enabled: true, now: 101))
+        }
+    }
+
+    @MainActor
+    func testReminderTitleBelongsToAffectedThreadNotSelectedThread() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "selected", threadOptions: [
+            LiveThreadOption(id: "selected", title: "当前选中任务", updatedAtMS: 1, rolloutPath: "/selected"),
+            LiveThreadOption(id: "low", title: "缓存偏低任务", updatedAtMS: 1, rolloutPath: "/low")
+        ])
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: [
+            LiveRateMonitor.RolloutRead(threadID: "low", path: "/low", newOffset: 100, events: [],
+                cacheSamples: [sample(100, total: 20_000)])
+        ], now: 101)
+        XCTAssertEqual(monitor.totalSnapshot.cacheAdvice?.threadTitle, "缓存偏低任务")
+        XCTAssertNil(monitor.snapshot.cacheAdvice)
+        XCTAssertEqual(monitor.totalSnapshot.outputTokens, 0)
+    }
+
     func testSharedCrossPlatformFixtures() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let data = try Data(contentsOf: root.appendingPathComponent("fixtures/cache-usage-advice.json"))

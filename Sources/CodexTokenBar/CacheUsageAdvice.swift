@@ -46,6 +46,20 @@ struct CacheUsageAdvice: Equatable, Sendable {
     var low: Bool
     var timestamp: TimeInterval
     var affectedThreads: Int = 0
+    var threadTitle: String? = nil
+
+    var displayTitle: String {
+        let title = threadTitle?.split(whereSeparator: \.isWhitespace).joined(separator: " ") ?? ""
+        return title.isEmpty ? "无标题会话" : title
+    }
+
+    var presentationID: String { "\(threadID):\(timestamp)" }
+    var hasValidHitRate: Bool { hitRate.isFinite && (0...1).contains(hitRate) }
+
+    func shouldRemind(enabled: Bool, dismissedID: String = "", now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        enabled && low && hasValidHitRate && timestamp.isFinite && timestamp >= 0
+            && now >= timestamp && now - timestamp <= 120 && presentationID != dismissedID
+    }
 }
 
 struct CacheUsageAdviceTracker {

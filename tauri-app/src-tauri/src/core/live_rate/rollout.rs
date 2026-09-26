@@ -283,6 +283,7 @@ impl CacheAdviceThreadState {
 
         self.advice = Some(CacheAdvice {
             thread_id: thread_id.to_owned(),
+            thread_title: None,
             hit_rate,
             low,
             timestamp,

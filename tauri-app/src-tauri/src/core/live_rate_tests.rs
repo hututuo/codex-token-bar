@@ -10,6 +10,39 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 #[test]
+fn cache_advice_snapshot_uses_affected_thread_title_and_keeps_missing_title_unknown() {
+    for title in ["缓存偏低任务", "  "] {
+        let root = temp_root("cache-advice-title");
+        fs::create_dir_all(&root).unwrap();
+        let rollout_path = root.join("sessions/rollout-low.jsonl");
+        create_state_database(&root, "low", title, 300);
+        insert_state_thread(&root, "selected", "当前选中任务", 200);
+        set_thread_rollout_path(&root, "low", &rollout_path);
+        create_logs_database(&root, |_connection, _now| {});
+        fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+        fs::File::create(&rollout_path).unwrap();
+        let scope = LiveRateSourceScope::new(root.display().to_string(), "cache-title");
+        let event_time = fixed_rollout_time();
+        let now = event_time.unix_timestamp() as f64;
+        read_snapshot_result_at(&root, &scope, Some("selected"), now - 1.0).unwrap();
+        append_rollout_line_at(
+            &rollout_path, event_time, "event_msg",
+            r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":2000},"total_token_usage":{"total_tokens":20000}}}"#,
+        );
+        let snapshot = read_snapshot_result_at(&root, &scope, Some("selected"), now + 0.5).unwrap();
+        let advice = snapshot.cache_advice.as_ref().expect("a single low request must alert");
+        assert_eq!(advice.thread_id, "low");
+        assert_eq!(advice.thread_title.as_deref(), if title.trim().is_empty() { None } else { Some(title) });
+        assert_eq!(snapshot.selected_thread_title, "当前选中任务");
+        assert_eq!(snapshot.tokens_per_second, 0.0);
+        assert!(advice.low);
+        let json = serde_json::to_value(advice).unwrap();
+        assert_eq!(json["threadTitle"], serde_json::to_value(&advice.thread_title).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn read_snapshot_counts_recent_stream_deltas() {
     let root = temp_root("live-rate-counts");
     fs::create_dir_all(&root).unwrap();

@@ -73,7 +73,16 @@ struct QuotaSidebarRail: View {
     @ObservedObject var radar: CodexRadarStore
     @ObservedObject var monitor: LiveRateMonitor
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
+    @AppStorage("cacheHitAdviceEnabled") private var cacheRemindersEnabled = true
+    @AppStorage("cacheHitAdviceDismissed") private var dismissedCacheAdviceID = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var cacheWarning: CacheUsageAdvice? {
+        guard monitor.monitoringEnabled, monitor.dataSource != nil,
+              let advice = monitor.totalSnapshot.cacheAdvice,
+              advice.shouldRemind(enabled: cacheRemindersEnabled, dismissedID: dismissedCacheAdviceID) else { return nil }
+        return advice
+    }
 
     var body: some View {
         let shares = FloatingTodayModelUsagePresentation.items(
@@ -102,7 +111,7 @@ struct QuotaSidebarRail: View {
                         }.help("打开主页面").accessibilityLabel("打开主页面")
                             .accessibilityIdentifier("quota-sidebar-dashboard")
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
-                    rateRing
+                    if let advice = cacheWarning { cacheNotice(advice) } else { rateRing }
                     if let fiveHour = quota.snapshot.fiveHour {
                         ring(label: "5h", window: fiveHour, color: SidebarPalette.green)
                     }
@@ -177,8 +186,16 @@ struct QuotaSidebarRail: View {
                     bar(window: quota.snapshot.sevenDay, color: SidebarPalette.purple)
                     SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: 46)
                 }.frame(width: 16).frame(maxHeight: .infinity)
+                    .overlay(alignment: .center) {
+                        if let advice = cacheWarning {
+                            Circle().fill(.orange).frame(width: 6, height: 6)
+                                .offset(y: quota.snapshot.fiveHour == nil ? -89 : -118)
+                                .allowsHitTesting(false)
+                                .help("缓存命中偏低 · \(advice.displayTitle)")
+                        }
+                    }
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("额度侧栏，实时速率\(rateText)，悬停展开简略信息，可拖动调整位置")
+                    .accessibilityLabel(cacheWarning.map { "缓存命中偏低，\($0.displayTitle)，悬停查看提醒" } ?? "额度侧栏，实时速率\(rateText)，悬停展开简略信息，可拖动调整位置")
                     .contentShape(Rectangle())
                     .onTapGesture { controller.enter() }
             }
@@ -192,6 +209,30 @@ struct QuotaSidebarRail: View {
         .clipShape(QuotaSidebarEdgeShape(edge: controller.edge))
         .foregroundStyle(.white)
         .onHover { if $0 { controller.enter() } }
+        .onChange(of: cacheWarning?.presentationID, initial: true) { _, id in controller.updateCacheAdvice(id) }
+    }
+
+    private func cacheNotice(_ advice: CacheUsageAdvice) -> some View {
+        VStack(spacing: 2) {
+            Button { controller.select(.overview, section: "usage") } label: {
+                VStack(spacing: 2) {
+                    Text("缓存命中偏低").font(.system(size: 10, weight: .semibold))
+                    Text(advice.displayTitle).font(.system(size: 9)).lineLimit(2)
+                        .frame(maxWidth: .infinity).foregroundStyle(.white.opacity(0.85))
+                    Text(String(format: "%.1f%%", advice.hitRate * 100)
+                         + (advice.affectedThreads > 1 ? " · \(advice.affectedThreads) 会话" : ""))
+                        .font(.system(size: 10, weight: .medium)).monospacedDigit()
+                }.frame(maxWidth: .infinity).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+                .help("\(advice.displayTitle) · 会话 ID：\(advice.threadID)")
+                .accessibilityLabel("缓存命中偏低，\(advice.displayTitle)，点击查看详情")
+                .accessibilityIdentifier("quota-sidebar-cache-advice")
+            Button("收起") { dismissedCacheAdviceID = advice.presentationID }
+                .font(.system(size: 9)).buttonStyle(.plain)
+                .accessibilityLabel("收起本次缓存提醒")
+        }.foregroundStyle(SidebarPalette.amber).padding(.horizontal, 4)
+            .frame(width: 80, height: 68)
+            .background(SidebarPalette.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
     }
 
     private var rateRing: some View {

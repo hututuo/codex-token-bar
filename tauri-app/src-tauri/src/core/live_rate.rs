@@ -258,7 +258,10 @@ fn read_snapshot_result_at(
     let selected_thread_title = selected_thread_id
         .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "选择会话查看单会话速率".into());
-    let cache_advice = rollout::latest_cache_advice(source_scope, now);
+    let cache_advice = rollout::latest_cache_advice(source_scope, now).map(|mut advice| {
+        advice.thread_title = read_thread_title_or_warn(codex_home, &advice.thread_id, &mut warnings);
+        advice
+    });
 
     Ok(LiveRateSnapshot {
         scope_label: "全会话".into(),

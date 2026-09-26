@@ -6,6 +6,7 @@ use super::LocalDataWarning;
 #[serde(rename_all = "camelCase")]
 pub struct CacheAdvice {
     pub thread_id: String,
+    pub thread_title: Option<String>,
     pub hit_rate: f64,
     pub low: bool,
     pub timestamp: f64,

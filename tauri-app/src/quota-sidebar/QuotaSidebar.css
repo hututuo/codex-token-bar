@@ -165,3 +165,14 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .qs-pin{display:inline-flex;align-items:center;justify-content:center}.qs-pin[aria-pressed="true"]{color:#b9d6a3}.qs-pin svg{display:block}
 
 .qs-rail-actions{display:flex;justify-content:center;gap:4px;flex-shrink:0;height:24px}.qs-rail-actions button{display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:5px;background:transparent;color:#929c8c}.qs-rail-actions button:hover{background:#ffffff12;color:#edf1e9}.qs-rail-actions button[aria-pressed=true]{color:#b6ef75}
+
+/* Cache warnings occupy the rate slot so quota rings and native clipping stay stable. */
+.qs-bars{position:relative}
+.qs-cache-indicator{position:absolute;left:5px;width:6px;height:6px;border-radius:50%;background:#efc077;box-shadow:0 0 5px #efc07788;pointer-events:none}
+.qs-summary>.qs-cache-notice{width:80px;height:80px;min-height:80px;flex-shrink:0;padding:4px;display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:2px;border-radius:9px;background:#efc07714;color:#efc077;text-align:center}
+.qs-cache-notice button{border:0;background:transparent;color:inherit;padding:0;min-width:0}
+.qs-cache-open{display:flex;flex-direction:column;align-items:stretch;gap:2px}
+.qs-cache-open strong{font-size:10px;line-height:12px;font-weight:600}
+.qs-cache-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;font-size:9px;line-height:11px;color:#d8ddcf}
+.qs-cache-rate{font-size:11px;line-height:13px;font-variant-numeric:tabular-nums}.qs-cache-rate small{font-size:8px}
+.quota-sidebar-document .qs-cache-dismiss{font-size:9px;line-height:12px;color:#b4ad9c}.qs-cache-dismiss:hover{color:#efc077}

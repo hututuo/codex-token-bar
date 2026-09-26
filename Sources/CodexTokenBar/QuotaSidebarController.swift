@@ -58,6 +58,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var makeRail: (() -> AnyView)?
     private var makeDetail: (() -> AnyView)?
     private var detailContentMounted = false
+    private var cacheAdviceID: String?
+    private var lastPresentedCacheAdviceID: String?
 
     init(settings: UserDefaults = .standard) {
         self.settings = settings
@@ -123,7 +125,15 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         railPanel = nil; detailPanel = nil
         detailContentMounted = false
         makeRail = nil; makeDetail = nil; frames = nil; screen = nil
+        cacheAdviceID = nil; lastPresentedCacheAdviceID = nil
         interaction.dismiss()
+    }
+
+    func updateCacheAdvice(_ id: String?) {
+        cacheAdviceID = id
+        if id == nil { interaction.presentCacheAdvice(nil) }
+        updateFrames()
+        if id == nil { pointerMoved() }
     }
 
     // Quota presence changes layout only. A refreshed account snapshot must
@@ -299,7 +309,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         guard let frames else { return }
         if frames.contains(NSEvent.mouseLocation, detailVisible: interaction.detail != nil) {
             enter()
-        } else if interaction.expanded && !interaction.pinned && collapseTask == nil {
+        } else if interaction.expanded && !interaction.pinned && interaction.cacheNoticeID == nil && collapseTask == nil {
             collapseTask = Task { [weak self] in
                 do { try await Task.sleep(for: .milliseconds(320)) } catch { return }
                 guard let self else { return }
@@ -328,6 +338,13 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private func updateFrames(animateDocking: Bool = false) {
         guard !isTrackingPress, !isDragging else { return }
         guard let railPanel else { return }
+        // Defer while dragging; a new request opens only level two and never
+        // activates the app or changes a selected/pinned detail.
+        if let id = cacheAdviceID, id != lastPresentedCacheAdviceID {
+            lastPresentedCacheAdviceID = id
+            collapseTask?.cancel(); collapseTask = nil
+            interaction.presentCacheAdvice(id)
+        }
         (railPanel.contentView as? QuotaSidebarCanvasView)?.edge = edge
         // Preserve the chosen physical display until it disappears. A change
         // of scale or usable bounds recomputes Cocoa point/pixel placement.
