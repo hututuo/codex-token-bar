@@ -60,6 +60,7 @@ export interface AppSettingsSnapshot {
   usageVisibleAggregateIntervalMinutes: number;
   usageBackgroundAggregateIntervalMinutes: number;
   floatingWindow: FloatingWindowSettings;
+  tokenRateScaleInitializedV092?: boolean;
   floatingPosition: FloatingWindowPosition | null;
   displaySurfaces: DisplaySurfaceSettings;
   setupGuideCompleted: boolean;

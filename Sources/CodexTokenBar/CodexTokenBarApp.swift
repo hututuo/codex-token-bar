@@ -15,6 +15,7 @@ struct CodexTokenBarApp: App {
     private let updaterController: SPUStandardUpdaterController
 
     init() {
+        TokenRateScaleSettings.initializeForV092()
         let updaterController = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,

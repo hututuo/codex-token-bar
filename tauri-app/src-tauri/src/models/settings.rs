@@ -29,6 +29,8 @@ pub struct AppSettingsSnapshot {
     #[serde(default)]
     pub floating_window: FloatingWindowSettingsSnapshot,
     #[serde(default)]
+    pub token_rate_scale_initialized_v092: bool,
+    #[serde(default)]
     pub floating_position: Option<FloatingWindowPositionSnapshot>,
     #[serde(default)]
     pub display_surfaces: DisplaySurfaceSettingsSnapshot,
@@ -53,6 +55,7 @@ impl Default for AppSettingsSnapshot {
             usage_background_aggregate_interval_minutes:
                 default_usage_background_aggregate_interval_minutes(),
             floating_window: FloatingWindowSettingsSnapshot::default(),
+            token_rate_scale_initialized_v092: true,
             floating_position: None,
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
             setup_guide_completed: false,

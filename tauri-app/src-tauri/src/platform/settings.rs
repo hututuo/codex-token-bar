@@ -1284,7 +1284,20 @@ pub(super) fn read_app_settings_or_default() -> AppSettingsSnapshot {
 }
 
 fn read_app_settings_at(path: &Path) -> Result<AppSettingsSnapshot, String> {
-    let outcome = read_app_settings_at_with_diagnostics(path)?;
+    let mut outcome = read_app_settings_at_with_diagnostics(path)?;
+    if !outcome.settings.token_rate_scale_initialized_v092 {
+        outcome.settings.floating_window.token_rate_full_scale =
+            crate::models::DEFAULT_TOKEN_RATE_FULL_SCALE;
+        outcome.settings.token_rate_scale_initialized_v092 = true;
+        if let Some(diagnostic) = write_app_settings_at_with_hooks(
+            path,
+            &outcome.settings,
+            |_, _| {},
+            sync_parent_directory,
+        )? {
+            eprintln!("{diagnostic}");
+        }
+    }
     if let Some(diagnostic) = outcome.diagnostic {
         eprintln!("{diagnostic}");
     }
@@ -2877,6 +2890,66 @@ mod tests {
             };
             assert_eq!(sanitize_floating_settings(settings).token_rate_full_scale, expected);
         }
+    }
+
+    #[test]
+    fn v092_rate_scale_initialization_overrides_legacy_value_only_once() {
+        let root = TestSettingsRoot::new("rate-scale-v092-upgrade");
+        let path = root.settings_path();
+        let mut legacy = serde_json::to_value(AppSettingsSnapshot {
+            floating_window: FloatingWindowSettingsSnapshot {
+                token_rate_full_scale: 230.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("tokenRateScaleInitializedV092");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let initialized = read_app_settings_at(&path).unwrap();
+        assert_eq!(initialized.floating_window.token_rate_full_scale, 150.0);
+        assert!(initialized.token_rate_scale_initialized_v092);
+        let persisted: AppSettingsSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.floating_window.token_rate_full_scale, 150.0);
+        assert!(persisted.token_rate_scale_initialized_v092);
+
+        mutate_app_settings_at(&path, |settings| {
+            settings.floating_window.token_rate_full_scale = 260.0;
+        })
+        .unwrap();
+        assert_eq!(
+            read_app_settings_at(&path)
+                .unwrap()
+                .floating_window
+                .token_rate_full_scale,
+            260.0
+        );
+    }
+
+    #[test]
+    fn v092_rate_scale_initialization_keeps_fresh_install_edits() {
+        let root = TestSettingsRoot::new("rate-scale-v092-fresh");
+        let path = root.settings_path();
+        let first_launch = read_app_settings_at(&path).unwrap();
+        assert_eq!(first_launch.floating_window.token_rate_full_scale, 150.0);
+        assert!(first_launch.token_rate_scale_initialized_v092);
+
+        mutate_app_settings_at(&path, |settings| {
+            settings.floating_window.token_rate_full_scale = 260.0;
+        })
+        .unwrap();
+        assert_eq!(
+            read_app_settings_at(&path)
+                .unwrap()
+                .floating_window
+                .token_rate_full_scale,
+            260.0
+        );
     }
     use std::{
         cell::Cell,

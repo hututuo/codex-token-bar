@@ -2,6 +2,28 @@ import XCTest
 @testable import CodexTokenBar
 
 final class TokenRateScaleSettingsTests: XCTestCase {
+    func testV092InitializationOverridesOldSavedScaleOnlyOnce() throws {
+        let suite = "rate-scale-v092-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(230.0, forKey: TokenRateScaleSettings.key)
+
+        TokenRateScaleSettings.initializeForV092(defaults: defaults)
+        XCTAssertEqual(defaults.double(forKey: TokenRateScaleSettings.key), 150.0)
+        XCTAssertTrue(defaults.bool(forKey: TokenRateScaleSettings.initializationKey))
+
+        defaults.set(260.0, forKey: TokenRateScaleSettings.key)
+        TokenRateScaleSettings.initializeForV092(defaults: defaults)
+        XCTAssertEqual(defaults.double(forKey: TokenRateScaleSettings.key), 260.0)
+    }
+
+    func testV092InitializationAlsoWritesFreshInstallDefault() throws {
+        let suite = "rate-scale-v092-fresh-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        TokenRateScaleSettings.initializeForV092(defaults: defaults)
+        XCTAssertEqual(defaults.double(forKey: TokenRateScaleSettings.key), 150.0)
+    }
     func testDefaultRateScaleIs150() {
         XCTAssertEqual(TokenRateScaleSettings.defaultValue, 150)
         XCTAssertEqual(TokenRateScaleSettings.displayValue(TokenRateScaleSettings.defaultValue), "150/s")
