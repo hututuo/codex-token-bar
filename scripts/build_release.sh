@@ -421,13 +421,18 @@ tell application "Finder"
   try
     set statusbar visible of dmgWindow to false
   end try
+  try
+    -- Finder stores this property under its four-character code on systems
+    -- whose localized scripting dictionary does not parse “pathbar visible”.
+    set «class pbvi» of dmgWindow to false
+  end try
   set bounds of dmgWindow to {120, 120, 1120, 680}
   set viewOptions to icon view options of dmgWindow
   set arrangement of viewOptions to not arranged
   set icon size of viewOptions to 96
   set background picture of viewOptions to bgFile
-  set position of item "$APP_NAME.app" of dmgFolder to {165, 235}
-  set position of item "Applications" of dmgFolder to {595, 235}
+  set position of item "$APP_NAME.app" of dmgFolder to {165, 265}
+  set position of item "Applications" of dmgFolder to {634, 265}
   update dmgFolder without registering applications
   delay 2
   try
