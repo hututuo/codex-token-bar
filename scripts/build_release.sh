@@ -431,8 +431,11 @@ tell application "Finder"
   set arrangement of viewOptions to not arranged
   set icon size of viewOptions to 96
   set background picture of viewOptions to bgFile
-  set position of item "$APP_NAME.app" of dmgFolder to {165, 265}
-  set position of item "Applications" of dmgFolder to {634, 265}
+  -- Finder item positions use a top-left origin while the Swift background
+  -- artwork is drawn from the bottom-left origin. 285 aligns both icons with
+  -- the artwork's y=275 center line after that coordinate conversion.
+  set position of item "$APP_NAME.app" of dmgFolder to {165, 285}
+  set position of item "Applications" of dmgFolder to {634, 285}
   update dmgFolder without registering applications
   delay 2
   try
