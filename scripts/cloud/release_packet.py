@@ -17,6 +17,14 @@ def run(*args, capture=False, env=None):
 def api(path):
     return json.loads(run('gh','api',f'repos/{REPO}/{path}',capture=True))
 
+def write_signing_key(path, value):
+    # Tauri's Base64 decoder rejects a trailing newline in the key file.
+    payload = value.rstrip()
+    if not payload:
+        raise ValueError('Signing key must not be empty')
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as key:
+        key.write(payload)
+
 def public_names(version):
     prefix=f'CodexTokenBar-v{version}'
     return [f'{prefix}-macos-arm64.dmg',f'{prefix}-macos-arm64.app.zip','CodexTokenBar.app.zip',
@@ -125,7 +133,7 @@ def sign(args):
         keypaths=[]
         for i,value in enumerate(keys):
             key=temp/f'private-{i}.key'
-            with os.fdopen(os.open(key,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'w') as f: f.write(value.rstrip()+'\n')
+            write_signing_key(key, value)
             keypaths.append(key)
         # Child tools receive paths; do not propagate both private key values.
         child_env=os.environ.copy()

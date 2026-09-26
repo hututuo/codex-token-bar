@@ -6,6 +6,30 @@ import { fileURLToPath } from 'node:url';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const python=process.platform==='win32'?'python':'python3';
 const read=p=>readFileSync(new URL(`../../${p}`,import.meta.url),'utf8');
+test('signing key files remain strict Base64, private and create-only',()=>{
+  const script=[
+    "import sys,base64,pathlib,tempfile,stat",
+    "sys.path.insert(0,'scripts/cloud')",
+    "from release_packet import write_signing_key",
+    "with tempfile.TemporaryDirectory() as directory:",
+    " for index,suffix in enumerate(['',chr(10),chr(13)+chr(10)]):",
+    "  path=pathlib.Path(directory)/str(index)",
+    "  write_signing_key(path,'dGVzdC1rZXk='+suffix)",
+    "  assert base64.b64decode(path.read_bytes(),validate=True)==b'test-key'",
+    "  assert sys.platform=='win32' or stat.S_IMODE(path.stat().st_mode)==0o600",
+    "  try: write_signing_key(path,'cmVwbGFjZWQ=')",
+    "  except FileExistsError: pass",
+    "  else: raise AssertionError('Existing key was overwritten')",
+    "  assert path.read_bytes()==b'dGVzdC1rZXk='",
+    " empty=pathlib.Path(directory)/'empty'",
+    " try: write_signing_key(empty,chr(10))",
+    " except ValueError: pass",
+    " else: raise AssertionError('Empty key was accepted')",
+    " assert not empty.exists()",
+  ].join('\n');
+  const result=spawnSync(python,['-c',script],{cwd:root,encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);
+});
 test('privileged workflows are manual/reusable and require protected environments',()=>{
   for(const [file,environment] of [['sign-release.yml','release-signing'],['publish-release.yml','production-release']]) {
     const content=read(`.github/workflows/${file}`);

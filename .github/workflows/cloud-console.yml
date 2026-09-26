@@ -113,6 +113,7 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.operation == 'sign'
     uses: hututuo/codex-token-bar/.github/workflows/sign-release.yml@29092c80203dedcb72e33be9999594ca476bf5d3
+    secrets: inherit
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
       build_run_id: ${{ needs.resolve.outputs.build_run_id }}
