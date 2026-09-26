@@ -29,6 +29,86 @@ enum QuotaSidebarRadarPresentation {
     }
 }
 
+struct SidebarQuotaRingLabel: View {
+    let label: String
+    let reset: QuotaSidebarResetTimePresentation?
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text(label).font(.system(size: 11, weight: .medium))
+            if let reset {
+                VStack(spacing: 0) {
+                    Text(reset.date).font(.system(size: 8)).foregroundStyle(.gray)
+                    Text(reset.time).font(.system(size: 9)).foregroundStyle(.white.opacity(0.7))
+                }.monospacedDigit()
+            } else {
+                Text("重置未知").font(.system(size: 8)).foregroundStyle(.gray)
+            }
+        }.lineLimit(1)
+    }
+}
+
+struct QuotaSidebarRecommendations: View {
+    let models: [CodexCrowdRadarModel]
+    let stale: Bool
+    let onOpen: () -> Void
+    @State private var pageIndex = 0
+    @State private var hovered = false
+    @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var pageCount: Int { QuotaSidebarRecommendationPaging.pageCount(models.count) }
+    private var rotates: Bool { pageCount > 1 && !hovered && !focused }
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(spacing: 4) {
+                HStack(spacing: 5) {
+                    Text("众测推荐")
+                    if pageCount > 1 { Text("\(pageIndex + 1)/\(pageCount)").monospacedDigit() }
+                }.font(.system(size: 8)).foregroundStyle(.gray)
+                ZStack(alignment: .top) {
+                    if models.isEmpty {
+                        Text("待读取").foregroundStyle(.gray).frame(height: 41)
+                    } else {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(QuotaSidebarRecommendationPaging.range(page: pageIndex, count: models.count), id: \.self) { index in
+                                HStack(spacing: 4) {
+                                    Text("\(index + 1)").font(.system(size: 8)).monospacedDigit()
+                                        .foregroundStyle(.gray).frame(width: 9, alignment: .trailing)
+                                    Text(CodexRadarPresentationText.compactModelName(models[index].model) + " " + models[index].effort)
+                                        .lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+                                }.frame(height: 11)
+                                    .help("第 \(index + 1) 名 · \(models[index].model) \(models[index].effort) · IQ \(String(format: "%.1f", models[index].iq))")
+                            }
+                        }.id(pageIndex)
+                            .transition(reduceMotion ? .identity : .asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .move(edge: .top).combined(with: .opacity)))
+                    }
+                }.frame(width: 74, height: 41, alignment: .top).clipped()
+                if stale { Text("刷新未成功").font(.system(size: 8)).foregroundStyle(.orange) }
+            }.font(.system(size: 9)).frame(maxWidth: .infinity).padding(.vertical, 2).contentShape(Rectangle())
+        }.buttonStyle(SidebarPulseButtonStyle())
+            .focused($focused)
+            .onHover { hovered = $0 }
+            .help("每 4 秒翻页，悬停或键盘聚焦暂停；点击查看完整排行榜")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("众测推荐，第 \(models.isEmpty ? 0 : pageIndex + 1)/\(pageCount) 页，点击查看完整排行榜")
+            .accessibilityIdentifier("quota-sidebar-recommendations")
+            .task(id: rotates) {
+                guard rotates else { return }
+                do {
+                    while !Task.isCancelled {
+                        try await Task.sleep(for: QuotaSidebarRecommendationPaging.interval)
+                        try Task.checkCancellation()
+                        withAnimation(reduceMotion ? nil : .timingCurve(0.22, 0.8, 0.25, 1, duration: 0.4)) {
+                            pageIndex = QuotaSidebarRecommendationPaging.next(page: pageIndex, count: models.count)
+                        }
+                    }
+                } catch { /* The collapsed/unmounted summary cancels its display-only task. */ }
+            }
+    }
+}
+
 struct QuotaSidebarRadarContent: View {
     let snapshot: CodexRadarSnapshot?
     let crowd: CodexCrowdRadarSnapshot?

@@ -25,3 +25,17 @@ export function sidebarLocalTime(value: string | undefined, unix?: number | null
 export function sidebarMetricValue(value: string | undefined): string {
   return value?.replace(/^(?:总|今|次)\s+/, "") || "未知";
 }
+
+/** Split local reset time into two short lines that fit inside a 49px ring. */
+export function sidebarRingResetTime(value?: string, unix?: number | null) {
+  const date = typeof unix === "number" && Number.isFinite(unix)
+    ? new Date(unix * 1000) : new Date(value ?? "");
+  if (Number.isNaN(date.getTime())) return null;
+  const pad = (number: number) => String(number).padStart(2, "0");
+  return {
+    date: `${date.getMonth() + 1}/${date.getDate()}`,
+    time: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+    dateTime: date.toISOString(),
+    title: `重置时间：${sidebarLocalTime(value, unix)}（本地时间）`,
+  };
+}

@@ -133,16 +133,10 @@ struct QuotaSidebarRail: View {
                         .accessibilityIdentifier("quota-sidebar-tasks")
                         .accessibilityAddTraits(.isButton)
                         .accessibilityAction { controller.select(.tasks) }
-                    Button { controller.select(.radar, section: "ranking") } label: {
-                        VStack(spacing: 4) {
-                            Text("众测推荐").foregroundStyle(.gray)
-                            ForEach(Array(QuotaSidebarRadarPresentation.rankedModels(radar.crowdSnapshot).prefix(3))) { model in
-                                Text(CodexRadarPresentationText.compactModelName(model.model) + " " + model.effort)
-                                    .lineLimit(1).minimumScaleFactor(0.7)
-                            }
-                            if radar.crowdStaleDataDisplayed { Text("刷新未成功").foregroundStyle(.orange) }
-                        }.font(.system(size: 9)).frame(maxWidth: .infinity).padding(.vertical, 2).contentShape(Rectangle())
-                    }.buttonStyle(SidebarPulseButtonStyle())
+                    let recommendations = QuotaSidebarRadarPresentation.rankedModels(radar.crowdSnapshot)
+                    QuotaSidebarRecommendations(models: recommendations, stale: radar.crowdStaleDataDisplayed) {
+                        controller.select(.radar, section: "ranking")
+                    }.id(recommendations.map(\.id))
                     Rectangle().fill(.white.opacity(0.13)).frame(width: 52, height: 1)
                     TimelineView(CodexRadarCountdownTimelineSchedule(deadline: CodexRadarPresentationText.countdownDeadline(snapshot: radar.snapshot))) { tick in
                         let active = QuotaSidebarRadarPresentation.isActiveWindow(radar.snapshot, stale: radar.staleDataDisplayed, updatedAt: radar.lastSuccessfulRefreshAt, now: tick.date)
@@ -251,12 +245,14 @@ struct QuotaSidebarRail: View {
 
     private func ring(label: String, window: AccountQuotaWindow?, color: Color) -> some View {
         let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: quota.snapshot)
+        let reset = QuotaSidebarResetTimePresentation.make(window?.resetsAt)
+        let resetDescription = reset.map { "重置时间：\($0.date) \($0.time)（本地时间）" } ?? "重置时间未知"
         return Button { controller.select(.overview, section: "top") } label: {
             VStack(spacing: 5) {
                 ZStack {
                     SidebarValueRing(fraction: data.remaining.map { Double($0) / 100 }, color: color,
                                      emphasis: data.stale ? 0.45 : 1, expected: expected(window: window))
-                    Text(label).font(.system(size: 12, weight: .medium))
+                    SidebarQuotaRingLabel(label: label, reset: reset)
                 }.frame(width: 46, height: 46)
                 Text(data.text).font(.system(size: 17, weight: .medium, design: .rounded)).monospacedDigit()
                     .contentTransition(.numericText())
@@ -270,7 +266,8 @@ struct QuotaSidebarRail: View {
             // this row. The native rail remains exactly 88 pt wide.
             .contentShape(Rectangle())
         }.buttonStyle(SidebarPulseButtonStyle())
-            .accessibilityLabel("\(label) 剩余 \(data.accessibilityText)，点击查看详情")
+            .help(resetDescription)
+            .accessibilityLabel("\(label) 剩余 \(data.accessibilityText)，\(resetDescription)，点击查看详情")
             .accessibilityIdentifier("quota-sidebar-\(label)")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { controller.select(.overview, section: "top") }
@@ -283,7 +280,7 @@ struct QuotaSidebarRail: View {
     }
 }
 
-private struct SidebarPulseButtonStyle: ButtonStyle {
+struct SidebarPulseButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.background {

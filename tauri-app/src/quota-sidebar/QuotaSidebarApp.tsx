@@ -15,7 +15,7 @@ import type { DisplaySurfaceSettings, RunningThreadMember } from "../types/dashb
 import { initialSidebarState, sidebarRailClassName, hasFiveHourQuota, isSidebarAction, quotaPercent, quotaText, sidebarReducer, type SidebarAction, type SidebarState } from "./model";
 import { useFloatingRadar, useFloatingCrowdRadar } from "../floating/useFloatingRadar";
 import { sidebarRadarSnapshot, sidebarRadarAtTime, sidebarRadarCompact, sidebarRadarIsActive, type SidebarRadar } from "./radarModel";
-import { sidebarLocalTime, sidebarMetricValue } from "./detailsModel";
+import { sidebarLocalTime, sidebarMetricValue, sidebarRingResetTime } from "./detailsModel";
 import { formatTokens } from "../utils/format";
 import { isSidebarDragTarget, createSidebarDragSession } from "./drag";
 import { sanitizeRateFullScale, formatLiveRateValue } from "../components/liveRate/rateDisplay";
@@ -31,6 +31,7 @@ import {
 } from "../floating/floatingModelUsage";
 import { sidebarExpectedFraction } from "./meterFeedback";
 import { SidebarSummaryLayer } from "./SidebarSummaryLayer";
+import { SidebarRecommendations } from "./SidebarRecommendations";
 
 import { prepareResetCreditsForDisplay } from "../components/quota/resetCredits";
 import type { SidebarSection } from "./model";
@@ -245,12 +246,12 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = 200, li
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
       <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
-      {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} /><Value value={quotaText(five)} /></button>}
-      <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} /><Value value={quotaText(seven)} /></button>
+      {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
+      <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>
       <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}>{modelStrip(false)}<span>模型占比</span></button>
       <div className="qs-divider" />
       <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><span className="qs-task-ring"><Value value={String(data.runningThreads.total ?? "—")} /></span><span>{data.runningThreads.status === "ready" ? `${data.runningThreads.mainThreads ?? "—"} 主 · ${data.runningThreads.subagents ?? "—"} 子` : data.runningThreads.status === "stale" ? "运行·过期" : "运行·未知"}</span></button>
-      <button className="qs-recommendations" onClick={() => onOpen("radar", "ranking")}><small title="每 5 分钟刷新；缓存标记表示来源服务器返回缓存，并非本机停止刷新">众测推荐</small>{radar?.crowd.rows.slice(0, 3).map(row => <span key={row.rank} title={`${row.model} ${row.effort} · IQ ${row.iq.toFixed(1)}`}>{row.model.replace(/^gpt-[\d.]+-/, "")} {row.effort}</span>)}</button>
+      <SidebarRecommendations rows={radar?.crowd.rows ?? []} visible={state.mode !== "rest"} onOpen={() => onOpen("radar", "ranking")} />
       <div className="qs-divider" />
       <button className="qs-window-status" data-active={sidebarRadarIsActive(radar)} onClick={() => onOpen("radar", "top")}><span>{sidebarRadarCompact(radar)}</span>{sidebarRadarIsActive(radar) && radar?.official.deadlineMs && <small>{radar.official.countdown}</small>}</button>
       {data.quota?.quota?.resetCredit?.updatedAt && <button className="qs-reset-count" onClick={() => onOpen("credits", "top")}>重置卡 {data.quota.quota.resetCredit.availableCount} 张{nearestCredit && <small>{sidebarLocalTime(nearestCredit.expiresAt, nearestCredit.expiresAtUnix)}</small>}</button>}
@@ -276,8 +277,9 @@ function Value({ value }: { value: string }) {
 function Bar({ percent, color, expected }: { percent: number | null; color: string; expected?: number | null }) {
   return <span className={`qs-bar ${percent === null ? "qs-unknown" : ""}`}><i style={{ transform: `scaleY(${(percent ?? 100) / 100})`, background: color }} />{expected != null && <b className="qs-pace-mark" style={{ bottom: `${expected * 100}%` }} title={`均匀用量参考：预期剩余 ${Math.round(expected * 100)}%`} />}</span>;
 }
-function Ring({ label, percent, color, expected }: { label: string; percent: number | null; color: string; expected?: number | null }) {
-  return <div className="qs-ring" data-known={percent !== null} title={expected != null ? `白线为均匀使用参考：预期剩余 ${Math.round(expected * 100)}%` : undefined}><svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="22" className="qs-track" /><circle cx="26" cy="26" r="22" fill="none" stroke={color} strokeWidth="4" strokeLinecap="round" className="qs-ring-value" strokeDasharray="138.23" strokeDashoffset={138.23 * (1 - (percent ?? 0) / 100)} transform="rotate(-90 26 26)" />{expected != null && <line className="qs-pace-tick" x1="26" y1="0" x2="26" y2="8" transform={`rotate(${expected * 360} 26 26)`} />}</svg><span>{label}</span></div>;
+function Ring({ label, percent, color, expected, reset }: { label: string; percent: number | null; color: string; expected?: number | null; reset?: ReturnType<typeof sidebarRingResetTime> }) {
+  const title = [reset === null ? "重置时间未知" : reset?.title, expected != null ? `白线为均匀使用参考：预期剩余 ${Math.round(expected * 100)}%` : null].filter(Boolean).join("；");
+  return <div className="qs-ring" data-known={percent !== null} title={title || undefined}><svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="22" className="qs-track" /><circle cx="26" cy="26" r="22" fill="none" stroke={color} strokeWidth="4" strokeLinecap="round" className="qs-ring-value" strokeDasharray="138.23" strokeDashoffset={138.23 * (1 - (percent ?? 0) / 100)} transform="rotate(-90 26 26)" />{expected != null && <line className="qs-pace-tick" x1="26" y1="0" x2="26" y2="8" transform={`rotate(${expected * 360} 26 26)`} />}</svg><span className={reset !== undefined ? "qs-ring-center" : undefined}><span>{label}</span>{reset !== undefined && (reset ? <time className="qs-ring-reset" dateTime={reset.dateTime} aria-label={reset.title}><span>{reset.date}</span><span>{reset.time}</span></time> : <small className="qs-ring-reset-unknown">重置未知</small>)}</span></div>;
 }
 function DetailSurface() {
   const [value, setValue] = useState<Presentation | null>(null);

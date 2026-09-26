@@ -67,6 +67,23 @@ html.quota-sidebar-document,html.quota-sidebar-document body,html.quota-sidebar-
 .quota-sidebar-document .qs-recommendations{font-size:9px;line-height:11px;font-weight:400}
 .quota-sidebar-document .qs-recommendations span{font-size:9px;line-height:11px;font-weight:400}
 .qs-summary>.qs-recommendations{height:auto;min-height:0;padding:5px 3px}
+.qs-ring>.qs-ring-center{display:flex;flex-direction:column;justify-content:center;gap:1px;font-size:11px;line-height:12px}
+.qs-ring-reset{display:flex;flex-direction:column;align-items:center;color:#abb5a6;font-size:9px;line-height:10px;font-variant-numeric:tabular-nums}
+.qs-ring-reset>span:first-child{font-size:8px;line-height:9px;color:#929d8c}
+.qs-ring-reset-unknown{font-size:8px;line-height:10px;color:#929d8c}
+.qs-recommendation-heading{display:flex;align-items:center;justify-content:center;gap:5px;width:100%;line-height:11px}
+.qs-recommendation-heading>small{color:#74836f;font-variant-numeric:tabular-nums}
+.qs-recommendations .qs-recommendation-viewport{display:block;position:relative;width:100%;height:41px;flex-shrink:0;overflow:hidden}
+.qs-recommendations .qs-recommendation-page{position:absolute;inset:0;display:flex;flex-direction:column;gap:4px;overflow:visible;text-align:left}
+.qs-recommendations .qs-recommendation-row{display:flex;align-items:center;gap:4px;min-height:11px;flex-shrink:0}
+.qs-recommendation-row>b{width:9px;flex-shrink:0;color:#869b7b;font-size:8px;font-weight:400;text-align:right;font-variant-numeric:tabular-nums}
+.qs-recommendation-row>span{flex:1;min-width:0}
+.qs-recommendation-empty{display:block;padding-top:15px;color:#899785}
+.qs-recommendation-in{animation:qs-recommendation-in .4s cubic-bezier(.22,.8,.25,1) both}
+.qs-recommendation-out{animation:qs-recommendation-out .4s cubic-bezier(.22,.8,.25,1) both;pointer-events:none}
+@keyframes qs-recommendation-in{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes qs-recommendation-out{from{transform:translateY(0);opacity:1}to{transform:translateY(-100%);opacity:0}}
+@media(prefers-reduced-motion:reduce){.qs-recommendation-in{animation:none}.qs-recommendations .qs-recommendation-out{display:none;animation:none}}
 .quota-sidebar-document .qs-summary>.qs-window-status{font-size:10px;line-height:12px;height:auto;min-height:0;padding:0;position:relative}
 .qs-window-status::before{content:"";position:absolute;inset:-10px 0}
 
