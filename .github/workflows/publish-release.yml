@@ -56,11 +56,15 @@ jobs:
           test "$CONFIRM" = "publish-v$VERSION"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_sha }}
+          # Publication tooling can be repaired without rebuilding sealed assets.
+          # The manifest, signatures and tag remain bound to inputs.source_sha.
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
+      - name: Publication adapter regression checks
+        run: node --test scripts/cloud/*.test.mjs
       - name: Validate signing-run origin
         env:
           GH_TOKEN: ${{ github.token }}

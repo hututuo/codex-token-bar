@@ -52,6 +52,35 @@ test('public publication requires an exact confirmation before reading a packet 
   assert.notEqual(result.status,0);
   assert.match(result.stderr,/Exact publish-vVERSION confirmation/);
 });
+test('publication distinguishes absent tags from API failures and resolves annotated tags',()=>{
+  const script=[
+    "import sys,json,subprocess",
+    "from unittest.mock import patch",
+    "sys.path.insert(0,'scripts/cloud')",
+    "from publish_packet import existing_tag_commit",
+    "def reply(status,body): return subprocess.CompletedProcess([],status,json.dumps(body),'')",
+    "with patch('publish_packet.subprocess.run',return_value=reply(1,{'status':'404'})) as command, patch('publish_packet.api') as api:",
+    " assert existing_tag_commit('v0.9.2') is None",
+    " assert command.call_args.args[0][-1].endswith('/git/ref/tags/v0.9.2')",
+    " api.assert_not_called()",
+    "for status in ['401','403','422','500']:",
+    " with patch('publish_packet.subprocess.run',return_value=reply(1,{'status':status})), patch('publish_packet.api') as api:",
+    "  try: existing_tag_commit('v0.9.2')",
+    "  except SystemExit: pass",
+    "  else: raise AssertionError('API failure treated as absent tag')",
+    "  api.assert_not_called()",
+    "for kind in ['commit','tag']:",
+    " with patch('publish_packet.subprocess.run',return_value=reply(0,{'object':{'type':kind,'sha':'b'*40}})), patch('publish_packet.api',return_value={'sha':'a'*40}) as api:",
+    "  assert existing_tag_commit('v0.9.2')=='a'*40",
+    "  api.assert_called_once_with('commits/v0.9.2')",
+    "with patch('publish_packet.subprocess.run',return_value=reply(0,{})), patch('publish_packet.api',return_value={'sha':'invalid'}):",
+    " try: existing_tag_commit('v0.9.2')",
+    " except SystemExit: pass",
+    " else: raise AssertionError('Invalid commit identity was accepted')",
+  ].join('\n');
+  const result=spawnSync(python,['-c',script],{cwd:root,encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);
+});
 test('release packet keeps exactly nine public assets and excludes signing metadata',()=>{
   const result=spawnSync(python,['-c',"import sys,json;sys.path.insert(0,'scripts/cloud');from release_packet import public_names;print(json.dumps(public_names('0.9.2')))"],{cwd:root,encoding:'utf8'});
   assert.equal(result.status,0,result.stderr);
@@ -61,4 +90,27 @@ test('release packet keeps exactly nine public assets and excludes signing metad
   assert.ok(names.includes('CodexTokenBar-v0.9.2-windows-arm64-setup.exe.sig'));
   assert.ok(!names.includes('appcast-baseline.json'));
   assert.ok(!names.some(n=>n.includes('private')||n.endsWith('.key')));
+});
+test('publication finds an exact existing draft across pages and refuses duplicate matches',()=>{
+  const script=[
+    "import sys,json,subprocess",
+    "from unittest.mock import patch",
+    "sys.path.insert(0,'scripts/cloud')",
+    "from publish_packet import release_for_tag",
+    "draft={'id':12,'tag_name':'v0.9.2','draft':True}",
+    "pages=[[{'id':11,'tag_name':'v0.9.1','draft':False}],[draft]]",
+    "with patch('publish_packet.run',return_value=json.dumps(pages)):",
+    " assert release_for_tag('v0.9.2')==draft",
+    " assert release_for_tag('v9.9.9') is None",
+    "with patch('publish_packet.run',return_value=json.dumps([[draft],[draft]])):",
+    " try: release_for_tag('v0.9.2')",
+    " except SystemExit: pass",
+    " else: raise AssertionError('Ambiguous release draft was accepted')",
+    "with patch('publish_packet.run',side_effect=subprocess.CalledProcessError(1,['gh'])):",
+    " try: release_for_tag('v0.9.2')",
+    " except subprocess.CalledProcessError: pass",
+    " else: raise AssertionError('API error treated as absent release')",
+  ].join('\n');
+  const result=spawnSync(python,['-c',script],{cwd:root,encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);
 });

@@ -13,6 +13,33 @@ def put(path, body):
     if result.returncode: raise RuntimeError('GitHub write failed: '+result.stderr[-500:])
     return json.loads(result.stdout)
 
+def existing_tag_commit(tag):
+    # The commits endpoint returns 422 for an absent tag; refs returns 404.
+    result=subprocess.run(['gh','api',f'repos/{REPO}/git/ref/tags/{tag}'],
+                          text=True,capture_output=True)
+    if result.returncode:
+        try:
+            missing=str(json.loads(result.stdout).get('status'))=='404'
+        except (ValueError, AttributeError):
+            missing=False
+        if missing: return None
+        raise SystemExit('Unable to determine the current tag identity')
+    # Resolve annotated tags to their commit before comparing source identity.
+    sha=api(f'commits/{tag}').get('sha','')
+    if not isinstance(sha,str) or not re.fullmatch(r'[0-9a-f]{40}',sha):
+        raise SystemExit('Invalid release tag commit identity')
+    return sha
+
+def release_for_tag(tag):
+    # Published-tag lookup excludes drafts. List authenticated releases so a
+    # failed publication can safely resume its existing draft by exact tag.
+    pages=json.loads(run('gh','api',f'repos/{REPO}/releases?per_page=100',
+                         '--paginate','--slurp',capture=True))
+    matches=[release for page in pages for release in page if release.get('tag_name')==tag]
+    if len(matches)>1:
+        raise SystemExit('Multiple releases identify this tag; no mutation performed')
+    return matches[0] if matches else None
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('packet',type=pathlib.Path)
@@ -28,11 +55,9 @@ def main():
     notes=(a.packet/'release-notes.md').read_text()
     if '## English' not in notes: raise SystemExit('Chinese-first and English release notes are required before public publication')
     tag=f'v{a.version}'
-    existing_tag=subprocess.run(['gh','api',f'repos/{REPO}/commits/{tag}','--jq','.sha'],text=True,capture_output=True)
-    if existing_tag.returncode==0 and existing_tag.stdout.strip()!=a.source_sha:
+    existing_tag=existing_tag_commit(tag)
+    if existing_tag is not None and existing_tag!=a.source_sha:
         raise SystemExit('Version tag already identifies different source code; no draft created')
-    if existing_tag.returncode!=0 and '404' not in existing_tag.stderr:
-        raise SystemExit('Unable to determine the current tag identity')
     latest=subprocess.run(['gh','api',f'repos/{REPO}/releases/latest','--jq','.tag_name'],text=True,capture_output=True)
     if latest.returncode==0:
         last=latest.stdout.strip().removeprefix('v')
@@ -47,20 +72,18 @@ def main():
     feed_already_equal=base64.b64decode(current_feed['content'])==wanted_feed
     if current_feed['sha']!=baseline['blob_sha'] and not feed_already_equal:
         raise SystemExit('Live appcast changed after signing; regenerate a candidate rather than overwrite history')
-    existing=subprocess.run(['gh','api',f'repos/{REPO}/releases/tags/{tag}'],text=True,capture_output=True)
-    if existing.returncode:
-        if '404' not in existing.stderr: raise SystemExit('Unable to determine current release state')
+    release=release_for_tag(tag)
+    if release is None:
         run('gh','release','create',tag,'--repo',REPO,'--draft','--target',a.source_sha,
             '--title',f'Codex Token Bar {tag}','--notes-file',a.packet/'release-notes.md')
-        release=api(f'releases/tags/{tag}')
-    else:
-        release=json.loads(existing.stdout)
-        if release.get('body','').strip()!=notes.strip(): raise SystemExit('Existing release notes differ; no overwrite performed')
+        release=release_for_tag(tag)
+        if release is None: raise SystemExit('Created release draft could not be read back')
+    if release.get('body','').strip()!=notes.strip(): raise SystemExit('Existing release notes differ; no overwrite performed')
     # A draft can already have a tag. Never move a published or conflicting tag.
-    target=subprocess.run(['gh','api',f'repos/{REPO}/commits/{tag}','--jq','.sha'],text=True,capture_output=True)
-    if target.returncode==0 and target.stdout.strip()!=a.source_sha:
+    target=existing_tag_commit(tag)
+    if target is not None and target!=a.source_sha:
         raise SystemExit('Version tag already identifies different source code')
-    if target.returncode!=0 and not release['draft']: raise SystemExit('Published release tag could not be verified')
+    if target is None and not release['draft']: raise SystemExit('Published release tag could not be verified')
     metadata={f['name']:f for f in data['files']}
     expected=set(data['public_assets'])
     assets={r['name']:r for r in release['assets']}
@@ -92,6 +115,7 @@ def main():
     locator={'version':a.version,'source_sha':a.source_sha,'tag':tag,'release_url':final['html_url'],
       'build_run_id':data['build_run_id'],'ci_run_id':data['ci_run_id'],
       'signing_run_id':data['signing_run_id'],'publish_run_id':os.environ['GITHUB_RUN_ID'],
+      'publication_tooling_sha':os.environ['GITHUB_SHA'],
       'assets':[metadata[n] for n in data['public_assets']]}
     path=f'contents/docs/releases/{tag}-cloud-locator.json'
     check=subprocess.run(['gh','api',f'repos/{REPO}/{path}?ref=main'],text=True,capture_output=True)
