@@ -1,6 +1,9 @@
 import type { CSSProperties } from "react";
 import type { LiveRateSnapshot } from "../../types/dashboard";
 
+import { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../../settings/tokenRateScale.ts";
+export { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../../settings/tokenRateScale.ts";
+
 const ALPHA_UP = 0.28;
 const ALPHA_DOWN = 0.18;
 const ZERO_THRESHOLD = 0.05;
@@ -11,9 +14,9 @@ export type RateDisplayScope = "selectedSession" | "allSessions";
 
 export function sanitizeRateFullScale(value: number): number {
   if (!Number.isFinite(value)) {
-    return 200;
+    return DEFAULT_TOKEN_RATE_FULL_SCALE;
   }
-  return Math.min(400, Math.max(50, Math.round(value / 10) * 10));
+  return Math.min(500, Math.max(50, Math.round(value / 10) * 10));
 }
 
 export function rateFillScale(tokensPerSecond: number, fullScale: number): number {

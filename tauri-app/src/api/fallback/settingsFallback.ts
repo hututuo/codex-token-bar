@@ -9,6 +9,8 @@ import {
   DEFAULT_USAGE_VISIBLE_AGGREGATE_INTERVAL_MINUTES,
 } from "../../settings/usageRefreshCadence";
 
+import { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../../settings/tokenRateScale.ts";
+
 export const fallbackAppSettings: AppSettingsSnapshot = {
   codexHome: null,
   customAccountDisplayName: "",
@@ -20,7 +22,7 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
   floatingWindow: {
     opacity: 0.92,
     scale: 1,
-    tokenRateFullScale: 200,
+    tokenRateFullScale: DEFAULT_TOKEN_RATE_FULL_SCALE,
     unreadEffect: "ripple",
     gradientStart: "#ffffff",
     gradientEnd: "#daefff",

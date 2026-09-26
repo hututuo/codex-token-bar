@@ -67,7 +67,7 @@ test("sanitizeFloatingSettings falls back for invalid gradient palette values", 
   assert.equal(settings.gradientType, DEFAULT_FLOATING_SETTINGS.gradientType);
   assert.equal(settings.quotaColorMode, DEFAULT_FLOATING_SETTINGS.quotaColorMode);
   assert.equal(settings.quotaFixedColor, DEFAULT_FLOATING_SETTINGS.quotaFixedColor);
-  assert.equal(settings.tokenRateFullScale, 400);
+  assert.equal(settings.tokenRateFullScale, 500);
 });
 
 test("floatingGradientBackground reuses the configured panel gradient", () => {
@@ -85,11 +85,11 @@ test("floatingGradientBackground reuses the configured panel gradient", () => {
   }), "radial-gradient(circle at 18% 10%, #102040, #40a0ff)");
 });
 
-test("sanitizeFloatingSettings defaults missing token rate full scale to Swift-style 200 tok/s", () => {
+test("sanitizeFloatingSettings defaults missing token rate full scale to Swift-style 150 tok/s", () => {
   const settings = sanitizeFloatingSettings({});
 
-  assert.equal(DEFAULT_FLOATING_SETTINGS.tokenRateFullScale, 200);
-  assert.equal(settings.tokenRateFullScale, 200);
+  assert.equal(DEFAULT_FLOATING_SETTINGS.tokenRateFullScale, 150);
+  assert.equal(settings.tokenRateFullScale, 150);
   assert.equal(DEFAULT_FLOATING_SETTINGS.pagingGuideRevision, 0);
   assert.equal(settings.pagingGuideRevision, 0);
   assert.equal(CURRENT_FLOATING_PAGING_GUIDE_REVISION, 6);
@@ -197,4 +197,11 @@ test("sanitizeFloatingSettings migrates legacy content order with running thread
       assert.deepEqual(floatingGuidePages({ pagingGuideRevision, hasPagedRows: true, hasRunningThreadDetailsTarget }), []);
     }
   }
+});
+
+
+test("rate scale invalid fallback is 150 without resetting saved settings", () => {
+  assert.equal(sanitizeFloatingSettings({ tokenRateFullScale: NaN }).tokenRateFullScale, 150);
+  assert.equal(sanitizeFloatingSettings({ tokenRateFullScale: 200 }).tokenRateFullScale, 200);
+  assert.equal(sanitizeFloatingSettings({ tokenRateFullScale: 260 }).tokenRateFullScale, 260);
 });

@@ -1,0 +1,1 @@
+export const DEFAULT_TOKEN_RATE_FULL_SCALE = 150;

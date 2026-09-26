@@ -1,13 +1,13 @@
 [
   {
-    "name": "first-low-immediate",
+    "name": "cold-first-request",
     "steps": [
       {
         "at": 100,
         "total": 20000,
         "input": 20000,
         "cached": 100,
-        "low": true
+        "low": false
       },
       {
         "at": 101,
@@ -26,14 +26,14 @@
         "total": 20000,
         "input": 20000,
         "cached": 100,
-        "low": true
+        "low": false
       },
       {
         "at": 101,
         "total": 20000,
         "input": 20000,
         "cached": 100,
-        "low": true
+        "low": false
       }
     ]
   },
@@ -45,7 +45,7 @@
         "total": 20000,
         "input": 20000,
         "cached": 100,
-        "low": true
+        "low": false
       },
       {
         "at": 101,
@@ -68,7 +68,7 @@
         "at": 100,
         "input": 20000,
         "cached": 100,
-        "low": true
+        "low": false
       },
       {
         "at": 101,
@@ -86,7 +86,7 @@
         "total": 40000,
         "input": 20000,
         "cached": 100,
-        "low": true
+        "low": false
       },
       {
         "at": 101,
@@ -112,7 +112,7 @@
         "total": 20000,
         "input": 20000,
         "cached": 100,
-        "low": true
+        "low": false
       },
       {
         "at": 220,
@@ -132,7 +132,7 @@
         "total": 20000,
         "input": 20000,
         "cached": 100,
-        "low": true
+        "low": false
       },
       {
         "at": 101,
@@ -140,7 +140,7 @@
         "total": 40000,
         "input": 20000,
         "cached": 100,
-        "low": true
+        "low": false
       }
     ]
   }

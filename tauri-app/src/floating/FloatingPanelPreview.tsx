@@ -1,3 +1,4 @@
+import { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../components/liveRate/rateDisplay";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import {
   codexRadarDiagnosticLabel,
@@ -218,7 +219,7 @@ function FloatingRateMeter({
   snapshot: FloatingPanelSnapshot;
   statusText?: string;
 }) {
-  const scaleLimit = sanitizeRateFullScale(fullScale || snapshot.maxTokensPerSecond || 200);
+  const scaleLimit = sanitizeRateFullScale(fullScale || snapshot.maxTokensPerSecond || DEFAULT_TOKEN_RATE_FULL_SCALE);
   const hasStatusText = typeof statusText === "string" && statusText.length > 0;
 
   return (

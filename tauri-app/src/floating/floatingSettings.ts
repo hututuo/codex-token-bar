@@ -8,6 +8,8 @@ import {
   sanitizeFloatingContentVisibility,
 } from "./floatingContent.ts";
 
+import { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../settings/tokenRateScale.ts";
+
 export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
 // Keep enough room for the four-model and quota rows while the Radar IQ type
 // follows Swift's compact scale. Native and CSS dimensions must stay aligned.
@@ -28,7 +30,7 @@ export type FloatingGuidePage = "paging" | "runningModels" | "edgeDock";
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   opacity: 0.92,
   scale: 1,
-  tokenRateFullScale: 200,
+  tokenRateFullScale: DEFAULT_TOKEN_RATE_FULL_SCALE,
   unreadEffect: "ripple",
   gradientStart: "#ffffff",
   gradientEnd: "#daefff",
@@ -92,7 +94,7 @@ export function sanitizeFloatingSettings(
   return {
     opacity: clampNumber(settings.opacity, 0.4, 1, DEFAULT_FLOATING_SETTINGS.opacity),
     scale: clampNumber(settings.scale, 0.9, 1.38, DEFAULT_FLOATING_SETTINGS.scale),
-    tokenRateFullScale: clampNumber(settings.tokenRateFullScale, 50, 400, DEFAULT_FLOATING_SETTINGS.tokenRateFullScale),
+    tokenRateFullScale: clampNumber(settings.tokenRateFullScale, 50, 500, DEFAULT_FLOATING_SETTINGS.tokenRateFullScale),
     unreadEffect: sanitizeUnreadEffect(settings.unreadEffect),
     gradientStart: sanitizeHexColor(settings.gradientStart, DEFAULT_FLOATING_SETTINGS.gradientStart),
     gradientEnd: sanitizeHexColor(settings.gradientEnd, DEFAULT_FLOATING_SETTINGS.gradientEnd),

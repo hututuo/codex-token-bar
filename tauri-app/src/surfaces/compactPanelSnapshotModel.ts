@@ -1,3 +1,4 @@
+import { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../settings/tokenRateScale.ts";
 import type {
   DashboardSnapshot,
   FloatingPanelSnapshot,
@@ -7,7 +8,7 @@ import type {
 
 const baseFloatingPanelSnapshot: FloatingPanelSnapshot = {
   tokensPerSecond: 0,
-  maxTokensPerSecond: 200,
+  maxTokensPerSecond: DEFAULT_TOKEN_RATE_FULL_SCALE,
   liveRateAvailable: false,
   trendLabel: "",
   resetCreditLabel: "",

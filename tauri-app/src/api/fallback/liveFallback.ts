@@ -1,3 +1,4 @@
+import { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../../settings/tokenRateScale.ts";
 import type {
   FloatingPanelSnapshot,
   LiveRateSnapshot,
@@ -15,7 +16,7 @@ export function emptyLiveRateSnapshot(selectedThreadId?: string | null): LiveRat
     totalTokens: 0,
     totalTokensToday: 0,
     requestsToday: 0,
-    maxTokensPerSecond: 200,
+    maxTokensPerSecond: DEFAULT_TOKEN_RATE_FULL_SCALE,
     preciseEnabled: false,
     unreadSummary: emptyUnreadSummary,
     warnings: [],
@@ -32,7 +33,7 @@ export const emptyUnreadSummary: UnreadSummary = {
 
 export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   tokensPerSecond: 0,
-  maxTokensPerSecond: 200,
+  maxTokensPerSecond: DEFAULT_TOKEN_RATE_FULL_SCALE,
   liveRateAvailable: false,
   trendLabel: "",
   resetCreditLabel: "",

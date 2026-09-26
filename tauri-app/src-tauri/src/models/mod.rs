@@ -46,6 +46,7 @@ pub use session_management::{
     SessionManagementThread,
 };
 pub use settings::{
+    DEFAULT_TOKEN_RATE_FULL_SCALE,
     default_status_metric_label_style, AppSettingsSnapshot, AutoResumeSettingsSnapshot,
     AutoResumeTaskSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,

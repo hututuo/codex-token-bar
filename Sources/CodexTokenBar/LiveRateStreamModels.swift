@@ -6,6 +6,7 @@ extension LiveRateMonitor {
         let title: String
         let updatedAtMS: Int
         let rolloutPath: String
+        var threadSource: String = "user"
 
         enum CodingKeys: String, CodingKey {
             case id

@@ -300,7 +300,7 @@ test("monitoring settings own the token-rate full scale control", async () => {
 
     const fullScale = panel.querySelector('input[type="range"][aria-label*="速率"]');
     assert.ok(fullScale, "monitoring page should expose the token-rate full-scale range");
-    assert.equal(fullScale.value, "200");
+    assert.equal(fullScale.value, "150");
     await setRangeValue(act, fullScale, 260, window);
     assert.deepEqual(calls.tokenRateFullScale, [260]);
   });

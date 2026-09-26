@@ -1,7 +1,32 @@
+import SQLite3
 import XCTest
 @testable import CodexTokenBar
 
 final class CacheUsageAdviceTests: XCTestCase {
+    func testStateReaderUsesExplicitNameAndReviewSource() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cache-advice-title-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("state_5.sqlite").path
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        let schema = """
+        CREATE TABLE threads (id TEXT, title TEXT, name TEXT, first_user_message TEXT,
+          thread_source TEXT, rollout_path TEXT, updated_at INTEGER, updated_at_ms INTEGER, archived INTEGER);
+        INSERT INTO threads VALUES ('named', 'first prompt text', '正式会话标题', 'first prompt text',
+          'user', '/named', 1, 1000, 0);
+        INSERT INTO threads VALUES ('review', 'Guardian review', 'Guardian review', '',
+          'guardian_review', '/review', 2, 2000, 0);
+        INSERT INTO threads VALUES ('untitled', 'first prompt only', '', 'first prompt only',
+          'user', '/untitled', 3, 3000, 0);
+        """
+        XCTAssertEqual(sqlite3_exec(database, schema, nil, nil, nil), SQLITE_OK)
+        let threads = try LiveRateMonitor.recentThreads(stateDB: path)
+        XCTAssertEqual(threads.first { $0.id == "named" }?.title, "正式会话标题")
+        XCTAssertEqual(threads.first { $0.id == "review" }?.threadSource, "guardian_review")
+        XCTAssertEqual(threads.first { $0.id == "untitled" }?.title, "")
+    }
     func testReminderPresentationRequiresFreshValidRequestAndDismissesOnlyThatRequest() {
         var advice = CacheUsageAdvice(threadID: "private-id", hitRate: 0, low: true, timestamp: 100, threadTitle: "  修复\n 金额显示  ")
         XCTAssertEqual(advice.displayTitle, "修复 金额显示")
@@ -32,8 +57,8 @@ final class CacheUsageAdviceTests: XCTestCase {
         ])
         monitor.testProcessPollInputs(streamRows: [], rolloutReads: [
             LiveRateMonitor.RolloutRead(threadID: "low", path: "/low", newOffset: 100, events: [],
-                cacheSamples: [sample(100, total: 20_000)])
-        ], now: 101)
+                cacheSamples: [sample(100, total: 20_000), sample(101, total: 40_000)])
+        ], now: 102)
         XCTAssertEqual(monitor.totalSnapshot.cacheAdvice?.threadTitle, "缓存偏低任务")
         XCTAssertNil(monitor.snapshot.cacheAdvice)
         XCTAssertEqual(monitor.totalSnapshot.outputTokens, 0)
@@ -63,8 +88,8 @@ final class CacheUsageAdviceTests: XCTestCase {
         monitor.testPrepareForLiveRateProcessing(selectedThreadID: "a")
         monitor.testProcessPollInputs(streamRows: [], rolloutReads: [
             LiveRateMonitor.RolloutRead(threadID: "a", path: "/test", newOffset: 100, events: [],
-                cacheSamples: [sample(100, total: 20_000)])
-        ], now: 101)
+                cacheSamples: [sample(100, total: 20_000), sample(101, total: 40_000)])
+        ], now: 102)
         XCTAssertEqual(monitor.snapshot.cacheAdvice?.low, true)
         XCTAssertEqual(monitor.snapshot.outputTokens, 0)
         XCTAssertEqual(monitor.snapshot.rollingTokensPerSecond, 0)
@@ -100,16 +125,41 @@ final class CacheUsageAdviceTests: XCTestCase {
         CacheUsageSample(timestamp: at, input: input, cached: cached, total: total)
     }
 
-    func testFirstLowRequestAlertsImmediatelyAndDuplicateDoesNotRepublish() {
+    func testColdFirstRequestDoesNotAlertAndDuplicateDoesNotRepublish() {
         var tracker = CacheUsageAdviceTracker()
         tracker.consume(sample(100, total: 20_000), threadID: "a", now: 100, monotonic: 100)
-        XCTAssertEqual(tracker.latest(now: 100)?.low, true)
+        XCTAssertEqual(tracker.latest(now: 100)?.low, false)
         tracker.consume(sample(101, total: 20_000), threadID: "a", now: 101, monotonic: 101)
-        XCTAssertEqual(tracker.latest(now: 101)?.low, true)
+        XCTAssertEqual(tracker.latest(now: 101)?.low, false)
         XCTAssertEqual(tracker.latest(now: 101)?.timestamp, 100)
         tracker.consume(CacheUsageSample(timestamp: 102, context: true), threadID: "a", now: 102)
         tracker.consume(sample(103, total: 40_000), threadID: "a", now: 103, monotonic: 103)
         XCTAssertEqual(tracker.latest(now: 103)?.low, true)
+    }
+
+    func testCompactionReestablishesBaselineBeforeAlerting() {
+        var tracker = CacheUsageAdviceTracker()
+        tracker.consume(sample(100, total: 20_000), threadID: "a", now: 100)
+        tracker.consume(sample(101, total: 40_000), threadID: "a", now: 101)
+        XCTAssertEqual(tracker.latest(now: 101)?.low, true)
+        tracker.consume(CacheUsageSample(timestamp: 102, reset: true), threadID: "a", now: 102)
+        tracker.consume(sample(103, total: 20_000), threadID: "a", now: 103)
+        XCTAssertEqual(tracker.latest(now: 103)?.low, false)
+        tracker.consume(sample(104, total: 40_000), threadID: "a", now: 104)
+        XCTAssertEqual(tracker.latest(now: 104)?.low, true)
+    }
+
+    @MainActor
+    func testGuardianReviewDoesNotPublishCacheWarning() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "review", threadOptions: [
+            LiveThreadOption(id: "review", title: "Review", updatedAtMS: 1, rolloutPath: "/review", threadSource: "guardian_review")
+        ])
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: [
+            LiveRateMonitor.RolloutRead(threadID: "review", path: "/review", newOffset: 100, events: [],
+                cacheSamples: [sample(100, total: 20_000), sample(101, total: 40_000)])
+        ], now: 102)
+        XCTAssertNil(monitor.totalSnapshot.cacheAdvice)
     }
 
     func testUnknownAndTinyInputDoNotDelayNextLowRequest() {
@@ -126,7 +176,7 @@ final class CacheUsageAdviceTests: XCTestCase {
         var tracker = CacheUsageAdviceTracker()
         tracker.consume(sample(100, total: 20_000), threadID: "a", now: 100)
         tracker.consume(sample(101, total: 40_000), threadID: "b", now: 101)
-        XCTAssertEqual(tracker.latest(now: 101)?.low, true)
+        XCTAssertEqual(tracker.latest(now: 101)?.low, false)
         tracker.consume(CacheUsageSample(timestamp: 102, model: "new-model", context: true), threadID: "a", now: 102)
         tracker.consume(sample(103, total: 60_000), threadID: "a", now: 103)
         XCTAssertEqual(tracker.latest(now: 103)?.low, true)

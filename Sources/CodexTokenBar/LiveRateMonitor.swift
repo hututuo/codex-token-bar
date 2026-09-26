@@ -360,7 +360,8 @@ final class LiveRateMonitor: ObservableObject {
                     id: option.id,
                     title: option.title,
                     updatedAtMS: option.updatedAtMS,
-                    rolloutPath: Self.rebasedPath(option.rolloutPath, from: oldHome, to: newHome)
+                    rolloutPath: Self.rebasedPath(option.rolloutPath, from: oldHome, to: newHome),
+                    threadSource: option.threadSource
                 )
             }
             var reboundStates: [String: RolloutReadState] = [:]
@@ -813,14 +814,16 @@ final class LiveRateMonitor: ObservableObject {
                 id: thread.id,
                 title: thread.title,
                 updatedAtMS: thread.updatedAtMS,
-                rolloutPath: thread.rolloutPath
+                rolloutPath: thread.rolloutPath,
+                threadSource: thread.threadSource
             )
             let path = option.normalizedRolloutPath
             let standardized = ThreadRow(
                 id: thread.id,
                 title: thread.title,
                 updatedAtMS: thread.updatedAtMS,
-                rolloutPath: path ?? ""
+                rolloutPath: path ?? "",
+                threadSource: thread.threadSource
             )
             let key = path.map { "path:\($0)" } ?? "thread:\(thread.id)"
             if let current = ownerByKey[key] {
@@ -847,7 +850,7 @@ final class LiveRateMonitor: ObservableObject {
             previousStates[standardizedPath] = state
         }
         let options = uniqueOwners.map {
-            LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath)
+            LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath, threadSource: $0.threadSource)
         }
         let currentSelectionValid = options.isEmpty
             ? threadID.isEmpty && selectedThreadID.isEmpty
@@ -961,7 +964,10 @@ final class LiveRateMonitor: ObservableObject {
         for read in reads {
             rolloutReadStates[read.path] = read.state
             if read.cacheReset { cacheAdviceTracker.reset(threadID: read.threadID) }
+            let isReviewThread = threadOptions.contains { $0.id == read.threadID && $0.threadSource == "guardian_review" }
+            if isReviewThread { cacheAdviceTracker.reset(threadID: read.threadID) }
             for sample in read.cacheSamples {
+                if isReviewThread { continue }
                 guard sample.context || sample.reset || sample.timestamp >= cacheAdviceNotBefore || !sample.timestamp.isFinite else { continue }
                 cacheAdviceTracker.consume(sample, threadID: read.threadID, now: now)
             }

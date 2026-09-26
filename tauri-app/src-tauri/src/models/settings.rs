@@ -535,8 +535,10 @@ fn default_floating_scale() -> f64 {
     1.0
 }
 
+pub const DEFAULT_TOKEN_RATE_FULL_SCALE: f64 = 150.0;
+
 fn default_token_rate_full_scale() -> f64 {
-    200.0
+    DEFAULT_TOKEN_RATE_FULL_SCALE
 }
 
 fn default_floating_unread_effect() -> String {
@@ -734,4 +736,27 @@ fn default_enabled() -> bool {
 
 fn default_disabled() -> bool {
     false
+}
+
+
+#[cfg(test)]
+mod rate_scale_tests {
+    use super::*;
+
+    #[test]
+    fn rate_scale_defaults_and_missing_fields_use_150() {
+        assert_eq!(FloatingWindowSettingsSnapshot::default().token_rate_full_scale, 150.0);
+        let legacy: FloatingWindowSettingsSnapshot = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.token_rate_full_scale, 150.0);
+    }
+
+    #[test]
+    fn rate_scale_deserialization_preserves_existing_preferences() {
+        for value in [200.0, 260.0] {
+            let settings: FloatingWindowSettingsSnapshot = serde_json::from_value(
+                serde_json::json!({"tokenRateFullScale": value})
+            ).unwrap();
+            assert_eq!(settings.token_rate_full_scale, value);
+        }
+    }
 }

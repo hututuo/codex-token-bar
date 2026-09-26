@@ -11,7 +11,7 @@ interface LiveRateMeterProps {
 
 export function LiveRateMeter({ fullScale, liveRateEnabled, onFullScaleChange, snapshot }: LiveRateMeterProps) {
   const scaleLimit = sanitizeFullScale(fullScale);
-  const rangeFill = ((scaleLimit - 50) / 350) * 100;
+  const rangeFill = ((scaleLimit - 50) / 450) * 100;
   const rateLabel = liveRateEnabled ? formatLiveRateValue(snapshot.tokensPerSecond) : "0.0";
 
   return (
@@ -35,7 +35,7 @@ export function LiveRateMeter({ fullScale, liveRateEnabled, onFullScaleChange, s
       <label className="rate-scale-slider">
         <span>满格</span>
         <input
-          max="400"
+          max="500"
           min="50"
           onChange={(event) => onFullScaleChange(Number(event.currentTarget.value))}
           step="10"

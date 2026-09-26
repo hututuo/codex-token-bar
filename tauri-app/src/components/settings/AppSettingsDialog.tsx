@@ -1033,10 +1033,10 @@ function MonitoringSettings({
           </span>
           <input
             aria-label="速率条满量程"
-            max="400"
+            max="500"
             min="50"
             onChange={(event) => onTokenRateFullScaleChange(Number(event.currentTarget.value))}
-            style={{ "--range-fill": `${((fullScale - 50) / 350) * 100}%` } as CSSProperties}
+            style={{ "--range-fill": `${((fullScale - 50) / 450) * 100}%` } as CSSProperties}
             type="range"
             value={fullScale}
           />

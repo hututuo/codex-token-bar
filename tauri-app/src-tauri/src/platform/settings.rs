@@ -2664,7 +2664,9 @@ fn sanitize_floating_settings(
     FloatingWindowSettingsSnapshot {
         opacity: clamp_f64(settings.opacity, 0.4, 1.0, 0.92),
         scale: clamp_f64(settings.scale, 0.9, 1.38, 1.0),
-        token_rate_full_scale: clamp_f64(settings.token_rate_full_scale, 50.0, 400.0, 200.0),
+        token_rate_full_scale: clamp_f64(
+            settings.token_rate_full_scale, 50.0, 500.0, crate::models::DEFAULT_TOKEN_RATE_FULL_SCALE,
+        ),
         unread_effect: sanitize_unread_effect(&settings.unread_effect).into(),
         gradient_start: sanitize_hex_color(&settings.gradient_start, "#ffffff").into(),
         gradient_end: sanitize_hex_color(&settings.gradient_end, "#daefff").into(),
@@ -2865,6 +2867,17 @@ fn settings_path() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_scale_normalization_matches_swift_and_frontend() {
+        for (value, expected) in [(f64::NAN, 150.0), (f64::INFINITY, 150.0),
+            (1.0, 50.0), (900.0, 500.0), (200.0, 200.0), (260.0, 260.0), (500.0, 500.0)] {
+            let settings = FloatingWindowSettingsSnapshot {
+                token_rate_full_scale: value, ..Default::default()
+            };
+            assert_eq!(sanitize_floating_settings(settings).token_rate_full_scale, expected);
+        }
+    }
     use std::{
         cell::Cell,
         fs::FileTimes,
@@ -3113,7 +3126,7 @@ mod tests {
         assert_eq!(sanitized.quota_refresh_interval_ms, 60_000);
         assert_eq!(sanitized.floating_window.opacity, 1.0);
         assert_eq!(sanitized.floating_window.scale, 0.9);
-        assert_eq!(sanitized.floating_window.token_rate_full_scale, 200.0);
+        assert_eq!(sanitized.floating_window.token_rate_full_scale, 150.0);
         assert_eq!(sanitized.floating_window.unread_effect, "ripple");
         assert_eq!(sanitized.floating_window.gradient_start, "#ffffff");
         assert_eq!(sanitized.floating_window.gradient_end, "#daefff");

@@ -7,6 +7,8 @@ import {
   formatLiveRateValue,
   liveRateDisplayBucket,
   rateFillScale,
+  sanitizeRateFullScale,
+  DEFAULT_TOKEN_RATE_FULL_SCALE,
   smoothLiveRateSnapshot,
   smoothLiveRateValue,
 } from "./rateDisplay.ts";
@@ -124,4 +126,19 @@ test("rate bars use shared transform fill styles instead of width animation", as
     css.indexOf(".floating-close-button {"),
   );
   assert.doesNotMatch(floatingTrackBlock, /transition: width/);
+});
+
+
+test("rate scale defaults to 150 while preserving configured 200 and 260", () => {
+  assert.equal(DEFAULT_TOKEN_RATE_FULL_SCALE, 150);
+  for (const missing of [undefined, NaN, Infinity, -Infinity]) {
+    assert.equal(sanitizeRateFullScale(missing), 150);
+    assert.equal(rateFillScale(75, missing), 0.5);
+  }
+  assert.equal(sanitizeRateFullScale(200), 200);
+  assert.equal(sanitizeRateFullScale(260), 260);
+  assert.equal(sanitizeRateFullScale(500), 500);
+  assert.equal(sanitizeRateFullScale(900), 500);
+  assert.equal(sanitizeRateFullScale(1), 50);
+  assert.equal(rateFillScale(150, DEFAULT_TOKEN_RATE_FULL_SCALE), 1);
 });

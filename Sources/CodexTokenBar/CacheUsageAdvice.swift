@@ -69,6 +69,7 @@ struct CacheUsageAdviceTracker {
         var requests = RecentFingerprintSet(limit: 128)
         var advice: CacheUsageAdvice?
         var touched: TimeInterval = 0
+        var hasObservedRequest = false
     }
     private var states: [String: State] = [:]
 
@@ -86,7 +87,9 @@ struct CacheUsageAdviceTracker {
             }
         }
         if sample.context {
-            if state.model != sample.model { state = State(model: sample.model) }
+            if state.model != sample.model {
+                state = State(model: sample.model, hasObservedRequest: state.hasObservedRequest)
+            }
             return
         }
         // A record can land while the existing poll is reading. Retain up to
@@ -103,14 +106,16 @@ struct CacheUsageAdviceTracker {
         if let request = sample.requestID, !request.isEmpty, !requestIsNew { return }
         if let total = sample.total, let previous = state.total {
             if total == previous && !requestIsNew { return }
-            if total < previous { state.advice = nil; state.total = total; return }
+            if total < previous { state.advice = nil; state.total = total; state.hasObservedRequest = true; return }
         }
         if let request = sample.requestID, !request.isEmpty {
             guard state.requests.insertIfNew(request) else { return }
         }
         state.total = sample.total ?? state.total
         let ratio = Double(cached) / Double(input)
-        let low = input >= 20_000 && ratio < 0.3
+        // The first request in a new or compacted context cannot have a warm cache.
+        let low = state.hasObservedRequest && input >= 20_000 && ratio < 0.3
+        state.hasObservedRequest = true
         state.advice = CacheUsageAdvice(threadID: threadID, hitRate: ratio, low: low, timestamp: sample.timestamp)
     }
 

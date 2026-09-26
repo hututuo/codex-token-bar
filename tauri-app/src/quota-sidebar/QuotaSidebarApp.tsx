@@ -21,7 +21,7 @@ import { sidebarRadarSnapshot, sidebarRadarAtTime, sidebarRadarCompact, sidebarR
 import { sidebarLocalTime, sidebarMetricValue, sidebarRingResetTime } from "./detailsModel";
 import { formatTokens } from "../utils/format";
 import { isSidebarDragTarget, createSidebarDragSession } from "./drag";
-import { sanitizeRateFullScale, formatLiveRateValue } from "../components/liveRate/rateDisplay";
+import { DEFAULT_TOKEN_RATE_FULL_SCALE, sanitizeRateFullScale, formatLiveRateValue } from "../components/liveRate/rateDisplay";
 import { sidebarRatePercent } from "./rateModel";
 import { createSidebarPublisher, sidebarVisualPercent } from "./presentation";
 import { createSidebarNativeCoordinator } from "./nativeCoordinator";
@@ -58,7 +58,7 @@ export function QuotaSidebarApp() {
 
 function RailSurface() {
   const [display, setDisplay] = useState(INACTIVE_DISPLAY_SURFACES);
-  const [rateFullScale, setRateFullScale] = useState(() => sanitizeRateFullScale(200));
+  const [rateFullScale, setRateFullScale] = useState(() => sanitizeRateFullScale(DEFAULT_TOKEN_RATE_FULL_SCALE));
   const [quotaRefreshRevision, requestQuotaRefresh] = useReducer((value: number) => value + 1, 0);
   const [cadence, setCadence] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const [state, dispatch] = useReducer(sidebarReducer, initialSidebarState);
@@ -225,7 +225,7 @@ function RailSurface() {
     <SidebarRailContent data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })} />
   </main>;
 }
-export function SidebarRailContent({ data, radar, state, rateFullScale = 200, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh }: {
+export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh }: {
   data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onPin?: () => void; onRefresh?: () => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
 }) {
   const ratePercent = sidebarRatePercent(data.snapshot, liveRateEnabled, rateFullScale);

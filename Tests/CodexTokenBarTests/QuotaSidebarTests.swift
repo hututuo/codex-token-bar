@@ -53,7 +53,7 @@ final class QuotaSidebarTests: XCTestCase {
         XCTAssertEqual(fraction(-1, 200, true), 0)
         XCTAssertEqual(fraction(.nan, 200, true), 0)
         XCTAssertEqual(fraction(.infinity, 200, true), 0)
-        XCTAssertEqual(fraction(100, .nan, true), 0.5)
+        XCTAssertEqual(fraction(75, .nan, true), 0.5)
         XCTAssertEqual(fraction(100, 200, false), 0)
     }
 

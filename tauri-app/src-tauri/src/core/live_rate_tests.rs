@@ -29,8 +29,14 @@ fn cache_advice_snapshot_uses_affected_thread_title_and_keeps_missing_title_unkn
             &rollout_path, event_time, "event_msg",
             r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":2000},"total_token_usage":{"total_tokens":20000}}}"#,
         );
+        let first = read_snapshot_result_at(&root, &scope, Some("selected"), now + 0.25).unwrap();
+        assert!(first.cache_advice.as_ref().is_none_or(|advice| !advice.low));
+        append_rollout_line_at(
+            &rollout_path, event_time, "event_msg",
+            r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":2000},"total_token_usage":{"total_tokens":40000}}}"#,
+        );
         let snapshot = read_snapshot_result_at(&root, &scope, Some("selected"), now + 0.5).unwrap();
-        let advice = snapshot.cache_advice.as_ref().expect("a single low request must alert");
+        let advice = snapshot.cache_advice.as_ref().expect("second low request should alert");
         assert_eq!(advice.thread_id, "low");
         assert_eq!(advice.thread_title.as_deref(), if title.trim().is_empty() { None } else { Some(title) });
         assert_eq!(snapshot.selected_thread_title, "当前选中任务");
@@ -40,6 +46,46 @@ fn cache_advice_snapshot_uses_affected_thread_title_and_keeps_missing_title_unkn
         assert_eq!(json["threadTitle"], serde_json::to_value(&advice.thread_title).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn cache_advice_uses_explicit_name_instead_of_first_prompt() {
+    let root = temp_root("cache-advice-explicit-name");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "named", "first prompt text", 0);
+    let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+    connection.execute_batch("ALTER TABLE threads ADD COLUMN name TEXT;").unwrap();
+    connection.execute("UPDATE threads SET name = '正式会话标题', first_user_message = 'first prompt text' WHERE id = 'named'", []).unwrap();
+    assert_eq!(state::read_thread_title(&root, "named").unwrap().as_deref(), Some("正式会话标题"));
+    connection.execute("UPDATE threads SET name = '' WHERE id = 'named'", []).unwrap();
+    assert_eq!(state::read_thread_title(&root, "named").unwrap(), None);
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn guardian_review_does_not_emit_cache_advice() {
+    let root = temp_root("cache-advice-guardian-review");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/review.jsonl");
+    create_state_database(&root, "review", "Guardian review", 0);
+    mark_thread_source(&root, "review", "guardian_review");
+    set_thread_rollout_path(&root, "review", &rollout_path);
+    create_logs_database(&root, |_connection, _now| {});
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+    let scope = LiveRateSourceScope::new(root.display().to_string(), "guardian-review");
+    let event_time = fixed_rollout_time();
+    let now = event_time.unix_timestamp() as f64;
+    read_snapshot_result_at(&root, &scope, None, now - 1.0).unwrap();
+    for total in [20_000, 40_000] {
+        append_rollout_line_at(&rollout_path, event_time, "event_msg", &format!(
+            "{{\"type\":\"token_count\",\"info\":{{\"last_token_usage\":{{\"input_tokens\":20000,\"cached_input_tokens\":0}},\"total_token_usage\":{{\"total_tokens\":{total}}}}}}}"
+        ));
+    }
+    let snapshot = read_snapshot_result_at(&root, &scope, None, now + 0.5).unwrap();
+    assert!(snapshot.cache_advice.is_none());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

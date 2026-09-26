@@ -90,6 +90,7 @@ struct CacheAdviceThreadState {
     request_ids: RecentRequestIds,
     advice: Option<CacheAdvice>,
     touched_at: Instant,
+    has_observed_request: bool,
 }
 
 impl Default for CacheAdviceThreadState {
@@ -100,6 +101,7 @@ impl Default for CacheAdviceThreadState {
             request_ids: RecentRequestIds::default(),
             advice: None,
             touched_at: Instant::now(),
+            has_observed_request: false,
         }
     }
 }
@@ -143,6 +145,7 @@ impl CacheAdviceStore {
                     *state = CacheAdviceThreadState {
                         model,
                         touched_at: monotonic_now,
+                        has_observed_request: state.has_observed_request,
                         ..CacheAdviceThreadState::default()
                     };
                 }
@@ -262,8 +265,9 @@ impl CacheAdviceThreadState {
             .zip(self.total_watermark)
             .is_some_and(|(total, previous)| total < previous);
         if total_regressed {
-                self.advice = None;
+            self.advice = None;
             self.total_watermark = sample.total_tokens;
+            self.has_observed_request = true;
             return;
         }
 
@@ -277,8 +281,10 @@ impl CacheAdviceThreadState {
             self.request_ids.insert_if_new(request_id);
         }
 
-        let qualifies_as_low = input_tokens >= CACHE_ADVICE_LOW_INPUT_TOKENS
+        let qualifies_as_low = self.has_observed_request
+            && input_tokens >= CACHE_ADVICE_LOW_INPUT_TOKENS
             && hit_rate < CACHE_ADVICE_LOW_HIT_RATE;
+        self.has_observed_request = true;
         let low = qualifies_as_low;
 
         self.advice = Some(CacheAdvice {
@@ -321,6 +327,10 @@ pub(super) fn read_rollout_metrics(
     let mut cache_observations = Vec::new();
 
     for thread in threads {
+        let include_cache_advice = thread.thread_source != "guardian_review";
+        if !include_cache_advice {
+            cache_observations.push((thread.id.clone(), CacheObservation::Reset));
+        }
         let path = thread.rollout_path;
         let signature = file_signature(&path);
         if !signature.exists || !signature.regular {
@@ -420,7 +430,9 @@ pub(super) fn read_rollout_metrics(
         for line in lines {
             let thread_id = thread.id.clone();
             let mut observe = |observation| {
-                cache_observations.push((thread_id.clone(), observation));
+                if include_cache_advice {
+                    cache_observations.push((thread_id.clone(), observation));
+                }
             };
             metrics.extend(rollout_line_metrics(
                 &thread.id,
@@ -670,6 +682,7 @@ pub(super) fn publish_scope_threads_for_test(
             threads: vec![super::state::RolloutThread {
                 id: thread_id.into(),
                 rollout_path: PathBuf::new(),
+                thread_source: "user".into(),
             }],
             refreshed_at: Instant::now(),
         },
@@ -881,7 +894,7 @@ mod cache_advice_tests {
             timestamp: Some(at), input_tokens: Some(20_000), cached_input_tokens: Some(0), total_tokens: None, request_id: Some(id.into()) });
         store.observe("a", identified(108., "r1"), 108., now);
         store.observe("a", identified(109., "r1"), 109., now);
-        assert!(store.latest(109.).unwrap().low);
+        assert!(!store.latest(109.).unwrap().low);
         assert_eq!(store.latest(109.).unwrap().timestamp, 108.);
         store.observe("a", identified(110., "r2"), 110., now);
         assert!(store.latest(110.).unwrap().low);
@@ -908,7 +921,9 @@ mod cache_advice_tests {
         store.observe("a", sample(101., Some(40_000), 100), 110., start + Duration::from_secs(10));
         assert!(store.latest(110.).is_none());
         store.observe("a", sample(111., Some(60_000), 100), 111., start + Duration::from_secs(11));
-        assert!(store.latest(111.).unwrap().low);
+        assert!(!store.latest(111.).unwrap().low);
+        store.observe("a", sample(112., Some(80_000), 100), 112., start + Duration::from_secs(12));
+        assert!(store.latest(112.).unwrap().low);
         let path = std::env::temp_dir().join(format!("cache-advice-boundary-{}", std::process::id()));
         fs::write(&path, b"original\n").unwrap();
         let original = read_boundary(&path, 9).unwrap();

@@ -2,23 +2,32 @@ import Foundation
 
 extension LiveRateMonitor {
     nonisolated static func recentThreads(stateDB: String) throws -> [ThreadRow] {
-        let sql = """
-        SELECT id, title, rollout_path, coalesce(updated_at_ms, updated_at * 1000) AS updated_at_ms
-        FROM threads
-        WHERE archived = 0
-        ORDER BY updated_at_ms DESC, updated_at DESC
-        LIMIT 20;
-        """
         return try CodexStateDatabaseReadPool.shared.withConnection(
             url: URL(fileURLWithPath: stateDB)
         ) { connection in
             try connection.readTransaction { snapshot in
-                try snapshot.readRows(sql) { statement in
+                let columns = Set(try snapshot.readRows("PRAGMA table_info(threads)") { $0.text(1) ?? "" })
+                let name = columns.contains("name") ? "name" : "''"
+                let firstMessage = columns.contains("first_user_message") ? "first_user_message" : "''"
+                let source = columns.contains("thread_source") ? "COALESCE(thread_source, 'user')" : "'user'"
+                let sql = """
+                SELECT id, COALESCE(NULLIF(TRIM(\(name)), ''),
+                           CASE WHEN TRIM(COALESCE(title, '')) != TRIM(COALESCE(\(firstMessage), ''))
+                                THEN NULLIF(TRIM(title), '') END, ''),
+                       rollout_path, coalesce(updated_at_ms, updated_at * 1000) AS updated_at_ms,
+                       \(source)
+                FROM threads
+                WHERE archived = 0
+                ORDER BY updated_at_ms DESC, updated_at DESC
+                LIMIT 20;
+                """
+                return try snapshot.readRows(sql) { statement in
                     ThreadRow(
                         id: statement.text(0) ?? "",
                         title: statement.text(1) ?? "",
                         updatedAtMS: statement.int(3) ?? 0,
-                        rolloutPath: statement.text(2) ?? ""
+                        rolloutPath: statement.text(2) ?? "",
+                        threadSource: statement.text(4) ?? "user"
                     )
                 }
             }

@@ -9,9 +9,9 @@ test("rate ribbon follows measured zero, half-scale and overflow using the exist
   assert.equal(sidebarRatePercent(snapshot(0), true, 200), 0);
   assert.equal(sidebarRatePercent(snapshot(100), true, 200), 50);
   assert.equal(sidebarRatePercent(snapshot(900), true, 200), 100);
-  assert.equal(sidebarRatePercent(snapshot(100), true, NaN), 50);
+  assert.equal(sidebarRatePercent(snapshot(75), true, NaN), 50);
   assert.equal(sidebarRatePercent(snapshot(25), true, 1), 50);
-  assert.equal(sidebarRatePercent(snapshot(200), true, 999), 50);
+  assert.equal(sidebarRatePercent(snapshot(250), true, 999), 50);
   assert.equal(sidebarRatePercent(snapshot(130), true, 257), 50);
 });
 test("disabled, unavailable, negative and nonfinite rates are unknown, never activity or full fill", () => {

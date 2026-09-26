@@ -15,6 +15,7 @@ pub(super) struct UsageSummary {
 pub(super) struct RolloutThread {
     pub(super) id: String,
     pub(super) rollout_path: PathBuf,
+    pub(super) thread_source: String,
 }
 
 pub(super) fn read_thread_options_result(
@@ -33,9 +34,14 @@ pub(super) fn read_thread_options_result(
     } else {
         "1 = 1"
     };
+    let title_expression = if column_exists(&connection, "threads", "name") {
+        "COALESCE(NULLIF(TRIM(name), ''), NULLIF(TRIM(title), ''), '')"
+    } else {
+        "title"
+    };
     let sql = format!(
         r#"
-        SELECT id, title, first_user_message, preview,
+        SELECT id, {title_expression}, first_user_message, preview,
                strftime(
                  '%m/%d %H:%M',
                  CASE
@@ -88,9 +94,14 @@ pub(super) fn read_recent_rollout_threads(
     } else {
         "1 = 1"
     };
+    let source_expression = if column_exists(&connection, "threads", "thread_source") {
+        "COALESCE(thread_source, 'user')"
+    } else {
+        "'user'"
+    };
     let sql = format!(
         r#"
-        SELECT id, rollout_path
+        SELECT id, rollout_path, {source_expression}
         FROM threads
         WHERE {archived_filter}
           AND rollout_path IS NOT NULL
@@ -103,9 +114,11 @@ pub(super) fn read_recent_rollout_threads(
     let rows = statement.query_map(params![limit as i64], |row| {
         let id: String = row.get(0)?;
         let rollout_path: String = row.get(1)?;
+        let thread_source: String = row.get(2)?;
         Ok(RolloutThread {
             id,
             rollout_path: normalize_rollout_path(codex_home, rollout_path),
+            thread_source,
         })
     })?;
 
@@ -114,25 +127,21 @@ pub(super) fn read_recent_rollout_threads(
 
 pub(super) fn read_thread_title(codex_home: &Path, thread_id: &str) -> Result<Option<String>> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
-    let mut statement = connection.prepare(
-        r#"
-        SELECT title, first_user_message, preview
-        FROM threads
-        WHERE id = ?1
-        LIMIT 1;
-        "#,
-    )?;
+    let name_expression = if column_exists(&connection, "threads", "name") { "name" } else { "''" };
+    let sql = format!("SELECT {name_expression}, title, first_user_message FROM threads WHERE id = ?1 LIMIT 1;");
+    let mut statement = connection.prepare(&sql)?;
     let mut rows = statement.query(params![thread_id])?;
     let Some(row) = rows.next()? else {
         return Ok(None);
     };
 
-    for index in 0..3 {
-        let value: String = row.get(index)?;
-        let cleaned = compact_title(&value);
-        if !cleaned.is_empty() {
-            return Ok(Some(cleaned));
-        }
+    let name = compact_title(&row.get::<_, Option<String>>(0)?.unwrap_or_default());
+    if !name.is_empty() { return Ok(Some(name)); }
+    let title = row.get::<_, Option<String>>(1)?.unwrap_or_default();
+    let first_message = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+    // Codex often fills title with the first prompt before it has a real name.
+    if !title.trim().is_empty() && title.trim() != first_message.trim() {
+        return Ok(Some(compact_title(&title)));
     }
     Ok(None)
 }

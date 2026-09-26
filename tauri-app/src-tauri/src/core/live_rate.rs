@@ -20,7 +20,7 @@ use state::{read_thread_options_result, read_thread_title, UsageSummary};
 use stream::{rollup_metric_events, rollup_stream_rows};
 
 const LOOKBACK_SECONDS: f64 = 8.0;
-const MAX_TOKENS_PER_SECOND: f64 = 200.0;
+const MAX_TOKENS_PER_SECOND: f64 = crate::models::DEFAULT_TOKEN_RATE_FULL_SCALE;
 #[cfg(test)]
 const UNREAD_SUMMARY_TTL: Duration = Duration::from_secs(3);
 #[cfg(test)]

@@ -10,7 +10,7 @@ test("live rate meter keeps one focused rate instrument with configurable full s
   assert.match(source, /量程 \{scaleLimit\} tok\/s/);
   assert.match(source, /className="rate-scale-slider"/);
   assert.match(source, /min="50"/);
-  assert.match(source, /max="400"/);
+  assert.match(source, /max="500"/);
   assert.doesNotMatch(source, /metric-card/);
   assert.doesNotMatch(source, /todayTokens/);
   assert.doesNotMatch(source, /requestCount/);

@@ -94,7 +94,7 @@ test("real rail reopens with current rate, quota presence and agent count withou
     await render("rest", 10, 2);
     assert.equal(summary.querySelectorAll(".qs-ring").length, 2);
     await React.act(async () => endOpacity(dom, summary));
-    for (let i = 1; i <= 10; i++) await render("rest", i * 10, i, true);
+    for (let i = 1; i <= 10; i++) await render("rest", i * 7.5, i, true);
     assert.equal(summary.children.length, 0);
     assert.equal(dom.document.querySelector(".qs-rate-bar i").style.transform, "scaleY(0.5)");
     await render("hover", 100, 10, true);

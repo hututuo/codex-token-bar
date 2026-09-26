@@ -58,6 +58,7 @@ struct LiveThreadOption: Identifiable, Hashable {
     let title: String
     let updatedAtMS: Int
     let rolloutPath: String
+    var threadSource: String = "user"
 
     var displayTitle: String {
         title.isEmpty ? "未命名会话" : title
