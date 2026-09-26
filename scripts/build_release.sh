@@ -264,10 +264,25 @@ import Foundation
 
 let outputURL = URL(fileURLWithPath: CommandLine.arguments[1])
 let appName = CommandLine.arguments[2]
-let size = NSSize(width: 760, height: 500)
-let image = NSImage(size: size)
-
-image.lockFocus()
+let size = NSSize(width: 1000, height: 560)
+let backingScale: CGFloat = 2
+let bitmap = NSBitmapImageRep(
+    bitmapDataPlanes: nil,
+    pixelsWide: Int(size.width * backingScale),
+    pixelsHigh: Int(size.height * backingScale),
+    bitsPerSample: 8,
+    samplesPerPixel: 4,
+    hasAlpha: true,
+    isPlanar: false,
+    colorSpaceName: .deviceRGB,
+    bitmapFormat: [],
+    bytesPerRow: 0,
+    bitsPerPixel: 0
+)!
+bitmap.size = size
+let graphicsContext = NSGraphicsContext(bitmapImageRep: bitmap)!
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = graphicsContext
 
 let bounds = NSRect(origin: .zero, size: size)
 let background = NSGradient(colors: [
@@ -285,16 +300,16 @@ func roundedPanel(_ rect: NSRect, alpha: CGFloat) {
     path.stroke()
 }
 
-roundedPanel(NSRect(x: 80, y: 180, width: 170, height: 155), alpha: 0.52)
-roundedPanel(NSRect(x: 510, y: 180, width: 170, height: 155), alpha: 0.52)
-roundedPanel(NSRect(x: 74, y: 342, width: 612, height: 74), alpha: 0.48)
+roundedPanel(NSRect(x: 112, y: 190, width: 220, height: 170), alpha: 0.52)
+roundedPanel(NSRect(x: 668, y: 190, width: 220, height: 170), alpha: 0.52)
+roundedPanel(NSRect(x: 100, y: 400, width: 800, height: 80), alpha: 0.48)
 
 let arrowPath = NSBezierPath()
-arrowPath.move(to: NSPoint(x: 306, y: 255))
-arrowPath.line(to: NSPoint(x: 448, y: 255))
-arrowPath.move(to: NSPoint(x: 418, y: 284))
-arrowPath.line(to: NSPoint(x: 450, y: 255))
-arrowPath.line(to: NSPoint(x: 418, y: 226))
+arrowPath.move(to: NSPoint(x: 402, y: 275))
+arrowPath.line(to: NSPoint(x: 598, y: 275))
+arrowPath.move(to: NSPoint(x: 560, y: 312))
+arrowPath.line(to: NSPoint(x: 604, y: 275))
+arrowPath.line(to: NSPoint(x: 560, y: 238))
 NSColor(calibratedRed: 0.03, green: 0.50, blue: 0.95, alpha: 0.80).setStroke()
 arrowPath.lineWidth = 8
 arrowPath.lineCapStyle = .round
@@ -320,34 +335,32 @@ let warningStyle: [NSAttributedString.Key: Any] = [
 
 let title = "安装 \(appName)"
 title.draw(
-    in: NSRect(x: 0, y: 455, width: size.width, height: 34),
+    in: NSRect(x: 0, y: 516, width: size.width, height: 34),
     withAttributes: titleStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
 "拖动左侧 App 到右侧 Applications 文件夹".draw(
-    in: NSRect(x: 0, y: 425, width: size.width, height: 24),
+    in: NSRect(x: 0, y: 486, width: size.width, height: 24),
     withAttributes: bodyStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
 "提示“未知开发者”时不要删除 App".draw(
-    in: NSRect(x: 98, y: 390, width: 564, height: 20),
+    in: NSRect(x: 120, y: 454, width: 760, height: 20),
     withAttributes: warningStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 "系统设置 -> 隐私与安全 -> 滑到最底下找到 \(appName)".draw(
-    in: NSRect(x: 96, y: 367, width: 568, height: 20),
+    in: NSRect(x: 120, y: 431, width: 760, height: 20),
     withAttributes: smallStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 "点“仍要打开”，再确认“打开”".draw(
-    in: NSRect(x: 96, y: 345, width: 568, height: 20),
+    in: NSRect(x: 120, y: 408, width: 760, height: 20),
     withAttributes: smallStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
-image.unlockFocus()
+NSGraphicsContext.restoreGraphicsState()
+graphicsContext.flushGraphics()
 
-guard
-    let tiff = image.tiffRepresentation,
-    let bitmap = NSBitmapImageRep(data: tiff),
-    let png = bitmap.representation(using: .png, properties: [:])
+guard let png = bitmap.representation(using: .png, properties: [:])
 else {
     fatalError("Failed to render DMG background PNG")
 }
@@ -359,6 +372,11 @@ func centeredParagraph() -> NSParagraphStyle {
     return style
 }
 SWIFT
+
+# Finder lays out this window at 1000x560 logical points. Keep the packaged
+# background at a 2x Retina backing size so it is not interpolated on macOS.
+/usr/bin/sips -s dpiWidth 144 -s dpiHeight 144 \
+  "$DMG_STAGING/.background/dmg-background.png" >/dev/null
 
 RW_DMG="$RELEASE_DIR/${DMG_NAME%.dmg}.rw.dmg"
 rm -f "$RW_DMG" "$RELEASE_DIR/$DMG_NAME"
