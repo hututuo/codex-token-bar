@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import type { CacheUsageAdvice } from "../../types/live";
 import { cacheAdviceID, cacheAdviceWarning } from "./cacheAdvicePresentation";
 
@@ -23,8 +23,10 @@ export function useCacheUsageAdvice(advice?: CacheUsageAdvice | null, available 
   const enabled = useSyncExternalStore(subscribe, () => read(enabledKey) !== "false", () => true);
   const dismissedID = useSyncExternalStore(subscribe, () => read(dismissedKey) ?? "", () => "");
   const warning = cacheAdviceWarning(advice, enabled && available, dismissedID);
+  const id = advice ? cacheAdviceID(advice) : null;
+  const dismiss = useCallback(() => { if (id) write(dismissedKey, id); }, [id]);
   return { enabled, warning,
     setEnabled: (value: boolean) => write(enabledKey, String(value)),
-    dismiss: () => { if (advice) write(dismissedKey, cacheAdviceID(advice)); },
+    dismiss,
   };
 }

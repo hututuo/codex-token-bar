@@ -151,6 +151,7 @@ fn read_stats(connection: &Connection) -> Result<DashboardStats> {
 
 fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
+        reserve_windows: Vec::new(),
         five_hour: QuotaLimit {
             label: "5h".into(),
             availability: crate::models::QuotaAvailability::Unavailable,

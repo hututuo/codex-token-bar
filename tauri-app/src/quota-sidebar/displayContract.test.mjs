@@ -58,7 +58,7 @@ test("real account quota IPC -> useCompactPanelData -> rail and detail preserve 
         resetsAtUnix: Date.now() / 1000 + 7 * 24 * 3600 * .7 });
       const calls = [];
       window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
-      window.__TAURI_INTERNALS__ = { transformCallback: () => 1, invoke: async command => { calls.push(command); return command === "read_account_quota" ? quota : null; } };
+      window.__TAURI_INTERNALS__ = { transformCallback: () => 1, invoke: async command => { calls.push(command); return command === "list_quota_accounts" ? { revision: 0, selectedId: null, accounts: [] } : command === "read_account_quota" ? quota : null; } };
       const sourceToken = { physicalHomeKey: "wire-contract", sourceGeneration: 1 };
       let latest;
       function Probe() {

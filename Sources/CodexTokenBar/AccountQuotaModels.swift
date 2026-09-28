@@ -20,6 +20,10 @@ struct AccountQuotaWindow: Equatable, Sendable {
 
     var displayLabel: String {
         switch label {
+        case "Reserve 5h":
+            return "Luna 储备 · 5小时"
+        case "Reserve 7d":
+            return "Luna 储备 · 7天"
         case "5h":
             return "5小时"
         case "7d":
@@ -31,6 +35,10 @@ struct AccountQuotaWindow: Equatable, Sendable {
 
     var compactDisplayLabel: String {
         switch label {
+        case "Reserve 5h":
+            return "储备5h"
+        case "Reserve 7d":
+            return "储备7d"
         case "5h":
             return "5h"
         case "7d":
@@ -147,6 +155,12 @@ struct AccountQuotaLimitCard: Equatable, Sendable {
             return limitName
         }
         return id
+    }
+
+    var isLunaReserve: Bool {
+        id.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("base_model_inference") == .orderedSame
+            || id.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("gpt-reserve") == .orderedSame
+            || limitName?.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("gpt-reserve") == .orderedSame
     }
 
     var hasQuotaWindows: Bool {
@@ -304,7 +318,22 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     }
 
     var isAvailable: Bool {
-        fiveHour != nil || sevenDay != nil
+        fiveHour != nil || sevenDay != nil || !reserveWindows.isEmpty
+    }
+
+    /// Passive server-returned buckets; never replace ordinary quota or drive recovery.
+    var reserveWindows: [AccountQuotaWindow] {
+        guard let card = limitCards.first(where: \.isLunaReserve) else { return [] }
+        return [card.fiveHour, card.sevenDay].compactMap { window in
+            window.map { AccountQuotaWindow(label: "Reserve \($0.label)", usedPercent: $0.usedPercent,
+                                           resetsAt: $0.resetsAt, cycleID: $0.cycleID) }
+        }
+    }
+
+    var reserveHasUnavailableWindow: Bool {
+        limitCards.filter(\.isLunaReserve).contains {
+            $0.resolvedFiveHourAvailability == .unavailable || $0.resolvedSevenDayAvailability == .unavailable
+        }
     }
 
     var staleDataDisplayed: Bool {

@@ -44,6 +44,8 @@ const QUOTA_CHILD_ENV_REMOVE: &[&str] = &[
 ];
 
 mod auth;
+pub(crate) mod accounts;
+mod direct_http;
 pub(crate) mod codex_binary;
 mod rate_limits;
 mod reset_credit;
@@ -61,6 +63,7 @@ struct QuotaCacheScope {
     codex_home: PathBuf,
     account_key: Option<String>,
     flight_fingerprint: [u8; 32],
+    selection_revision: u64,
 }
 
 impl QuotaCacheScope {
@@ -71,7 +74,7 @@ impl QuotaCacheScope {
     }
 
     fn allows_flight_reuse(&self, current: &Self) -> bool {
-        if self.codex_home != current.codex_home {
+        if self.codex_home != current.codex_home || self.selection_revision != current.selection_revision {
             return false;
         }
 
@@ -492,7 +495,7 @@ where
                 return Ok(stale_quota_bundle(previous, bundle));
             }
         }
-        if quota_available(&bundle.quota) {
+        if ordinary_quota_available(&bundle.quota) {
             return finalizer(&completed_scope, bundle, history_limit_id.as_deref());
         }
         Ok(bundle)
@@ -526,15 +529,22 @@ fn quota_cache_scope(codex_home: &Path, account_key: Option<String>) -> QuotaCac
         codex_home: std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf()),
         account_key,
         flight_fingerprint: observation.flight_fingerprint,
+        selection_revision: 0,
     }
 }
 
 fn observed_quota_cache_scope(codex_home: &Path) -> QuotaCacheScope {
     let observation = read_local_auth_observation(codex_home);
+    let registry = accounts::registry();
+    let selected = registry.as_ref().ok().and_then(|r| r.selected_id.as_ref());
+    let account_key = accounts::credential(codex_home).ok().map(|c| format!("quota-account:{}", c.id()))
+        .or_else(|| selected.map(|id| format!("quota-account:{id}")))
+        .or(observation.stable_account_key);
     QuotaCacheScope {
         codex_home: std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf()),
-        account_key: observation.stable_account_key,
+        account_key: if registry.is_ok() { account_key } else { None },
         flight_fingerprint: observation.flight_fingerprint,
+        selection_revision: registry.map(|r| r.revision).unwrap_or(u64::MAX),
     }
 }
 
@@ -632,7 +642,7 @@ fn cache_result_has_real_quota(result: &Result<AccountQuotaBundle, String>) -> b
 fn resolve_cached_quota(cached: Result<AccountQuotaBundle, String>) -> Result<AccountQuotaBundle, String> {
     match cached {
         Ok(mut bundle) => {
-            if !quota_available(&bundle.quota) {
+            if !ordinary_quota_available(&bundle.quota) {
                 bundle.quota_history_daily.clear();
                 bundle.quota_history_24h.clear();
                 bundle.quota_history_7d.clear();
@@ -655,9 +665,17 @@ fn cache_ttl(result: &Result<AccountQuotaBundle, String>, success_freshness: Dur
     }
 }
 
-fn quota_available(quota: &QuotaSnapshot) -> bool {
+fn ordinary_quota_available(quota: &QuotaSnapshot) -> bool {
     use crate::models::QuotaAvailability::Measured;
     quota.five_hour.availability == Measured || quota.seven_day.availability == Measured
+}
+
+fn quota_available(quota: &QuotaSnapshot) -> bool {
+    ordinary_quota_available(quota)
+        || quota.reserve_windows.iter().any(|window| {
+            window.availability == crate::models::QuotaAvailability::Measured
+                && window.remaining_percent.is_some_and(f64::is_finite)
+        })
 }
 
 fn account_quota_failed(bundle: &AccountQuotaBundle) -> bool {
@@ -675,6 +693,21 @@ fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
         .any(|diagnostic| diagnostic.stale_data_displayed)
 }
 
+/// Automation always checks the local login, never the independently selected quota account.
+pub(crate) fn read_current_account_quota(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
+    let credential = accounts::current_credential(codex_home)?;
+    let parsed = direct_http::read(&credential)?;
+    if accounts::current_credential(codex_home)?.id() != credential.id() {
+        return Err("本地登录已切换，请重新检查额度".into());
+    }
+    Ok(AccountQuotaBundle {
+        updated_at: diagnostic_timestamp(), attribution_identity: None,
+        account: AccountInfo { display_name: credential.label, plan_label: parsed.plan_label.unwrap_or_default() },
+        quota: parsed.quota, quota_history_daily: vec![], quota_history_24h: vec![],
+        quota_history_7d: vec![], quota_history_30d: vec![], warnings: vec![], diagnostics: vec![],
+    })
+}
+
 fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, String> {
     let (bundle, history_limit_id) = match read_rate_limits(codex_home) {
         Ok(ParsedRateLimits {
@@ -689,7 +722,7 @@ fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, Strin
                 AccountQuotaBundle {
                     updated_at,
                     attribution_identity: None,
-                    account: account_info(codex_home, plan_label.as_deref()),
+                    account: selected_account_info(codex_home, plan_label.as_deref()),
                     quota,
                     quota_history_daily: Vec::new(),
                     quota_history_24h: Vec::new(),
@@ -754,7 +787,7 @@ fn identity_changed_quota_bundle(codex_home: &Path) -> AccountQuotaBundle {
     AccountQuotaBundle {
         updated_at,
         attribution_identity: None,
-        account: account_info(codex_home, None),
+        account: selected_account_info(codex_home, None),
         quota,
         quota_history_daily: Vec::new(),
         quota_history_24h: Vec::new(),
@@ -823,7 +856,7 @@ fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle 
     let bundle = AccountQuotaBundle {
         updated_at,
         attribution_identity: None,
-        account: account_info(codex_home, None),
+        account: selected_account_info(codex_home, None),
         quota,
         quota_history_daily: Vec::new(),
         quota_history_24h: Vec::new(),
@@ -892,6 +925,15 @@ fn refresh_quota_histories(
 pub fn account_info(codex_home: &Path, plan_label: Option<&str>) -> AccountInfo {
     AccountInfo {
         display_name: read_local_account_name(codex_home).unwrap_or_else(|| "Codex Token Bar".into()),
+        plan_label: plan_label.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("计划待读取").into(),
+    }
+}
+
+fn selected_account_info(codex_home: &Path, plan_label: Option<&str>) -> AccountInfo {
+    AccountInfo {
+        display_name: accounts::credential(codex_home).map(|c| c.label)
+            .or_else(|_| accounts::registry().and_then(|r| r.accounts.into_iter().find(|a| Some(&a.id) == r.selected_id.as_ref()).map(|a| a.label).ok_or_else(|| "missing".into())))
+            .unwrap_or_else(|_| "额度账号待读取".into()),
         plan_label: plan_label
             .map(str::trim)
             .filter(|label| !label.is_empty())
@@ -1156,7 +1198,7 @@ enum QuotaStdoutEvent {
 }
 
 fn read_rate_limits(codex_home: &Path) -> Result<ParsedRateLimits, String> {
-    read_rate_limits_once(codex_home, RATE_LIMIT_READ_TIMEOUT)
+    direct_http::read(&accounts::credential(codex_home)?)
 }
 
 fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedRateLimits, String> {
@@ -1495,6 +1537,42 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    fn reserve_only_is_successfully_cached_without_ordinary_history() {
+        let quota = parse_rate_limits(&json!({
+            "rateLimitsByLimitId": {"base_model_inference": {
+                "primary": {"usedPercent": 25, "windowDurationMins": 10080}
+            }}
+        })).unwrap();
+        assert!(quota_available(&quota));
+        assert!(!ordinary_quota_available(&quota));
+        let mut bundle = quota_bundle_fixture("reserve", quota, Vec::new(), Vec::new());
+        bundle.quota_history_24h = history_bundle_fixture("ordinary").recent_24h;
+        assert_eq!(cache_ttl(&Ok(bundle.clone()), Duration::from_secs(30)), Duration::from_secs(30));
+        let resolved = resolve_cached_quota(Ok(bundle)).unwrap();
+        assert!(resolved.quota_history_24h.is_empty());
+        assert_eq!(resolved.quota.reserve_windows[0].remaining_percent, Some(0.75));
+
+        let failure = quota_bundle_fixture("reserve", placeholder_quota(), Vec::new(), Vec::new());
+        let stale = stale_quota_bundle(resolved, failure);
+        assert!(bundle_has_stale_data(&stale));
+        assert_eq!(stale.quota.reserve_windows[0].remaining_percent, Some(0.75));
+        assert!(stale.quota_history_24h.is_empty());
+    }
+
+    #[test]
+    fn unreadable_reserve_is_not_a_successful_quota_measurement() {
+        let quota = parse_rate_limits(&json!({
+            "rateLimitsByLimitId": {"base_model_inference": {
+                "primary": {"usedPercent": "broken", "windowDurationMins": 10080}
+            }}
+        })).unwrap();
+        assert!(!quota_available(&quota));
+        assert!(!ordinary_quota_available(&quota));
+        let bundle = quota_bundle_fixture("reserve", quota, Vec::new(), Vec::new());
+        assert_eq!(cache_ttl(&Ok(bundle), Duration::from_secs(30)), FAILURE_CACHE_TTL);
+    }
+
+    #[test]
     fn automatic_success_freshness_uses_half_cadence_capped_at_thirty_seconds() {
         let cases = [
             (30_000, Duration::from_secs(15)),
@@ -1630,7 +1708,7 @@ mod tests {
         .unwrap();
 
         assert!(!quota_available(&result.quota));
-        assert_eq!(result.account.display_name, "b");
+        assert_eq!(result.account.display_name, "额度账号待读取");
         assert!(result.quota_history_24h.is_empty());
         assert!(!bundle_has_stale_data(&result));
         assert!(QUOTA_READ_CACHE
@@ -1885,7 +1963,7 @@ mod tests {
         .unwrap();
 
         assert!(!quota_available(&result.quota));
-        assert_eq!(result.account.display_name, "Codex Token Bar");
+        assert_eq!(result.account.display_name, "额度账号待读取");
         assert!(result.quota_history_daily.is_empty());
         assert!(result.quota_history_24h.is_empty());
         assert!(result.quota_history_7d.is_empty());
@@ -2125,6 +2203,13 @@ mod tests {
     }
 
     #[test]
+    fn account_selection_aba_rejects_previous_inflight_request() {
+        let before = QuotaCacheScope { codex_home: PathBuf::from("synthetic"), account_key: Some("quota-account:one".into()), flight_fingerprint: [1; 32], selection_revision: 1 };
+        let after = QuotaCacheScope { selection_revision: 3, ..before.clone() };
+        assert!(!before.allows_flight_reuse(&after));
+    }
+
+    #[test]
     fn stable_account_token_rotation_keeps_history_identity_owned() {
         let cache = QuotaHistoryCacheCoordinator::default();
         let codex_home = PathBuf::from("rotation-home");
@@ -2132,11 +2217,13 @@ mod tests {
         let before_rotation = QuotaCacheScope {
             codex_home: codex_home.clone(),
             account_key: Some("sub:stable-account".into()),
+            selection_revision: 0,
             flight_fingerprint: [1; 32],
         };
         let after_rotation = QuotaCacheScope {
             codex_home,
             account_key: Some("sub:stable-account".into()),
+            selection_revision: 0,
             flight_fingerprint: [2; 32],
         };
         let before_history_identity = before_rotation
@@ -2174,11 +2261,13 @@ mod tests {
         let account_a = QuotaCacheScope {
             codex_home: codex_home.clone(),
             account_key: Some("sub:account-a".into()),
+            selection_revision: 0,
             flight_fingerprint: [3; 32],
         };
         let account_b = QuotaCacheScope {
             codex_home,
             account_key: Some("sub:account-b".into()),
+            selection_revision: 0,
             flight_fingerprint: [4; 32],
         };
         let identity_a = account_a
@@ -2225,6 +2314,7 @@ mod tests {
         let scope = QuotaCacheScope {
             codex_home: PathBuf::from("unkeyed-home"),
             account_key: None,
+            selection_revision: 0,
             flight_fingerprint: [5; 32],
         };
         assert!(scope
@@ -2234,6 +2324,7 @@ mod tests {
         let keyed_scope = QuotaCacheScope {
             codex_home: PathBuf::from("unknown-plan-home"),
             account_key: Some("sub:unknown-plan".into()),
+            selection_revision: 0,
             flight_fingerprint: [6; 32],
         };
         let mut unknown_plan = measured_quota_bundle("Unknown User");

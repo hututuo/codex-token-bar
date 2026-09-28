@@ -15,8 +15,8 @@ export function CacheUsageNotice({ advice }: { advice?: CacheUsageAdvice | null 
       </label>
     </div>
     {warning && <div role="status" style={{ marginTop: 6, color: "#bc8734", display: "flex", alignItems: "start", gap: 8 }}>
-      <span style={{ minWidth: 0, overflowWrap: "anywhere" }} title={`会话 ID：${warning.threadId}`}>本次请求缓存命中偏低 · {cacheAdviceTitle(warning)}{(warning.affectedThreads ?? 0) > 1 ? ` 等 ${warning.affectedThreads} 个会话` : ""}<br />可检查是否切换了模型或上下文；这不代表缓存服务故障。</span>
-      <button type="button" style={{ marginLeft: "auto", whiteSpace: "nowrap" }} onClick={dismiss}>收起</button>
+      <span style={{ minWidth: 0, overflowWrap: "anywhere" }} title={`会话 ID：${warning.threadId}`}>本次请求缓存命中偏低 · {cacheAdviceTitle(warning)}{(warning.affectedThreads ?? 0) > 1 ? ` 等 ${warning.affectedThreads} 个会话` : ""}<br />可能与切换模型或上下文变化有关，请检查最近的相关操作。</span>
+      <button type="button" aria-label="关闭本次缓存提醒" style={{ marginLeft: "auto", whiteSpace: "nowrap", minHeight: 28, padding: "4px 9px", border: "1px solid #bc8734", borderRadius: 6, background: "rgba(239,192,119,.18)", color: "inherit", fontWeight: 600 }} onClick={dismiss}>× 关闭提醒</button>
     </div>}
   </div>;
 }

@@ -67,6 +67,8 @@ export interface ResetCreditDetail {
 export interface QuotaSnapshot {
   fiveHour: QuotaLimit;
   sevenDay: QuotaLimit;
+  /** Optional for older native hosts; only populated from server-returned Reserve buckets. */
+  reserveWindows?: QuotaLimit[];
   resetCredit: ResetCreditSummary;
   paceLabel: string;
 }

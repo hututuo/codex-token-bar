@@ -11,7 +11,7 @@ const data = {
     sevenDayAvailability: "measured", sevenDayRemainingPercent: 0.70, quotaDataStale: true },
   runningThreads: { total: 2, status: "ready" },
 };
-test("primary rows retain large targets while the intrinsic summary is vertically centered", async () => {
+test("primary rows retain large targets while the centered summary scrolls within its native clip", async () => {
   await withSsrModules(async load => {
     const { SidebarRailContent } = await load("/src/quota-sidebar/QuotaSidebarApp.tsx");
     const window = new Window();
@@ -34,7 +34,9 @@ test("primary rows retain large targets while the intrinsic summary is verticall
       const summaryStyle = window.getComputedStyle(window.document.querySelector(".qs-summary"));
       assert.equal(summaryStyle.top, "50%");
       assert.equal(summaryStyle.transform, "translateY(-50%)");
-      assert.equal(summaryStyle.height, "auto");
+      assert.equal(summaryStyle.height, summaryStyle.maxHeight);
+      assert.equal(summaryStyle.overflowY, "auto");
+      assert.equal(window.document.querySelector(".qs-summary").getAttribute("data-scrollable"), "true");
       assert.equal(window.getComputedStyle(window.document.querySelector(".qs-recommendations")).fontSize, "9px");
       const digit = window.document.querySelector(".qs-task-ring .qs-value-change>span");
       assert.equal(window.getComputedStyle(digit).lineHeight, "26px");

@@ -4,6 +4,26 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AccountQuotaReaderTests: XCTestCase {
+    func testServerReturnedReserveUsesOneOrdinaryRequestWithoutOptIn() async throws {
+        let transport = ScriptedQuotaProcessTransport(scenarios: [
+            successfulScenario(result: [
+                "rateLimitsByLimitId": [
+                    "base_model_inference": [
+                        "limitName": "gpt-reserve",
+                        "primary": ["usedPercent": 25, "windowDurationMins": 10_080]
+                    ]
+                ]
+            ])
+        ])
+        let client = makeTestAppServerClient(transport: transport, timeout: 0.2)
+        let snapshot = try await client.read(codexPath: "/fake/codex", dataSource: nil).get()
+        XCTAssertEqual(snapshot.reserveWindows.first?.remainingPercent, 75)
+        XCTAssertEqual(transport.rateLimitRequests.count, 1)
+        let request = try XCTUnwrap(transport.rateLimitRequests.first)
+        XCTAssertEqual(Set(request.keys), ["jsonrpc", "id", "method"])
+        XCTAssertEqual(request["method"] as? String, "account/rateLimits/read")
+    }
+
     func testQuotaOnlyAppServerDisablesUnrelatedPluginStartupFetch() {
         XCTAssertEqual(
             FoundationAccountQuotaProcessTransport.appServerArguments,
@@ -887,6 +907,10 @@ private final class ScriptedQuotaProcessTransport: AccountQuotaProcessTransport,
         lock.withLock { sessions.reduce(0) { $0 + $1.rateLimitReadCount } }
     }
 
+    var rateLimitRequests: [[String: Any]] {
+        lock.withLock { sessions.flatMap(\.rateLimitRequests) }
+    }
+
     func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession {
         try lock.withLock {
             guard !scenarios.isEmpty else {
@@ -936,6 +960,13 @@ private final class ScriptedQuotaProcessSession: AccountQuotaProcessSession, @un
         condition.withLock {
             writes.append(data)
             condition.broadcast()
+        }
+    }
+
+    var rateLimitRequests: [[String: Any]] {
+        condition.withLock {
+            writes.compactMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                .filter { $0["method"] as? String == "account/rateLimits/read" }
         }
     }
 

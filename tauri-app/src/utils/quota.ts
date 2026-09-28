@@ -3,6 +3,15 @@ import type { AccountQuotaBundle } from "../types/dashboard";
 const FIVE_HOUR_DURATION_SECONDS = 5 * 60 * 60;
 const SEVEN_DAY_DURATION_SECONDS = 7 * 24 * 60 * 60;
 
+export function quotaWindowDisplayLabel(label: string): string {
+  return label === "Reserve 5h" ? "Luna 储备 · 5小时"
+    : label === "Reserve 7d" ? "Luna 储备 · 7天" : label;
+}
+
+export function quotaWindowShortLabel(label: string): string {
+  return label === "Reserve 5h" ? "储备5h" : label === "Reserve 7d" ? "储备7d" : label;
+}
+
 export function compactQuotaLabel(limit: AccountQuotaBundle["quota"]["fiveHour"], now: Date = new Date()): string {
   if (
     limit.availability !== "measured"

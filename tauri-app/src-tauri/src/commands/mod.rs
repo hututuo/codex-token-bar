@@ -2,6 +2,7 @@ pub(crate) mod auto_resume;
 pub(crate) mod codex_radar;
 pub(crate) mod codex_instances;
 pub(crate) mod dashboard;
+pub(crate) mod quota_accounts;
 pub(crate) mod live;
 pub(crate) mod provider_repair;
 pub(crate) mod session_management;

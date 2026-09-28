@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 mod placement;
+mod outside_click;
 mod motion;
 #[cfg(target_os = "macos")]
 mod canvas_macos;
@@ -140,6 +141,19 @@ pub async fn set_quota_sidebar_mode(window: WebviewWindow, mode: SidebarMode, sh
 pub async fn drag_quota_sidebar(window: WebviewWindow) -> Result<bool, String> {
     crate::commands::window_auth::require_window_label(&window, "drag_quota_sidebar")?;
     placement::drag(window).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarPointerState { inside: bool, click_revision: u64 }
+
+#[tauri::command]
+pub fn quota_sidebar_pointer_state(window: WebviewWindow) -> Result<SidebarPointerState, String> {
+    crate::commands::window_auth::require_window_label(&window, "quota_sidebar_pointer_state")?;
+    // Start tracking before sampling position; fast clicks are retained between polls.
+    let click_revision = outside_click::revision()?;
+    let inside = quota_sidebar_pointer_inside(window)?;
+    Ok(SidebarPointerState { inside, click_revision })
 }
 
 #[tauri::command]

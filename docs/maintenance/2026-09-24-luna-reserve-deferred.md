@@ -1,5 +1,7 @@
 # Luna Reserve 只读额度：延期记录
 
+> 后续：已在独立分支实现[普通响应中的被动储备展示](2026-09-27-cpa-reserve-passive-display.md)。不发送 supportsLunaReserve、不执行 fallback；下文保留的是 2026-09-24 上线排除范围，不能解读为后续分支仍完全没有解析代码。主动 opt-in 方案继续延期。
+
 状态：`DEFERRED_NOT_IN_RELEASE`
 
 本次上线不包含 Luna Reserve 读取功能，也不包含任何自动切换或 Reserve fallback。

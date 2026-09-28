@@ -18,6 +18,18 @@ const cycle = (id, extra={}) => ({id,startLowerUnix:null,startUpperUnix:null,end
   expectedResetUnix:1788825600,current:true,expired:false,earlyEnd:false,pendingReset:false,incomplete:true,...extra});
 const settle = async () => { for(let i=0;i<6;i++) await new Promise(resolve=>setTimeout(resolve,0)); };
 
+function mockTauri(window, readCycle) {
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+  window.__TAURI_INTERNALS__ = {
+    transformCallback: () => 1, unregisterCallback: () => {},
+    invoke: async (command, args) => {
+      if (command === "list_quota_accounts") return { revision: 0, selectedId: null, accounts: [] };
+      if (command.startsWith("plugin:event|")) return 1;
+      return readCycle(command, args);
+    },
+  };
+}
+
 async function withDom(run) {
   const window = new Window(); const restore=installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT=true;
@@ -46,12 +58,12 @@ test("six lifetime metrics remain visible; legacy reset-minus-seven-day input ca
 test("observed cycle models preserve unknown prices, independent review, Tokens and separate boundary usage",async()=>{
   await withDom(async({window,container,root,StatsStrip})=>{
     const calls=[];
-    window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+    mockTauri(window, async(command,args)=>{
       calls.push([command,args]);
       if(command==="read_quota_cycles") return [cycle("a"),cycle("previous",{current:false,earlyEnd:true,startLowerUnix:1787616000,startUpperUnix:1787616100})];
       return {cycleId:args.cycleId,modelBreakdowns:[breakdown("gpt-5.6-luna"),breakdown("codex-auto-review"),breakdown("GPT-5.6-NewLane")],
         boundaryModelBreakdowns:[breakdown("gpt-6-astra",500)],observedStartUnix:1788220800,observedEndUnix:1788307200};
-    }};
+    });
     await React.act(async()=>{root.render(React.createElement(StatsStrip,{stats,planLabel:"Pro",sourceToken:source,attributionIdentity:identity,preciseDataFresh:true}));await settle();});
     assert.match(container.querySelector('.quota-calendar-selection').title,/开始记录/);
     assert.equal(container.querySelector('.stats-model-cost-header .quota-calendar-disclosure').textContent,"历史周期");
@@ -81,11 +93,11 @@ test("observed cycle models preserve unknown prices, independent review, Tokens 
 test("late old-Home/account range result is discarded immediately after the source changes",async()=>{
   for (const changeHome of [false,true]) await withDom(async({window,container,root,StatsStrip})=>{
     let resolveOld;
-    window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+    mockTauri(window, async(command,args)=>{
       if(command==="read_quota_cycles") return [cycle(args.expectedScope)];
       if(args.expectedScope.startsWith("account-a|")) return new Promise(resolve=>{resolveOld=resolve;});
       return {cycleId:args.cycleId,modelBreakdowns:[breakdown("gpt-5.6-terra")],boundaryModelBreakdowns:[],observedStartUnix:1788220800,observedEndUnix:1788307200};
-    }};
+    });
     const render=(sourceToken,attributionIdentity)=>root.render(React.createElement(StatsStrip,{stats,planLabel:"Pro",sourceToken,attributionIdentity,preciseDataFresh:true}));
     await React.act(async()=>{render(source,identity);await settle();});
     assert.equal(typeof resolveOld,"function");
@@ -98,10 +110,10 @@ test("late old-Home/account range result is discarded immediately after the sour
 // Original model-cost regressions remain explicit. Fixtures now return native
 // observed-period rows rather than assuming resetAt minus a fixed seven days.
 function mockCycleRows(window, rows, boundaryRows = []) {
-  window.__TAURI_INTERNALS__ = { invoke: async (command, args) => command === "read_quota_cycles"
+  mockTauri(window, async (command, args) => command === "read_quota_cycles"
     ? [cycle("a")]
     : { cycleId: args.cycleId, modelBreakdowns: rows, boundaryModelBreakdowns: boundaryRows,
-        observedStartUnix: 1788220800, observedEndUnix: 1788307200 } };
+        observedStartUnix: 1788220800, observedEndUnix: 1788307200 });
 }
 
 test("StatsStrip keeps model costs pending while precise usage is unavailable", async () => {
@@ -120,8 +132,8 @@ test("StatsStrip keeps model costs pending while precise usage is unavailable", 
 
 test("StatsStrip does not render an anonymous canvas fallback before native cycle models arrive", async () => {
   await withDom(async ({ window, container, root, StatsStrip }) => {
-    window.__TAURI_INTERNALS__ = { invoke: async command => command === "read_quota_cycles"
-      ? [cycle("a")] : new Promise(() => {}) };
+    mockTauri(window, async command => command === "read_quota_cycles"
+      ? [cycle("a")] : new Promise(() => {}));
     await React.act(async () => {
       root.render(React.createElement(StatsStrip, {
         stats, planLabel: "Pro", sourceToken: source, attributionIdentity: identity, preciseDataFresh: true,
@@ -326,13 +338,13 @@ test("same-day cycle changes share one date row and meet at fractional boundarie
 test("planned index repair waits and retries after publication", async () => {
   await withDom(async ({window, container, root, StatsStrip}) => {
     let reads = 0;
-    window.__TAURI_INTERNALS__ = {invoke: async (command, args) => {
+    mockTauri(window, async (command, args) => {
       if (command === "read_quota_cycles") return [cycle("a")];
       reads += 1;
       return reads === 1
         ? {cycleId: args.cycleId, pendingReason: "周期明细资料正在更新，请等待精准统计更新", modelBreakdowns: [], boundaryModelBreakdowns: []}
         : {cycleId: args.cycleId, pendingReason: null, modelBreakdowns: [breakdown("gpt-5.6-sol")], boundaryModelBreakdowns: [], observedStartUnix:1788220800, observedEndUnix:1788307200};
-    }};
+    });
     await React.act(async () => {
       root.render(React.createElement(StatsStrip, {stats, planLabel:"Pro", sourceToken:source, attributionIdentity:identity, preciseDataFresh:true}));
       await settle();
@@ -350,12 +362,12 @@ test("period refresh keeps committed amounts visible and equivalent source objec
   await withDom(async ({window,container,root,StatsStrip}) => {
     let reads = 0;
     let release;
-    window.__TAURI_INTERNALS__ = {invoke: async (command,args) => {
+    mockTauri(window, async (command,args) => {
       if (command === "read_quota_cycles") return [cycle("a")];
       reads += 1;
       if (reads > 1) return new Promise(resolve => {release = resolve;});
       return {cycleId:args.cycleId,modelBreakdowns:[breakdown("gpt-5.6-sol")],boundaryModelBreakdowns:[]};
-    }};
+    });
     const render = updated => root.render(React.createElement(StatsStrip, {
       stats, planLabel:"Pro", sourceToken:{...source}, attributionIdentity:{...identity},
       preciseDataFresh:true, quotaUpdatedAt:updated,

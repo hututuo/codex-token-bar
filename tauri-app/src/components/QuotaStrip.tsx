@@ -1,3 +1,5 @@
+import { QuotaAccountSelector } from "./QuotaAccountSelector";
+import { useQuotaAccounts } from "../quotaAccounts";
 import { DiagnosticNotice } from "./DiagnosticNotice";
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type {
@@ -15,6 +17,7 @@ import {
   sanitizeQuotaRefreshIntervalMs,
 } from "../settings/quotaRefreshCadence";
 import { formatPercent, formatTokens } from "../utils/format";
+import { quotaWindowDisplayLabel } from "../utils/quota";
 import {
   estimateSharedAccountAttribution,
   quotaValueToPercentagePoints,
@@ -125,6 +128,7 @@ function persistenceFenceKey(fence: AttributionPersistenceOwnerLease): string {
 }
 
 function QuotaBar({ quota, stale = false }: { quota: QuotaLimit; stale?: boolean }) {
+  const label = quotaWindowDisplayLabel(quota.label);
   const remainingPercent = typeof quota.remainingPercent === "number" ? quota.remainingPercent : null;
   const measured = quota.availability === "measured" && remainingPercent !== null;
   const measuredLabel = remainingPercent === null ? "" : formatPercent(remainingPercent);
@@ -140,11 +144,11 @@ function QuotaBar({ quota, stale = false }: { quota: QuotaLimit; stale?: boolean
   return (
     <div
       aria-label={measured
-        ? `${quota.label} 剩 ${measuredLabel}${stale ? "，旧数据" : ""}，已用 ${usedLabel}，重置 ${quota.resetsAt}`
-        : `${quota.label} 额度待读取，重置 ${quota.resetsAt}`}
+        ? `${label} 剩 ${measuredLabel}${stale ? "，旧数据" : ""}，已用 ${usedLabel}，重置 ${quota.resetsAt}`
+        : `${label} 额度待读取，重置 ${quota.resetsAt}`}
       className={measured ? "quota-bar" : "quota-bar quota-bar--unavailable"}
     >
-      <span className="quota-label">{quota.label}</span>
+      <span className="quota-label">{label}</span>
       <div className="quota-track" aria-hidden="true">
         {measured && fillStyle ? <i className="quota-track-fill" style={fillStyle} /> : (
           <span className="quota-track-pending">待读取</span>
@@ -501,7 +505,9 @@ function QuotaStripView({
   const nativeSafetyAcknowledgeAttemptRef = useRef<string | null>(null);
   const preciseFailureAttemptRef = useRef(new Map<string, string>());
   const radarSnapshot = useSubscribedCodexRadarSnapshot();
-  const { settings: attributionSettings } = useSharedAccountAttributionSettings();
+  const { settings: savedAttributionSettings } = useSharedAccountAttributionSettings();
+  const quotaAccounts = useQuotaAccounts();
+  const attributionSettings = useMemo(() => ({ ...savedAttributionSettings, enabled: savedAttributionSettings.enabled && quotaAccounts.accounts.selectedId === null && !quotaAccounts.error }), [savedAttributionSettings, quotaAccounts.accounts.selectedId, quotaAccounts.error]);
   const resetCreditPanel = useMemo(() => resetCreditPanelModel(snapshot.resetCredit), [snapshot.resetCredit]);
   const quotaWarnings = useMemo(() => quotaReadWarnings(warnings, diagnostics), [diagnostics, warnings]);
   const quotaAttemptStatus = useMemo(
@@ -1658,10 +1664,8 @@ function QuotaStripView({
       aria-label="账户额度"
       data-attribution-status={attributionSettings.enabled ? attribution.status : undefined}
     >
-      <div className="quota-plan">
-        <span>本地账户额度</span>
-        <strong>本地读取</strong>
-      </div>
+      <div className="quota-account-toolbar"><QuotaAccountSelector /><span>仅切换额度 · 本地 token 独立统计</span></div>
+      <div className="quota-plan"><span>所选账号额度</span><strong>官方直连</strong></div>
       {visibleQuotaLimits.map((quota) => <QuotaBar key={quota.label} quota={quota} stale={quotaDataStale} />)}
       <button
         type="button"
@@ -1704,6 +1708,13 @@ function QuotaStripView({
           </label>
         ) : null}
       </div>
+      {(snapshot.reserveWindows?.length ?? 0) > 0 && (
+        <div className="quota-reserve-row" aria-label="Luna 储备额度">
+          {(snapshot.reserveWindows ?? []).filter(window => window.availability !== "absent").map(window => (
+            <QuotaBar key={window.label} quota={window} stale={quotaDataStale} />
+          ))}
+        </div>
+      )}
       {quotaWarnings.length > 0 ? (
         <div className="quota-read-warning" role="status">
           <div className="quota-read-warning-main">

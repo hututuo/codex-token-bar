@@ -8,6 +8,18 @@ private enum SidebarPalette {
     static let background = Color(red: 0.035, green: 0.045, blue: 0.038)
 }
 
+/// Additional server-returned windows must stay reachable on short screens.
+private struct ReserveSidebarScroll: ViewModifier {
+    let enabled: Bool
+    func body(content: Content) -> some View {
+        if enabled {
+            ScrollView(.vertical) { content.padding(.vertical, 12) }.scrollIndicators(.hidden)
+        } else {
+            content
+        }
+    }
+}
+
 // Value interpolation belongs to SwiftUI, not a timer per meter. Scaling a
 // fixed track leaves surrounding layout unchanged throughout the transition.
 private struct SidebarValueBar: View {
@@ -91,6 +103,11 @@ struct QuotaSidebarRail: View {
             fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         ZStack(alignment: controller.edge == .right ? .trailing : .leading) {
             if controller.interaction.expanded {
+                if let advice = cacheWarning {
+                    cacheNotice(advice)
+                        .frame(height: controller.expandedContentHeight)
+                        .transition(.opacity)
+                } else {
                 VStack(spacing: 7) {
                     HStack(spacing: 4) {
                         Button { controller.togglePin() } label: {
@@ -111,11 +128,15 @@ struct QuotaSidebarRail: View {
                         }.help("打开主页面").accessibilityLabel("打开主页面")
                             .accessibilityIdentifier("quota-sidebar-dashboard")
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
-                    if let advice = cacheWarning { cacheNotice(advice) } else { rateRing }
+                    QuotaAccountMenu(compact: true)
+                    rateRing
                     if let fiveHour = quota.snapshot.fiveHour {
                         ring(label: "5h", window: fiveHour, color: SidebarPalette.green)
                     }
                     ring(label: "7d", window: quota.snapshot.sevenDay, color: SidebarPalette.purple)
+                    ForEach(quota.snapshot.reserveWindows, id: \.label) { window in
+                        ring(label: window.compactDisplayLabel, window: window, color: SidebarPalette.blue)
+                    }
                     Button { controller.select(.overview, section: "models") } label: {
                         VStack(spacing: 6) {
                             SidebarModelShareStrip(items: shares).frame(width: 52, height: 4)
@@ -172,8 +193,10 @@ struct QuotaSidebarRail: View {
                         }.buttonStyle(SidebarPulseButtonStyle())
                     }
                 }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
+                    .modifier(ReserveSidebarScroll(enabled: !quota.snapshot.reserveWindows.isEmpty))
                     .frame(maxHeight: .infinity, alignment: .center)
                     .transition(.opacity)
+                }
             }
             Group {
                 VStack(spacing: 12) {
@@ -213,26 +236,63 @@ struct QuotaSidebarRail: View {
     }
 
     private func cacheNotice(_ advice: CacheUsageAdvice) -> some View {
-        VStack(spacing: 2) {
-            Button { controller.select(.overview, section: "usage") } label: {
-                VStack(spacing: 2) {
-                    Text("缓存命中偏低").font(.system(size: 10, weight: .semibold))
-                    Text(advice.displayTitle).font(.system(size: 9)).lineLimit(2)
-                        .frame(maxWidth: .infinity).foregroundStyle(.white.opacity(0.85))
-                    Text(String(format: "%.1f%%", advice.hitRate * 100)
-                         + (advice.affectedThreads > 1 ? " · \(advice.affectedThreads) 会话" : ""))
-                        .font(.system(size: 10, weight: .medium)).monospacedDigit()
-                }.frame(maxWidth: .infinity).contentShape(Rectangle())
-            }.buttonStyle(.plain)
-                .help("\(advice.displayTitle) · 会话 ID：\(advice.threadID)")
-                .accessibilityLabel("缓存命中偏低，\(advice.displayTitle)，点击查看详情")
-                .accessibilityIdentifier("quota-sidebar-cache-advice")
-            Button("收起") { dismissedCacheAdviceID = advice.presentationID }
-                .font(.system(size: 9)).buttonStyle(.plain)
-                .accessibilityLabel("收起本次缓存提醒")
-        }.foregroundStyle(SidebarPalette.amber).padding(.horizontal, 4)
-            .frame(width: 80, height: 68)
-            .background(SidebarPalette.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        VStack(spacing: 12) {
+            VStack(spacing: 7) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 22, weight: .medium))
+                Text("缓存命中\n偏低")
+                    .font(.system(size: 13, weight: .semibold)).lineSpacing(2)
+            }.accessibilityElement(children: .combine)
+            VStack(spacing: 3) {
+                Text(String(format: "%.1f", advice.hitRate * 100) + "%")
+                    .font(.system(size: 24, weight: .semibold, design: .rounded))
+                    .monospacedDigit().minimumScaleFactor(0.8).lineLimit(1)
+                Text("本次请求").font(.system(size: 10)).foregroundStyle(.white.opacity(0.55))
+            }
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("相关会话").font(.system(size: 10)).foregroundStyle(SidebarPalette.amber.opacity(0.8))
+                    Text(advice.displayTitle).font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.95)).fixedSize(horizontal: false, vertical: true)
+                        .help(advice.displayTitle)
+                    if advice.affectedThreads > 1 {
+                        Text("等 \(advice.affectedThreads) 个会话").font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
+                    }
+                    Rectangle().fill(SidebarPalette.amber.opacity(0.2)).frame(height: 1)
+                    Text("本次请求的缓存复用较少。可能与切换模型或上下文变化有关，请检查最近的相关操作。")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.75))
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+            }.scrollIndicators(.automatic).frame(maxHeight: .infinity)
+            VStack(spacing: 6) {
+                Button { controller.select(.overview, section: "usage") } label: {
+                    HStack(spacing: 3) {
+                        Text("查看详情")
+                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                    }.font(.system(size: 10)).frame(maxWidth: .infinity, minHeight: 24).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel("查看缓存命中详情，\(advice.displayTitle)")
+                    .accessibilityIdentifier("quota-sidebar-cache-advice")
+                Button {
+                    dismissedCacheAdviceID = advice.presentationID
+                    controller.dismiss()
+                } label: {
+                    Label("关闭提醒", systemImage: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                        .background(SidebarPalette.amber.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(SidebarPalette.amber.opacity(0.65)))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .help("关闭本次提醒；点击侧栏外也可收起")
+                    .accessibilityLabel("关闭本次缓存提醒")
+                Text("点击外部\n也可收起").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
+            }
+        }.multilineTextAlignment(.center).foregroundStyle(SidebarPalette.amber)
+            .padding(.horizontal, 8).padding(.vertical, 24)
+            .frame(width: 88).frame(maxHeight: .infinity)
+            .background(SidebarPalette.amber.opacity(0.06))
     }
 
     private var rateRing: some View {
@@ -457,6 +517,12 @@ struct QuotaSidebarDetailView: View {
                     quotaRow("5 小时额度", window: fiveHour, snapshot: snapshot.quota, color: SidebarPalette.green)
                 }
                 quotaRow("7 天额度", window: snapshot.quota.sevenDay, snapshot: snapshot.quota, color: SidebarPalette.purple)
+                ForEach(snapshot.quota.reserveWindows, id: \.label) { window in
+                    quotaRow(window.displayLabel, window: window, snapshot: snapshot.quota, color: SidebarPalette.blue)
+                }
+                if snapshot.quota.reserveHasUnavailableWindow {
+                    Text("Luna 储备：部分窗口未返回有效读数").font(.caption).foregroundStyle(.secondary)
+                }
                 if let pace = snapshot.quota.sevenDayPaceStatus {
                     HStack(spacing: 6) {
                         Text(pace.compactTitle).font(.system(size: 11)).foregroundStyle(SidebarPalette.green)

@@ -76,7 +76,7 @@ struct DashboardView: View {
     @AppStorage(StatusSummaryConfiguration.selectionKey) private var statusSummarySelectionRaw = StatusSummaryConfiguration.defaultSelectionRaw
     @AppStorage("liveRateMonitoringEnabled") private var liveRateMonitoringEnabled = true
     @AppStorage("preciseTokenCountingEnabled") private var preciseTokenCountingEnabled = false
-    @AppStorage(SharedAccountUsageAttributionSettings.enabledKey) private var sharedAccountAttributionEnabled = SharedAccountUsageAttributionSettings.defaultEnabled
+    @AppStorage(SharedAccountUsageAttributionSettings.enabledKey) private var requestedSharedAccountAttributionEnabled = SharedAccountUsageAttributionSettings.defaultEnabled
     @AppStorage(SharedAccountUsageAttributionSettings.tierKey) private var sharedAccountRadarTierRaw = SharedAccountUsageAttributionSettings.defaultTier.rawValue
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var sharedAccountPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
@@ -722,6 +722,10 @@ struct DashboardView: View {
         }
     }
 
+    private var sharedAccountAttributionEnabled: Bool {
+        requestedSharedAccountAttributionEnabled && ((try? QuotaAccountRegistry.state()).map { $0.selectedID == nil } ?? false)
+    }
+
     private func refreshSharedAccountAttribution() {
         sharedAccountSegmentStore.setObserverInstanceID(
             store.preciseObservationSessionID
@@ -1120,7 +1124,7 @@ struct DashboardView: View {
 
             StatStrip(
                 snapshot: store.snapshot,
-                quotaSnapshot: quotaStore.snapshot,
+                quotaSnapshot: ((try? QuotaAccountRegistry.state().selectedID) == nil) ? quotaStore.snapshot : .empty,
                 quotaCycleHistory: quotaHistoryStore.snapshot,
                 cycleCodexHome: store.currentDataSource?.codexHome,
                 todayUsageSummary: store.todayUsageSummary,

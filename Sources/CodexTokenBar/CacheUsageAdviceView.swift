@@ -21,10 +21,13 @@ struct CacheUsageAdviceView: View {
             }
             if let advice, warning {
                 HStack(alignment: .top) {
-                    Text("本次请求缓存命中偏低 · \(advice.displayTitle)\(advice.affectedThreads > 1 ? " 等 \(advice.affectedThreads) 个会话" : "")\n可检查是否切换了模型或上下文；这不代表缓存服务故障。")
+                    Text("本次请求缓存命中偏低 · \(advice.displayTitle)\(advice.affectedThreads > 1 ? " 等 \(advice.affectedThreads) 个会话" : "")\n可能与切换模型或上下文变化有关，请检查最近的相关操作。")
                         .help("会话 ID：\(advice.threadID)")
                     Spacer(minLength: 4)
-                    Button("收起") { dismissedID = advice.presentationID }.buttonStyle(.plain)
+                    Button { dismissedID = advice.presentationID } label: {
+                        Label("关闭提醒", systemImage: "xmark").fontWeight(.semibold)
+                    }.buttonStyle(.bordered).controlSize(.small)
+                        .accessibilityLabel("关闭本次缓存提醒")
                 }.foregroundStyle(.orange)
             }
         }

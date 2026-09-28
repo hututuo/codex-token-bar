@@ -3,7 +3,14 @@ import Darwin
 
 struct LiveAccountQuotaReader: QuotaReading {
     func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
-        await AccountQuotaReader.read(dataSource: dataSource)
+        await DirectQuotaHTTPReader.read(dataSource: dataSource)
+    }
+}
+
+/// Automation remains tied to the current local login.
+struct CurrentAccountQuotaReader: QuotaReading {
+    func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
+        await DirectQuotaHTTPReader.read(dataSource: dataSource, currentOnly: true)
     }
 }
 
@@ -1130,8 +1137,12 @@ enum AccountQuotaReader {
     static func parse(_ result: [String: Any], accountName: String?) -> AccountQuotaSnapshot {
         let byLimit = result["rateLimitsByLimitId"] as? [String: Any]
         let fallbackLimit = result["rateLimits"] as? [String: Any]
-        let limitCards = parseLimitCards(byLimit: byLimit, fallbackLimit: fallbackLimit)
-        let primaryCard = selectedLimitCard(from: limitCards)
+        var limitCards = parseLimitCards(byLimit: byLimit, fallbackLimit: fallbackLimit)
+        // A Reserve-only map must not become the ordinary quota/history identity.
+        if !limitCards.contains(where: { !$0.isLunaReserve }) {
+            limitCards += parseLimitCards(byLimit: nil, fallbackLimit: fallbackLimit).filter { !$0.isLunaReserve }
+        }
+        let primaryCard = selectedLimitCard(from: limitCards.filter { !$0.isLunaReserve })
         let primary = primaryCard?.fiveHour
         let secondary = primaryCard?.sevenDay
         let planType = parsePlanType(result: result, selectedCard: primaryCard)
@@ -1155,7 +1166,7 @@ enum AccountQuotaReader {
             snapshot.resetCreditUpdatedAt = resetCredits.updatedAt
         }
         snapshot.selectedLimitID = primaryCard?.id
-        if primary == nil && secondary == nil {
+        if !snapshot.isAvailable {
             snapshot.status = "额度暂无数据"
         }
         return snapshot
@@ -1363,7 +1374,8 @@ enum AccountQuotaReader {
     ) async -> Result<AccountQuotaResetCreditSnapshot, AccountQuotaDiagnostic> {
         let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readResetCredits")
         trace?.mark("readAccessToken.begin")
-        guard let accessToken = readAccessToken(dataSource: dataSource) else {
+        let selectionKey = QuotaAccountRegistry.selectionKey(home: dataSource?.codexHome)
+        guard let credential = try? QuotaAccountRegistry.credential(home: dataSource?.codexHome) else {
             let underlying = AccountQuotaDiagnostic(
                 source: .resetCredit,
                 category: .authMissing,
@@ -1376,76 +1388,23 @@ enum AccountQuotaReader {
             trace?.end("missing-access-token")
             return .failure(.resetCreditFailure(underlying: underlying))
         }
-        guard let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") else {
-            let underlying = AccountQuotaDiagnostic(
-                source: .resetCredit,
-                category: .parseFailure,
-                severity: .error,
-                message: "重置卡请求地址异常",
-                rawCause: "Invalid reset-credit URL",
-                retryable: false,
-                occurredAt: Date()
-            )
-            trace?.end("invalid-url")
-            return .failure(.resetCreditFailure(underlying: underlying))
-        }
         trace?.mark("readAccessToken.end")
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 14
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("CodexTokenBar", forHTTPHeaderField: "User-Agent")
-
-        let session = Self.makeResetCreditSession()
-        defer { session.finishTasksAndInvalidate() }
 
         do {
             trace?.mark("http.begin")
-            let (data, response) = try await session.data(for: request)
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-            trace?.mark("http.end", metadata: [
-                "status": String(statusCode),
-                "bytes": String(data.count)
-            ])
-            guard let http = response as? HTTPURLResponse else {
-                trace?.end("invalid-response", metadata: ["status": String(statusCode)])
-                let underlying = AccountQuotaDiagnostic(
-                    source: .resetCredit,
-                    category: .parseFailure,
-                    severity: .error,
-                    message: "重置卡响应格式异常",
-                    rawCause: "Missing HTTP response",
-                    retryable: false,
-                    occurredAt: Date()
-                )
-                return .failure(.resetCreditFailure(underlying: underlying))
+            let data = try await DirectQuotaHTTPReader.fetch(credential: credential, resetCredits: true)
+            guard selectionKey == QuotaAccountRegistry.selectionKey(home: dataSource?.codexHome) else {
+                throw DirectQuotaError.identityChanged
             }
-            guard (200..<300).contains(http.statusCode) else {
-                trace?.end("http-error", metadata: ["status": String(http.statusCode)])
-                let category = AccountQuotaDiagnostic.category(forHTTPStatus: http.statusCode)
-                let underlying = AccountQuotaDiagnostic(
-                    source: .resetCredit,
-                    category: category,
-                    severity: .error,
-                    message: "重置卡请求失败",
-                    rawCause: "HTTP \(http.statusCode)",
-                    httpStatus: http.statusCode,
-                    retryable: category != .httpAuth,
-                    occurredAt: Date()
-                )
-                return .failure(.resetCreditFailure(underlying: underlying))
-            }
+            trace?.mark("http.end", metadata: ["bytes": String(data.count)])
             guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                trace?.end("parse-failed", metadata: ["status": String(http.statusCode)])
+                trace?.end("parse-failed")
                 let underlying = AccountQuotaDiagnostic(
                     source: .resetCredit,
                     category: .parseFailure,
                     severity: .error,
                     message: "重置卡响应格式异常",
-                    rawCause: String(data: data.prefix(512), encoding: .utf8) ?? "Invalid JSON",
-                    httpStatus: http.statusCode,
+                    rawCause: "Invalid reset-credit JSON",
                     retryable: false,
                     occurredAt: Date()
                 )
@@ -1468,6 +1427,14 @@ enum AccountQuotaReader {
                 "credits": String(snapshot.credits.count)
             ])
             return .success(snapshot)
+        } catch DirectQuotaError.http(let status) {
+            let category = AccountQuotaDiagnostic.category(forHTTPStatus: status)
+            trace?.end("http-error", metadata: ["status": String(status)])
+            return .failure(.resetCreditFailure(underlying: AccountQuotaDiagnostic(
+                source: .resetCredit, category: category, severity: .error,
+                message: "重置卡请求失败", rawCause: "HTTP \(status)", httpStatus: status,
+                retryable: category != .httpAuth, occurredAt: Date()
+            )))
         } catch {
             trace?.end("failed", metadata: ["error": error.localizedDescription])
             let underlying = AccountQuotaDiagnostic.classify(

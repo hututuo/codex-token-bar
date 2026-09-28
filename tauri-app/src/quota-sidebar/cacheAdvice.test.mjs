@@ -57,7 +57,7 @@ test("live sidebar alerts expand, show titles, open details and share dismissal 
         useSidebarCacheAdvice(warning, dispatch, dragging);
         const data = { snapshot: { cacheAdvice: advice, liveRateAvailable: available, todayModelBreakdowns: [], fiveHourAvailability: "absent", sevenDayAvailability: "unavailable", sevenDayRemainingPercent: null }, runningThreads: { status: "ready", total: 0 }, quota: { quota: {} } };
         return React.createElement(React.Fragment, null,
-          React.createElement(SidebarRailContent, { data, state, onOpen: (tab, section) => dispatch({ type: "open", tab, section }) }),
+          React.createElement(SidebarRailContent, { data, state, onDismissReminder: () => dispatch({ type: "dismiss" }), onOpen: (tab, section) => dispatch({ type: "open", tab, section }) }),
           React.createElement(CacheUsageNotice, { advice }));
       }
       const render = (advice, props = {}) => React.act(async () => root.render(React.createElement(Harness, { advice, ...props })));
@@ -70,14 +70,34 @@ test("live sidebar alerts expand, show titles, open details and share dismissal 
         assert.ok(window.document.querySelector(".qs-cache-indicator"));
         assert.equal(window.document.querySelector(".qs-cache-title").textContent, "修复金额提示");
         assert.match(window.document.querySelector(".qs-cache-notice").textContent, /12.0%/);
+        const summary = window.document.querySelector(".qs-summary");
+        assert.equal(summary.getAttribute("data-reminder"), "true");
+        assert.equal(summary.getAttribute("data-scrollable"), "false");
+        for (const selector of [".qs-rail-actions", ".quota-account-compact", ".qs-rate-trigger", ".qs-quota-trigger", ".qs-model-trigger", ".qs-running-trigger", ".qs-recommendations", ".qs-window-status"])
+          assert.equal(summary.querySelector(selector), null, selector + " must yield the whole panel to the warning");
+        assert.doesNotMatch(summary.textContent, /不代表|免责声明/);
+        assert.match(summary.textContent, /可能与切换模型或上下文变化有关/);
+        assert.match(summary.textContent, /请检查最近的相关操作/);
+        assert.match(summary.textContent, /点击外部/);
+        const longTitle = "这是需要完整阅读而不是截断为两行的会话标题，检查低缓存命中提醒的内容与关闭操作";
+        await render({ ...advice, threadTitle: longTitle });
+        assert.equal(summary.querySelector(".qs-cache-title").textContent, longTitle);
+        assert.equal(summary.querySelector(".qs-cache-body").getAttribute("tabindex"), "0");
+
         await React.act(async () => dispatch({ type: "leave" }));
         assert.equal(state.mode, "hover");
         await React.act(async () => window.document.querySelector(".qs-cache-open").click());
         assert.equal(state.mode, "detail");
         assert.equal(state.section, "usage");
+        assert.match(window.document.querySelector(".qs-cache-dismiss").textContent, /×.*关闭提醒/);
+        assert.equal(window.document.querySelector(".qs-cache-dismiss").getAttribute("aria-label"), "关闭本次缓存提醒");
         await React.act(async () => window.document.querySelector(".qs-cache-dismiss").click());
+        assert.equal(state.mode, "rest");
         assert.equal(window.document.querySelector(".qs-cache-notice"), null);
         assert.equal(window.document.querySelector(".qs-cache-indicator"), null);
+        assert.equal(window.document.querySelector(".qs-summary").getAttribute("data-reminder"), "false");
+        assert.ok(window.document.querySelector(".qs-rate-trigger"), "normal content returns after dismissal");
+
         assert.equal(window.document.querySelector('[role="status"]'), null);
         await React.act(async () => dispatch({ type: "leave" }));
         await render({ ...advice });

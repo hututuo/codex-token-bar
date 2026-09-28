@@ -1953,7 +1953,6 @@ pub fn read_usage_cache_status(window: tauri::WebviewWindow) -> Result<UsageCach
 pub async fn read_account_quota(
     window: tauri::WebviewWindow,
     app: AppHandle,
-    auto_resume: tauri::State<'_, crate::commands::auto_resume::AutoResumeRegistry>,
     source_token: CodexHomeSourceToken,
     force_refresh: Option<bool>,
 ) -> Result<AccountQuotaBundle, String> {
@@ -1965,9 +1964,7 @@ pub async fn read_account_quota(
         crate::core::dashboard::LocalCodexDataSource::new(codex_home).read_account_quota(forced)
     })
     .await;
-    if let Ok(bundle) = &result {
-        auto_resume.observe_quota(bundle);
-    }
+    // Display quota selection is independent; automation has its own local-login reader.
     startup_trace::mark_performance(format!(
         "read_account_quota force={} {}ms {}",
         forced,
@@ -3266,6 +3263,7 @@ mod tests {
 
     fn placeholder_quota_for_test() -> QuotaSnapshot {
         QuotaSnapshot {
+            reserve_windows: Vec::new(),
             five_hour: QuotaLimit {
                 label: "5h".into(),
                 availability: crate::models::QuotaAvailability::Unavailable,

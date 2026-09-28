@@ -49,6 +49,39 @@ const unavailableQuotaSnapshot = {
   paceLabel: "额度读取失败",
 };
 
+test("Reserve renders both windows separately without replacing ordinary quota", async () => {
+  await withSsrModules(async load => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    for (const ordinaryRemaining of [0.62, 0]) {
+      const snapshot = { ...quotaSnapshot,
+        fiveHour: { ...quotaSnapshot.fiveHour, remainingPercent: ordinaryRemaining, usedPercent: 1 - ordinaryRemaining },
+        reserveWindows: [
+          { ...quotaSnapshot.fiveHour, label: "Reserve 5h", remainingPercent: 0.75, usedPercent: 0.25 },
+          { ...quotaSnapshot.sevenDay, label: "Reserve 7d", remainingPercent: 0.4, usedPercent: 0.6 },
+        ],
+      };
+      const html = renderComponent(QuotaStrip, { snapshot, diagnostics: [], warnings: [] });
+      assert.match(html, new RegExp(`aria-label="5h 剩 ${Math.round(ordinaryRemaining * 100)}%`));
+      assert.match(html, /aria-label="7d 剩 81%/);
+      assert.match(html, /class="quota-reserve-row" aria-label="Luna 储备额度"/);
+      assert.match(html, /aria-label="Luna 储备 · 5小时 剩 75%，已用 25%，重置 2h"/);
+      assert.match(html, /aria-label="Luna 储备 · 7天 剩 40%，已用 60%，重置 3天"/);
+    }
+  });
+});
+
+test("Missing Reserve is hidden and unreadable Reserve is never rendered as measured zero", async () => {
+  await withSsrModules(async load => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const ordinaryHtml = renderComponent(QuotaStrip, { snapshot: quotaSnapshot, warnings: [] });
+    assert.doesNotMatch(ordinaryHtml, /quota-reserve-row|Luna 储备/);
+    const html = renderComponent(QuotaStrip, { snapshot: { ...quotaSnapshot,
+      reserveWindows: [{ ...unavailableQuotaSnapshot.fiveHour, label: "Reserve 5h" }] }, warnings: [] });
+    assert.match(html, /Luna 储备 · 5小时 额度待读取/);
+    assert.doesNotMatch(html, /Luna 储备 · 5小时 剩 (0|100)%/);
+  });
+});
+
 test("QuotaStrip renders unavailable quota as pending instead of exhausted zero", async () => {
   await withSsrModules(async (load) => {
     const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
@@ -267,7 +300,7 @@ test("QuotaStrip releases cadence space when no save handler is provided", async
     const html = renderComponent(QuotaStrip, { snapshot: quotaSnapshot, warnings: [] });
 
     assert.match(html, /class="quota-side-card quota-pace quota-pace--without-cadence"/);
-    assert.doesNotMatch(html, /class="quota-refresh-cadence"|<select/);
+    assert.doesNotMatch(html, /class="quota-refresh-cadence"/);
   });
 });
 

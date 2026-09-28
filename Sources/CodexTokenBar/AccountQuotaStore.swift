@@ -88,6 +88,8 @@ final class AccountQuotaStore: ObservableObject {
     private let retryScheduler: any AccountQuotaRetryScheduling
     private let userDefaults: UserDefaults
     nonisolated(unsafe) private var cadenceObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var accountObserver: NSObjectProtocol?
+    private var lastQuotaAccountIdentity: String?
 
     private var currentDataSource: CodexDataSource?
     private var refreshTask: Task<Void, Never>?
@@ -108,6 +110,8 @@ final class AccountQuotaStore: ObservableObject {
     private var resetCreditSnapshotSourceID: String?
     private var quotaStatusBeforeRefresh: String?
     private var resetCreditStatusBeforeRefresh: String?
+
+    var usesSelectableAccount: Bool { quotaReader is LiveAccountQuotaReader }
 
     var currentDataSourceIdentity: String? {
         currentDataSource?.stableIdentityKey
@@ -135,6 +139,12 @@ final class AccountQuotaStore: ObservableObject {
             automaticRefreshInterval ?? AccountQuotaRefreshCadence.storedValue(in: userDefaults).seconds
         )
         if observesUserDefaults {
+            if quotaReader is LiveAccountQuotaReader || quotaReader is CurrentAccountQuotaReader {
+                accountObserver = NotificationCenter.default.addObserver(forName: QuotaAccountRegistry.changed,
+                    object: nil, queue: nil) { [weak self] _ in
+                    Task { @MainActor in self?.refresh(force: true) }
+                }
+            }
             cadenceObserver = NotificationCenter.default.addObserver(
                 forName: UserDefaults.didChangeNotification,
                 object: userDefaults,
@@ -150,6 +160,7 @@ final class AccountQuotaStore: ObservableObject {
     }
 
     deinit {
+        if let accountObserver { NotificationCenter.default.removeObserver(accountObserver) }
         if let cadenceObserver {
             NotificationCenter.default.removeObserver(cadenceObserver)
         }
@@ -222,6 +233,24 @@ final class AccountQuotaStore: ObservableObject {
     }
 
     func refresh(force: Bool = true) {
+        if quotaReader is LiveAccountQuotaReader || quotaReader is CurrentAccountQuotaReader {
+            let identity = quotaSourceID(for: currentDataSource)
+            if let previous = lastQuotaAccountIdentity, previous != identity {
+                cancelQuotaRefresh(restoreStatus: false)
+                cancelResetCreditRefresh(restoreStatus: false)
+                cancelQuotaRetry(resetBackoff: true)
+                cancelResetCreditRetry(resetBackoff: true)
+                cancelQuotaFailureNotice(resetTracking: true)
+                historyStore?.clearIdentity()
+                sourceBindingGeneration += 1
+                sourceIdentityGeneration += 1
+                lastSuccessfulRefreshCompletedAt = nil
+                snapshot = .empty
+                snapshotSourceID = nil
+                resetCreditSnapshotSourceID = nil
+            }
+            lastQuotaAccountIdentity = identity
+        }
         refreshQuota(force: force)
         refreshResetCredits()
     }
@@ -648,6 +677,7 @@ final class AccountQuotaStore: ObservableObject {
         refreshGeneration == generation
             && sourceBindingGeneration == bindingGeneration
             && activeRefreshSourceID == sourceID
+            && (!(quotaReader is LiveAccountQuotaReader || quotaReader is CurrentAccountQuotaReader) || quotaSourceID(for: currentDataSource) == sourceID)
     }
 
     private func isCurrentResetCreditRefresh(
@@ -658,6 +688,7 @@ final class AccountQuotaStore: ObservableObject {
         resetCreditGeneration == generation
             && sourceBindingGeneration == bindingGeneration
             && activeResetCreditSourceID == sourceID
+            && (!(quotaReader is LiveAccountQuotaReader || quotaReader is CurrentAccountQuotaReader) || quotaSourceID(for: currentDataSource) == sourceID)
     }
 
     private func installAutomaticRefreshTimer() {
@@ -672,6 +703,11 @@ final class AccountQuotaStore: ObservableObject {
     }
 
     private func quotaSourceID(for dataSource: CodexDataSource?) -> String {
-        dataSource?.stableIdentityKey ?? "automatic"
+        let source = dataSource?.stableIdentityKey ?? "automatic"
+        if quotaReader is CurrentAccountQuotaReader {
+            return source + ":" + ((try? QuotaAccountRegistry.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable")
+        }
+        guard quotaReader is LiveAccountQuotaReader else { return source }
+        return source + ":" + QuotaAccountRegistry.selectionKey(home: dataSource?.codexHome)
     }
 }

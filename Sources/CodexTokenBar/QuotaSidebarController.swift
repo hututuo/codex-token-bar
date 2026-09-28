@@ -39,6 +39,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private(set) var railPanel: QuotaSidebarPanel?
     private(set) var detailPanel: QuotaSidebarPanel?
     @Published private(set) var edge = QuotaSidebarEdge.right
+    @Published private(set) var expandedContentHeight: CGFloat = 470
     private(set) var hasFiveHour = false
     private var quotaObservation: AnyCancellable?
     private let settings: UserDefaults
@@ -51,6 +52,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var localMonitor: Any?
     private var globalMonitor: Any?
     private var screenObserver: NSObjectProtocol?
+    private var activationObserver: NSObjectProtocol?
     private var collapseTask: Task<Void, Never>?
     private var frameAnimationTask: QuotaSidebarFrameClock?
     private var frameAnimationGeneration = 0
@@ -120,7 +122,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
-        localMonitor = nil; globalMonitor = nil; screenObserver = nil
+        if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
+        localMonitor = nil; globalMonitor = nil; screenObserver = nil; activationObserver = nil
         railPanel?.orderOut(nil); detailPanel?.orderOut(nil)
         railPanel = nil; detailPanel = nil
         detailContentMounted = false
@@ -148,7 +151,10 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     func enter() {
         guard !isTrackingPress, !isDragging else { return }
         collapseTask?.cancel(); collapseTask = nil
-        guard !interaction.expanded else { return }
+        if interaction.expanded {
+            if interaction.cacheNoticeID != nil && !interaction.cacheNoticePointerEntered { interaction.enter() }
+            return
+        }
         interaction.enter()
         updateFrames()
     }
@@ -168,6 +174,10 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     func dismiss() {
         collapseTask?.cancel(); collapseTask = nil
+        if let id = interaction.cacheNoticeID {
+            settings.set(id, forKey: "cacheHitAdviceDismissed")
+            cacheAdviceID = nil
+        }
         interaction.dismiss()
         updateFrames()
     }
@@ -286,16 +296,30 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     private func installObservers() {
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .keyDown]) { [weak self] event in
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
             MainActor.assumeIsolated {
                 if event.type == .keyDown {
                     if event.keyCode == 53, self?.interaction.expanded == true { self?.dismiss() }
+                } else if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) {
+                    self?.outsideClick()
                 } else { self?.pointerMoved() }
             }
             return event
         }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pointerMoved() }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            MainActor.assumeIsolated {
+                if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) { self?.outsideClick() }
+                else { self?.pointerMoved() }
+            }
+        }
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.interaction.cacheNoticeID != nil, !self.interaction.pinned,
+                      !self.isDragging, !self.isTrackingPress else { return }
+                self.dismiss()
+            }
         }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -304,20 +328,26 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         }
     }
 
+    private func outsideClick() {
+        guard interaction.expanded, !interaction.pinned, !isDragging, !isTrackingPress,
+              let frames, !frames.contains(NSEvent.mouseLocation, detailVisible: interaction.detail != nil) else { return }
+        dismiss()
+    }
+
     private func pointerMoved() {
         guard !isTrackingPress, !isDragging else { return }
         guard let frames else { return }
         if frames.contains(NSEvent.mouseLocation, detailVisible: interaction.detail != nil) {
             enter()
-        } else if interaction.expanded && !interaction.pinned && interaction.cacheNoticeID == nil && collapseTask == nil {
+        } else if interaction.expanded && interaction.allowsAutomaticCollapse && collapseTask == nil {
             collapseTask = Task { [weak self] in
                 do { try await Task.sleep(for: .milliseconds(320)) } catch { return }
                 guard let self else { return }
                 self.collapseTask = nil
                 guard let frames = self.frames,
                       !frames.contains(NSEvent.mouseLocation, detailVisible: self.interaction.detail != nil) else { return }
-                self.interaction.leaveAfterGrace()
-                self.updateFrames()
+                guard self.interaction.allowsAutomaticCollapse else { return }
+                self.dismiss()
             }
         }
     }
@@ -360,6 +390,12 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                                           expanded: interaction.expanded, scale: screen.backingScaleFactor,
                                           hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5)
         let previous = frames
+        // The host remains 560pt tall for reveal animation, but a weekly-only
+        // or short-screen rail clips that canvas. Fit full-panel notices to
+        // the settled visible height, not the stable animation canvas.
+        if interaction.expanded && expandedContentHeight != next.rail.height {
+            expandedContentHeight = next.rail.height
+        }
         frames = next
         let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if reducedMotion { cancelFrameAnimation() }

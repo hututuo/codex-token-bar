@@ -5,6 +5,7 @@ use time::OffsetDateTime;
 
 pub(super) fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
+        reserve_windows: Vec::new(),
         five_hour: QuotaLimit {
             label: "5h".into(),
             availability: QuotaAvailability::Unavailable,
@@ -78,36 +79,57 @@ pub(super) fn parse_rate_limits_with_plan(result: &Value) -> Result<ParsedRateLi
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let fallback_card = result
-        .get("rateLimits")
-        .and_then(parse_fallback_limit_card);
-    let cards = if by_limit.is_empty() {
-        fallback_card.into_iter().collect::<Vec<_>>()
+    let fallback_card = result.get("rateLimits").and_then(parse_fallback_limit_card);
+    let mut cards = if by_limit.is_empty() {
+        fallback_card.clone().into_iter().collect::<Vec<_>>()
     } else {
         by_limit
     };
 
+    if !cards.iter().any(|card| !card.is_reserve) {
+        cards.extend(fallback_card.filter(|card| !card.is_reserve));
+    }
+    // Consume only returned buckets; reading them never opts into Reserve use.
+    let reserve_windows = cards
+        .iter()
+        .find(|card| card.is_reserve)
+        .map(|card| {
+            [card.five_hour.clone(), card.seven_day.clone()]
+                .into_iter()
+                .flatten()
+                .map(|mut window| {
+                    window.label = format!("Reserve {}", window.label);
+                    window
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let selected_card = cards
         .iter()
-        .find(|card| card.id == "codex")
-        .or_else(|| cards.first())
-        .ok_or_else(|| "额度暂无数据".to_string())?;
+        .find(|card| !card.is_reserve && card.id.eq_ignore_ascii_case("codex"))
+        .or_else(|| cards.iter().find(|card| !card.is_reserve));
+    if selected_card.is_none() && reserve_windows.is_empty() {
+        return Err("额度暂无数据".to_string());
+    }
     let five_hour = selected_card
-        .five_hour
-        .clone()
-        .unwrap_or_else(|| absent_quota("5h"));
+        .and_then(|card| card.five_hour.clone())
+        .unwrap_or_else(|| {
+            if selected_card.is_some() { absent_quota("5h") } else { unavailable_quota("5h") }
+        });
     let seven_day = selected_card
-        .seven_day
-        .clone()
-        .unwrap_or_else(|| absent_quota("7d"));
+        .and_then(|card| card.seven_day.clone())
+        .unwrap_or_else(|| {
+            if selected_card.is_some() { absent_quota("7d") } else { unavailable_quota("7d") }
+        });
 
     Ok(ParsedRateLimits {
         plan_label: parse_plan_label(result),
-        limit_id: selected_card.id.clone(),
+        limit_id: selected_card.map(|card| card.id.clone()).unwrap_or_default(),
         quota: QuotaSnapshot {
             pace_label: pace_label(&seven_day),
             five_hour,
             seven_day,
+            reserve_windows,
             reset_credit: ResetCreditSummary {
                 available_count: 0,
                 status: "重置卡待读取".into(),
@@ -174,6 +196,7 @@ fn format_plan_label(value: &str) -> Option<String> {
 #[derive(Clone, Debug)]
 struct ParsedLimitCard {
     id: String,
+    is_reserve: bool,
     five_hour: Option<QuotaLimit>,
     seven_day: Option<QuotaLimit>,
 }
@@ -202,7 +225,14 @@ fn parse_limit_card(value: &Value, selected_id: &str) -> Option<ParsedLimitCard>
     if five_hour.is_none() && seven_day.is_none() {
         return None;
     }
+    let is_reserve = id.eq_ignore_ascii_case("base_model_inference")
+        || id.eq_ignore_ascii_case("gpt-reserve")
+        || value
+            .get("limitName")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name.trim().eq_ignore_ascii_case("gpt-reserve"));
     Some(ParsedLimitCard {
+        is_reserve,
         id,
         five_hour,
         seven_day,
@@ -378,6 +408,119 @@ fn hours_until(reset_unix: Option<i64>) -> Option<f64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn reserve_card() -> Value {
+        json!({
+            "limitName": "gpt-reserve",
+            "primary": {"usedPercent": 25, "windowDurationMins": 300, "resetsAt": 1800000000},
+            "secondary": {"usedPercent": 60, "windowDurationMins": 10080, "resetsAt": 1800086400}
+        })
+    }
+
+    #[test]
+    fn reserve_is_separate_before_and_after_ordinary_exhaustion() {
+        for used in [20, 100] {
+            let parsed = parse_rate_limits_with_plan(&json!({
+                "rateLimitsByLimitId": {
+                    "codex": {
+                        "primary": {"usedPercent": used, "windowDurationMins": 300},
+                        "secondary": {"usedPercent": used, "windowDurationMins": 10080}
+                    },
+                    "base_model_inference": reserve_card()
+                }
+            })).unwrap();
+            assert_eq!(parsed.limit_id, "codex");
+            assert_eq!(parsed.quota.five_hour.used_percent, Some(used as f64 / 100.0));
+            assert_eq!(parsed.quota.seven_day.used_percent, Some(used as f64 / 100.0));
+            let reserve = &parsed.quota.reserve_windows;
+            assert_eq!(reserve.len(), 2);
+            assert_eq!(reserve[0].label, "Reserve 5h");
+            assert_eq!(reserve[0].remaining_percent, Some(0.75));
+            assert_eq!(reserve[0].resets_at_unix, Some(1800000000));
+            assert_eq!(reserve[1].label, "Reserve 7d");
+            assert_eq!(reserve[1].remaining_percent, Some(0.4));
+            assert_eq!(reserve[1].resets_at_unix, Some(1800086400));
+        }
+    }
+
+    #[test]
+    fn reserve_only_does_not_become_ordinary_quota_or_history_identity() {
+        let parsed = parse_rate_limits_with_plan(&json!({
+            "rateLimitsByLimitId": {"base_model_inference": reserve_card()}
+        })).unwrap();
+        assert!(parsed.limit_id.is_empty());
+        assert_eq!(parsed.quota.five_hour.availability, QuotaAvailability::Unavailable);
+        assert_eq!(parsed.quota.five_hour.remaining_percent, None);
+        assert_eq!(parsed.quota.seven_day.availability, QuotaAvailability::Unavailable);
+        assert_eq!(parsed.quota.seven_day.remaining_percent, None);
+        assert_eq!(parsed.quota.reserve_windows.len(), 2);
+    }
+
+    #[test]
+    fn reserve_only_map_preserves_legacy_ordinary_fallback() {
+        let parsed = parse_rate_limits_with_plan(&json!({
+            "rateLimitsByLimitId": {"base_model_inference": reserve_card()},
+            "rateLimits": {"limitId": "codex", "primary": {"usedPercent": 42, "windowDurationMins": 300}}
+        })).unwrap();
+        assert_eq!(parsed.limit_id, "codex");
+        assert_eq!(parsed.quota.five_hour.used_percent, Some(0.42));
+        assert_eq!(parsed.quota.reserve_windows.len(), 2);
+    }
+
+    #[test]
+    fn reserve_aliases_and_weekly_primary_are_classified_correctly() {
+        for id in ["base_model_inference", " GPT-RESERVE "] {
+            let parsed = parse_rate_limits_with_plan(&json!({
+                "rateLimitsByLimitId": {(id): {
+                    "primary": {"usedPercent": 100, "windowDurationMins": 10080}
+                }}
+            })).unwrap();
+            assert!(parsed.limit_id.is_empty());
+            assert_eq!(parsed.quota.reserve_windows.len(), 1);
+            assert_eq!(parsed.quota.reserve_windows[0].label, "Reserve 7d");
+            assert_eq!(parsed.quota.reserve_windows[0].remaining_percent, Some(0.0));
+        }
+        let parsed = parse_rate_limits_with_plan(&json!({
+            "rateLimitsByLimitId": {"other-id": reserve_card()}
+        })).unwrap();
+        assert!(parsed.limit_id.is_empty());
+        assert_eq!(parsed.quota.reserve_windows.len(), 2);
+    }
+
+    #[test]
+    fn malformed_reserve_percentage_is_unknown_not_zero_or_full() {
+        let mut card = reserve_card();
+        card["primary"]["usedPercent"] = json!("broken");
+        let quota = parse_rate_limits(&json!({
+            "rateLimitsByLimitId": {"base_model_inference": card}
+        })).unwrap();
+        assert_eq!(quota.reserve_windows.len(), 2);
+        assert_eq!(quota.reserve_windows[0].availability, QuotaAvailability::Unavailable);
+        assert_eq!(quota.reserve_windows[0].remaining_percent, None);
+        assert_eq!(quota.reserve_windows[0].used_percent, None);
+        assert_eq!(quota.reserve_windows[1].remaining_percent, Some(0.4));
+    }
+
+    #[test]
+    fn reserve_ipc_preserves_both_windows_and_accepts_old_snapshots() {
+        let ordinary = parse_rate_limits(&json!({
+            "rateLimits": {"primary": {"usedPercent": 20, "windowDurationMins": 300}}
+        })).unwrap();
+        assert!(ordinary.reserve_windows.is_empty());
+        let old_json = serde_json::to_value(ordinary).unwrap();
+        assert!(old_json.get("reserveWindows").is_none());
+        let restored: QuotaSnapshot = serde_json::from_value(old_json).unwrap();
+        assert!(restored.reserve_windows.is_empty());
+
+        let with_reserve = parse_rate_limits(&json!({
+            "rateLimitsByLimitId": {"base_model_inference": reserve_card()}
+        })).unwrap();
+        let ipc = serde_json::to_value(&with_reserve).unwrap();
+        assert_eq!(ipc["reserveWindows"][0]["remainingPercent"], 0.75);
+        assert_eq!(ipc["reserveWindows"][1]["label"], "Reserve 7d");
+        let restored: QuotaSnapshot = serde_json::from_value(ipc).unwrap();
+        assert_eq!(restored.reserve_windows.len(), 2);
+    }
 
     #[test]
     fn placeholder_quota_is_explicitly_unavailable_without_zero_measurements() {

@@ -2956,6 +2956,7 @@ fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
 
 fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
+        reserve_windows: Vec::new(),
         five_hour: QuotaLimit {
             label: "5h".into(),
             availability: crate::models::QuotaAvailability::Unavailable,

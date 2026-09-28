@@ -5,8 +5,10 @@ import { flashSidebarButton } from "./meterFeedback";
 // the bounded fallback also retires them when WebKit suppresses transitionend.
 export const SIDEBAR_SUMMARY_RETIRE_MS = 320;
 
-export function SidebarSummaryLayer({ visible, children }: {
+export function SidebarSummaryLayer({ visible, scrollable = false, reminder = false, children }: {
   visible: boolean;
+  scrollable?: boolean;
+  reminder?: boolean;
   children: () => ReactNode;
 }) {
   const [retained, setRetained] = useState(visible);
@@ -20,7 +22,7 @@ export function SidebarSummaryLayer({ visible, children }: {
     return () => clearTimeout(timer);
   }, [visible, retained]);
 
-  return <div className="qs-summary" data-visible={visible} aria-hidden={!visible} inert={!visible}
+  return <div className="qs-summary" data-scrollable={scrollable} data-reminder={reminder} data-visible={visible} aria-hidden={!visible} inert={!visible}
     onClickCapture={event => flashSidebarButton(event.target)}
     onTransitionEnd={event => {
       if (!visible && event.target === event.currentTarget && event.propertyName === "opacity") {

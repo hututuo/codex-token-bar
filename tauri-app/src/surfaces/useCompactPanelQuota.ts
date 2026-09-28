@@ -1,3 +1,4 @@
+import { useQuotaAccounts, quotaAccountKey } from "../quotaAccounts";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { readAccountQuota, readAccountResetCredits } from "../api/client";
 import { emptyAccountQuotaBundle } from "../api/fallback";
@@ -74,7 +75,9 @@ export function useCompactPanelQuota({
 readQuota: QuotaReader = defaultQuotaReader,
 readResetCredits: ResetCreditReader = defaultResetCreditReader,
 dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscriptions): AccountQuotaBundle {
-  const sourceKey = codexHomeSourceTokenKey(sourceToken);
+  const { key: selectedQuotaKey } = useQuotaAccounts();
+  const localSourceKey = codexHomeSourceTokenKey(sourceToken);
+  const sourceKey = localSourceKey === null ? null : localSourceKey + ":quota:" + selectedQuotaKey;
   const [quota, setQuota] = useState<AccountQuotaBundle>(() => emptyAccountQuotaBundle());
   const quotaInFlightGeneration = useRef<number | null>(null);
   const resetInFlightGeneration = useRef<number | null>(null);
@@ -160,7 +163,7 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
     let unlistenResetCredits: (() => void) | null = null;
 
     void dashboardSubscriptions.onQuota((payload) => {
-      if (disposed || codexHomeSourceTokenKey(payload.sourceToken) !== sourceKey) {
+      if (disposed || codexHomeSourceTokenKey(payload.sourceToken) !== localSourceKey || (payload.quotaAccountKey ?? "0:local") !== quotaAccountKey()) {
         return;
       }
       setQuota((previous) => mergeCompactQuota(previous, payload.quota));
@@ -169,7 +172,7 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
       else unlistenQuota = unlisten;
     });
     void dashboardSubscriptions.onResetCredits((payload) => {
-      if (disposed || codexHomeSourceTokenKey(payload.sourceToken) !== sourceKey) {
+      if (disposed || codexHomeSourceTokenKey(payload.sourceToken) !== localSourceKey || (payload.quotaAccountKey ?? "0:local") !== quotaAccountKey()) {
         return;
       }
       setQuota((previous) => mergeCompactResetCredits(previous, payload.resetCredits));
@@ -219,6 +222,7 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
       !mounted.current
       || !current.active
       || !current.enabled
+      || quotaAccountKey() !== selectedQuotaKey
       || current.generation !== requestGeneration
       || current.sourceKey !== requestSourceKey
     ) {
@@ -297,6 +301,7 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
       !mounted.current
       || !current.active
       || !current.enabled
+      || quotaAccountKey() !== selectedQuotaKey
       || current.generation !== requestGeneration
       || current.sourceKey !== requestSourceKey
     ) {
@@ -319,7 +324,7 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
       resetRetryTimer.current = null;
       void refreshResetCredits(true);
     }, delayMs);
-  }, [active, enabled, followDashboardUpdates, readResetCredits, sourceToken]);
+  }, [active, enabled, followDashboardUpdates, readResetCredits, sourceToken, selectedQuotaKey]);
 
   useEffect(() => {
     if (!active || !enabled || followDashboardUpdates) {
@@ -347,6 +352,7 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
     enabled,
     followDashboardUpdates,
     initialDelayMs,
+    selectedQuotaKey,
     refreshQuota,
     refreshResetCredits,
   ]);

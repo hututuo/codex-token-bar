@@ -1,4 +1,7 @@
 pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
+    "save_current_quota_account",
+    "import_quota_account",
+    "remove_quota_account",
     "set_codex_home",
     "reset_codex_home",
     "read_dashboard_snapshot",
@@ -69,6 +72,8 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
+    "list_quota_accounts",
+    "select_quota_account",
     "read_sidebar_trend",
     "get_codex_home",
     "read_app_settings",
@@ -97,7 +102,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "dismiss_status_panel_on_blur",
 ];
 
-pub(crate) const QUOTA_SIDEBAR_ONLY_COMMANDS: &[&str] = &["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "drag_quota_sidebar"];
+pub(crate) const QUOTA_SIDEBAR_ONLY_COMMANDS: &[&str] = &["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "quota_sidebar_pointer_state", "drag_quota_sidebar"];
 
 pub(crate) const STATUS_WINDOW_ONLY_COMMANDS: &[&str] = &["publish_status_indicator_readout"];
 
@@ -166,7 +171,7 @@ mod tests {
 
     #[test]
     fn quota_sidebar_has_its_own_geometry_authority_and_read_lifecycle() {
-        for command in ["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "drag_quota_sidebar"] {
+        for command in ["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "quota_sidebar_pointer_state", "drag_quota_sidebar"] {
             assert!(allows_window_label(command, "quota-sidebar"));
             for label in ["main", "floating", "status", "quota-sidebar-detail", "unknown"] { assert!(!allows_window_label(command, label)); }
         }

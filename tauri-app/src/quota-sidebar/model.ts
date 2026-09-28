@@ -1,7 +1,7 @@
 export type SidebarMode = "rest" | "hover" | "detail";
 export type SidebarSection = "top" | "usage" | "five" | "seven" | "models" | "credits" | "ranking";
 export interface SidebarState { cacheNoticeID?: string; section?: SidebarSection; focusRevision?: number; mode: SidebarMode; tab: "quota" | "running" | "radar" | "credits"; pinned: boolean }
-export type SidebarAction = { type: "cache-advice"; id: string | null } | { type: "enter" } | { type: "leave" } | { type: "open"; tab: SidebarState["tab"]; section?: SidebarSection } | { type: "pin" } | { type: "close" } | { type: "disable" } | { type: "drag" };
+export type SidebarAction = { type: "cache-advice"; id: string | null } | { type: "enter" } | { type: "leave" } | { type: "open"; tab: SidebarState["tab"]; section?: SidebarSection } | { type: "pin" } | { type: "close" } | { type: "dismiss" } | { type: "disable" } | { type: "drag" };
 export const initialSidebarState: SidebarState = { mode: "rest", tab: "quota", pinned: false };
 export function sidebarReducer(state: SidebarState, action: SidebarAction): SidebarState {
   switch (action.type) {
@@ -26,6 +26,7 @@ export function sidebarReducer(state: SidebarState, action: SidebarAction): Side
       const { cacheNoticeID: _notice, ...rest } = state;
       return { ...rest, mode: state.mode === "detail" ? "hover" : state.mode, pinned: false };
     }
+    case "dismiss":
     case "disable": return initialSidebarState;
     default: return state;
   }
@@ -39,7 +40,7 @@ export function isSidebarAction(value: unknown): value is SidebarAction {
   if (!value || typeof value !== "object" || !("type" in value)) return false;
   const action = value as Record<string, unknown>;
   return action.type === "open" ? (action.tab === "quota" || action.tab === "running" || action.tab === "radar" || action.tab === "credits") && (action.section === undefined || ["top", "usage", "five", "seven", "models", "credits", "ranking"].includes(String(action.section)))
-    : ["enter", "leave", "pin", "close", "disable", "drag"].includes(String(action.type));
+    : ["enter", "leave", "pin", "close", "dismiss", "disable", "drag"].includes(String(action.type));
 }
 
 /** A measured zero is present; missing, unavailable and nonfinite 5h are absent. */

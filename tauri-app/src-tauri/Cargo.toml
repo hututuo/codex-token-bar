@@ -1,6 +1,6 @@
 [package]
 name = "codex-token-bar"
-version = "0.9.2"
+version = "0.9.3"
 description = "Cross-platform Codex Token Bar for Windows"
 authors = ["Codex Token Bar"]
 license = "AGPL-3.0-only"
@@ -43,13 +43,15 @@ libc = "0.2"
 rustix = { version = "1.1.4", features = ["fs", "pipe", "event"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSAttributedString", "NSButton", "NSColor", "NSControl", "NSFont", "NSFontDescriptor", "NSParagraphStyle", "NSResponder", "NSEvent", "NSTrackingArea", "NSRunningApplication", "NSScreen", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSStringDrawing", "NSText", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSDictionary", "NSGeometry", "NSObject", "NSRange", "NSString", "NSURL"] }
 plist = "1.9.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_Threading", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_Threading", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
 winreg = "0.55"
 
 [patch.crates-io]

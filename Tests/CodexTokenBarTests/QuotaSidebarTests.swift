@@ -29,6 +29,24 @@ final class QuotaSidebarTests: XCTestCase {
         XCTAssertEqual(state, QuotaSidebarInteraction())
     }
 
+    func testCacheReminderAllowsPointerExitAfterEntryAndKeepsIntentionalPin() {
+        var state = QuotaSidebarInteraction()
+        state.presentCacheAdvice("a:200")
+        XCTAssertFalse(state.allowsAutomaticCollapse)
+        state.enter()
+        XCTAssertTrue(state.allowsAutomaticCollapse)
+        state.leaveAfterGrace()
+        XCTAssertEqual(state, QuotaSidebarInteraction())
+        state.presentCacheAdvice("a:201")
+        state.enter()
+        state.togglePin()
+        state.leaveAfterGrace()
+        XCTAssertTrue(state.expanded)
+        XCTAssertTrue(state.pinned)
+        state.dismiss()
+        XCTAssertEqual(state, QuotaSidebarInteraction())
+    }
+
     @MainActor
     func testDetailSectionSelectionCanRepeatAndTabSelectionReturnsToTop() {
         let controller = QuotaSidebarController()

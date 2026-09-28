@@ -1357,7 +1357,7 @@ impl AutoResumeRegistry {
         if !quota_due.is_empty() {
             let home = auto_resume::default_codex_home();
             let quota_result = tauri::async_runtime::spawn_blocking(move || {
-                quota::read_account_quota(&home, false)
+                quota::read_current_account_quota(&home)
             })
             .await;
             match quota_result {
@@ -2563,6 +2563,7 @@ mod tests {
                 plan_label: String::new(),
             },
             quota: QuotaSnapshot {
+                reserve_windows: Vec::new(),
                 five_hour: five,
                 seven_day: seven,
                 reset_credit: ResetCreditSummary {

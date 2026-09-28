@@ -14,6 +14,43 @@ function fixture(availability, percent) {
       unreadSummary: { source: "pending", label: "", detail: "" } },
     runningThreads: { total: 2, status: "ready" } };
 }
+
+test("Reserve rings and detail preserve ordinary navigation and remain reachable in the native clip", async () => {
+  await withSsrModules(async load => {
+    const { SidebarRailContent, QuotaDetails } = await load("/src/quota-sidebar/QuotaSidebarApp.tsx");
+    const data = fixture("measured", 0);
+    data.quota.quota.reserveWindows = [
+      { label: "Reserve 5h", availability: "measured", remainingPercent: 0.75, resetsAt: "2h" },
+      { label: "Reserve 7d", availability: "measured", remainingPercent: 0.4, resetsAt: "3天" },
+    ];
+    const hover = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover", tab: "quota", pinned: false }, onOpen() {} }));
+    assert.match(hover, /data-scrollable="true"/);
+    assert.ok(hover.includes("查看五小时额度详情"));
+    assert.ok(hover.includes("查看七天额度详情"));
+    assert.ok(hover.includes("储备5h"));
+    assert.ok(hover.includes("储备7d"));
+    assert.equal((hover.match(/class="qs-ring"/g) || []).length, 5);
+    const detail = renderToStaticMarkup(React.createElement(QuotaDetails, { data }));
+    for (const id of ["five", "seven", "Reserve-5h", "Reserve-7d"]) assert.ok(detail.includes(`id="qs-section-${id}"`));
+    for (const label of ["Luna 储备 · 5小时", "Luna 储备 · 7天", "75%", "40%"]) assert.ok(detail.includes(label));
+    const rest = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "rest", tab: "quota", pinned: false }, onOpen() {} }));
+    assert.equal((rest.match(/class="qs-bar(?: |")/g) || []).length, 3);
+    assert.doesNotMatch(rest, /class="qs-ring"/);
+  });
+});
+
+test("Unreadable Reserve stays unknown in detail and never creates a zero ring", async () => {
+  await withSsrModules(async load => {
+    const { SidebarRailContent, QuotaDetails } = await load("/src/quota-sidebar/QuotaSidebarApp.tsx");
+    const data = fixture("measured", 0.42);
+    data.quota.quota.reserveWindows = [{ label: "Reserve 7d", availability: "unavailable", remainingPercent: null, resetsAt: "待读取" }];
+    const hover = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover", tab: "quota", pinned: false }, onOpen() {} }));
+    assert.match(hover, /data-scrollable="true"/);
+    assert.doesNotMatch(hover, /储备7d/);
+    const detail = renderToStaticMarkup(React.createElement(QuotaDetails, { data }));
+    assert.match(detail, /Luna 储备 · 7天.*暂不可用/s);
+  });
+});
 test("missing 5h is absent in bars, rings and detail; measured zero remains present", async () => {
   await withSsrModules(async load => {
     const { SidebarRailContent, QuotaDetails } = await load("/src/quota-sidebar/QuotaSidebarApp.tsx");

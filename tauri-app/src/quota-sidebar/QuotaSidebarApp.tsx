@@ -1,3 +1,4 @@
+import { QuotaAccountSelector } from "../components/QuotaAccountSelector";
 import { CacheUsageNotice } from "../components/liveRate/CacheUsageNotice";
 import { cacheAdviceTitle } from "../components/liveRate/cacheAdvicePresentation";
 import { useCacheUsageAdvice } from "../components/liveRate/useCacheUsageAdvice";
@@ -25,7 +26,7 @@ import { DEFAULT_TOKEN_RATE_FULL_SCALE, sanitizeRateFullScale, formatLiveRateVal
 import { sidebarRatePercent } from "./rateModel";
 import { createSidebarPublisher, sidebarVisualPercent } from "./presentation";
 import { createSidebarNativeCoordinator } from "./nativeCoordinator";
-import { monitorSidebarPresence } from "./presence";
+import { monitorSidebarPresence, monitorSidebarReminder, type SidebarPointerState } from "./presence";
 import {
   floatingModelUsageKnownCostUSD,
   floatingTodayModelUsageItems,
@@ -35,6 +36,7 @@ import {
 import { sidebarExpectedFraction } from "./meterFeedback";
 import { SidebarSummaryLayer } from "./SidebarSummaryLayer";
 import { SidebarRecommendations } from "./SidebarRecommendations";
+import { quotaWindowDisplayLabel, quotaWindowShortLabel } from "../utils/quota";
 
 import { prepareResetCreditsForDisplay } from "../components/quota/resetCredits";
 import type { SidebarSection } from "./model";
@@ -111,13 +113,18 @@ function RailSurface() {
   );
   const dragSession = useRef<ReturnType<typeof createSidebarDragSession> | null>(null);
   const [dragging, setDragging] = useState(false);
-  const { warning: cacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice,
+  const { warning: cacheWarning, dismiss: dismissCacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice,
     display.quotaSidebarEnabled && display.liveRateEnabled && data.snapshot.liveRateAvailable === true);
   useSidebarCacheAdvice(cacheWarning, dispatch, dragging);
+  const reminderPointer = useRef({ id: "", entered: false });
   const leaveRevision = useRef(0);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelLeave = useCallback(() => { leaveRevision.current++; if (leaveTimer.current !== null) clearTimeout(leaveTimer.current); leaveTimer.current = null; }, []);
-  const enter = useCallback(() => { if (dragSession.current?.active) return; cancelLeave(); dispatch({ type: "enter" }); }, [cancelLeave]);
+  const enter = useCallback(() => {
+    if (dragSession.current?.active) return;
+    reminderPointer.current.entered = true;
+    cancelLeave(); dispatch({ type: "enter" });
+  }, [cancelLeave]);
   const leave = useCallback(() => {
     if (dragSession.current?.active) return;
     cancelLeave();
@@ -151,6 +158,17 @@ function RailSurface() {
       () => { cancelLeave(); dispatch({ type: "leave" }); },
     );
   }, [display.quotaSidebarEnabled, state.mode, state.pinned, state.cacheNoticeID, dragging, cancelLeave]);
+  const dismissReminder = useCallback(() => {
+    cancelLeave(); dismissCacheWarning(); dispatch({ type: "dismiss" });
+  }, [cancelLeave, dismissCacheWarning]);
+  useEffect(() => {
+    if (!display.quotaSidebarEnabled || !state.cacheNoticeID || state.mode === "rest" || state.pinned || dragging) return;
+    if (reminderPointer.current.id !== state.cacheNoticeID)
+      reminderPointer.current = { id: state.cacheNoticeID, entered: false };
+    return monitorSidebarReminder(
+      () => invoke<SidebarPointerState>("quota_sidebar_pointer_state"),
+      dismissReminder, undefined, () => reminderPointer.current.entered);
+  }, [display.quotaSidebarEnabled, state.cacheNoticeID, state.mode, state.pinned, dragging, dismissReminder]);
   const startDrag = (event: PointerEvent<HTMLElement>) => {
     if (event.button !== 0 || dragSession.current?.active || !isSidebarDragTarget(event.target as Element)) return;
     event.preventDefault(); cancelLeave();
@@ -222,11 +240,11 @@ function RailSurface() {
   useEffect(() => { publisher.current?.update(presentation, display.quotaSidebarEnabled && state.mode === "detail"); }, [presentation, display.quotaSidebarEnabled, state.mode]);
   if (!display.quotaSidebarEnabled) return null;
   return <main className={sidebarRailClassName(display.quotaSidebarSide, state.mode)} onPointerDown={startDrag} onPointerEnter={enter} onPointerLeave={leave} data-dragging={dragging} aria-label="额度侧栏">
-    <SidebarRailContent data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })} />
+    <SidebarRailContent data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error} onDismissReminder={dismissReminder} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })} />
   </main>;
 }
-export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh }: {
-  data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onPin?: () => void; onRefresh?: () => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
+export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh, onDismissReminder }: {
+  data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
 }) {
   const ratePercent = sidebarRatePercent(data.snapshot, liveRateEnabled, rateFullScale);
   const { warning: cacheWarning, dismiss: dismissCacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice, liveRateEnabled && data.snapshot.liveRateAvailable === true);
@@ -236,6 +254,8 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
   const showsFiveHour = hasFiveHourQuota(data.snapshot.fiveHourAvailability, data.snapshot.fiveHourRemainingPercent);
   const expectedFive = sidebarExpectedFraction(five, data.snapshot.fiveHourExpectedRemainingPercent, data.snapshot.quotaDataStale);
   const expectedSeven = sidebarExpectedFraction(seven, data.snapshot.sevenDayExpectedRemainingPercent, data.snapshot.quotaDataStale);
+  const reserveWindows = (data.quota?.quota?.reserveWindows ?? []).filter(window =>
+    window.availability === "measured" && typeof window.remainingPercent === "number" && Number.isFinite(window.remainingPercent));
   const models = useMemo(() => floatingTodayModelUsageItems(data.snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false }).filter(item => item.share > 0), [data.snapshot.todayModelBreakdowns]);
   const modelTitle = models.length ? `今日模型 Token 占比：${models.map(item => `${item.label} ${(item.share * 100).toFixed(1)}%`).join("，")}` : "今日模型占比待读取";
   const modelStrip = (vertical: boolean) => <div className={`qs-model-strip ${vertical ? "qs-model-strip-vertical" : ""}`} title={modelTitle} aria-label={modelTitle}>{models.map(item => <i key={item.key} style={{ flexGrow: item.share, background: item.color }} />)}</div>;
@@ -245,7 +265,28 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
       {cacheWarning && <span className="qs-cache-indicator" style={{ top: `calc(50% - ${showsFiveHour ? 114 : 87}px)` }} role="status" aria-label={`缓存命中偏低：${cacheAdviceTitle(cacheWarning)}`} title={`缓存命中偏低 · ${cacheAdviceTitle(cacheWarning)}`} />}
       <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ transform: `scaleY(${(ratePercent ?? 0) / 100})`, background: "#78b7ff" }} /></span>
       {showsFiveHour && <Bar percent={five} color="#b6ef75" expected={expectedFive} />}<Bar percent={seven} color="#b4acff" expected={expectedSeven} />{modelStrip(true)}
-    </div><SidebarSummaryLayer visible={state.mode !== "rest"}>{() => {
+    </div><SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning}>{() => {
+      if (cacheWarning) return <section className="qs-cache-notice" aria-label="缓存命中提醒">
+        <div className="qs-cache-heading">
+          <span className="qs-cache-symbol" aria-hidden="true">!</span>
+          <strong>缓存命中<br />偏低</strong>
+        </div>
+        <div className="qs-cache-metric" role="status">
+          <span className="qs-cache-rate">{(cacheWarning.hitRate * 100).toFixed(1)}<small>%</small></span>
+          <span>本次请求</span>
+        </div>
+        <div className="qs-cache-body" onPointerDown={event => event.stopPropagation()} tabIndex={0} aria-label="会话标题与提醒说明">
+          <span className="qs-cache-label">相关会话</span>
+          <p className="qs-cache-title" title={cacheAdviceTitle(cacheWarning)}>{cacheAdviceTitle(cacheWarning)}</p>
+          {(cacheWarning.affectedThreads ?? 0) > 1 && <p className="qs-cache-count">等 {cacheWarning.affectedThreads} 个会话</p>}
+          <p className="qs-cache-explanation">本次请求的缓存复用较少。可能与切换模型或上下文变化有关，请检查最近的相关操作。</p>
+        </div>
+        <div className="qs-cache-actions">
+          <button type="button" className="qs-cache-open" onClick={() => onOpen("quota", "usage")} aria-label={"查看缓存命中详情，" + cacheAdviceTitle(cacheWarning)}>查看详情 <span aria-hidden="true">›</span></button>
+          <button type="button" className="qs-cache-dismiss" onClick={() => { dismissCacheWarning(); onDismissReminder?.(); }} aria-label="关闭本次缓存提醒" title="关闭本次提醒；点击侧栏外也可收起"><span aria-hidden="true">×</span> 关闭提醒</button>
+          <span className="qs-cache-hint">点击外部<br />也可收起</span>
+        </div>
+      </section>;
       const nearestCredit = prepareResetCreditsForDisplay(data.quota?.quota?.resetCredit?.credits ?? []).find(item => item.isCountdownEligible)?.credit;
       return <>
       <div className="qs-rail-actions">
@@ -253,15 +294,16 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
         <button aria-label="刷新数据" title="刷新数据" onClick={onRefresh}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg></button>
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
-      {cacheWarning ? <div className="qs-cache-notice" role="status">
-        <button className="qs-cache-open" onClick={() => onOpen("quota", "usage")} title={`${cacheAdviceTitle(cacheWarning)} · 会话 ID：${cacheWarning.threadId}`} aria-label={`缓存命中偏低，${cacheAdviceTitle(cacheWarning)}，点击查看详情`}>
-          <strong>缓存命中偏低</strong><span className="qs-cache-title">{cacheAdviceTitle(cacheWarning)}</span>
-          <span className="qs-cache-rate">{(cacheWarning.hitRate * 100).toFixed(1)}%{(cacheWarning.affectedThreads ?? 0) > 1 && <small> · {cacheWarning.affectedThreads} 会话</small>}</span>
-        </button>
-        <button className="qs-cache-dismiss" onClick={dismissCacheWarning} aria-label="收起本次缓存提醒">收起</button>
-      </div> : <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>}
+      <QuotaAccountSelector compact />
+      <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
       {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
       <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>
+      {reserveWindows.map(window => {
+        const percent = sidebarVisualPercent(quotaPercent(window.availability, window.remainingPercent));
+        return <button key={window.label} className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label={`查看${quotaWindowDisplayLabel(window.label)}额度详情`}>
+          <Ring label={quotaWindowShortLabel(window.label)} percent={percent} color="#78b7ff" reset={sidebarRingResetTime(window.resetsAt, window.resetsAtUnix)} /><Value value={quotaText(percent)} />
+        </button>;
+      })}
       <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}>{modelStrip(false)}<span>模型占比</span></button>
       <div className="qs-divider" />
       <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><span className="qs-task-ring"><Value value={String(data.runningThreads.total ?? "—")} /></span><span>{data.runningThreads.status === "ready" ? `${data.runningThreads.mainThreads ?? "—"} 主 · ${data.runningThreads.subagents ?? "—"} 子` : data.runningThreads.status === "stale" ? "运行·过期" : "运行·未知"}</span></button>
@@ -370,12 +412,13 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
     {snapshot.liveRateAvailable && <CacheUsageNotice advice={snapshot.cacheAdvice} />}
     {snapshot.quotaDataStale && <p className="qs-warning">额度已过期 · 显示上次成功读取的结果</p>}
     <div className="qs-quota-group" id="qs-section-top">
-      {([ ["5 小时额度", quota.quota.fiveHour, "#b6ef75"], ["7 天额度", quota.quota.sevenDay, "#b4acff"] ] as const)
+      {([ ["5 小时额度", quota.quota.fiveHour, "#b6ef75"], ["7 天额度", quota.quota.sevenDay, "#b4acff"],
+        ...(quota.quota.reserveWindows ?? []).map(window => [quotaWindowDisplayLabel(window.label), window, "#78b7ff"] as const) ] as const)
         .filter(([label, limit]) => label !== "5 小时额度" || hasFiveHourQuota(limit.availability, limit.remainingPercent))
         .map(([label, limit, color]) => {
           const percent = quotaPercent(limit.availability, limit.remainingPercent);
-          const expected = sidebarExpectedFraction(percent, label === "5 小时额度" ? snapshot.fiveHourExpectedRemainingPercent : snapshot.sevenDayExpectedRemainingPercent, snapshot.quotaDataStale);
-          return <section className="qs-limit" key={label} id={`qs-section-${label === "5 小时额度" ? "five" : "seven"}`}>
+          const expected = sidebarExpectedFraction(percent, label === "5 小时额度" ? snapshot.fiveHourExpectedRemainingPercent : label === "7 天额度" ? snapshot.sevenDayExpectedRemainingPercent : null, snapshot.quotaDataStale);
+          return <section className="qs-limit" key={label} id={`qs-section-${label === "5 小时额度" ? "five" : label === "7 天额度" ? "seven" : limit.label.replaceAll(" ", "-")}`}>
             <div><span><i style={{ background: color }} />{label}</span><strong>{quotaText(percent)}<small> 剩余</small></strong></div>
             <div className="qs-detail-quota-meter">
               <progress max={100} value={percent ?? 0} style={{ "--qs-accent": color } as CSSProperties} />

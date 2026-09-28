@@ -166,13 +166,30 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 
 .qs-rail-actions{display:flex;justify-content:center;gap:4px;flex-shrink:0;height:24px}.qs-rail-actions button{display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:5px;background:transparent;color:#929c8c}.qs-rail-actions button:hover{background:#ffffff12;color:#edf1e9}.qs-rail-actions button[aria-pressed=true]{color:#b6ef75}
 
-/* Cache warnings occupy the rate slot so quota rings and native clipping stay stable. */
+/* Cache warnings own the whole second level; normal summary returns on dismissal. */
 .qs-bars{position:relative}
 .qs-cache-indicator{position:absolute;left:5px;width:6px;height:6px;border-radius:50%;background:#efc077;box-shadow:0 0 5px #efc07788;pointer-events:none}
-.qs-summary>.qs-cache-notice{width:80px;height:80px;min-height:80px;flex-shrink:0;padding:4px;display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:2px;border-radius:9px;background:#efc07714;color:#efc077;text-align:center}
-.qs-cache-notice button{border:0;background:transparent;color:inherit;padding:0;min-width:0}
-.qs-cache-open{display:flex;flex-direction:column;align-items:stretch;gap:2px}
-.qs-cache-open strong{font-size:10px;line-height:12px;font-weight:600}
-.qs-cache-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;font-size:9px;line-height:11px;color:#d8ddcf}
-.qs-cache-rate{font-size:11px;line-height:13px;font-variant-numeric:tabular-nums}.qs-cache-rate small{font-size:8px}
-.quota-sidebar-document .qs-cache-dismiss{font-size:9px;line-height:12px;color:#b4ad9c}.qs-cache-dismiss:hover{color:#efc077}
+.quota-sidebar-document .qs-summary[data-reminder=true]{height:calc(var(--qs-native-height,100vh) - 32px);max-height:calc(var(--qs-native-height,100vh) - 32px);padding:0 4px;overflow:hidden;gap:0}
+.qs-summary>.qs-cache-notice{width:100%;height:100%;min-height:0;padding:12px 4px;display:flex;flex-direction:column;align-items:stretch;gap:12px;border-radius:12px;background:#efc0770c;color:#efc077;text-align:center}
+.qs-cache-heading,.qs-cache-metric,.qs-cache-actions{display:flex;flex-direction:column;align-items:center;flex-shrink:0}
+.qs-cache-heading{gap:7px}.qs-cache-symbol{display:grid;place-items:center;width:23px;height:23px;border:1.5px solid #efc077;border-radius:50%;font-size:16px;font-weight:700}
+.qs-cache-heading strong{font-size:13px;line-height:17px;font-weight:650}
+.qs-cache-metric{gap:3px}.qs-cache-rate{font-size:25px;line-height:30px;font-weight:600;letter-spacing:-1px;font-variant-numeric:tabular-nums}.qs-cache-rate small{font-size:14px;letter-spacing:0}.qs-cache-metric>span:last-child{font-size:10px;color:#a4aa9e}
+.qs-cache-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;text-align:left;overflow-wrap:anywhere;touch-action:pan-y;padding:2px 0}
+.qs-cache-body:focus-visible{outline:1px solid #efc07788;outline-offset:-1px}
+.qs-cache-label{font-size:10px;color:#c6a269}.qs-cache-title{display:block;margin:6px 0 0;font-size:12px;line-height:18px;font-weight:500;color:#eff0e9;overflow-wrap:anywhere}
+.qs-cache-count{font-size:10px;line-height:15px;color:#a4aa9e;margin:5px 0 0}
+.qs-cache-explanation{border-top:1px solid #efc07733;padding-top:10px;margin:12px 0 0;font-size:11px;line-height:17px;color:#c2c8ba}
+.qs-cache-actions{gap:6px;align-items:stretch}.qs-cache-notice button{min-width:0;cursor:pointer}
+.quota-sidebar-document .qs-cache-open{min-height:24px;padding:2px 0;border:0;background:transparent;color:#dfba83;font-size:10px;line-height:16px}
+.quota-sidebar-document .qs-cache-open:hover{color:#fff0d6}.qs-cache-open:focus-visible{outline:1px solid #ffe4b8;outline-offset:-1px;border-radius:4px}
+.qs-cache-hint{font-size:9px;line-height:13px;color:#919a89}
+
+/* Keep all returned Reserve windows reachable within the existing native clip. */
+.quota-sidebar-document .qs-summary[data-scrollable=true]{height:calc(var(--qs-native-height,100vh) - 24px);max-height:calc(var(--qs-native-height,100vh) - 24px);justify-content:flex-start;overflow-y:auto;overscroll-behavior:contain;padding:8px 0}
+.quota-sidebar-document .qs-cache-dismiss{min-height:32px;margin-top:0;padding:5px 2px;border:1px solid #efc07788;border-radius:5px;background:#efc07729;color:#ffdda7;font-size:10px;line-height:16px;font-weight:650;cursor:pointer}.quota-sidebar-document .qs-cache-dismiss:hover{background:#efc07740;color:#fff0d6}.quota-sidebar-document .qs-cache-dismiss:focus-visible{outline:2px solid #ffe4b8;outline-offset:2px}
+
+.qs-rail .quota-account-compact { width: 66px; margin: 0 auto 4px; }
+.qs-rail .quota-account-compact label { display: flex; flex-direction: column; gap: 3px; font-size: 9px; text-align: center; }
+.qs-rail .quota-account-compact select { width: 66px; font-size: 9px; color: #dce6f5; background: #262d36; border: 1px solid #ffffff26; border-radius: 5px; padding: 3px 0; }
+.qs-rail .quota-account-error { font-size: 9px; color: #ffb0b0; overflow-wrap: anywhere; }

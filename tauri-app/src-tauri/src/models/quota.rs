@@ -46,6 +46,9 @@ pub struct QuotaAttributionIdentity {
 pub struct QuotaSnapshot {
     pub five_hour: QuotaLimit,
     pub seven_day: QuotaLimit,
+    /// Server-returned Reserve windows. No opt-in, ordinary quota substitution, or fallback.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reserve_windows: Vec<QuotaLimit>,
     pub reset_credit: ResetCreditSummary,
     pub pace_label: String,
 }
