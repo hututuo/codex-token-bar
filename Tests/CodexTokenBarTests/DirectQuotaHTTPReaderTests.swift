@@ -3,6 +3,36 @@ import XCTest
 @testable import CodexTokenBar
 
 final class DirectQuotaHTTPReaderTests: XCTestCase {
+    func testRemovalFailurePreservesManifestAndCredential() throws {
+        enum Failure: Error { case delete, commit, restore }
+        var hasCredential = true
+        var listed = true
+        XCTAssertThrowsError(try QuotaAccountRegistry.finishRemoval(
+            delete: { throw Failure.delete },
+            commit: { listed = false },
+            restore: { XCTFail("No rollback is needed when deletion fails") }))
+        XCTAssertTrue(hasCredential)
+        XCTAssertTrue(listed)
+        XCTAssertThrowsError(try QuotaAccountRegistry.finishRemoval(
+            delete: { hasCredential = false },
+            commit: { throw Failure.commit },
+            restore: { hasCredential = true }))
+        XCTAssertTrue(hasCredential)
+        XCTAssertTrue(listed)
+        try QuotaAccountRegistry.finishRemoval(
+            delete: { hasCredential = false },
+            commit: { listed = false },
+            restore: { XCTFail("Successful removal must not restore a credential") })
+        XCTAssertFalse(hasCredential)
+        XCTAssertFalse(listed)
+        XCTAssertThrowsError(try QuotaAccountRegistry.finishRemoval(
+            delete: {}, commit: { throw Failure.commit }, restore: { throw Failure.restore })) { error in
+            guard case DirectQuotaError.removalRecovery = error else {
+                return XCTFail("Restoration failure must be surfaced explicitly")
+            }
+        }
+    }
+
     private func auth(account: String = "account-1", user: String = "user-1", signature: String = "one", explicit: String? = nil) throws -> Data {
         let claims: [String: Any] = ["https://api.openai.com/auth": ["chatgpt_account_id": account, "chatgpt_user_id": user], "https://api.openai.com/profile": ["email": "same@example.invalid"]]
         let payload = try JSONSerialization.data(withJSONObject: claims).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")

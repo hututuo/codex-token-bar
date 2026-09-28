@@ -73,7 +73,7 @@ struct QuotaAccountCredential: Codable, Sendable {
 }
 
 enum DirectQuotaError: LocalizedError {
-    case credentials, identityChanged, http(Int), response, vault
+    case credentials, identityChanged, http(Int), response, vault, removalRecovery
     var errorDescription: String? {
         switch self {
         case .credentials: "未找到有效的 ChatGPT 登录凭据；请添加或更新额度账号。普通 API Key 不支持订阅额度查询。"
@@ -83,6 +83,7 @@ enum DirectQuotaError: LocalizedError {
             : "额度接口返回 HTTP \(status)"
         case .response: "额度接口响应格式异常"
         case .vault: "无法访问系统安全凭据存储"
+        case .removalRecovery: "额度账号移除未完成，且凭据恢复失败；请重新导入账号后重试。"
         }
     }
 }

@@ -116,11 +116,45 @@ enum QuotaAccountRegistry {
     }
 
     static func remove(_ id: String) throws {
-        try mutate { state in
+        try withRegistryLock {
+            var state = try state()
+            guard state.accounts.contains(where: { $0.id == id }) else { throw DirectQuotaError.credentials }
+            let previous = try optionalSecret(service: service, id: id)
             state.accounts.removeAll { $0.id == id }
             if state.selectedID == id { state.selectedID = nil }
-            SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: id] as CFDictionary)
+            state.revision += 1
+            try finishRemoval(delete: {
+                let status = SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service,
+                    kSecAttrAccount: id, kSecUseAuthenticationUI: kSecUseAuthenticationUIFail] as CFDictionary)
+                guard status == errSecSuccess || status == errSecItemNotFound else { throw DirectQuotaError.vault }
+            }, commit: {
+                try persist(state)
+            }, restore: {
+                if let previous { try writeSecret(id: id, data: previous) }
+            })
+            NotificationCenter.default.post(name: changed, object: nil)
         }
+    }
+
+    /// A failed manifest commit must not leave a listed account without its saved credential.
+    static func finishRemoval(delete: () throws -> Void, commit: () throws -> Void, restore: () throws -> Void) throws {
+        try delete()
+        do { try commit() } catch {
+            let commitError = error
+            do { try restore() } catch { throw DirectQuotaError.removalRecovery }
+            throw commitError
+        }
+    }
+
+    private static func persist(_ state: QuotaAccountRegistryState) throws {
+        let temporary = root.appendingPathComponent("quota-accounts-\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try JSONEncoder().encode(state).write(to: temporary, options: .withoutOverwriting)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+        let file = try FileHandle(forWritingTo: temporary)
+        defer { try? file.close() }
+        try file.synchronize()
+        guard rename(temporary.path, manifest.path) == 0 else { throw DirectQuotaError.vault }
     }
 
     private static func mutate(_ body: (inout QuotaAccountRegistryState) throws -> Void) throws {
@@ -128,8 +162,7 @@ enum QuotaAccountRegistry {
             var state = try state()
             try body(&state)
             state.revision += 1
-            try JSONEncoder().encode(state).write(to: manifest, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+            try persist(state)
             NotificationCenter.default.post(name: changed, object: nil)
         }
     }
@@ -169,12 +202,18 @@ enum QuotaAccountRegistry {
     }
 
     private static func secret(service: String, id: String) throws -> Data {
+        guard let data = try optionalSecret(service: service, id: id) else { throw DirectQuotaError.vault }
+        return data
+    }
+
+    private static func optionalSecret(service: String, id: String) throws -> Data? {
         let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service,
             kSecAttrAccount: id, kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne,
             kSecUseAuthenticationUI: kSecUseAuthenticationUIFail]
         var value: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &value) == errSecSuccess,
-              let data = value as? Data else { throw DirectQuotaError.vault }
+        let status = SecItemCopyMatching(query as CFDictionary, &value)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = value as? Data else { throw DirectQuotaError.vault }
         return data
     }
 

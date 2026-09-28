@@ -61,7 +61,7 @@ test("A to B to A discards late quota and reset responses from the first A", asy
   const window = new Window({ url: "http://localhost/" });
   const restore = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  let selection = { revision: 0, selectedId: null, accounts: [{ id: "a", label: "A" }, { id: "b", label: "B" }] };
+  let selection = { revision: 7, selectedId: "a", accounts: [{ id: "a", label: "A" }, { id: "b", label: "B" }] };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
   window.__TAURI_INTERNALS__ = {
     transformCallback: () => 1, unregisterCallback: () => {},
@@ -75,9 +75,7 @@ test("A to B to A discards late quota and reset responses from the first A", asy
     const React = await import("react");
     const { createRoot } = await import("react-dom/client");
     await withSsrModules(async load => {
-      const { useCompactPanelQuota } = await load("/src/surfaces/useCompactPanelQuota.ts");
-      const { emptyAccountQuotaBundle } = await load("/src/api/fallback/quotaFallback.ts");
-      const { changeQuotaAccount } = await load("/src/quotaAccounts.ts");
+      const { useCompactPanelQuota, emptyAccountQuotaBundle, changeQuotaAccount } = await load("/src/test/quotaAccountHarness.ts");
       const pendingQuota = [], pendingReset = [];
       const readQuota = () => { const d = deferred(); pendingQuota.push(d); return d.promise; };
       const readReset = () => { const d = deferred(); pendingReset.push(d); return d.promise; };
@@ -92,9 +90,17 @@ test("A to B to A discards late quota and reset responses from the first A", asy
       const settle = async () => { for (let i=0;i<5;i++) await React.act(tick); };
       try {
         await React.act(async () => root.render(React.createElement(Probe))); await settle();
+        const initial = emptyAccountQuotaBundle(); initial.account.displayName = "saved-A";
+        await React.act(async () => pendingQuota.at(-1).resolve(initial));
+        await settle(); assert.equal(latest.account.displayName, "saved-A");
         await React.act(async () => changeQuotaAccount("select_quota_account", { id: "a" })); await settle();
         const oldQuota = pendingQuota.at(-1), oldReset = pendingReset.at(-1);
         await React.act(async () => changeQuotaAccount("select_quota_account", { id: "b" })); await settle();
+        assert.notEqual(pendingQuota.at(-1), oldQuota, "B must issue a new request");
+        assert.notEqual(latest.account.displayName, "saved-A", "Switching must clear A immediately");
+        const selectedB = emptyAccountQuotaBundle(); selectedB.account.displayName = "new-B";
+        await React.act(async () => pendingQuota.at(-1).resolve(selectedB));
+        await settle(); assert.equal(latest.account.displayName, "new-B");
         await React.act(async () => changeQuotaAccount("select_quota_account", { id: "a" })); await settle();
         const fresh = emptyAccountQuotaBundle(); fresh.account.displayName = "new-A";
         await React.act(async () => { pendingQuota.at(-1).resolve(fresh); pendingReset.at(-1).resolve({ successful: true, updatedAt: fresh.updatedAt, resetCredit: { availableCount: 2, status: "new-A", credits: [] }, warnings: [], diagnostics: [] }); });

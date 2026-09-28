@@ -121,6 +121,43 @@ fn write_secret(credential: &Credential) -> Result<(), String> {
 #[cfg(not(any(target_os="macos", target_os="windows")))]
 fn write_secret(_: &Credential) -> Result<(), String> { Err("此平台尚未支持保存额度账号".into()) }
 
+#[cfg(target_os="macos")]
+fn read_saved_secret(id: &str) -> Result<Option<Vec<u8>>, String> {
+    let entry = keyring::Entry::new(SERVICE, id).map_err(|_| "无法访问系统安全凭据存储")?;
+    match entry.get_secret() {
+        Ok(data) => Ok(Some(data)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("无法访问系统安全凭据存储".into()),
+    }
+}
+#[cfg(target_os="windows")]
+fn read_saved_secret(id: &str) -> Result<Option<Vec<u8>>, String> { windows_vault::read_optional(id) }
+#[cfg(not(any(target_os="macos", target_os="windows")))]
+fn read_saved_secret(_: &str) -> Result<Option<Vec<u8>>, String> { Ok(None) }
+
+#[cfg(target_os="macos")]
+fn delete_saved_secret(id: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(SERVICE, id).map_err(|_| "无法访问系统安全凭据存储")?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err("无法移除系统安全凭据".into()),
+    }
+}
+#[cfg(target_os="windows")]
+fn delete_saved_secret(id: &str) -> Result<(), String> { windows_vault::remove(id) }
+#[cfg(not(any(target_os="macos", target_os="windows")))]
+fn delete_saved_secret(_: &str) -> Result<(), String> { Ok(()) }
+
+#[cfg(target_os="macos")]
+fn restore_saved_secret(id: &str, data: &[u8]) -> Result<(), String> {
+    keyring::Entry::new(SERVICE, id).and_then(|entry| entry.set_secret(data))
+        .map_err(|_| "无法恢复系统安全凭据".into())
+}
+#[cfg(target_os="windows")]
+fn restore_saved_secret(id: &str, data: &[u8]) -> Result<(), String> { windows_vault::write(id, data) }
+#[cfg(not(any(target_os="macos", target_os="windows")))]
+fn restore_saved_secret(_: &str, _: &[u8]) -> Result<(), String> { Err("此平台尚未支持保存额度账号".into()) }
+
 fn update_secret_if_changed(credential: &Credential) -> Result<(), String> {
     if read_secret(SERVICE, &credential.id()).ok()
         .and_then(|data| serde_json::from_slice::<Credential>(&data).ok())
@@ -177,26 +214,56 @@ fn with_registry_lock<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, 
     body()
 }
 
+fn persist_registry(root: &Path, state: &Registry) -> Result<(), String> {
+    let temp = root.join(format!("quota-accounts-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut options = fs::OpenOptions::new(); options.create_new(true).write(true);
+        #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+        let mut file = options.open(&temp).map_err(|_| "无法保存账号设置")?;
+        file.write_all(&serde_json::to_vec(state).map_err(|_| "账号设置编码失败")?).map_err(|_| "无法保存账号设置")?;
+        file.sync_all().map_err(|_| "无法持久化账号设置")?;
+        drop(file);
+        fs::rename(&temp, root.join("quota-accounts.json")).map_err(|_| "无法提交账号设置")?;
+        Ok::<_, String>(())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temp); }
+    result
+}
+
 fn mutate(body: impl FnOnce(&mut Registry) -> Result<(), String>) -> Result<Registry, String> {
     with_registry_lock(|| {
     let root = root()?;
     let mut state = registry()?;
     body(&mut state)?;
     state.revision = state.revision.saturating_add(1);
-    let temp = root.join(format!("quota-accounts-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut options = fs::OpenOptions::new(); options.create_new(true).write(true);
-        #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
-        let mut file = options.open(&temp).map_err(|_| "无法保存账号设置")?;
-        file.write_all(&serde_json::to_vec(&state).map_err(|_| "账号设置编码失败")?).map_err(|_| "无法保存账号设置")?;
-        file.sync_all().map_err(|_| "无法持久化账号设置")?;
-        drop(file);
-        fs::rename(&temp, root.join("quota-accounts.json")).map_err(|_| "无法提交账号设置")?;
-        Ok::<_, String>(state)
-    })();
-    if result.is_err() { let _ = fs::remove_file(&temp); }
-    result
+    persist_registry(&root, &state)?;
+    Ok(state)
     })
+}
+
+fn remove_transaction(
+    mut state: Registry,
+    id: &str,
+    read_secret: impl FnOnce(&str) -> Result<Option<Vec<u8>>, String>,
+    delete_secret: impl FnOnce(&str) -> Result<(), String>,
+    persist: impl FnOnce(&Registry) -> Result<(), String>,
+    restore_secret: impl FnOnce(&str, &[u8]) -> Result<(), String>,
+) -> Result<Registry, String> {
+    if !state.accounts.iter().any(|account| account.id == id) { return Err("额度账号不存在".into()); }
+    let previous_secret = read_secret(id)?;
+    delete_secret(id)?;
+    state.accounts.retain(|account| account.id != id);
+    if state.selected_id.as_deref() == Some(id) { state.selected_id = None; }
+    state.revision = state.revision.saturating_add(1);
+    if let Err(persist_error) = persist(&state) {
+        if let Some(secret) = previous_secret {
+            if let Err(restore_error) = restore_secret(id, &secret) {
+                return Err(format!("{persist_error}；恢复已保存凭据失败：{restore_error}"));
+            }
+        }
+        return Err(persist_error);
+    }
+    Ok(state)
 }
 
 pub fn save_current(home: &Path) -> Result<Registry, String> {
@@ -222,15 +289,17 @@ pub fn select(id: Option<String>) -> Result<Registry, String> {
     })
 }
 pub fn remove(id: &str) -> Result<Registry, String> {
-    mutate(|state| {
-        if !state.accounts.iter().any(|a| a.id == id) { return Err("额度账号不存在".into()); }
-        state.accounts.retain(|a| a.id != id);
-        if state.selected_id.as_deref() == Some(id) { state.selected_id = None; }
-        #[cfg(target_os="windows")]
-        windows_vault::remove(id)?;
-        #[cfg(target_os="macos")]
-        if let Ok(entry) = keyring::Entry::new(SERVICE, id) { let _ = entry.delete_credential(); }
-        Ok(())
+    with_registry_lock(|| {
+        let root = root()?;
+        let state = registry()?;
+        remove_transaction(
+            state,
+            id,
+            read_saved_secret,
+            delete_saved_secret,
+            |state| persist_registry(&root, state),
+            restore_saved_secret,
+        )
     })
 }
 
@@ -270,6 +339,18 @@ mod windows_vault {
             result
         }
     }
+    pub(super) fn read_optional(id: &str) -> Result<Option<Vec<u8>>, String> {
+        use std::io::Read;
+        let file = match fs::File::open(path(id)?) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err("无法访问 Windows 安全凭据存储".into()),
+        };
+        let mut data = vec![];
+        file.take(MAX_BYTES + 1).read_to_end(&mut data).map_err(|_| "无法访问 Windows 安全凭据存储")?;
+        if data.len() as u64 > MAX_BYTES { return Err("Windows 凭据格式异常".into()); }
+        transform(&data, false).map(Some)
+    }
     pub(super) fn read(id: &str) -> Result<Vec<u8>, String> { transform(&limited_read(&path(id)?)?, false) }
     pub(super) fn write(id: &str, data: &[u8]) -> Result<(), String> {
         let path = path(id)?;
@@ -295,6 +376,7 @@ mod windows_vault {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::{Cell, RefCell}, rc::Rc};
     fn auth(account: &str, user: &str, signature: &str) -> Value {
         let claims = serde_json::json!({"https://api.openai.com/auth": {"chatgpt_account_id": account, "chatgpt_user_id": user}, "https://api.openai.com/profile": {"email": "same@example.invalid"}});
         let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
@@ -326,5 +408,90 @@ mod tests {
         let state = Registry { accounts: vec![AccountEntry { id: c.id(), label: c.label.clone(), source_path: None }], selected_id: Some(c.id()), ..Registry::default() };
         let serialized = serde_json::to_string(&state).unwrap();
         assert!(!serialized.contains(&c.access_token)); assert!(!serialized.contains("accessToken"));
+    }
+
+    fn removal_registry() -> Registry {
+        Registry {
+            version: 1,
+            revision: 7,
+            selected_id: Some("target".into()),
+            accounts: vec![
+                AccountEntry { id: "target".into(), label: "Target".into(), source_path: None },
+                AccountEntry { id: "other".into(), label: "Other".into(), source_path: None },
+            ],
+        }
+    }
+
+    #[test]
+    fn remove_transaction_succeeds() {
+        let persisted = RefCell::new(None);
+        let state = remove_transaction(
+            removal_registry(),
+            "target",
+            |_| Ok(Some(b"saved".to_vec())),
+            |_| Ok(()),
+            |state| { *persisted.borrow_mut() = Some(state.clone()); Ok(()) },
+            |_, _| -> Result<(), String> { panic!("successful persistence must not restore the credential") },
+        ).unwrap();
+        assert_eq!(state.revision, 8);
+        assert_eq!(state.selected_id, None);
+        assert_eq!(state.accounts.len(), 1);
+        assert_eq!(state.accounts[0].id, "other");
+        let persisted = persisted.into_inner().unwrap();
+        assert_eq!(persisted.revision, state.revision);
+        assert_eq!(persisted.accounts[0].id, "other");
+    }
+
+    #[test]
+    fn remove_delete_failure_leaves_manifest_unchanged() {
+        let manifest = Rc::new(RefCell::new(removal_registry()));
+        let original = manifest.borrow().clone();
+        let persist_called = Cell::new(false);
+        let error = remove_transaction(
+            original.clone(),
+            "target",
+            |_| Ok(Some(b"saved".to_vec())),
+            |_| Err("delete failed".into()),
+            |state| { persist_called.set(true); *manifest.borrow_mut() = state.clone(); Ok(()) },
+            |_, _| Ok(()),
+        ).err().unwrap();
+        assert_eq!(error, "delete failed");
+        assert!(!persist_called.get());
+        let manifest = manifest.borrow();
+        assert_eq!(manifest.revision, original.revision);
+        assert_eq!(manifest.selected_id, original.selected_id);
+        assert_eq!(manifest.accounts.len(), original.accounts.len());
+        assert_eq!(manifest.accounts[0].id, "target");
+    }
+
+    #[test]
+    fn remove_persist_failure_restores_credential() {
+        let secret = RefCell::new(Some(b"saved".to_vec()));
+        let error = remove_transaction(
+            removal_registry(),
+            "target",
+            |_| Ok(secret.borrow().clone()),
+            |_| { secret.borrow_mut().take(); Ok(()) },
+            |_| Err("persist failed".into()),
+            |_, data| { *secret.borrow_mut() = Some(data.to_vec()); Ok(()) },
+        ).err().unwrap();
+        assert_eq!(error, "persist failed");
+        assert_eq!(secret.into_inner(), Some(b"saved".to_vec()));
+    }
+
+    #[test]
+    fn remove_restore_failure_reports_both_errors() {
+        let secret = RefCell::new(Some(b"saved".to_vec()));
+        let error = remove_transaction(
+            removal_registry(),
+            "target",
+            |_| Ok(secret.borrow().clone()),
+            |_| { secret.borrow_mut().take(); Ok(()) },
+            |_| Err("persist failed".into()),
+            |_, _| Err("restore failed".into()),
+        ).err().unwrap();
+        assert!(error.contains("persist failed"));
+        assert!(error.contains("restore failed"));
+        assert_eq!(secret.into_inner(), None);
     }
 }

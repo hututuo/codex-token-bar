@@ -265,7 +265,7 @@ dashboardSubscriptions: DashboardQuotaSubscriptions = defaultDashboardSubscripti
       quotaRetryTimer.current = null;
       void refreshQuota(true);
     }, delayMs);
-  }, [active, enabled, followDashboardUpdates, readQuota, scheduleQuotaFailureNotice, sourceToken]);
+  }, [active, enabled, followDashboardUpdates, readQuota, scheduleQuotaFailureNotice, selectedQuotaKey, sourceToken]);
 
   const refreshResetCredits = useCallback(async function refreshResetCredits(forceRefresh = false) {
     const lifecycle = lifecycleRef.current;

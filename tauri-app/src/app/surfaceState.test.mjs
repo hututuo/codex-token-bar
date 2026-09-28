@@ -552,7 +552,8 @@ test("live rate updates do not force heavy analytics rerenders", async () => {
   assert.equal(analyticsSection.includes("DashboardAnalyticsSectionView"), true);
   assert.equal(dashboardData.includes("startTransition"), true);
   assert.equal(dashboardData.includes("mergePreciseDashboard(current, precise)"), true);
-  assert.equal(dashboardData.includes("mergeQuota(current, quota)"), true);
+  assert.match(dashboardData, /startTransition\(\(\) => \{\s*setState\(\(current\) =>[^;]+mergeQuota\(current,/);
+  assert.equal(dashboardData.includes("account: current.dashboard.account"), true);
 });
 
 test("dashboard records frontend commit cost for refresh payloads", async () => {

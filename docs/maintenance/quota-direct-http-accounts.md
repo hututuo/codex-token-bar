@@ -17,7 +17,7 @@ Status: included in the v0.9.3 release candidate. Implementation began on codex/
 
 - Current login can come from auth.json or Codex keyring/auto storage. Import supports Codex nested tokens and CPA flat credentials. Saved-account metadata contains opaque ID, label, source link, revision and selection only.
 - Saved access tokens use macOS Keychain. Windows uses current-user DPAPI encrypted files because OAuth JWTs can exceed Credential Manager's blob limit. Original Codex keyring reads retain Codex's service and home-hash lookup.
-- Fresh matching credentials are reread from the linked original file or current login. The newest expiry among matching candidates wins; a file rewritten for another account never replaces the saved identity. Removal and vault refresh share a registry lock.
+- Fresh matching credentials are reread from the linked original file or current login. The newest expiry among matching candidates wins; a file rewritten for another account never replaces the saved identity. Removal and vault refresh share a registry lock. Removal reports secure-store failures and restores the saved credential if the registry commit fails.
 - This version does not own an OAuth login/refresh-token flow. Refresh tokens are not copied or rotated. If an account's original source no longer refreshes and its saved access token expires, quota access requires login in the original client and add/update/import again. Saved accounts are not a promise of indefinite unattended access.
 - Redirects are refused; origin is fixed; request time and response size are bounded. Credential contents never enter the frontend, registry metadata, diagnostics or test logs.
 
