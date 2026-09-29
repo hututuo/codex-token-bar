@@ -716,7 +716,7 @@ fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, Strin
                 AccountQuotaBundle {
                     updated_at,
                     attribution_identity: None,
-        account: current_account_info(codex_home, plan_label.as_deref()),
+                    account: current_account_info(codex_home, plan_label.as_deref()),
                     quota,
                     quota_history_daily: Vec::new(),
                     quota_history_24h: Vec::new(),

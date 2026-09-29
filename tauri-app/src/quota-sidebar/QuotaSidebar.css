@@ -188,8 +188,3 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 /* Keep all returned Reserve windows reachable within the existing native clip. */
 .quota-sidebar-document .qs-summary[data-scrollable=true]{height:calc(var(--qs-native-height,100vh) - 24px);max-height:calc(var(--qs-native-height,100vh) - 24px);justify-content:flex-start;overflow-y:auto;overscroll-behavior:contain;padding:8px 0}
 .quota-sidebar-document .qs-cache-dismiss{min-height:32px;margin-top:0;padding:5px 2px;border:1px solid #efc07788;border-radius:5px;background:#efc07729;color:#ffdda7;font-size:10px;line-height:16px;font-weight:650;cursor:pointer}.quota-sidebar-document .qs-cache-dismiss:hover{background:#efc07740;color:#fff0d6}.quota-sidebar-document .qs-cache-dismiss:focus-visible{outline:2px solid #ffe4b8;outline-offset:2px}
-
-.qs-rail .quota-account-compact { width: 66px; margin: 0 auto 4px; }
-.qs-rail .quota-account-compact label { display: flex; flex-direction: column; gap: 3px; font-size: 9px; text-align: center; }
-.qs-rail .quota-account-compact select { width: 66px; font-size: 9px; color: #dce6f5; background: #262d36; border: 1px solid #ffffff26; border-radius: 5px; padding: 3px 0; }
-.qs-rail .quota-account-error { font-size: 9px; color: #ffb0b0; overflow-wrap: anywhere; }

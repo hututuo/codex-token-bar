@@ -73,7 +73,7 @@ test("live sidebar alerts expand, show titles, open details and share dismissal 
         const summary = window.document.querySelector(".qs-summary");
         assert.equal(summary.getAttribute("data-reminder"), "true");
         assert.equal(summary.getAttribute("data-scrollable"), "false");
-        for (const selector of [".qs-rail-actions", ".quota-account-compact", ".qs-rate-trigger", ".qs-quota-trigger", ".qs-model-trigger", ".qs-running-trigger", ".qs-recommendations", ".qs-window-status"])
+        for (const selector of [".qs-rail-actions", ".qs-rate-trigger", ".qs-quota-trigger", ".qs-model-trigger", ".qs-running-trigger", ".qs-recommendations", ".qs-window-status"])
           assert.equal(summary.querySelector(selector), null, selector + " must yield the whole panel to the warning");
         assert.doesNotMatch(summary.textContent, /不代表|免责声明/);
         assert.match(summary.textContent, /可能与切换模型或上下文变化有关/);

@@ -268,7 +268,7 @@ The Radar feed refreshes every 10 minutes by default. The dashboard credits the 
 
 ## Feature: Reset Credit Details
 
-Codex Token Bar uses the selected ChatGPT login to read the official account endpoint directly and turns reset credits into a readable detail view. You can see how many reset credits are available, why each one was granted, who it is linked to, the exact expiry date, remaining time, and card ID.
+Codex Token Bar uses the current Codex login for the selected Codex Home to read the official account endpoint directly and turns reset credits into a readable detail view. You can see how many reset credits are available, why each one was granted, who it is linked to, the exact expiry date, remaining time, and card ID.
 
 This feature is read-only: the app displays the information but never calls the endpoint that consumes a reset credit, and it does not upload quota data or conversation content.
 
