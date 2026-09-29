@@ -1,4 +1,3 @@
-import { QuotaAccountSelector } from "../components/QuotaAccountSelector";
 import { CacheUsageNotice } from "../components/liveRate/CacheUsageNotice";
 import { cacheAdviceTitle } from "../components/liveRate/cacheAdvicePresentation";
 import { useCacheUsageAdvice } from "../components/liveRate/useCacheUsageAdvice";
@@ -294,7 +293,6 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
         <button aria-label="刷新数据" title="刷新数据" onClick={onRefresh}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg></button>
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
-      <QuotaAccountSelector compact />
       <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
       {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
       <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>

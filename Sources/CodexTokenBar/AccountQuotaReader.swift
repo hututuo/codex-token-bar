@@ -7,13 +7,6 @@ struct LiveAccountQuotaReader: QuotaReading {
     }
 }
 
-/// Automation remains tied to the current local login.
-struct CurrentAccountQuotaReader: QuotaReading {
-    func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
-        await DirectQuotaHTTPReader.read(dataSource: dataSource, currentOnly: true)
-    }
-}
-
 protocol AccountQuotaResetCreditReading: Sendable {
     func readResetCredits(
         dataSource: CodexDataSource?
@@ -1374,8 +1367,8 @@ enum AccountQuotaReader {
     ) async -> Result<AccountQuotaResetCreditSnapshot, AccountQuotaDiagnostic> {
         let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readResetCredits")
         trace?.mark("readAccessToken.begin")
-        let selectionKey = QuotaAccountRegistry.selectionKey(home: dataSource?.codexHome)
-        guard let credential = try? QuotaAccountRegistry.credential(home: dataSource?.codexHome) else {
+        let selectionKey = (try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable"
+        guard let credential = try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome) else {
             let underlying = AccountQuotaDiagnostic(
                 source: .resetCredit,
                 category: .authMissing,
@@ -1393,7 +1386,8 @@ enum AccountQuotaReader {
         do {
             trace?.mark("http.begin")
             let data = try await DirectQuotaHTTPReader.fetch(credential: credential, resetCredits: true)
-            guard selectionKey == QuotaAccountRegistry.selectionKey(home: dataSource?.codexHome) else {
+            let currentKey = (try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable"
+            guard selectionKey == currentKey else {
                 throw DirectQuotaError.identityChanged
             }
             trace?.mark("http.end", metadata: ["bytes": String(data.count)])

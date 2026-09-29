@@ -300,7 +300,7 @@ test("QuotaStrip releases cadence space when no save handler is provided", async
     const html = renderComponent(QuotaStrip, { snapshot: quotaSnapshot, warnings: [] });
 
     assert.match(html, /class="quota-side-card quota-pace quota-pace--without-cadence"/);
-    assert.doesNotMatch(html, /class="quota-refresh-cadence"/);
+    assert.doesNotMatch(html, /class="quota-refresh-cadence"|<select/);
   });
 });
 

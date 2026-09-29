@@ -160,10 +160,6 @@ struct AccountQuotaStrip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                QuotaAccountMenu()
-                Text("官方直连 · 本地 token 独立统计").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
             HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
                 AccountQuotaAccountLabel(
                     presentation: presentation.accountLabel,

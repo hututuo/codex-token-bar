@@ -1,4 +1,3 @@
-import { useQuotaAccounts, quotaAccountKey } from "../quotaAccounts";
 import { useCallback, useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { AccountQuotaBundle, CodexHomeSourceToken } from "../types/dashboard";
@@ -56,14 +55,12 @@ export function useDeferredQuotaLoad({
   const forceQuotaRefreshRef = useRef(forceQuotaRefresh);
   onQuotaRef.current = onQuota;
   forceQuotaRefreshRef.current = forceQuotaRefresh;
-  const { key: selectedQuotaKey } = useQuotaAccounts();
   const sourceKey = sourceToken === null
     ? null
     : [
         sourceToken.canonicalHomeKey,
         sourceToken.physicalHomeKey,
         sourceToken.transitionGeneration,
-        selectedQuotaKey,
       ].join("\u0000");
 
   const quotaLifecycleRef = useRef({ active, dashboardReady, sourceKey });
@@ -89,7 +86,6 @@ export function useDeferredQuotaLoad({
         !quotaNoticeMounted.current
         || !lifecycle.active
         || !lifecycle.dashboardReady
-        || quotaAccountKey() !== selectedQuotaKey
         || lifecycle.sourceKey !== expectedSourceKey
         || startedAt === null
         || latest === null
@@ -167,7 +163,7 @@ export function useDeferredQuotaLoad({
       let succeeded = false;
       try {
         const quota = await source.readAccountQuota(requestSourceToken, forceRefresh);
-        if (!cancelled && quotaAccountKey() === selectedQuotaKey && quota !== null) {
+        if (!cancelled && quota !== null) {
           succeeded = !quota.diagnostics.some((diagnostic) => (
             diagnostic.source === "account_quota"
           ));
@@ -206,7 +202,7 @@ export function useDeferredQuotaLoad({
         onLoadEnd?.();
       }
 
-      if (cancelled || quotaAccountKey() !== selectedQuotaKey) {
+      if (cancelled) {
         return;
       }
       if (succeeded) {
@@ -271,7 +267,7 @@ export function useDeferredQuotaLoad({
       } catch {
         reset = null;
       }
-      if (cancelled || quotaAccountKey() !== selectedQuotaKey) {
+      if (cancelled) {
         return;
       }
       if (reset !== null) {

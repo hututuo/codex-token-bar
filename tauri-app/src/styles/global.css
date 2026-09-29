@@ -12842,23 +12842,3 @@ details.session-management-banner {
 .stats-model-cost-row > .quota-cycle-calendar { min-width:0; margin:0; }
 .stats-quota-boundary-detail:not([open]){margin:0}
 .stats-quota-boundary-detail[open] span{display:inline-block;margin:3px 14px 3px 0}
-
-/* Quota identity is separate from the local token ledger. */
-.quota-account-selector { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; text-align: left; }
-.quota-account-selector label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
-.quota-account-selector select, .quota-account-selector input { max-width: 100%; min-width: 0; padding: 5px 6px; color: inherit; background: var(--bg-inset, #222833); border: 1px solid var(--border-color, #4a5262); border-radius: 6px; font: inherit; }
-.quota-account-selector select { width: 138px; text-overflow: ellipsis; }
-.quota-account-manage summary { cursor: pointer; font-size: 10px; color: #aab9d2; }
-.quota-account-popover { position: absolute; top: 100%; left: 0; z-index: 11000; display: grid; gap: 10px; width: 300px; padding: 14px; border: 1px solid #596170; border-radius: 10px; background: #20242e; color: #edf0f7; box-shadow: 0 8px 28px #0006; }
-.quota-account-popover p, .quota-account-popover small { margin: 0; font-size: 11px; line-height: 1.5; }
-.quota-account-popover button { padding: 7px; border: 1px solid #596170; border-radius: 6px; background: #303949; color: inherit; cursor: pointer; font-size: 11px; }
-.quota-account-selector button:disabled { opacity: .5; cursor: wait; }
-.quota-account-error { max-width: 300px; font-size: 11px; color: #ff9a9a; overflow-wrap: anywhere; }
-
-.quota-account-toolbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; padding-bottom: 5px; border-bottom: 1px solid var(--line); }
-.quota-account-toolbar > span { color: var(--muted); font-size: 10px; }
-.quota-account-toolbar .quota-account-selector { flex-direction: row; align-items: center; gap: 12px; }
-.quota-account-toolbar .quota-account-selector > label { flex-direction: row; align-items: center; gap: 8px; }
-.quota-account-toolbar .quota-account-selector select { width: 196px; background: var(--panel-solid); color: var(--text); }
-.quota-account-manage[open] { z-index: 11000; }
-.quota-strip:has(.quota-account-manage[open]) { z-index: 30; }

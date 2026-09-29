@@ -1,7 +1,4 @@
 pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
-    "save_current_quota_account",
-    "import_quota_account",
-    "remove_quota_account",
     "set_codex_home",
     "reset_codex_home",
     "read_dashboard_snapshot",
@@ -72,8 +69,6 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
-    "list_quota_accounts",
-    "select_quota_account",
     "read_sidebar_trend",
     "get_codex_home",
     "read_app_settings",

@@ -63,13 +63,11 @@ export function onUnreadSummaryChanged(
 }
 
 export interface AccountQuotaChangedPayload {
-  quotaAccountKey?: string;
   quota: AccountQuotaBundle;
   sourceToken: CodexHomeSourceToken;
 }
 
 export interface AccountResetCreditsChangedPayload {
-  quotaAccountKey?: string;
   resetCredits: ResetCreditBundle;
   sourceToken: CodexHomeSourceToken;
 }

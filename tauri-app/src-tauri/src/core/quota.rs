@@ -63,7 +63,6 @@ struct QuotaCacheScope {
     codex_home: PathBuf,
     account_key: Option<String>,
     flight_fingerprint: [u8; 32],
-    selection_revision: u64,
 }
 
 impl QuotaCacheScope {
@@ -74,7 +73,7 @@ impl QuotaCacheScope {
     }
 
     fn allows_flight_reuse(&self, current: &Self) -> bool {
-        if self.codex_home != current.codex_home || self.selection_revision != current.selection_revision {
+        if self.codex_home != current.codex_home {
             return false;
         }
 
@@ -529,22 +528,17 @@ fn quota_cache_scope(codex_home: &Path, account_key: Option<String>) -> QuotaCac
         codex_home: std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf()),
         account_key,
         flight_fingerprint: observation.flight_fingerprint,
-        selection_revision: 0,
     }
 }
 
 fn observed_quota_cache_scope(codex_home: &Path) -> QuotaCacheScope {
     let observation = read_local_auth_observation(codex_home);
-    let registry = accounts::registry();
-    let selected = registry.as_ref().ok().and_then(|r| r.selected_id.as_ref());
-    let account_key = accounts::credential(codex_home).ok().map(|c| format!("quota-account:{}", c.id()))
-        .or_else(|| selected.map(|id| format!("quota-account:{id}")))
+    let account_key = accounts::current_credential(codex_home).ok().map(|c| format!("quota-account:{}", c.id()))
         .or(observation.stable_account_key);
     QuotaCacheScope {
         codex_home: std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf()),
-        account_key: if registry.is_ok() { account_key } else { None },
+        account_key,
         flight_fingerprint: observation.flight_fingerprint,
-        selection_revision: registry.map(|r| r.revision).unwrap_or(u64::MAX),
     }
 }
 
@@ -693,7 +687,7 @@ fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
         .any(|diagnostic| diagnostic.stale_data_displayed)
 }
 
-/// Automation always checks the local login, never the independently selected quota account.
+/// Re-read only the login currently active in this Codex Home.
 pub(crate) fn read_current_account_quota(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
     let credential = accounts::current_credential(codex_home)?;
     let parsed = direct_http::read(&credential)?;
@@ -722,7 +716,7 @@ fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, Strin
                 AccountQuotaBundle {
                     updated_at,
                     attribution_identity: None,
-                    account: selected_account_info(codex_home, plan_label.as_deref()),
+        account: current_account_info(codex_home, plan_label.as_deref()),
                     quota,
                     quota_history_daily: Vec::new(),
                     quota_history_24h: Vec::new(),
@@ -787,7 +781,7 @@ fn identity_changed_quota_bundle(codex_home: &Path) -> AccountQuotaBundle {
     AccountQuotaBundle {
         updated_at,
         attribution_identity: None,
-        account: selected_account_info(codex_home, None),
+        account: current_account_info(codex_home, None),
         quota,
         quota_history_daily: Vec::new(),
         quota_history_24h: Vec::new(),
@@ -856,7 +850,7 @@ fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle 
     let bundle = AccountQuotaBundle {
         updated_at,
         attribution_identity: None,
-        account: selected_account_info(codex_home, None),
+        account: current_account_info(codex_home, None),
         quota,
         quota_history_daily: Vec::new(),
         quota_history_24h: Vec::new(),
@@ -929,10 +923,9 @@ pub fn account_info(codex_home: &Path, plan_label: Option<&str>) -> AccountInfo 
     }
 }
 
-fn selected_account_info(codex_home: &Path, plan_label: Option<&str>) -> AccountInfo {
+fn current_account_info(codex_home: &Path, plan_label: Option<&str>) -> AccountInfo {
     AccountInfo {
-        display_name: accounts::credential(codex_home).map(|c| c.label)
-            .or_else(|_| accounts::registry().and_then(|r| r.accounts.into_iter().find(|a| Some(&a.id) == r.selected_id.as_ref()).map(|a| a.label).ok_or_else(|| "missing".into())))
+        display_name: accounts::current_credential(codex_home).map(|c| c.label)
             .unwrap_or_else(|_| "额度账号待读取".into()),
         plan_label: plan_label
             .map(str::trim)
@@ -1198,7 +1191,7 @@ enum QuotaStdoutEvent {
 }
 
 fn read_rate_limits(codex_home: &Path) -> Result<ParsedRateLimits, String> {
-    direct_http::read(&accounts::credential(codex_home)?)
+    direct_http::read(&accounts::current_credential(codex_home)?)
 }
 
 fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedRateLimits, String> {
@@ -2203,13 +2196,6 @@ mod tests {
     }
 
     #[test]
-    fn account_selection_aba_rejects_previous_inflight_request() {
-        let before = QuotaCacheScope { codex_home: PathBuf::from("synthetic"), account_key: Some("quota-account:one".into()), flight_fingerprint: [1; 32], selection_revision: 1 };
-        let after = QuotaCacheScope { selection_revision: 3, ..before.clone() };
-        assert!(!before.allows_flight_reuse(&after));
-    }
-
-    #[test]
     fn stable_account_token_rotation_keeps_history_identity_owned() {
         let cache = QuotaHistoryCacheCoordinator::default();
         let codex_home = PathBuf::from("rotation-home");
@@ -2217,13 +2203,11 @@ mod tests {
         let before_rotation = QuotaCacheScope {
             codex_home: codex_home.clone(),
             account_key: Some("sub:stable-account".into()),
-            selection_revision: 0,
             flight_fingerprint: [1; 32],
         };
         let after_rotation = QuotaCacheScope {
             codex_home,
             account_key: Some("sub:stable-account".into()),
-            selection_revision: 0,
             flight_fingerprint: [2; 32],
         };
         let before_history_identity = before_rotation
@@ -2261,13 +2245,11 @@ mod tests {
         let account_a = QuotaCacheScope {
             codex_home: codex_home.clone(),
             account_key: Some("sub:account-a".into()),
-            selection_revision: 0,
             flight_fingerprint: [3; 32],
         };
         let account_b = QuotaCacheScope {
             codex_home,
             account_key: Some("sub:account-b".into()),
-            selection_revision: 0,
             flight_fingerprint: [4; 32],
         };
         let identity_a = account_a
@@ -2314,7 +2296,6 @@ mod tests {
         let scope = QuotaCacheScope {
             codex_home: PathBuf::from("unkeyed-home"),
             account_key: None,
-            selection_revision: 0,
             flight_fingerprint: [5; 32],
         };
         assert!(scope
@@ -2324,7 +2305,6 @@ mod tests {
         let keyed_scope = QuotaCacheScope {
             codex_home: PathBuf::from("unknown-plan-home"),
             account_key: Some("sub:unknown-plan".into()),
-            selection_revision: 0,
             flight_fingerprint: [6; 32],
         };
         let mut unknown_plan = measured_quota_bundle("Unknown User");

@@ -69,19 +69,11 @@ final class AutoResumeTaskManager: ObservableObject {
             try CodexBinaryLocator.findExecutable()
         }
     ) {
-        let automationQuotaStore = quotaStore.usesSelectableAccount
-            ? AccountQuotaStore(quotaReader: CurrentAccountQuotaReader()) : quotaStore
-        self.quotaStore = automationQuotaStore
+        self.quotaStore = quotaStore
         self.appServer = appServer
         self.defaults = defaults
         self.dataSourceProvider = dataSourceProvider
-        self.quotaBackgroundActivityChanged = { enabled in
-            quotaBackgroundActivityChanged(enabled)
-            if quotaStore.usesSelectableAccount {
-                automationQuotaStore.setDataSource(dataSourceProvider())
-                if enabled { automationQuotaStore.start(dataSource: dataSourceProvider()) } else { automationQuotaStore.stop() }
-            }
-        }
+        self.quotaBackgroundActivityChanged = quotaBackgroundActivityChanged
         self.runningStateBackgroundActivityChanged = runningStateBackgroundActivityChanged
         self.notifier = notifier
         self.codexBinaryProvider = codexBinaryProvider

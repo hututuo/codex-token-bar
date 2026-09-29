@@ -1,5 +1,3 @@
-import { useQuotaAccounts, quotaAccountKey } from "../quotaAccounts";
-import { clearAccountQuota } from "./clearAccountQuota";
 import {
   startTransition,
   useCallback,
@@ -210,18 +208,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     ?? state.dashboard?.settledThrough
     ?? null;
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
-  const { key: selectedQuotaKey, accounts: quotaAccounts } = useQuotaAccounts();
-  const previousQuotaKey = useRef(selectedQuotaKey);
-  useLayoutEffect(() => {
-    if (previousQuotaKey.current === selectedQuotaKey) return;
-    previousQuotaKey.current = selectedQuotaKey;
-    quotaComparisonObservationRef.current = null;
-    latestComparisonUpdatedAtRef.current = null;
-    setState(clearAccountQuota);
-    setForceNextQuotaLoad(true);
-    setQuotaLoadGeneration(value => value + 1);
-  }, [selectedQuotaKey]);
-
 
   const requestPreciseRefresh = useCallback((
     force = true,
@@ -548,9 +534,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) {
       return;
     }
-    if (quotaAccountKey() !== selectedQuotaKey) return;
-    if (quotaAccounts.selectedId !== null) quota = { ...quota, attributionIdentity: null };
-    void desktopPlatform.publishAccountQuotaChanged({ quota, sourceToken, quotaAccountKey: selectedQuotaKey });
+    void desktopPlatform.publishAccountQuotaChanged({ quota, sourceToken });
     markRenderCommit("frontend quota dashboard");
     const comparison = advanceQuotaComparisonObservation(
       quotaComparisonObservationRef.current,
@@ -566,9 +550,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     quotaComparisonObservationRef.current = comparison.state;
     latestComparisonUpdatedAtRef.current = comparison.state?.comparisonUpdatedAt ?? null;
     startTransition(() => {
-      setState((current) => isSourceTokenCurrent(sourceToken) && quotaAccountKey() === selectedQuotaKey
-        ? mergeQuota(current, quotaAccounts.selectedId !== null && current.dashboard
-          ? { ...quota, account: current.dashboard.account } : quota)
+      setState((current) => isSourceTokenCurrent(sourceToken)
+        ? mergeQuota(current, quota)
         : current);
     });
     // Poll timestamps alone are not a comparison boundary. Exact usage catches
@@ -596,25 +579,23 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
         "frontend initial quota boundary joined active precise owner",
       );
     }
-  }, [isSourceTokenCurrent, markRenderCommit, requestPreciseRefresh, sourceToken, selectedQuotaKey, quotaAccounts.selectedId]);
+  }, [isSourceTokenCurrent, markRenderCommit, requestPreciseRefresh, sourceToken]);
 
   const mergeResetCreditSnapshot = useCallback((reset: ResetCreditBundle) => {
     if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) {
       return;
     }
-    if (quotaAccountKey() !== selectedQuotaKey) return;
     void desktopPlatform.publishAccountResetCreditsChanged({
-      quotaAccountKey: selectedQuotaKey,
       resetCredits: reset,
       sourceToken,
     });
     markRenderCommit("frontend reset-credit dashboard");
     startTransition(() => {
-      setState((current) => isSourceTokenCurrent(sourceToken) && quotaAccountKey() === selectedQuotaKey
+      setState((current) => isSourceTokenCurrent(sourceToken)
         ? mergeResetCredits(current, reset)
         : current);
     });
-  }, [isSourceTokenCurrent, markRenderCommit, sourceToken, selectedQuotaKey]);
+  }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
 
   const refreshAttributionPreciseUsage = useCallback((comparisonUpdatedAt: string) => {
     if (!isSourceTokenCurrent(sourceToken)) {

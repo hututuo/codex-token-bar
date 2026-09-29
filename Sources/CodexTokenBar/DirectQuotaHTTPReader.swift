@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 /// Identity belongs to the ChatGPT account, not to the rotating access token.
-struct QuotaAccountCredential: Codable, Sendable {
+struct QuotaAccountCredential: Sendable {
     var accountID: String
     var userID: String
     var label: String
@@ -11,14 +11,6 @@ struct QuotaAccountCredential: Codable, Sendable {
     var id: String {
         SHA256.hash(data: Data(("quota-account-v1\0" + userID + "\0" + accountID).utf8))
             .map { String(format: "%02x", $0) }.joined()
-    }
-
-    var expiresAt: Double { (Self.jwt(accessToken)["exp"] as? NSNumber)?.doubleValue ?? 0 }
-
-    static func freshest(_ values: [Self], accountID: String) -> Self? {
-        values.filter { $0.id == accountID }.enumerated().max { a, b in
-            a.element.expiresAt == b.element.expiresAt ? a.offset > b.offset : a.element.expiresAt < b.element.expiresAt
-        }?.element
     }
 
     static func parse(_ data: Data) throws -> Self {
@@ -73,17 +65,15 @@ struct QuotaAccountCredential: Codable, Sendable {
 }
 
 enum DirectQuotaError: LocalizedError {
-    case credentials, identityChanged, http(Int), response, vault, removalRecovery
+    case credentials, identityChanged, http(Int), response
     var errorDescription: String? {
         switch self {
-        case .credentials: "未找到有效的 ChatGPT 登录凭据；请添加或更新额度账号。普通 API Key 不支持订阅额度查询。"
-        case .identityChanged: "额度账号已变化，本次结果已丢弃，请刷新。"
+        case .credentials: "未找到有效的 ChatGPT 登录凭据；请在 Codex 中重新登录后重试。普通 API Key 不支持订阅额度查询。"
+        case .identityChanged: "Codex 登录账号已变化，本次结果已丢弃，请刷新。"
         case .http(let status): status == 401 || status == 403
-            ? "HTTP \(status)：额度登录已过期或无权限，请在原客户端重新登录后更新账号凭据。"
+            ? "HTTP \(status)：额度登录已过期或无权限，请在 Codex 中重新登录后重试。"
             : "额度接口返回 HTTP \(status)"
         case .response: "额度接口响应格式异常"
-        case .vault: "无法访问系统安全凭据存储"
-        case .removalRecovery: "额度账号移除未完成，且凭据恢复失败；请重新导入账号后重试。"
         }
     }
 }
@@ -98,17 +88,13 @@ private final class QuotaNoRedirect: NSObject, URLSessionTaskDelegate, @unchecke
 }
 
 enum DirectQuotaHTTPReader {
-    static func read(dataSource: CodexDataSource?, currentOnly: Bool = false) async -> Result<AccountQuotaSnapshot, Error> {
+    static func read(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
         do {
-            func selectionKey() -> String {
-                currentOnly ? ((try? QuotaAccountRegistry.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable")
-                    : QuotaAccountRegistry.selectionKey(home: dataSource?.codexHome)
-            }
-            let key = selectionKey()
-            let credential = try currentOnly ? QuotaAccountRegistry.currentCredential(home: dataSource?.codexHome)
-                : QuotaAccountRegistry.credential(home: dataSource?.codexHome)
+            let key = (try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable"
+            let credential = try CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome)
             let data = try await fetch(credential: credential)
-            guard key == selectionKey() else {
+            let currentKey = (try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable"
+            guard key == currentKey else {
                 throw DirectQuotaError.identityChanged
             }
             guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {

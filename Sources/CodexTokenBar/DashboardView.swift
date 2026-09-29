@@ -723,7 +723,7 @@ struct DashboardView: View {
     }
 
     private var sharedAccountAttributionEnabled: Bool {
-        requestedSharedAccountAttributionEnabled && ((try? QuotaAccountRegistry.state()).map { $0.selectedID == nil } ?? false)
+        requestedSharedAccountAttributionEnabled
     }
 
     private func refreshSharedAccountAttribution() {
@@ -1124,7 +1124,7 @@ struct DashboardView: View {
 
             StatStrip(
                 snapshot: store.snapshot,
-                quotaSnapshot: ((try? QuotaAccountRegistry.state().selectedID) == nil) ? quotaStore.snapshot : .empty,
+                quotaSnapshot: quotaStore.snapshot,
                 quotaCycleHistory: quotaHistoryStore.snapshot,
                 cycleCodexHome: store.currentDataSource?.codexHome,
                 todayUsageSummary: store.todayUsageSummary,

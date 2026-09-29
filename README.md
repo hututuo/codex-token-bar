@@ -46,7 +46,7 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 - 速蹬窗口：把雷达建议、模型 IQ、当前可用额度窗口和本地实时速度放进一个可配置的小窗口。
 - 年度 token 热力图、最近 24 小时 5 分钟粒度曲线、缓存命中率曲线和缓存排行。
 - Codex 额度按官方实际窗口自适应：只提供 7d 时只显示 7d，同时提供 5h / 7d 时才显示两条，并保留本地轻量历史、雷达站额度预估和节奏提示。
-- 独立额度账号：跟随当前登录或切换已保存账号；接口返回 Reserve 储备窗口时单独展示其额度和重置时间。
+- 官方额度：读取当前 Codex 登录对应的额度；接口返回 Reserve 储备窗口时单独展示其额度和重置时间。
 - 低缓存命中提醒使用完整二级侧栏，显示会话标题与排查提示，支持明显的关闭按钮和点击外部收起。
 - 重置卡详情：显示可用重置机会、每张卡的来源、关联用户、到期时间、剩余时间和卡片编号。
 - 本地优先：读取 `~/.codex` 本地数据，不上传 prompt、输出、日志或账号额度。
@@ -71,7 +71,7 @@ Codex Token Bar 可以读取 [codexradar.com](https://codexradar.com/) 提供的
 
 ## 特色：重置卡详情
 
-Codex Token Bar 使用所选 ChatGPT 登录凭据，直接读取官方账号接口，把“重置机会 / 重置卡”展示成可读详情。你可以看到当前有几张可用重置卡、每张卡为什么发放、关联到谁、明确的到期日期、还剩多久到期和卡片编号。
+Codex Token Bar 使用当前 Codex 登录凭据，直接读取官方账号接口，把“重置机会 / 重置卡”展示成可读详情。你可以看到当前有几张可用重置卡、每张卡为什么发放、关联到谁、明确的到期日期、还剩多久到期和卡片编号。
 
 这个功能是只读的：应用只展示信息，不会调用消耗重置卡的接口，也不会上传账号额度或会话内容。
 
@@ -153,7 +153,7 @@ sessions/
 state_5.sqlite
 ```
 
-`sessions/` 用于精确 token_count、缓存命中率和会话轮次统计。`state_5.sqlite` 在可用时用于补充会话元数据。账号额度通过官方 HTTP 接口读取，按窗口时长识别 5h / 7d 身份，并保存轻量额度历史。额度账号可跟随当前登录或独立切换；本地 token 和费用统计仍由本机日志汇总。保存账号的访问凭据使用 macOS 钥匙串或 Windows 用户级加密存储；登录过期时需在原客户端重新登录并更新凭据。
+`sessions/` 用于精确 token_count、缓存命中率和会话轮次统计。`state_5.sqlite` 在可用时用于补充会话元数据。额度通过官方 HTTP 接口读取当前 Codex 登录，按窗口时长识别 5h / 7d 和接口返回的 Reserve 窗口，并保存轻量额度历史；本地 token 和费用统计仍由本机日志汇总。登录过期时请先在 Codex 中重新登录。
 
 ## 从源码运行
 
@@ -243,7 +243,7 @@ There are now two official implementation lines:
 - Floating pace panel: combines Radar action, model IQ, the currently available quota windows, and local live speed in a configurable compact window.
 - Yearly token heatmap, 5-minute recent activity chart, cache hit-rate curve, and cache hit ranking.
 - Adaptive Codex quota display: a 7-day-only account shows only 7d, while 5h and 7d appear together only when both are available, with lightweight local history, Radar estimates, and compact pace hints.
-- Independent quota accounts: follow the current login or select a saved account, with separate Reserve windows and reset times when returned by the endpoint.
+- Official quota: reads the quota for the current Codex login and shows separate Reserve windows and reset times when returned by the endpoint.
 - Full-panel low-cache-hit alerts with conversation titles, troubleshooting guidance, a visible close button, and outside-click dismissal.
 - Reset credit details: see available reset credits, grant reason, linked user, expiry time, remaining time, and card ID.
 - Local-first: reads local `~/.codex` data and does not upload prompts, outputs, logs, or quota data.
@@ -348,7 +348,7 @@ sessions/
 state_5.sqlite
 ```
 
-`sessions/` powers precise token_count, cache hit-rate, and turn-level statistics. `state_5.sqlite` supplements session metadata. Account quotas are read through the official HTTP endpoint, with windows identified by duration and lightweight history stored locally. Quota account selection is independent from aggregate local token and cost totals. Saved access credentials use macOS Keychain or Windows user-scoped encryption; expired credentials require signing in again in the original client and updating the saved account.
+`sessions/` powers precise token_count, cache hit-rate, and turn-level statistics. `state_5.sqlite` supplements session metadata. Quotas are read through the official HTTP endpoint for the Codex Home currently selected in app settings; window duration identifies 5h, 7d, and any Reserve windows returned by the endpoint. Lightweight quota history and local token and cost totals stay on this device. If the login expires, sign in again in Codex.
 
 ## Run From Source
 

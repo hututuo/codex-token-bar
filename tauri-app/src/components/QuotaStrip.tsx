@@ -1,5 +1,3 @@
-import { QuotaAccountSelector } from "./QuotaAccountSelector";
-import { useQuotaAccounts } from "../quotaAccounts";
 import { DiagnosticNotice } from "./DiagnosticNotice";
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type {
@@ -506,8 +504,7 @@ function QuotaStripView({
   const preciseFailureAttemptRef = useRef(new Map<string, string>());
   const radarSnapshot = useSubscribedCodexRadarSnapshot();
   const { settings: savedAttributionSettings } = useSharedAccountAttributionSettings();
-  const quotaAccounts = useQuotaAccounts();
-  const attributionSettings = useMemo(() => ({ ...savedAttributionSettings, enabled: savedAttributionSettings.enabled && quotaAccounts.accounts.selectedId === null && !quotaAccounts.error }), [savedAttributionSettings, quotaAccounts.accounts.selectedId, quotaAccounts.error]);
+  const attributionSettings = savedAttributionSettings;
   const resetCreditPanel = useMemo(() => resetCreditPanelModel(snapshot.resetCredit), [snapshot.resetCredit]);
   const quotaWarnings = useMemo(() => quotaReadWarnings(warnings, diagnostics), [diagnostics, warnings]);
   const quotaAttemptStatus = useMemo(
@@ -1664,8 +1661,7 @@ function QuotaStripView({
       aria-label="账户额度"
       data-attribution-status={attributionSettings.enabled ? attribution.status : undefined}
     >
-      <div className="quota-account-toolbar"><QuotaAccountSelector /><span>仅切换额度 · 本地 token 独立统计</span></div>
-      <div className="quota-plan"><span>所选账号额度</span><strong>官方直连</strong></div>
+      <div className="quota-plan"><span>当前登录额度</span><strong>官方直连</strong></div>
       {visibleQuotaLimits.map((quota) => <QuotaBar key={quota.label} quota={quota} stale={quotaDataStale} />)}
       <button
         type="button"

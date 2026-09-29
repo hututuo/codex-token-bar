@@ -1,4 +1,3 @@
-import { useQuotaAccounts } from "../../quotaAccounts";
 import { useEffect, useMemo, useState } from "react";
 import type { CodexHomeSourceToken, QuotaAttributionIdentity, QuotaCycle, QuotaCycleUsage } from "../../types/dashboard";
 import { readQuotaCycles, readQuotaCycleUsage } from "../../api/dashboardClient";
@@ -14,8 +13,7 @@ function cycleBoundaryKey(cycle: QuotaCycle | undefined): string {
 }
 export function useQuotaCycleHistory(sourceToken: CodexHomeSourceToken | null, identity: QuotaAttributionIdentity | null,
   refreshKey: string, enabled: boolean) {
-  const { accounts, error: accountError } = useQuotaAccounts();
-  const scope = accounts.selectedId === null && !accountError ? quotaCycleScopeKey(identity) : null;
+  const scope = quotaCycleScopeKey(identity);
   const [historySettingsGeneration, setHistorySettingsGeneration] = useState(0);
   useEffect(() => {
     let cancelled = false;

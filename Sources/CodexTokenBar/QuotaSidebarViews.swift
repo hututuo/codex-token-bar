@@ -128,7 +128,6 @@ struct QuotaSidebarRail: View {
                         }.help("打开主页面").accessibilityLabel("打开主页面")
                             .accessibilityIdentifier("quota-sidebar-dashboard")
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
-                    QuotaAccountMenu(compact: true)
                     rateRing
                     if let fiveHour = quota.snapshot.fiveHour {
                         ring(label: "5h", window: fiveHour, color: SidebarPalette.green)
