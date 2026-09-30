@@ -3,6 +3,39 @@
     <channel>
         <title>Codex Token Bar</title>
         <item>
+            <title>0.9.3</title>
+            <pubDate>Wed, 30 Sep 2026 16:46:59 +0000</pubDate>
+            <sparkle:version>903</sparkle:version>
+            <sparkle:shortVersionString>0.9.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Codex Token Bar v0.9.3
+
+## 简体中文
+
+- 增加 GPT-6.1 Sol 的模型识别、价格卡和显示选项，按 2026-09-29 起的标准 API 价格计算。
+
+- 额度改为直接请求官方接口，读取当前 Codex 登录对应的额度，不依赖模型服务商配置。
+- 增加 Reserve 储备额度展示：接口返回可识别的储备窗口时，单独显示其剩余额度和重置时间。
+- 低缓存命中提醒改为完整的二级侧栏面板，突出命中率、会话标题和排查提示；关闭按钮更明显，也可点击其他应用或在移入后移开鼠标收起。
+- 修复 macOS 提醒图标被裁切的问题，并同步 Windows 侧栏的关闭与显示行为。
+
+普通 API Key 不支持订阅额度查询；登录过期时，请先在 Codex 中重新登录。
+
+## English
+
+- Adds GPT-6.1 Sol model recognition, pricing, and display options using the standard API rates effective from September 29, 2026.
+
+- Quotas now come directly from the official endpoint for the current Codex login, independent of model-provider settings.
+- Adds a separate Reserve quota display, including remaining quota and reset times when the endpoint returns recognized Reserve windows.
+- Low-cache-hit alerts now use the full second-level sidebar, with a clear hit rate, session title, and troubleshooting guidance. Alerts have a more visible close button and can also be dismissed by clicking another app or leaving after entering the panel.
+- Fixes cropped alert icons on macOS and synchronizes sidebar display and dismissal behavior on Windows.
+
+Ordinary API keys cannot query subscription quotas. If the login expires, sign in again in Codex.
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.3/CodexTokenBar-v0.9.3-macos-arm64.app.zip" length="13052707" type="application/octet-stream" sparkle:edSignature="F5nDJpadOvVLIo8urNDGayUoNndAsawD3OHb3hSgB1vAEaN5Lq7swKavsyl/X0Yb1sOJBMkHwrf3k5vA+nL+AA==" />
+        </item>
+        <item>
             <title>0.9.2</title>
             <pubDate>Sat, 26 Sep 2026 14:43:11 +0000</pubDate>
             <sparkle:version>902</sparkle:version>
@@ -209,61 +242,6 @@ v0.8.3 is a unified update for the native Swift and cross-platform editions, foc
 - Download only from the official GitHub Release and verify files with the bundled unified `SHA256SUMS-v0.8.3.txt`.
 </description>
             <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-macos-arm64.app.zip" length="8409004" type="application/octet-stream" sparkle:edSignature="7zCbXup3Q6hn8fOiYVwF5IBtmn4h6zTjT80J1JMzyI0LkK4rF7Iu+QWdDNfGcG7cR0tSjLpIq70Lj9CnlJMkBg==" />
-        </item>
-        <item>
-            <title>0.8.2</title>
-            <pubDate>Fri, 24 Jul 2026 20:31:13 +0800</pubDate>
-            <sparkle:version>802</sparkle:version>
-            <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"># Codex Token Bar v0.8.2
-
-v0.8.2 重做了 macOS Swift 原生版和 Windows Tauri 版的本地精确历史统计。目标不是限制可读取的历史，而是在保留完整、精确结果的前提下，让大体量 Codex 历史能够持续复用索引、增量更新并快速恢复。
-
-## 主要更新
-
-- **无限历史的精确索引**：历史统计改用可重建的本地 SQLite 外存索引，不再用文件数、字节数、事件数或扫描时长上限换取性能。只要原始 Codex JSONL 仍在，统计就覆盖全部可读取历史。
-- **字节级增量续扫**：记录每个源文件已经确认处理到的字节位置。文件只在尾部增长时，从上次结束位置继续解析；文件被截断、替换或中段改变时，会安全重建受影响部分。
-- **更快的首次建库**：Swift 与 Tauri 都会并行准备历史分片；Tauri 使用一个重任务配合多个轻任务工作线程，并通过 SQLite 批量事务导入，显著降低大型历史首次索引的等待时间。
-- **稳定复用已有索引**：同一索引格式下，软件更新、重启和日常刷新都会继续使用现有精确索引，不会因为重新构建 App 而无故全量重扫。
-- **更轻的活动刷新**：稳定历史直接复用已聚合快照，只有真正变化的会话进入增量解析。活跃使用期间的精确历史刷新由分钟级降到数秒级。
-- **断点恢复**：Tauri 的建库过程使用可恢复代次和暂存状态。异常退出或系统中断后，可从已确认进度继续，而不是丢弃所有工作。
-- **隐私边界不变**：索引只保存统计所需的数值、时间、文件身份和源偏移，不保存会话正文，也不上传本地用量、历史或索引数据。
-- **雷达测试隔离**：Dashboard 运行时测试不再访问真实 Radar 网络，减少测试噪声和外部服务依赖。
-
-## 升级说明
-
-- 从 v0.8.0 首次升级到 v0.8.2 时，因为 v0.8.0 没有这套精确 SQLite 索引，需要完成一次初始建库；之后同格式版本会直接复用。
-- 精确索引是缓存，不是数据源。删除索引不会删除 Codex 会话，只会在下次统计时重新建立。
-- macOS 构建采用 ad-hoc 签名且未 Apple notarize；Windows 安装器未使用商业代码签名证书。请只从官方 Release 下载并核对 SHA256，系统可能显示未知开发者或未知发布者提示。
-
----
-
-## English
-
-# Codex Token Bar v0.8.2
-
-v0.8.2 rebuilds exact local history accounting for both the native macOS Swift app and the Windows Tauri app. It improves performance without limiting readable history: complete results are retained while large Codex histories become incrementally indexed, resumable, and reusable across launches.
-
-## Highlights
-
-- **Exact indexing without history caps**: usage history now uses a rebuildable local SQLite index. Performance no longer depends on file-count, byte, event, or scan-time limits; all readable source history remains in scope.
-- **Byte-level incremental scanning**: the index records the confirmed source offset for every file. Append-only growth resumes from the previous endpoint, while truncation, replacement, or earlier-file changes safely rebuild the affected data.
-- **Faster first index**: Swift and Tauri prepare history shards in parallel. Tauri combines one heavy worker with several light workers and imports through batched SQLite transactions to reduce first-index time on large histories.
-- **Persistent index reuse**: app updates, relaunches, and routine refreshes reuse the existing exact index when its format remains compatible. Rebuilding the app does not trigger an unnecessary full scan.
-- **Lighter active refreshes**: stable history reuses aggregated snapshots and only changed conversations enter incremental parsing. Exact refreshes during active use drop from minutes to seconds on the tested large local history.
-- **Resumable construction**: Tauri keeps recoverable generations and staging state. An interruption can continue from confirmed progress instead of discarding the complete build.
-- **Unchanged privacy boundary**: the index stores only numeric statistics, timestamps, file identity, and source offsets required for accounting. It does not store conversation text or upload local usage, history, or index data.
-- **Isolated Radar tests**: Dashboard runtime tests no longer access the live Radar network, reducing external dependency and test noise.
-
-## Upgrade notes
-
-- The first upgrade from v0.8.0 to v0.8.2 performs a one-time initial index build because v0.8.0 did not contain this exact SQLite index. Later compatible releases reuse it.
-- The exact index is a cache, not the source of truth. Deleting it does not delete Codex conversations; it only causes the index to be rebuilt.
-- The macOS build is ad-hoc signed and not Apple-notarized. Windows installers do not use a commercial code-signing certificate. Download only from the official Release and verify SHA256; the operating system may show an unidentified-developer or unknown-publisher warning.
-</description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.2/CodexTokenBar-v0.8.2-macos-arm64.app.zip" length="7642615" type="application/octet-stream" sparkle:edSignature="mJrxuPg0MKbVTJXkPbbG3EV3VmKkTicXKYoxObnpHWpI33S55Sd3gbK9hGPvD09GfeDh7iz5nONTnumwerY5BA==" />
         </item>
     </channel>
 </rss>
