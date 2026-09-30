@@ -284,3 +284,25 @@ test("GPT-5.5 stays fixed while dated Sol rows use the cutover price", () => {
   assert.equal(estimate.costUSD, 14);
   assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt55"]);
 });
+
+test("GPT-6.1 Sol routes, persists and prices separately from previous Sol", () => {
+  for (const alias of ["gpt-6.1-sol", "GPT_6.1_SOL", "GPT 6.1 Sol", "gpt61-sol", "gpt61sol"]) {
+    assert.equal(detectedOfficialAPIPriceModel(alias), "gpt61Sol");
+  }
+  assert.equal(normalizeOfficialAPIPriceModel("gpt61Sol"), "gpt61Sol");
+  assert.equal(readStoredQuotaPriceModel({ getItem: () => "gpt61Sol", setItem: () => assert.fail("already valid") }), "gpt61Sol");
+  assert.equal(detectedOfficialAPIPriceModel("gpt-6.1-sol-preview"), null);
+  const breakdown = { inputTokens: 1_000_000, cachedInputTokens: 500_000, outputTokens: 100_000, calls: 1 };
+  const boundary = Date.parse("2026-09-29T00:00:00Z") / 1000;
+  const before = modelAwareAPICostUSD([{ model: "gpt-6.1-sol", eventStartUnix: boundary - 1, breakdown }], breakdown, "gpt56Sol");
+  assert.equal(before.costUSD, 0);
+  assert.deepEqual(before.unpricedModels, ["gpt-6.1-sol"]);
+  for (const eventStartUnix of [undefined, boundary, boundary + 86400]) {
+    const quote = modelAwareAPICostUSD([{ model: "gpt-6.1-sol", eventStartUnix, breakdown }], breakdown, "gpt56Sol");
+    assert.equal(quote.costUSD, 2.05);
+    assert.deepEqual(quote.detectedModels, ["gpt61Sol"]);
+    assert.deepEqual(quote.unpricedModels, []);
+    assert.equal(quote.fallbackCalls, 0);
+  }
+  assert.equal(officialAPICostUSD(1_000_000, 500_000, 100_000, "gpt6Sol"), 2.1);
+});

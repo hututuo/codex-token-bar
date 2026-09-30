@@ -21,7 +21,7 @@ struct StandardAPIPriceQuote: Equatable, Sendable {
 /// Historical standard API prices used for event-time cost estimates.
 /// Rates cover input, cached input, and output; local Codex usage does not
 /// expose cache writes as a separate token field. GPT-6 rates follow the
-/// models' 2026-09-22 release boundary.
+/// models' release boundaries (2026-09-22 for Sol/Luna, 2026-09-29 for 6.1 Sol).
 /// https://developers.openai.com/api/docs/pricing
 ///
 /// Callers must pass an event date to `quote(for:at:)`. A missing date is not
@@ -29,15 +29,17 @@ struct StandardAPIPriceQuote: Equatable, Sendable {
 /// is explicitly intended. Auto-review aliases and the independent Spark
 /// quota are intentionally outside this table.
 enum StandardAPIPriceSchedule {
+    private static let gpt61SolCutover = utcDate(year: 2026, month: 9, day: 29)
     private static let gpt6SolAndLunaCutover = utcDate(year: 2026, month: 9, day: 22)
     private static let solCutover = utcDate(year: 2026, month: 8, day: 21)
     private static let terraAndLunaCutover = utcDate(year: 2026, month: 7, day: 30)
 
-    static let revision = "standard-api-dated-v2"
+    static let revision = "standard-api-dated-v3"
     static func sqlPartitionExpression(timestamp: String) -> String {
-        "CASE WHEN \(timestamp) >= \(Int(gpt6SolAndLunaCutover.timeIntervalSince1970)) THEN 3 WHEN \(timestamp) >= \(Int(solCutover.timeIntervalSince1970)) THEN 2 WHEN \(timestamp) >= \(Int(terraAndLunaCutover.timeIntervalSince1970)) THEN 1 ELSE 0 END"
+        "CASE WHEN \(timestamp) >= \(Int(gpt61SolCutover.timeIntervalSince1970)) THEN 4 WHEN \(timestamp) >= \(Int(gpt6SolAndLunaCutover.timeIntervalSince1970)) THEN 3 WHEN \(timestamp) >= \(Int(solCutover.timeIntervalSince1970)) THEN 2 WHEN \(timestamp) >= \(Int(terraAndLunaCutover.timeIntervalSince1970)) THEN 1 ELSE 0 END"
     }
     static func partitionStart(at date: Date) -> Date {
+        if date >= gpt61SolCutover { return gpt61SolCutover }
         if date >= gpt6SolAndLunaCutover { return gpt6SolAndLunaCutover }
         if date >= solCutover { return solCutover }
         if date >= terraAndLunaCutover { return terraAndLunaCutover }
@@ -58,6 +60,8 @@ enum StandardAPIPriceSchedule {
         switch key {
         case "gpt-6-astra", "gpt6-astra", "gpt6astra":
             return "gpt-6-astra"
+        case "gpt-6.1-sol", "gpt6.1-sol", "gpt61-sol", "gpt61sol":
+            return "gpt-6.1-sol"
         case "gpt-6-sol", "gpt6-sol", "gpt6sol":
             return "gpt-6-sol"
         case "gpt-6-luna", "gpt6-luna", "gpt6luna":
@@ -113,6 +117,13 @@ enum StandardAPIPriceSchedule {
                 cachedInputUSDPerMillion: 1,
                 outputUSDPerMillion: 50
             ), revision: "standard-api-gpt-6-astra")
+        case "gpt-6.1-sol":
+            guard eventDate >= gpt61SolCutover else { return nil }
+            return fixedQuote(modelKey, rates: APIPriceRates(
+                inputUSDPerMillion: 2,
+                cachedInputUSDPerMillion: 0.1,
+                outputUSDPerMillion: 10
+            ), revision: "standard-api-gpt-6.1-sol-from-2026-09-29")
         case "gpt-6-sol":
             guard eventDate >= gpt6SolAndLunaCutover else { return nil }
             return fixedQuote(modelKey, rates: APIPriceRates(

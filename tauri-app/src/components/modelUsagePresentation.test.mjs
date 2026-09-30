@@ -98,3 +98,15 @@ function row(model, totalTokens, calls, eventStartUnix) {
     breakdown: { inputTokens: totalTokens, cachedInputTokens: 0, outputTokens: 0, totalTokens, calls },
   };
 }
+
+test("GPT-6.1 Sol aliases display separately from previous Sol and future variants", () => {
+  const slices = modelUsageSlices([
+    row("gpt-6.1-sol", 300, 1), row("GPT_6.1_SOL", 200, 1), row("gpt-6-sol", 100, 1),
+  ]);
+  assert.deepEqual(slices.map(({ key, label, tokens }) => ({ key, label, tokens })), [
+    { key: "gpt-6.1-sol", label: "GPT-6.1 Sol", tokens: 500 },
+    { key: "gpt-6-sol", label: "GPT-6 Sol", tokens: 100 },
+  ]);
+  assert.equal(modelUsageKey("gpt61sol"), "gpt-6.1-sol");
+  assert.equal(modelUsageKey("gpt-6.1-sol-preview"), "gpt-6.1-sol-preview");
+});

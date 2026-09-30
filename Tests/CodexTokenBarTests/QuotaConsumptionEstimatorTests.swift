@@ -465,7 +465,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(2.5 / OfficialAPIPriceModel.gpt56Terra.currentPriceRates.inputUSDPerMillion, 1.25, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt54MiniLegacy.currentPriceRates.costUSD(for: breakdown), 1.2, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt6Astra.currentPriceRates.costUSD(for: breakdown), 15, accuracy: 0.0001)
-        XCTAssertEqual(OfficialAPIPriceModel.selectableCases, [.gpt6Astra, .gpt6Sol, .gpt6Luna, .gpt56Sol, .gpt56Terra, .gpt56Luna])
+        XCTAssertEqual(OfficialAPIPriceModel.selectableCases, [.gpt6Astra, .gpt61Sol, .gpt6Sol, .gpt6Luna, .gpt56Sol, .gpt56Terra, .gpt56Luna])
     }
 
     func testAutoReviewPricingRulesUseUTC20260730CutoverAndRemainAppendOnly() throws {

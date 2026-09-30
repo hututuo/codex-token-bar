@@ -71,3 +71,19 @@ test("Astra and existing legacy cards retain their stored standard prices", () =
   });
   assert.equal(canonicalStandardAPIModelKey(" GPT_5.6_Terra "), "gpt-5.6-terra");
 });
+
+test("GPT-6.1 Sol has an independent September 29 card and narrow aliases", () => {
+  const expected = { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 10 };
+  for (const alias of ["gpt-6.1-sol", "GPT_6.1_SOL", "GPT 6.1 Sol", "gpt61sol", "gpt61-sol"]) {
+    assert.equal(canonicalStandardAPIModelKey(alias), "gpt-6.1-sol");
+    assert.equal(standardAPIPriceQuote(alias, "2026-09-28T23:59:59Z"), null);
+    const quote = standardAPIPriceQuote(alias, "2026-09-29T00:00:00Z");
+    assert.deepEqual(quote.rates, expected);
+    assert.equal(quote.revision, "standard-api-gpt-6.1-sol-from-2026-09-29");
+    assert.deepEqual(currentStandardAPIPriceQuote(alias).rates, expected);
+  }
+  assert.equal(standardAPIPriceQuote("gpt-6.1-sol", null), null);
+  assert.equal(canonicalStandardAPIModelKey("gpt-6.1-sol-preview"), null);
+  assert.equal(canonicalStandardAPIModelKey("gpt-6.1"), null);
+  assert.equal(currentStandardAPIPriceQuote("gpt-6-sol").rates.cachedInputUSDPerMillion, 0.2);
+});

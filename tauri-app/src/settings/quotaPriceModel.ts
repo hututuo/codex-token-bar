@@ -4,6 +4,7 @@ import {
 
 export type OfficialAPIPriceModel =
   | "gpt6Astra"
+  | "gpt61Sol"
   | "gpt6Sol"
   | "gpt6Luna"
   | "gpt56Sol"
@@ -103,6 +104,7 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
   label: string;
 }> = [
   { value: "gpt6Astra", label: "GPT-6 Astra" },
+  { value: "gpt61Sol", label: "GPT-6.1 Sol" },
   { value: "gpt6Sol", label: "GPT-6 Sol" },
   { value: "gpt6Luna", label: "GPT-6 Luna" },
   { value: "gpt56Sol", label: "GPT-5.6 Sol" },
@@ -116,6 +118,7 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
 // https://developers.openai.com/api/docs/pricing
 const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
   gpt6Astra: { inputUSDPerMillion: 10, cachedInputUSDPerMillion: 1, outputUSDPerMillion: 50 },
+  gpt61Sol: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 10 },
   gpt6Sol: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 10 },
   gpt6Luna: { inputUSDPerMillion: 0.1, cachedInputUSDPerMillion: 0.01, outputUSDPerMillion: 0.5 },
   gpt56Sol: { inputUSDPerMillion: 4, cachedInputUSDPerMillion: 0.4, outputUSDPerMillion: 20 },
@@ -157,6 +160,7 @@ const LEGACY_PRICE_MODEL_MIGRATIONS: Record<string, OfficialAPIPriceModel> = {
 
 export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPriceModel | null {
   if (value === "gpt6Astra"
+    || value === "gpt61Sol"
     || value === "gpt6Sol"
     || value === "gpt6Luna"
     || value === "gpt56Sol"
@@ -173,6 +177,7 @@ export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPrice
 
 export function isOfficialAPIPriceModel(value: unknown): value is OfficialAPIPriceModel {
   return value === "gpt6Astra"
+    || value === "gpt61Sol"
     || value === "gpt6Sol"
     || value === "gpt6Luna"
     || value === "gpt56Sol"
@@ -257,6 +262,11 @@ export function detectedOfficialAPIPriceModel(
     case "gpt6astra":
     case "gpt 6 astra":
       return "gpt6Astra";
+    case "gpt-6.1-sol":
+    case "gpt6.1-sol":
+    case "gpt61-sol":
+    case "gpt61sol":
+      return "gpt61Sol";
     case "gpt-6-sol":
     case "gpt6-sol":
     case "gpt6sol":
@@ -443,6 +453,7 @@ export function modelAwareAPICostUSD(
   }
   const detectedModelKeys = ([
     "gpt6Astra",
+    "gpt61Sol",
     "gpt6Sol",
     "gpt6Luna",
     "gpt56Sol",
@@ -497,6 +508,7 @@ export function priceModelTitle(model: DetectedOfficialAPIPriceModel): string {
   if (model === "gpt55") return "GPT-5.5";
   switch (normalizeOfficialAPIPriceModel(model) ?? "gpt56Sol") {
     case "gpt6Astra": return "GPT-6 Astra";
+    case "gpt61Sol": return "GPT-6.1 Sol";
     case "gpt6Sol": return "GPT-6 Sol";
     case "gpt6Luna": return "GPT-6 Luna";
     case "gpt56Sol": return "GPT-5.6 Sol";

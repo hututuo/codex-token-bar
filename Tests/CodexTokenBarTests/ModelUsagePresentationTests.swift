@@ -2,6 +2,20 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ModelUsagePresentationTests: XCTestCase {
+
+    func testGPT61SolAliasesStaySeparateFromPreviousSolAndFutureVariants() {
+        let slices = ModelUsagePresentation.slices(from: [
+            row("gpt-6.1-sol", tokens: 300, calls: 1),
+            row("GPT_6.1_SOL", tokens: 200, calls: 1),
+            row("gpt-6-sol", tokens: 100, calls: 1),
+        ])
+        XCTAssertEqual(slices.map(\.id), ["gpt-6.1-sol", "gpt-6-sol"])
+        XCTAssertEqual(slices.map(\.label), ["GPT-6.1 Sol", "GPT-6 Sol"])
+        XCTAssertEqual(slices.map(\.tokens), [500, 100])
+        XCTAssertEqual(ModelUsagePresentation.key(for: "gpt61sol"), "gpt-6.1-sol")
+        XCTAssertEqual(ModelUsagePresentation.key(for: "gpt-6.1-sol-preview"), "gpt-6.1-sol-preview")
+    }
+
     func testSlicesCombineAliasesAndSortByTokenShare() {
         let rows = [
             row("gpt-5.6-sol", tokens: 600, calls: 2),

@@ -135,6 +135,51 @@ final class StandardAPIPriceScheduleTests: XCTestCase {
         ))
     }
 
+
+    func testGPT61SolAliasesAndReleaseBoundaryStayIndependentFromPreviousSol() throws {
+        let boundary = date("2026-09-29T00:00:00Z")
+        let expected = APIPriceRates(inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 10)
+        for alias in ["gpt-6.1-sol", "GPT_6.1_SOL", "GPT 6.1 Sol", "gpt61-sol", "gpt61sol"] {
+            XCTAssertEqual(OfficialAPIPriceModel.detected(from: alias), .gpt61Sol)
+            XCTAssertEqual(StandardAPIPriceSchedule.canonicalModelKey(for: alias), "gpt-6.1-sol")
+            XCTAssertNil(StandardAPIPriceSchedule.quote(for: alias, at: boundary.addingTimeInterval(-1)))
+            XCTAssertEqual(StandardAPIPriceSchedule.quote(for: alias, at: boundary)?.rates, expected)
+            XCTAssertEqual(StandardAPIPriceSchedule.currentQuote(for: alias)?.rates, expected)
+        }
+        XCTAssertEqual(OfficialAPIPriceModel.storedValue(for: "gpt61Sol"), .gpt61Sol)
+        XCTAssertEqual(OfficialAPIPriceModel.gpt61Sol.title, "GPT-6.1 Sol")
+        XCTAssertNil(OfficialAPIPriceModel.detected(from: "gpt-6.1-sol-preview"))
+        XCTAssertNil(StandardAPIPriceSchedule.currentQuote(for: "gpt-6.1"))
+        XCTAssertNil(StandardAPIPriceSchedule.quote(for: "gpt-6.1-sol", at: nil))
+        XCTAssertEqual(StandardAPIPriceSchedule.currentQuote(for: "gpt-6-sol")?.rates.cachedInputUSDPerMillion, 0.2)
+        XCTAssertEqual(StandardAPIPriceSchedule.partitionStart(at: boundary), boundary)
+        XCTAssertEqual(StandardAPIPriceSchedule.partitionStart(at: boundary.addingTimeInterval(-1)), date("2026-09-22T00:00:00Z"))
+        XCTAssertNotEqual(ModelPricingKey(model: "gpt-6.1-sol", at: boundary),
+                          ModelPricingKey(model: "gpt-6.1-sol", at: boundary.addingTimeInterval(-1)))
+        XCTAssertTrue(StandardAPIPriceSchedule.sqlPartitionExpression(timestamp: "bucket_start")
+            .contains(">= \(Int(boundary.timeIntervalSince1970)) THEN 4"))
+    }
+
+    func testGPT61SolAggregateUsesItsCacheRateWithoutFallback() {
+        let breakdown = TokenCacheBreakdown(inputTokens: 1_000_000, cachedInputTokens: 500_000,
+            outputTokens: 100_000, reasoningOutputTokens: 0, totalTokens: 1_100_000, calls: 1)
+        let boundary = date("2026-09-29T00:00:00Z")
+        let rows = [ModelTokenBreakdown(model: "gpt-6.1-sol", breakdown: breakdown)]
+        let before = ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: rows,
+            eventDate: boundary.addingTimeInterval(-1), fallbackBreakdown: breakdown, fallbackModel: .gpt56Sol)
+        XCTAssertEqual(before.costUSD, 0)
+        XCTAssertEqual(before.unpricedModels, ["gpt-6.1-sol"])
+        let after = ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: rows,
+            eventDate: boundary, fallbackBreakdown: breakdown, fallbackModel: .gpt56Sol)
+        XCTAssertEqual(after.costUSD, 2.05, accuracy: 0.000001)
+        XCTAssertEqual(after.detectedModels, [.gpt61Sol])
+        XCTAssertEqual(after.fallbackCalls, 0)
+        XCTAssertTrue(after.unpricedModels.isEmpty)
+        let noDate = ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: rows,
+            timestamp: nil, fallbackBreakdown: breakdown, fallbackModel: .gpt56Sol)
+        XCTAssertEqual(noDate.costUSD, 2.05, accuracy: 0.000001)
+    }
+
     private func date(_ value: String) -> Date {
         ISO8601DateFormatter().date(from: value)!
     }
