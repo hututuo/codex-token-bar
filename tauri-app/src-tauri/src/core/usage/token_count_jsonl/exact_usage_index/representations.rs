@@ -58,14 +58,19 @@ pub(super) fn reuse_complete(
     generation: i64,
 ) -> Result<bool,String> {
     if !reader.fast_reuse_supported() {return Ok(false);}
+    // Normal current-parser scans need no legacy enrichment receipt. A missing
+    // receipt is reusable only after the existing enrichment owner has finished;
+    // a present but stale/incomplete receipt must still take the proof path.
     let ready: Option<i64>=db.query_row(
         "SELECT s.source_id FROM sources s WHERE s.path=?1
             AND s.append_ready=1 AND s.resume_offset=s.size
             AND s.size=?2 AND s.modified_ns=?3
             AND NOT EXISTS(SELECT 1 FROM pending_sources p WHERE p.source_id=s.source_id)
-            AND EXISTS(SELECT 1 FROM event_enrichment_sources e WHERE e.path=s.path
+            AND (EXISTS(SELECT 1 FROM event_enrichment_sources e WHERE e.path=s.path
                 AND e.revision=?4 AND e.parser_revision=?5
-                AND e.completed_size=s.size AND e.completed_prefix_sha256=s.prefix_sha256)",
+                AND e.completed_size=s.size AND e.completed_prefix_sha256=s.prefix_sha256)
+                OR (NOT EXISTS(SELECT 1 FROM event_enrichment_sources e WHERE e.path=s.path)
+                    AND EXISTS(SELECT 1 FROM metadata WHERE key='event_enrichment_revision' AND value=?4)))",
         params![path,checked_i64(signature.size,"逻辑来源大小")?,signature.modified_ns.to_string(),EVENT_ENRICHMENT_REVISION,STAGED_FULL_REBUILD_PARSER_REVISION],
         |r|r.get(0)).optional().map_err(|e|format!("无法核查压缩来源旧账覆盖：{e}"))?;
     let Some(source)=ready else {return Ok(false);};

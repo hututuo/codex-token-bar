@@ -1000,7 +1000,7 @@ fn release_upgrade_keeps_legacy_ledger_through_paginated_rewrite_and_append() {
     let pending: serde_json::Value = serde_json::from_str(&pending).unwrap();
     assert_eq!(pending["status"], "copied");
     assert_eq!(pending["sourcePath"], index_path.to_string_lossy().as_ref());
-    assert_eq!(pending["targetSchema"], 13);
+    assert_eq!(pending["targetSchema"], 14);
     copy.execute_batch("CREATE TABLE relocation_noop(value INTEGER); INSERT INTO relocation_noop VALUES(42)").unwrap();
     super::exact_usage_index::relocate_legacy_index(&root,&index_path,&durable).unwrap();
     assert_eq!(copy.query_row("SELECT value FROM relocation_noop",[],|r|r.get::<_,i64>(0)).unwrap(),42);
@@ -4972,7 +4972,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "13"
+        "14"
     );
     assert_eq!(
         interrupted_database
@@ -5005,7 +5005,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "13"
+        "14"
     );
     assert_eq!(
         completed
@@ -5413,7 +5413,7 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
         Ok(_) => panic!("non-numeric future schema must fail closed"),
         Err(error) => error,
     };
-    assert!(error.contains("元数据schema_version已损坏"), "{error}");
+    assert!(error.contains("元数据 schema_version 已损坏"), "{error}");
     let connection = Connection::open(&index_path).unwrap();
     let after_nonnumeric = connection
         .query_row(
@@ -12832,7 +12832,7 @@ fn actual_release_relocation_uses_supplied_cache_path() {
     let parsed: serde_json::Value = serde_json::from_str(&receipt).unwrap();
     assert_eq!(parsed["status"], "succeeded");
     assert_eq!(parsed["sourceSchema"], 9);
-    assert_eq!(parsed["targetSchema"], 13);
+    assert_eq!(parsed["targetSchema"], 14);
     assert_eq!(parsed["sourcePath"], legacy.to_string_lossy().as_ref());
     assert_eq!(fs::read(&rollback).unwrap(), preserved);
     drop(index);
@@ -12953,7 +12953,7 @@ fn storage_upgrade_transaction_rolls_back_and_reuses_one_backup() {
     db.execute_batch("DROP TABLE source_representations;
         DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup');
         UPDATE metadata SET value='13' WHERE key='schema_version';
-        CREATE TRIGGER stop_storage_upgrade BEFORE UPDATE ON metadata
+        CREATE TRIGGER stop_storage_upgrade BEFORE INSERT ON metadata
         WHEN NEW.key='schema_version' AND NEW.value='14'
         BEGIN SELECT RAISE(ABORT,'synthetic interruption'); END;").unwrap();
     drop(db);

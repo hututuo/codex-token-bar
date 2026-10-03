@@ -7,6 +7,24 @@ The original Codex Token Bar code was made available under the MIT License:
 - Copyright (c) 2026 hututuo
 - Full preserved text: `LICENSES/CodexTokenBar-MIT.txt`
 
+## Zstandard compressed-history decoder
+
+The Swift application statically includes the official Zstandard 1.5.7 decoder.
+The Rust application uses the `zstd` 0.13.3 wrapper and its `zstd-sys` 1.5.7
+native decoder dependency.
+
+- Upstream: https://github.com/facebook/zstd
+- Zstandard license selected: BSD 3-Clause
+- Full text bundled with the apps: `OpenSourceLicenses/Zstandard-BSD-3-Clause.txt`
+- Vendored Swift source and provenance: `Sources/CZstd/` and
+  `LICENSES/Zstandard-1.5.7-provenance.md`
+- Rust wrapper upstream: https://github.com/gyscos/zstd-rs
+- Rust wrapper license selected: MIT
+- Full wrapper license bundled with Tauri: `OpenSourceLicenses/Zstd-rs-MIT.txt`
+
+No external zstd executable or system shared library is required for history
+reading.
+
 ## Codex++ session enhancements
 
 The session-enhancement implementation includes modified and adapted portions

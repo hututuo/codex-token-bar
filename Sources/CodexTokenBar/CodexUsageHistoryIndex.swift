@@ -1498,7 +1498,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             rollbackPath: rollbackDatabaseURL(for: source).path,
             manifestPath: candidateMigrationManifestURL(for: source).path,
             sourceSchema: manifest?.sourceReceipt.schemaVersion ?? "13",
-            targetSchema: "13", status: "copied")
+            targetSchema: schemaVersion, status: "copied")
     }
 
 
@@ -8347,7 +8347,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     /// Finish the established migration before relocating. The old location
-    /// stays at schema 13, so previous releases cannot resume writing stale
+    /// stays at the current schema, so previous releases cannot resume writing stale
     /// history after the new writer switches to Application Support.
     static func relocateLegacyIndex(from legacy: URL, to destination: URL,
         fileManager: FileManager = .default,

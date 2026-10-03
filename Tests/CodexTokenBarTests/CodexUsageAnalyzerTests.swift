@@ -6337,8 +6337,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "13",
-            "the transactional identity-column migration is independent from replay repair"
+            "14",
+            "the transactional storage migration is independent from replay repair"
         )
         XCTAssertEqual(
             try scalarInt(
@@ -8619,7 +8619,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             at: swiftUsageCacheRoot(in: cacheRoot),
             includingPropertiesForKeys: [.isRegularFileKey]
         )
-        return try XCTUnwrap(files.first { $0.pathExtension == "sqlite" })
+        return try XCTUnwrap(files.first { $0.pathExtension == "sqlite" && !$0.lastPathComponent.hasSuffix(".schema13-before-representations.sqlite") })
     }
 
     private func scalarInt(_ sql: String, in database: SQLiteDatabaseDriver) throws -> Int {
