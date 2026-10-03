@@ -28,7 +28,7 @@ export function diagnosticErrorText(error: unknown): string {
       try { error = JSON.parse(error); } catch { /* Keep non-JSON error text. */ }
     }
     const plainError = error instanceof Error && !error.cause && Object.keys(error).length === 0;
-    const value = typeof error === "string" ? error : plainError ? error.message : JSON.stringify(visit(error, 0), null, 2);
+    const value = typeof error === "string" ? error : error instanceof Error && plainError ? error.message : JSON.stringify(visit(error, 0), null, 2);
     const redacted = (value ?? String(error)).replace(/\bBearer\s+[^\s"\\]+/gi, "Bearer [redacted]");
     return redacted.length > 16_384 ? redacted.slice(0, 16_384) + "\n[diagnostic truncated]" : redacted;
   } catch { return "无法格式化错误对象"; }
