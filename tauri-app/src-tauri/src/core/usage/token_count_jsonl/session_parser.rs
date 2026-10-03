@@ -10,7 +10,6 @@ use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 #[cfg(test)]
 use std::collections::HashSet;
-use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use time::format_description::well_known::Rfc3339;

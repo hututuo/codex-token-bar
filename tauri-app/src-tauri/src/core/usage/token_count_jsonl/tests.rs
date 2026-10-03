@@ -12806,8 +12806,12 @@ fn compressed_history_reuses_complete_missing_ledger_then_materializes_and_appen
     let root = temp_root();
     fs::create_dir_all(root.join("sessions")).unwrap();
     let file = root.join("sessions/rollout-019f1234-1234-1234-1234-123456789abc.jsonl");
-    let line = |n: u64, second: u32| format!(
-        "{{\"timestamp\":\"2026-10-01T00:00:{second:02}Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"last_token_usage\":{{\"input_tokens\":{n},\"cached_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":{n}}}}}}}}}}\n");
+    let line = |n: u64, second: u32| {
+        serde_json::json!({"timestamp":format!("2026-10-01T00:00:{second:02}Z"),
+            "type":"event_msg", "payload":{"type":"token_count","info":{
+                "last_token_usage":{"input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}
+            }}}).to_string()+"\n"
+    };
     let original = line(120, 0);
     fs::write(&file, &original).unwrap();
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);

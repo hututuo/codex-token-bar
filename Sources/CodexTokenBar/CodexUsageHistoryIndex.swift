@@ -1551,7 +1551,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 let representationExists = try connection.readRows(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_representations'"
                 ) { $0.int(0) }.first != nil
-                if !representationExists || (try meta("representation_revision")) != "rollout-storage-v1" {
+                let representationRevision = try meta("representation_revision")
+                if !representationExists || representationRevision != "rollout-storage-v1" {
                     return .corrupt(component: "representation", rawValue: "version/structure mismatch")
                 }
             }
@@ -3477,7 +3478,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             SELECT s.path FROM sources s JOIN source_representations r USING(source_id)
             WHERE s.source_id=? AND r.verification='metadata_only'
             """, bindings: [.int64(sourceID)]) { $0.text(0) }.first ?? nil
-        guard let pending,
+        let needsText = try connection.readRows("""
+            SELECT EXISTS(SELECT 1 FROM usage_ledger_bindings
+                WHERE source_id=? AND (prompt_offset IS NOT NULL OR assistant_offset IS NOT NULL))
+            """, bindings: [.int64(sourceID)]) { $0.int(0) == 1 }.first ?? false
+        guard needsText, let pending,
               let source = try indexedSources(connection: connection, includeMissing: true)[pending],
               try sourceChunksMatch(file: URL(fileURLWithPath: pending), source: source, connection: connection)
         else { return }
@@ -5756,7 +5761,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var firstLine = Data()
         while true {
             let remaining = Self.explicitSubagentFirstLineLimit + 1 - firstLine.count
-            let chunk = handle.readData(ofLength: min(64 * 1_024, remaining))
+            guard let chunk = try? handle.read(upToCount: min(64 * 1_024, remaining)) else { return .unresolved }
             guard !chunk.isEmpty else { return .unresolved }
             if let newline = chunk.firstIndex(of: 0x0A) {
                 guard firstLine.count + chunk.distance(from: chunk.startIndex, to: newline)
@@ -6904,7 +6909,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         if ["-wal", "-shm", "-journal"].contains(where: { fileManager.fileExists(atPath: databaseURL.path + $0) }) {
             try quarantineIncompleteStage(at: databaseURL, for: job)
         }
-        let readHandle = try FileHandle(forReadingFrom: job.file)
+        let readHandle = try CodexRolloutReader(forReadingFrom: job.file)
         defer { try? readHandle.close() }
         let formalSignature = try sourceSignature(
             forOpenHandle: readHandle,
@@ -7869,7 +7874,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 let new = newChunks[position]
                 if old.0 == new.0 && old.1 == new.1 && old.2 == new.2 { continue }
                 guard position == oldChunks.count-1, new.0 == old.0, new.1 > old.1 else { unchangedContent=false; break }
-                let handle = try FileHandle(forReadingFrom:staged.job.file)
+                let handle = try CodexRolloutReader(forReadingFrom:staged.job.file)
                 defer { try? handle.close() }
                 let offset = oldChunks.prefix(position).reduce(Int64(0)) { $0 + $1.1 }
                 try handle.seek(toOffset:UInt64(offset))

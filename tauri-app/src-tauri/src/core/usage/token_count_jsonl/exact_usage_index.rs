@@ -4934,6 +4934,9 @@ impl ExactUsageIndex {
                     )));
                     return item.usage;
                 }
+                if item.source_offsets.user_prompt.is_none() && item.source_offsets.assistant_response.is_none() {
+                    return item.usage;
+                }
                 let verified = verified_excerpts.entry(file.clone()).or_insert_with(||
                     representations::verify_excerpt_source(&self.connection, &file));
                 match verified {
@@ -14942,7 +14945,7 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
     let mut explicit_paths = Vec::new();
     let mut unresolved_candidate = false;
     for (path, legacy_candidate) in candidates {
-        let boundary = RolloutReader::open(&path).map_err(|e| e.to_string())
+        let boundary = RolloutReader::open(Path::new(&path)).map_err(|e| e.to_string())
             .and_then(|mut f| super::session_parser::paginated_subagent_boundary(&mut f));
         match boundary {
             Ok(value) if stored_revision.as_deref() == Some(PAGINATED_V5_PARSER_REVISION) && value != Some(u64::MAX) => continue,

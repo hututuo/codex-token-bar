@@ -1253,7 +1253,7 @@ extension CodexUsageAnalyzer {
         var line = Data()
         let newline = UInt8(ascii: "\n")
         while true {
-            let chunk = handle.readData(ofLength: 16_384)
+            let chunk = try handle.read(upToCount: 16_384) ?? Data()
             if chunk.isEmpty {
                 break
             }
