@@ -33,6 +33,10 @@
 ## 验证
 
 - PASS：Node诊断回归13项；标准库Rust诊断测试4项；Swift诊断独立编译/运行；diff检查。
-- 待云端：完整Swift/Rust/前端构建及缺失/压缩rollout保留旧账的集成回归。
+- PASS：[完整云端检查37114236505](https://github.com/hututuo/codex-token-bar/actions/runs/37114236505)，源码d3e92160595dbf7c2fc9e0efe804766095404532。
+- 前端1166项测试、11项云端流程测试和生产构建通过。
+- macOS Rust1168通过/10忽略；Windows Rust1118通过/10忽略；两端均通过缺失active rollout、对应压缩副本诊断及两万文件回归。Windows打包脚本self-test通过。
+- Swift执行1629项，7跳过、0失败；新增错误原因和历史数据源回归通过。
+- 第一轮因新增错误格式器的TypeScript类型收窄失败；修正后以上同SHA全套检查和CI证据封存通过。
 - NOT_RUN：该Windows用户机器复现/恢复；新安装包实机升级。
 - 未发布新版本；本轮是诊断补齐，不把测试通过作为客户故障已恢复的证据。
