@@ -1849,10 +1849,15 @@ fn assert_missing_active_rollout_keeps_last_good(compressed: bool) {
         compressed || error.contains("无法确认 active rollout 会话文件边界"),
         "the command failure must preserve the scanner reason: {error}"
     );
+    // Windows TEMP can use an 8.3 spelling (RUNNER~1) while discovery reports
+    // the canonical long path. Compare the complete logical path in that form.
+    let canonical_rollout = fs::canonicalize(&root).unwrap()
+        .join("active-rollouts").join(missing_rollout.file_name().unwrap());
+    let normalized_error = error.replace('\\', "/");
     assert!(
-        error.contains(&missing_rollout.to_string_lossy().to_string())
-            || error.replace('\\', "/").contains(&missing_rollout.to_string_lossy().replace('\\', "/")),
-        "the command failure must identify the unresolved file: {error}"
+        normalized_error.contains(&missing_rollout.to_string_lossy().replace('\\', "/"))
+            || normalized_error.contains(&canonical_rollout.to_string_lossy().replace('\\', "/")),
+        "the command failure must identify {missing_rollout:?} or {canonical_rollout:?}: {error}"
     );
 
     let connection = Connection::open(&index_path).unwrap();
