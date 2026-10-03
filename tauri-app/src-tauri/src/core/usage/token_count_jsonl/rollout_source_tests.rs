@@ -162,7 +162,7 @@ fn physical_modification_time_is_preserved_while_logical_size_stays_decoded() {
     let first_time = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let second_time = UNIX_EPOCH + Duration::from_secs(1_700_000_120);
 
-    File::open(&path)
+    File::options().write(true).open(&path)
         .unwrap()
         .set_times(FileTimes::new().set_modified(first_time))
         .unwrap();
@@ -174,7 +174,7 @@ fn physical_modification_time_is_preserved_while_logical_size_stays_decoded() {
     assert_eq!(first_metadata.modified().unwrap(), first_time);
     drop(first);
 
-    File::open(&path)
+    File::options().write(true).open(&path)
         .unwrap()
         .set_times(FileTimes::new().set_modified(second_time))
         .unwrap();

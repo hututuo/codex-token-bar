@@ -1850,7 +1850,8 @@ fn assert_missing_active_rollout_keeps_last_good(compressed: bool) {
         "the command failure must preserve the scanner reason: {error}"
     );
     assert!(
-        error.contains(&missing_rollout.to_string_lossy().to_string()),
+        error.contains(&missing_rollout.to_string_lossy().to_string())
+            || error.replace('\\', "/").contains(&missing_rollout.to_string_lossy().replace('\\', "/")),
         "the command failure must identify the unresolved file: {error}"
     );
 
