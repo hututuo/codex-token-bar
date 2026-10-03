@@ -6,13 +6,14 @@ struct DiagnosticLogEntry: Identifiable {
     let source: String
     let summary: String
     let detail: String
+    var sourceContext: String? = nil
     let firstAt: Date
     var lastAt: Date
     var count: Int
     var endedAt: Date?
     var recovered = false
     var text: String {
-        "\(summary)\n来源：\(source)\n首次：\(firstAt.ISO8601Format())\n最近：\(lastAt.ISO8601Format()) · 次数：\(count)" +
+        "\(summary)\n来源：\(source)" + (sourceContext.map { "\n发生时数据源：\($0)" } ?? "") + "\n首次：\(firstAt.ISO8601Format())\n最近：\(lastAt.ISO8601Format()) · 次数：\(count)" +
         (endedAt.map { "\n\(recovered ? "恢复" : "错误变化")：\($0.ISO8601Format())" } ?? "") + "\n\(detail)"
     }
 }
@@ -22,10 +23,11 @@ final class DiagnosticLogHistory: ObservableObject {
     static let shared = DiagnosticLogHistory()
     @Published private(set) var current: [String: DiagnosticLogEntry] = [:]
     @Published private(set) var history: [DiagnosticLogEntry] = []
+    @Published var sourceContext = "尚未确认数据源"
     func record(summary: String, logs: String, source: String? = nil, at: Date = Date()) {
         let key = source ?? summary
         if var previous = current[key] {
-            if previous.detail == logs {
+            if previous.detail == logs && previous.sourceContext == sourceContext {
                 guard at.timeIntervalSince(previous.lastAt) >= 1 else { return }
                 previous.lastAt = at; previous.count += 1; current[key] = previous
                 return
@@ -36,7 +38,7 @@ final class DiagnosticLogHistory: ObservableObject {
             current.removeValue(forKey: key)
         }
         guard !logs.isEmpty else { return }
-        current[key] = DiagnosticLogEntry(source: key, summary: summary, detail: logs, firstAt: at, lastAt: at, count: 1)
+        current[key] = DiagnosticLogEntry(source: key, summary: summary, detail: logs, sourceContext: sourceContext, firstAt: at, lastAt: at, count: 1)
     }
     var currentText: String {
         let text = current.values.sorted { $0.lastAt > $1.lastAt }.map(\.text).joined(separator: "\n\n")
@@ -45,8 +47,20 @@ final class DiagnosticLogHistory: ObservableObject {
     var historyText: String {
         history.isEmpty ? "暂无历史记录" : history.map(\.text).joined(separator: "\n\n")
     }
+    var environmentText: String {
+        "Codex Token Bar · Swift 端\n版本：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发版") / build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知")\n系统：\(ProcessInfo.processInfo.operatingSystemVersionString)\n架构：\(architecture)\n数据源：\(sourceContext)\n记录范围：本次运行；历史最多 100 条"
+    }
+    private var architecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "x86_64"
+        #else
+        return "unknown"
+        #endif
+    }
     var report: String {
-        "Codex Token Bar · Swift 端\n版本：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发版")\n系统：\(ProcessInfo.processInfo.operatingSystemVersionString)\n导出时间：\(Date().ISO8601Format())\n记录范围：本次运行；历史最多 100 条\n\n【当前问题】\n\(currentText)\n\n【历史记录】\n\(historyText)"
+        "\(environmentText)\n导出时间：\(Date().ISO8601Format())\n\n【当前问题】\n\(currentText)\n\n【历史记录】\n\(historyText)"
     }
 }
 
@@ -81,7 +95,7 @@ struct DiagnosticNotice: View {
                     }
                     Button("关闭") { showingLogs = false }.keyboardShortcut(.cancelAction)
                 }
-                Text("本次运行 · 历史最多 100 条").font(.caption).foregroundStyle(.secondary)
+                Text(history.environmentText).textSelection(.enabled).font(.caption).foregroundStyle(.secondary)
                 Text("当前问题（\(history.current.count)）").font(.headline)
                 logArea(history.currentText + supplement)
                 Divider()

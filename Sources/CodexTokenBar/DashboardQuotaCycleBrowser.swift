@@ -198,7 +198,7 @@ struct DashboardQuotaCycleBrowser: View {
             // An actual validation failure invalidates the display; normal refreshes
             // retain the same cycle until a newer committed result arrives.
             result = nil; resultKey = nil
-            DiagnosticLogHistory.shared.record(summary: "周期明细读取失败", logs: error.localizedDescription, source: "quota-cycle")
+            DiagnosticLogHistory.shared.record(summary: "周期明细读取失败", logs: DiagnosticErrorDetails.text(error), source: "quota-cycle")
             errorText = "周期明细待更新"
         }
     }

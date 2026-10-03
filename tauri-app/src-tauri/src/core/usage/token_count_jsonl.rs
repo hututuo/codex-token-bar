@@ -34,6 +34,7 @@ mod aggregates;
 mod cache_version_tests;
 mod exact_usage_index;
 mod fingerprint_codec;
+mod scan_failure;
 mod session_files;
 mod session_parser;
 #[cfg(test)]
@@ -1175,19 +1176,22 @@ fn spawn_precise_refresh_owner(
                         schedule_exact_storage_maintenance(&key);
                     }
                 }
-                Err(_) => {
+                Err(panic) => {
+                    owner.state.flight.set_trace_status("panic_error");
+                    let cause = panic.downcast_ref::<&str>().copied()
+                        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("非文本 panic payload");
                     finish_precise_dashboard_progress(
                         &spawn_progress_key,
                         false,
                         "精确 token refresh owner 执行异常，保留上次可信数据",
                     );
-                    owner.finish(PreciseRefreshResult::failure(
-                        "精确 token refresh owner 执行异常".into(),
-                    ));
+                    owner.finish(precise_refresh_failure(&owner.state.flight, &key, &[],
+                        format!("精确 token refresh owner 执行异常：{}", cause.chars().take(1024).collect::<String>())));
                 }
             }
         });
-    if spawned.is_err() {
+    if let Err(error) = spawned {
         flight.set_trace_status("spawn_error");
         finish_precise_dashboard_progress(
             &progress_key,
@@ -1197,7 +1201,7 @@ fn spawn_precise_refresh_owner(
         finish_precise_refresh_flight(
             &coordinator,
             &flight,
-            PreciseRefreshResult::failure("精确 token refresh owner 线程启动失败".into()),
+            precise_refresh_failure(&flight, &progress_key, &[], format!("精确 token refresh owner 线程启动失败：{error}")),
         );
     }
 }
@@ -1319,7 +1323,7 @@ fn run_precise_refresh_inner(
         Err(error) => {
             flight.set_trace_status("open_error");
             trace_precise_failure("open", &error);
-            return PreciseRefreshResult::failure(error);
+            return precise_refresh_failure(flight, canonical_home, &warnings, error);
         }
     };
     let watcher_before: Result<(), String> = {
@@ -1336,7 +1340,7 @@ fn run_precise_refresh_inner(
     };
     if let Err(error) = watcher_before {
         flight.set_trace_status("watcher_before_error");
-        return PreciseRefreshResult::failure(error);
+        return precise_refresh_failure(flight, canonical_home, &warnings, error);
     }
     let reused_completed_summary = if index.migration_pending() {
         // A summary-only reuse would bypass the scan that commits a pending
@@ -1349,7 +1353,7 @@ fn run_precise_refresh_inner(
             Err(error) => {
                 flight.set_trace_status("summary_reuse_probe_error");
                 trace_precise_failure("summary_reuse_probe", &error);
-                return PreciseRefreshResult::failure(error);
+                return precise_refresh_failure(flight, canonical_home, &warnings, error);
             }
         }
     };
@@ -1365,7 +1369,7 @@ fn run_precise_refresh_inner(
                 Err(error) => {
                     flight.set_trace_status("thread_metadata_reuse_error");
                     trace_precise_failure("thread_metadata_reuse", &error);
-                    return PreciseRefreshResult::failure(error);
+                    return precise_refresh_failure(flight, canonical_home, &warnings, error);
                 }
             }
         } else {
@@ -1379,7 +1383,7 @@ fn run_precise_refresh_inner(
         };
         if let Err(error) = sync_hook {
             flight.set_trace_status("sync_hook_error");
-            return PreciseRefreshResult::failure(error);
+            return precise_refresh_failure(flight, canonical_home, &warnings, error);
         }
         update_precise_dashboard_progress(
             canonical_home,
@@ -1414,7 +1418,11 @@ fn run_precise_refresh_inner(
                 );
                 (Some(plan), None)
             }
-            Err(_) => {
+            Err(error) => {
+                warnings.push(LocalDataWarning {
+                    source: "precise_scan_estimate".into(),
+                    message: format!("预扫描未完成，已回退正式扫描：{error}"),
+                });
                 // The estimate is a UI-only sidecar. Any timeout, transient
                 // SQLite lock, or filesystem race must never block the real
                 // scanner or turn a safe index refresh into a failure.
@@ -1448,7 +1456,7 @@ fn run_precise_refresh_inner(
             Err(error) => {
                 flight.set_trace_status("sync_error");
                 trace_precise_failure("sync", &error);
-                return PreciseRefreshResult::failure(error);
+                return precise_refresh_failure(flight, canonical_home, &warnings, error);
             }
         }
     };
@@ -1458,7 +1466,7 @@ fn run_precise_refresh_inner(
             Err(error) => {
                 flight.set_trace_status("aggregate_lineage_error");
                 trace_precise_failure("aggregate_lineage", &error);
-                return PreciseRefreshResult::failure(error);
+                return precise_refresh_failure(flight, canonical_home, &warnings, error);
             }
         };
         startup_trace::mark_performance(format!(
@@ -1468,14 +1476,14 @@ fn run_precise_refresh_inner(
         if let Err(error) = index.ensure_dashboard_aggregates(canonical_home) {
             flight.set_trace_status("aggregate_upgrade_error");
             trace_precise_failure("aggregate_upgrade", &error);
-            return PreciseRefreshResult::failure(error);
+            return precise_refresh_failure(flight, canonical_home, &warnings, error);
         }
         match index.dashboard_aggregate_identity() {
             Ok(identity) => Some(identity),
             Err(error) => {
                 flight.set_trace_status("aggregate_lineage_error");
                 trace_precise_failure("aggregate_lineage", &error);
-                return PreciseRefreshResult::failure(error);
+                return precise_refresh_failure(flight, canonical_home, &warnings, error);
             }
         }
     } else {
@@ -1491,7 +1499,7 @@ fn run_precise_refresh_inner(
         Err(error) => {
             flight.set_trace_status("dashboard_revision_error");
             trace_precise_failure("dashboard_revision", &error);
-            return PreciseRefreshResult::failure(error);
+            return precise_refresh_failure(flight, canonical_home, &warnings, error);
         }
     };
     flight.record_completed_sync(revision);
@@ -1509,7 +1517,7 @@ fn run_precise_refresh_inner(
     };
     if let Err(error) = watcher_after {
         flight.set_trace_status("watcher_after_error");
-        return PreciseRefreshResult::failure(error);
+        return precise_refresh_failure(flight, canonical_home, &warnings, error);
     }
 
     let summary = {
@@ -1517,6 +1525,10 @@ fn run_precise_refresh_inner(
             PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::SignatureSummary);
         let signature = dashboard_index_signature(canonical_home, dashboard_revision);
         summary_after_precise_sync(&index, canonical_home, &signature, &warnings, flight)
+            .map_err(|error| {
+                flight.set_trace_status("summary_error");
+                precise_refresh_error(flight, canonical_home, &warnings, error)
+            })
     };
     flight.publish_summary(&summary);
     let claim_full = {
@@ -1527,7 +1539,7 @@ fn run_precise_refresh_inner(
     if !claim_full {
         if let Err(error) = run_precise_refresh_after_cutoff_hook_for_testing() {
             flight.set_trace_status("cutoff_error");
-            return PreciseRefreshResult::failure(error);
+            return precise_refresh_failure(flight, canonical_home, &warnings, error);
         }
         if summary.is_ok() {
             if flight.trace_status() == "running" {
@@ -1554,7 +1566,7 @@ fn run_precise_refresh_inner(
                 if let Err(error) = index.ensure_dashboard_aggregates(canonical_home) {
                     flight.set_trace_status("aggregate_upgrade_error");
                     trace_precise_failure("aggregate_upgrade", &error);
-                    return PreciseRefreshResult::failure(error);
+                    return precise_refresh_failure(flight, canonical_home, &warnings, error);
                 }
             }
             match index.dashboard_aggregate_identity() {
@@ -1562,7 +1574,7 @@ fn run_precise_refresh_inner(
                 Err(error) => {
                     flight.set_trace_status("aggregate_lineage_error");
                     trace_precise_failure("aggregate_lineage", &error);
-                    return PreciseRefreshResult::failure(error);
+                    return precise_refresh_failure(flight, canonical_home, &warnings, error);
                 }
             }
         }
@@ -1597,11 +1609,38 @@ fn run_precise_refresh_inner(
             }
             PreciseRefreshResult {
                 summary,
-                full: Some(Err(error)),
+                full: Some(Err(precise_refresh_error(flight, canonical_home, &warnings, error))),
                 migration_pending,
             }
         }
     }
+}
+
+fn precise_refresh_error(
+    flight: &PreciseRefreshFlight,
+    codex_home: &Path,
+    warnings: &[LocalDataWarning],
+    error: String,
+) -> String {
+    let details = warnings.iter().map(|warning| {
+        format!("[{}] {}", warning.source, warning.message)
+    });
+    let rendered = scan_failure::with_context(
+        error, flight.trace_status(), &codex_home.to_string_lossy(),
+        env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH,
+        details,
+    );
+    startup_trace::mark_performance(format!("precise_failure_detail {}", rendered.replace('\n', " | ")));
+    rendered
+}
+
+fn precise_refresh_failure(
+    flight: &PreciseRefreshFlight,
+    codex_home: &Path,
+    warnings: &[LocalDataWarning],
+    error: String,
+) -> PreciseRefreshResult {
+    PreciseRefreshResult::failure(precise_refresh_error(flight, codex_home, warnings, error))
 }
 
 fn reusable_completed_summary_revision(

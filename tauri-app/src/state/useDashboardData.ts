@@ -1,3 +1,4 @@
+import { setDiagnosticSource } from "../diagnostics/reportContext";
 import {
   startTransition,
   useCallback,
@@ -319,6 +320,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       return false;
     }
 
+    setDiagnosticSource(envelope);
     sourceTransitionRef.current = result.transition;
     const acceptedSourceToken = result.transition.sourceToken;
     const startsSourceLoad = result.initialized || result.sourceChanged;

@@ -1,3 +1,4 @@
+import { diagnosticErrorText } from "../diagnostics/errorDetails";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { clearCommandFailure, recordCommandFailure } from "../diagnostics/localDiagnostics";
@@ -137,11 +138,5 @@ function platformDiagnosticKey(key: string) {
 }
 
 function platformErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
-  }
-  if (typeof error === "string" && error.trim()) {
-    return error;
-  }
-  return "Unknown platform command failure";
+  return diagnosticErrorText(error);
 }

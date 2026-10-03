@@ -1,3 +1,4 @@
+import { diagnosticErrorText } from "./errorDetails.ts";
 import { diagnosticJournal } from "./diagnosticJournal.ts";
 const WARNING_THROTTLE_MS = 5_000;
 const MAX_LOCAL_DIAGNOSTICS = 50;
@@ -79,7 +80,7 @@ export function recordCommandFailure(command: string, error: unknown, attempt?: 
   trimCommandDiagnostics();
   emitCommandDiagnostics();
   if (!throttled) {
-    console.warn(`Local operation failed: ${command}`, error);
+    console.warn(`Local operation failed: ${command}`, commandFailureMessage(error));
   }
 }
 
@@ -123,15 +124,5 @@ function emitCommandDiagnostics() {
 }
 
 function commandFailureMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "string") {
-    return error;
-  }
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
+  return diagnosticErrorText(error);
 }

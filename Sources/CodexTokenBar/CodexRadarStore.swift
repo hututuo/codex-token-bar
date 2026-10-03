@@ -100,7 +100,7 @@ struct LiveCodexRadarReader: CodexRadarReading, Sendable {
             return enriched
         } catch {
             if !(error is CancellationError), (error as? URLError)?.code != .cancelled, !Task.isCancelled {
-                await MainActor.run { DiagnosticLogHistory.shared.record(summary: "雷达倒计时补充读取失败", logs: error.localizedDescription, source: "radar-countdown") }
+                await MainActor.run { DiagnosticLogHistory.shared.record(summary: "雷达倒计时补充读取失败", logs: DiagnosticErrorDetails.text(error), source: "radar-countdown") }
             }
             return snapshot
         }

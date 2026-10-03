@@ -7,17 +7,35 @@ pub(super) fn fetch(credential: &Credential, reset: bool) -> Result<Value, Strin
     let endpoint = if reset { "rate-limit-reset-credits" } else { "usage" };
     let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(8)).redirect(reqwest::redirect::Policy::none())
-        .build().map_err(|_| "额度网络客户端初始化失败")?;
+        .build().map_err(|error| format!("额度网络客户端初始化失败：{}", network_cause(error)))?;
     // Fixed official origin. Never send ChatGPT credentials to a configured model provider.
     let response = client.get(format!("https://chatgpt.com/backend-api/wham/{endpoint}"))
         .bearer_auth(&credential.access_token).header("Chatgpt-Account-Id", &credential.account_id)
         .header("Accept", "application/json").header("User-Agent", "CodexTokenBar")
-        .send().map_err(|error| if error.is_timeout() { "额度请求超时" } else { "额度网络连接失败" })?;
-    if !response.status().is_success() { return Err(format!("HTTP {}", response.status().as_u16())); }
+        .send().map_err(|error| format!("{}（wham/{endpoint}）：{}",
+            if error.is_timeout() { "额度请求超时" } else { "额度网络连接失败" }, network_cause(error)))?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}（wham/{endpoint}，Content-Type={}）", response.status().as_u16(),
+            response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or("未提供").chars().take(128).collect::<String>()));
+    }
     let mut body = vec![];
-    response.take(1_048_577).read_to_end(&mut body).map_err(|_| "额度响应读取失败")?;
+    response.take(1_048_577).read_to_end(&mut body).map_err(|error| format!("额度响应读取失败（wham/{endpoint}）：{error}"))?;
     if body.len() > 1_048_576 { return Err("额度响应过大".into()); }
-    serde_json::from_slice(&body).map_err(|_| "额度响应解析失败".into())
+    serde_json::from_slice(&body).map_err(|error| format!("额度响应解析失败（wham/{endpoint}，{}字节，行{}列{}，类别{:?}）", body.len(), error.line(), error.column(), error.classify()))
+}
+
+fn network_cause(error: reqwest::Error) -> String {
+    use std::error::Error;
+    // Strip the request URL and never include headers, credentials or response bodies.
+    let error = error.without_url();
+    let mut causes = vec![error.to_string()];
+    let mut source = error.source();
+    for _ in 0..5 {
+        let Some(cause) = source else { break; };
+        causes.push(cause.to_string());
+        source = cause.source();
+    }
+    causes.join(" -> ").chars().take(2048).collect()
 }
 
 pub(super) fn normalize(raw: &Value, now: i64) -> Value {

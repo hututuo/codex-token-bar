@@ -2,6 +2,27 @@ import XCTest
 @testable import CodexTokenBar
 
 final class DiagnosticLogHistoryTests: XCTestCase {
+    func testUnderlyingFileErrorIncludesDomainCodeAndPath() {
+        let underlying = NSError(domain: NSPOSIXErrorDomain, code: 13, userInfo: [NSFilePathErrorKey: "/codex/sessions/blocked.jsonl"])
+        let error = NSError(domain: "Scan", code: 1, userInfo: [NSUnderlyingErrorKey: underlying, "access_token": "must-not-log"])
+        let text = DiagnosticErrorDetails.text(error)
+        XCTAssertTrue(text.contains("NSPOSIXErrorDomain / 13"))
+        XCTAssertTrue(text.contains("blocked.jsonl"))
+        XCTAssertFalse(text.contains("must-not-log"))
+    }
+
+    @MainActor
+    func testSourceSwitchKeepsOriginalFailureContext() {
+        let journal = DiagnosticLogHistory()
+        journal.sourceContext = "/old"
+        journal.record(summary: "读取失败", logs: "same error", source: "usage")
+        journal.sourceContext = "/new"
+        journal.record(summary: "读取失败", logs: "same error", source: "usage")
+        XCTAssertEqual(journal.history.first?.sourceContext, "/old")
+        XCTAssertEqual(journal.current["usage"]?.sourceContext, "/new")
+        XCTAssertTrue(journal.environmentText.contains("build"))
+    }
+
     @MainActor
     func testRecoveryKeepsOriginalCauseAndTimes() {
         let journal = DiagnosticLogHistory()

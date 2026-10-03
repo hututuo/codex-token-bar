@@ -445,6 +445,7 @@ final class CodexUsageStore: ObservableObject {
         let nextIdentity = nextDataSource?.usageIdentityKey
         let previousPath = dataSource?.codexHome.standardizedFileURL.path
         let nextPath = nextDataSource?.codexHome.standardizedFileURL.path
+        DiagnosticLogHistory.shared.sourceContext = nextPath ?? "尚未确认数据源"
         let identityChanged = previousIdentity != nextIdentity
         let bindingChanged = previousPath != nextPath
         if identityChanged || bindingChanged {
@@ -1048,7 +1049,7 @@ final class CodexUsageStore: ObservableObject {
                     trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
                     return
                 }
-                DiagnosticLogHistory.shared.record(summary: sawNumericPrecisePhase ? "会话明细读取失败" : "用量读取失败", logs: error.localizedDescription, source: "usage")
+                DiagnosticLogHistory.shared.record(summary: sawNumericPrecisePhase ? "会话明细读取失败" : "用量读取失败", logs: DiagnosticErrorDetails.text(error), source: "usage")
                 if let upgrade = Self.indexUpgradeRequiredError(from: error) {
                     self.indexUpgradeRequired = upgrade
                     self.isDetailHydrating = false

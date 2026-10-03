@@ -10616,6 +10616,14 @@ fn visit_session_files(
                 };
                 let path = entry.path();
                 if is_history_repair_workspace(&path) { continue; }
+                if path.to_string_lossy().ends_with(".jsonl.zst")
+                    && !warnings.iter().any(|warning| warning.source == "jsonl_compression")
+                {
+                    warnings.push(LocalDataWarning {
+                        source: "jsonl_compression".into(),
+                        message: format!("检测到压缩会话文件；当前统计扫描器不读取 .jsonl.zst：{}。请核查 Codex 的本地聊天历史压缩设置", path.display()),
+                    });
+                }
                 let metadata = match fs::symlink_metadata(&path) {
                     Ok(metadata) => metadata,
                     Err(error) => {
@@ -10928,18 +10936,22 @@ fn estimate_active_rollouts(
         {
             *unresolved_boundary = true;
             boundary_warnings.push(format!(
-                "active rollout 路径不是 JSONL，本轮跳过该项：{}",
+                "active rollout 路径不是 JSONL，本轮跳过该项：{}（当前扫描器仅支持普通 JSONL）",
                 path.display()
             ));
             continue;
         }
-        let Ok(canonical) = fs::canonicalize(&path) else {
-            *unresolved_boundary = true;
-            boundary_warnings.push(format!(
-                "无法确认 active rollout 会话文件边界：{}",
-                path.display()
-            ));
-            continue;
+        let canonical = match fs::canonicalize(&path) {
+            Ok(canonical) => canonical,
+            Err(error) => {
+                *unresolved_boundary = true;
+                boundary_warnings.push(format!(
+                    "无法确认 active rollout 会话文件边界：{}（{}）{}",
+                    path.display(), error,
+                    super::scan_failure::compressed_twin_hint(&path, canonical_home)
+                ));
+                continue;
+            }
         };
         if !canonical.starts_with(canonical_home) {
             boundary_warnings.push(format!(
@@ -11139,7 +11151,7 @@ fn visit_active_rollouts(
         {
             scan_completeness.mark_incomplete();
             warnings.push(scan_warning(format!(
-                "active rollout 路径不是 JSONL，本轮跳过该项：{}",
+                "active rollout 路径不是 JSONL，本轮跳过该项：{}（当前扫描器仅支持普通 JSONL）",
                 path.display()
             )));
             continue;
@@ -17368,9 +17380,10 @@ fn resolve_file_within_codex_home(
         Ok(canonical) => canonical,
         Err(error) => {
             warnings.push(scan_warning(format!(
-                "无法确认 {source} 会话文件边界：{}（{}）",
+                "无法确认 {source} 会话文件边界：{}（{}）{}",
                 candidate.display(),
-                error
+                error,
+                super::scan_failure::compressed_twin_hint(candidate, canonical_home)
             )));
             return ResolvedSessionFile::Unresolved;
         }

@@ -1792,6 +1792,15 @@ fn codex_home_replacement_during_precise_scan_blocks_generation_publish() {
 
 #[test]
 fn missing_active_rollout_keeps_last_good_and_blocks_publish() {
+    assert_missing_active_rollout_keeps_last_good(false);
+}
+
+#[test]
+fn compressed_active_rollout_keeps_last_good_and_reports_format() {
+    assert_missing_active_rollout_keeps_last_good(true);
+}
+
+fn assert_missing_active_rollout_keeps_last_good(compressed: bool) {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1818,6 +1827,12 @@ fn missing_active_rollout_keeps_last_good_and_blocks_publish() {
     let missing_rollout = root
         .join("active-rollouts")
         .join("rollout-019emissing-active-0000-0000-0000.jsonl");
+    if compressed {
+        fs::create_dir_all(missing_rollout.parent().unwrap()).unwrap();
+        let mut compressed_path = missing_rollout.as_os_str().to_os_string();
+        compressed_path.push(".zst");
+        fs::write(PathBuf::from(compressed_path), b"compressed payload is never read by diagnosis").unwrap();
+    }
     create_state_database_with_rollout(
         &root,
         "019emissing-active-0000-0000-0000-rollout",
@@ -1825,6 +1840,20 @@ fn missing_active_rollout_keeps_last_good_and_blocks_publish() {
     );
     let error = dashboard_snapshot(&root).unwrap_err();
     assert!(error.contains("会话源扫描不完整"), "{error}");
+    assert!(error.contains("扫描诊断"), "{error}");
+    assert!(error.contains("失败阶段：sync_error"), "{error}");
+    if compressed {
+        assert!(error.contains("对应压缩文件"), "{error}");
+        assert!(error.contains("本地聊天历史压缩"), "{error}");
+    }
+    assert!(
+        error.contains("无法确认 active rollout 会话文件边界"),
+        "the command failure must preserve the scanner reason: {error}"
+    );
+    assert!(
+        error.contains(&missing_rollout.to_string_lossy().to_string()),
+        "the command failure must identify the unresolved file: {error}"
+    );
 
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
