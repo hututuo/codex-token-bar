@@ -1796,7 +1796,7 @@ fn missing_active_rollout_keeps_last_good_and_blocks_publish() {
 }
 
 #[test]
-fn compressed_active_rollout_keeps_last_good_and_reports_format() {
+fn corrupt_compressed_active_rollout_keeps_last_good_and_reports_error() {
     assert_missing_active_rollout_keeps_last_good(true);
 }
 
@@ -1843,11 +1843,10 @@ fn assert_missing_active_rollout_keeps_last_good(compressed: bool) {
     assert!(error.contains("扫描诊断"), "{error}");
     assert!(error.contains("失败阶段：sync_error"), "{error}");
     if compressed {
-        assert!(error.contains("对应压缩文件"), "{error}");
-        assert!(error.contains("本地聊天历史压缩"), "{error}");
+        assert!(error.contains("zstd") || error.contains("压缩") || error.contains("会话文件"), "{error}");
     }
     assert!(
-        error.contains("无法确认 active rollout 会话文件边界"),
+        compressed || error.contains("无法确认 active rollout 会话文件边界"),
         "the command failure must preserve the scanner reason: {error}"
     );
     assert!(
@@ -12684,7 +12683,7 @@ fn actual_release_nine_upgrades_rewrites_and_appends() {
     let index=ExactUsageIndex::open(&root).unwrap();drop(index);
     assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),before,"structural migration must not parse JSONL");
     let db=Connection::open(&path).unwrap();
-    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"13");
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"14");
     assert_eq!(db.query_row("SELECT COUNT(*) FROM (SELECT timestamp,input_tokens,cached_input_tokens,output_tokens,tokens FROM release_expected EXCEPT SELECT timestamp,input_tokens,cached_input_tokens,output_tokens,tokens FROM event_rows)",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     assert_eq!(db.query_row("SELECT COUNT(*) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),2);
     drop(db);
@@ -12727,7 +12726,7 @@ fn actual_release_historical_database_upgrades_and_keeps_incremental_scan() {
         assert_eq!(db.query_row(&format!("SELECT COUNT(*) FROM (SELECT {fields} FROM {a} EXCEPT SELECT {fields} FROM {b})"),[],|r|r.get::<_,i64>(0)).unwrap(),0);
     }
     assert_eq!(db.query_row("SELECT COUNT(*) FROM event_rows e JOIN release_expected r USING(id) WHERE e.legacy_tokens IS NOT r.old_tokens",[],|r|r.get::<_,i64>(0)).unwrap(),0);
-    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"13");
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"14");
     let structural_total:i64=db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get(0)).unwrap();drop(db);
     let first=dashboard_snapshot(&root).unwrap();
     let after_first=ExactUsageIndex::scan_bytes_for_testing();
@@ -12771,7 +12770,7 @@ fn actual_release_relocation_uses_supplied_cache_path() {
     super::exact_usage_index::relocate_legacy_index(&home,&legacy,&destination).unwrap();
     assert_eq!(ExactUsageIndex::scan_bytes_for_testing(),bytes);
     let db=Connection::open(&destination).unwrap();
-    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"13");
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"14");
     assert_eq!(db.query_row("SELECT COUNT(*) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),count);
     let total:i64=db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get(0)).unwrap();
     super::exact_usage_index::relocate_legacy_index(&home,&legacy,&destination).unwrap();
@@ -12799,4 +12798,91 @@ fn actual_release_relocation_uses_supplied_cache_path() {
     assert_eq!(fs::read(&rollback).unwrap(), preserved);
     drop(index); drop(db); fs::remove_dir_all(root).unwrap();
     println!("Actual release relocation: 13112 rows, non-default legacy path -> destination, no raw scan, unrelated index untouched");
+}
+
+#[test]
+fn compressed_history_reuses_complete_missing_ledger_then_materializes_and_appends() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019f1234-1234-1234-1234-123456789abc.jsonl");
+    let line = |n: u64, second: u32| format!(
+        "{{\"timestamp\":\"2026-10-01T00:00:{second:02}Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"last_token_usage\":{{\"input_tokens\":{n},\"cached_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":{n}}}}}}}}}}\n");
+    let original = line(120, 0);
+    fs::write(&file, &original).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let index = super::exact_usage_index::database_path(&root).unwrap();
+    let db = Connection::open(&index).unwrap();
+    let source: i64 = db.query_row("SELECT source_id FROM sources", [], |r| r.get(0)).unwrap();
+    db.execute_batch("UPDATE usage_ledger_sources SET missing=1; UPDATE usage_ledger_bindings SET available=0;").unwrap();
+    drop(db);
+    let modified = fs::metadata(&file).unwrap().modified().unwrap();
+    let zst = file.with_extension("jsonl.zst");
+    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+    encoder.set_pledged_src_size(Some(original.len() as u64)).unwrap();
+    encoder.write_all(original.as_bytes()).unwrap();
+    fs::write(&zst, encoder.finish().unwrap()).unwrap();
+    fs::File::options().write(true).open(&zst).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    fs::remove_file(&file).unwrap();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    let db = Connection::open(&index).unwrap();
+    assert_eq!(db.query_row("SELECT source_id FROM sources", [], |r| r.get::<_, i64>(0)).unwrap(), source);
+    assert_eq!(db.query_row("SELECT missing FROM usage_ledger_sources", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM source_representations", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    drop(db);
+    fs::write(&file, format!("{original}{}", line(7, 1))).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 127);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 127);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cold_compressed_history_counts_once_and_corruption_preserves_last_good() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let zst = root.join("sessions/rollout-019f2345-1234-1234-1234-123456789abc.jsonl.zst");
+    let line = r#"{"timestamp":"2026-10-01T00:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}
+"#;
+    fs::write(&zst, zstd::stream::encode_all(line.as_bytes(), 3).unwrap()).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    fs::write(&zst, [0x28, 0xb5, 0x2f, 0xfd]).unwrap();
+    assert!(dashboard_snapshot(&root).is_err());
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events", [], |r| r.get::<_, i64>(0)).unwrap(), 120);
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn storage_thirteen_to_fourteen_is_additive_and_backs_up_original_database() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019f3456-1234-1234-1234-123456789abc.jsonl");
+    write_lines(&file, &[r#"{"timestamp":"2026-10-01T00:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let path = super::exact_usage_index::database_path(&root).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE source_representations;
+        DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup');
+        UPDATE metadata SET value='13' WHERE key='schema_version';
+        CREATE TABLE expected_rows AS SELECT * FROM event_rows;
+        CREATE TABLE expected_sources AS SELECT * FROM sources;").unwrap();
+    drop(db);
+    drop(ExactUsageIndex::open(&root).unwrap());
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'", [], |r| r.get::<_, String>(0)).unwrap(), "14");
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM (SELECT * FROM expected_rows EXCEPT SELECT * FROM event_rows)", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM (SELECT * FROM expected_sources EXCEPT SELECT * FROM sources)", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    let backup: String = db.query_row("SELECT value FROM metadata WHERE key='representation_upgrade_backup'", [], |r| r.get(0)).unwrap();
+    let saved = Connection::open(backup).unwrap();
+    assert_eq!(saved.query_row("SELECT value FROM metadata WHERE key='schema_version'", [], |r| r.get::<_, String>(0)).unwrap(), "13");
+    assert_eq!(saved.query_row("SELECT SUM(tokens) FROM event_rows", [], |r| r.get::<_, i64>(0)).unwrap(), 120);
+    drop(saved); drop(db);
+    fs::remove_dir_all(root).unwrap();
 }

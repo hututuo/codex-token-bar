@@ -1,0 +1,4 @@
+module CZstd {
+    umbrella header "CZstd.h"
+    export *
+}

@@ -35,6 +35,9 @@ mod cache_version_tests;
 mod exact_usage_index;
 mod fingerprint_codec;
 mod scan_failure;
+mod rollout_source;
+#[cfg(test)]
+mod rollout_source_tests;
 mod session_files;
 mod session_parser;
 #[cfg(test)]

@@ -1,7 +1,8 @@
 use std::path::Path;
 
 pub(super) fn session_id_from_file(file: &Path) -> String {
-    let stem = file
+    let logical = super::rollout_source::logical_path(file);
+    let stem = logical
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or_default();

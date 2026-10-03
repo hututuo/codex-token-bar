@@ -25,12 +25,12 @@ enum PaginatedHistoryBoundary {
         return UInt64(hex.prefix(12), radix: 16)
     }
 
-    static func read(file: URL, handle: FileHandle? = nil) throws -> UInt64? {
+    static func read(file: URL, handle: (any CodexReadHandle)? = nil) throws -> UInt64? {
         try metadata(file: file, handle: handle)?.ordinal
     }
 
-    static func metadata(file: URL, handle supplied: FileHandle? = nil) throws -> Metadata? {
-        let handle = try supplied ?? FileHandle(forReadingFrom: file)
+    static func metadata(file: URL, handle supplied: (any CodexReadHandle)? = nil) throws -> Metadata? {
+        let handle = try supplied ?? CodexRolloutReader(forReadingFrom: file)
         let position = try handle.offset()
         defer {
             try? handle.seek(toOffset: position)

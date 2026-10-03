@@ -28,7 +28,7 @@ pub(super) fn queue_if_new(
     signature: FileSignature,
     jobs: &mut Vec<EmptySourceJob>,
 ) -> Result<bool, String> {
-    if signature.size != 0 { return Ok(false); }
+    if signature.size != 0 || rollout_source::physical_path(file).is_ok_and(|p|rollout_source::is_compressed(&p)) { return Ok(false); }
     let session_id = session_id_from_file(file);
     if !is_new_source(connection, path, &session_id)? { return Ok(false); }
     jobs.push(EmptySourceJob {

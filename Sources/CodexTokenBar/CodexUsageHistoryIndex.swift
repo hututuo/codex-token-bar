@@ -141,11 +141,11 @@ extension CodexUsageAnalyzer {
         let initialState: IndexedSessionParserState
         /// Process-local pinned source handle. It is never persisted; the
         /// caller owns and closes it after the synchronous parser returns.
-        let readHandle: FileHandle?
+        let readHandle: (any CodexReadHandle)?
 
         static func full(
             endOffset: UInt64,
-            readHandle: FileHandle? = nil
+            readHandle: (any CodexReadHandle)? = nil
         ) -> IndexedSessionParseRequest {
             IndexedSessionParseRequest(
                 hashingStartOffset: 0,
@@ -476,9 +476,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         case unresolved
     }
 
-    private static let schemaVersion = "13"
+    private static let schemaVersion = "14"
+    private static let accountingSchemaVersion = "13"
     private static let structuralSchemaVersion = "11"
-    private static let inPlaceSchemaVersions: Set<String> = ["6", "7", "11", "12", "13"]
+    private static let inPlaceSchemaVersions: Set<String> = ["6", "7", "11", "12", "13", "14"]
     private static let oldForkReplayBoundaryRevision = "explicit-subagent-delayed-context-v3"
     private static let paginatedV4BoundaryRevision = "paginated-subagent-boundary-v4"
     private static let paginatedV5BoundaryRevision = "paginated-owned-turn-v5"
@@ -619,6 +620,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         onProgress: ((PreciseIndexProgress) -> Void)? = nil,
         openMode: OpenMode = .active
     ) throws {
+        let existedBeforeOpen = fileManager.fileExists(atPath: databaseURL.path)
         let gate = Self.operationGate(for: databaseURL)
         let migratedViaCandidate: Bool
         if openMode == .active {
@@ -674,6 +676,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 try driver.withConnection { try UsageHistoryRetention.install(on: $0) }
                 try driver.withConnection { try UsageEventLedger.install(on: $0) }
                 try migrateAccounting()
+                try migrateRepresentations(backupRequired: existedBeforeOpen)
                 try driver.withConnection { connection in
                     let exists = try connection.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_observations';") { $0.int(0) }.first == 1
                     if !exists {
@@ -1078,7 +1081,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let schema = try connection.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version' LIMIT 1;"
             ) { $0.text(0) }.first ?? nil
-            if schema == "12" || schema == schemaVersion {
+            if schema == "12" || schema == accountingSchemaVersion || schema == schemaVersion {
                 // An older build may have committed accounting and stopped
                 // before retiring its structural migration manifest.
                 let quickCheck = try connection.readRows("PRAGMA quick_check;") { $0.text(0) ?? "" }
@@ -1544,6 +1547,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     supported: schemaVersion
                 )
             }
+            if rawSchema == schemaVersion {
+                let representationExists = try connection.readRows(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_representations'"
+                ) { $0.int(0) }.first != nil
+                if !representationExists || (try meta("representation_revision")) != "rollout-storage-v1" {
+                    return .corrupt(component: "representation", rawValue: "version/structure mismatch")
+                }
+            }
             if let accounting = try meta("accounting_revision"),
                accounting != UsageAccountingState.revision {
                 return .upgradeRequired(
@@ -1654,7 +1665,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
             }
             var stages: [String] = []
-            if rawSchema != schemaVersion { stages.append("schema") }
+            if rawSchema != schemaVersion {
+                stages.append(rawSchema == accountingSchemaVersion ? "representation" : "schema")
+            }
             if try meta("fork_replay_boundary_revision") != forkReplayBoundaryRevision {
                 stages.append("forkReplay")
             }
@@ -2338,7 +2351,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func sessionCatalogFirstLineFingerprint(
         for file: URL
     ) throws -> (endOffset: Int64, sha256: String) {
-        let handle = try FileHandle(forReadingFrom: file)
+        let handle = try CodexRolloutReader(forReadingFrom: file)
         defer { try? handle.close() }
 
         var hasher = SHA256()
@@ -2405,7 +2418,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         try driver.withConnection { connection in
             try configure(connection)
-            let indexedSources = try indexedSources(connection: connection)
+            let indexedSources = try indexedSources(connection: connection, includeMissing: true)
+            let missingSourceIDs = Set(try connection.readRows("SELECT source_id FROM usage_ledger_sources WHERE missing=1") { $0.int64(0) }.compactMap { $0 })
+            let representedSourceIDs = Set(try connection.readRows("SELECT source_id FROM source_representations") { $0.int64(0) }.compactMap { $0 })
             let enrichmentPendingSourceIDs = try eventEnrichmentPendingSourceIDs(
                 connection: connection
             )
@@ -2416,6 +2431,39 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     let path = file.path
                     let existing = indexedSources[path]
                     let observedMetadata = try sourceSignatureMetadata(for: file)
+                    if let existing, representedSourceIDs.contains(existing.id),
+                       !missingSourceIDs.contains(existing.id),
+                       !enrichmentPendingSourceIDs.contains(existing.id),
+                       isTrustedContentProbe(existing.signature.contentProbe),
+                       sourceMetadataMatches(existing.signature, observedMetadata) {
+                        unchangedFiles += 1
+                        return
+                    }
+                    if let existing,
+                       !enrichmentPendingSourceIDs.contains(existing.id),
+                       isTrustedContentProbe(existing.signature.contentProbe),
+                       existing.checkpoint?.resumeOffset == existing.signature.size,
+                       existing.signature.size == observedMetadata.size,
+                       existing.signature.modifiedAt == observedMetadata.modifiedAt {
+                        let reader = try CodexRolloutReader(forReadingFrom: file)
+                        defer { try? reader.close() }
+                        if reader.supportsMetadataReuse {
+                            let opened = try sourceSignatureMetadata(forOpenHandle: reader, file: file)
+                            guard opened == observedMetadata,
+                                  try sourceSignatureMetadata(for: file) == observedMetadata else {
+                                throw CodexUsageSourceChangedError(path: file.path)
+                            }
+                            try connection.transaction { tx in
+                                try recordRepresentation(source: existing, file: file, reader: reader,
+                                    signature: opened, verification: "metadata_only", connection: tx)
+                                try saveSourceObservation(sourceID: existing.id, signature: opened, connection: tx)
+                                try tx.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=? AND available<>0", bindings: [.int64(existing.id)])
+                                try restoreSourcePresence(existing.id, connection: tx)
+                            }
+                            unchangedFiles += 1
+                            return
+                        }
+                    }
                     if let existing,
                        enrichmentPendingSourceIDs.contains(existing.id) {
                         let observed = try sourceSignature(
@@ -2457,6 +2505,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                 // without hashing every historical JSONL body.
                                 try saveSourceObservation(sourceID: existing.id, signature: observedMetadata, connection: connection)
                             }
+                            try restoreSourcePresence(existing.id, connection: connection)
                             unchangedFiles += 1
                             return
                         }
@@ -2476,6 +2525,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                     signature: observed,
                                     connection: connection
                                 )
+                                try restoreSourcePresence(existing.id, connection: connection)
                                 unchangedFiles += 1
                                 return
                             }
@@ -3368,8 +3418,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ) throws -> [String: TurnSourceReference] {
         var references: [String: TurnSourceReference] = [:]
         try driver.withConnection { connection in
+            var checkedSources = Set<Int64>()
             for stableID in stableIDs {
                 guard let identity = Self.parseStableID(stableID) else { continue }
+                if checkedSources.insert(identity.sourceID).inserted {
+                    try verifyCompressedExcerptSource(identity.sourceID, connection: connection)
+                }
                 let rows = try connection.readRows(
                     """
                     SELECT
@@ -3414,6 +3468,28 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return references
     }
 
+    /// A metadata association preserves usage, but never certifies old text offsets.
+    /// Only a source actually requested for excerpts is decoded and checked against
+    /// its existing chunk proofs. No token parsing or ledger reconciliation occurs.
+    private func verifyCompressedExcerptSource(_ sourceID: Int64,
+                                               connection: SQLiteDatabaseConnection) throws {
+        let pending = try connection.readRows("""
+            SELECT s.path FROM sources s JOIN source_representations r USING(source_id)
+            WHERE s.source_id=? AND r.verification='metadata_only'
+            """, bindings: [.int64(sourceID)]) { $0.text(0) }.first ?? nil
+        guard let pending,
+              let source = try indexedSources(connection: connection, includeMissing: true)[pending],
+              try sourceChunksMatch(file: URL(fileURLWithPath: pending), source: source, connection: connection)
+        else { return }
+        try connection.transaction { tx in
+            try tx.execute("UPDATE source_representations SET verification='verified_full' WHERE source_id=?", bindings: [.int64(sourceID)])
+            try tx.execute("""
+                UPDATE usage_ledger_bindings SET available=1
+                WHERE source_id=? AND generation=(SELECT generation FROM usage_ledger_sources WHERE source_id=? AND missing=0)
+                """, bindings: [.int64(sourceID), .int64(sourceID)])
+        }
+    }
+
     static func clearForTesting() {
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: ephemeralRoot)
@@ -3436,12 +3512,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ) { $0.text(0) }.first ?? nil
             if revision == UsageAccountingState.revision {
                 let schema = try connection.readRows("SELECT value FROM schema_meta WHERE key='schema_version';") { $0.text(0) }.first ?? nil
-                if schema != Self.schemaVersion {
+                if (Int(schema ?? "0") ?? 0) < Int(Self.accountingSchemaVersion)! {
                     let columns = try connection.readRows("PRAGMA table_info(events);") { $0.text(1) }
                     guard columns.contains("accounting_kind") else { throw CodexUsageIndexRepairRequiredError(reason: "accounting marker 与事件结构不一致") }
                     let receipt = String(data: try JSONEncoder().encode(Self.candidateMigrationFacts(connection: connection)), encoding: .utf8)!
                     try connection.transaction { tx in
-                        try tx.execute("UPDATE schema_meta SET value=? WHERE key='schema_version';", bindings: [.text(Self.schemaVersion)])
+                        try tx.execute("UPDATE schema_meta SET value=? WHERE key='schema_version';", bindings: [.text(Self.accountingSchemaVersion)])
                         try tx.execute("INSERT INTO schema_meta(key,value) VALUES ('accounting_structural_receipt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;", bindings: [.text(receipt)])
                     }
                 }
@@ -3489,13 +3565,82 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ("accounting_structural_receipt", receipt),
                     ("accounting_revision", UsageAccountingState.revision),
                     ("accounting_coverage", legacyCount > 0 ? "legacy-source-audit-required" : "complete"),
-                    ("schema_version", Self.schemaVersion)
+                    ("schema_version", Self.accountingSchemaVersion)
                 ] {
                     try transaction.execute("INSERT INTO schema_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
                                             bindings: [.text(key), .text(value)])
                 }
             }
         }
+    }
+
+    /// Additive storage metadata only; historical tables and parser revisions stay intact.
+    private func migrateRepresentations(backupRequired: Bool) throws {
+        try driver.withConnection { db in
+            let schema = try db.readRows("SELECT value FROM schema_meta WHERE key='schema_version'") { $0.text(0) }.first ?? nil
+            if schema == Self.schemaVersion {
+                let revision = try db.readRows("SELECT value FROM schema_meta WHERE key='representation_revision'") { $0.text(0) }.first ?? nil
+                let exists = try db.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_representations'") { $0.int(0) }.first != nil
+                guard revision == "rollout-storage-v1", exists else {
+                    throw CodexUsageIndexRepairRequiredError(reason: "表示层版本与结构不一致，已保留原库")
+                }
+                return
+            }
+            guard schema == Self.accountingSchemaVersion else {
+                throw CodexUsageIndexUpgradeRequiredError(component: "表示层", stored: schema ?? "missing", supported: Self.schemaVersion)
+            }
+            var backupPath: String?
+            if backupRequired {
+                try Self.ensureCandidateMigrationCapacity(databaseURL: driver.url, fileManager: fileManager)
+                let backupURL = URL(fileURLWithPath: driver.url.path + ".schema13-before-representations-" + UUID().uuidString + ".sqlite")
+                let backup = SQLiteDatabaseDriver(url: backupURL, enableWAL: false, fileManager: fileManager)
+                try backup.withConnection { copy in
+                    try copy.restoreDatabase(from: driver.url)
+                    _ = try copy.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
+                    _ = try copy.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+                    try copy.execute("PRAGMA synchronous=FULL")
+                }
+                try Self.synchronizeFile(at: backupURL)
+                try Self.synchronizeDirectory(at: backupURL.deletingLastPathComponent())
+                backupPath = backupURL.path
+            }
+            try db.transaction { tx in
+                try tx.execute("""
+                    CREATE TABLE source_representations(
+                        source_id INTEGER PRIMARY KEY REFERENCES sources(source_id) ON DELETE CASCADE,
+                        physical_path TEXT NOT NULL, storage_format TEXT NOT NULL,
+                        physical_size INTEGER NOT NULL, physical_stamp TEXT NOT NULL,
+                        logical_size INTEGER NOT NULL, modified_at REAL NOT NULL,
+                        verification TEXT NOT NULL);
+                    INSERT INTO schema_meta(key,value) VALUES ('representation_revision','rollout-storage-v1');
+                    UPDATE schema_meta SET value='14' WHERE key='schema_version';
+                    """)
+                if let backupPath {
+                    try tx.execute("INSERT INTO schema_meta(key,value) VALUES ('representation_upgrade_backup',?)", bindings: [.text(backupPath)])
+                }
+            }
+        }
+    }
+
+    private func recordRepresentation(source: IndexedSource, file: URL, reader: CodexRolloutReader,
+        signature: SourceSignature, verification: String, connection: SQLiteDatabaseConnection) throws {
+        let physical = try SourceFileObservation.readPhysical(handle: reader.physicalHandle)
+        try connection.execute("""
+            INSERT INTO source_representations(source_id,physical_path,storage_format,physical_size,physical_stamp,logical_size,modified_at,verification)
+            VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET physical_path=excluded.physical_path,
+                storage_format=excluded.storage_format,physical_size=excluded.physical_size,physical_stamp=excluded.physical_stamp,
+                logical_size=excluded.logical_size,modified_at=excluded.modified_at,verification=excluded.verification
+            WHERE physical_stamp<>excluded.physical_stamp OR physical_path<>excluded.physical_path
+                OR logical_size<>excluded.logical_size
+                OR (verification<>'verified_full' AND excluded.verification='verified_full');
+            """, bindings: [.int64(source.id), .text(reader.physicalURL.path), .text(reader.isCompressed ? "zstd" : "jsonl"),
+                .int64(try sqliteInt64(physical.size)), .text(physical.physicalStamp), .int64(try sqliteInt64(signature.size)),
+                .double(signature.modifiedAt), .text(verification)])
+    }
+
+    private func restoreSourcePresence(_ sourceID: Int64, connection: SQLiteDatabaseConnection) throws {
+        // Restoring source presence does not certify its old excerpt bindings.
+        try connection.execute("UPDATE usage_ledger_sources SET missing=0 WHERE source_id=? AND missing<>0", bindings: [.int64(sourceID)])
     }
 
     private func prepareSchema(
@@ -4110,7 +4255,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     VALUES ('schema_version', ?)
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value;
                     """,
-                    bindings: [.text(currentVersion == Self.schemaVersion ? Self.schemaVersion : Self.structuralSchemaVersion)]
+                    bindings: [.text([Self.schemaVersion, Self.accountingSchemaVersion].contains(currentVersion ?? "") ? currentVersion! : Self.structuralSchemaVersion)]
                 )
                 if !eventEnrichmentRequiresSync {
                     try transaction.execute(
@@ -5606,7 +5751,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func probeExplicitSubagentSessionFile(
         _ file: URL
     ) -> ExplicitSubagentSessionFileProbe {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return .unresolved }
+        guard let handle = try? CodexRolloutReader(forReadingFrom: file) else { return .unresolved }
         defer { try? handle.close() }
         var firstLine = Data()
         while true {
@@ -5705,7 +5850,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// implementation issued one SQLite query per JSONL file, which amplified
     /// cold-page I/O into thousands of random reads on every refresh.
     private func indexedSources(
-        connection: SQLiteDatabaseConnection
+        connection: SQLiteDatabaseConnection,
+        includeMissing: Bool = false
     ) throws -> [String: IndexedSource] {
         let rows: [(String, IndexedSource)] = try connection.readRows(
             """
@@ -5730,7 +5876,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 accounting_state,
                 (SELECT o.physical_stamp FROM source_observations o WHERE o.source_id=sources.source_id AND o.size_bytes=sources.size_bytes AND o.modified_at=sources.modified_at)
             FROM sources
-            WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=sources.source_id AND l.missing=1)
+            WHERE \(includeMissing ? "1=1" : "NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=sources.source_id AND l.missing=1)")
             ORDER BY source_id;
             """
         ) { row in
@@ -5945,7 +6091,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
               ) else {
             return nil
         }
-        let readHandle = try FileHandle(forReadingFrom: file)
+        let readHandle = try CodexRolloutReader(forReadingFrom: file)
         defer { try? readHandle.close() }
         let formalSignature = try sourceSignature(
             forOpenHandle: readHandle,
@@ -6213,7 +6359,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         let pathBefore = try sourceSignatureMetadata(for: file)
         guard pathBefore.size == source.signature.size else { return false }
-        let handle = try FileHandle(forReadingFrom: file)
+        let handle = try CodexRolloutReader(forReadingFrom: file)
         defer { try? handle.close() }
         let handleBefore = try sourceSignatureMetadata(forOpenHandle: handle, file: file)
         guard handleBefore.size == source.signature.size else { return false }
@@ -6226,6 +6372,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             )
             guard actual == expected else { return false }
         }
+        try handle.validateDecodedEnd(at: source.signature.size)
         let handleAfter = try sourceSignatureMetadata(forOpenHandle: handle, file: file)
         let pathAfter = try sourceSignatureMetadata(for: file)
         return handleBefore == handleAfter
@@ -6238,7 +6385,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         index: UInt64,
         byteCount: UInt64
     ) throws -> CodexUsageAnalyzer.IndexedChunkHash {
-        let handle = try FileHandle(forReadingFrom: file)
+        let handle = try CodexRolloutReader(forReadingFrom: file)
         defer { try? handle.close() }
         return try hashSourceChunk(
             file: file,
@@ -6250,7 +6397,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func hashSourceChunk(
         file: URL,
-        readHandle: FileHandle,
+        readHandle: any CodexReadHandle,
         index: UInt64,
         byteCount: UInt64
     ) throws -> CodexUsageAnalyzer.IndexedChunkHash {
@@ -6287,7 +6434,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func validateAppendScan(
         file: URL,
-        readHandle: FileHandle,
+        readHandle: any CodexReadHandle,
         observedSignature: SourceSignature,
         chunkHashes: [CodexUsageAnalyzer.IndexedChunkHash]
     ) throws {
@@ -6444,7 +6591,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try connection.execute("""
             INSERT INTO source_observations(source_id,size_bytes,modified_at,physical_stamp) VALUES (?,?,?,?)
             ON CONFLICT(source_id) DO UPDATE SET size_bytes=excluded.size_bytes,
-                modified_at=excluded.modified_at,physical_stamp=excluded.physical_stamp;
+                modified_at=excluded.modified_at,physical_stamp=excluded.physical_stamp
+            WHERE size_bytes<>excluded.size_bytes OR modified_at<>excluded.modified_at OR physical_stamp<>excluded.physical_stamp;
             """, bindings: [.int64(sourceID), .int64(try sqliteInt64(signature.size)),
                             .double(signature.modifiedAt), .text(stamp)])
     }
@@ -6683,10 +6831,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// once through the path to prove it still names the bytes just parsed.
     private func validateScannedSourcePrefix(
         file: URL,
-        readHandle: FileHandle,
+        readHandle: any CodexReadHandle,
         committedSignature: SourceSignature,
         expectedContentHash: String
     ) throws {
+        try readHandle.validateDecodedEnd(at: committedSignature.size)
         let handleSignature = try sourceSignature(
             forOpenHandle: readHandle,
             file: file
@@ -8052,7 +8201,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func sourceSignature(
-        forOpenHandle handle: FileHandle,
+        forOpenHandle handle: any CodexReadHandle,
         file: URL
     ) throws -> SourceSignature {
         let metadata = try sourceSignatureMetadata(
@@ -8068,7 +8217,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func sourceSignatureMetadata(
-        forOpenHandle handle: FileHandle,
+        forOpenHandle handle: any CodexReadHandle,
         file: URL
     ) throws -> SourceSignature {
         let observation = try SourceFileObservation.read(handle: handle)
@@ -8096,14 +8245,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func contentHash(for file: URL, length: UInt64) throws -> String {
-        let handle = try FileHandle(forReadingFrom: file)
+        let handle = try CodexRolloutReader(forReadingFrom: file)
         defer { try? handle.close() }
 
         return try contentHash(forOpenHandle: handle, length: length, file: file)
     }
 
     private func contentHash(
-        forOpenHandle handle: FileHandle,
+        forOpenHandle handle: any CodexReadHandle,
         length: UInt64,
         file: URL
     ) throws -> String {
@@ -8133,14 +8282,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func contentProbe(for file: URL, size: UInt64) throws -> String {
-        let handle = try FileHandle(forReadingFrom: file)
+        let handle = try CodexRolloutReader(forReadingFrom: file)
         defer { try? handle.close() }
 
         return try contentProbe(forOpenHandle: handle, size: size)
     }
 
     private func contentProbe(
-        forOpenHandle handle: FileHandle,
+        forOpenHandle handle: any CodexReadHandle,
         size: UInt64
     ) throws -> String {
         Self.sourceProbeTestState.record()
@@ -8148,10 +8297,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         let probeLength = 4_096
         var data = Data("\(size):".utf8)
-        data.append(handle.readData(ofLength: probeLength))
+        data.append(try handle.read(upToCount: probeLength) ?? Data())
         if size > UInt64(probeLength) {
             try handle.seek(toOffset: size - UInt64(probeLength))
-            data.append(handle.readData(ofLength: probeLength))
+            data.append(try handle.read(upToCount: probeLength) ?? Data())
         }
         return SHA256.hash(data: data)
             .map { String(format: "%02x", $0) }

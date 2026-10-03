@@ -40,7 +40,7 @@ enum UsageEventLedger {
     }
 
     static func isPaginatedFile(_ file: URL) throws -> Bool {
-        let handle = try FileHandle(forReadingFrom:file)
+        let handle = try CodexRolloutReader(forReadingFrom:file)
         defer { try? handle.close() }
         let prefix = try handle.read(upToCount:64 * 1024) ?? Data()
         let line = prefix.prefix { $0 != 10 }
@@ -54,7 +54,7 @@ enum UsageEventLedger {
         let exists = try db.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_ledger_meta'") { $0.int(0) }.first != nil
         guard exists else {
             let hasMetadata = try db.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'") { $0.int(0) }.first != nil
-            if hasMetadata, (try db.readRows("SELECT value FROM schema_meta WHERE key='schema_version'") { $0.text(0) }.first ?? nil) == "13" {
+            if hasMetadata, (try db.readRows("SELECT value FROM schema_meta WHERE key='schema_version'") { $0.text(0) }.first ?? nil)  .map({ ["13", "14"].contains($0) }) == true {
                 throw CodexUsageIndexRepairRequiredError(reason: "历史账本标记与结构不一致，已保留原库")
             }
             return

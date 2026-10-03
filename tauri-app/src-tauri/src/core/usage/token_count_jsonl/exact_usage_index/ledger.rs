@@ -11,7 +11,7 @@ const GROUP_BASE: i64 = 1_i64 << 62;
 
 pub(super) fn validate(db: &Connection) -> Result<(),String> {
     if !table_exists_checked(db,"usage_ledger_meta")? {
-        if table_exists_checked(db,"metadata")? && metadata_i64(db,"schema_version")? == Some(13) {
+        if table_exists_checked(db,"metadata")? && metadata_i64(db,"schema_version")?.is_some_and(|v| (13..=CURRENT_SCHEMA_VERSION).contains(&v)) {
             return Err("历史账本标记与结构不一致，已保留原库；不会从当前原文覆盖重建".into());
         }
         return Ok(());

@@ -15,10 +15,16 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.9.0")
     ],
     targets: [
+        .target(
+            name: "CZstd",
+            path: "Sources/CZstd",
+            publicHeadersPath: "include"
+        ),
         .executableTarget(
             name: "CodexTokenBar",
             dependencies: [
                 "TiktokenSwift",
+                "CZstd",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/CodexTokenBar"

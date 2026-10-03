@@ -1,3 +1,4 @@
+use super::rollout_source::RolloutReader;
 use super::accounting::{AccountingState, Components, Snapshot, COUNTED};
 #[cfg(test)]
 use super::TokenEvent;
@@ -156,7 +157,7 @@ pub(super) trait ExactSessionEventSink {
 
 pub(super) fn stream_session_file_exact(
     file: &Path,
-    handle: &mut fs::File,
+    handle: &mut (impl Read + Seek),
     prefix_size: u64,
     session_id: &str,
     sink: &mut impl ExactSessionEventSink,
@@ -179,7 +180,7 @@ pub(super) fn stream_session_file_exact(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn stream_session_file_exact_from(
     file: &Path,
-    handle: &mut fs::File,
+    handle: &mut (impl Read + Seek),
     hashing_start_offset: u64,
     parsing_start_offset: u64,
     prefix_size: u64,
@@ -471,7 +472,7 @@ pub(super) struct MessageLinkScan {
 
 /// Marker-only pass: never invokes the accounting parser or admits events.
 pub(super) fn scan_message_links(file: &Path, size: u64, offsets: &std::collections::HashSet<u64>) -> Result<MessageLinkScan, String> {
-    let mut handle = fs::File::open(file).map_err(|e| e.to_string())?;
+    let mut handle = RolloutReader::open(file).map_err(|e| e.to_string())?;
     let metadata = paginated_subagent_metadata(&mut handle)?;
     let mut ownership = AccountingState::fresh();
     let mut fork: Option<ForkSessionMetadata> = None;
@@ -671,7 +672,7 @@ fn visit_source_range_lines(
         .end
         .checked_sub(range.start)
         .ok_or_else(|| format!("会话摘录字节区间无效：{}", file.display()))?;
-    let mut handle = fs::File::open(file)
+    let mut handle = RolloutReader::open(file)
         .map_err(|error| format!("打开会话摘录源文件失败：{}（{}）", file.display(), error))?;
     handle
         .seek(SeekFrom::Start(range.start))
@@ -711,7 +712,7 @@ pub(super) fn parse_session_file_full_result(
     warnings: &mut Vec<LocalDataWarning>,
 ) -> SessionParseResult {
     let mut sink = TestExactSessionSink::default();
-    let mut handle = match fs::File::open(file) {
+    let mut handle = match RolloutReader::open(file) {
         Ok(handle) => handle,
         Err(error) => {
             warnings.push(jsonl_file_warning(format!(
@@ -726,10 +727,7 @@ pub(super) fn parse_session_file_full_result(
             };
         }
     };
-    let prefix_size = handle
-        .metadata()
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
+    let prefix_size = handle.logical_size();
     let parsed = match stream_session_file_exact(
         file,
         &mut handle,
@@ -1117,7 +1115,7 @@ const EXPLICIT_SUBAGENT_FIRST_LINE_LIMIT: usize = 256 * 1024;
 pub(super) fn probe_explicit_subagent_session_file(
     path: &Path,
 ) -> ExplicitSubagentSessionFileProbe {
-    let Ok(file) = fs::File::open(path) else {
+    let Ok(file) = RolloutReader::open(path) else {
         return ExplicitSubagentSessionFileProbe::Unresolved;
     };
     let mut reader = BufReader::new(file);
@@ -1321,7 +1319,7 @@ mod tests {
 
 /// Read the declared boundary from the same open source on every parse,
 /// including append resumes. This adds no new persisted checkpoint fields.
-pub(super) fn paginated_subagent_boundary(handle: &mut fs::File) -> Result<Option<u64>, String> {
+pub(super) fn paginated_subagent_boundary(handle: &mut (impl Read + Seek)) -> Result<Option<u64>, String> {
     paginated_subagent_metadata(handle).map(|m| m.map(|m| m.ordinal))
 }
 
@@ -1336,7 +1334,7 @@ fn uuid_milliseconds(value: &str) -> Option<u64> {
     (id.get_version_num() == 7).then_some((id.as_u128() >> 80) as u64)
 }
 
-fn paginated_subagent_metadata(handle: &mut fs::File) -> Result<Option<PaginatedSubagentMetadata>, String> {
+fn paginated_subagent_metadata(handle: &mut (impl Read + Seek)) -> Result<Option<PaginatedSubagentMetadata>, String> {
     let position = handle.stream_position().map_err(|e| e.to_string())?;
     let result = (|| {
         handle.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;

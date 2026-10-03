@@ -1,9 +1,11 @@
+use super::rollout_source::{self, RolloutReader, SourceHandle};
 pub(super) mod cycle_range;
 mod retention;
 mod reconciler;
 mod ledger;
 mod message_links;
 mod empty_sources;
+mod representations;
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -62,7 +64,8 @@ use uuid::Uuid;
 // v0.9.1 is the only forward-migration baseline for v0.9.2. Earlier and future
 // layouts are preserved read-only and rejected instead of being deleted.
 const INDEX_SCHEMA_VERSION: i64 = 11; // durable structural candidate contract
-const CURRENT_SCHEMA_VERSION: i64 = 13;
+const CURRENT_SCHEMA_VERSION: i64 = 14;
+const ACCOUNTING_SCHEMA_VERSION: i64 = 13;
 const GITHUB_BASE_SCHEMA_VERSION: i64 = 9;
 const INDEX_INTEGRITY_RECEIPT_VERSION: u32 = 2;
 const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
@@ -1204,6 +1207,7 @@ fn assess_index_migration(
     }
     retention::validate(connection)?;
     ledger::validate(connection)?;
+    if table_exists_checked(connection, "metadata")? { representations::validate(connection)?; }
     let metadata_exists = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
@@ -1353,9 +1357,8 @@ fn assess_index_migration(
     {
         stages.push("schema");
     }
-    if schema != CURRENT_SCHEMA_VERSION {
-        stages.push("accounting");
-    }
+    if schema < ACCOUNTING_SCHEMA_VERSION { stages.push("accounting"); }
+    if schema < CURRENT_SCHEMA_VERSION { stages.push("representation"); }
     if metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
         != Some(FORK_REPLAY_BOUNDARY_REVISION)
     {
@@ -1534,7 +1537,7 @@ impl ExactUsageIndex {
         let needs_migration_work = matches!(
             &migration_assessment,
             MigrationAssessment::KnownMigrationRequired(stages)
-                if stages.iter().any(|stage| *stage != "accounting")
+                if stages.iter().any(|stage| !["accounting", "representation"].contains(stage))
         );
         preparation.advance("open_integrity");
         let (mut connection, recovered_corrupt_index) = open_index_connection_with_recovery(
@@ -1763,6 +1766,7 @@ impl ExactUsageIndex {
             && !event_enrichment_requires_sync
             && schema_version != Some(INDEX_SCHEMA_VERSION)
             && schema_version != Some(CURRENT_SCHEMA_VERSION)
+            && schema_version != Some(ACCOUNTING_SCHEMA_VERSION)
         {
             set_metadata(
                 &connection,
@@ -1854,6 +1858,7 @@ impl ExactUsageIndex {
         ledger::install(&connection)?;
         preparation.advance("accounting_migration");
         apply_accounting_migration(&mut connection, accounting_receipt)?;
+        representations::migrate(&mut connection, &path, existed_before)?;
         retention::install(&connection)?;
         preparation.advance("finalize_open");
         let migration_markers_complete = !should_report_migration
@@ -2971,7 +2976,7 @@ impl ExactUsageIndex {
 
         for candidate in candidates {
             let file = PathBuf::from(&candidate.path);
-            let handle = match fs::File::open(&file) {
+            let handle = match RolloutReader::open(&file) {
                 Ok(handle) => handle,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     record_missing_event_enrichment_source(
@@ -4903,6 +4908,7 @@ impl ExactUsageIndex {
         }
 
         let canonical_home = canonical_codex_home(codex_home)?;
+        let mut verified_excerpts = HashMap::new();
         Ok(selected
             .into_iter()
             .map(|mut item| {
@@ -4927,6 +4933,13 @@ impl ExactUsageIndex {
                         file.display()
                     )));
                     return item.usage;
+                }
+                let verified = verified_excerpts.entry(file.clone()).or_insert_with(||
+                    representations::verify_excerpt_source(&self.connection, &file));
+                match verified {
+                    Ok(true) => {}
+                    Ok(false) => return item.usage,
+                    Err(error) => {warnings.push(excerpt_warning(error.clone())); return item.usage;}
                 }
                 match read_event_excerpts(&file, item.source_offsets) {
                     Ok((user_prompt, assistant_response)) => match file_signature(&file) {
@@ -5008,7 +5021,8 @@ impl ExactUsageIndex {
                 f.size,
                 f.modified_ns
             FROM selected_turns AS turn_rows
-            LEFT JOIN usage_ledger_bindings binding ON binding.event_id=turn_rows.event_id AND binding.available=1
+            LEFT JOIN usage_ledger_bindings binding ON binding.event_id=turn_rows.event_id
+                AND (binding.available=1 OR EXISTS(SELECT 1 FROM source_representations r WHERE r.source_id=binding.source_id AND r.verification='metadata_only'))
                 AND binding.raw_generation=(SELECT raw_generation FROM usage_ledger_sources ls WHERE ls.source_id=binding.source_id AND ls.missing=0)
             LEFT JOIN session_metadata m ON m.session_id = turn_rows.session_id
             JOIN files f
@@ -6074,7 +6088,7 @@ fn build_staged_full_rebuild(
     #[cfg(test)]
     empty_sources::STAGED_DATABASE_BUILDS.fetch_add(1, Ordering::SeqCst);
     run_before_staging_open_hook_for_testing(&job.file);
-    let mut handle = fs::File::open(&job.file).map_err(|error| {
+    let mut handle = RolloutReader::open(&job.file).map_err(|error| {
         StagedFullRebuildError::IncompleteSource(format!(
             "读取精确 token 暂存源文件失败：{}（{}）",
             job.file.display(),
@@ -6668,7 +6682,7 @@ fn validated_staged_full_rebuild(
         _ => return Ok(None),
     };
     if [LEGACY_STAGED_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&manifest.parser_revision.as_str())
-        && super::session_parser::paginated_subagent_boundary(&mut fs::File::open(&job.file).map_err(|e| e.to_string())?)?.is_some() {
+        && super::session_parser::paginated_subagent_boundary(&mut RolloutReader::open(&job.file).map_err(|e| e.to_string())?)?.is_some() {
         return Ok(None);
     }
     let artifact_bytes = fs::metadata(database_path)
@@ -6724,7 +6738,7 @@ fn validated_staged_full_rebuild(
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    let mut source_handle = match fs::File::open(&job.file) {
+    let mut source_handle = match RolloutReader::open(&job.file) {
         Ok(handle) => handle,
         Err(_) => return Ok(None),
     };
@@ -9328,7 +9342,7 @@ fn process_scan_file_with_progress(
     expected_signature: Option<FileSignature>,
     mode: ExactSyncMode,
 ) -> Result<(), String> {
-    let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let canonical = rollout_source::canonical_logical_path(file).unwrap_or_else(|_| rollout_source::logical_path(file));
     if !scanned_paths.insert(canonical) {
         return Ok(());
     }
@@ -9397,7 +9411,7 @@ fn reserve_staging_source(
             .map_err(|e|e.to_string())?.collect::<Result<_,_>>().map_err(|e|e.to_string())?;
         if candidates.len()==1 {
             let (source,old_path)=&candidates[0];
-            if fs::metadata(old_path).is_err_and(|e|e.kind()==std::io::ErrorKind::NotFound) {
+            if rollout_source::metadata(Path::new(old_path)).is_err_and(|e|e.kind()==std::io::ErrorKind::NotFound) {
                 connection.execute("UPDATE sources SET path=?2 WHERE source_id=?1",params![source,path]).map_err(|e|e.to_string())?;
                 stored=read(connection)?;
             }
@@ -9472,14 +9486,14 @@ fn process_session_file(
     empty_source_jobs: &mut Vec<empty_sources::EmptySourceJob>,
 ) -> Result<Option<FullRebuildJob>, String> {
     if is_history_repair_workspace(file) { return Ok(None); }
-    let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let canonical = rollout_source::canonical_logical_path(file).unwrap_or_else(|_| rollout_source::logical_path(file));
     let path = canonical.to_string_lossy().into_owned();
 
     // 单个文件不可读（权限/锁定/iCloud 占位）属持久性错误：整轮报错会让 building
     // 滞留、后台无限重试且 dashboard 永不刷新。删除已经明确发生时不写入
     // exact_seen_files，让本轮正式发布安全登记删除墓碑；其他不可读错误仍抑制
     // 墓碑，保留旧统计待自愈。
-    let mut handle = match fs::File::open(file) {
+    let mut handle = match RolloutReader::open(file) {
         Ok(handle) => handle,
         Err(error) => {
             // The discovery list is intentionally allowed to become stale.
@@ -9570,6 +9584,9 @@ fn process_session_file(
         )
         .optional()
         .map_err(|error| format!("无法读取会话文件索引签名：{error}"))?;
+    if representations::reuse_complete(connection, &path, &handle, signature, generation)? {
+        return Ok(None);
+    }
     let source_missing: bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM usage_ledger_sources l JOIN sources s USING(source_id) WHERE s.path=?1 AND l.missing=1 AND NOT EXISTS(SELECT 1 FROM pending_sources p WHERE p.source_id=s.source_id AND p.mode<>'tombstone'))",params![&path],|r|r.get(0)).map_err(|e|e.to_string())?;
     let unchanged = !source_missing && previous_signature
         .as_ref()
@@ -9730,7 +9747,7 @@ fn append_session_file(
     codex_home: &Path,
     file: &Path,
     path: &str,
-    handle: &mut fs::File,
+    handle: &mut impl SourceHandle,
     signature: FileSignature,
     checkpoint: &IndexedFileCheckpoint,
     warnings: &mut Vec<LocalDataWarning>,
@@ -9998,7 +10015,7 @@ fn revalidate_metadata_only_file(
     generation: i64,
     file: &Path,
     path: &str,
-    handle: &mut fs::File,
+    handle: &mut impl SourceHandle,
     signature: FileSignature,
     checkpoint: &IndexedFileCheckpoint,
     diagnostics: &mut ExactScanDiagnostics,
@@ -10143,7 +10160,7 @@ fn validate_building_generation_commit_scope(
 
     for (path, committed_size, audit_chunk_index) in committed_files {
         let file = Path::new(&path);
-        let mut handle = fs::File::open(file).map_err(|error| {
+        let mut handle = RolloutReader::open(file).map_err(|error| {
             format!(
                 "会话文件在发布前已不可读，本轮结果不会发布：{}（{}）",
                 file.display(),
@@ -10189,7 +10206,7 @@ fn validate_building_generation_commit_scope(
 
 fn audit_checkpoint_chunk(
     connection: &Connection,
-    handle: &mut fs::File,
+    handle: &mut impl SourceHandle,
     file: &Path,
     path: &str,
     checkpoint: &IndexedFileCheckpoint,
@@ -10248,7 +10265,7 @@ fn stored_file_chunk(
 }
 
 fn hash_file_chunk(
-    handle: &mut fs::File,
+    handle: &mut impl SourceHandle,
     path: &Path,
     chunk_index: u64,
     byte_count: u64,
@@ -10289,7 +10306,7 @@ fn hash_file_chunk(
 
 fn validate_append_scan_prefix(
     path: &Path,
-    handle: &mut fs::File,
+    handle: &mut impl SourceHandle,
     start_signature: FileSignature,
     chunk_hashes: &[ExactChunkHash],
 ) -> Result<(), String> {
@@ -10313,7 +10330,7 @@ fn validate_append_scan_prefix(
         .size
         .saturating_sub(tail_index.saturating_mul(EXACT_INDEX_CHUNK_SIZE));
     let current_tail = hash_file_chunk(handle, path, tail_index, prefix_byte_count)?;
-    let mut path_handle = fs::File::open(path).map_err(|error| {
+    let mut path_handle = RolloutReader::open(path).map_err(|error| {
         format!(
             "无法重开会话文件以复核追加边界：{}（{}）",
             path.display(),
@@ -10616,14 +10633,6 @@ fn visit_session_files(
                 };
                 let path = entry.path();
                 if is_history_repair_workspace(&path) { continue; }
-                if path.to_string_lossy().ends_with(".jsonl.zst")
-                    && !warnings.iter().any(|warning| warning.source == "jsonl_compression")
-                {
-                    warnings.push(LocalDataWarning {
-                        source: "jsonl_compression".into(),
-                        message: format!("检测到压缩会话文件；当前统计扫描器不读取 .jsonl.zst：{}。请核查 Codex 的本地聊天历史压缩设置", path.display()),
-                    });
-                }
                 let metadata = match fs::symlink_metadata(&path) {
                     Ok(metadata) => metadata,
                     Err(error) => {
@@ -10645,9 +10654,7 @@ fn visit_session_files(
                         warnings,
                         scan_completeness,
                     )?;
-                } else if path
-                    .extension()
-                    .is_some_and(|extension| extension == "jsonl")
+                } else if rollout_source::is_rollout(&path)
                 {
                     match resolve_file_within_codex_home(
                         &canonical_home,
@@ -10830,13 +10837,11 @@ fn estimate_session_directory(
                 pending.push(path);
                 continue;
             }
-            if path
-                .extension()
-                .is_none_or(|extension| extension != "jsonl")
+            if !rollout_source::is_rollout(&path)
             {
                 continue;
             }
-            let canonical = match fs::canonicalize(&path) {
+            let canonical = match rollout_source::canonical_logical_path(&path) {
                 Ok(canonical) => canonical,
                 Err(error) => {
                     *unresolved_boundary = true;
@@ -10856,7 +10861,7 @@ fn estimate_session_directory(
                 ));
                 continue;
             }
-            let metadata = match fs::metadata(&canonical) {
+            let metadata = match rollout_source::metadata(&canonical) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     *unresolved_boundary = true;
@@ -10930,18 +10935,16 @@ fn estimate_active_rollouts(
                 codex_home.join(path)
             }
         };
-        if path
-            .extension()
-            .is_none_or(|extension| extension != "jsonl")
+        if !rollout_source::is_rollout(&path)
         {
             *unresolved_boundary = true;
             boundary_warnings.push(format!(
-                "active rollout 路径不是 JSONL，本轮跳过该项：{}（当前扫描器仅支持普通 JSONL）",
+                "active rollout 路径不是 JSONL，本轮跳过该项：{}（支持 JSONL 或 JSONL.zst）",
                 path.display()
             ));
             continue;
         }
-        let canonical = match fs::canonicalize(&path) {
+        let canonical = match rollout_source::canonical_logical_path(&path) {
             Ok(canonical) => canonical,
             Err(error) => {
                 *unresolved_boundary = true;
@@ -10961,7 +10964,7 @@ fn estimate_active_rollouts(
             ));
             continue;
         }
-        let metadata = match fs::metadata(&canonical) {
+        let metadata = match rollout_source::metadata(&canonical) {
             Ok(metadata) => metadata,
             Err(error) => {
                 *unresolved_boundary = true;
@@ -11145,13 +11148,11 @@ fn visit_active_rollouts(
                 codex_home.join(path)
             }
         };
-        if !path
-            .extension()
-            .is_some_and(|extension| extension == "jsonl")
+        if !rollout_source::is_rollout(&path)
         {
             scan_completeness.mark_incomplete();
             warnings.push(scan_warning(format!(
-                "active rollout 路径不是 JSONL，本轮跳过该项：{}（当前扫描器仅支持普通 JSONL）",
+                "active rollout 路径不是 JSONL，本轮跳过该项：{}（支持 JSONL 或 JSONL.zst）",
                 path.display()
             )));
             continue;
@@ -13638,7 +13639,7 @@ fn validate_schema11_storage(
     let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
         .map_err(|error| format!("无法只读打开 schema 11 候选库：{error}"))?;
     let storage_before = schema11_source_receipt_from_connection(index_path, &connection)?;
-    if matches!(metadata_i64(&connection, "schema_version")?, Some(12) | Some(CURRENT_SCHEMA_VERSION)) {
+    if matches!(metadata_i64(&connection, "schema_version")?, Some(12) | Some(ACCOUNTING_SCHEMA_VERSION) | Some(CURRENT_SCHEMA_VERSION)) {
         // Resume manifests written by a previous schema-12 accounting build.
         let receipt=metadata_text(&connection,"accounting_structural_receipt")?.ok_or("Missing accounting structural receipt")?;
         let facts: Schema11MigrationFacts=serde_json::from_str(&receipt).map_err(|e|e.to_string())?;
@@ -14941,7 +14942,7 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
     let mut explicit_paths = Vec::new();
     let mut unresolved_candidate = false;
     for (path, legacy_candidate) in candidates {
-        let boundary = fs::File::open(&path).map_err(|e| e.to_string())
+        let boundary = RolloutReader::open(&path).map_err(|e| e.to_string())
             .and_then(|mut f| super::session_parser::paginated_subagent_boundary(&mut f));
         match boundary {
             Ok(value) if stored_revision.as_deref() == Some(PAGINATED_V5_PARSER_REVISION) && value != Some(u64::MAX) => continue,
@@ -15045,7 +15046,7 @@ fn apply_accounting_migration(connection: &mut Connection,receipt: Option<String
         if revision != ACCOUNTING_REVISION {
             return Err(format!("Unknown accounting revision {revision}; preserved index"));
         }
-        if metadata_i64(connection, "schema_version")? != Some(CURRENT_SCHEMA_VERSION) {
+        if metadata_i64(connection, "schema_version")?.unwrap_or(0) < ACCOUNTING_SCHEMA_VERSION {
             if !column_exists_checked(connection, "event_rows", "accounting_kind")? {
                 return Err("Accounting marker does not match event structure".into());
             }
@@ -15053,7 +15054,7 @@ fn apply_accounting_migration(connection: &mut Connection,receipt: Option<String
             if let Some(receipt) = receipt {
                 set_metadata(&tx, "accounting_structural_receipt", &receipt)?;
             }
-            set_metadata(&tx, "schema_version", &CURRENT_SCHEMA_VERSION.to_string())?;
+            set_metadata(&tx, "schema_version", &ACCOUNTING_SCHEMA_VERSION.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         }
         return Ok(());
@@ -15151,7 +15152,7 @@ fn apply_accounting_migration(connection: &mut Connection,receipt: Option<String
     }
     set_metadata(&tx,"accounting_coverage",if legacy_count>0 {"legacy-source-audit-required"} else {"complete"})?;
     set_metadata(&tx,"accounting_revision",ACCOUNTING_REVISION)?;
-    set_metadata(&tx,"schema_version",&CURRENT_SCHEMA_VERSION.to_string())?;
+    set_metadata(&tx,"schema_version",&ACCOUNTING_SCHEMA_VERSION.to_string())?;
     let revision=metadata_i64(&tx,"revision")?.unwrap_or(0).saturating_add(1);
     set_metadata(&tx,"revision",&revision.to_string())?;
     set_metadata(&tx,DASHBOARD_REVISION_KEY,&revision.to_string())?;
@@ -16977,15 +16978,17 @@ fn collect_session_catalog_observations(
                     continue;
                 }
                 if !metadata.is_file()
-                    || path.extension().and_then(|value| value.to_str()) != Some("jsonl")
+                    || !rollout_source::is_rollout(&path)
                 {
                     continue;
                 }
-                observations.push(session_catalog_observation(path, archived, &metadata)?);
+                let logical = rollout_source::canonical_logical_path(&path).map_err(|e|e.to_string())?;
+                observations.push(session_catalog_observation(logical, archived, &metadata)?);
             }
         }
     }
     observations.sort_by(|left, right| left.path.cmp(&right.path));
+    observations.dedup_by(|left,right| left.path==right.path);
     Ok(observations)
 }
 
@@ -16996,10 +16999,11 @@ fn session_catalog_observation(
 ) -> Result<SessionCatalogObservation, String> {
     let modified = metadata.modified().ok();
     let created = metadata.created().ok();
+    let size = file_signature(&path)?.size;
     Ok(SessionCatalogObservation {
         path,
         archived,
-        size: metadata.len(),
+        size,
         modified_ns: system_time_ns_text(modified),
         created_ns: system_time_ns_text(created),
         modified_at: system_time_unix_seconds(modified),
@@ -17025,7 +17029,9 @@ fn refresh_session_catalog_entry<F>(
 where
     F: FnMut(&[u8]) -> Result<IndexedSessionMetadata, String>,
 {
-    let mut file = open_session_catalog_rollout(&observation.path)?;
+    let physical = rollout_source::physical_path(&observation.path).map_err(|e|e.to_string())?;
+    let raw = open_session_catalog_rollout(&physical)?;
+    let mut file = RolloutReader::from_file(raw, physical).map_err(|e|e.to_string())?;
     let before = file_signature_from_handle(&file, &observation.path)?;
     if before.size != observation.size || before.modified_ns.to_string() != observation.modified_ns
     {
@@ -17057,7 +17063,8 @@ where
             observation.path.display()
         ));
     }
-    let path_metadata = fs::symlink_metadata(&observation.path).map_err(|error| {
+    let physical_path = rollout_source::physical_path(&observation.path).map_err(|error| error.to_string())?;
+    let path_metadata = fs::symlink_metadata(&physical_path).map_err(|error| {
         format!(
             "会话文件首行校验后无法复核路径 {}：{error}",
             observation.path.display()
@@ -17376,7 +17383,7 @@ fn resolve_file_within_codex_home(
 ) -> ResolvedSessionFile {
     if is_history_repair_workspace(candidate) { return ResolvedSessionFile::Rejected; }
 
-    let canonical = match fs::canonicalize(candidate) {
+    let canonical = match rollout_source::canonical_logical_path(candidate) {
         Ok(canonical) => canonical,
         Err(error) => {
             warnings.push(scan_warning(format!(
@@ -17396,7 +17403,7 @@ fn resolve_file_within_codex_home(
         )));
         return ResolvedSessionFile::Rejected;
     }
-    let metadata = match fs::metadata(&canonical) {
+    let metadata = match rollout_source::metadata(&canonical) {
         Ok(metadata) => metadata,
         Err(error) => {
             warnings.push(scan_warning(format!(
@@ -17469,7 +17476,8 @@ fn record_source_observation(connection: &Connection, path: &str, signature: Fil
     if let Some(stamp) = signature.physical {
         connection.execute("INSERT INTO source_observations(path,size,modified_ns,physical_stamp)
             VALUES (?1,?2,?3,?4) ON CONFLICT(path) DO UPDATE SET size=excluded.size,
-            modified_ns=excluded.modified_ns,physical_stamp=excluded.physical_stamp",
+            modified_ns=excluded.modified_ns,physical_stamp=excluded.physical_stamp
+            WHERE size<>excluded.size OR modified_ns<>excluded.modified_ns OR physical_stamp<>excluded.physical_stamp",
             params![path, checked_i64(signature.size, "源文件观察大小")?,
                 signature.modified_ns.to_string(), stamp.encode()])
             .map_err(|error| format!("无法保存源文件元数据观察：{error}"))?;
@@ -17505,7 +17513,7 @@ fn physical_file_stamp(handle: &fs::File, _metadata: &fs::Metadata) -> Result<Op
 fn physical_file_stamp(_handle: &fs::File, _metadata: &fs::Metadata) -> Result<Option<PhysicalFileStamp>, String> { Ok(None) }
 
 fn file_signature(path: &Path) -> Result<FileSignature, String> {
-    let handle = fs::File::open(path)
+    let handle = RolloutReader::open(path)
         .map_err(|error| format!("打开会话文件失败：{}（{}）", path.display(), error))?;
     file_signature_from_handle(&handle, path)
 }
@@ -17526,8 +17534,8 @@ fn directory_signature(path: &Path) -> DirectorySignature {
     }
 }
 
-fn file_signature_from_handle(handle: &fs::File, path: &Path) -> Result<FileSignature, String> {
-    let metadata = handle
+fn file_signature_from_handle(handle: &impl SourceHandle, path: &Path) -> Result<FileSignature, String> {
+    let metadata = handle.raw_file()
         .metadata()
         .map_err(|error| format!("读取会话文件元数据失败：{}（{}）", path.display(), error))?;
     let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -17536,18 +17544,20 @@ fn file_signature_from_handle(handle: &fs::File, path: &Path) -> Result<FileSign
         .unwrap_or_default()
         .as_nanos();
     Ok(FileSignature {
-        size: metadata.len(),
+        size: handle.logical_length().map_err(|error| format!("读取会话逻辑长度失败：{}（{error}）",path.display()))?,
         modified_ns,
-        physical: physical_file_stamp(handle, &metadata)?,
+        physical: physical_file_stamp(handle.raw_file(), &metadata)?,
     })
 }
 
 fn validate_same_file_prefix(
     path: &Path,
-    handle: &mut fs::File,
+    handle: &mut impl SourceHandle,
     start_signature: FileSignature,
     scanned_hash: [u8; 32],
 ) -> Result<(), String> {
+    handle.validate_decoded_end(start_signature.size)
+        .map_err(|e|format!("会话压缩内容结尾校验失败：{}（{e}）",path.display()))?;
     let handle_before = file_signature_from_handle(handle, path)?;
     let path_before = file_signature(path)?;
     validate_prefix_bounds(start_signature, handle_before, path_before)?;
@@ -17557,7 +17567,7 @@ fn validate_same_file_prefix(
     }
 
     let current_hash = hash_file_prefix(handle, start_signature.size, path)?;
-    let mut path_handle = fs::File::open(path).map_err(|error| {
+    let mut path_handle = RolloutReader::open(path).map_err(|error| {
         format!(
             "无法重开会话文件以复核已扫描前缀：{}（{}）",
             path.display(),
@@ -17587,7 +17597,7 @@ fn validate_prefix_bounds(
 }
 
 fn hash_file_prefix(
-    handle: &mut fs::File,
+    handle: &mut impl SourceHandle,
     prefix_size: u64,
     path: &Path,
 ) -> Result<[u8; 32], String> {
@@ -18159,7 +18169,7 @@ fn restartable_private_stage(path: &Path, job: &FullRebuildJob) -> Result<bool, 
     if ![1, 2, STAGING_MANIFEST_SCHEMA_VERSION].contains(&schema) || source != job.path { return Ok(false); }
     if complete == 0 && parser == STAGED_FULL_REBUILD_PARSER_REVISION { return Ok(true); }
     if [LEGACY_STAGED_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&parser.as_str()) {
-        return super::session_parser::paginated_subagent_boundary(&mut fs::File::open(&job.file).map_err(|e| e.to_string())?).map(|b| b.is_some());
+        return super::session_parser::paginated_subagent_boundary(&mut RolloutReader::open(&job.file).map_err(|e| e.to_string())?).map(|b| b.is_some());
     }
     Ok(false)
 }

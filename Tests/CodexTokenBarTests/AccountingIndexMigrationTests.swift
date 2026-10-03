@@ -55,7 +55,7 @@ final class AccountingIndexMigrationTests: XCTestCase {
         )
         XCTAssertEqual(
             try schemaValue("schema_version", in: migrated),
-            "13"
+            "14"
         )
         XCTAssertEqual(
             try schemaValue("accounting_revision", in: migrated),
@@ -143,7 +143,7 @@ final class AccountingIndexMigrationTests: XCTestCase {
             try eventSnapshots(in: recovered),
             [EventSnapshot(tokens: 110, kind: 0, reported: nil, legacy: 999)]
         )
-        XCTAssertEqual(try schemaValue("schema_version", in: recovered), "13")
+        XCTAssertEqual(try schemaValue("schema_version", in: recovered), "14")
         XCTAssertEqual(
             try schemaValue("accounting_revision", in: recovered),
             "codex-components-v1"

@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 /// A cheap invalidation hint shared by the snapshot cache and the exact index.
-/// One stat/fstat supplies all fields; this never opens or hashes file contents.
+/// Physical identity comes from stat/fstat; rollout size addresses decoded bytes.
 /// Physical identity is not a ledger identity and is not proof of new usage.
 struct SourceFileObservation {
     let size: UInt64
@@ -20,12 +20,34 @@ struct SourceFileObservation {
     }
 
     static func read(at file: URL) throws -> Self {
+        if CodexRolloutReader.isRollout(file) {
+            let handle = try CodexRolloutReader(forReadingFrom: file)
+            defer { try? handle.close() }
+            return try read(handle: handle)
+        }
         var status = Darwin.stat()
         guard lstat(file.path, &status) == 0 else { throw CocoaError(.fileReadUnknown) }
         return try Self(status: status)
     }
 
     static func read(handle: FileHandle) throws -> Self {
+        try readPhysical(handle: handle)
+    }
+
+    static func read(handle: any CodexReadHandle) throws -> Self {
+        let observed = try readPhysical(handle: handle.physicalHandle)
+        return Self(size: try handle.logicalSize(), modifiedAt: observed.modifiedAt, physicalStamp: observed.physicalStamp)
+    }
+
+    private init(size: UInt64, modifiedAt: TimeInterval, physicalStamp: String) {
+        self.size = size; self.modifiedAt = modifiedAt; self.physicalStamp = physicalStamp
+    }
+
+    func matches(_ other: Self) -> Bool {
+        size == other.size && modifiedAt == other.modifiedAt && physicalStamp == other.physicalStamp
+    }
+
+    static func readPhysical(handle: FileHandle) throws -> Self {
         var status = Darwin.stat()
         guard fstat(handle.fileDescriptor, &status) == 0 else { throw CocoaError(.fileReadUnknown) }
         return try Self(status: status)

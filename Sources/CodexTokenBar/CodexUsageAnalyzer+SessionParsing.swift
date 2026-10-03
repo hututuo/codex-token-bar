@@ -807,35 +807,18 @@ extension CodexUsageAnalyzer {
     }
 
     private func trustedJSONLFile(_ file: URL, canonicalHome: URL) throws -> URL? {
-        guard file.pathExtension == "jsonl",
-              fileManager.fileExists(atPath: file.path) else {
-            return nil
+        guard CodexRolloutReader.isRollout(file) else { return nil }
+        let physical = try CodexRolloutReader.physicalURL(for: file)
+        guard fileManager.fileExists(atPath: physical.path) else { return nil }
+        guard let values = fileResourceValues(for: physical) else {
+            throw CodexUsageDiscoveryError.traversalFailed(path: physical.path, reason: "无法读取会话文件属性")
         }
-        guard let values = fileResourceValues(for: file) else {
-            throw CodexUsageDiscoveryError.traversalFailed(
-                path: file.path,
-                reason: "无法读取 JSONL 文件属性"
-            )
-        }
-        guard values.isSymbolicLink != true,
-              values.isRegularFile == true else {
-            return nil
-        }
-        let resolved = file.standardizedFileURL.resolvingSymlinksInPath()
-        guard isContained(resolved, in: canonicalHome) else {
-            return nil
-        }
-        guard let resolvedValues = fileResourceValues(for: resolved) else {
-            throw CodexUsageDiscoveryError.traversalFailed(
-                path: resolved.path,
-                reason: "无法验证 JSONL 文件属性"
-            )
-        }
-        guard resolvedValues.isSymbolicLink != true,
-              resolvedValues.isRegularFile == true else {
-            return nil
-        }
-        return resolved
+        guard values.isSymbolicLink != true, values.isRegularFile == true else { return nil }
+        let resolved = physical.standardizedFileURL.resolvingSymlinksInPath()
+        guard isContained(resolved, in: canonicalHome),
+              let resolvedValues = fileResourceValues(for: resolved),
+              resolvedValues.isSymbolicLink != true, resolvedValues.isRegularFile == true else { return nil }
+        return CodexRolloutReader.logicalURL(resolved)
     }
 
     private func fileResourceValues(for file: URL) -> URLResourceValues? {
@@ -1117,7 +1100,7 @@ extension CodexUsageAnalyzer {
         endingAt endOffset: UInt64? = nil,
         chunkHashingFrom hashingStartOffset: UInt64? = nil,
         validationBoundary: UInt64? = nil,
-        readHandle suppliedHandle: FileHandle? = nil,
+        readHandle suppliedHandle: (any CodexReadHandle)? = nil,
         handleLine: (UInt64, String) throws -> Void
     ) throws -> SessionLineStreamResult {
         let hashingOffset = hashingStartOffset ?? offset
@@ -1130,7 +1113,7 @@ extension CodexUsageAnalyzer {
             || endOffset.map({ validationBoundary > $0 }) == true {
             throw CocoaError(.fileReadCorruptFile)
         }
-        let handle = try suppliedHandle ?? FileHandle(forReadingFrom: file)
+        let handle = try suppliedHandle ?? CodexRolloutReader(forReadingFrom: file)
         let ownsHandle = suppliedHandle == nil
         defer {
             if ownsHandle {
@@ -1263,7 +1246,7 @@ extension CodexUsageAnalyzer {
     }
 
     private func readIndexedLine(from file: URL, at offset: UInt64) throws -> String {
-        let handle = try FileHandle(forReadingFrom: file)
+        let handle = try CodexRolloutReader(forReadingFrom: file)
         defer { try? handle.close() }
         try handle.seek(toOffset: offset)
 

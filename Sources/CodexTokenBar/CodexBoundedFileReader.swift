@@ -20,7 +20,7 @@ struct CodexBoundedFileReader {
     }
 
     mutating func read(
-        from handle: FileHandle,
+        from handle: any CodexReadHandle,
         upToCount requestedCount: Int,
         file: URL,
         body: (UnsafeRawBufferPointer) throws -> Void
@@ -28,23 +28,8 @@ struct CodexBoundedFileReader {
         precondition(requestedCount >= 0 && requestedCount <= storage.count)
         guard requestedCount > 0 else { return 0 }
 
-        let count: Int
-        while true {
-            let result = storage.withUnsafeMutableBytes { bytes in
-                Darwin.read(handle.fileDescriptor, bytes.baseAddress, requestedCount)
-            }
-            if result >= 0 {
-                count = result
-                break
-            }
-            if errno == EINTR {
-                continue
-            }
-            throw NSError(
-                domain: NSPOSIXErrorDomain,
-                code: Int(errno),
-                userInfo: [NSFilePathErrorKey: file.path]
-            )
+        let count = try storage.withUnsafeMutableBytes { bytes in
+            try handle.readBytes(into: UnsafeMutableRawBufferPointer(rebasing: bytes[..<requestedCount]))
         }
 
         if count > 0 {
