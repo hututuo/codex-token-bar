@@ -279,9 +279,12 @@ fn prepare_legacy_accounting_fixture() -> PathBuf {
         )
         .unwrap();
     connection
-        .execute(
-            "DELETE FROM metadata WHERE key IN ('accounting_revision', 'accounting_coverage', 'accounting_structural_receipt')",
-            [],
+        .execute_batch(
+            "DROP TABLE IF EXISTS source_representations;
+             DELETE FROM metadata WHERE key IN (
+                 'representation_revision', 'representation_upgrade_backup',
+                 'accounting_revision', 'accounting_coverage', 'accounting_structural_receipt'
+             );",
         )
         .unwrap();
     connection

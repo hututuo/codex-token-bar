@@ -51,7 +51,7 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
     var isCompressed: Bool { context != nil }
     var supportsMetadataReuse: Bool { isCompressed && layout.singleFrame && layout.declaredSize }
     private var context: OpaquePointer?
-    private var input = [UInt8](repeating: 0, count: 128 * 1024)
+    private var input: [UInt8] = []
     private var inputCount = 0
     private var inputPosition = 0
     private var lastHint = 0
@@ -75,9 +75,32 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
         }
         return URL(fileURLWithPath: logical.path + ".zst")
     }
+    private static func openPreferred(_ file: URL) throws -> (URL, FileHandle) {
+        var lastError: Error = failure("普通/压缩来源正在转换，请重试", file: file)
+        for _ in 0..<3 {
+            do {
+                let physical = try physicalURL(for: file)
+                let handle = try FileHandle(forReadingFrom: physical)
+                if physical.lastPathComponent.hasSuffix(".jsonl.zst"),
+                   FileManager.default.fileExists(atPath: logicalURL(file).path) {
+                    try? handle.close()
+                    continue
+                }
+                return (physical, handle)
+            } catch {
+                lastError = error
+                let value = error as NSError
+                guard (value.domain == NSPOSIXErrorDomain && value.code == Int(ENOENT))
+                    || (value.domain == NSCocoaErrorDomain && value.code == NSFileReadNoSuchFileError)
+                else { throw error }
+            }
+        }
+        throw lastError
+    }
     init(forReadingFrom file: URL) throws {
-        physicalURL = try Self.physicalURL(for: file)
-        physicalHandle = try FileHandle(forReadingFrom: physicalURL)
+        let opened = try Self.openPreferred(file)
+        physicalURL = opened.0
+        physicalHandle = opened.1
         let observed = try SourceFileObservation.readPhysical(handle: physicalHandle)
         cacheKey = "\(physicalURL.path):\(observed.size):\(observed.modifiedAt):\(observed.physicalStamp)"
         layout = Layout(logicalSize: observed.size, singleFrame: false, declaredSize: false)
@@ -85,7 +108,8 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
             if physicalURL.lastPathComponent.hasSuffix(".jsonl.zst") {
                 if let cached = Self.cache.get(cacheKey) { layout = cached }
                 else {
-                    layout = try Self.inspect(physicalHandle, physicalSize: observed.size)
+                    do { layout = try Self.inspect(physicalHandle, physicalSize: observed.size) }
+                    catch { throw Self.failure("zstd结构检查失败：\(error.localizedDescription)", file: physicalURL) }
                     guard try SourceFileObservation.readPhysical(handle: physicalHandle).matches(observed) else {
                         throw Self.failure("来源在压缩帧检查期间发生变化", file: physicalURL)
                     }
@@ -93,6 +117,7 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
                 }
                 guard let ctx = ZSTD_createDStream() else { throw Self.failure("无法创建zstd解码器", file: physicalURL) }
                 context = ctx
+                input = [UInt8](repeating: 0, count: 128 * 1024)
                 try resetDecoder()
             }
         } catch {
@@ -104,7 +129,7 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
     deinit { if let context { ZSTD_freeDStream(context) }; if !closed { try? physicalHandle.close() } }
     static func failure(_ message: String, file: URL) -> NSError {
         NSError(domain: "CodexRolloutReader", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: message, NSFilePathErrorKey: file.path])
+                userInfo: [NSLocalizedDescriptionKey: "\(message)：\(file.path)", NSFilePathErrorKey: file.path])
     }
     private func checked(_ result: Int) throws -> Int {
         if ZSTD_isError(result) != 0 {

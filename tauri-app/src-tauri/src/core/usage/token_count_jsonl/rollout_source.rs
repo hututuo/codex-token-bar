@@ -121,9 +121,19 @@ pub(super) struct RolloutReader {
 }
 impl RolloutReader {
     pub fn open(path: &Path) -> io::Result<Self> {
-        let physical=physical_path(path)?;
-        let file=File::open(&physical)?;
-        Self::from_file(file, physical)
+        for _ in 0..3 {
+            let physical = physical_path(path)?;
+            let file = match File::open(&physical) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if is_compressed(&physical) && logical_path(path).try_exists()? {
+                continue;
+            }
+            return Self::from_file(file, physical);
+        }
+        Err(io::Error::new(io::ErrorKind::NotFound, "rollout representations changed during open; retry"))
     }
     pub fn from_file(mut file: File, physical: PathBuf) -> io::Result<Self> {
         let before=cache_key(&physical,&file)?;
@@ -133,7 +143,7 @@ impl RolloutReader {
             let cache=CACHE.get_or_init(||Mutex::new(HashMap::new()));
             let cached=cache.lock().map_err(|_|invalid("zstd layout cache poisoned"))?.get(&before).copied();
             layout=if let Some(value)=cached {value} else {
-                let value=inspect(&mut file)?;
+                let value=inspect(&mut file).map_err(|e|io::Error::new(e.kind(),format!("zstd结构检查失败 {}：{e}",physical.display())))?;
                 if cache_key(&physical,&file)?!=before { return Err(invalid("rollout changed during frame inspection")); }
                 let mut map=cache.lock().map_err(|_|invalid("zstd layout cache poisoned"))?;
                 if map.len()>=32768 {map.clear();}
@@ -144,7 +154,7 @@ impl RolloutReader {
             if layout.logical_size.is_none() {
                 // Unknown-size frames cannot use the metadata reuse lane.
                 let mut bytes=[0;128*1024]; let mut size=0u64;
-                loop { let n=d.read(&mut bytes)?; if n==0 {break;}
+                loop { let n=d.read(&mut bytes).map_err(|e|io::Error::new(e.kind(),format!("zstd长度核对失败 {}：{e}",physical.display())))?; if n==0 {break;}
                     size=size.checked_add(n as u64).ok_or_else(||invalid("rollout logical size overflow"))?;
                 }
                 layout.logical_size=Some(size);
@@ -176,7 +186,7 @@ impl RolloutReader {
 }
 impl Read for RolloutReader {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        let n=match self.storage.as_mut().expect("reader storage") {Storage::Plain(f)=>f.read(bytes)?,Storage::Compressed(d)=>d.read(bytes)?};
+        let n=match self.storage.as_mut().expect("reader storage") {Storage::Plain(f)=>f.read(bytes)?,Storage::Compressed(d)=>d.read(bytes).map_err(|e|io::Error::new(e.kind(),format!("zstd解码失败 {}：{e}",self.physical.display())))?};
         self.logical_position=self.logical_position.checked_add(n as u64).ok_or_else(||invalid("rollout offset overflow"))?;
         Ok(n)
     }

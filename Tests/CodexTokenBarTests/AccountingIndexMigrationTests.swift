@@ -231,6 +231,9 @@ final class AccountingIndexMigrationTests: XCTestCase {
         }
         try database.execute(
             """
+            DROP TABLE IF EXISTS source_representations;
+            DELETE FROM schema_meta
+            WHERE key IN ('representation_revision', 'representation_upgrade_backup');
             DELETE FROM schema_meta
             WHERE key IN (
                 'accounting_revision',

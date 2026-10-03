@@ -16,12 +16,26 @@ pub(super) fn migrate(db: &mut Connection, index_path: &Path, existed_before: bo
         return Err("表示层迁移需要已支持的会计结构；已保留原库".into());
     }
     let backup=if existed_before {
-        schema11_migration_capacity(index_path)?;
         let mut name=index_path.as_os_str().to_os_string();
-        name.push(format!(".schema13-before-representations-{}.sqlite",uuid::Uuid::new_v4()));
+        name.push(".schema13-before-representations.sqlite");
         let backup=PathBuf::from(name);
-        schema11_copy_candidate(index_path,&backup)?;
-        schema11_sync_parent(&backup)?;
+        if backup.exists() {
+            let saved=sqlite::open_read_only(&backup,StdDuration::from_secs(5)).map_err(|e|e.to_string())?;
+            if metadata_i64(&saved,"schema_version")?!=Some(ACCOUNTING_SCHEMA_VERSION) {
+                return Err("升级前备份版本不一致，已保留原库与备份".into());
+            }
+            quick_check_index(&saved,Some(&backup))?;
+        } else {
+            schema11_migration_capacity(index_path)?;
+            let temporary=backup.with_extension(format!("pending-{}",uuid::Uuid::new_v4()));
+            let copied=(||{
+                schema11_copy_candidate(index_path,&temporary)?;
+                fs::rename(&temporary,&backup).map_err(|e|e.to_string())?;
+                schema11_sync_parent(&backup)
+            })();
+            if copied.is_err() {let _=fs::remove_file(&temporary);}
+            copied?;
+        }
         Some(backup)
     } else {None};
     let tx=db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
@@ -62,14 +76,20 @@ pub(super) fn reuse_complete(
     let stable: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM source_representations WHERE source_id=?1 AND physical_path=?2 AND physical_stamp=?3 AND physical_size=?4 AND logical_size=?5)",params![source,reader.physical_path().to_string_lossy(),stamp,checked_i64(physical.len(),"压缩物理大小")?,checked_i64(signature.size,"逻辑来源大小")?],|r|r.get(0)).map_err(|e|e.to_string())?;
     if stable && !missing {return Ok(true);}
     if file_signature(Path::new(path))? != signature {return Err(format!("压缩来源在关联前变化：{path}"));}
+    let proved: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM source_observations WHERE path=?1 AND size=?2 AND modified_ns=?3 AND physical_stamp=?4)
+        AND NOT EXISTS(SELECT 1 FROM source_representations r JOIN sources s USING(source_id) WHERE s.path=?1 AND r.verification='metadata_only')",
+        params![path,checked_i64(signature.size,"逻辑来源大小")?,signature.modified_ns.to_string(),stamp],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let verification=if proved {"verified_full"}else{"metadata_only"};
     let tx=db.unchecked_transaction().map_err(|e|e.to_string())?;
-    tx.execute("INSERT INTO source_representations VALUES(?1,?2,'zstd',?3,?4,?5,?6,'metadata_only')
+    tx.execute("INSERT INTO source_representations VALUES(?1,?2,'zstd',?3,?4,?5,?6,?7)
         ON CONFLICT(source_id) DO UPDATE SET physical_path=excluded.physical_path,storage_format='zstd',
         physical_size=excluded.physical_size,physical_stamp=excluded.physical_stamp,
-        logical_size=excluded.logical_size,modified_ns=excluded.modified_ns,verification='metadata_only'",
-        params![source,reader.physical_path().to_string_lossy(),checked_i64(physical.len(),"压缩物理大小")?,stamp,checked_i64(signature.size,"逻辑来源大小")?,signature.modified_ns.to_string()]).map_err(|e|e.to_string())?;
+        logical_size=excluded.logical_size,modified_ns=excluded.modified_ns,verification=excluded.verification",
+        params![source,reader.physical_path().to_string_lossy(),checked_i64(physical.len(),"压缩物理大小")?,stamp,checked_i64(signature.size,"逻辑来源大小")?,signature.modified_ns.to_string(),verification]).map_err(|e|e.to_string())?;
     record_source_observation(&tx,path,signature)?;
-    tx.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=?1 AND available<>0",params![source]).map_err(|e|e.to_string())?;
+    if !proved {
+        tx.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=?1 AND available<>0",params![source]).map_err(|e|e.to_string())?;
+    }
     tx.execute("UPDATE usage_ledger_sources SET missing=0 WHERE source_id=?1 AND missing<>0",params![source]).map_err(|e|e.to_string())?;
     // Preserve the old raw generation/offsets and numeric generation.
     let _=generation;

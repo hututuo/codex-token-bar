@@ -26,6 +26,7 @@ final class CompressedHistoryIndexTests: XCTestCase {
         let index = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: db.url)
         let analyzer = CodexUsageAnalyzer(dataSource: CodexDataSource(codexHome: root, origin: .userSelected))
         try Data(line(120).utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_800_000_000)], ofItemAtPath: file.path)
         return Fixture(root: root, file: file, db: db, analyzer: analyzer, index: index)
     }
     private func line(_ input: Int, second: Int = 0) -> String {
@@ -65,6 +66,7 @@ final class CompressedHistoryIndexTests: XCTestCase {
         _ = try f.synchronize()
         let source = try scalar(f.db, "SELECT source_id FROM sources")
         let events = try scalar(f.db, "SELECT COUNT(*) FROM events")
+        XCTAssertEqual(try scalar(f.db, "SELECT resume_offset=size_bytes FROM sources"), 1)
         try f.db.execute("UPDATE usage_ledger_sources SET missing=1; UPDATE usage_ledger_bindings SET available=0;")
         _ = try compress(f)
         let reused = try f.index.synchronize(files: [f.file], sessionID: f.analyzer.sessionID(from:)) { _,_,_,_,_ in
@@ -101,6 +103,42 @@ final class CompressedHistoryIndexTests: XCTestCase {
         XCTAssertThrowsError(try f.synchronize())
         XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
     }
+    func testCompressedCatalogRetainsLogicalSizeAndSkipsWarmFirstLine() throws {
+        let f = try fixture()
+        _ = try compress(f)
+        let metadata = CodexUsageHistoryIndex.SessionCatalogMetadata(threadID: "thread",
+            cwd: "/synthetic", sessionID: nil, forkedFromID: nil, parentThreadID: nil, source: "cli")
+        let cold = try f.index.synchronizeSessionCatalog(candidates: [.init(file: f.file, archived: false)]) { file in
+            let reader = try CodexRolloutReader(forReadingFrom: file)
+            defer { try? reader.close() }
+            XCTAssertFalse((try reader.read(upToCount: 1024) ?? Data()).isEmpty)
+            return metadata
+        }
+        XCTAssertEqual(cold.entries.first?.sizeBytes, Int64(line(120).utf8.count))
+        let warm = try f.index.synchronizeSessionCatalog(candidates: [.init(file: f.file, archived: false)]) { _ in
+            XCTFail("warm compressed catalog must not reparse its first line")
+            return metadata
+        }
+        XCTAssertEqual(warm.parsedFirstLines, 0)
+    }
+    func testRestoredCompressedTextOffsetsRequireOldChunkProof() throws {
+        let f = try fixture()
+        let prompt = """
+        {"timestamp":"2026-10-01T00:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"synthetic prompt"}}
+
+        """
+        try Data((prompt + line(120)).utf8).write(to: f.file)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_800_000_000)], ofItemAtPath: f.file.path)
+        _ = try f.synchronize()
+        var ids: [String] = []
+        try f.index.forEachStoredEvent { ids.append($0.stableID) }
+        _ = try compress(f)
+        _ = try f.synchronize()
+        XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), 0)
+        XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
+        XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), Int64(ids.count))
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+    }
     func testThirteenToFourteenIsAdditiveAndHasConsistentBackup() throws {
         let f = try fixture()
         _ = try f.synchronize()
@@ -120,4 +158,27 @@ final class CompressedHistoryIndexTests: XCTestCase {
         XCTAssertEqual(try scalar(saved, "SELECT SUM(tokens) FROM events"), 120)
         XCTAssertEqual(try scalar(saved, "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='schema_version'"), 13)
     }
+    func testInterruptedStorageTransactionKeepsThirteenAndReusesOneBackup() throws {
+        let f = try fixture()
+        _ = try f.synchronize()
+        try f.db.execute("""
+            DROP TABLE source_representations;
+            DELETE FROM schema_meta WHERE key IN ('representation_revision','representation_upgrade_backup');
+            UPDATE schema_meta SET value='13' WHERE key='schema_version';
+            CREATE TRIGGER stop_storage_upgrade BEFORE UPDATE ON schema_meta
+            WHEN NEW.key='schema_version' AND NEW.value='14'
+            BEGIN SELECT RAISE(ABORT,'synthetic interruption'); END;
+            """)
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: f.db.url))
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        XCTAssertEqual(try scalar(f.db, "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='schema_version'"), 13)
+        XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM sqlite_master WHERE name='source_representations'"), 0)
+        try f.db.execute("DROP TRIGGER stop_storage_upgrade")
+        _ = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: f.db.url)
+        let backups = try FileManager.default.contentsOfDirectory(atPath: f.root.path)
+            .filter { $0.hasSuffix(".schema13-before-representations.sqlite") }
+        XCTAssertEqual(backups.count, 1)
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+    }
+
 }

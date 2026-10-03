@@ -3707,7 +3707,7 @@ fn exact_index_migrates_v091_schema9_without_reparsing_and_keeps_append_checkpoi
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "13"
+        "14"
     );
     assert_eq!(
         connection
@@ -3964,7 +3964,7 @@ fn exact_index_migrates_fba33820_schema10_without_reparsing_and_keeps_append_che
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "13"
+        "14"
     );
     assert_eq!(
         connection
@@ -4012,7 +4012,9 @@ fn accounting_preparation_skips_unneeded_structural_hashes_and_rebuilds_aggregat
     let index_path = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(&index_path).unwrap();
     connection.execute_batch(
-        "UPDATE metadata SET value='11' WHERE key='schema_version';
+        "DROP TABLE IF EXISTS source_representations;
+         DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup');
+         UPDATE metadata SET value='11' WHERE key='schema_version';
          DELETE FROM metadata WHERE key IN ('accounting_revision','accounting_coverage','accounting_structural_receipt');
          UPDATE event_rows SET tokens=999;
          UPDATE dashboard_source_totals SET total_tokens=999;
@@ -4072,7 +4074,11 @@ fn accounting_preparation_reuses_candidate_facts_through_semantic_conversion() {
     assert!(connection.query_row("SELECT value FROM metadata WHERE key='accounting_structural_receipt'", [],
         |row| row.get::<_,String>(0)).unwrap().contains("fingerprint_count"));
     // Simulate the previous writer committing schema 12 before cleanup.
-    connection.execute("UPDATE metadata SET value='12' WHERE key='schema_version'",[]).unwrap();
+    connection.execute_batch(
+        "DROP TABLE IF EXISTS source_representations;
+         DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup');
+         UPDATE metadata SET value='12' WHERE key='schema_version';"
+    ).unwrap();
     drop(connection);
     // A later process/open has no in-memory proof. Resume still validates the
     // durable switched manifest and retains rollback until a successful sync.
@@ -4100,7 +4106,9 @@ fn accounting_preparation_preserves_a_pending_checkpoint_and_resume() {
     let checkpoint = connection.query_row("SELECT target_generation,resume_offset FROM pending_sources", [],
         |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?))).unwrap();
     connection.execute_batch(
-        "UPDATE metadata SET value='11' WHERE key='schema_version';
+        "DROP TABLE IF EXISTS source_representations;
+         DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup');
+         UPDATE metadata SET value='11' WHERE key='schema_version';
          DELETE FROM metadata WHERE key IN ('accounting_revision','accounting_coverage','accounting_structural_receipt');
          UPDATE pending_event_rows SET tokens=999;"
     ).unwrap();
@@ -4737,7 +4745,7 @@ fn exact_index_schema11_switch_interruptions_resume_without_jsonl_reparse() {
                     |row| row.get::<_, String>(0),
                 )
                 .unwrap(),
-            "13"
+            "14"
         );
         assert!(rollback_path.exists());
         assert!(manifest_path.exists());
@@ -5334,7 +5342,7 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
     let connection = Connection::open(&index_path).unwrap();
     let before = connection
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'), (SELECT COUNT(*) FROM source_representations), (SELECT COUNT(*) FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup'))",
             [],
             |row| {
                 Ok((
@@ -5343,6 +5351,8 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             },
         )
@@ -5363,7 +5373,7 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
     let connection = Connection::open(&index_path).unwrap();
     let after = connection
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'), (SELECT COUNT(*) FROM source_representations), (SELECT COUNT(*) FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup'))",
             [],
             |row| {
                 Ok((
@@ -5372,6 +5382,8 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             },
         )
@@ -5401,8 +5413,26 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
         Ok(_) => panic!("non-numeric future schema must fail closed"),
         Err(error) => error,
     };
-    assert!(error.contains("未知或损坏"), "{error}");
+    assert!(error.contains("元数据schema_version已损坏"), "{error}");
     let connection = Connection::open(&index_path).unwrap();
+    let after_nonnumeric = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'), (SELECT COUNT(*) FROM source_representations), (SELECT COUNT(*) FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup'))",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(after_nonnumeric, before);
     assert_eq!(
         connection
             .query_row(
@@ -10383,6 +10413,12 @@ fn pre_v091_schema6_is_preserved_and_refused_without_automatic_rebuild() {
         .join("exact-token-index.sqlite3");
     let connection = Connection::open(&index_path).unwrap();
     connection
+        .execute_batch(
+            "DROP TABLE IF EXISTS source_representations;
+             DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup');"
+        )
+        .unwrap();
+    connection
         .execute(
             "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
             [],
@@ -10768,10 +10804,16 @@ fn v22_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
     assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
 
     let connection = Connection::open(&database).unwrap();
-        connection
-            .execute(
+    connection
+        .execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'fork_replay_boundary_revision'",
             params!["explicit-subagent-delayed-context-v3"],
+        )
+        .unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE IF EXISTS source_representations;
+             DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup');"
         )
         .unwrap();
     connection
@@ -12072,7 +12114,11 @@ fn summary_only_success_is_not_a_full_precise_completion() {
 fn convert_current_index_to_v091_schema9(index_path: &Path) {
     let mut connection = Connection::open(index_path).unwrap();
     connection
-        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DROP TABLE IF EXISTS source_representations;
+             DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup');"
+        )
         .unwrap();
     let fingerprints = {
         let mut statement = connection
@@ -12824,11 +12870,13 @@ fn compressed_history_reuses_complete_missing_ledger_then_materializes_and_appen
     let zst = file.with_extension("jsonl.zst");
     let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
     encoder.set_pledged_src_size(Some(original.len() as u64)).unwrap();
+    encoder.include_contentsize(true).unwrap();
     encoder.write_all(original.as_bytes()).unwrap();
     fs::write(&zst, encoder.finish().unwrap()).unwrap();
     fs::File::options().write(true).open(&zst).unwrap()
         .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
     fs::remove_file(&file).unwrap();
+    assert!(super::rollout_source::RolloutReader::open(&file).unwrap().fast_reuse_supported());
     ExactUsageIndex::reset_scan_bytes_for_testing();
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
     assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
@@ -12888,5 +12936,37 @@ fn storage_thirteen_to_fourteen_is_additive_and_backs_up_original_database() {
     assert_eq!(saved.query_row("SELECT value FROM metadata WHERE key='schema_version'", [], |r| r.get::<_, String>(0)).unwrap(), "13");
     assert_eq!(saved.query_row("SELECT SUM(tokens) FROM event_rows", [], |r| r.get::<_, i64>(0)).unwrap(), 120);
     drop(saved); drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn storage_upgrade_transaction_rolls_back_and_reuses_one_backup() {
+    let _guard=app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    write_lines(&root.join("sessions/rollout-019f4567-1234-1234-1234-123456789abc.jsonl"), &[
+        r#"{"timestamp":"2026-10-01T00:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#
+    ]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,120);
+    let path=super::exact_usage_index::database_path(&root).unwrap();
+    let db=Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE source_representations;
+        DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup');
+        UPDATE metadata SET value='13' WHERE key='schema_version';
+        CREATE TRIGGER stop_storage_upgrade BEFORE UPDATE ON metadata
+        WHEN NEW.key='schema_version' AND NEW.value='14'
+        BEGIN SELECT RAISE(ABORT,'synthetic interruption'); END;").unwrap();
+    drop(db);
+    assert!(ExactUsageIndex::open(&root).is_err());
+    let db=Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"13");
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events",[],|r|r.get::<_,i64>(0)).unwrap(),120);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='source_representations'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    db.execute_batch("DROP TRIGGER stop_storage_upgrade").unwrap();
+    drop(db);
+    drop(ExactUsageIndex::open(&root).unwrap());
+    let count=fs::read_dir(path.parent().unwrap()).unwrap().filter_map(Result::ok)
+        .filter(|p|p.file_name().to_string_lossy().ends_with(".schema13-before-representations.sqlite")).count();
+    assert_eq!(count,1);
     fs::remove_dir_all(root).unwrap();
 }

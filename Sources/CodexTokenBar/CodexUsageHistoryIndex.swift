@@ -2336,12 +2336,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         for file: URL
     ) throws -> SessionCatalogFileSignature {
         var value = stat()
-        guard Darwin.lstat(file.path, &value) == 0,
+        let physical = try CodexRolloutReader.physicalURL(for: file)
+        guard Darwin.lstat(physical.path, &value) == 0,
               (value.st_mode & S_IFMT) == S_IFREG else {
             throw CodexUsageSourceChangedError(path: file.path)
         }
+        let logicalSize: Int64
+        if physical.lastPathComponent.hasSuffix(".jsonl.zst") {
+            let reader = try CodexRolloutReader(forReadingFrom: file)
+            defer { try? reader.close() }
+            logicalSize = try sqliteInt64(reader.logicalSize())
+        } else { logicalSize = Int64(value.st_size) }
         return SessionCatalogFileSignature(
-            sizeBytes: Int64(value.st_size),
+            sizeBytes: logicalSize,
             modifiedSeconds: Int64(value.st_mtimespec.tv_sec),
             modifiedNanoseconds: Int64(value.st_mtimespec.tv_nsec),
             createdSeconds: Int64(value.st_birthtimespec.tv_sec),
@@ -2389,7 +2396,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
         let generation = UUID().uuidString
-        let canonicalFiles = files.map { $0.resolvingSymlinksInPath() }
+        let canonicalFiles = Array(Set(files.map { CodexRolloutReader.logicalURL($0.resolvingSymlinksInPath()) })).sorted { $0.path < $1.path }
         let observedPaths = Set(canonicalFiles.map(\.path))
         var changedFiles = 0
         var unchangedFiles = 0
@@ -2454,11 +2461,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                   try sourceSignatureMetadata(for: file) == observedMetadata else {
                                 throw CodexUsageSourceChangedError(path: file.path)
                             }
+                            let wasMetadataOnly = try connection.readRows(
+                                "SELECT verification FROM source_representations WHERE source_id=?",
+                                bindings: [.int64(existing.id)]
+                            ) { $0.text(0) }.compactMap { $0 }.first == "metadata_only"
+                            let verification = existing.signature.physicalStamp == opened.physicalStamp && !wasMetadataOnly
+                                ? "verified_full" : "metadata_only"
                             try connection.transaction { tx in
                                 try recordRepresentation(source: existing, file: file, reader: reader,
-                                    signature: opened, verification: "metadata_only", connection: tx)
+                                    signature: opened, verification: verification, connection: tx)
                                 try saveSourceObservation(sourceID: existing.id, signature: opened, connection: tx)
-                                try tx.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=? AND available<>0", bindings: [.int64(existing.id)])
+                                if verification == "metadata_only" {
+                                    try tx.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=? AND available<>0", bindings: [.int64(existing.id)])
+                                }
                                 try restoreSourcePresence(existing.id, connection: tx)
                             }
                             unchangedFiles += 1
@@ -2500,7 +2515,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     }
                     if let existing,
                        isTrustedContentProbe(existing.signature.contentProbe) {
-                        if sourceMetadataMatches(existing.signature, observedMetadata) {
+                        let needsCompressedProof: Bool
+                        if existing.signature.physicalStamp == nil {
+                            needsCompressedProof = try CodexRolloutReader.physicalURL(for: file).lastPathComponent.hasSuffix(".jsonl.zst")
+                        } else { needsCompressedProof = false }
+                        if !needsCompressedProof && sourceMetadataMatches(existing.signature, observedMetadata) {
                             if existing.signature.physicalStamp == nil {
                                 // Adopt the old index's metadata baseline once,
                                 // without hashing every historical JSONL body.
@@ -3596,17 +3615,31 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
             var backupPath: String?
             if backupRequired {
-                try Self.ensureCandidateMigrationCapacity(databaseURL: driver.url, fileManager: fileManager)
-                let backupURL = URL(fileURLWithPath: driver.url.path + ".schema13-before-representations-" + UUID().uuidString + ".sqlite")
-                let backup = SQLiteDatabaseDriver(url: backupURL, enableWAL: false, fileManager: fileManager)
-                try backup.withConnection { copy in
-                    try copy.restoreDatabase(from: driver.url)
-                    _ = try copy.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
-                    _ = try copy.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
-                    try copy.execute("PRAGMA synchronous=FULL")
+                let backupURL = URL(fileURLWithPath: driver.url.path + ".schema13-before-representations.sqlite")
+                if fileManager.fileExists(atPath: backupURL.path) {
+                    let saved = SQLiteDatabaseDriver(url: backupURL, readOnly: true, createsFileIfMissing: false)
+                    try saved.withConnection { copy in
+                        let version = try copy.readRows("SELECT value FROM schema_meta WHERE key='schema_version'") { $0.text(0) }.first ?? nil
+                        let check = try copy.readRows("PRAGMA quick_check") { $0.text(0) ?? "" }
+                        guard version == Self.accountingSchemaVersion, check == ["ok"] else {
+                            throw CodexUsageIndexRepairRequiredError(reason: "升级前备份不完整，已保留原库与备份")
+                        }
+                    }
+                } else {
+                    try Self.ensureCandidateMigrationCapacity(databaseURL: driver.url, fileManager: fileManager)
+                    let temporary = URL(fileURLWithPath: backupURL.path + ".pending-" + UUID().uuidString)
+                    defer { try? fileManager.removeItem(at: temporary) }
+                    let backup = SQLiteDatabaseDriver(url: temporary, enableWAL: false, fileManager: fileManager)
+                    try backup.withConnection { copy in
+                        try copy.restoreDatabase(from: driver.url)
+                        _ = try copy.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
+                        _ = try copy.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+                        try copy.execute("PRAGMA synchronous=FULL")
+                    }
+                    try Self.synchronizeFile(at: temporary)
+                    try fileManager.moveItem(at: temporary, to: backupURL)
+                    try Self.synchronizeDirectory(at: backupURL.deletingLastPathComponent())
                 }
-                try Self.synchronizeFile(at: backupURL)
-                try Self.synchronizeDirectory(at: backupURL.deletingLastPathComponent())
                 backupPath = backupURL.path
             }
             try db.transaction { tx in
@@ -6565,6 +6598,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 .int64(sourceID)
             ]
         )
+        try connection.execute("DELETE FROM source_representations WHERE source_id=?", bindings: [.int64(sourceID)])
         try saveSourceObservation(sourceID: sourceID, signature: signature, connection: connection)
     }
 

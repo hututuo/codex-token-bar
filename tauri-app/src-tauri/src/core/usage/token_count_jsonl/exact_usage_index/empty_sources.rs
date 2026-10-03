@@ -40,17 +40,18 @@ pub(super) fn queue_if_new(
 // Both queries refer to the same regular file. A renamed/replaced path is not
 // evidence that the original empty observation can be published unchanged.
 fn current_signature(job: &EmptySourceJob) -> Result<Option<FileSignature>, String> {
-    let handle = match fs::File::open(&job.file) {
+    let mut handle = match RolloutReader::open(&job.file) {
         Ok(handle) => handle,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("读取空会话文件失败：{}（{error}）", job.file.display())),
     };
-    let canonical = fs::canonicalize(&job.file)
+    let canonical = rollout_source::canonical_logical_path(&job.file)
         .map_err(|error| format!("复核空文件物理路径失败：{error}"))?;
     if canonical != job.file || !handle.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err(format!("空会话文件的物理边界发生变化：{}", job.file.display()));
     }
     let opened = file_signature_from_handle(&handle, &job.file)?;
+    handle.validate_decoded_end(opened.size).map_err(|e|format!("空文件压缩内容校验失败：{}（{e}）",job.file.display()))?;
     let by_path = file_signature(&job.file)?;
     if opened != by_path {
         return Err(format!("空会话文件在元数据复核期间发生变化：{}", job.file.display()));

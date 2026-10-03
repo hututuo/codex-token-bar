@@ -20,14 +20,16 @@ struct SourceFileObservation {
     }
 
     static func read(at file: URL) throws -> Self {
-        if CodexRolloutReader.isRollout(file) {
-            let handle = try CodexRolloutReader(forReadingFrom: file)
-            defer { try? handle.close() }
-            return try read(handle: handle)
-        }
+        let logical = CodexRolloutReader.logicalURL(file)
         var status = Darwin.stat()
-        guard lstat(file.path, &status) == 0 else { throw CocoaError(.fileReadUnknown) }
-        return try Self(status: status)
+        if lstat(logical.path, &status) == 0 { return try Self(status: status) }
+        let code = errno
+        guard CodexRolloutReader.isRollout(file), code == ENOENT else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSFilePathErrorKey: logical.path])
+        }
+        let handle = try CodexRolloutReader(forReadingFrom: file)
+        defer { try? handle.close() }
+        return try read(handle: handle)
     }
 
     static func read(handle: FileHandle) throws -> Self {

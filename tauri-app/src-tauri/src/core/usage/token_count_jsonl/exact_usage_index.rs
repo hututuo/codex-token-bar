@@ -8530,6 +8530,10 @@ fn publish_schema11_pending_generation(
         return Err("schema 11 单文件墓碑仍携带暂存子行，已停止发布并保留现场".into());
     }
 
+    if table_exists_checked(transaction, "source_representations")? {
+        transaction.execute("DELETE FROM source_representations WHERE source_id IN (SELECT source_id FROM pending_sources WHERE target_generation=?1)",
+            params![generation]).map_err(|e|e.to_string())?;
+    }
     ledger::publish_bindings(transaction, generation)?;
 
     // Full replacements and tombstones discard only the affected source's
@@ -9596,6 +9600,7 @@ fn process_session_file(
         .is_some_and(|(_, deleted, size, modified_ns, physical)| {
             !deleted && signature.matches_stored(nonnegative_u64(*size), modified_ns)
                 && (physical.is_none() || signature.matches_physical(physical.as_deref()))
+                && (!handle.compressed() || physical.is_some())
         });
     if unchanged {
         if previous_signature.as_ref().is_some_and(|(_, _, _, _, physical)| physical.is_none()) {
@@ -16986,7 +16991,10 @@ fn collect_session_catalog_observations(
                     continue;
                 }
                 let logical = rollout_source::canonical_logical_path(&path).map_err(|e|e.to_string())?;
-                observations.push(session_catalog_observation(logical, archived, &metadata)?);
+                let selected = rollout_source::physical_path(&logical).map_err(|e|format!("无法解析目录来源 {}：{e}",logical.display()))?;
+                let selected_metadata = fs::symlink_metadata(&selected).map_err(|e|e.to_string())?;
+                reject_session_catalog_reparse_point(&selected, &selected_metadata)?;
+                observations.push(session_catalog_observation(logical, archived, &selected_metadata)?);
             }
         }
     }

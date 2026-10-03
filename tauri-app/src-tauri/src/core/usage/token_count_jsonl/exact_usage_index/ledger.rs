@@ -121,7 +121,7 @@ fn full_prefix_matches(db: &Connection,staged: &StagedFullRebuild) -> Result<boo
         match new {
             Some((new_count,new_hash)) if new_count==*count && new_hash==*hash => {},
             Some((new_count,_)) if position+1==old.len() && new_count>*count => {
-                let mut file=fs::File::open(&staged.job.file).map_err(|e|e.to_string())?;
+                let mut file=RolloutReader::open(&staged.job.file).map_err(|e|e.to_string())?;
                 file.seek(SeekFrom::Start(offset)).map_err(|e|e.to_string())?;
                 let mut bytes=vec![0u8;usize::try_from(*count).map_err(|e|e.to_string())?];
                 file.read_exact(&mut bytes).map_err(|e|e.to_string())?;
@@ -154,7 +154,7 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
     let unchanged=full_prefix_matches(db,staged)?;
     let paginated={
         let mut bytes=Vec::new();
-        fs::File::open(&staged.job.file).map_err(|e|e.to_string())?.take(65536).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+        RolloutReader::open(&staged.job.file).map_err(|e|e.to_string())?.take(65536).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
         let header=bytes.split(|b|*b==b'\n').next().unwrap_or(&[]);
         serde_json::from_slice::<serde_json::Value>(header).ok().is_some_and(|v|v["type"]=="session_meta" && v["payload"]["history_mode"]=="paginated")
     };

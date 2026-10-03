@@ -2073,6 +2073,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             """)
         let tables = try db.readRows("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'usage_ledger_%'") { $0.text(0) }.compactMap { $0 }
         for table in tables { try db.execute("DROP TABLE \(table)") }
+        try removeRepresentationStateForLegacyFixture(in: db)
         try db.execute("UPDATE schema_meta SET value='6' WHERE key='schema_version'")
         let header = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\"history_mode\":\"paginated\"}}"
         // Upstream rewrites the outer timestamp and drops A, while preserving
@@ -5568,6 +5569,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
 
         let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try removeRepresentationStateForLegacyFixture(in: database)
         try database.execute(
             """
             ALTER TABLE sources ADD COLUMN device_id TEXT NOT NULL DEFAULT '16777233';
@@ -5603,7 +5605,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "13"
+            "14"
         )
         for table in ["sources", "event_enrichment_sources", "session_catalog_entries"] {
             XCTAssertEqual(
@@ -5675,7 +5677,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "13"
+            "14"
         )
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), sourceCountBefore)
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), eventCountBefore)
@@ -5747,6 +5749,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         // The previous intermediate writer may have stopped at schema 12
         // after accounting, while the structural switch still has a manifest.
+        try removeRepresentationStateForLegacyFixture(in: database)
         try database.execute("UPDATE schema_meta SET value='12' WHERE key='schema_version'")
         _ = try CodexUsageHistoryIndex(codexHome: codexHome)
         CodexUsageHistoryIndex.failNextSchemaMigrationRetirementForTesting()
@@ -5877,7 +5880,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 try database.readRows(
                     "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                 ) { $0.text(0) }.first,
-                "13"
+                "14"
             )
         }
     }
@@ -5933,7 +5936,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.first,
-            "13"
+            "14"
         )
     }
 
@@ -6101,6 +6104,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(initial.stats.totalTokens, 120)
         let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
         let eventCountBefore = try scalarInt("SELECT COUNT(*) FROM events;", in: database)
+        try removeRepresentationStateForLegacyFixture(in: database)
         try database.execute(
             "UPDATE schema_meta SET value = '2' WHERE key = 'schema_version';"
         )
@@ -6287,6 +6291,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             "UPDATE sources SET path = ?, is_skipping_fork_replay = 1, is_explicit_subagent_fork = 0;",
             bindings: [.text(missingPath)]
         )
+        try removeRepresentationStateForLegacyFixture(in: database)
         try database.execute(
             "UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';"
         )
@@ -6445,6 +6450,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             )
 
             try database.execute("DROP INDEX sources_session_nocase;")
+            try removeRepresentationStateForLegacyFixture(in: database)
             try database.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'schema_version';",
                 bindings: [.text(schemaVersion)]
@@ -6474,7 +6480,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "13"
+                "14"
             )
 
             let planDetails = try database.readRows(
@@ -6704,6 +6710,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                     "UPDATE schema_meta SET value = 'source-bucket-v2-incremental-parser-v1' WHERE key = 'provenance_revision';"
                 )
             }
+            try removeRepresentationStateForLegacyFixture(in: database)
             try database.execute(
                 "UPDATE schema_meta SET value = '\(schemaVersion)' WHERE key = 'schema_version';"
             )
@@ -6798,7 +6805,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "13"
+                "14"
             )
             XCTAssertEqual(
                 try database.readRows("SELECT model FROM events LIMIT 1;") {
@@ -6875,6 +6882,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
         let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try removeRepresentationStateForLegacyFixture(in: database)
         try database.execute("UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';")
         try database.execute(
             "DELETE FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
@@ -7038,6 +7046,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'attribution_generation';",
             in: database
         )
+        try removeRepresentationStateForLegacyFixture(in: database)
         try database.execute("UPDATE schema_meta SET value = '6' WHERE key = 'schema_version';")
         try database.execute(
             "DELETE FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
@@ -8623,6 +8632,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         _ database: SQLiteDatabaseDriver
     ) throws {
         try convertCurrentSwiftFingerprintsToLegacyText(database)
+        try removeRepresentationStateForLegacyFixture(in: database)
         try database.execute(
             """
             ALTER TABLE sources ADD COLUMN device_id TEXT NOT NULL DEFAULT '16777233';
@@ -8645,6 +8655,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         _ database: SQLiteDatabaseDriver
     ) throws {
         try convertCurrentSwiftFingerprintsToLegacyText(database)
+        try removeRepresentationStateForLegacyFixture(in: database)
         try database.execute(
             "UPDATE schema_meta SET value = '7' WHERE key = 'schema_version';"
         )
@@ -8687,6 +8698,18 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 """
             )
         }
+    }
+
+    private func removeRepresentationStateForLegacyFixture(
+        in database: SQLiteDatabaseDriver
+    ) throws {
+        try database.execute(
+            """
+            DROP TABLE IF EXISTS source_representations;
+            DELETE FROM schema_meta
+            WHERE key IN ('representation_revision', 'representation_upgrade_backup');
+            """
+        )
     }
 
     private func swiftSchemaMigrationFacts(
