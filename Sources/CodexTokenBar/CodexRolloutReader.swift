@@ -249,7 +249,7 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
             }
             guard magic == 0xfd2fb528 else { throw failure("无效zstd帧魔数或尾随内容") }
             let descriptor = try number(1)
-            guard descriptor & 0x18 == 0 else { throw failure("不支持的zstd保留位") }
+            guard descriptor & 0x08 == 0 else { throw failure("不支持的zstd保留位") }
             let single = descriptor & 0x20 != 0
             if !single { try skip(1) }
             try skip([0, 1, 2, 4][Int(descriptor & 3)])

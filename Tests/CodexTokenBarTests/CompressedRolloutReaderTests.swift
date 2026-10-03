@@ -88,6 +88,21 @@ final class CompressedRolloutReaderTests: XCTestCase {
         XCTAssertThrowsError(try CodexRolloutReader(forReadingFrom: file))
     }
 
+    func testUnusedDescriptorBitIsIgnoredButReservedBitIsRejected() throws {
+        let root = try temporaryDirectory()
+        let payload = Data("{}\n".utf8)
+        var valid = rawFrame(payload, singleSegment: true)
+        valid[4] |= 0x10 // official decoder ignores descriptor bit 4
+        let file = try write(valid, named: "unused.jsonl.zst", in: root)
+        let reader = try CodexRolloutReader(forReadingFrom: file)
+        defer { try? reader.close() }
+        XCTAssertEqual(try readAll(reader), payload)
+        try reader.validateDecodedEnd(at: UInt64(payload.count))
+        valid[4] |= 0x08 // descriptor bit 3 is reserved and must be zero
+        let invalid = try write(valid, named: "reserved.jsonl.zst", in: root)
+        XCTAssertThrowsError(try CodexRolloutReader(forReadingFrom: invalid))
+    }
+
     func testObservationUsesPhysicalModificationTimeAndDecodedLogicalSize() throws {
         let root = try temporaryDirectory()
         let payload = Data("{\"logical\":\"size\"}\n".utf8)

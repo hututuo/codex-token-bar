@@ -182,3 +182,18 @@ fn physical_modification_time_is_preserved_while_logical_size_stays_decoded() {
     assert_eq!(second.logical_size(), payload.len() as u64);
     assert_eq!(second.metadata().unwrap().modified().unwrap(), second_time);
 }
+
+#[test]
+fn unused_descriptor_bit_is_ignored_but_reserved_bit_is_rejected() {
+    let fixture = FixtureDir::new();
+    let payload = b"{}\n";
+    let mut frame = raw_frame(payload, true);
+    frame[4] |= 0x10; // official decoder ignores descriptor bit 4
+    let path = fixture.write("unused.jsonl.zst", &frame);
+    let mut reader = RolloutReader::open(&path).unwrap();
+    assert_eq!(read_all(&mut reader), payload);
+    reader.verify_end(payload.len() as u64).unwrap();
+    frame[4] |= 0x08; // descriptor bit 3 is reserved and must be zero
+    let reserved = fixture.write("reserved.jsonl.zst", &frame);
+    assert!(RolloutReader::open(&reserved).is_err());
+}

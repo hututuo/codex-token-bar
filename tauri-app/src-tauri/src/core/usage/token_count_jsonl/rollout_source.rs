@@ -82,7 +82,7 @@ fn inspect(file: &mut File) -> io::Result<Layout> {
         }
         if magic!=0xfd2fb528 { return Err(invalid("invalid zstd frame magic or trailing bytes")); }
         let descriptor=read_number(file,1)? as u8;
-        if descriptor&0x18!=0 { return Err(invalid("reserved zstd frame bits")); }
+        if descriptor&0x08!=0 { return Err(invalid("reserved zstd frame bits")); }
         let single=descriptor&0x20!=0;
         if !single { skip(file,1,end)?; }
         skip(file,[0,1,2,4][(descriptor&3) as usize],end)?;
