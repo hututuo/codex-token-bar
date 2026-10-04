@@ -13166,7 +13166,7 @@ fn compressed_history_ranking_only_selects_active_sessions_and_preserves_totals(
     let cold = root.join(format!("sessions/rollout-{cold_id}.jsonl"));
     let original = format!("{{\"timestamp\":\"2026-10-04T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"active prompt\"}}}}\n{}", token_line("2026-10-04T00:00:00Z", 3000));
     fs::write(&active, &original).unwrap();
-    fs::write(&cold, token_line("2026-09-26T00:00:00Z", 10000)).unwrap();
+    fs::write(&cold, format!("{{\"timestamp\":\"2026-09-26T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"cold prompt\"}}}}\n{}", token_line("2026-09-26T00:00:00Z", 10000))).unwrap();
     let now = time::macros::datetime!(2026-10-04 0:00 UTC);
     let read = || {
         let mut index = ExactUsageIndex::open(&root).unwrap();
@@ -13207,6 +13207,7 @@ fn compressed_history_ranking_only_selects_active_sessions_and_preserves_totals(
 #[test]
 fn history_compression_setting_accepts_boolean_only_and_ignores_prompt_text() {
     let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
     for (config, expected) in [
         ("[features]\nlocal_thread_store_compression = true\n", true),
         ("features.local_thread_store_compression = true # enabled\n", true),

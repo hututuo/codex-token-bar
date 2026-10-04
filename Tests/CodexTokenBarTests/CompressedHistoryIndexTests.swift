@@ -6,7 +6,9 @@ final class CompressedHistoryIndexTests: XCTestCase {
     func testActiveRankingUsesSessionActivityBeforeLimitWithoutTrimmingHistory() throws {
         let f = try fixture()
         let old = f.root.appendingPathComponent("rollout-019e1234-1234-1234-1234-123456789abc.jsonl")
-        try Data(line(10000).replacingOccurrences(of: "2026-10-01", with: "2026-09-01").utf8).write(to: old)
+        let prompt = "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"ranking prompt\"}}\n"
+        try Data((prompt + line(120)).utf8).write(to: f.file)
+        try Data((prompt + line(10000)).replacingOccurrences(of: "2026-10-01", with: "2026-09-01").utf8).write(to: old)
         _ = try f.index.synchronize(files: [f.file, old], sessionID: f.analyzer.sessionID(from:)) { file, id, request, fingerprint, emit in
             try f.analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request, insertFingerprint: fingerprint, emit: emit)
         }
