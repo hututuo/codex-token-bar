@@ -89,24 +89,57 @@ $code = [UpdateFaultWindows]::ShellExecuteW([IntPtr]::Zero,'open',(Join-Path $ro
 if ($code -gt 32) { throw 'Missing installer unexpectedly launched' }
 Write-Host "PASS ShellExecute failed launch returns $code"
 
-function Run-Fixture([string]$dir, [bool]$silent, [bool]$cancel) {
+function Run-Fixture([string]$dir, [bool]$silent, [bool]$cancel, [bool]$injectFailure = $false) {
     $start = [Diagnostics.ProcessStartInfo]::new($exe)
     $start.UseShellExecute = $false
     $start.Arguments = $(if($silent){'/S '}else{'/P '}) + '/D=' + $dir
     [UpdateFaultWindows]::FaultObserved = $false
-    $p = [Diagnostics.Process]::Start($start)
-    $deadline = [datetime]::UtcNow.AddSeconds(30)
-    while (-not $p.WaitForExit(150)) {
-        if($cancel) { [UpdateFaultWindows]::CancelDialogs($p.Id) }
-        if([datetime]::UtcNow -gt $deadline) { $p.Kill(); throw 'Fixture timed out' }
+    $p = $null
+    $primary = $null
+    try {
+        $p = [Diagnostics.Process]::Start($start)
+        $script:LastFixturePid = $p.Id
+        if ($injectFailure) { throw "Injected fixture primary failure" }
+        $deadline = [datetime]::UtcNow.AddSeconds(30)
+        while (-not $p.WaitForExit(150)) {
+            if($cancel) { [UpdateFaultWindows]::CancelDialogs($p.Id) }
+            if([datetime]::UtcNow -gt $deadline) { throw 'Fixture timed out' }
+        }
+        if ($cancel -and -not [UpdateFaultWindows]::FaultObserved) { throw 'No real copy-error dialog observed' }
+        return $p.ExitCode
+    } catch {
+        $primary = $_
+        throw
+    } finally {
+        if ($null -ne $p) {
+            try {
+                if (-not $p.HasExited) {
+                    $p.Kill()
+                    if (-not $p.WaitForExit(5000)) { throw 'Fixture process did not exit after cleanup' }
+                }
+            } catch {
+                if ($null -ne $primary) { Write-Warning ("Fixture cleanup also failed: " + $_.Exception.Message) }
+                else { throw }
+            } finally { $p.Dispose() }
+        }
     }
-    if ($cancel -and -not [UpdateFaultWindows]::FaultObserved) { throw "No real copy-error dialog observed" }
-    return $p.ExitCode
 }
 $link = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\TokenBarUpdateFixture.lnk'
 $desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'TokenBarUpdateFixture.lnk'
 if ((Test-Path $link) -or (Test-Path $desktopLink)) { throw 'Fixture shortcut collision' }
+$primaryFailure = $null
 try {
+    $cleanupDir = Join-Path $root 'cleanup failure case'
+    $null = New-Item -ItemType Directory $cleanupDir
+    try {
+        Run-Fixture $cleanupDir $false $false $true
+        throw 'Injected failure was not raised'
+    } catch {
+        if ($_.Exception.Message -ne 'Injected fixture primary failure') { throw }
+    }
+    $remaining = Get-Process -Id $script:LastFixturePid -ErrorAction SilentlyContinue
+    if ($remaining) { throw 'Owned installer survived exception cleanup' }
+    Write-Host 'PASS fixture preserves primary error and cleans up its own process'
     foreach ($silent in @($true,$false)) {
         $dir = Join-Path $root $(if($silent){'用户 silent dir'}else{'用户 interactive dir'})
         $null = New-Item -ItemType Directory $dir
@@ -132,8 +165,15 @@ try {
     if(-not(Test-Path (Join-Path $dir 'registered.txt'))) { throw 'Registration marker absent' }
     if($shell.CreateShortcut($link).TargetPath -ne (Join-Path $dir 'fixture.exe')) { throw 'Canonical shortcut not repaired' }
     Write-Host 'PASS last unquoted /D with Chinese/spaces and canonical shortcut repair'
+} catch {
+    $primaryFailure = $_
+    throw
 } finally {
     Remove-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $desktopLink -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $root -Recurse -Force
+    try { Remove-Item -LiteralPath $root -Recurse -Force }
+    catch {
+        if ($null -ne $primaryFailure) { Write-Warning ("Fixture directory cleanup also failed: " + $_.Exception.Message) }
+        else { throw }
+    }
 }
