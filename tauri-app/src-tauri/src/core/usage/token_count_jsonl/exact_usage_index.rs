@@ -10067,6 +10067,9 @@ fn revalidate_metadata_only_file(
         }
     }
 
+    handle.validate_decoded_end(signature.size).map_err(|error| {
+        format!("会话文件元数据复核的压缩终点校验失败：{}（{error}）", file.display())
+    })?;
     let handle_after = file_signature_from_handle(handle, file)?;
     let path_after = file_signature(file)?;
     if handle_after != signature || path_after != signature {
@@ -10186,6 +10189,11 @@ fn validate_building_generation_commit_scope(
             .checked_sub(1)
             .map_or(0, |offset| offset / EXACT_INDEX_CHUNK_SIZE + 1);
         if chunk_count == 0 {
+            if current.size == committed_size {
+                handle.validate_decoded_end(committed_size).map_err(|error| {
+                    format!("发布前压缩终点校验失败：{}（{error}）", file.display())
+                })?;
+            }
             continue;
         }
         let mut probe_indices = vec![0, chunk_count - 1, audit_chunk_index % chunk_count];
@@ -10207,6 +10215,13 @@ fn validate_building_generation_commit_scope(
                     file.display()
                 ));
             }
+        }
+        // Sorted probes end at the last logical chunk; consume the frame
+        // trailer without starting a second full decode pass.
+        if current.size == committed_size {
+            handle.validate_decoded_end(committed_size).map_err(|error| {
+                format!("发布前压缩终点校验失败：{}（{error}）", file.display())
+            })?;
         }
     }
     Ok(())
@@ -10318,6 +10333,11 @@ fn validate_append_scan_prefix(
     start_signature: FileSignature,
     chunk_hashes: &[ExactChunkHash],
 ) -> Result<(), String> {
+    // Take(logical_size) can finish before a trailing zero-output frame.
+    // Plain source handles deliberately allow a newer appended suffix.
+    handle.validate_decoded_end(start_signature.size).map_err(|error| {
+        format!("追加扫描的压缩终点校验失败：{}（{error}）", path.display())
+    })?;
     let handle_after = file_signature_from_handle(handle, path)?;
     let path_after = file_signature(path)?;
     validate_prefix_bounds(start_signature, handle_after, path_after)?;

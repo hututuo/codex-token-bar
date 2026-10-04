@@ -84,7 +84,9 @@ pub(super) fn reuse_complete(
     let proved: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM source_observations WHERE path=?1 AND size=?2 AND modified_ns=?3 AND physical_stamp=?4)
         AND NOT EXISTS(SELECT 1 FROM source_representations r JOIN sources s USING(source_id) WHERE s.path=?1 AND r.verification='metadata_only')",
         params![path,checked_i64(signature.size,"逻辑来源大小")?,signature.modified_ns.to_string(),stamp],|r|r.get(0)).map_err(|e|e.to_string())?;
-    let verification=if proved {"verified_full"}else{"metadata_only"};
+    // Missing sources have revoked bindings even if the old physical stamp
+    // reappears unchanged. Queue one lazy content proof to restore those links.
+    let verification=if proved && !missing {"verified_full"}else{"metadata_only"};
     let tx=db.unchecked_transaction().map_err(|e|e.to_string())?;
     tx.execute("INSERT INTO source_representations VALUES(?1,?2,'zstd',?3,?4,?5,?6,?7)
         ON CONFLICT(source_id) DO UPDATE SET physical_path=excluded.physical_path,storage_format='zstd',
@@ -92,7 +94,7 @@ pub(super) fn reuse_complete(
         logical_size=excluded.logical_size,modified_ns=excluded.modified_ns,verification=excluded.verification",
         params![source,reader.physical_path().to_string_lossy(),checked_i64(physical.len(),"压缩物理大小")?,stamp,checked_i64(signature.size,"逻辑来源大小")?,signature.modified_ns.to_string(),verification]).map_err(|e|e.to_string())?;
     record_source_observation(&tx,path,signature)?;
-    if !proved {
+    if verification == "metadata_only" {
         tx.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=?1 AND available<>0",params![source]).map_err(|e|e.to_string())?;
     }
     tx.execute("UPDATE usage_ledger_sources SET missing=0 WHERE source_id=?1 AND missing<>0",params![source]).map_err(|e|e.to_string())?;

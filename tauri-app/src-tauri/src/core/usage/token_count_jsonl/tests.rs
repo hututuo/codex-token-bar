@@ -12916,6 +12916,106 @@ fn cold_compressed_history_counts_once_and_corruption_preserves_last_good() {
     fs::remove_dir_all(root).unwrap();
 }
 
+fn declared_zstd_frame(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+    encoder.set_pledged_src_size(Some(bytes.len() as u64)).unwrap();
+    encoder.include_contentsize(true).unwrap();
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn assert_bad_zero_output_tail_preserves_published_history(append: bool) {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019f5678-1234-1234-1234-123456789abc.jsonl");
+    let token = |n: u64, second: u32| serde_json::json!({
+        "timestamp":format!("2026-10-01T00:00:{second:02}Z"),"type":"event_msg",
+        "payload":{"type":"token_count","info":{"last_token_usage":{
+            "input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}}}
+    }).to_string()+"\n";
+    let original = token(120, 0);
+    fs::write(&file, &original).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let index = super::exact_usage_index::database_path(&root).unwrap();
+    // Include numeric identity, logical checkpoint and metadata: none may
+    // advance when the compressed container fails its terminal checksum.
+    let state = || {
+        let db = Connection::open(&index).unwrap();
+        db.query_row("SELECT source_id,size,resume_offset,modified_ns,
+            (SELECT value FROM metadata WHERE key='published_generation'),
+            (SELECT COUNT(*) FROM event_rows) FROM sources", [], |r| Ok((
+                r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,
+                r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?
+            ))).unwrap()
+    };
+    let before = state();
+    let modified = fs::metadata(&file).unwrap().modified().unwrap();
+    let payload = if append {format!("{original}{}", token(7, 1))} else {original};
+    let mut archive = declared_zstd_frame(payload.as_bytes());
+    archive.extend_from_slice(&[0x28,0xb5,0x2f,0xfd,0x24,0,1,0,0,0,0,0,0]);
+    let zst = file.with_extension("jsonl.zst");
+    fs::write(&zst, archive).unwrap();
+    fs::File::options().write(true).open(&zst).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified + StdDuration::from_secs(1))).unwrap();
+    fs::remove_file(&file).unwrap();
+    let error = dashboard_snapshot(&root).unwrap_err();
+    assert!(error.contains("压缩终点校验失败"), "{error}");
+    assert_eq!(state(), before);
+    let db = Connection::open(&index).unwrap();
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events", [], |r| r.get::<_,i64>(0)).unwrap(), 120);
+    drop(db);
+    let mut valid = declared_zstd_frame(payload.as_bytes());
+    valid.extend(declared_zstd_frame(b""));
+    fs::write(&zst, valid).unwrap();
+    let expected = if append {127} else {120};
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, expected);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, expected);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn compressed_append_bad_zero_output_tail_rolls_back_checkpoint_and_retries_once() {
+    assert_bad_zero_output_tail_preserves_published_history(true);
+}
+
+#[test]
+fn compressed_same_size_revalidation_rejects_bad_zero_output_tail() {
+    assert_bad_zero_output_tail_preserves_published_history(false);
+}
+
+#[test]
+fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019f6789-1234-1234-1234-123456789abc.jsonl");
+    let original = concat!(
+        "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"synthetic prompt\"}}\n",
+        "{\"timestamp\":\"2026-10-01T00:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":120}}}}\n"
+    );
+    fs::write(&file, original).unwrap();
+    assert!(dashboard_snapshot(&root).unwrap().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
+    let modified = fs::metadata(&file).unwrap().modified().unwrap();
+    let zst = file.with_extension("jsonl.zst");
+    fs::write(&zst, declared_zstd_frame(original.as_bytes())).unwrap();
+    fs::File::options().write(true).open(&zst).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    fs::remove_file(&file).unwrap();
+    assert!(dashboard_snapshot(&root).unwrap().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT verification FROM source_representations",[],|r|r.get::<_,String>(0)).unwrap(),"verified_full");
+    let checkpoint: (i64,i64,i64) = db.query_row("SELECT source_id,size,resume_offset FROM sources",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    // Observe a disappearance without changing the file's own physical stamp.
+    db.execute_batch("UPDATE usage_ledger_sources SET missing=1; UPDATE usage_ledger_bindings SET available=0;").unwrap();
+    assert!(dashboard_snapshot(&root).unwrap().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
+    assert_eq!(db.query_row("SELECT source_id,size,resume_offset FROM sources",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap(),checkpoint);
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events",[],|r|r.get::<_,i64>(0)).unwrap(),120);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn storage_thirteen_to_fourteen_is_additive_and_backs_up_original_database() {
     let _guard = app_paths::app_path_test_env_guard(&[]);

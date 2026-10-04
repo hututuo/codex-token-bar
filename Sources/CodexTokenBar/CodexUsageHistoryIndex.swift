@@ -3442,7 +3442,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             for stableID in stableIDs {
                 guard let identity = Self.parseStableID(stableID) else { continue }
                 if checkedSources.insert(identity.sourceID).inserted {
-                    try verifyCompressedExcerptSource(identity.sourceID, connection: connection)
+                    try verifyRestoredExcerptSource(identity.sourceID, connection: connection)
                 }
                 let rows = try connection.readRows(
                     """
@@ -3491,11 +3491,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// A metadata association preserves usage, but never certifies old text offsets.
     /// Only a source actually requested for excerpts is decoded and checked against
     /// its existing chunk proofs. No token parsing or ledger reconciliation occurs.
-    private func verifyCompressedExcerptSource(_ sourceID: Int64,
+    private func verifyRestoredExcerptSource(_ sourceID: Int64,
                                                connection: SQLiteDatabaseConnection) throws {
         let pending = try connection.readRows("""
-            SELECT s.path FROM sources s JOIN source_representations r USING(source_id)
-            WHERE s.source_id=? AND r.verification='metadata_only'
+            SELECT s.path FROM sources s JOIN usage_ledger_sources l USING(source_id)
+            LEFT JOIN source_representations r USING(source_id)
+            WHERE s.source_id=? AND l.missing=0 AND (
+                r.verification='metadata_only' OR EXISTS(
+                    SELECT 1 FROM usage_ledger_bindings b
+                    WHERE b.source_id=s.source_id AND b.generation=l.generation
+                      AND b.available=0
+                      AND (b.prompt_offset IS NOT NULL OR b.assistant_offset IS NOT NULL)))
             """, bindings: [.int64(sourceID)]) { $0.text(0) }.first ?? nil
         let needsText = try connection.readRows("""
             SELECT EXISTS(SELECT 1 FROM usage_ledger_bindings
@@ -6476,6 +6482,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         observedSignature: SourceSignature,
         chunkHashes: [CodexUsageAnalyzer.IndexedChunkHash]
     ) throws {
+        // A bounded JSONL read can stop before a zero-output trailing zstd
+        // frame. Validate the decoder before committing the appended events.
+        // Ordinary files allow concurrent appends and this check is a no-op.
+        try readHandle.validateDecodedEnd(at: observedSignature.size)
         let handleSignature = try sourceSignature(
             forOpenHandle: readHandle,
             file: file

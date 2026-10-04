@@ -59,10 +59,17 @@ and physical stability checks, before bindings become available. This currently
 requires a full content proof for that selected source, not a range-only proof;
 it does not recount all historical sources. Later unchanged excerpts reuse that
 proof. Sources with no text offsets are not decoded merely to browse a turn.
+If an already verified source disappears and returns, its revoked text bindings
+also require this proof before being restored, even when its physical stamp is
+unchanged. Numeric history and checkpoints are retained throughout.
 
 A corrupt or truncated stream must not publish a partial replacement. The last
 trusted ledger remains available and diagnostics include the physical path and
 structure/decode stage. Token-only indexes cannot recreate lost full chat text.
+Incremental appends and same-length content revalidation must consume the
+compressed decoder's terminal state before committing. Reading the declared
+logical byte length alone does not validate a zero-output trailing frame.
+Ordinary JSONL still permits a concurrent appended suffix.
 
 ## Verification scope
 

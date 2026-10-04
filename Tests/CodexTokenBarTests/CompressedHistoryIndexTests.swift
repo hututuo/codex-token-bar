@@ -139,6 +139,106 @@ final class CompressedHistoryIndexTests: XCTestCase {
         XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), Int64(ids.count))
         XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
     }
+    private func promptFixture() throws -> Fixture {
+        let f = try fixture()
+        let prompt = """
+        {"timestamp":"2026-10-01T00:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"synthetic prompt"}}
+
+        """
+        try Data((prompt + line(120)).utf8).write(to: f.file)
+        _ = try f.synchronize()
+        return f
+    }
+    private func eventIDs(_ f: Fixture) throws -> [String] {
+        var ids: [String] = []
+        try f.index.forEachStoredEvent { ids.append($0.stableID) }
+        return ids
+    }
+    private func markMissing(_ f: Fixture) throws {
+        _ = try f.index.synchronize(files: [], sessionID: f.analyzer.sessionID(from:)) { _,_,_,_,_ in
+            XCTFail("missing-source observation must not parse")
+            throw CocoaError(.fileReadUnknown)
+        }
+        XCTAssertEqual(try scalar(f.db, "SELECT missing FROM usage_ledger_sources"), 1)
+        XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), 0)
+    }
+    func testVerifiedTextReappearingUnchangedRestoresLinksWithoutRecounting() throws {
+        for compressed in [false, true] {
+            let f = try promptFixture()
+            let ids = try eventIDs(f)
+            let source = try scalar(f.db, "SELECT source_id FROM sources")
+            let resume = try scalar(f.db, "SELECT resume_offset FROM sources")
+            if compressed {
+                _ = try compress(f)
+                _ = try f.synchronize()
+            }
+            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
+            try markMissing(f)
+            _ = try f.synchronize()
+            XCTAssertEqual(try scalar(f.db, "SELECT missing FROM usage_ledger_sources"), 0)
+            XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), 0)
+            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
+            XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), Int64(ids.count))
+            _ = try f.synchronize()
+            XCTAssertEqual(try eventIDs(f), ids)
+            XCTAssertEqual(try scalar(f.db, "SELECT source_id FROM sources"), source)
+            XCTAssertEqual(try scalar(f.db, "SELECT resume_offset FROM sources"), resume)
+            XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        }
+    }
+    func testRestoredTextChangedBeforeProofKeepsLinksUnavailableAndNumbersIntact() throws {
+        for compressed in [false, true] {
+            let f = try promptFixture()
+            let ids = try eventIDs(f)
+            let original = try Data(contentsOf: f.file)
+            let physical = try (compressed ? compress(f) : f.file)
+            _ = try f.synchronize()
+            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
+            try markMissing(f)
+            _ = try f.synchronize()
+            let date = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: physical.path)[.modificationDate] as? Date)
+            let changed = Data(String(decoding: original, as: UTF8.self)
+                .replacingOccurrences(of: "synthetic prompt", with: "different prompt").utf8)
+            XCTAssertEqual(changed.count, original.count)
+            try (compressed ? frame(changed) : changed).write(to: physical)
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: physical.path)
+            XCTAssertTrue(try f.index.turnSourceReferences(for: ids).isEmpty)
+            XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), 0)
+            XCTAssertEqual(try eventIDs(f), ids)
+            XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        }
+    }
+    func testBadZeroOutputTrailingFrameRollsBackAppendAndValidMultiFrameRetriesOnce() throws {
+        let f = try fixture()
+        _ = try f.synchronize()
+        let ids = try eventIDs(f)
+        let resume = try scalar(f.db, "SELECT resume_offset FROM sources")
+        let fingerprints = try scalar(f.db, "SELECT COUNT(*) FROM source_fingerprints")
+        let bytes = Data((line(120) + line(7, second: 1)).utf8)
+        let zst = URL(fileURLWithPath: f.file.path + ".zst")
+        // Empty final frame with a deliberately wrong checksum. Its FCS is
+        // zero, so the parser's logical byte bound does not consume it.
+        let badTail = Data([0x28,0xb5,0x2f,0xfd,0x24,0,1,0,0,0,0,0,0])
+        try (frame(bytes) + badTail).write(to: zst)
+        try FileManager.default.removeItem(at: f.file)
+        var usedAppend = false
+        XCTAssertThrowsError(try f.index.synchronize(files: [f.file], sessionID: f.analyzer.sessionID(from:)) {
+            file, id, request, fingerprint, emit in
+            usedAppend = request.parsingStartOffset == UInt64(resume)
+            return try f.analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id,
+                request: request, insertFingerprint: fingerprint, emit: emit)
+        })
+        XCTAssertTrue(usedAppend)
+        XCTAssertEqual(try eventIDs(f), ids)
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        XCTAssertEqual(try scalar(f.db, "SELECT resume_offset FROM sources"), resume)
+        XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM source_fingerprints"), fingerprints)
+        try (frame(bytes) + frame(Data())).write(to: zst)
+        _ = try f.synchronize()
+        _ = try f.synchronize()
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 127)
+        XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM events"), 2)
+    }
     func testThirteenToFourteenIsAdditiveAndHasConsistentBackup() throws {
         let f = try fixture()
         _ = try f.synchronize()
