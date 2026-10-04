@@ -44,6 +44,14 @@ Section
   FileWrite $0 "new version"
   FileClose $0
   !insertmacro NSIS_HOOK_POSTINSTALL
+  ${If} ${Errors}
+    StrCpy $1 "hook error flag set"
+  ${Else}
+    StrCpy $1 "no hook error flag"
+  ${EndIf}
+  FileOpen $0 "$INSTDIR\hook-context.txt" w
+  FileWrite $0 "programs=$SMPROGRAMS; dir=$INSTDIR; update=$UpdateMode; noShortcut=$NoShortcutMode; $1"
+  FileClose $0
 SectionEnd
 '@
 $exe = Join-Path $root 'installer.exe'
@@ -57,7 +65,20 @@ if ($LASTEXITCODE -ne 0) { throw 'NSIS fixture compilation failed' }
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
+using System.IO;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
 public static class UpdateFaultWindows {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ static extern uint GetFinalPathNameByHandle(SafeFileHandle h,StringBuilder text,uint length,uint flags);
+ public static string FinalPath(string path) {
+   using(var file = File.Open(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete)) {
+     var text = new StringBuilder(4096);
+     uint length = GetFinalPathNameByHandle(file.SafeFileHandle,text,(uint)text.Capacity,0);
+     if(length==0 || length>=text.Capacity) throw new IOException("Cannot normalize shortcut target");
+     return text.ToString();
+   }
+ }
  [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
  public static extern IntPtr ShellExecuteW(IntPtr h,string op,string file,string args,string dir,int show);
  [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -160,10 +181,25 @@ try {
     $shortcut = $shell.CreateShortcut($link)
     $shortcut.TargetPath = Join-Path $root 'old-copy.exe'
     $shortcut.Save()
+    $oldLinkHash = (Get-FileHash -LiteralPath $link).Hash
+    $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut)
+    $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
     if ((Run-Fixture $dir $true $false) -ne 0) { throw 'Unblocked fixture failed' }
     if((Get-Content (Join-Path $dir 'fixture.exe') -Raw) -ne 'new payload') { throw 'Payload mismatch' }
     if(-not(Test-Path (Join-Path $dir 'registered.txt'))) { throw 'Registration marker absent' }
-    if($shell.CreateShortcut($link).TargetPath -ne (Join-Path $dir 'fixture.exe')) { throw 'Canonical shortcut not repaired' }
+    $reader = New-Object -ComObject WScript.Shell
+    $readLink = $reader.CreateShortcut($link)
+    $actualTarget = $readLink.TargetPath
+    $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($readLink)
+    $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($reader)
+    $expectedTarget = Join-Path $dir 'fixture.exe'
+    $newLinkHash = (Get-FileHash -LiteralPath $link).Hash
+    Write-Host ("Shortcut expected=" + $expectedTarget + "; actual=" + $actualTarget + "; changed=" + ($oldLinkHash -ne $newLinkHash))
+    Write-Host (Get-Content -LiteralPath (Join-Path $dir 'hook-context.txt') -Raw)
+    if (-not(Test-Path -LiteralPath $actualTarget) -or
+        [UpdateFaultWindows]::FinalPath($actualTarget) -ne [UpdateFaultWindows]::FinalPath($expectedTarget)) {
+        throw ('Canonical shortcut not repaired: expected=' + $expectedTarget + '; actual=' + $actualTarget)
+    }
     Write-Host 'PASS last unquoted /D with Chinese/spaces and canonical shortcut repair'
 } catch {
     $primaryFailure = $_
