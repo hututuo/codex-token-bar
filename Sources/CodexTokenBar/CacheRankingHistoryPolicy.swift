@@ -43,6 +43,9 @@ enum CacheRankingHistoryPolicy {
             for delimiter in ["\"\"\"", "'''"] where value.hasPrefix(delimiter) {
                 if value.components(separatedBy: delimiter).count.isMultiple(of: 2) { multiline = delimiter }
             }
+            if table.isEmpty, key == "features", value.hasPrefix("{"), value.hasSuffix("}") {
+                enabled = inlineCompressionFlag(String(value.dropFirst().dropLast()))
+            }
             if (table == "features" && key == "local_thread_store_compression")
                 || (table.isEmpty && key == "features.local_thread_store_compression") {
                 enabled = value == "true"
@@ -50,6 +53,35 @@ enum CacheRankingHistoryPolicy {
         }
         return enabled
     }
+
+    private static func inlineCompressionFlag(_ body: String) -> Bool {
+        var entries: [String] = []
+        var entry = ""
+        var quote: Character?
+        var escaped = false
+        var nesting = 0
+        for character in body {
+            if escaped { entry.append(character); escaped = false; continue }
+            if quote == "\"", character == "\\" { entry.append(character); escaped = true; continue }
+            if let current = quote {
+                if character == current { quote = nil }
+            } else if character == "\"" || character == "'" { quote = character }
+            else if character == "{" || character == "[" { nesting += 1 }
+            else if character == "}" || character == "]" { nesting -= 1 }
+            else if character == ",", nesting == 0 { entries.append(entry); entry = ""; continue }
+            entry.append(character)
+        }
+        entries.append(entry)
+        for entry in entries {
+            guard let equals = entry.firstIndex(of: "=") else { continue }
+            let key = entry[..<equals].filter { !$0.isWhitespace && $0 != "\"" && $0 != "'" }
+            if key == "local_thread_store_compression" {
+                return entry[entry.index(after: equals)...].trimmingCharacters(in: .whitespaces) == "true"
+            }
+        }
+        return false
+    }
+
 }
 
 extension TokenCacheUsage {

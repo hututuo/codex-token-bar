@@ -359,10 +359,11 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         ).withMinuteBoundaryBuckets(QuotaPeriodBoundaryContext.shared.bucketStarts(
             home: dataSource.codexHome.standardizedFileURL.path
         ))
+        let compressionEnabled = CacheRankingHistoryPolicy.isEnabled(codexHome: dataSource.codexHome)
         if let inMemory = Self.sessionEventCache.snapshot(
             for: dataSource.codexHome.path,
             signature: signature
-        ) {
+        ), (inMemory.cacheUsage.rankingActiveSince != nil) == compressionEnabled {
             return DashboardFastSnapshotResult(
                 snapshot: inMemory,
                 freshness: .current
@@ -373,7 +374,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             homeIdentityKey: dataSource.usageIdentityKey,
             signature: signature,
             attributionState: attributionState
-        ) else {
+        ), (persistent.snapshot.cacheUsage.rankingActiveSince != nil) == compressionEnabled else {
             return nil
         }
         return DashboardFastSnapshotResult(

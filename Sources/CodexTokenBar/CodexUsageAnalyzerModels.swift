@@ -334,6 +334,7 @@ extension CodexUsageAnalyzer {
             let cacheDaily: [TokenCacheBucket]
             let cacheHourly: [TokenCacheBucket]
             let cacheRecentBins: [TokenCacheBucket]
+            let cacheRankingActiveSince: Date?
             let preciseTimeSeriesGeneratedAt: Date?
             let coverageKind: DashboardSnapshotCoverageKind?
             let observedThrough: Date?
@@ -369,6 +370,7 @@ extension CodexUsageAnalyzer {
                 cacheDaily = snapshot.cacheUsage.daily
                 cacheHourly = snapshot.cacheUsage.hourly
                 cacheRecentBins = snapshot.cacheUsage.recentBins
+                cacheRankingActiveSince = snapshot.cacheUsage.rankingActiveSince
                 preciseTimeSeriesGeneratedAt = snapshot.preciseTimeSeriesGeneratedAt
                 coverageKind = snapshot.coverageKind
                 observedThrough = snapshot.observedThrough
@@ -382,7 +384,7 @@ extension CodexUsageAnalyzer {
                 attributionState: CodexUsageHistoryIndex.AttributionState,
                 generatedAt: Date = Date()
             ) -> DashboardSnapshot {
-                let cacheUsage = TokenCacheUsage(
+                var cacheUsage = TokenCacheUsage(
                     total: cacheTotal,
                     modelBreakdowns: cacheModelBreakdowns,
                     dailyModelBreakdowns: cacheDailyModelBreakdowns ?? [],
@@ -406,6 +408,7 @@ extension CodexUsageAnalyzer {
                     attributionSourceMutationDetected:
                         attributionState.requiresSyntheticCutover
                 )
+                cacheUsage.rankingActiveSince = cacheRankingActiveSince
                 return DashboardSnapshot(
                     stats: stats,
                     dailyUsage: dailyUsage,

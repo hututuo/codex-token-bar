@@ -452,6 +452,7 @@ struct TokenCacheUsage: Codable {
         try container.encode(recentBins, forKey: .recentBins)
         try container.encode(sessions, forKey: .sessions)
         try container.encode(turns, forKey: .turns)
+        try container.encodeIfPresent(rankingActiveSince, forKey: .rankingActiveSince)
         try container.encode(attributionEvents, forKey: .attributionEvents)
         try container.encode(attributionEventsComplete, forKey: .attributionEventsComplete)
         try container.encode(

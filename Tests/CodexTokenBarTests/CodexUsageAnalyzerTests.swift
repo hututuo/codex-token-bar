@@ -22,6 +22,42 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testCompressionScopeToggleInvalidatesFastMemoryAndPersistentSnapshots() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CompressionRankingScopeCache")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let home = try makeCodexHome()
+        try seedStateDatabase(at: home)
+        _ = try writeTokenCountRollout(in: home.appendingPathComponent("sessions"), sessionID: "019f1234-1234-1234-1234-123456789abc", timestamp: Date().addingTimeInterval(-30), totalTokens: 120)
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
+        let original = try analyzer.load()
+        XCTAssertEqual(try analyzer.loadFastSnapshotResult().freshness, .current)
+        let config = home.appendingPathComponent("config.toml")
+        try "features = { local_thread_store_compression = true }\n".write(to: config, atomically: true, encoding: .utf8)
+        XCTAssertNotEqual(try analyzer.loadFastSnapshotResult().freshness, .current)
+        let active = try analyzer.load()
+        XCTAssertNotNil(active.cacheUsage.rankingActiveSince)
+        XCTAssertEqual(active.stats.totalTokens, original.stats.totalTokens)
+        XCTAssertEqual(try analyzer.loadFastSnapshotResult().freshness, .current)
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        let restarted = try analyzer.loadFastSnapshotResult()
+        XCTAssertEqual(restarted.snapshot.usagePrecision, .precise)
+        XCTAssertNotNil(restarted.snapshot.cacheUsage.rankingActiveSince)
+        XCTAssertEqual(restarted.snapshot.stats.totalTokens, original.stats.totalTokens)
+        try "[features]\nlocal_thread_store_compression = false\n".write(to: config, atomically: true, encoding: .utf8)
+        XCTAssertNotEqual(try analyzer.loadFastSnapshotResult().freshness, .current)
+        let restored = try analyzer.load()
+        XCTAssertNil(restored.cacheUsage.rankingActiveSince)
+        XCTAssertEqual(restored.stats.totalTokens, original.stats.totalTokens)
+    }
+
     func testCurrentStreakUsesTodayWithOneDayGraceTable() throws {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: try makeCodexHome()))
         var calendar = Calendar(identifier: .gregorian)

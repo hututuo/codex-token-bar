@@ -6,6 +6,8 @@ final class CacheRankingHistoryPolicyTests: XCTestCase {
     func testReadsExplicitCodexCompressionBooleanWithoutMistakingPromptTextForSettings() {
         XCTAssertTrue(CacheRankingHistoryPolicy.isEnabled(configText: "[features]\nlocal_thread_store_compression = true # enabled\n"))
         XCTAssertTrue(CacheRankingHistoryPolicy.isEnabled(configText: "features.local_thread_store_compression = true\n"))
+        XCTAssertTrue(CacheRankingHistoryPolicy.isEnabled(configText: "features = { note = \"a, local_thread_store_compression = false\", local_thread_store_compression = true }\n"))
+        XCTAssertFalse(CacheRankingHistoryPolicy.isEnabled(configText: "features = { note = \"a, local_thread_store_compression = true\" }\n"))
         XCTAssertTrue(CacheRankingHistoryPolicy.isEnabled(configText: "[\"features\"]\n'local_thread_store_compression' = true\n"))
         XCTAssertFalse(CacheRankingHistoryPolicy.isEnabled(configText: "[features]\nlocal_thread_store_compression = false\n"))
         XCTAssertFalse(CacheRankingHistoryPolicy.isEnabled(configText: "[profiles.example.features]\nlocal_thread_store_compression = true\n"))
