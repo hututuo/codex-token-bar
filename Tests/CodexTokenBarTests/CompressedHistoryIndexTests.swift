@@ -210,11 +210,15 @@ final class CompressedHistoryIndexTests: XCTestCase {
     }
     func testBadZeroOutputTrailingFrameRollsBackAppendAndValidMultiFrameRetriesOnce() throws {
         let f = try fixture()
+        // Exceed the 4 KiB signature probe: smaller files reject the bad
+        // trailer during that probe before ever reaching the append parser.
+        let padding = String(repeating: "\n", count: 8192)
+        try Data((padding + line(120)).utf8).write(to: f.file)
         _ = try f.synchronize()
         let ids = try eventIDs(f)
         let resume = try scalar(f.db, "SELECT resume_offset FROM sources")
         let fingerprints = try scalar(f.db, "SELECT COUNT(*) FROM source_fingerprints")
-        let bytes = Data((line(120) + line(7, second: 1)).utf8)
+        let bytes = Data((padding + line(120) + line(7, second: 1)).utf8)
         let zst = URL(fileURLWithPath: f.file.path + ".zst")
         // Empty final frame with a deliberately wrong checksum. Its FCS is
         // zero, so the parser's logical byte bound does not consume it.
