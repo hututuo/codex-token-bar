@@ -34,7 +34,7 @@ shortcut repair and running-version acknowledgement are different boundaries.
 
 ## Verification
 
-Local: 31 tests of extracted production state core, receipt and launch gate;
+Local: 32 tests of extracted production state core, receipt and launch gate;
 11 updater UI/bridge tests; 102 script tests passed, one platform-only skip.
 The lightweight Rust harness substitutes disk writes/platform bindings and is
 not a full Tauri build or Windows acceptance result. Full frontend local tests

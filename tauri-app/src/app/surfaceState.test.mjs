@@ -527,7 +527,7 @@ test("windows updater lane uses signed Tauri metadata and a dashboard entry", as
   assert.equal(updateClient.includes("checkAppUpdate"), true);
   assert.equal(updateClient.includes("installAppUpdate"), true);
   assert.equal(updateClientCore.includes('bridge.invoke<AppUpdateSnapshot>("check_app_update")'), true);
-  assert.equal(updateClientCore.includes('bridge.invoke("install_app_update", { version })'), true);
+  assert.match(updateClientCore, /"install_app_update",\s*\{\s*version\s*\}/);
   assert.equal(dashboardApp.includes("useAutomaticUpdateChecks"), false);
   assert.equal(dashboardApp.includes("UPDATE_WAKE_POLL_INTERVAL_MS"), false);
   assert.equal(dashboardPage.includes("onCheckForUpdate"), true);

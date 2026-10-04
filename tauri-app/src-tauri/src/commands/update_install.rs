@@ -85,9 +85,14 @@ pub(super) fn registered_install_directory() -> Result<PathBuf, String> {
         .map_err(|_| "找不到此程序的安装目录登记，请使用正式安装包重新安装".to_string())?;
     let directory: String = key.get_value("")
         .map_err(|_| "安装目录登记不完整，请使用正式安装包重新安装".to_string())?;
-    let registered = std::fs::canonicalize(&directory)
-        .map_err(|_| "登记的安装目录不可用，请使用正式安装包重新安装".to_string())?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    validate_install_directory(&executable, Path::new(&directory))
+}
+
+#[cfg(any(windows, test))]
+fn validate_install_directory(executable: &Path, directory: &Path) -> Result<PathBuf, String> {
+    let registered = std::fs::canonicalize(directory)
+        .map_err(|_| "登记的安装目录不可用，请使用正式安装包重新安装".to_string())?;
     let current = std::fs::canonicalize(executable.parent().ok_or("无法定位程序目录")?)
         .map_err(|e| e.to_string())?;
     if !executable.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("codex-token-bar.exe")) || registered != current {
@@ -121,6 +126,23 @@ mod tests {
         assert!(has_completed(&attempt, "0.9.3", Path::new("registered")));
         assert!(has_completed(&attempt, "0.9.4", Path::new("registered")));
         assert!(!has_completed(&attempt, "unknown", Path::new("registered")));
+    }
+    #[test]
+    fn automatic_install_requires_registered_directory_and_product_executable() {
+        let root = std::env::temp_dir().join(format!("tokenbar-path-guard-{}", uuid_for_test()));
+        let current = root.join("用户 current dir");
+        let other = root.join("other dir");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let executable = current.join("codex-token-bar.exe");
+        assert!(validate_install_directory(&executable, &current).is_ok());
+        assert!(validate_install_directory(&executable, &other).is_err());
+        assert!(validate_install_directory(&current.join("renamed.exe"), &current).is_err());
+        assert!(validate_install_directory(&executable, &root.join("missing")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    fn uuid_for_test() -> u128 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
     }
     #[cfg(windows)]
     #[test]

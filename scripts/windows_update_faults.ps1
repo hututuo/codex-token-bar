@@ -14,6 +14,7 @@ Unicode true
 !define PRODUCTNAME "TokenBarUpdateFixture"
 !define MAINBINARYNAME "fixture"
 !define STARTMENUFOLDER ""
+Var PassiveMode
 Var UpdateMode
 Var NoShortcutMode
 Var AppStartMenuFolder
@@ -26,6 +27,11 @@ RequestExecutionLevel user
 Page instfiles
 InstallDir "$TEMP\fixture"
 Function .onInit
+  ${GetOptions} $CMDLINE "/P" $PassiveMode
+  ${IfNot} ${Errors}
+    StrCpy $PassiveMode 1
+    SetAutoClose true
+  ${EndIf}
   StrCpy $UpdateMode 1
   StrCpy $NoShortcutMode 0
 FunctionEnd
@@ -54,12 +60,28 @@ using System.Runtime.InteropServices;
 public static class UpdateFaultWindows {
  [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
  public static extern IntPtr ShellExecuteW(IntPtr h,string op,string file,string args,string dir,int show);
- [DllImport("user32.dll")] static extern bool EnumWindows(Func<IntPtr,IntPtr,bool> cb,IntPtr data);
+ [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+ delegate bool EnumWindowsProc(IntPtr h, IntPtr data);
+ [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc cb,IntPtr data);
  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+ public static bool FaultObserved = false;
+ [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
  [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr h,int id);
  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h,uint msg,IntPtr wp,IntPtr lp);
  public static void CancelDialogs(int target) {
-   EnumWindows((h,_)=>{uint pid;GetWindowThreadProcessId(h,out pid);if(pid==target && GetDlgItem(h,4)!=IntPtr.Zero)PostMessage(h,0x111,(IntPtr)2,IntPtr.Zero);return true;},IntPtr.Zero);
+   EnumWindows((h,_)=>{
+     uint pid;GetWindowThreadProcessId(h,out pid);
+     if(pid==target) {
+       if(GetDlgItem(h,4)!=IntPtr.Zero) {
+         FaultObserved = true;
+         PostMessage(h,0x111,(IntPtr)2,IntPtr.Zero);
+       } else if(FaultObserved && IsWindowEnabled(GetDlgItem(h,2))) {
+         // NSIS abort page waits for Close; only dismiss after a real copy fault.
+         PostMessage(h,0x111,(IntPtr)2,IntPtr.Zero);
+       }
+     }
+     return true;
+   },IntPtr.Zero);
  }
 }
 '@
@@ -71,12 +93,14 @@ function Run-Fixture([string]$dir, [bool]$silent, [bool]$cancel) {
     $start = [Diagnostics.ProcessStartInfo]::new($exe)
     $start.UseShellExecute = $false
     $start.Arguments = $(if($silent){'/S '}else{'/P '}) + '/D=' + $dir
+    [UpdateFaultWindows]::FaultObserved = $false
     $p = [Diagnostics.Process]::Start($start)
     $deadline = [datetime]::UtcNow.AddSeconds(30)
     while (-not $p.WaitForExit(150)) {
         if($cancel) { [UpdateFaultWindows]::CancelDialogs($p.Id) }
         if([datetime]::UtcNow -gt $deadline) { $p.Kill(); throw 'Fixture timed out' }
     }
+    if ($cancel -and -not [UpdateFaultWindows]::FaultObserved) { throw "No real copy-error dialog observed" }
     return $p.ExitCode
 }
 $link = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\TokenBarUpdateFixture.lnk'
