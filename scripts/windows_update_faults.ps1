@@ -5,7 +5,8 @@ $null = New-Item -ItemType Directory $root
 $hooks = (Resolve-Path 'tauri-app/src-tauri/windows/installer-hooks.nsh').Path
 $compiler = (Get-Command makensis.exe -ErrorAction Stop).Source
 $payload = Join-Path $root 'payload.exe'
-Set-Content -LiteralPath $payload -Value 'new payload' -NoNewline
+Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $payload
+$payloadHash = (Get-FileHash -LiteralPath $payload).Hash
 $script = @'
 Unicode true
 !include LogicLib.nsh
@@ -68,7 +69,21 @@ using System.Runtime.InteropServices;
 using System.IO;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
+using System.Runtime.InteropServices.ComTypes;
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface FixtureShellLinkW {
+ void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int length, IntPtr data, uint flags);
+}
 public static class UpdateFaultWindows {
+ public static string ReadShortcut(string path) {
+   object obj = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
+   try {
+     ((IPersistFile)obj).Load(path,0);
+     var text = new StringBuilder(4096);
+     ((FixtureShellLinkW)obj).GetPath(text,text.Capacity,IntPtr.Zero,4);
+     return text.ToString();
+   } finally { Marshal.FinalReleaseComObject(obj); }
+ }
  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
  static extern uint GetFinalPathNameByHandle(SafeFileHandle h,StringBuilder text,uint length,uint flags);
  public static string FinalPath(string path) {
@@ -145,8 +160,8 @@ function Run-Fixture([string]$dir, [bool]$silent, [bool]$cancel, [bool]$injectFa
         }
     }
 }
-$link = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\TokenBarUpdateFixture.lnk'
-$desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'TokenBarUpdateFixture.lnk'
+$link = Join-Path ([Environment]::GetFolderPath('Programs')) 'TokenBarUpdateFixture.lnk'
+$desktopLink = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'TokenBarUpdateFixture.lnk'
 if ((Test-Path $link) -or (Test-Path $desktopLink)) { throw 'Fixture shortcut collision' }
 $primaryFailure = $null
 try {
@@ -179,22 +194,27 @@ try {
     $null = New-Item -ItemType Directory $dir
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($link)
-    $shortcut.TargetPath = Join-Path $root 'old-copy.exe'
+    $oldTarget = Join-Path $root 'old-copy.exe'
+    Copy-Item -LiteralPath $payload -Destination $oldTarget
+    $shortcut.TargetPath = $oldTarget
     $shortcut.Save()
+    if (-not(Test-Path -LiteralPath $link)) { throw 'Old fixture shortcut was not saved' }
+    if ([UpdateFaultWindows]::ReadShortcut($link) -ne $oldTarget) { throw 'Old fixture shortcut target is invalid' }
     $oldLinkHash = (Get-FileHash -LiteralPath $link).Hash
     $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shortcut)
     $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
     if ((Run-Fixture $dir $true $false) -ne 0) { throw 'Unblocked fixture failed' }
-    if((Get-Content (Join-Path $dir 'fixture.exe') -Raw) -ne 'new payload') { throw 'Payload mismatch' }
+    if((Get-FileHash -LiteralPath (Join-Path $dir 'fixture.exe')).Hash -ne $payloadHash) { throw 'Payload mismatch' }
     if(-not(Test-Path (Join-Path $dir 'registered.txt'))) { throw 'Registration marker absent' }
     $reader = New-Object -ComObject WScript.Shell
     $readLink = $reader.CreateShortcut($link)
-    $actualTarget = $readLink.TargetPath
+    $wshTarget = $readLink.TargetPath
+    $actualTarget = [UpdateFaultWindows]::ReadShortcut($link)
     $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($readLink)
     $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($reader)
     $expectedTarget = Join-Path $dir 'fixture.exe'
     $newLinkHash = (Get-FileHash -LiteralPath $link).Hash
-    Write-Host ("Shortcut expected=" + $expectedTarget + "; actual=" + $actualTarget + "; changed=" + ($oldLinkHash -ne $newLinkHash))
+    Write-Host ("Shortcut expected=" + $expectedTarget + "; actualWide=" + $actualTarget + "; WSH=" + $wshTarget + "; changed=" + ($oldLinkHash -ne $newLinkHash))
     Write-Host (Get-Content -LiteralPath (Join-Path $dir 'hook-context.txt') -Raw)
     if (-not(Test-Path -LiteralPath $actualTarget) -or
         [UpdateFaultWindows]::FinalPath($actualTarget) -ne [UpdateFaultWindows]::FinalPath($expectedTarget)) {
