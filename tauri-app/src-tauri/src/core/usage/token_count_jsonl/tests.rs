@@ -12985,6 +12985,47 @@ fn compressed_same_size_revalidation_rejects_bad_zero_output_tail() {
 }
 
 #[test]
+fn compressed_final_commit_rejects_bad_tail_added_after_valid_append() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019f7890-1234-1234-1234-123456789abc.jsonl");
+    let token = |n, second| serde_json::json!({
+        "timestamp":format!("2026-10-01T00:00:{second:02}Z"),"type":"event_msg",
+        "payload":{"type":"token_count","info":{"last_token_usage":{
+            "input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}}}
+    }).to_string()+"\n";
+    let original = token(120, 0);
+    fs::write(&file, &original).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let index = super::exact_usage_index::database_path(&root).unwrap();
+    let db = Connection::open(&index).unwrap();
+    let generation: String = db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get(0)).unwrap();
+    drop(db);
+    let appended = format!("{original}{}", token(7, 1));
+    fs::write(&file, &appended).unwrap();
+    ExactUsageIndex::set_after_file_commit_hook_for_testing(|path| {
+        let bytes = fs::read(path).map_err(|e| e.to_string())?;
+        let mut archive = declared_zstd_frame(&bytes);
+        archive.extend_from_slice(&[0x28,0xb5,0x2f,0xfd,0x24,0,1,0,0,0,0,0,0]);
+        fs::write(path.with_extension("jsonl.zst"), archive).map_err(|e| e.to_string())?;
+        fs::remove_file(path).map_err(|e| e.to_string())
+    });
+    let mut exact = ExactUsageIndex::open(&root).unwrap();
+    let error = exact.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("发布前压缩终点校验失败"), "{error}");
+    drop(exact);
+    let db = Connection::open(&index).unwrap();
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get::<_,String>(0)).unwrap(), generation);
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events", [], |r| r.get::<_,i64>(0)).unwrap(), 120);
+    drop(db);
+    fs::write(file.with_extension("jsonl.zst"), declared_zstd_frame(appended.as_bytes())).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 127);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 127);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
     let _guard = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -13002,16 +13043,38 @@ fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
     fs::File::options().write(true).open(&zst).unwrap()
         .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
     fs::remove_file(&file).unwrap();
-    assert!(dashboard_snapshot(&root).unwrap().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
+    // Read the index directly: the public dashboard may reuse its unchanged
+    // numeric snapshot, including a previously populated prompt string.
+    let read_index = || {
+        let mut exact = ExactUsageIndex::open(&root).unwrap();
+        exact.sync(&root, &mut Vec::new()).unwrap();
+        exact.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap()
+    };
+    assert!(read_index().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
     let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
     assert_eq!(db.query_row("SELECT verification FROM source_representations",[],|r|r.get::<_,String>(0)).unwrap(),"verified_full");
     let checkpoint: (i64,i64,i64) = db.query_row("SELECT source_id,size,resume_offset FROM sources",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     // Observe a disappearance without changing the file's own physical stamp.
     db.execute_batch("UPDATE usage_ledger_sources SET missing=1; UPDATE usage_ledger_bindings SET available=0;").unwrap();
-    assert!(dashboard_snapshot(&root).unwrap().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
+    assert!(read_index().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
     assert_eq!(db.query_row("SELECT source_id,size,resume_offset FROM sources",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap(),checkpoint);
     assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events",[],|r|r.get::<_,i64>(0)).unwrap(),120);
     assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    // Revoke again, restore presence, then change the same-length body before
+    // the lazy proof. A preserved mtime must not reopen a changed prompt.
+    db.execute_batch("UPDATE usage_ledger_sources SET missing=1; UPDATE usage_ledger_bindings SET available=0;").unwrap();
+    let mut exact = ExactUsageIndex::open(&root).unwrap();
+    exact.sync(&root, &mut Vec::new()).unwrap();
+    let changed = original.replace("synthetic prompt", "different prompt");
+    assert_eq!(changed.len(), original.len());
+    fs::write(&zst, declared_zstd_frame(changed.as_bytes())).unwrap();
+    fs::File::options().write(true).open(&zst).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    let rejected = exact.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap();
+    assert_eq!(rejected.stats.total_tokens, 120);
+    assert!(rejected.cache_usage.turns.iter().all(|t| t.user_prompt.is_empty()));
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    drop(exact);
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
