@@ -13012,8 +13012,10 @@ fn compressed_final_commit_rejects_bad_tail_added_after_valid_append() {
         fs::remove_file(path).map_err(|e| e.to_string())
     });
     let mut exact = ExactUsageIndex::open(&root).unwrap();
-    let error = exact.sync(&root, &mut Vec::new()).unwrap_err();
-    assert!(error.contains("发布前压缩终点校验失败"), "{error}");
+    let mut warnings = Vec::new();
+    let error = exact.sync(&root, &mut warnings).unwrap_err();
+    assert!(error.contains("停止本轮发布"), "{error}");
+    assert!(warnings.iter().any(|w| w.message.contains("发布前压缩终点校验失败")), "{warnings:?}");
     drop(exact);
     let db = Connection::open(&index).unwrap();
     assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get::<_,String>(0)).unwrap(), generation);
@@ -13050,8 +13052,16 @@ fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
         exact.sync(&root, &mut Vec::new()).unwrap();
         exact.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap()
     };
-    assert!(read_index().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
     let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    db.execute_batch("CREATE TRIGGER stop_excerpt_proof BEFORE UPDATE OF available ON usage_ledger_bindings
+        WHEN NEW.available=1 BEGIN SELECT RAISE(ABORT,'synthetic excerpt interruption'); END;").unwrap();
+    let interrupted = read_index();
+    assert!(interrupted.cache_usage.turns.iter().all(|t| t.user_prompt.is_empty()));
+    assert_eq!(interrupted.stats.total_tokens, 120);
+    assert_eq!(db.query_row("SELECT verification FROM source_representations",[],|r|r.get::<_,String>(0)).unwrap(),"metadata_only");
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    db.execute_batch("DROP TRIGGER stop_excerpt_proof").unwrap();
+    assert!(read_index().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
     assert_eq!(db.query_row("SELECT verification FROM source_representations",[],|r|r.get::<_,String>(0)).unwrap(),"verified_full");
     let checkpoint: (i64,i64,i64) = db.query_row("SELECT source_id,size,resume_offset FROM sources",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     // Observe a disappearance without changing the file's own physical stamp.

@@ -2,6 +2,31 @@
 use super::*;
 const REVISION: &str = "rollout-storage-v1";
 
+// Excerpts are normally read inside the dashboard's WAL snapshot. A
+// savepoint works both there and when verification is called independently.
+struct ExcerptProofSavepoint<'a> {
+    db: &'a Connection,
+    active: bool,
+}
+impl<'a> ExcerptProofSavepoint<'a> {
+    fn begin(db: &'a Connection) -> Result<Self, String> {
+        db.execute_batch("SAVEPOINT restored_excerpt_proof").map_err(|e| e.to_string())?;
+        Ok(Self { db, active: true })
+    }
+    fn commit(mut self) -> Result<(), String> {
+        self.db.execute_batch("RELEASE restored_excerpt_proof").map_err(|e| e.to_string())?;
+        self.active = false;
+        Ok(())
+    }
+}
+impl Drop for ExcerptProofSavepoint<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.db.execute_batch("ROLLBACK TO restored_excerpt_proof; RELEASE restored_excerpt_proof");
+        }
+    }
+}
+
 pub(super) fn validate(db: &Connection) -> Result<(), String> {
     if metadata_i64(db,"schema_version")? != Some(CURRENT_SCHEMA_VERSION) {return Ok(());}
     if metadata_text(db,"representation_revision")?.as_deref()!=Some(REVISION)
@@ -128,9 +153,9 @@ pub(super) fn verify_excerpt_source(db: &Connection, path: &Path) -> Result<bool
     }
     reader.validate_decoded_end(size).map_err(|e|e.to_string())?;
     if file_signature_from_handle(&reader,path)?!=before || file_signature(path)?!=before {return Ok(false);}
-    let tx=db.unchecked_transaction().map_err(|e|e.to_string())?;
-    tx.execute("UPDATE source_representations SET verification='verified_full' WHERE source_id=?1",params![source]).map_err(|e|e.to_string())?;
-    tx.execute("UPDATE usage_ledger_bindings SET available=1 WHERE source_id=?1 AND raw_generation=(SELECT raw_generation FROM usage_ledger_sources WHERE source_id=?1 AND missing=0)",params![source]).map_err(|e|e.to_string())?;
-    tx.commit().map_err(|e|e.to_string())?;
+    let proof = ExcerptProofSavepoint::begin(db)?;
+    db.execute("UPDATE source_representations SET verification='verified_full' WHERE source_id=?1",params![source]).map_err(|e|e.to_string())?;
+    db.execute("UPDATE usage_ledger_bindings SET available=1 WHERE source_id=?1 AND raw_generation=(SELECT raw_generation FROM usage_ledger_sources WHERE source_id=?1 AND missing=0)",params![source]).map_err(|e|e.to_string())?;
+    proof.commit()?;
     Ok(true)
 }
