@@ -607,15 +607,17 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             "hasStateDB": signature.stateDatabase == nil ? "0" : "1",
             "attributionGeneration": String(signature.attributionGeneration)
         ])
+        let compressionEnabled = CacheRankingHistoryPolicy.isEnabled(codexHome: dataSource.codexHome)
         if initialEventEnrichmentComplete,
            !initialAttributionState.currentScanUnsafeCauseDetected,
            let cached = Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature),
-           cached.cacheUsage.attributionEventsComplete {
+           cached.cacheUsage.attributionEventsComplete,
+           (cached.cacheUsage.rankingActiveSince != nil) == compressionEnabled {
             trace?.end("snapshot-cache-hit", metadata: [
                 "tokens": String(cached.stats.totalTokens),
                 "calls": String(cached.stats.totalCalls)
             ])
-            let stableCacheUsage = TokenCacheUsage(
+            var stableCacheUsage = TokenCacheUsage(
                 total: cached.cacheUsage.total,
                 modelBreakdowns: cached.cacheUsage.modelBreakdowns,
                 dailyModelBreakdowns: cached.cacheUsage.dailyModelBreakdowns,
@@ -639,6 +641,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 attributionSourceMutationDetected:
                     initialAttributionState.requiresSyntheticCutover
             )
+            stableCacheUsage.rankingActiveSince = cached.cacheUsage.rankingActiveSince
             return .complete(DashboardSnapshot(
                 stats: cached.stats,
                 dailyUsage: cached.dailyUsage,
@@ -668,6 +671,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         // Keep the exact observation and the settled chart boundary separate:
         // today's/model/attribution summaries may include the latest observed
         // bucket, while chart bins remain limited to closed buckets.
+        let rankingActiveSince = compressionEnabled ? preciseCoverageAt.addingTimeInterval(-7 * 24 * 60 * 60) : nil
+        var activeRankingRows: [CodexUsageHistoryIndex.AggregatedSessionRow] = []
         let aggregationNow = settledThrough.addingTimeInterval(-0.001)
         var aggregation = UsageAggregationBuilder(
             calendar: calendar,
@@ -783,7 +788,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             try historyIndex.forEachAggregatedSessionRow { row in
                 aggregation.consumeSessionAggregate(row)
             }
-            for turn in try historyIndex.boundedTurnCandidates() {
+            if let rankingActiveSince {
+                try historyIndex.forEachAggregatedSessionRow(activeSince: rankingActiveSince) { activeRankingRows.append($0) }
+            }
+            for turn in try historyIndex.boundedTurnCandidates(activeSince: rankingActiveSince) {
                 aggregation.considerTurnCandidate(turn)
             }
             exactSessionCount = try historyIndex.aggregatedSessionCount()
@@ -823,7 +831,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         trace?.mark("cacheUsage.begin")
         let attributionCurrentScanUnsafeCauseDetected =
             synchronization.lineageAmbiguityDetected
-        let aggregatedCacheUsage = aggregation.cacheUsage(
+        var aggregatedCacheUsage = aggregation.cacheUsage(
             recentBins: recentBins,
             threadInfo: threadInfo,
             attributionProvenanceEpoch: synchronization.provenanceEpoch,
@@ -838,6 +846,11 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             attributionModelBucketsComplete: synchronization.eventEnrichmentComplete,
             durableAttributionEvents: durableAttributionEvents
         )
+        if let rankingActiveSince {
+            aggregatedCacheUsage = aggregatedCacheUsage.withRankingSessions(activeRankingRows.map { row in
+                SessionCacheUsage(id: row.sessionID, title: threadInfo[row.sessionID]?.title ?? row.sessionID, lastUpdated: row.lastUpdated, breakdown: row.breakdown)
+            }, activeSince: rankingActiveSince)
+        }
         let totalTokens = aggregation.totalTokens
         trace?.mark("stats.begin")
         let peakThreadTokens = aggregation.peakSessionTokens
@@ -873,7 +886,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         // Publish only the numeric projection at this boundary. It becomes the
         // durable numeric last-good value, but never the in-memory completion
         // receipt used to skip detail hydration.
-        let numericCacheUsage = TokenCacheUsage(
+        var numericCacheUsage = TokenCacheUsage(
             total: aggregatedCacheUsage.total,
             modelBreakdowns: aggregatedCacheUsage.modelBreakdowns,
             dailyModelBreakdowns: aggregatedCacheUsage.dailyModelBreakdowns,
@@ -900,6 +913,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             attributionSourceMutationDetected:
                 aggregatedCacheUsage.attributionSourceMutationDetected
         )
+        numericCacheUsage.rankingActiveSince = rankingActiveSince
         let numericSnapshot = DashboardSnapshot(
             stats: stats,
             dailyUsage: daily,

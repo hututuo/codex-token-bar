@@ -67,7 +67,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
     }),
     [cacheUsage, excludesFirstTurns, excludesSingleTurnSessions, scope, sortOrder],
   );
-  const hasCurrentRows = cacheUsage.sessions.length > 0 || cacheUsage.turns.length > 0;
+  const hasCurrentRows = Boolean(cacheUsage.rankingActiveSince) || cacheUsage.sessions.length > 0 || cacheUsage.turns.length > 0;
   const fallbackItems = hasCurrentRows ? [] : legacyItems;
   const outerItems = hasCurrentRows ? rankingItems.slice(0, CACHE_RANKING_PAGE_SIZE) : [];
   const outerFallbackItems = hasCurrentRows ? [] : fallbackItems.slice(0, CACHE_RANKING_PAGE_SIZE);
@@ -91,6 +91,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
         <div className="section-title-row cache-ranking-section-title-row">
           <div>
             <h2>缓存命中排行</h2>
+            {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
             <span>{rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
           </div>
           <div className="ranking-controls" aria-label="缓存命中排行控制">
@@ -173,7 +174,7 @@ export function CacheHitRankingDetail({
     () => legacyItems.filter((item) => legacyCacheRankingItemMatchesQuery(item, searchQuery)),
     [legacyItems, searchQuery],
   );
-  const hasCurrentRows = cacheUsage.sessions.length > 0 || cacheUsage.turns.length > 0;
+  const hasCurrentRows = Boolean(cacheUsage.rankingActiveSince) || cacheUsage.sessions.length > 0 || cacheUsage.turns.length > 0;
   const filteredItems = hasCurrentRows ? searchedItems : [];
   const filteredFallbackItems = hasCurrentRows ? [] : searchedLegacyItems;
   const totalCount = hasCurrentRows ? filteredItems.length : filteredFallbackItems.length;
@@ -217,6 +218,7 @@ export function CacheHitRankingDetail({
         <div className="codex-radar-detail-head cache-ranking-detail-head">
           <div>
             <strong id="cache-hit-ranking-detail-title">缓存命中排行</strong>
+            {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
             <span>{rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
           </div>
           <button

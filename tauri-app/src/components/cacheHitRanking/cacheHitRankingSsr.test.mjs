@@ -168,3 +168,18 @@ test("cache hit ranking keeps the outer ten-row surface and opens a searchable d
     assert.match(turnHtml, /悬停后应该可以看到完整内容/);
   });
 });
+
+test("compressed history scope is visible and an empty active ranking never falls back to old rows", async () => {
+  await withSsrModules(async (load) => {
+    const { CacheHitRanking, CacheHitRankingDetail } = await load("/src/components/CacheHitRanking.tsx");
+    const cacheUsage = { rankingActiveSince: "2026-09-27T00:00:00Z", sessions: [], turns: [] };
+    const legacyItems = [{ id: "old", title: "cold legacy session", subtitle: "older history", hitRate: 0.1, tokens: 2000 }];
+    const props = { cacheUsage, legacyItems, rankingItems: [], scope: "turns", sortOrder: "latest", excludesFirstTurns: true, excludesSingleTurnSessions: true, onClose() {} };
+    for (const component of [CacheHitRanking, CacheHitRankingDetail]) {
+      const html = renderComponent(component, props);
+      assert.match(html, /仅显示最近 7 天活跃会话/);
+      assert.doesNotMatch(html, /cold legacy session/);
+    }
+    assert.doesNotMatch(renderComponent(CacheHitRanking, { cacheUsage: { sessions: [], turns: [] } }), /已开启历史压缩/);
+  });
+});

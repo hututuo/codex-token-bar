@@ -299,8 +299,9 @@ struct TokenCacheUsage: Codable {
     let daily: [TokenCacheBucket]
     let hourly: [TokenCacheBucket]
     let recentBins: [TokenCacheBucket]
-    let sessions: [SessionCacheUsage]
+    var sessions: [SessionCacheUsage]
     let turns: [TurnCacheUsage]
+    var rankingActiveSince: Date? = nil
     let attributionEvents: [TokenCacheAttributionEvent]
     /// False for old on-disk snapshots and approximate/state-SQLite results.
     /// Attribution must force a fresh exact scan before trusting event-level
@@ -379,6 +380,7 @@ struct TokenCacheUsage: Codable {
         case recentBins
         case sessions
         case turns
+        case rankingActiveSince
         case attributionEvents
         case attributionEventsComplete
         case attributionModelBucketsComplete
@@ -405,6 +407,7 @@ struct TokenCacheUsage: Codable {
         recentBins = try container.decode([TokenCacheBucket].self, forKey: .recentBins)
         sessions = try container.decode([SessionCacheUsage].self, forKey: .sessions)
         turns = try container.decode([TurnCacheUsage].self, forKey: .turns)
+        rankingActiveSince = try container.decodeIfPresent(Date.self, forKey: .rankingActiveSince)
         attributionEvents = try container.decodeIfPresent(
             [TokenCacheAttributionEvent].self,
             forKey: .attributionEvents

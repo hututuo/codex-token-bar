@@ -2944,6 +2944,7 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
             index_revision: index_identity.dashboard_revision,
             aggregate_boundary_unix: canonical_signature.aggregate_boundary_unix,
             quota_reset_at: canonical_signature.quota_reset_at,
+            history_compression_enabled: canonical_signature.history_compression_enabled,
         };
         if let Some(snapshot) = cached_dashboard_startup_snapshot(
             &raw_signature,
@@ -3133,6 +3134,8 @@ struct DashboardScanSignature {
     /// A newly observed/reset quota invalidates only the disposable projection.
     #[serde(default)]
     quota_reset_at: Option<i64>,
+    #[serde(default)]
+    history_compression_enabled: bool,
 }
 
 fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> DashboardScanSignature {
@@ -3146,6 +3149,7 @@ fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> Dashboar
         index_revision,
         aggregate_boundary_unix: ExactUsageIndex::latest_eligible_aggregate_boundary(now_utc),
         quota_reset_at: crate::core::quota::cached_seven_day_reset_at(codex_home),
+        history_compression_enabled: history_compression_enabled(codex_home),
     }
 }
 
@@ -3477,6 +3481,7 @@ fn dashboard_scan_signature_at(
         index_revision,
         aggregate_boundary_unix: ExactUsageIndex::latest_eligible_aggregate_boundary(now_utc),
         quota_reset_at: crate::core::quota::cached_seven_day_reset_at(codex_home),
+        history_compression_enabled: history_compression_enabled(codex_home),
     }
 }
 
@@ -4544,4 +4549,12 @@ pub(crate) fn dashboard_scan_signature_count_for_testing() -> usize {
 /// Read existing published aggregates only; period navigation never scans logs.
 pub(crate) fn quota_cycle_model_ranges(codex_home: &Path, ranges: &[(i64, i64)]) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
     exact_usage_index::cycle_range::read(codex_home, ranges)
+}
+
+fn history_compression_enabled(codex_home: &Path) -> bool {
+    fs::read_to_string(codex_home.join("config.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Table>(&text).ok())
+        .and_then(|config| config.get("features")?.get("local_thread_store_compression")?.as_bool())
+        .unwrap_or(false)
 }

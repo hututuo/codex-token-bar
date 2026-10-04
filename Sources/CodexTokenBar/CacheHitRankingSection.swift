@@ -200,6 +200,12 @@ struct CacheHitRankingSection: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("缓存命中排行")
                         .font(.system(size: 19, weight: .semibold))
+                    if cacheUsage.rankingActiveSince != nil {
+                        Text(CacheRankingHistoryPolicy.notice)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(rankingSubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -315,6 +321,12 @@ struct CacheHitRankingDetailView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("缓存命中排行")
                         .font(.system(size: 19, weight: .semibold))
+                    if cacheUsage.rankingActiveSince != nil {
+                        Text(CacheRankingHistoryPolicy.notice)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(rankingSubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)

@@ -3,6 +3,43 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CompressedHistoryIndexTests: XCTestCase {
+    func testActiveRankingUsesSessionActivityBeforeLimitWithoutTrimmingHistory() throws {
+        let f = try fixture()
+        let old = f.root.appendingPathComponent("rollout-019e1234-1234-1234-1234-123456789abc.jsonl")
+        try Data(line(10000).replacingOccurrences(of: "2026-10-01", with: "2026-09-01").utf8).write(to: old)
+        _ = try f.index.synchronize(files: [f.file, old], sessionID: f.analyzer.sessionID(from:)) { file, id, request, fingerprint, emit in
+            try f.analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request, insertFingerprint: fingerprint, emit: emit)
+        }
+        let cutoff = ISO8601DateFormatter().date(from: "2026-09-27T00:00:00Z")!
+        let turns = try f.index.boundedTurnCandidates(limit: 1, activeSince: cutoff)
+        XCTAssertEqual(turns.count, 1)
+        XCTAssertEqual(turns.first?.sessionID, "019f1234-1234-1234-1234-123456789abc")
+        var sessions: [CodexUsageHistoryIndex.AggregatedSessionRow] = []
+        try f.index.forEachAggregatedSessionRow(limit: 1, activeSince: cutoff) { sessions.append($0) }
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.sessionID, turns.first?.sessionID)
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 10120)
+        XCTAssertEqual(try f.index.boundedTurnCandidates().count, 2)
+        // An old turn belongs to a recently reactivated session and remains eligible.
+        try f.db.execute("UPDATE dashboard_turn_candidates SET timestamp=1 WHERE session_id='019f1234-1234-1234-1234-123456789abc'")
+        XCTAssertEqual(try f.index.boundedTurnCandidates(activeSince: cutoff).count, 1)
+    }
+
+    func testActiveRankingDoesNotProveCompressedExcerptSource() throws {
+        let f = try fixture()
+        let prompt = "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"synthetic prompt\"}}\n"
+        try Data((prompt + line(120)).utf8).write(to: f.file)
+        _ = try f.synchronize()
+        let turns = try f.index.boundedTurnCandidates()
+        _ = try compress(f)
+        _ = try f.synchronize()
+        try f.db.execute("CREATE TRIGGER stop_ranking_proof BEFORE UPDATE OF verification ON source_representations BEGIN SELECT RAISE(ABORT, 'ranking must not prove compressed source'); END")
+        XCTAssertTrue(try f.index.turnSourceReferences(for: turns.map(\.id), skipsCompressedSources: true).isEmpty)
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        try f.db.execute("DROP TRIGGER stop_ranking_proof")
+        XCTAssertFalse(try f.index.turnSourceReferences(for: turns.map(\.id)).isEmpty)
+    }
+
     private struct Fixture {
         let root: URL
         let file: URL

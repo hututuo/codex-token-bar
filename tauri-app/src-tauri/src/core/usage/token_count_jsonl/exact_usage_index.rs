@@ -16,7 +16,7 @@ use super::session_parser::{
     UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE,
 };
 use super::{
-    IndexedSessionCatalogEntry, IndexedSessionCatalogSnapshot, IndexedSessionMetadata,
+    history_compression_enabled, IndexedSessionCatalogEntry, IndexedSessionCatalogSnapshot, IndexedSessionMetadata,
     SummaryFileContribution, TokenUsageSummary,
 };
 #[cfg(not(test))]
@@ -4122,7 +4122,7 @@ impl ExactUsageIndex {
         let cache_ranking_ms = cache_ranking_started.elapsed().as_millis();
 
         let cache_usage_started = Instant::now();
-        let cache_usage = self.cache_usage(codex_home, warnings)?;
+        let cache_usage = self.cache_usage(codex_home, warnings, now_utc)?;
         let cache_usage_ms = cache_usage_started.elapsed().as_millis();
         let total_ms = dashboard_started.elapsed().as_millis();
         startup_trace::mark_performance(format_precise_dashboard_phases(
@@ -4274,6 +4274,7 @@ impl ExactUsageIndex {
                     COALESCE(t.cached_tokens, 0) AS cached_tokens,
                     s.output_tokens,
                     COALESCE(m.updated_at, s.updated_at) AS updated_at,
+                    s.updated_at AS last_activity_at,
                     COALESCE(
                         NULLIF(TRIM(m.title), ''),
                         '会话 ' || SUBSTR(s.session_id, 1, 8)
@@ -4806,19 +4807,22 @@ impl ExactUsageIndex {
         &self,
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
+        now: OffsetDateTime,
     ) -> Result<TokenCacheUsage, String> {
-        let sessions = self.session_candidates()?;
-        let turns = self.turn_candidates(codex_home, warnings)?;
-        Ok(TokenCacheUsage { sessions, turns })
+        let active_since = history_compression_enabled(codex_home)
+            .then(|| now.unix_timestamp() - 7 * 24 * 60 * 60);
+        let sessions = self.session_candidates(active_since)?;
+        let turns = self.turn_candidates(codex_home, warnings, active_since)?;
+        Ok(TokenCacheUsage { sessions, turns, ranking_active_since: active_since.and_then(format_rfc3339_unix) })
     }
 
-    fn session_candidates(&self) -> Result<Vec<SessionCacheUsage>, String> {
+    fn session_candidates(&self, active_since: Option<i64>) -> Result<Vec<SessionCacheUsage>, String> {
         let mut selected_ids = HashSet::new();
         let mut selected = Vec::new();
         for (multi_turn_only, latest_first) in
             [(true, false), (true, true), (false, false), (false, true)]
         {
-            for item in self.query_session_candidates(multi_turn_only, latest_first)? {
+            for item in self.query_session_candidates(multi_turn_only, latest_first, active_since)? {
                 if selected_ids.insert(item.id.clone()) {
                     selected.push(item);
                 }
@@ -4831,6 +4835,7 @@ impl ExactUsageIndex {
         &self,
         multi_turn_only: bool,
         latest_first: bool,
+        active_since: Option<i64>,
     ) -> Result<Vec<SessionCacheUsage>, String> {
         let turn_predicate = if multi_turn_only { "AND calls > 1" } else { "" };
         let ordering = if latest_first {
@@ -4854,6 +4859,7 @@ impl ExactUsageIndex {
             FROM dashboard_session_rows
             WHERE calls > 0
               AND (?1 = 1 OR input_tokens >= ?2)
+              AND (?4 IS NULL OR last_activity_at >= ?4)
               {turn_predicate}
             {ordering}
             LIMIT ?3
@@ -4868,7 +4874,8 @@ impl ExactUsageIndex {
                 params![
                     latest_first,
                     CACHE_USAGE_MIN_INPUT_TOKENS,
-                    CACHE_USAGE_CANDIDATE_LIMIT
+                    CACHE_USAGE_CANDIDATE_LIMIT,
+                    active_since
                 ],
                 |row| {
                     Ok(SessionCacheUsage {
@@ -4894,13 +4901,14 @@ impl ExactUsageIndex {
         &self,
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
+        active_since: Option<i64>,
     ) -> Result<Vec<TurnCacheUsage>, String> {
         let mut selected_ids = HashSet::new();
         let mut selected = Vec::new();
         for (later_turn_only, latest_first) in
             [(true, false), (true, true), (false, false), (false, true)]
         {
-            for item in self.query_turn_candidates(later_turn_only, latest_first)? {
+            for item in self.query_turn_candidates(later_turn_only, latest_first, active_since)? {
                 if selected_ids.insert(item.usage.id.clone()) {
                     selected.push(item);
                 }
@@ -4920,6 +4928,11 @@ impl ExactUsageIndex {
                 ) else {
                     return item.usage;
                 };
+                // Ranking never opens a zstd decoder in active-only mode.
+                // An eligible session can still have an older compressed shard.
+                if active_since.is_some() && !file.is_file() {
+                    return item.usage;
+                }
                 let before = match file_signature(&file) {
                     Ok(signature) => signature,
                     Err(error) => {
@@ -4967,6 +4980,7 @@ impl ExactUsageIndex {
         &self,
         later_turn_only: bool,
         latest_first: bool,
+        active_since: Option<i64>,
     ) -> Result<Vec<IndexedTurnCandidate>, String> {
         let turn_predicate = if later_turn_only {
             "AND c.turn_index > 1"
@@ -4998,6 +5012,9 @@ impl ExactUsageIndex {
                     0
                 )
                   AND (?1 = 1 OR c.input_tokens >= ?2)
+                  AND (?4 IS NULL OR c.session_id IN (
+                    SELECT session_id FROM dashboard_session_rows WHERE last_activity_at >= ?4
+                  ))
                   {turn_predicate}
                 {ordering}
                 LIMIT ?3
@@ -5043,7 +5060,8 @@ impl ExactUsageIndex {
                 params![
                     latest_first,
                     CACHE_USAGE_MIN_INPUT_TOKENS,
-                    CACHE_USAGE_CANDIDATE_LIMIT
+                    CACHE_USAGE_CANDIDATE_LIMIT,
+                    active_since
                 ],
                 |row| {
                     let event_id = row.get::<_, i64>(0)?;

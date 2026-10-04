@@ -421,7 +421,8 @@ extension CodexUsageAnalyzer {
     ) -> TokenCacheUsage {
         guard !cacheUsage.turns.isEmpty,
               let references = try? index.turnSourceReferences(
-                for: cacheUsage.turns.map(\.id)
+                for: cacheUsage.turns.map(\.id),
+                skipsCompressedSources: cacheUsage.rankingActiveSince != nil
               ),
               !references.isEmpty else {
             return cacheUsage
@@ -499,7 +500,7 @@ extension CodexUsageAnalyzer {
                 breakdown: turn.breakdown
             )
         }
-        return TokenCacheUsage(
+        var hydrated = TokenCacheUsage(
             total: cacheUsage.total,
             modelBreakdowns: cacheUsage.modelBreakdowns,
             dailyModelBreakdowns: cacheUsage.dailyModelBreakdowns,
@@ -520,6 +521,8 @@ extension CodexUsageAnalyzer {
                 cacheUsage.attributionCurrentScanUnsafeCauseDetected,
             attributionSourceMutationDetected: cacheUsage.attributionSourceMutationDetected
         )
+        hydrated.rankingActiveSince = cacheUsage.rankingActiveSince
+        return hydrated
     }
 
     func assistantExcerptHydrationRanges(

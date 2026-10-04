@@ -177,6 +177,8 @@ pub struct CacheHitRankingItem {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenCacheUsage {
+    #[serde(default)]
+    pub ranking_active_since: Option<String>,
     pub sessions: Vec<SessionCacheUsage>,
     pub turns: Vec<TurnCacheUsage>,
 }

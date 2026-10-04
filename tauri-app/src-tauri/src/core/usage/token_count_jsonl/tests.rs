@@ -13149,3 +13149,73 @@ fn storage_upgrade_transaction_rolls_back_and_reuses_one_backup() {
     assert_eq!(count,1);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn compressed_history_ranking_only_selects_active_sessions_and_preserves_totals() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let active_id = "019f7777-1234-1234-1234-123456789abc";
+    let cold_id = "019e7777-1234-1234-1234-123456789abc";
+    let token_line = |date: &str, input: u64| serde_json::json!({
+        "timestamp": date, "type": "event_msg", "payload": {"type": "token_count", "info": {
+            "last_token_usage": {"input_tokens": input, "cached_input_tokens": 0, "output_tokens": 0, "total_tokens": input}
+        }}
+    }).to_string() + "\n";
+    let active = root.join(format!("sessions/rollout-{active_id}.jsonl"));
+    let cold = root.join(format!("sessions/rollout-{cold_id}.jsonl"));
+    let original = format!("{{\"timestamp\":\"2026-10-04T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"active prompt\"}}}}\n{}", token_line("2026-10-04T00:00:00Z", 3000));
+    fs::write(&active, &original).unwrap();
+    fs::write(&cold, token_line("2026-09-26T00:00:00Z", 10000)).unwrap();
+    let now = time::macros::datetime!(2026-10-04 0:00 UTC);
+    let read = || {
+        let mut index = ExactUsageIndex::open(&root).unwrap();
+        index.sync(&root, &mut Vec::new()).unwrap();
+        index.dashboard_data(&root, now, UtcOffset::UTC, &mut Vec::new()).unwrap()
+    };
+    let all = read();
+    assert_eq!(all.stats.total_tokens, 13000);
+    assert_eq!(all.cache_usage.sessions.len(), 2);
+    let disabled_signature = dashboard_scan_signature_at(&root, 0, now, UtcOffset::UTC);
+    fs::write(root.join("config.toml"), "[features]\nlocal_thread_store_compression = true\n").unwrap();
+    let filtered = read();
+    assert_eq!(filtered.stats.total_tokens, all.stats.total_tokens);
+    assert_eq!(filtered.stats.peak_thread_tokens, all.stats.peak_thread_tokens);
+    assert_eq!(filtered.cache_usage.sessions.len(), 1);
+    assert_eq!(filtered.cache_usage.sessions[0].id, active_id);
+    assert!(filtered.cache_usage.turns.iter().all(|t| t.session_id == active_id));
+    assert_eq!(filtered.cache_usage.ranking_active_since.as_deref(), Some("2026-09-27T00:00:00Z"));
+    assert_ne!(disabled_signature, dashboard_scan_signature_at(&root, 0, now, UtcOffset::UTC));
+    // Even a recent session with a compressed shard never triggers an automatic text proof.
+    let modified = fs::metadata(&active).unwrap().modified().unwrap();
+    let zst = active.with_extension("jsonl.zst");
+    fs::write(&zst, declared_zstd_frame(original.as_bytes())).unwrap();
+    fs::File::options().write(true).open(&zst).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    fs::remove_file(&active).unwrap();
+    let compressed = read();
+    assert_eq!(compressed.stats.total_tokens, 13000);
+    assert!(compressed.cache_usage.turns.iter().all(|t| t.user_prompt.is_empty()));
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT verification FROM source_representations", [], |r| r.get::<_, String>(0)).unwrap(), "metadata_only");
+    drop(db);
+    fs::write(root.join("config.toml"), "[features]\nlocal_thread_store_compression = false\n").unwrap();
+    assert_eq!(read().cache_usage.sessions.len(), 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn history_compression_setting_accepts_boolean_only_and_ignores_prompt_text() {
+    let root = temp_root();
+    for (config, expected) in [
+        ("[features]\nlocal_thread_store_compression = true\n", true),
+        ("features.local_thread_store_compression = true # enabled\n", true),
+        ("[features]\nlocal_thread_store_compression = false\n", false),
+        ("[features]\nlocal_thread_store_compression = 'true'\n", false),
+        ("instructions = '''\n[features]\nlocal_thread_store_compression = true\n'''\n", false),
+    ] {
+        fs::write(root.join("config.toml"), config).unwrap();
+        assert_eq!(history_compression_enabled(&root), expected);
+    }
+    fs::remove_dir_all(root).unwrap();
+}

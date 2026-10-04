@@ -152,6 +152,7 @@ export interface TurnCacheUsage {
 }
 
 export interface TokenCacheUsage {
+  rankingActiveSince?: string | null;
   sessions: SessionCacheUsage[];
   turns: TurnCacheUsage[];
 }

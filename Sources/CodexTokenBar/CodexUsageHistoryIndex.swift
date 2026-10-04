@@ -3187,6 +3187,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     func forEachAggregatedSessionRow(
         limit: Int = 256,
+        activeSince: Date? = nil,
         _ body: (AggregatedSessionRow) throws -> Void
     ) throws {
         try driver.forEachRow(
@@ -3200,6 +3201,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         MAX(last_timestamp) AS last_timestamp
                     FROM dashboard_source_totals
                     GROUP BY session_id
+                    HAVING (?1 IS NULL OR MAX(last_timestamp) >= ?1)
                 ), logical_turns AS (
                     SELECT
                         session_id,
@@ -3246,7 +3248,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 SELECT * FROM selected
                 ORDER BY last_timestamp DESC, total_tokens DESC, session_id;
                 """,
-                bindings: [.int(limit), .int(limit)]
+                bindings: [activeSince.map { .double($0.timeIntervalSince1970) } ?? .null, .int(limit), .int(limit)]
             ) { row in
                 guard let sessionID = row.text(0),
                       let inputTokens = row.int(1),
@@ -3278,7 +3280,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         ) { $0.int(0) ?? 0 }.first ?? 0
     }
 
-    func boundedTurnCandidates(limit: Int = 128) throws -> [TurnCacheUsage] {
+    func boundedTurnCandidates(limit: Int = 128, activeSince: Date? = nil) throws -> [TurnCacheUsage] {
         try driver.withConnection { connection in
                 var candidates: [String: TurnCacheUsage] = [:]
                 let selections = [
@@ -3307,10 +3309,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             turn_index
                         FROM dashboard_turn_candidates
                         WHERE \(selection.predicate)
+                          AND (?1 IS NULL OR session_id IN (
+                            SELECT session_id FROM dashboard_source_totals
+                            GROUP BY session_id HAVING MAX(last_timestamp) >= ?1
+                          ))
                         ORDER BY \(selection.ordering)
                         LIMIT ?;
                         """,
-                        bindings: [.int(limit)]
+                        bindings: [activeSince.map { .double($0.timeIntervalSince1970) } ?? .null, .int(limit)]
                     ) { row -> TurnCacheUsage? in
                         guard let sourceID = row.int64(0),
                               let rawOffset = row.int64(1), rawOffset >= 0,
@@ -3427,20 +3433,27 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
-    func turnSourceReferences(for stableIDs: [String]) throws -> [String: TurnSourceReference] {
+    func turnSourceReferences(for stableIDs: [String], skipsCompressedSources: Bool = false) throws -> [String: TurnSourceReference] {
         try withExclusiveAccess {
-            try turnSourceReferencesExclusively(for: stableIDs)
+            try turnSourceReferencesExclusively(for: stableIDs, skipsCompressedSources: skipsCompressedSources)
         }
     }
 
     private func turnSourceReferencesExclusively(
-        for stableIDs: [String]
+        for stableIDs: [String],
+        skipsCompressedSources: Bool
     ) throws -> [String: TurnSourceReference] {
         var references: [String: TurnSourceReference] = [:]
         try driver.withConnection { connection in
             var checkedSources = Set<Int64>()
             for stableID in stableIDs {
                 guard let identity = Self.parseStableID(stableID) else { continue }
+                if skipsCompressedSources {
+                    let path = try connection.readRows("SELECT path FROM sources WHERE source_id=?", bindings: [.int64(identity.sourceID)]) { $0.text(0) }.first ?? nil
+                    guard let path,
+                          let physical = try? CodexRolloutReader.physicalURL(for: URL(fileURLWithPath: path)),
+                          !physical.lastPathComponent.hasSuffix(".jsonl.zst") else { continue }
+                }
                 if checkedSources.insert(identity.sourceID).inserted {
                     try verifyRestoredExcerptSource(identity.sourceID, connection: connection)
                 }
