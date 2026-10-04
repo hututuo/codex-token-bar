@@ -22,6 +22,7 @@ notify = "8.2.0"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.37.0", features = ["backup", "bundled"] }
 serde = { version = "1.0", features = ["derive"] }
+semver = "1.0"
 serde_json = { version = "1.0", features = ["raw_value"] }
 sha2 = "0.10"
 tauri = { version = "2.11.3", features = ["macos-private-api", "tray-icon"] }
@@ -57,6 +58,7 @@ winreg = "0.55"
 
 [patch.crates-io]
 wry = { path = "vendor/wry" }
+tauri-plugin-updater = { path = "vendor/tauri-plugin-updater" }
 
 # Identical SHA-256 output, with runtime detection and a software fallback.
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]

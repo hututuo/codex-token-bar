@@ -1,0 +1,115 @@
+# Small real NSIS fixture using the exact production hooks. No user registry or data.
+$ErrorActionPreference = 'Stop'
+$root = Join-Path $env:RUNNER_TEMP ('tokenbar-update-fixture-' + [guid]::NewGuid())
+$null = New-Item -ItemType Directory $root
+$hooks = (Resolve-Path 'tauri-app/src-tauri/windows/installer-hooks.nsh').Path
+$compiler = (Get-Command makensis.exe -ErrorAction Stop).Source
+$payload = Join-Path $root 'payload.exe'
+Set-Content -LiteralPath $payload -Value 'new payload' -NoNewline
+$script = @'
+Unicode true
+!include LogicLib.nsh
+!include FileFunc.nsh
+!include MUI2.nsh
+!define PRODUCTNAME "TokenBarUpdateFixture"
+!define MAINBINARYNAME "fixture"
+!define STARTMENUFOLDER ""
+Var UpdateMode
+Var NoShortcutMode
+Var AppStartMenuFolder
+!macro SetLnkAppUserModelId path
+!macroend
+!include "__HOOKS__"
+Name "Token Bar updater fault fixture"
+OutFile "__OUT__"
+RequestExecutionLevel user
+Page instfiles
+InstallDir "$TEMP\fixture"
+Function .onInit
+  StrCpy $UpdateMode 1
+  StrCpy $NoShortcutMode 0
+FunctionEnd
+Section
+  SetOutPath "$INSTDIR"
+  !insertmacro NSIS_HOOK_PREINSTALL
+  File /oname=fixture.exe "__PAYLOAD__"
+  ; Model the upstream ordering: registration after payload copy.
+  FileOpen $0 "$INSTDIR\registered.txt" w
+  FileWrite $0 "new version"
+  FileClose $0
+  !insertmacro NSIS_HOOK_POSTINSTALL
+SectionEnd
+'@
+$exe = Join-Path $root 'installer.exe'
+$script = $script.Replace('__HOOKS__', $hooks).Replace('__OUT__', $exe).Replace('__PAYLOAD__', $payload)
+$nsi = Join-Path $root 'fixture.nsi'
+Set-Content -LiteralPath $nsi -Value $script -Encoding utf8
+& $compiler /V2 $nsi
+if ($LASTEXITCODE -ne 0) { throw 'NSIS fixture compilation failed' }
+
+# Real launch error; ShellExecute return code, not GetLastError, is authoritative.
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class UpdateFaultWindows {
+ [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
+ public static extern IntPtr ShellExecuteW(IntPtr h,string op,string file,string args,string dir,int show);
+ [DllImport("user32.dll")] static extern bool EnumWindows(Func<IntPtr,IntPtr,bool> cb,IntPtr data);
+ [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+ [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr h,int id);
+ [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h,uint msg,IntPtr wp,IntPtr lp);
+ public static void CancelDialogs(int target) {
+   EnumWindows((h,_)=>{uint pid;GetWindowThreadProcessId(h,out pid);if(pid==target && GetDlgItem(h,4)!=IntPtr.Zero)PostMessage(h,0x111,(IntPtr)2,IntPtr.Zero);return true;},IntPtr.Zero);
+ }
+}
+'@
+$code = [UpdateFaultWindows]::ShellExecuteW([IntPtr]::Zero,'open',(Join-Path $root 'missing.exe'),$null,$null,0).ToInt64()
+if ($code -gt 32) { throw 'Missing installer unexpectedly launched' }
+Write-Host "PASS ShellExecute failed launch returns $code"
+
+function Run-Fixture([string]$dir, [bool]$silent, [bool]$cancel) {
+    $start = [Diagnostics.ProcessStartInfo]::new($exe)
+    $start.UseShellExecute = $false
+    $start.Arguments = $(if($silent){'/S '}else{'/P '}) + '/D=' + $dir
+    $p = [Diagnostics.Process]::Start($start)
+    $deadline = [datetime]::UtcNow.AddSeconds(30)
+    while (-not $p.WaitForExit(150)) {
+        if($cancel) { [UpdateFaultWindows]::CancelDialogs($p.Id) }
+        if([datetime]::UtcNow -gt $deadline) { $p.Kill(); throw 'Fixture timed out' }
+    }
+    return $p.ExitCode
+}
+$link = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\TokenBarUpdateFixture.lnk'
+$desktopLink = Join-Path ([Environment]::GetFolderPath('Desktop')) 'TokenBarUpdateFixture.lnk'
+if ((Test-Path $link) -or (Test-Path $desktopLink)) { throw 'Fixture shortcut collision' }
+try {
+    foreach ($silent in @($true,$false)) {
+        $dir = Join-Path $root $(if($silent){'用户 silent dir'}else{'用户 interactive dir'})
+        $null = New-Item -ItemType Directory $dir
+        $target = Join-Path $dir 'fixture.exe'
+        Set-Content -LiteralPath $target -Value 'old payload' -NoNewline
+        $lock = [IO.File]::Open($target,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try {
+            $exit = Run-Fixture $dir $silent (-not $silent)
+            if ($exit -eq 0) { throw 'Locked payload unexpectedly reported success' }
+            if(Test-Path (Join-Path $dir 'registered.txt')) { throw 'Registered version despite failed payload copy' }
+        } finally { $lock.Dispose() }
+        if((Get-Content -LiteralPath $target -Raw) -ne 'old payload') { throw 'Old payload was modified during failed install' }
+        Write-Host "PASS locked overwrite aborts before registration; silent=$silent"
+    }
+    $dir = Join-Path $root '用户 successful dir'
+    $null = New-Item -ItemType Directory $dir
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($link)
+    $shortcut.TargetPath = Join-Path $root 'old-copy.exe'
+    $shortcut.Save()
+    if ((Run-Fixture $dir $true $false) -ne 0) { throw 'Unblocked fixture failed' }
+    if((Get-Content (Join-Path $dir 'fixture.exe') -Raw) -ne 'new payload') { throw 'Payload mismatch' }
+    if(-not(Test-Path (Join-Path $dir 'registered.txt'))) { throw 'Registration marker absent' }
+    if($shell.CreateShortcut($link).TargetPath -ne (Join-Path $dir 'fixture.exe')) { throw 'Canonical shortcut not repaired' }
+    Write-Host 'PASS last unquoted /D with Chinese/spaces and canonical shortcut repair'
+} finally {
+    Remove-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $desktopLink -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $root -Recurse -Force
+}

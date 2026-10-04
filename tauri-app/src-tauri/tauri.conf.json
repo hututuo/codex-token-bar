@@ -26,9 +26,12 @@
       "../../LICENSES/CodexTokenBar-MIT.txt": "OpenSourceLicenses/CodexTokenBar-MIT.txt",
       "../../LICENSES/Zstandard-BSD-3-Clause.txt": "OpenSourceLicenses/Zstandard-BSD-3-Clause.txt",
       "../../LICENSES/Zstd-rs-MIT.txt": "OpenSourceLicenses/Zstd-rs-MIT.txt",
-      "../../OPEN_SOURCE_NOTICES.md": "OPEN_SOURCE_NOTICES.md"
+      "../../OPEN_SOURCE_NOTICES.md": "OPEN_SOURCE_NOTICES.md",
+      "../../LICENSES/Tauri-updater-MIT.txt": "OpenSourceLicenses/Tauri-updater-MIT.txt"
     },
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,6 +41,11 @@
     "macOS": {
       "infoPlist": "Info.plist",
       "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
     }
   },
   "plugins": {

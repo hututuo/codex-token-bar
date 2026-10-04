@@ -14,6 +14,7 @@ import { DashboardPage } from "../pages/DashboardPage";
 import { useDashboardData } from "../state/useDashboardData";
 import { useDashboardShellSettings } from "./useDashboardShellSettings";
 import { mountUpdateStateReconciler } from "./updateStateReconciler";
+import { finishUpdateInstall } from "./updateInstallOutcome";
 import { useThreadDeleteBridge } from "./useThreadDeleteBridge";
 
 type AppUpdateState =
@@ -250,12 +251,16 @@ async function installConfirmedUpdate(
   setAppUpdateState: (state: AppUpdateState) => void,
 ) {
   setAppUpdateState({ kind: "installing", message: "正在下载更新...", update });
-  try {
-    await installAppUpdate(update.version, message => {
+  const final = await finishUpdateInstall(
+    () => installAppUpdate(update.version, message => {
       setAppUpdateState({ kind: "installing", message, update });
-    });
-  } catch {
-    setAppUpdateState({ kind: "error", message: "更新未完成，请稍后重试", update: null });
+    }),
+    readCachedAppUpdate,
+  );
+  if (final.status === "available") {
+    setAppUpdateState({ kind: "available", message: final.message, update: final });
+  } else {
+    setAppUpdateState({ kind: final.status === "error" ? "error" : "idle", message: final.message, update: null });
   }
 }
 

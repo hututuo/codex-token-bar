@@ -105,3 +105,14 @@ process-identity gate, stopped-instance gate, transaction journal, conflict
 policy, and official Codex app-server visibility rebuild. This attribution is
 provided as product-design provenance and does not relicense any part of Codex
 Token Bar under CC BY-NC-SA 4.0.
+
+## Tauri updater Windows launch patch
+
+The Tauri application includes tauri-plugin-updater 2.10.1, with a narrow local
+patch checking Windows installer launch errors before cleaning up and exiting.
+Download and signature verification remain upstream implementations.
+
+- Upstream: https://github.com/tauri-apps/plugins-workspace/tree/updater-v2.10.1/plugins/updater
+- License selected: MIT
+- Full text: OpenSourceLicenses/Tauri-updater-MIT.txt
+- Source and patch provenance: tauri-app/src-tauri/vendor/tauri-plugin-updater/TOKENBAR_PATCH.md

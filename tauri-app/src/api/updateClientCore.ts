@@ -47,7 +47,7 @@ export function createUpdateClient(bridge: UpdateBridge) {
           "app-update-install-progress",
           event => onProgress?.(event.payload.finished ? "正在安装更新..." : "正在下载更新..."),
         );
-        await bridge.invoke("install_app_update", { version });
+        return await bridge.invoke<"started" | "alreadyLatest">("install_app_update", { version });
       } finally {
         unlisten?.();
       }

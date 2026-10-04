@@ -11,6 +11,11 @@ pub(crate) mod surface;
 pub(crate) mod thread_delete;
 pub(crate) mod thread_activity;
 pub(crate) mod update;
+#[cfg(any(windows, test))]
+mod update_install;
+#[cfg(test)]
+#[path = "../../vendor/tauri-plugin-updater/src/windows_launch.rs"]
+mod updater_launch_regression;
 pub(crate) mod window_auth;
 
 use crate::core::dashboard::LocalCodexDataSource;

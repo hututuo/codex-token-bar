@@ -41,6 +41,7 @@ struct PersistedUpdateState {
     available_body: Option<String>,
     available_date: Option<String>,
     last_notified_version: Option<String>,
+    install_message: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -59,13 +60,16 @@ impl AppUpdateState {
         match &state.available_version {
             Some(version) => Self {
                 status: "available".into(),
-                message: format!("发现新版本 {version}"),
+                message: match &state.install_message {
+                    Some(message) => format!("发现新版本 {version}；{message}"),
+                    None => format!("发现新版本 {version}"),
+                },
                 version: Some(version.clone()),
                 body: state.available_body.clone(),
                 date: state.available_date.clone(),
                 revision,
             },
-            None => Self::none("", revision),
+            None => Self::none(state.install_message.clone().unwrap_or_default(), revision),
         }
     }
 
@@ -142,6 +146,7 @@ fn tray_target_matches(target: &TrayTarget, available: Option<&str>) -> bool {
 trait UpdateOps<A: Clone + Send + 'static>: Send + Sync {
     // load/persist 是带 fsync 的磁盘 IO，签名定为 future：生产实现必须把
     // 阻塞体移交 spawn_blocking，不允许在 async 执行器线程上直接读写盘。
+    fn current_version(&self) -> &str;
     fn load(&self) -> BoxFuture<'_, Result<Option<PersistedUpdateState>, String>>;
     fn persist<'a>(&'a self, state: &'a PersistedUpdateState) -> BoxFuture<'a, Result<(), String>>;
     fn check(&self) -> BoxFuture<'_, Result<Option<CheckedUpdate<A>>, String>>;
@@ -210,6 +215,7 @@ struct RegistryCore<A> {
     state: Arc<Mutex<RuntimeState<A>>>,
     persist_lock: Arc<Mutex<()>>,
     initialized: Arc<AtomicBool>,
+    initialize_lock: Arc<Mutex<()>>,
     started: Arc<AtomicBool>,
     installing: Arc<AtomicBool>,
 }
@@ -289,6 +295,7 @@ impl<A> Clone for RegistryCore<A> {
             state: self.state.clone(),
             persist_lock: self.persist_lock.clone(),
             initialized: self.initialized.clone(),
+            initialize_lock: self.initialize_lock.clone(),
             started: self.started.clone(),
             installing: self.installing.clone(),
         }
@@ -301,6 +308,7 @@ impl<A> Default for RegistryCore<A> {
             state: Arc::new(Mutex::new(RuntimeState::default())),
             persist_lock: Arc::new(Mutex::new(())),
             initialized: Arc::new(AtomicBool::new(false)),
+            initialize_lock: Arc::new(Mutex::new(())),
             started: Arc::new(AtomicBool::new(false)),
             installing: Arc::new(AtomicBool::new(false)),
         }
@@ -309,22 +317,33 @@ impl<A> Default for RegistryCore<A> {
 
 impl<A: Clone + Send + 'static> RegistryCore<A> {
     async fn initialize(&self, ops: &impl UpdateOps<A>) -> Option<String> {
-        if self.initialized.swap(true, Ordering::AcqRel) {
+        let _initializing = self.initialize_lock.lock().await;
+        if self.initialized.load(Ordering::Acquire) {
             return None;
         }
+        let mut warning = None;
         match ops.load().await {
-            Ok(Some(persisted)) => {
+            Ok(Some(mut persisted)) => {
+                if persisted.available_version.as_deref()
+                    .is_some_and(|version| !is_newer_version(version, ops.current_version()))
+                {
+                    persisted.available_version = None;
+                    persisted.available_body = None;
+                    persisted.available_date = None;
+                    persisted.last_notified_version = None;
+                    // Filter before presentation. Do not spawn a cancellable disk cleanup
+                    // here: a detached write could overwrite a later check. The next
+                    // regular persistence saves the filtered state automatically.
+                }
                 let mut state = self.state.lock().await;
                 state.shown_notification_version = persisted.last_notified_version.clone();
                 state.persisted = persisted;
             }
             Ok(None) => {}
-            Err(error) => {
-                self.state.lock().await.persisted = PersistedUpdateState::default();
-                return Some(error);
-            }
+            Err(error) => warning = Some(error),
         }
-        None
+        self.initialized.store(true, Ordering::Release);
+        warning
     }
 
     async fn reconcile_presentation(&self, ops: &impl UpdateOps<A>, now: i64, explicit: bool) {
@@ -579,7 +598,8 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
             )),
         };
         let result = match checked {
-            Ok(Some(update)) => self.apply_available(ops, update).await,
+            Ok(Some(update)) if is_newer_version(&update.version, ops.current_version()) => self.apply_available(ops, update).await,
+            Ok(Some(_)) => self.apply_none(ops).await,
             Ok(None) => self.apply_none(ops).await,
             Err(error) => {
                 let snapshot = {
@@ -689,7 +709,7 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
         ops: &impl UpdateOps<A>,
         requested: &str,
         now: i64,
-    ) -> Result<(), String> {
+    ) -> Result<InstallUpdateResult, String> {
         if self
             .installing
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -700,7 +720,10 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
         let _install_owner = UpdateInstallOwner {
             installing: self.installing.clone(),
         };
-        self.check(ops, true, now).await?;
+        let checked_state = self.check(ops, true, now).await?;
+        if checked_state.status == "none" {
+            return Ok(InstallUpdateResult::AlreadyLatest);
+        }
         let artifact = {
             let state = self.state.lock().await;
             let available = state.persisted.available_version.as_deref();
@@ -713,7 +736,19 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
             let artifact = checked.unwrap().artifact.clone();
             artifact
         };
-        ops.install(artifact).await
+        ops.install(artifact).await?;
+        Ok(InstallUpdateResult::Started)
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallUpdateResult { Started, AlreadyLatest }
+
+fn is_newer_version(candidate: &str, current: &str) -> bool {
+    match (semver::Version::parse(candidate), semver::Version::parse(current)) {
+        (Ok(candidate), Ok(current)) => candidate.cmp_precedence(&current).is_gt(),
+        _ => false,
     }
 }
 
@@ -753,9 +788,22 @@ struct TauriUpdateOps {
 }
 
 impl UpdateOps<Update> for TauriUpdateOps {
+    fn current_version(&self) -> &str {
+        env!("CARGO_PKG_VERSION")
+    }
     fn load(&self) -> BoxFuture<'_, Result<Option<PersistedUpdateState>, String>> {
         let path = state_path(&self.app);
-        Box::pin(async move { run_update_disk_io(move || load_state_soft(&path?)).await })
+        Box::pin(async move { run_update_disk_io(move || {
+                let path = path?;
+                let mut state = load_state_soft(&path)?.unwrap_or_default();
+                #[cfg(windows)]
+                {
+                    let result = super::update_install::reconcile_attempt(
+                        &path.with_file_name("update-install-attempt.json"), env!("CARGO_PKG_VERSION"));
+                    apply_install_receipt(&mut state, result);
+                }
+                Ok(Some(state))
+            }).await })
     }
 
     fn persist<'a>(
@@ -774,10 +822,13 @@ impl UpdateOps<Update> for TauriUpdateOps {
 
     fn check(&self) -> BoxFuture<'_, Result<Option<CheckedUpdate<Update>>, String>> {
         Box::pin(async move {
-            let update = self
-                .app
-                .updater()
-                .map_err(|error| error.to_string())?
+            let builder = self.app.updater_builder();
+            #[cfg(windows)]
+            let builder = {
+                let directory = run_update_disk_io(super::update_install::registered_install_directory).await?;
+                builder.installer_arg(super::update_install::destination_argument(&directory))
+            };
+            let update = builder.build().map_err(|error| error.to_string())?
                 .check()
                 .await
                 .map_err(|error| error.to_string())?;
@@ -817,8 +868,10 @@ impl UpdateOps<Update> for TauriUpdateOps {
     fn install(&self, artifact: Update) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
             let progress_app = self.app.clone();
-            artifact
-                .download_and_install(
+            #[cfg(windows)]
+            let directory = run_update_disk_io(super::update_install::registered_install_directory).await?;
+            let bytes = artifact
+                .download(
                     move |chunk, total| {
                         let _ = progress_app.emit(
                             INSTALL_PROGRESS_EVENT,
@@ -837,6 +890,33 @@ impl UpdateOps<Update> for TauriUpdateOps {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
+            #[cfg(windows)]
+            {
+                let path = state_path(&self.app)?.with_file_name("update-install-attempt.json");
+                let expected_directory = directory.clone();
+                let target = artifact.version.clone();
+                let attempt_path = path.clone();
+                run_update_disk_io(move || {
+                    if super::update_install::registered_install_directory()? != expected_directory {
+                        return Err("更新目录已变化，请重新检查更新".into());
+                    }
+                    super::update_install::begin_attempt(&attempt_path, env!("CARGO_PKG_VERSION"), &target, &expected_directory)
+                }).await?;
+                // The checked artifact retains the destination passed at check time.
+                // Compare it to the freshly validated directory before calling install.
+                let install_result = run_update_disk_io(move || artifact.install(&bytes).map_err(|e| e.to_string())).await;
+                if let Err(error) = install_result {
+                    let message = format!("安装器未能启动：{error}");
+                    let failure = message.clone();
+                    let recorded = run_update_disk_io(move || super::update_install::fail_attempt(&path, &failure)).await;
+                    return Err(match recorded {
+                        Ok(()) => message,
+                        Err(error) => format!("{message}；安装结果记录失败：{error}"),
+                    });
+                }
+            }
+            #[cfg(not(windows))]
+            artifact.install(&bytes).map_err(|error| error.to_string())?;
             self.app.restart();
         })
     }
@@ -855,6 +935,7 @@ impl UpdateMonitorRegistry {
             state: self.core.state.clone(),
             persist_lock: self.core.persist_lock.clone(),
             initialized: self.core.initialized.clone(),
+            initialize_lock: self.core.initialize_lock.clone(),
             started: self.core.started.clone(),
             installing: self.core.installing.clone(),
         };
@@ -914,6 +995,13 @@ async fn ensure_initialized_logged(core: &RegistryCore<Update>, ops: &TauriUpdat
     if let Some(error) = core.initialize(ops).await {
         eprintln!("Codex Token Bar: update monitor state recovered: {error}");
     }
+}
+
+fn apply_install_receipt(state: &mut PersistedUpdateState, result: Result<Option<String>, String>) {
+    state.install_message = match result {
+        Ok(message) => message,
+        Err(error) => Some(format!("无法确认上次更新安装结果：{error}")),
+    };
 }
 
 fn load_state_soft(path: &Path) -> Result<Option<PersistedUpdateState>, String> {
@@ -990,11 +1078,13 @@ pub async fn install_app_update(
     app: tauri::AppHandle,
     registry: tauri::State<'_, UpdateMonitorRegistry>,
     version: String,
-) -> Result<(), String> {
+) -> Result<InstallUpdateResult, String> {
     require_window_label(&window, "install_app_update")?;
     let ops = TauriUpdateOps { app };
     ensure_initialized_logged(&registry.core, &ops).await;
-    registry.core.install(&ops, &version, now_ms()).await
+    let result = registry.core.install(&ops, &version, now_ms()).await;
+    registry.core.reconcile_presentation(&ops, now_ms(), true).await;
+    result
 }
 
 #[cfg(test)]
@@ -1006,6 +1096,7 @@ mod tests {
     };
 
     struct MockOps {
+        load_delay_ms: AtomicU64,
         loaded: StdMutex<Result<Option<PersistedUpdateState>, String>>,
         persisted: StdMutex<Vec<PersistedUpdateState>>,
         checks: AtomicUsize,
@@ -1047,8 +1138,12 @@ mod tests {
     }
 
     impl UpdateOps<String> for MockOps {
+        fn current_version(&self) -> &str { "0.7.0" }
         fn load(&self) -> BoxFuture<'_, Result<Option<PersistedUpdateState>, String>> {
-            Box::pin(async move { self.loaded.lock().unwrap().clone() })
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(self.load_delay_ms.load(Ordering::SeqCst))).await;
+                self.loaded.lock().unwrap().clone()
+            })
         }
         fn persist<'a>(
             &'a self,
@@ -1155,6 +1250,7 @@ mod tests {
     impl Default for MockOps {
         fn default() -> Self {
             Self {
+                load_delay_ms: AtomicU64::new(0),
                 loaded: StdMutex::new(Ok(None)),
                 persisted: StdMutex::new(Vec::new()),
                 checks: AtomicUsize::new(0),
@@ -1754,6 +1850,101 @@ mod tests {
                 .unwrap();
             assert_eq!(joined.revision, 7);
         });
+    }
+
+    #[test]
+    fn startup_filters_installed_old_invalid_and_build_metadata_versions_offline() {
+        runtime().block_on(async {
+            for version in ["0.7.0", "0.6.9", "bad", "0.7.0+newbuild"] {
+                let core = RegistryCore::<String>::default();
+                let ops = MockOps::default();
+                *ops.loaded.lock().unwrap() = Ok(Some(PersistedUpdateState {
+                    available_version: Some(version.into()),
+                    available_body: Some("old notes".into()),
+                    last_attempt_at: Some(100), ..Default::default()
+                }));
+                core.initialize(&ops).await;
+                core.check(&ops, false, 101).await.unwrap();
+                core.reconcile_presentation(&ops, 101, false).await;
+                let state = core.state.lock().await;
+                assert!(state.persisted.available_version.is_none());
+                assert!(state.persisted.available_body.is_none());
+                assert_eq!(ops.checks.load(Ordering::SeqCst), 0);
+                assert_eq!(ops.notifications.load(Ordering::SeqCst), 0);
+            }
+        });
+    }
+
+    #[test]
+    fn startup_cleanup_failure_does_not_restore_stale_version_in_memory() {
+        runtime().block_on(async {
+            let core = RegistryCore::<String>::default();
+            let ops = MockOps::default();
+            *ops.loaded.lock().unwrap() = Ok(Some(PersistedUpdateState {
+                available_version: Some("0.7.0".into()), ..Default::default()
+            }));
+            ops.fail_persist.store(true, Ordering::SeqCst);
+            assert!(core.initialize(&ops).await.is_none());
+            assert!(core.state.lock().await.persisted.available_version.is_none());
+            assert!(ops.persisted.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn concurrent_initialization_waits_for_load_and_cancel_allows_retry() {
+        runtime().block_on(async {
+            let core = Arc::new(RegistryCore::<String>::default());
+            let ops = Arc::new(MockOps::default());
+            ops.load_delay_ms.store(30, Ordering::SeqCst);
+            *ops.loaded.lock().unwrap() = Ok(Some(PersistedUpdateState {
+                available_version: Some("0.8.0".into()), ..Default::default()
+            }));
+            let task = tokio::spawn({
+                let core = core.clone(); let ops = ops.clone();
+                async move { core.initialize(ops.as_ref()).await }
+            });
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            assert!(!core.initialized.load(Ordering::Acquire));
+            task.abort();
+            let _ = task.await;
+            let other = tokio::spawn({
+                let core = core.clone(); let ops = ops.clone();
+                async move { core.initialize(ops.as_ref()).await }
+            });
+            core.initialize(ops.as_ref()).await;
+            other.await.unwrap();
+            assert_eq!(core.state.lock().await.persisted.available_version.as_deref(), Some("0.8.0"));
+        });
+    }
+
+    #[test]
+    fn stale_install_click_reports_latest_without_downloading() {
+        runtime().block_on(async {
+            let core = RegistryCore::<String>::default();
+            let ops = MockOps::available("0.8.0");
+            core.check(&ops, true, 0).await.unwrap();
+            core.reconcile_presentation(&ops, 0, true).await;
+            *ops.check_result.lock().unwrap() = Ok(None);
+            assert_eq!(core.install(&ops, "0.8.0", 1).await.unwrap(), InstallUpdateResult::AlreadyLatest);
+            core.reconcile_presentation(&ops, 1, true).await;
+            assert_eq!(ops.installs.load(Ordering::SeqCst), 0);
+            assert!(ops.clear_attempts.load(Ordering::SeqCst) > 0);
+        });
+    }
+
+    #[test]
+    fn corrupt_install_receipt_preserves_monitor_availability() {
+        let root = std::env::temp_dir().join(format!("update-receipt-corrupt-{}", now_ms()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("update-install-attempt.json");
+        std::fs::write(&path, b"invalid JSON").unwrap();
+        let mut state = PersistedUpdateState {
+            available_version: Some("0.8.0".into()), ..Default::default()
+        };
+        apply_install_receipt(&mut state, super::super::update_install::reconcile_attempt(&path, "0.7.0"));
+        assert_eq!(state.available_version.as_deref(), Some("0.8.0"));
+        assert!(AppUpdateState::from_persisted(&state, 0).message.contains("无法确认"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn runtime() -> tokio::runtime::Runtime {

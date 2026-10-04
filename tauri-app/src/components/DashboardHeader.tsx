@@ -246,7 +246,7 @@ export function DashboardHeader({
         ? "安装更新"
         : appUpdateState.kind === "error"
           ? "重试更新检查"
-          : appUpdateState.message || "检查更新";
+          : appUpdateState.message && appUpdateState.message.length <= 20 ? appUpdateState.message : "检查更新";
   const updateNeedsAttention = appUpdateState.kind === "available" || appUpdateState.kind === "error";
 
   function beginEditDisplayName() {
@@ -426,6 +426,9 @@ export function DashboardHeader({
                         title={appUpdateState.message || undefined}
                         type="button"
                       >{updateButtonLabel}</button>
+                      {appUpdateState.message.includes("更新未完成") || appUpdateState.message.includes("尚未确认") || appUpdateState.message.includes("无法确认") ? (
+                        <small role="status" style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>{appUpdateState.message}</small>
+                      ) : null}
                       <button
                         aria-describedby={autostartStatus.message ? autostartHelpId : undefined}
                         aria-pressed={autostartStatus.enabled}
