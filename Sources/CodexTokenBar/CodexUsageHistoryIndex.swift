@@ -1992,6 +1992,34 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    /// Snapshot validation never measures compressed bodies. Missing entries
+    /// remain unknown to the caller and force the authoritative numeric owner.
+    func lightweightSourceObservations() throws -> [String: SourceFileObservation] {
+        try driver.withConnection { connection in
+            try configure(connection)
+            let pending = try eventEnrichmentPendingSourceIDs(connection: connection)
+            let rows = try connection.readRows("""
+                SELECT s.path, s.source_id, s.size_bytes, s.modified_at, o.physical_stamp
+                FROM sources s JOIN source_observations o
+                  ON o.source_id=s.source_id AND o.size_bytes=s.size_bytes AND o.modified_at=s.modified_at
+                WHERE s.append_ready=1 AND s.resume_offset=s.size_bytes
+                  AND NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=s.source_id AND l.missing=1)
+                """) { row in
+                    (row.text(0), row.int64(1), row.int64(2), row.double(3), row.text(4))
+                }
+            var result: [String: SourceFileObservation] = [:]
+            for (path, id, size, modified, stamp) in rows {
+                guard let path, let id, !pending.contains(id), let size, size >= 0,
+                      let modified, let stamp,
+                      let physical = try? SourceFileObservation.readPreferredPhysical(at: URL(fileURLWithPath: path)),
+                      physical.observation.modifiedAt == modified,
+                      physical.observation.physicalStamp == stamp else { continue }
+                result[path] = physical.observation.withLogicalSize(UInt64(size))
+            }
+            return result
+        }
+    }
+
     func dashboardAggregateIdentity() throws -> DashboardAggregateIdentity {
         try driver.withConnection { connection in
             try configure(connection)
@@ -2108,11 +2136,25 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             }
 
+            let known = try lightweightSourceObservations()
             var staged: [StagedSessionCatalogEntry] = []
             var unchangedFiles = 0
             var parsedFirstLines = 0
             for path in candidateByPath.keys.sorted() {
                 guard let candidate = candidateByPath[path] else { continue }
+                let physical = try SourceFileObservation.readPreferredPhysical(at: candidate.file)
+                if physical.file.lastPathComponent.hasSuffix(".jsonl.zst") {
+                    guard let current = existing[path], let observation = known[path],
+                          observation.physicalStamp == physical.observation.physicalStamp,
+                          observation.modifiedAt == physical.observation.modifiedAt,
+                          current.entry.sizeBytes == Int64(observation.size),
+                          current.entry.modifiedAt.timeIntervalSince1970 == observation.modifiedAt,
+                          current.entry.archived == candidate.archived else {
+                        throw CodexRolloutReader.failure("压缩会话目录元数据未就绪，保留上次完整目录", file: candidate.file)
+                    }
+                    unchangedFiles += 1
+                    continue
+                }
                 let observed = try sessionCatalogFileSignature(for: candidate.file)
                 if let current = existing[path],
                    current.signature == observed,
@@ -2342,11 +2384,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             throw CodexUsageSourceChangedError(path: file.path)
         }
         let logicalSize: Int64
-        if physical.lastPathComponent.hasSuffix(".jsonl.zst") {
-            let reader = try CodexRolloutReader(forReadingFrom: file)
-            defer { try? reader.close() }
-            logicalSize = try sqliteInt64(reader.logicalSize())
-        } else { logicalSize = Int64(value.st_size) }
+        guard !physical.lastPathComponent.hasSuffix(".jsonl.zst") else {
+            throw CodexRolloutReader.failure("压缩会话目录原文读取已延期", file: file)
+        }
+        logicalSize = Int64(value.st_size)
         return SessionCatalogFileSignature(
             sizeBytes: logicalSize,
             modifiedSeconds: Int64(value.st_mtimespec.tv_sec),
@@ -2359,7 +2400,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func sessionCatalogFirstLineFingerprint(
         for file: URL
     ) throws -> (endOffset: Int64, sha256: String) {
-        let handle = try CodexRolloutReader(forReadingFrom: file)
+        let handle = try CodexRolloutReader(forReadingFrom: file, allowsCompressed: false)
         defer { try? handle.close() }
 
         var hasher = SHA256()
@@ -2438,7 +2479,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 try autoreleasepool {
                     let path = file.path
                     let existing = indexedSources[path]
-                    let observedMetadata = try sourceSignatureMetadata(for: file)
+                    let observedMetadata = try sourceSignatureMetadata(for: file, reusing: existing?.signature)
                     if let existing, representedSourceIDs.contains(existing.id),
                        !missingSourceIDs.contains(existing.id),
                        !enrichmentPendingSourceIDs.contains(existing.id),
@@ -3446,16 +3487,29 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var references: [String: TurnSourceReference] = [:]
         try driver.withConnection { connection in
             var checkedSources = Set<Int64>()
+            var failedSources = Set<Int64>()
             for stableID in stableIDs {
-                guard let identity = Self.parseStableID(stableID) else { continue }
-                if skipsCompressedSources {
+                guard let identity = Self.parseStableID(stableID),
+                      !failedSources.contains(identity.sourceID) else { continue }
+                // Optional cold text is deferred independently of the ranking setting.
+                do {
                     let path = try connection.readRows("SELECT path FROM sources WHERE source_id=?", bindings: [.int64(identity.sourceID)]) { $0.text(0) }.first ?? nil
                     guard let path,
                           let physical = try? CodexRolloutReader.physicalURL(for: URL(fileURLWithPath: path)),
                           !physical.lastPathComponent.hasSuffix(".jsonl.zst") else { continue }
                 }
                 if checkedSources.insert(identity.sourceID).inserted {
-                    try verifyRestoredExcerptSource(identity.sourceID, connection: connection)
+                    do {
+                        try verifyRestoredExcerptSource(identity.sourceID, connection: connection)
+                    } catch {
+                        if error is SQLiteDatabaseError || error is CancellationError { throw error }
+                        let sourceError = error as NSError
+                        guard error is CodexUsageSourceChangedError
+                            || [NSPOSIXErrorDomain, NSCocoaErrorDomain, "CodexRolloutReader"].contains(sourceError.domain)
+                        else { throw error }
+                        failedSources.insert(identity.sourceID)
+                        continue
+                    }
                 }
                 let rows = try connection.readRows(
                     """
@@ -3521,8 +3575,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 WHERE source_id=? AND (prompt_offset IS NOT NULL OR assistant_offset IS NOT NULL))
             """, bindings: [.int64(sourceID)]) { $0.int(0) == 1 }.first ?? false
         guard needsText, let pending,
-              let source = try indexedSources(connection: connection, includeMissing: true)[pending],
-              try sourceChunksMatch(file: URL(fileURLWithPath: pending), source: source, connection: connection)
+              let source = try indexedSource(path: pending, connection: connection),
+              try sourceChunksMatch(file: URL(fileURLWithPath: pending), source: source, connection: connection, allowsCompressed: false)
         else { return }
         try connection.transaction { tx in
             try tx.execute("UPDATE source_representations SET verification='verified_full' WHERE source_id=?", bindings: [.int64(sourceID)])
@@ -4608,7 +4662,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             if Task.isCancelled { throw CancellationError() }
             guard observedPaths.contains(path), let source = sources[path] else { continue }
             let file = URL(fileURLWithPath: path)
-            let observed = try sourceSignatureMetadata(for: file)
+            guard let physical = try? CodexRolloutReader.physicalURL(for: file),
+                  !physical.lastPathComponent.hasSuffix(".jsonl.zst") else { continue }
+            let observed: SourceSignature
+            do { observed = try sourceSignatureMetadata(for: file, allowsCompressed: false) }
+            catch is CancellationError { throw CancellationError() }
+            catch { continue }
             guard sourceMetadataMatches(source.signature, observed) else { continue }
             let bindings = try connection.readRows("""
                 SELECT b.raw_offset,b.event_id FROM usage_ledger_bindings b
@@ -4620,8 +4679,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let scan: CodexUsageAnalyzer.MessageLinkScan
             do { scan = try scanner(file, source.signature.size, Set(events.keys)) }
             catch is CancellationError { throw CancellationError() }
+            catch let error as SQLiteDatabaseError { throw error }
             catch { continue } // Optional excerpts must not take numeric usage offline.
-            guard sourceMetadataMatches(source.signature, try sourceSignatureMetadata(for: file)),
+            let after: SourceSignature
+            do { after = try sourceSignatureMetadata(for: file, allowsCompressed: false) }
+            catch is CancellationError { throw CancellationError() }
+            catch { continue }
+            guard sourceMetadataMatches(source.signature, after),
                   !scan.chunks.isEmpty else { continue }
             let storedChunkCount = try connection.readRows("SELECT COUNT(*) FROM source_chunks WHERE source_id=?", bindings:[.int64(sourceID)]) { $0.int(0) }.first ?? 0
             var verified = storedChunkCount == scan.chunks.count
@@ -6380,7 +6444,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func sourceChunksMatch(
         file: URL,
         source: IndexedSource,
-        connection: SQLiteDatabaseConnection
+        connection: SQLiteDatabaseConnection,
+        allowsCompressed: Bool = true
     ) throws -> Bool {
         let expectedCount = chunkCount(for: source.signature.size)
         let stored: [CodexUsageAnalyzer.IndexedChunkHash] = try connection.readRows(
@@ -6414,11 +6479,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         guard expectedCount > 0 else { return source.signature.size == 0 }
 
-        let pathBefore = try sourceSignatureMetadata(for: file)
-        guard pathBefore.size == source.signature.size else { return false }
-        let handle = try CodexRolloutReader(forReadingFrom: file)
+        let handle = try CodexRolloutReader(forReadingFrom: file, allowsCompressed: allowsCompressed)
         defer { try? handle.close() }
-        let handleBefore = try sourceSignatureMetadata(forOpenHandle: handle, file: file)
+        let pathBefore = try sourceSignatureMetadata(for: file, allowsCompressed: allowsCompressed)
+        guard pathBefore.size == source.signature.size else { return false }
+                let handleBefore = try sourceSignatureMetadata(forOpenHandle: handle, file: file)
         guard handleBefore.size == source.signature.size else { return false }
         for expected in stored {
             let actual = try hashSourceChunk(
@@ -6431,7 +6496,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         try handle.validateDecodedEnd(at: source.signature.size)
         let handleAfter = try sourceSignatureMetadata(forOpenHandle: handle, file: file)
-        let pathAfter = try sourceSignatureMetadata(for: file)
+        let pathAfter = try sourceSignatureMetadata(for: file, allowsCompressed: allowsCompressed)
         return handleBefore == handleAfter
             && pathBefore == pathAfter
             && handleAfter.size == source.signature.size
@@ -8236,8 +8301,21 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return .int64(try sqliteInt64(value))
     }
 
-    private func sourceSignatureMetadata(for file: URL) throws -> SourceSignature {
-        let observation = try SourceFileObservation.read(at: file)
+    private func sourceSignatureMetadata(for file: URL, reusing stored: SourceSignature? = nil, allowsCompressed: Bool = true) throws -> SourceSignature {
+        let physical = try SourceFileObservation.readPreferredPhysical(at: file)
+        guard allowsCompressed || !physical.file.lastPathComponent.hasSuffix(".jsonl.zst") else {
+            throw CodexRolloutReader.failure("可选原文读取已延期：来源为压缩历史", file: physical.file)
+        }
+        let observation: SourceFileObservation
+        if physical.file.lastPathComponent.hasSuffix(".jsonl.zst"),
+           let stored, stored.physicalStamp == physical.observation.physicalStamp,
+           stored.modifiedAt == physical.observation.modifiedAt {
+            observation = physical.observation.withLogicalSize(stored.size)
+        } else if !allowsCompressed || !physical.file.lastPathComponent.hasSuffix(".jsonl.zst") {
+            observation = physical.observation
+        } else {
+            observation = try SourceFileObservation.read(at: file)
+        }
         return SourceSignature(
             size: observation.size,
             modifiedAt: observation.modifiedAt,
@@ -8337,6 +8415,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 throw CodexUsageSourceChangedError(path: file.path)
             }
             remaining -= UInt64(count)
+        }
+        // A prefix of a growing source is not its EOF. Equal-length compressed
+        // stage reuse must also consume checksums and zero-output trailing frames.
+        if try handle.logicalSize() == length {
+            try handle.validateDecodedEnd(at: length)
         }
         return hasher.finalize()
             .map { String(format: "%02x", $0) }

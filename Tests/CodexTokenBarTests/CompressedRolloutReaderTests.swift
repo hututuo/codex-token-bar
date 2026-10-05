@@ -16,11 +16,68 @@ final class CompressedRolloutReaderTests: XCTestCase {
         XCTAssertEqual(CodexRolloutReader.logicalURL(compressedURL), plainURL)
         XCTAssertEqual(try CodexRolloutReader.physicalURL(for: compressedURL), plainURL)
 
+        let physical = try SourceFileObservation.readPreferredPhysical(at: compressedURL)
+        XCTAssertEqual(physical.file, plainURL)
+        XCTAssertEqual(physical.observation.size, UInt64(plain.count))
+
         let reader = try CodexRolloutReader(forReadingFrom: compressedURL)
         defer { try? reader.close() }
         XCTAssertFalse(reader.isCompressed)
         XCTAssertEqual(reader.physicalURL, plainURL)
         XCTAssertEqual(try readAll(reader), plain)
+    }
+
+    func testPhysicalObservationOfUnknownFrameDoesNotDecodeOrInspectBlocks() throws {
+        let root = try temporaryDirectory()
+        let payload = Data("{\"unknown\":true}\n".utf8)
+        let frame = rawFrame(payload, singleSegment: false)
+        let file = try write(frame, named: "cold-unknown.jsonl.zst", in: root)
+
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let result = try SourceFileObservation.readPreferredPhysical(at: file)
+        let counters = CodexRolloutReader.workCountersForCurrentThread()
+
+        XCTAssertEqual(result.file, file)
+        XCTAssertEqual(result.observation.size, UInt64(frame.count))
+        XCTAssertEqual(counters.open, 1)
+        XCTAssertEqual(counters.decoded_bytes, 0)
+        XCTAssertEqual(counters.structure_blocks, 0)
+
+        let logical = result.observation.withLogicalSize(UInt64(payload.count))
+        XCTAssertEqual(logical.size, UInt64(payload.count))
+        XCTAssertEqual(logical.modifiedAt, result.observation.modifiedAt)
+        XCTAssertEqual(logical.physicalStamp, result.observation.physicalStamp)
+    }
+
+    func testUnsafePlainEntryDoesNotFallBackToCompressedSibling() throws {
+        let root = try temporaryDirectory()
+        let plain = root.appendingPathComponent("unsafe.jsonl")
+        let compressed = root.appendingPathComponent("unsafe.jsonl.zst")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: false)
+        try rawFrame(Data("compressed\n".utf8), singleSegment: true).write(to: compressed)
+
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        XCTAssertThrowsError(try SourceFileObservation.readPreferredPhysical(at: compressed))
+        let counters = CodexRolloutReader.workCountersForCurrentThread()
+        XCTAssertEqual(counters.open, 0)
+        XCTAssertEqual(counters.decoded_bytes, 0)
+        XCTAssertEqual(counters.structure_blocks, 0)
+    }
+
+    func testOptionalPlainReaderNeverOpensCompressedSibling() throws {
+        let root = try temporaryDirectory()
+        let plain = root.appendingPathComponent("optional.jsonl")
+        let zst = root.appendingPathComponent("optional.jsonl.zst")
+        try Data("plain\n".utf8).write(to: plain)
+        try Data([0x28,0xb5,0x2f,0xfd]).write(to: zst)
+        let reader = try CodexRolloutReader(forReadingFrom: zst, allowsCompressed: false)
+        XCTAssertEqual(try readAll(reader), Data("plain\n".utf8))
+        try reader.close()
+        try FileManager.default.removeItem(at: plain)
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        XCTAssertThrowsError(try CodexRolloutReader(forReadingFrom: plain, allowsCompressed: false))
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().structure_blocks, 0)
     }
 
     func testDeclaredSingleFrameStreamsAndSeeks() throws {

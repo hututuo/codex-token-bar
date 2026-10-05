@@ -39,7 +39,29 @@ final class CompressedHistoryIndexTests: XCTestCase {
         XCTAssertTrue(try f.index.turnSourceReferences(for: turns.map(\.id), skipsCompressedSources: true).isEmpty)
         XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
         try f.db.execute("DROP TRIGGER stop_ranking_proof")
-        XCTAssertFalse(try f.index.turnSourceReferences(for: turns.map(\.id)).isEmpty)
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        XCTAssertTrue(try f.index.turnSourceReferences(for: turns.map(\.id)).isEmpty)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+    }
+
+    func testStableUnknownSizeColdHistoryUsesPhysicalObservationWithoutDecode() throws {
+        let f = try fixture()
+        let bytes = Data(line(120).utf8)
+        let known = frame(bytes)
+        let unknown = Data([0x28,0xb5,0x2f,0xfd,0,0]) + known.dropFirst(9)
+        try unknown.write(to: URL(fileURLWithPath: f.file.path + ".zst"))
+        try FileManager.default.removeItem(at: f.file)
+        _ = try f.synchronize()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let observations = try f.index.lightweightSourceObservations()
+        XCTAssertEqual(observations[f.file.path]?.size, UInt64(bytes.count))
+        _ = f.analyzer.sessionTreeSignature(for: [f.file], attributionProvenanceEpoch: "test",
+            attributionGeneration: 1, historyIndex: f.index)
+        _ = try f.synchronize()
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        let work = CodexRolloutReader.workCountersForCurrentThread()
+        XCTAssertEqual(work.decoded_bytes, 0)
+        XCTAssertEqual(work.structure_blocks, 0)
     }
 
     private struct Fixture {
@@ -144,21 +166,21 @@ final class CompressedHistoryIndexTests: XCTestCase {
     }
     func testCompressedCatalogRetainsLogicalSizeAndSkipsWarmFirstLine() throws {
         let f = try fixture()
-        _ = try compress(f)
+        _ = try f.synchronize()
         let metadata = CodexUsageHistoryIndex.SessionCatalogMetadata(threadID: "thread",
             cwd: "/synthetic", sessionID: nil, forkedFromID: nil, parentThreadID: nil, source: "cli")
-        let cold = try f.index.synchronizeSessionCatalog(candidates: [.init(file: f.file, archived: false)]) { file in
-            let reader = try CodexRolloutReader(forReadingFrom: file)
-            defer { try? reader.close() }
-            XCTAssertFalse((try reader.read(upToCount: 1024) ?? Data()).isEmpty)
-            return metadata
-        }
-        XCTAssertEqual(cold.entries.first?.sizeBytes, Int64(line(120).utf8.count))
+        _ = try f.index.synchronizeSessionCatalog(candidates: [.init(file: f.file, archived: false)]) { _ in metadata }
+        _ = try compress(f)
+        _ = try f.synchronize()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
         let warm = try f.index.synchronizeSessionCatalog(candidates: [.init(file: f.file, archived: false)]) { _ in
-            XCTFail("warm compressed catalog must not reparse its first line")
+            XCTFail("compressed catalog must not reparse its first line")
             return metadata
         }
+        XCTAssertEqual(warm.entries.first?.sizeBytes, Int64(line(120).utf8.count))
         XCTAssertEqual(warm.parsedFirstLines, 0)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().structure_blocks, 0)
     }
     func testRestoredCompressedTextOffsetsRequireOldChunkProof() throws {
         let f = try fixture()
@@ -174,6 +196,10 @@ final class CompressedHistoryIndexTests: XCTestCase {
         _ = try compress(f)
         _ = try f.synchronize()
         XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), 0)
+        XCTAssertTrue(try f.index.turnSourceReferences(for: ids).isEmpty)
+        let date = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: f.file.path + ".zst")[.modificationDate] as? Date)
+        try Data((prompt + line(120)).utf8).write(to: f.file)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: f.file.path)
         XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
         XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), Int64(ids.count))
         XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
@@ -211,13 +237,13 @@ final class CompressedHistoryIndexTests: XCTestCase {
                 _ = try compress(f)
                 _ = try f.synchronize()
             }
-            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
+            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, compressed ? 0 : ids.count)
             try markMissing(f)
             _ = try f.synchronize()
             XCTAssertEqual(try scalar(f.db, "SELECT missing FROM usage_ledger_sources"), 0)
             XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), 0)
-            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
-            XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), Int64(ids.count))
+            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, compressed ? 0 : ids.count)
+            XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), compressed ? 0 : Int64(ids.count))
             _ = try f.synchronize()
             XCTAssertEqual(try eventIDs(f), ids)
             XCTAssertEqual(try scalar(f.db, "SELECT source_id FROM sources"), source)
@@ -232,7 +258,7 @@ final class CompressedHistoryIndexTests: XCTestCase {
             let original = try Data(contentsOf: f.file)
             let physical = try (compressed ? compress(f) : f.file)
             _ = try f.synchronize()
-            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
+            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, compressed ? 0 : ids.count)
             try markMissing(f)
             _ = try f.synchronize()
             let date = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: physical.path)[.modificationDate] as? Date)

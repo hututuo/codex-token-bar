@@ -13,6 +13,21 @@ protocol CodexReadHandle: AnyObject {
     func logicalSize() throws -> UInt64
     func validateDecodedEnd(at size: UInt64) throws
 }
+
+/// Work performed by the rollout reader on the calling thread. These counters
+/// are compiled as instrumentation in debug builds for focused regressions.
+struct CodexRolloutReaderWorkCounters: Equatable {
+    var open: UInt64 = 0
+    var decoded_bytes: UInt64 = 0
+    var structure_blocks: UInt64 = 0
+}
+
+#if DEBUG
+private final class CodexRolloutReaderWorkCounterBox {
+    var value = CodexRolloutReaderWorkCounters()
+}
+#endif
+
 extension FileHandle: CodexReadHandle {
     var physicalHandle: FileHandle { self }
     func logicalSize() throws -> UInt64 { try SourceFileObservation.readPhysical(handle: self).size }
@@ -45,6 +60,7 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
         }
     }
     private static let cache = LayoutCache()
+    private static let workCounterThreadKey = "CodexRolloutReader.workCounters"
     let physicalHandle: FileHandle
     let physicalURL: URL
     private(set) var layout: Layout
@@ -62,6 +78,53 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
     static func isRollout(_ file: URL) -> Bool {
         file.pathExtension == "jsonl" || file.lastPathComponent.hasSuffix(".jsonl.zst")
     }
+
+    /// Reset reader work counters for the current thread. Test helpers use a
+    /// thread-local box so concurrent XCTest cases cannot affect each other.
+    static func resetWorkCountersForCurrentThread() {
+        #if DEBUG
+        workCounterBox().value = CodexRolloutReaderWorkCounters()
+        #endif
+    }
+
+    /// Snapshot reader work counters for the current thread.
+    static func workCountersForCurrentThread() -> CodexRolloutReaderWorkCounters {
+        #if DEBUG
+        return workCounterBox().value
+        #else
+        return CodexRolloutReaderWorkCounters()
+        #endif
+    }
+
+    /// Count a physical open performed by a reader-layer observation helper.
+    static func recordPhysicalOpenForCurrentThread() {
+        #if DEBUG
+        workCounterBox().value.open &+= 1
+        #endif
+    }
+
+    #if DEBUG
+    private static func workCounterBox() -> CodexRolloutReaderWorkCounterBox {
+        let dictionary = Thread.current.threadDictionary
+        if let existing = dictionary[workCounterThreadKey] as? CodexRolloutReaderWorkCounterBox {
+            return existing
+        }
+        let box = CodexRolloutReaderWorkCounterBox()
+        dictionary[workCounterThreadKey] = box
+        return box
+    }
+
+    private static func recordDecodedBytes(_ count: UInt64) {
+        workCounterBox().value.decoded_bytes &+= count
+    }
+
+    private static func recordStructureBlock() {
+        workCounterBox().value.structure_blocks &+= 1
+    }
+    #else
+    private static func recordDecodedBytes(_ count: UInt64) {}
+    private static func recordStructureBlock() {}
+    #endif
     static func logicalURL(_ file: URL) -> URL {
         file.lastPathComponent.hasSuffix(".jsonl.zst") ? file.deletingPathExtension() : file
     }
@@ -75,12 +138,16 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
         }
         return URL(fileURLWithPath: logical.path + ".zst")
     }
-    private static func openPreferred(_ file: URL) throws -> (URL, FileHandle) {
+    private static func openPreferred(_ file: URL, allowsCompressed: Bool) throws -> (URL, FileHandle) {
         var lastError: Error = failure("普通/压缩来源正在转换，请重试", file: file)
         for _ in 0..<3 {
             do {
                 let physical = try physicalURL(for: file)
+                guard allowsCompressed || !physical.lastPathComponent.hasSuffix(".jsonl.zst") else {
+                    throw failure("可选原文读取已延期：来源为压缩历史", file: physical)
+                }
                 let handle = try FileHandle(forReadingFrom: physical)
+                recordPhysicalOpenForCurrentThread()
                 if physical.lastPathComponent.hasSuffix(".jsonl.zst"),
                    FileManager.default.fileExists(atPath: logicalURL(file).path) {
                     try? handle.close()
@@ -97,8 +164,8 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
         }
         throw lastError
     }
-    init(forReadingFrom file: URL) throws {
-        let opened = try Self.openPreferred(file)
+    init(forReadingFrom file: URL, allowsCompressed: Bool = true) throws {
+        let opened = try Self.openPreferred(file, allowsCompressed: allowsCompressed)
         physicalURL = opened.0
         physicalHandle = opened.1
         let observed = try SourceFileObservation.readPhysical(handle: physicalHandle)
@@ -188,6 +255,7 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
         let (next, overflow) = position.addingReportingOverflow(UInt64(out.pos))
         guard !overflow else { throw Self.failure("逻辑字节偏移溢出", file: physicalURL) }
         position = next
+        if out.pos > 0 { Self.recordDecodedBytes(UInt64(out.pos)) }
         return out.pos
     }
     func seek(toOffset target: UInt64) throws {
@@ -263,6 +331,7 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
             } else { total = nil }
             while true {
                 blocks += 1
+                recordStructureBlock()
                 guard blocks <= 1_000_000 else { throw failure("压缩帧结构检查超出工作预算") }
                 let header = try number(3), kind = header >> 1 & 3, length = header >> 3
                 guard kind != 3 && length <= 128 * 1024 else { throw failure("无效zstd块头") }

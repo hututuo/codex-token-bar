@@ -1,4 +1,4 @@
-use super::rollout_source::RolloutReader;
+use super::rollout_source::{self, RolloutReader};
 use super::accounting::{AccountingState, Components, Snapshot, COUNTED};
 #[cfg(test)]
 use super::TokenEvent;
@@ -471,7 +471,8 @@ pub(super) struct MessageLinkScan {
 
 /// Marker-only pass: never invokes the accounting parser or admits events.
 pub(super) fn scan_message_links(file: &Path, size: u64, offsets: &std::collections::HashSet<u64>) -> Result<MessageLinkScan, String> {
-    let mut handle = RolloutReader::open(file).map_err(|e| e.to_string())?;
+    // Pin only the plain logical path. A conversion race cannot fall back to zst.
+    let mut handle = std::fs::File::open(rollout_source::logical_path(file)).map_err(|e| e.to_string())?;
     let metadata = paginated_subagent_metadata(&mut handle)?;
     let mut ownership = AccountingState::fresh();
     let mut fork: Option<ForkSessionMetadata> = None;
@@ -671,7 +672,10 @@ fn visit_source_range_lines(
         .end
         .checked_sub(range.start)
         .ok_or_else(|| format!("会话摘录字节区间无效：{}", file.display()))?;
-    let mut handle = RolloutReader::open(file)
+    if !rollout_source::physical_path(file).is_ok_and(|physical| !rollout_source::is_compressed(&physical)) {
+        return Ok(());
+    }
+    let mut handle = std::fs::File::open(rollout_source::logical_path(file))
         .map_err(|error| format!("打开会话摘录源文件失败：{}（{}）", file.display(), error))?;
     handle
         .seek(SeekFrom::Start(range.start))
@@ -681,11 +685,12 @@ fn visit_source_range_lines(
     let mut consumed = 0_u64;
     loop {
         reset_line_buffer(&mut line_bytes);
-        let bytes_read = reader
+        let bytes_read = (&mut reader).take(1024 * 1024 + 1)
             .read_until(b'\n', &mut line_bytes)
             .map_err(|error| format!("读取会话摘录失败：{}（{}）", file.display(), error))?;
-        if bytes_read == 0 {
-            break;
+        if bytes_read == 0 { break; }
+        if bytes_read > 1024 * 1024 {
+            return Err(format!("会话摘录单行超过显示预算：{}", file.display()));
         }
         consumed = consumed.saturating_add(bytes_read as u64);
         let line = std::str::from_utf8(&line_bytes)

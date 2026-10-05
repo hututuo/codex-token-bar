@@ -13061,7 +13061,17 @@ fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
     assert_eq!(db.query_row("SELECT verification FROM source_representations",[],|r|r.get::<_,String>(0)).unwrap(),"metadata_only");
     assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     db.execute_batch("DROP TRIGGER stop_excerpt_proof").unwrap();
-    assert!(read_index().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
+    super::rollout_source::reset_work_counters_for_current_thread();
+    assert!(read_index().cache_usage.turns.iter().all(|t| t.user_prompt.is_empty()));
+    assert_eq!(super::rollout_source::work_counters_for_current_thread().decoded_bytes, 0);
+    // Restoring plain text permits the existing lazy proof, even before numeric sync.
+    fs::write(&file, original).unwrap();
+    fs::File::options().write(true).open(&file).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    let mut materialized = ExactUsageIndex::open(&root).unwrap();
+    assert!(materialized.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap()
+        .cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
+    drop(materialized);
     assert_eq!(db.query_row("SELECT verification FROM source_representations",[],|r|r.get::<_,String>(0)).unwrap(),"verified_full");
     let checkpoint: (i64,i64,i64) = db.query_row("SELECT source_id,size,resume_offset FROM sources",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     // Observe a disappearance without changing the file's own physical stamp.
@@ -13077,8 +13087,8 @@ fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
     exact.sync(&root, &mut Vec::new()).unwrap();
     let changed = original.replace("synthetic prompt", "different prompt");
     assert_eq!(changed.len(), original.len());
-    fs::write(&zst, declared_zstd_frame(changed.as_bytes())).unwrap();
-    fs::File::options().write(true).open(&zst).unwrap()
+    fs::write(&file, changed.as_bytes()).unwrap();
+    fs::File::options().write(true).open(&file).unwrap()
         .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
     let rejected = exact.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap();
     assert_eq!(rejected.stats.total_tokens, 120);
@@ -13219,4 +13229,58 @@ fn history_compression_setting_accepts_boolean_only_and_ignores_prompt_text() {
         assert_eq!(history_compression_enabled(&root), expected);
     }
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stable_unknown_size_compressed_history_probe_and_full_sync_do_not_decode() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/cold-unknown.jsonl.zst");
+    let line = r#"{"timestamp":"2026-10-01T00:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}
+"#;
+    // encode_all emits an unknown-size frame; the formal owner must parse it once.
+    fs::write(&file, zstd::stream::encode_all(line.as_bytes(), 3).unwrap()).unwrap();
+    let mut exact = ExactUsageIndex::open(&root).unwrap();
+    exact.sync(&root, &mut Vec::new()).unwrap();
+    drop(exact);
+    super::rollout_source::reset_work_counters_for_current_thread();
+    let probe = super::exact_usage_index::read_only_source_probe(&root, StdDuration::from_secs(2)).unwrap();
+    assert_eq!(probe.changed, Some(false));
+    let mut exact = ExactUsageIndex::open(&root).unwrap();
+    let discovery = exact.discover_sources(&root, StdDuration::from_secs(2), 0).unwrap();
+    assert_eq!(discovery.candidate_total, 1);
+    assert!(!exact.sources_changed(&root, &mut Vec::new()).unwrap());
+    exact.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(exact.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap().stats.total_tokens, 120);
+    let work = super::rollout_source::work_counters_for_current_thread();
+    assert_eq!(work.decoded_bytes, 0);
+    assert_eq!(work.structure_blocks, 0);
+    drop(exact);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unknown_compressed_discovery_keeps_candidate_without_decoding_corrupt_body() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    fs::write(root.join("sessions/new.jsonl.zst"), [0x28,0xb5,0x2f,0xfd]).unwrap();
+    super::rollout_source::reset_work_counters_for_current_thread();
+    let discovery = estimate_precise_scan_total_with_source_revision(&root, StdDuration::from_secs(2), 0).unwrap();
+    assert_eq!(discovery.candidate_total, 1);
+    let work = super::rollout_source::work_counters_for_current_thread();
+    assert_eq!(work.decoded_bytes, 0);
+    assert_eq!(work.structure_blocks, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn watcher_recognizes_compressed_rollouts_outside_standard_directories_within_home() {
+    let root = PathBuf::from("test-home");
+    for name in ["custom/rollout.jsonl.zst", "custom/ROLLOUT.JSONL.ZST", "sessions/2026/removed"] {
+        assert!(super::is_monitored_exact_source_path(&root, &root.join(name)));
+    }
+    assert!(!super::is_monitored_exact_source_path(&root, Path::new("other/rollout.jsonl.zst")));
+    assert!(!super::is_monitored_exact_source_path(&root, &root.join("custom/cache.zst")));
 }

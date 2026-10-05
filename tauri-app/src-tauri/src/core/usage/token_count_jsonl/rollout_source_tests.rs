@@ -74,11 +74,63 @@ fn plain_jsonl_is_read_and_preferred_over_compressed_sibling() {
         rollout_source::canonical_logical_path(&compressed).unwrap(),
         fs::canonicalize(&logical).unwrap()
     );
+    rollout_source::reset_work_counters_for_current_thread();
+    assert_eq!(RolloutReader::cached_logical_length(&compressed).unwrap(), Some(b"plain source\n".len() as u64));
+    let counters = rollout_source::work_counters_for_current_thread();
+    assert_eq!(counters.open, 1);
+    assert_eq!(counters.decoded_bytes, 0);
+    assert_eq!(counters.structure_blocks, 0);
 
     let mut reader = RolloutReader::open(&compressed).unwrap();
     assert!(!reader.compressed());
     assert_eq!(reader.physical_path(), logical);
     assert_eq!(read_all(&mut reader), b"plain source\n");
+}
+
+#[test]
+fn unknown_size_cache_miss_does_not_inspect_or_decode() {
+    let fixture = FixtureDir::new();
+    let payload = b"{\"unknown\":true}\n";
+    let path = fixture.write("cold-unknown.jsonl.zst", &raw_frame(payload, false));
+
+    rollout_source::reset_work_counters_for_current_thread();
+    assert_eq!(RolloutReader::cached_logical_length(&path).unwrap(), None);
+    let counters = rollout_source::work_counters_for_current_thread();
+    assert_eq!(counters.open, 1);
+    assert_eq!(counters.decoded_bytes, 0);
+    assert_eq!(counters.structure_blocks, 0);
+}
+
+#[test]
+fn cached_compressed_size_is_metadata_only() {
+    let fixture = FixtureDir::new();
+    let payload = b"known size\n";
+    let path = fixture.write("cached-known.jsonl.zst", &raw_frame(payload, true));
+    let reader = RolloutReader::open(&path).unwrap();
+    assert_eq!(reader.logical_size(), payload.len() as u64);
+    drop(reader);
+
+    rollout_source::reset_work_counters_for_current_thread();
+    assert_eq!(RolloutReader::cached_logical_length(&path).unwrap(), Some(payload.len() as u64));
+    let counters = rollout_source::work_counters_for_current_thread();
+    assert_eq!(counters.open, 1);
+    assert_eq!(counters.decoded_bytes, 0);
+    assert_eq!(counters.structure_blocks, 0);
+}
+
+#[test]
+fn unsafe_plain_entry_does_not_fall_back_to_compressed_sibling() {
+    let fixture = FixtureDir::new();
+    let plain = fixture.0.join("unsafe.jsonl");
+    fs::create_dir(&plain).unwrap();
+    fixture.write("unsafe.jsonl.zst", &raw_frame(b"compressed\n", true));
+
+    rollout_source::reset_work_counters_for_current_thread();
+    assert!(RolloutReader::cached_logical_length(&plain).is_err());
+    let counters = rollout_source::work_counters_for_current_thread();
+    assert_eq!(counters.open, 0);
+    assert_eq!(counters.decoded_bytes, 0);
+    assert_eq!(counters.structure_blocks, 0);
 }
 
 #[test]
