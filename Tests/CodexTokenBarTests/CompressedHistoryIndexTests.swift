@@ -110,6 +110,41 @@ final class CompressedHistoryIndexTests: XCTestCase {
         XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
     }
 
+    func testParentDirectoryAliasKeepsColdSourceIdentityAndAvoidsRebuild() throws {
+        let f = try fixture()
+        _ = try f.synchronize()
+        let source = try scalar(f.db, "SELECT source_id FROM sources")
+        let path = try XCTUnwrap(f.db.readRows("SELECT path FROM sources") { $0.text(0) }.first ?? nil)
+        let alias = f.root.appendingPathComponent("directory-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: f.root)
+        let aliasFile = alias.appendingPathComponent(f.file.lastPathComponent)
+        _ = try compress(f)
+        _ = try f.synchronize()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let reused = try f.index.synchronize(files: [aliasFile], sessionID: f.analyzer.sessionID(from:)) { _,_,_,_,_ in
+            XCTFail("directory aliases must reuse the complete cold source")
+            throw CocoaError(.fileReadUnknown)
+        }
+        XCTAssertEqual(reused.unchangedFiles, 1)
+        XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM sources"), 1)
+        XCTAssertEqual(try scalar(f.db, "SELECT source_id FROM sources"), source)
+        XCTAssertEqual(try f.db.readRows("SELECT path FROM sources") { $0.text(0) }.first ?? nil, path)
+        let signature = f.analyzer.sessionTreeSignature(for: [aliasFile],
+            attributionProvenanceEpoch: "test", attributionGeneration: 1, historyIndex: f.index)
+        XCTAssertEqual(signature.files.first?.path, path)
+        XCTAssertEqual(signature.files.first?.size, UInt64(line(120).utf8.count))
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().structure_blocks, 0)
+        try Data((line(120) + line(7, second: 1)).utf8).write(to: f.file)
+        _ = try f.index.synchronize(files: [aliasFile], sessionID: f.analyzer.sessionID(from:)) {
+            file, id, request, fingerprint, emit in
+            try f.analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id,
+                request: request, insertFingerprint: fingerprint, emit: emit)
+        }
+        XCTAssertEqual(try scalar(f.db, "SELECT source_id FROM sources"), source)
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 127)
+    }
+
     func testRecoveredStageRejectsCorruptZeroOutputTailAndKeepsOldLedger() throws {
         let f = try fixture()
         let padding = String(repeating: "\n", count: 8192)

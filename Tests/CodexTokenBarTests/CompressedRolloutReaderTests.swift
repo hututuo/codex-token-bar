@@ -100,6 +100,21 @@ final class CompressedRolloutReaderTests: XCTestCase {
             domain: NSPOSIXErrorDomain, code: 13)))
     }
 
+    func testCanonicalLogicalPathResolvesParentButPreservesUnsafeLeaf() throws {
+        let root = try temporaryDirectory().resolvingSymlinksInPath()
+        let alias = root.appendingPathComponent("directory-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
+        let plain = root.appendingPathComponent("cold.jsonl")
+        let missingViaAlias = alias.appendingPathComponent("cold.jsonl")
+        XCTAssertEqual(CodexRolloutReader.canonicalLogicalURL(missingViaAlias), plain)
+        XCTAssertEqual(CodexRolloutReader.canonicalLogicalURL(alias.appendingPathComponent("cold.jsonl.zst")), plain)
+        let target = try write(Data("other source\n".utf8), named: "other.jsonl", in: root)
+        try FileManager.default.createSymbolicLink(at: plain, withDestinationURL: target)
+        let resolved = CodexRolloutReader.canonicalLogicalURL(missingViaAlias)
+        XCTAssertEqual(resolved, plain)
+        XCTAssertThrowsError(try SourceFileObservation.readPreferredPhysical(at: resolved))
+    }
+
     func testOptionalPlainReaderNeverOpensCompressedSibling() throws {
         let root = try temporaryDirectory()
         let plain = root.appendingPathComponent("optional.jsonl")

@@ -165,6 +165,14 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
     static func logicalURL(_ file: URL) -> URL {
         file.lastPathComponent.hasSuffix(".jsonl.zst") ? file.deletingPathExtension() : file
     }
+    /// Resolve the directory even when the logical JSONL leaf no longer exists.
+    /// Keep the leaf itself: an unsafe plain entry must still be rejected, not
+    /// followed to a different source or hidden behind a compressed twin.
+    static func canonicalLogicalURL(_ file: URL) -> URL {
+        let logical = logicalURL(file.standardizedFileURL)
+        return logical.deletingLastPathComponent().resolvingSymlinksInPath()
+            .appendingPathComponent(logical.lastPathComponent)
+    }
     static func physicalURL(for file: URL) throws -> URL {
         let logical = logicalURL(file)
         var status = Darwin.stat()

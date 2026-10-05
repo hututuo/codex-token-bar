@@ -817,7 +817,7 @@ extension CodexUsageAnalyzer {
     }
 
     private func canonicalPath(for file: URL) -> String {
-        file.resolvingSymlinksInPath().path
+        CodexRolloutReader.canonicalLogicalURL(file).path
     }
 
     private func canonicalSelectedHome() throws -> URL {
@@ -1117,7 +1117,9 @@ extension CodexUsageAnalyzer {
     }
 
     private func sessionCacheKey(for file: URL, known: [String: SourceFileObservation] = [:]) -> SessionCacheKey {
-        let canonical = file.resolvingSymlinksInPath()
+        let canonical = CodexRolloutReader.isRollout(file)
+            ? CodexRolloutReader.canonicalLogicalURL(file)
+            : file.resolvingSymlinksInPath()
         // The state SQLite database is a plain metadata observation, not a rollout.
         if !CodexRolloutReader.isRollout(canonical) {
             guard let observation = try? SourceFileObservation.read(at: canonical) else {

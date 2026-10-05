@@ -2446,7 +2446,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
         let generation = UUID().uuidString
-        let canonicalFiles = Array(Set(files.map { CodexRolloutReader.logicalURL($0.resolvingSymlinksInPath()) })).sorted { $0.path < $1.path }
+        let canonicalFiles = Array(Set(files.map { CodexRolloutReader.canonicalLogicalURL($0) })).sorted { $0.path < $1.path }
         let observedPaths = Set(canonicalFiles.map(\.path))
         var changedFiles = 0
         var unchangedFiles = 0
