@@ -2,7 +2,9 @@
 
 日期：2026-10-05。基线 `16711ea208e111ba6711c11094626f26b795c3c4`，代码分支 `codex/cold-history-read-paths`。
 
-代码和测试 SHA：`29c84923a543eed21b35c9f91672e6e140cdcdcf`。产品实现位于 `99acca5e`、`5409141d`；`035279a5`、`fb098230`、`29c84923` 修正回归测试的时序、临时目录和标准消息/追加输入。最新同 SHA 云端检查：[CI 37313120365](https://github.com/hututuo/codex-token-bar/actions/runs/37313120365)，最终状态 **PASS**。已下载并核对 `ci-passed-29c84923a543eed21b35c9f91672e6e140cdcdcf/checked-source.json`，其 source SHA、run ID 和 passed=true 与该 run 一致。本文只记录代码实施；没有合并、签名、安装或发布。
+初次实施代码和测试 SHA：`29c84923a543eed21b35c9f91672e6e140cdcdcf`。产品实现位于 `99acca5e`、`5409141d`；`035279a5`、`fb098230`、`29c84923` 修正回归测试的时序、临时目录和标准消息/追加输入。初次实施同 SHA 云端检查：[CI 37313120365](https://github.com/hututuo/codex-token-bar/actions/runs/37313120365)，最终状态 **PASS**。已下载并核对 `ci-passed-29c84923a543eed21b35c9f91672e6e140cdcdcf/checked-source.json`，其 source SHA、run ID 和 passed=true 与该 run 一致。本文只记录代码实施；没有合并、签名、安装或发布。
+
+发布前两位 GPT-6.1 Sol Max 独立复审补上路径转换/悬空分类、Swift实际缺失错误码、重复metadata打开、缺失leaf父目录alias及catalog witness key问题。最终代码/测试 SHA `1c1e624e90319d7c8e80509817cf526bfce86b54`，七项同 SHA CI 全部通过，详见[复审及最终证据](2026-10-05-sol-max-prepush-audit.md)。下文测试数量是初次实施历史证据，不替代复审版本验收。
 
 ## 判断规则与数据保留
 
@@ -24,8 +26,8 @@ mtime 来自文件系统，官方压缩器保留原 mtime；帧声明的是原�
 
 ## Swift/macOS 改动
 
-- `SourceFileObservation.readPreferredPhysical` 只选择安全 preferred 路径并核对 stat/fstat；逻辑大小与物理大小分开。
-- 精确索引一次查询当前完整来源观察；`sessionTreeSignature` 和同步前置签名复用同一物理版本的逻辑大小。未知来源保留在签名集合，不能通过丢掉条目制造假 unchanged。
+- `SourceFileObservation.readPreferredPhysical` 只选择安全 preferred 路径；plain 用单次 lstat 提示、zst 核对 stat/fstat；逻辑大小与物理大小分开。
+- 精确索引一次 SQL 查询持久完整来源 witness，由调用端核对一次当前物理观察；`sessionTreeSignature` 和同步前置签名复用同一物理版本的逻辑大小。未知来源保留在签名集合，不能通过丢掉条目制造假 unchanged。
 - 旧 message-link repair 与排行引用在实际 zst 的冷门处停止，独立于压缩设置。Swift 原文验证用单条来源查询，避免逐来源加载整张 sources。
 - 普通摘录按文件共享 pinned reader、prompt offset 去重及 assistant 区间合并。引用携带验证时的物理观察；读取前后核对描述符与路径，暂存输出只在整个来源稳定后合并。
 - 可选来源的 I/O、变化和 proof 错误只跳过该来源；SQLite、取消及数值扫描错误仍保留原上抛规则。

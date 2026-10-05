@@ -31,7 +31,10 @@ Windows 保持写句柄打开时的零延迟 rewrite、ReFS/网络卷物理 witn
 - 初始代码同 SHA 全套 CI：PASS，run `37313120365`。不能代替这次修复的 CI。
 - 本次 Swift syntax parse / diff whitespace：PASS。
 - 修后两位 GPT-6.1 Sol Max 独立复核：PASS / SOURCE_CONFIRMED，未发现剩余确认缺陷。Swift 实际组件错误分类10项通过、合成转换每类5000次成功；Rust 实际 resolver/hook 的独立 std-only probe 通过。组件结果不能代替完整包/客户现场。
-- 云端全套回归：执行中，最终同 SHA 证据补在本节。中间 SHA `f9e0e4d4` 的 Rust/macOS 已为1205 passed、0 failed、10 ignored，三个新增 owner/resolver 测试通过；不能代替后续 Swift canonical/catalog 修补的全套验收。
+- 最终代码/测试 SHA：`1c1e624e90319d7c8e80509817cf526bfce86b54`；[CI 37330037503](https://github.com/hututuo/codex-token-bar/actions/runs/37330037503) 七项 job 全部成功，sealed checked-source.json 的 SHA/run ID/passed=true 已回读核对。Swift1664项（7 skipped）、Rust/macOS1205 passed（10 ignored）、Rust/Windows1154 passed（10 ignored），均0失败；两端超过两万文件压力回归通过，Windows打包 self-test及 updater 故障 fixture通过。前端1170项+云端契约11项通过、生产构建及依赖audit通过；Swift发布脚本103项（102 passed、1 skipped）。
+- 中间 SHA `f9e0e4d4` 的 Rust/macOS 已为1205 passed、0 failed、10 ignored，三个新增 owner/resolver 测试通过；不能代替后续 Swift canonical/catalog 修补的全套验收。
 - Windows 客户安装恢复、真实大历史 wall-time、应用实机体验、打包签名及正式发布：NOT_RUN。
+
+修后同两位 Sol Max 独立复核通过，保留上文已知会话管理/文件系统边界；不能将源码和合成回归验收说成客户现场恢复或全部文件系统零风险。代码已经推到原 `codex/cold-history-read-paths` 分支；没有合并、打包签名或发布。
 
 本次证据目录：`runs/20261005-sol-max-reaudit/`。所有微基准和转换实验只使用合成文件，测试结果与现场/发布验收分开记录。
