@@ -13080,11 +13080,17 @@ fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
     assert_eq!(db.query_row("SELECT source_id,size,resume_offset FROM sources",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap(),checkpoint);
     assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events",[],|r|r.get::<_,i64>(0)).unwrap(),120);
     assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),1);
-    // Revoke again, restore presence, then change the same-length body before
-    // the lazy proof. A preserved mtime must not reopen a changed prompt.
+    // Revoke again, then let the formal owner verify the restored plain body.
+    // A later same-length rewrite with preserved mtime must not reopen text,
+    // or let an optional excerpt read rewrite the last published raw binding.
     db.execute_batch("UPDATE usage_ledger_sources SET missing=1; UPDATE usage_ledger_bindings SET available=0;").unwrap();
     let mut exact = ExactUsageIndex::open(&root).unwrap();
     exact.sync(&root, &mut Vec::new()).unwrap();
+    let published_binding: (i64, i64) = db.query_row(
+        "SELECT raw_generation,available FROM usage_ledger_bindings", [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(published_binding.1, 1, "the formal owner verified the restored body");
     let changed = original.replace("synthetic prompt", "different prompt");
     assert_eq!(changed.len(), original.len());
     fs::write(&file, changed.as_bytes()).unwrap();
@@ -13093,8 +13099,15 @@ fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
     let rejected = exact.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap();
     assert_eq!(rejected.stats.total_tokens, 120);
     assert!(rejected.cache_usage.turns.iter().all(|t| t.user_prompt.is_empty()));
-    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(db.query_row("SELECT raw_generation,available FROM usage_ledger_bindings", [],
+        |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(), published_binding);
     drop(exact);
+    fs::write(&file, original).unwrap();
+    fs::File::options().write(true).open(&file).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    let restored = read_index();
+    assert_eq!(restored.stats.total_tokens, 120);
+    assert!(restored.cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
@@ -13289,6 +13302,7 @@ fn watcher_recognizes_compressed_rollouts_outside_standard_directories_within_ho
 fn excerpt_batch_merges_plain_ranges_and_never_reads_compressed_twin() {
     use super::session_parser::{read_event_excerpt_batch, ExactEventSourceOffsets, SourceByteRange};
     let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
     let file = root.join("batch.jsonl");
     let prompt = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"shared prompt\"}}\n";
     let assistant = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"shared answer\"}}\n";
@@ -13313,6 +13327,7 @@ fn excerpt_batch_merges_plain_ranges_and_never_reads_compressed_twin() {
 fn excerpt_batch_rejects_descriptor_drift_and_bounded_huge_line() {
     use super::session_parser::{read_event_excerpt_batch, ExactEventSourceOffsets, SourceByteRange};
     let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
     let file = root.join("budget.jsonl");
     let bytes = vec![b'x'; 1024 * 1024 + 20];
     fs::write(&file, &bytes).unwrap();
