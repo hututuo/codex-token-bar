@@ -53,7 +53,7 @@ final class CompressedHistoryIndexTests: XCTestCase {
         try FileManager.default.removeItem(at: f.file)
         _ = try f.synchronize()
         CodexRolloutReader.resetWorkCountersForCurrentThread()
-        let observations = try f.index.lightweightSourceObservations()
+        let observations = try f.index.storedCompleteSourceObservations()
         XCTAssertEqual(observations[f.file.path]?.size, UInt64(bytes.count))
         _ = f.analyzer.sessionTreeSignature(for: [f.file], attributionProvenanceEpoch: "test",
             attributionGeneration: 1, historyIndex: f.index)
@@ -62,6 +62,50 @@ final class CompressedHistoryIndexTests: XCTestCase {
         let work = CodexRolloutReader.workCountersForCurrentThread()
         XCTAssertEqual(work.decoded_bytes, 0)
         XCTAssertEqual(work.structure_blocks, 0)
+    }
+
+    func testStoredWitnessDoesNoFileIOAndChangedColdFileInvalidatesTreeSignature() throws {
+        let f = try fixture()
+        _ = try f.synchronize()
+        let zst = try compress(f)
+        _ = try f.synchronize()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let before = f.analyzer.sessionTreeSignature(for: [f.file],
+            attributionProvenanceEpoch: "test", attributionGeneration: 1,
+            historyIndex: f.index, now: now)
+        let stored = try XCTUnwrap(f.index.storedCompleteSourceObservations()[f.file.path])
+        let bytes = try Data(contentsOf: zst)
+        // Rewrite the same bytes and restore mtime: the old stamp is still not
+        // proof of the replacement physical file, even with matching length.
+        try bytes.write(to: zst, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: stored.modifiedAt)],
+            ofItemAtPath: zst.path)
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        XCTAssertEqual(try f.index.storedCompleteSourceObservations()[f.file.path]?.physicalStamp, stored.physicalStamp)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().open, 0)
+        let after = f.analyzer.sessionTreeSignature(for: [f.file],
+            attributionProvenanceEpoch: "test", attributionGeneration: 1,
+            historyIndex: f.index, now: now)
+        XCTAssertNotEqual(before, after)
+        XCTAssertEqual(after.files.first?.size, UInt64.max)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().open, 1)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        try FileManager.default.removeItem(at: zst)
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        XCTAssertNotNil(try f.index.storedCompleteSourceObservations()[f.file.path])
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().open, 0)
+    }
+
+    func testPlainTreeSignatureUsesStatWithoutOpeningIndexedFiles() throws {
+        let f = try fixture()
+        _ = try f.synchronize()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let signature = f.analyzer.sessionTreeSignature(for: [f.file],
+            attributionProvenanceEpoch: "test", attributionGeneration: 1,
+            historyIndex: f.index)
+        XCTAssertEqual(signature.files.first?.size, UInt64(line(120).utf8.count))
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().open, 0)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
     }
 
     func testRecoveredStageRejectsCorruptZeroOutputTailAndKeepsOldLedger() throws {

@@ -13288,6 +13288,46 @@ fn unknown_compressed_discovery_keeps_candidate_without_decoding_corrupt_body() 
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn dangling_plain_after_discovery_preserves_publication_checkpoint_and_missing_state() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/dangling-after-discovery.jsonl");
+    let line = "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":120}}}}\n";
+    fs::write(&file, line).unwrap();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    let before = db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get::<_, String>(0)).unwrap();
+    let resume = db.query_row("SELECT resume_offset FROM sources", [], |r| r.get::<_, i64>(0)).unwrap();
+    let available = db.query_row("SELECT COALESCE(SUM(available),0) FROM usage_ledger_bindings", [], |r| r.get::<_, i64>(0)).unwrap();
+    // A new healthy candidate forces the formal pass rather than the unchanged
+    // discovery shortcut, so the stale first candidate is reopened by the owner.
+    fs::write(root.join("sessions/new.jsonl"), line.replace("120", "7")).unwrap();
+    let discovery = index.discover_sources(&root, StdDuration::from_secs(2), 1).unwrap();
+    assert_eq!(discovery.candidate_total, 2);
+    fs::write(file.with_extension("jsonl.zst"), zstd::stream::encode_all(line.as_bytes(), 3).unwrap()).unwrap();
+    fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink(root.join("missing.jsonl"), &file).unwrap();
+    let error = index.sync_with_scan_plan(&root, &mut Vec::new(), Some(discovery), Some(2)).unwrap_err();
+    assert!(error.contains("会话源扫描不完整"), "{error}");
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get::<_, String>(0)).unwrap(), before);
+    assert_eq!(db.query_row("SELECT resume_offset FROM sources WHERE path=?1", [file.to_string_lossy().as_ref()], |r| r.get::<_, i64>(0)).unwrap(), resume);
+    assert_eq!(db.query_row("SELECT COALESCE(SUM(missing),0) FROM usage_ledger_sources", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(db.query_row("SELECT COALESCE(SUM(available),0) FROM usage_ledger_bindings", [], |r| r.get::<_, i64>(0)).unwrap(), available);
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events", [], |r| r.get::<_, i64>(0)).unwrap(), 120);
+    fs::remove_file(&file).unwrap();
+    fs::write(&file, line).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 127);
+    drop(db);
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn watcher_recognizes_compressed_rollouts_outside_standard_directories_within_home() {
     let root = PathBuf::from("test-home");

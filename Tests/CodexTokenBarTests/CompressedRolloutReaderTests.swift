@@ -64,6 +64,42 @@ final class CompressedRolloutReaderTests: XCTestCase {
         XCTAssertEqual(counters.structure_blocks, 0)
     }
 
+    func testPlainPhysicalObservationUsesStatAndRejectsDanglingPlainTwin() throws {
+        let root = try temporaryDirectory()
+        let plain = try write(Data("plain\n".utf8), named: "plain.jsonl", in: root)
+        let zst = try write(rawFrame(Data("cold\n".utf8), singleSegment: true),
+            named: "plain.jsonl.zst", in: root)
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        XCTAssertEqual(try SourceFileObservation.readPreferredPhysical(at: zst).file, plain)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().open, 0)
+        try FileManager.default.removeItem(at: plain)
+        try FileManager.default.createSymbolicLink(at: plain,
+            withDestinationURL: root.appendingPathComponent("missing.jsonl"))
+        XCTAssertThrowsError(try SourceFileObservation.readPreferredPhysical(at: zst))
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+    }
+
+    func testActualFileHandleMissingErrorIsRetryableAndOtherErrorsAreNot() throws {
+        let root = try temporaryDirectory()
+        let missing = root.appendingPathComponent("missing.jsonl")
+        do {
+            let handle = try FileHandle(forReadingFrom: missing)
+            try handle.close()
+            XCTFail("missing fixture must fail to open")
+        } catch {
+            XCTAssertTrue(SourceFileObservation.isMissingFileError(error))
+        }
+        XCTAssertTrue(SourceFileObservation.isMissingFileError(NSError(
+            domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError)))
+        XCTAssertTrue(SourceFileObservation.isMissingFileError(NSError(
+            domain: "WrappedReader", code: 1, userInfo: [NSUnderlyingErrorKey:
+                NSError(domain: NSPOSIXErrorDomain, code: 2)])))
+        XCTAssertFalse(SourceFileObservation.isMissingFileError(NSError(
+            domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError)))
+        XCTAssertFalse(SourceFileObservation.isMissingFileError(NSError(
+            domain: NSPOSIXErrorDomain, code: 13)))
+    }
+
     func testOptionalPlainReaderNeverOpensCompressedSibling() throws {
         let root = try temporaryDirectory()
         let plain = root.appendingPathComponent("optional.jsonl")

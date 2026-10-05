@@ -2002,9 +2002,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
-    /// Snapshot validation never measures compressed bodies. Missing entries
-    /// remain unknown to the caller and force the authoritative numeric owner.
-    func lightweightSourceObservations() throws -> [String: SourceFileObservation] {
+    /// Read only persisted complete witnesses. Callers compare each with one
+    /// current physical observation before reusing its logical size. Unknown
+    /// or changed entries force the authoritative numeric owner.
+    func storedCompleteSourceObservations() throws -> [String: SourceFileObservation] {
         try driver.withConnection { connection in
             try configure(connection)
             let pending = try eventEnrichmentPendingSourceIDs(connection: connection)
@@ -2020,11 +2021,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             var result: [String: SourceFileObservation] = [:]
             for (path, id, size, modified, stamp) in rows {
                 guard let path, let id, !pending.contains(id), let size, size >= 0,
-                      let modified, let stamp,
-                      let physical = try? SourceFileObservation.readPreferredPhysical(at: URL(fileURLWithPath: path)),
-                      physical.observation.modifiedAt == modified,
-                      physical.observation.physicalStamp == stamp else { continue }
-                result[path] = physical.observation.withLogicalSize(UInt64(size))
+                      let modified, let stamp else { continue }
+                result[path] = SourceFileObservation(indexedLogicalSize: UInt64(size),
+                    modifiedAt: modified, physicalStamp: stamp)
             }
             return result
         }
@@ -2146,7 +2145,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             }
 
-            let known = try lightweightSourceObservations()
+            let known = try storedCompleteSourceObservations()
             var staged: [StagedSessionCatalogEntry] = []
             var unchangedFiles = 0
             var parsedFirstLines = 0

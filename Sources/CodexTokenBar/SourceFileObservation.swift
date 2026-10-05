@@ -51,6 +51,10 @@ struct SourceFileObservation {
                 // entries. Never fall back to its compressed sibling.
                 physical = logical
                 namedObservation = try Self(status: namedStatus)
+                // This is an invalidation hint, not a body proof. lstat already
+                // returns the regular file's identity, ctime, mtime and size
+                // atomically. Readers compare their pinned fstat separately.
+                return (physical, namedObservation)
             } else {
                 let logicalError = errno
                 guard logicalError == ENOENT, logical.pathExtension == "jsonl" else {
@@ -92,17 +96,17 @@ struct SourceFileObservation {
 
                 // A plain sibling appearing while the compressed file was
                 // opened takes precedence; retry and validate that path.
-                if physical.lastPathComponent.hasSuffix(".jsonl.zst"),
-                   lstat(logical.path, &namedStatus) == 0 {
-                    lastError = Self.changedError(path: logical.path)
-                    continue
+                if physical.lastPathComponent.hasSuffix(".jsonl.zst") {
+                    if lstat(logical.path, &namedStatus) == 0 {
+                        lastError = Self.changedError(path: logical.path)
+                        continue
+                    }
+                    let code = errno
+                    if code != ENOENT { throw Self.posixError(code, path: logical.path) }
                 }
                 return (physical, openedObservation)
             } catch {
-                let value = error as NSError
-                guard (value.domain == NSPOSIXErrorDomain && value.code == Int(ENOENT))
-                    || (value.domain == NSCocoaErrorDomain && value.code == NSFileReadNoSuchFileError)
-                else { throw error }
+                guard isMissingFileError(error) else { throw error }
                 lastError = error
             }
         }
@@ -115,10 +119,12 @@ struct SourceFileObservation {
 
     static func read(handle: any CodexReadHandle) throws -> Self {
         let observed = try readPhysical(handle: handle.physicalHandle)
-        return Self(size: try handle.logicalSize(), modifiedAt: observed.modifiedAt, physicalStamp: observed.physicalStamp)
+        return Self(indexedLogicalSize: try handle.logicalSize(), modifiedAt: observed.modifiedAt, physicalStamp: observed.physicalStamp)
     }
 
-    private init(size: UInt64, modifiedAt: TimeInterval, physicalStamp: String) {
+    /// A persisted witness must be compared with a current physical observation
+    /// before its logical size can be reused; it does not observe the filesystem.
+    init(indexedLogicalSize size: UInt64, modifiedAt: TimeInterval, physicalStamp: String) {
         self.size = size; self.modifiedAt = modifiedAt; self.physicalStamp = physicalStamp
     }
 
@@ -127,7 +133,7 @@ struct SourceFileObservation {
     }
 
     func withLogicalSize(_ logicalSize: UInt64) -> Self {
-        Self(size: logicalSize, modifiedAt: modifiedAt, physicalStamp: physicalStamp)
+        Self(indexedLogicalSize: logicalSize, modifiedAt: modifiedAt, physicalStamp: physicalStamp)
     }
 
     static func readPhysical(handle: FileHandle) throws -> Self {
@@ -142,5 +148,21 @@ struct SourceFileObservation {
 
     private static func changedError(path: String) -> NSError {
         NSError(domain: NSPOSIXErrorDomain, code: Int(ESTALE), userInfo: [NSFilePathErrorKey: path])
+    }
+
+    static func isMissingFileError(_ error: Error) -> Bool {
+        var current = error as NSError
+        // FileHandle uses code 4 on current macOS; other Foundation readers use
+        // 260 or wrap POSIX ENOENT. Bound traversal of wrapped errors.
+        for _ in 0..<8 {
+            if current.domain == NSPOSIXErrorDomain { return current.code == Int(ENOENT) }
+            if current.domain == NSCocoaErrorDomain,
+               current.code == NSFileNoSuchFileError || current.code == NSFileReadNoSuchFileError {
+                return true
+            }
+            guard let underlying = current.userInfo[NSUnderlyingErrorKey] as? NSError else { return false }
+            current = underlying
+        }
+        return false
     }
 }

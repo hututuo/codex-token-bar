@@ -15,6 +15,13 @@ pub(super) fn is_compressed(path: &Path) -> bool {
 pub(super) fn logical_path(path: &Path) -> PathBuf {
     if is_compressed(path) { path.with_extension("") } else { path.to_path_buf() }
 }
+fn plain_entry_exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(logical_path(path)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
 pub(super) fn physical_path(path: &Path) -> io::Result<PathBuf> {
     let logical = logical_path(path);
     match fs::symlink_metadata(&logical) {
@@ -24,13 +31,26 @@ pub(super) fn physical_path(path: &Path) -> io::Result<PathBuf> {
         Ok(_) => match fs::metadata(&logical) {
             Ok(m) if m.is_file() => Ok(logical),
             Ok(_) => Err(invalid("rollout is not a regular file")),
+            // A directory entry still exists. NotFound from following it is
+            // an unreadable/dangling entry, never evidence of source deletion.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(invalid("plain rollout entry exists but its target is unavailable")),
             Err(e) => Err(e),
         },
         Err(e) if e.kind() == io::ErrorKind::NotFound && logical.extension().is_some_and(|x| x == "jsonl") => {
             let mut compressed = logical.as_os_str().to_os_string();
             compressed.push(".zst");
             let compressed = PathBuf::from(compressed);
-            let metadata = fs::metadata(&compressed)?;
+            let metadata = match fs::metadata(&compressed) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    match fs::symlink_metadata(&compressed) {
+                        Ok(_) => return Err(invalid("compressed rollout entry exists but its target is unavailable")),
+                        Err(absent) if absent.kind() == io::ErrorKind::NotFound => return Err(error),
+                        Err(other) => return Err(other),
+                    }
+                }
+                Err(error) => return Err(error),
+            };
             if metadata.is_file() { Ok(compressed) }
             else { Err(invalid("rollout is not a regular file")) }
         }
@@ -203,7 +223,7 @@ impl RolloutReader {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            if is_compressed(&physical) && logical_path(path).try_exists()? {
+            if is_compressed(&physical) && plain_entry_exists(path)? {
                 continue;
             }
 
@@ -213,7 +233,7 @@ impl RolloutReader {
 
             let key = cache_key(&physical, &file)?;
             // Recheck plain precedence after opening the compressed handle.
-            if logical_path(path).try_exists()? {
+            if plain_entry_exists(path)? {
                 continue;
             }
             let cached = layout_cache()
@@ -223,7 +243,7 @@ impl RolloutReader {
                 .copied();
             return Ok(cached.and_then(|layout| layout.logical_size));
         }
-        Err(io::Error::new(io::ErrorKind::NotFound, "rollout representations changed during open; retry"))
+        Err(io::Error::new(io::ErrorKind::Interrupted, "rollout representations changed during open; retry"))
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -238,12 +258,12 @@ impl RolloutReader {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            if is_compressed(&physical) && logical_path(path).try_exists()? {
+            if is_compressed(&physical) && plain_entry_exists(path)? {
                 continue;
             }
             return Self::from_file(file, physical);
         }
-        Err(io::Error::new(io::ErrorKind::NotFound, "rollout representations changed during open; retry"))
+        Err(io::Error::new(io::ErrorKind::Interrupted, "rollout representations changed during open; retry"))
     }
     pub fn from_file(mut file: File, physical: PathBuf) -> io::Result<Self> {
         let before=cache_key(&physical,&file)?;

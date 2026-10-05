@@ -185,18 +185,22 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
                 }
                 let handle = try FileHandle(forReadingFrom: physical)
                 recordPhysicalOpenForCurrentThread()
-                if physical.lastPathComponent.hasSuffix(".jsonl.zst"),
-                   FileManager.default.fileExists(atPath: logicalURL(file).path) {
-                    try? handle.close()
-                    continue
+                if physical.lastPathComponent.hasSuffix(".jsonl.zst") {
+                    var status = Darwin.stat()
+                    if lstat(logicalURL(file).path, &status) == 0 {
+                        try? handle.close()
+                        continue
+                    }
+                    if errno != ENOENT {
+                        let code = errno
+                        try? handle.close()
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+                    }
                 }
                 return (physical, handle)
             } catch {
                 lastError = error
-                let value = error as NSError
-                guard (value.domain == NSPOSIXErrorDomain && value.code == Int(ENOENT))
-                    || (value.domain == NSCocoaErrorDomain && value.code == NSFileReadNoSuchFileError)
-                else { throw error }
+                guard SourceFileObservation.isMissingFileError(error) else { throw error }
             }
         }
         throw lastError

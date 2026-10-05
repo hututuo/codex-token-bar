@@ -693,7 +693,7 @@ extension CodexUsageAnalyzer {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.buildSessionTreeSignature", metadata: [
             "files": String(files.count)
         ])
-        let known = (try? historyIndex?.lightweightSourceObservations()) ?? [:]
+        let known = (try? historyIndex?.storedCompleteSourceObservations()) ?? [:]
         let signature = SessionTreeSignature(
             localDate: localDateString(for: now, timeZone: timeZone),
             utcOffsetSeconds: timeZone.secondsFromGMT(for: now),

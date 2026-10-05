@@ -133,6 +133,26 @@ fn unsafe_plain_entry_does_not_fall_back_to_compressed_sibling() {
     assert_eq!(counters.structure_blocks, 0);
 }
 
+#[cfg(unix)]
+#[test]
+fn dangling_entries_are_unreadable_not_deleted_and_never_fall_back() {
+    let fixture = FixtureDir::new();
+    let plain = fixture.0.join("dangling.jsonl");
+    let compressed = fixture.write("dangling.jsonl.zst", &raw_frame(b"cold\n", true));
+    std::os::unix::fs::symlink(fixture.0.join("absent.jsonl"), &plain).unwrap();
+    for path in [&plain, &compressed] {
+        assert_eq!(rollout_source::physical_path(path).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(RolloutReader::cached_logical_length(path).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(RolloutReader::open(path).err().unwrap().kind(), std::io::ErrorKind::InvalidData);
+    }
+    fs::remove_file(&plain).unwrap();
+    fs::remove_file(&compressed).unwrap();
+    std::os::unix::fs::symlink(fixture.0.join("absent.zst"), &compressed).unwrap();
+    assert_eq!(rollout_source::physical_path(&plain).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    fs::remove_file(&compressed).unwrap();
+    assert_eq!(rollout_source::physical_path(&plain).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+}
+
 #[test]
 fn known_size_frame_streams_seeks_and_validates_decoded_end() {
     let fixture = FixtureDir::new();
