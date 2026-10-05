@@ -13304,8 +13304,8 @@ fn excerpt_batch_merges_plain_ranges_and_never_reads_compressed_twin() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
     let file = root.join("batch.jsonl");
-    let prompt = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"shared prompt\"}}\n";
-    let assistant = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"shared answer\"}}\n";
+    let prompt = "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"shared prompt\"}}\n";
+    let assistant = "{\"timestamp\":\"2026-10-01T00:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"shared answer\"}}\n";
     fs::write(&file, format!("{prompt}{assistant}")).unwrap();
     fs::write(file.with_extension("jsonl.zst"), [0x28,0xb5,0x2f,0xfd]).unwrap();
     let offsets = ExactEventSourceOffsets {
