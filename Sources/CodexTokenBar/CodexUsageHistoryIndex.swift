@@ -2153,7 +2153,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 guard let candidate = candidateByPath[path] else { continue }
                 let physical = try SourceFileObservation.readPreferredPhysical(at: candidate.file)
                 if physical.file.lastPathComponent.hasSuffix(".jsonl.zst") {
-                    guard let current = existing[path], let observation = known[path],
+                    guard let current = existing[path],
+                          let observation = known[CodexRolloutReader.canonicalLogicalURL(candidate.file).path],
                           observation.physicalStamp == physical.observation.physicalStamp,
                           observation.modifiedAt == physical.observation.modifiedAt,
                           current.entry.sizeBytes == Int64(observation.size),

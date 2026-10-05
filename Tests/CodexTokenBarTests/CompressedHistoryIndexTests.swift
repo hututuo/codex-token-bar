@@ -304,15 +304,19 @@ final class CompressedHistoryIndexTests: XCTestCase {
         _ = try f.synchronize()
         let metadata = CodexUsageHistoryIndex.SessionCatalogMetadata(threadID: "thread",
             cwd: "/synthetic", sessionID: nil, forkedFromID: nil, parentThreadID: nil, source: "cli")
-        _ = try f.index.synchronizeSessionCatalog(candidates: [.init(file: f.file, archived: false)]) { _ in metadata }
+        let alias = f.root.appendingPathComponent("catalog-directory-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: f.root)
+        let aliasFile = alias.appendingPathComponent(f.file.lastPathComponent)
+        _ = try f.index.synchronizeSessionCatalog(candidates: [.init(file: aliasFile, archived: false)]) { _ in metadata }
         _ = try compress(f)
         _ = try f.synchronize()
         CodexRolloutReader.resetWorkCountersForCurrentThread()
-        let warm = try f.index.synchronizeSessionCatalog(candidates: [.init(file: f.file, archived: false)]) { _ in
+        let warm = try f.index.synchronizeSessionCatalog(candidates: [.init(file: aliasFile, archived: false)]) { _ in
             XCTFail("compressed catalog must not reparse its first line")
             return metadata
         }
         XCTAssertEqual(warm.entries.first?.sizeBytes, Int64(line(120).utf8.count))
+        XCTAssertEqual(warm.entries.first?.path, aliasFile.standardizedFileURL.path)
         XCTAssertEqual(warm.parsedFirstLines, 0)
         XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
         XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().structure_blocks, 0)

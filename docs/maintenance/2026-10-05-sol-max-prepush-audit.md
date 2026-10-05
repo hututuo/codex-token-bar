@@ -10,7 +10,7 @@
 2. **Swift 合法转换漏重试。** macOS 的 FileHandle 对缺失路径实际抛 Cocoa code 4，旧 guard 只接受 260 和裸 POSIX ENOENT。独立合成转换竞态已复现。统一识别 code 4/260 和有界 underlying ENOENT；权限/损坏仍立即失败。zst 开读后用 lstat 确认 plain 优先，不忽略不可访问入口。
 3. **Swift 轻量签名重复打开全体文件。** 完整索引 witness 查询先实际观察每个来源，cache-key 构造再观察一次。改为单次 SQL 取持久完整 witness，调用端以当前 stamp/mtime 对比后才能用旧 logical size；改名 `storedCompleteSourceObservations` 明确它不是当前观察。plain 当前观察恢复单次 lstat 快路，正文 proof 保留 pinned handle 与路径后置核对。独立元数据微基准约10倍成本只适用于旧两轮 metadata helper，不代表整体应用耗时。
 
-4. **Swift 缺失 logical leaf 的父目录别名解析不稳定。** Foundation 对不存在的 leaf 可能保留 `/var` 或父目录 alias，旧来源却按 plain 存在时的 canonical path 保存。普通 UI scanner 已先选存在物理文件并 canonicalize；确定影响主要是直接 sync/tree API 的非 canonical logical 输入与测试，会失去旧 witness、触发不必要重建/路径迁移，不能据此声称正常 UI 已经双计。统一 helper 只解析父目录并保留 leaf，在 plain→zst→plain 保持同一 logical path，也不把危险 leaf symlink 隐藏到别的来源。同步、签名和去重三处复用；不打开压缩正文做 canonicalize。
+4. **Swift 缺失 logical leaf 的父目录别名解析不稳定。** Foundation 对不存在的 leaf 可能保留 `/var` 或父目录 alias，旧来源却按 plain 存在时的 canonical path 保存。普通 UI scanner 已先选存在物理文件并 canonicalize；确定影响主要是直接 sync/tree API 的非 canonical logical 输入与测试，会失去旧 witness、触发不必要重建/路径迁移，不能据此声称正常 UI 已经双计。统一 helper 只解析父目录并保留 leaf，在 plain→zst→plain 保持同一 logical path，也不把危险 leaf symlink 隐藏到别的来源。同步、签名和去重三处复用；catalog 的完整 witness 查找也用 canonical key，已有 catalog row key 不迁移；不打开压缩正文做 canonicalize。
 
 新增回归覆盖：悬空 plain/compressed 与真正丢失的分类；discovery 后 source 变化且另一新 candidate 强制正式 owner，检查发表代次、断点、missing、raw 可用性与可信消费保留，恢复后仅加一次新消费；官方 materialize 顺序插入两次表示 lookup 之间，reader/轻量长度重试并选新 plain，零压缩解码；真实 Foundation 缺失错误识别；stored witness 零文件 I/O；plain tree signature 零 opens；同长度/恢复 mtime 的 compressed 替换必须使 signature unknown；父目录 alias 的冷来源同步不重建、ID/path 保持、恢复追加只新增7，unsafe leaf 仍拒绝。
 
@@ -30,7 +30,8 @@ Windows 保持写句柄打开时的零延迟 rewrite、ReFS/网络卷物理 witn
 
 - 初始代码同 SHA 全套 CI：PASS，run `37313120365`。不能代替这次修复的 CI。
 - 本次 Swift syntax parse / diff whitespace：PASS。
-- 修后两位独立复审及云端全套回归：执行中，最终证据补在本节。
+- 修后两位 GPT-6.1 Sol Max 独立复核：PASS / SOURCE_CONFIRMED，未发现剩余确认缺陷。Swift 实际组件错误分类10项通过、合成转换每类5000次成功；Rust 实际 resolver/hook 的独立 std-only probe 通过。组件结果不能代替完整包/客户现场。
+- 云端全套回归：执行中，最终同 SHA 证据补在本节。中间 SHA `f9e0e4d4` 的 Rust/macOS 已为1205 passed、0 failed、10 ignored，三个新增 owner/resolver 测试通过；不能代替后续 Swift canonical/catalog 修补的全套验收。
 - Windows 客户安装恢复、真实大历史 wall-time、应用实机体验、打包签名及正式发布：NOT_RUN。
 
 本次证据目录：`runs/20261005-sol-max-reaudit/`。所有微基准和转换实验只使用合成文件，测试结果与现场/发布验收分开记录。
