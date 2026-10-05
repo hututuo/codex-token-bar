@@ -22,6 +22,14 @@ fn plain_entry_exists(path: &Path) -> io::Result<bool> {
         Err(error) => Err(error),
     }
 }
+#[cfg(test)]
+thread_local! {
+    static AFTER_PLAIN_ABSENCE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn after_plain_absence_for_testing(hook: impl FnOnce() + 'static) {
+    AFTER_PLAIN_ABSENCE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
 pub(super) fn physical_path(path: &Path) -> io::Result<PathBuf> {
     let logical = logical_path(path);
     match fs::symlink_metadata(&logical) {
@@ -37,6 +45,11 @@ pub(super) fn physical_path(path: &Path) -> io::Result<PathBuf> {
             Err(e) => Err(e),
         },
         Err(e) if e.kind() == io::ErrorKind::NotFound && logical.extension().is_some_and(|x| x == "jsonl") => {
+            #[cfg(test)]
+            AFTER_PLAIN_ABSENCE_HOOK.with(|slot| {
+                let hook = slot.borrow_mut().take();
+                if let Some(hook) = hook { hook(); }
+            });
             let mut compressed = logical.as_os_str().to_os_string();
             compressed.push(".zst");
             let compressed = PathBuf::from(compressed);
@@ -45,7 +58,16 @@ pub(super) fn physical_path(path: &Path) -> io::Result<PathBuf> {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     match fs::symlink_metadata(&compressed) {
                         Ok(_) => return Err(invalid("compressed rollout entry exists but its target is unavailable")),
-                        Err(absent) if absent.kind() == io::ErrorKind::NotFound => return Err(error),
+                        Err(absent) if absent.kind() == io::ErrorKind::NotFound => {
+                            // Materialization publishes plain before deleting
+                            // zst. It may happen after our first plain lookup.
+                            // Recheck before claiming both representations gone.
+                            if plain_entry_exists(&logical)? {
+                                return Err(io::Error::new(io::ErrorKind::Interrupted,
+                                    "plain rollout appeared during compressed lookup; retry"));
+                            }
+                            return Err(error);
+                        }
                         Err(other) => return Err(other),
                     }
                 }
@@ -213,7 +235,11 @@ impl RolloutReader {
     /// inspects a frame or constructs a decoder.
     pub fn cached_logical_length(path: &Path) -> io::Result<Option<u64>> {
         for _ in 0..3 {
-            let physical = physical_path(path)?;
+            let physical = match physical_path(path) {
+                Ok(physical) => physical,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
             let file = match File::open(&physical) {
                 Ok(file) => {
                     #[cfg(test)]
@@ -248,7 +274,11 @@ impl RolloutReader {
 
     pub fn open(path: &Path) -> io::Result<Self> {
         for _ in 0..3 {
-            let physical = physical_path(path)?;
+            let physical = match physical_path(path) {
+                Ok(physical) => physical,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
             let file = match File::open(&physical) {
                 Ok(file) => {
                     #[cfg(test)]

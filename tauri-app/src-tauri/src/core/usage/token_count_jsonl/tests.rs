@@ -13301,6 +13301,7 @@ fn dangling_plain_after_discovery_preserves_publication_checkpoint_and_missing_s
     index.sync(&root, &mut Vec::new()).unwrap();
     let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
     let before = db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get::<_, String>(0)).unwrap();
+    let source_id = db.query_row("SELECT source_id FROM sources", [], |r| r.get::<_, i64>(0)).unwrap();
     let resume = db.query_row("SELECT resume_offset FROM sources", [], |r| r.get::<_, i64>(0)).unwrap();
     let available = db.query_row("SELECT COALESCE(SUM(available),0) FROM usage_ledger_bindings", [], |r| r.get::<_, i64>(0)).unwrap();
     // A new healthy candidate forces the formal pass rather than the unchanged
@@ -13314,13 +13315,14 @@ fn dangling_plain_after_discovery_preserves_publication_checkpoint_and_missing_s
     let error = index.sync_with_scan_plan(&root, &mut Vec::new(), Some(discovery), Some(2)).unwrap_err();
     assert!(error.contains("会话源扫描不完整"), "{error}");
     assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get::<_, String>(0)).unwrap(), before);
-    assert_eq!(db.query_row("SELECT resume_offset FROM sources WHERE path=?1", [file.to_string_lossy().as_ref()], |r| r.get::<_, i64>(0)).unwrap(), resume);
+    assert_eq!(db.query_row("SELECT resume_offset FROM sources WHERE source_id=?1", [source_id], |r| r.get::<_, i64>(0)).unwrap(), resume);
     assert_eq!(db.query_row("SELECT COALESCE(SUM(missing),0) FROM usage_ledger_sources", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     assert_eq!(db.query_row("SELECT COALESCE(SUM(available),0) FROM usage_ledger_bindings", [], |r| r.get::<_, i64>(0)).unwrap(), available);
     assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events", [], |r| r.get::<_, i64>(0)).unwrap(), 120);
     fs::remove_file(&file).unwrap();
     fs::write(&file, line).unwrap();
     index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 127);
     index.sync(&root, &mut Vec::new()).unwrap();
     assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 127);
     drop(db);

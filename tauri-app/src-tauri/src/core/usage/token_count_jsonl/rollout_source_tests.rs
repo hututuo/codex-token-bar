@@ -154,6 +154,33 @@ fn dangling_entries_are_unreadable_not_deleted_and_never_fall_back() {
 }
 
 #[test]
+fn materialization_between_representation_lookups_is_retried_not_deleted() {
+    for read_body in [false, true] {
+        let fixture = FixtureDir::new();
+        let plain = fixture.0.join("materialize.jsonl");
+        let payload = b"new plain\n";
+        let compressed = fixture.write("materialize.jsonl.zst", &raw_frame(b"old cold\n", true));
+        let publish_plain = plain.clone();
+        rollout_source::after_plain_absence_for_testing(move || {
+            // The official order never leaves both representations absent.
+            fs::write(&publish_plain, payload).unwrap();
+            fs::remove_file(&compressed).unwrap();
+        });
+        rollout_source::reset_work_counters_for_current_thread();
+        if read_body {
+            let mut reader = RolloutReader::open(&plain).unwrap();
+            assert!(!reader.compressed());
+            assert_eq!(read_all(&mut reader), payload);
+        } else {
+            assert_eq!(RolloutReader::cached_logical_length(&plain).unwrap(), Some(payload.len() as u64));
+        }
+        let work = rollout_source::work_counters_for_current_thread();
+        assert_eq!(work.decoded_bytes, 0);
+        assert_eq!(work.structure_blocks, 0);
+    }
+}
+
+#[test]
 fn known_size_frame_streams_seeks_and_validates_decoded_end() {
     let fixture = FixtureDir::new();
     let payload = b"{}\n{\"x\":1}\n";

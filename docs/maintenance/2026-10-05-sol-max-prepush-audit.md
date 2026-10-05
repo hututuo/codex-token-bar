@@ -6,11 +6,11 @@
 
 ## 确认问题和修复
 
-1. **Rust 不可读入口被当作来源删除。** `physical_path` 在 plain 目录项仍存在但链接目标缺失时返回 NotFound；正式 owner 对这个错误不登记 seen/incomplete，从而按 missing 处理。修复为 InvalidData；compressed 悬空入口同样处理。只有两个表示确实均不存在才沿用 NotFound。三次选择/开读重试耗尽改为 Interrupted，不能作为删除证据。开读后复核 plain 优先使用 symlink_metadata，包含刚出现的悬空目录项。
+1. **Rust 不可读入口被当作来源删除。** `physical_path` 在 plain 目录项仍存在但链接目标缺失时返回 NotFound；正式 owner 对这个错误不登记 seen/incomplete，从而按 missing 处理。修复为 InvalidData；compressed 悬空入口同样处理。只有两个表示确实均不存在才沿用 NotFound。还补上 materialize 在首次 plain lookup 后先发布 plain、再移除 zst 的窗口：compressed 缺失时再次查 plain；已出现则返回 Interrupted 并由 reader 重试，不登记删除。三次选择/开读重试耗尽改为 Interrupted，不能作为删除证据。开读后复核 plain 优先使用 symlink_metadata，包含刚出现的悬空目录项。
 2. **Swift 合法转换漏重试。** macOS 的 FileHandle 对缺失路径实际抛 Cocoa code 4，旧 guard 只接受 260 和裸 POSIX ENOENT。独立合成转换竞态已复现。统一识别 code 4/260 和有界 underlying ENOENT；权限/损坏仍立即失败。zst 开读后用 lstat 确认 plain 优先，不忽略不可访问入口。
 3. **Swift 轻量签名重复打开全体文件。** 完整索引 witness 查询先实际观察每个来源，cache-key 构造再观察一次。改为单次 SQL 取持久完整 witness，调用端以当前 stamp/mtime 对比后才能用旧 logical size；改名 `storedCompleteSourceObservations` 明确它不是当前观察。plain 当前观察恢复单次 lstat 快路，正文 proof 保留 pinned handle 与路径后置核对。独立元数据微基准约10倍成本只适用于旧两轮 metadata helper，不代表整体应用耗时。
 
-新增回归覆盖：悬空 plain/compressed 与真正丢失的分类；discovery 后 source 变化且另一新 candidate 强制正式 owner，检查发表代次、断点、missing、raw 可用性与可信消费保留，恢复后仅加一次新消费；真实 Foundation 缺失错误识别；stored witness 零文件 I/O；plain tree signature 零 opens；同长度/恢复 mtime 的 compressed 替换必须使 signature unknown。
+新增回归覆盖：悬空 plain/compressed 与真正丢失的分类；discovery 后 source 变化且另一新 candidate 强制正式 owner，检查发表代次、断点、missing、raw 可用性与可信消费保留，恢复后仅加一次新消费；官方 materialize 顺序插入两次表示 lookup 之间，reader/轻量长度重试并选新 plain，零压缩解码；真实 Foundation 缺失错误识别；stored witness 零文件 I/O；plain tree signature 零 opens；同长度/恢复 mtime 的 compressed 替换必须使 signature unknown。
 
 ## 确认的兼容限制，未放宽安全门
 
