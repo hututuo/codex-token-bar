@@ -69,7 +69,11 @@ final class CompressedHistoryIndexTests: XCTestCase {
         let padding = String(repeating: "\n", count: 8192)
         try Data((padding + line(120)).utf8).write(to: f.file)
         _ = try f.synchronize()
-        let replacement = Data((padding + line(127, second: 1)).utf8)
+        // Keep the byte-proved old consumption and force the full-stage path
+        // via an incomplete checkpoint. A rewritten unproved 127-token event
+        // must not replace the trusted 120-token ledger merely on retry.
+        try f.db.execute("UPDATE sources SET append_ready=0")
+        let replacement = Data((padding + line(120) + line(7, second: 1)).utf8)
         try replacement.write(to: f.file)
         CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
         XCTAssertThrowsError(try f.synchronize())
