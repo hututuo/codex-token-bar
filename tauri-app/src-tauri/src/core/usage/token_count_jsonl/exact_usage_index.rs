@@ -10,7 +10,7 @@ use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
 use super::session_parser::{
-    probe_explicit_subagent_session_file, read_event_excerpts, stream_session_file_exact,
+    probe_explicit_subagent_session_file, read_event_excerpt_batch, stream_session_file_exact,
     stream_session_file_exact_from, ExactChunkHash, ExactEventSourceOffsets, ExactSessionEventSink,
     ExactSessionParserState, ExactTokenEvent, ExplicitSubagentSessionFileProbe, SourceByteRange,
     UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE,
@@ -1017,6 +1017,17 @@ struct StagedFullRebuild {
     resume_offset: u64,
     parser_state: ExactSessionParserState,
     event_count: u64,
+    source_validation: Option<StageSourceValidation>,
+}
+
+/// Short-lived proof from this owner, bound to the sealed stage and source.
+/// Never serialized; recovered stages must first perform a real EOF proof.
+#[derive(Clone, Debug)]
+struct StageSourceValidation {
+    source: FileSignature,
+    prefix_sha256: [u8; 32],
+    artifact_id: String,
+    stage: FileSignature,
 }
 
 struct StagedFullRebuildResult {
@@ -4925,6 +4936,11 @@ impl ExactUsageIndex {
         }
 
         let canonical_home = canonical_codex_home(codex_home)?;
+        let mut requested_excerpts: HashMap<PathBuf, Vec<ExactEventSourceOffsets>> = HashMap::new();
+        for item in &selected {
+            requested_excerpts.entry(item.file_path.clone()).or_default().push(item.source_offsets);
+        }
+        let mut excerpt_batches: HashMap<PathBuf, Result<HashMap<ExactEventSourceOffsets, (String, String)>, String>> = HashMap::new();
         let mut verified_excerpts = HashMap::new();
         Ok(selected
             .into_iter()
@@ -4937,13 +4953,14 @@ impl ExactUsageIndex {
                 ) else {
                     return item.usage;
                 };
-                // Ranking never opens a zstd decoder in active-only mode.
-                // An eligible session can still have an older compressed shard.
-                if active_since.is_some() && !file.is_file() {
+                // Optional raw text is deferred for actual compressed storage,
+                // independent of the seven-day ranking preference.
+                if !rollout_source::physical_path(&file).is_ok_and(|physical| !rollout_source::is_compressed(&physical)) {
                     return item.usage;
                 }
-                let before = match file_signature(&file) {
-                    Ok(signature) => signature,
+                let before = match lightweight_file_signature(&file, None) {
+                    Ok(Some(signature)) => signature,
+                    Ok(None) => return item.usage,
                     Err(error) => {
                         warnings.push(excerpt_warning(error));
                         return item.usage;
@@ -4956,6 +4973,11 @@ impl ExactUsageIndex {
                     )));
                     return item.usage;
                 }
+                match representations::current_excerpt_observation(&self.connection, &file, before) {
+                    Ok(true) => {},
+                    Ok(false) => return item.usage,
+                    Err(error) => { warnings.push(excerpt_warning(error)); return item.usage; }
+                }
                 if item.source_offsets.user_prompt.is_none() && item.source_offsets.assistant_response.is_none() {
                     return item.usage;
                 }
@@ -4966,11 +4988,19 @@ impl ExactUsageIndex {
                     Ok(false) => return item.usage,
                     Err(error) => {warnings.push(excerpt_warning(error.clone())); return item.usage;}
                 }
-                match read_event_excerpts(&file, item.source_offsets) {
-                    Ok((user_prompt, assistant_response)) => match file_signature(&file) {
-                        Ok(after) if after == before => {
-                            item.usage.user_prompt = user_prompt;
-                            item.usage.assistant_response = assistant_response;
+                let batch = excerpt_batches.entry(file.clone()).or_insert_with(|| {
+                    let requests = requested_excerpts.get(&item.file_path).map(Vec::as_slice).unwrap_or(&[]);
+                    read_event_excerpt_batch(&file, requests, |handle| {
+                        if file_signature_from_handle(handle, &file)? == before { Ok(()) }
+                        else { Err(format!("会话摘录描述符在读取期间变化：{}", file.display())) }
+                    }).map(|values|
+                        requests.iter().copied().zip(values).collect())
+                });
+                match batch.as_ref().map(|values| values.get(&item.source_offsets)) {
+                    Ok(Some((user_prompt, assistant_response))) => match lightweight_file_signature(&file, None) {
+                        Ok(Some(after)) if after == before => {
+                            item.usage.user_prompt = user_prompt.clone();
+                            item.usage.assistant_response = assistant_response.clone();
                         }
                         Ok(_) => warnings.push(excerpt_warning(format!(
                             "会话摘录源文件在读取期间变化，将在下一次刷新重建：{}",
@@ -4978,7 +5008,8 @@ impl ExactUsageIndex {
                         ))),
                         Err(error) => warnings.push(excerpt_warning(error)),
                     },
-                    Err(error) => warnings.push(excerpt_warning(error)),
+                    Ok(None) => {},
+                    Err(error) => warnings.push(excerpt_warning(error.clone())),
                 }
                 item.usage
             })
@@ -6349,7 +6380,10 @@ fn build_staged_full_rebuild(
     drop(stage);
     sync_staging_database(&database_path, &staging_sync)?;
 
+    let stage_signature = file_signature_from_handle(&fs::File::open(&database_path).map_err(|error| error.to_string())?, &database_path)?;
     Ok(StagedFullRebuild {
+        source_validation: Some(StageSourceValidation { source: committed_signature,
+            prefix_sha256: parsed.prefix_sha256, artifact_id: artifact_id.clone(), stage: stage_signature }),
         job: FullRebuildJob {
             signature: committed_signature,
             ..job.clone()
@@ -6543,7 +6577,7 @@ fn reusable_staged_full_rebuild(
     let reusable = (|| {
         let stage = sqlite::open_read_only(database_path, StdDuration::from_secs(1))
             .map_err(|error| format!("无法只读打开精确 token 单文件暂存：{error}"))?;
-        validated_staged_full_rebuild(&stage, database_path, job, target_generation)
+        validated_staged_full_rebuild(&stage, database_path, job, target_generation, None)
     })();
     match reusable {
         Ok(Some(staged)) => Ok(Some(staged)),
@@ -6557,6 +6591,7 @@ fn validated_staged_full_rebuild(
     database_path: &Path,
     job: &FullRebuildJob,
     target_generation: i64,
+    proof: Option<&StageSourceValidation>,
 ) -> Result<Option<StagedFullRebuild>, String> {
     quick_check_index(connection, None)?;
     let manifest_schema_version =
@@ -6768,19 +6803,21 @@ fn validated_staged_full_rebuild(
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    let mut source_handle = match RolloutReader::open(&job.file) {
-        Ok(handle) => handle,
-        Err(_) => return Ok(None),
-    };
-    if validate_same_file_prefix(
-        &job.file,
-        &mut source_handle,
-        manifest_signature,
-        prefix_sha256,
-    )
-    .is_err()
-    {
-        return Ok(None);
+    let stage_signature = file_signature_from_handle(&fs::File::open(database_path).map_err(|error| error.to_string())?, database_path)?;
+    let known = (manifest_signature.size, manifest_signature.modified_ns.to_string(),
+        manifest_signature.physical.map(|stamp| stamp.encode()));
+    let reusable_proof = proof.is_some_and(|proof| proof.source == manifest_signature
+        && proof.source.physical.is_some() && proof.prefix_sha256 == prefix_sha256
+        && proof.artifact_id == manifest.artifact_id && proof.stage == stage_signature
+        && lightweight_file_signature(&job.file, Some(&known)).ok().flatten() == Some(manifest_signature));
+    if !reusable_proof {
+        let mut source_handle = match RolloutReader::open(&job.file) {
+            Ok(handle) => handle,
+            Err(_) => return Ok(None),
+        };
+        if validate_same_file_prefix(&job.file, &mut source_handle, manifest_signature, prefix_sha256).is_err() {
+            return Ok(None);
+        }
     }
     let event_count = connection
         .query_row("SELECT COUNT(*) FROM events", [], |row| {
@@ -6869,6 +6906,8 @@ fn validated_staged_full_rebuild(
     }
 
     Ok(Some(StagedFullRebuild {
+        source_validation: Some(StageSourceValidation { source: manifest_signature,
+            prefix_sha256, artifact_id: manifest.artifact_id.clone(), stage: stage_signature }),
         job: FullRebuildJob {
             signature: manifest_signature,
             ..job.clone()
@@ -6909,7 +6948,7 @@ fn import_staged_full_rebuild(
     let validated = {
         let stage = sqlite::open_read_only(&staged.database_path, StdDuration::from_secs(1))
             .map_err(|error| format!("无法只读打开待导入的精确 token 暂存：{error}"))?;
-        validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job, generation)?
+        validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job, generation, staged.source_validation.as_ref())?
             .ok_or_else(|| "精确 token 单文件暂存在导入前失效".to_string())?
     };
     if validated.artifact_id != staged.artifact_id || validated.actual_bytes != staged.actual_bytes
@@ -17614,7 +17653,7 @@ fn lightweight_file_signature(
     let logical = if !compressed {
         Some(before.size)
     } else if let Some((size, modified, stamp)) = known.filter(|(_, modified, stamp)| {
-        before.modified_ns.to_string() == *modified && before.matches_physical(stamp.as_deref())
+        before.physical.is_some() && before.modified_ns.to_string() == *modified && before.matches_physical(stamp.as_deref())
     }) {
         let _ = (modified, stamp);
         Some(*size)
@@ -17631,16 +17670,11 @@ fn lightweight_file_signature(
 }
 
 fn complete_source_observations(db: &Connection) -> Result<HashMap<String, (u64, String, Option<String>)>, String> {
-    let mut statement = db.prepare("SELECT path FROM sources WHERE deleted=0").map_err(|error| error.to_string())?;
-    let paths = statement.query_map([], |row| row.get::<_, String>(0)).map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
-    let mut result = HashMap::with_capacity(paths.len());
-    for path in paths {
-        if let Some(observation) = representations::complete_observation(db, &path)? {
-            result.insert(path, observation);
-        }
-    }
-    Ok(result)
+    let mut statement = db.prepare(representations::COMPLETE_OBSERVATIONS_SQL).map_err(|error| error.to_string())?;
+    let rows = statement.query_map(params![EVENT_ENRICHMENT_REVISION, STAGED_FULL_REBUILD_PARSER_REVISION], |row| {
+        Ok((row.get::<_, String>(0)?, (nonnegative_u64(row.get::<_, i64>(1)?), row.get(2)?, row.get(3)?)))
+    }).map_err(|error| error.to_string())?;
+    rows.collect::<Result<HashMap<_, _>, _>>().map_err(|error| error.to_string())
 }
 
 fn file_signature(path: &Path) -> Result<FileSignature, String> {

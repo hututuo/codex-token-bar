@@ -64,6 +64,56 @@ final class CompressedHistoryIndexTests: XCTestCase {
         XCTAssertEqual(work.structure_blocks, 0)
     }
 
+    func testRecoveredStageRejectsCorruptZeroOutputTailAndKeepsOldLedger() throws {
+        let f = try fixture()
+        let padding = String(repeating: "\n", count: 8192)
+        try Data((padding + line(120)).utf8).write(to: f.file)
+        _ = try f.synchronize()
+        let replacement = Data((padding + line(127, second: 1)).utf8)
+        try replacement.write(to: f.file)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(try f.synchronize())
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        let modified = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: f.file.path)[.modificationDate] as? Date)
+        let zst = URL(fileURLWithPath: f.file.path + ".zst")
+        let corruptTail = Data([0x28,0xb5,0x2f,0xfd,0x24,0,1,0,0,0,0,0,0])
+        try (frame(replacement) + corruptTail).write(to: zst)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: zst.path)
+        try FileManager.default.removeItem(at: f.file)
+        XCTAssertThrowsError(try f.synchronize())
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        try (frame(replacement) + frame(Data())).write(to: zst)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: zst.path)
+        _ = try f.synchronize()
+        _ = try f.synchronize()
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 127)
+    }
+
+    func testUnavailableColdSourceDoesNotHideHealthySourceReferences() throws {
+        let f = try promptFixture()
+        let healthy = f.root.appendingPathComponent("rollout-019e1234-1234-1234-1234-123456789abc.jsonl")
+        let text = String(decoding: try Data(contentsOf: f.file), as: UTF8.self)
+        try Data(text.replacingOccurrences(of: "synthetic prompt", with: "healthy prompt").utf8).write(to: healthy)
+        func syncBoth() throws {
+            _ = try f.index.synchronize(files: [f.file, healthy], sessionID: f.analyzer.sessionID(from:)) {
+                file, id, request, fingerprint, emit in
+                try f.analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request, insertFingerprint: fingerprint, emit: emit)
+            }
+        }
+        try syncBoth()
+        var ids: [String] = []
+        try f.index.forEachStoredEvent { ids.append($0.stableID) }
+        _ = try compress(f)
+        try syncBoth()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let refs = try f.index.turnSourceReferences(for: ids)
+        XCTAssertEqual(refs.count, 1)
+        XCTAssertEqual(refs.values.first?.file, healthy)
+        XCTAssertNotNil(refs.values.first?.observation)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 240)
+    }
+
     private struct Fixture {
         let root: URL
         let file: URL

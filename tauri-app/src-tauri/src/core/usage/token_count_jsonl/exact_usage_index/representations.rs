@@ -78,22 +78,23 @@ pub(super) fn migrate(db: &mut Connection, index_path: &Path, existed_before: bo
     tx.commit().map_err(|e|format!("无法提交会话表示迁移：{e}"))
 }
 
-/// A fully published current-parser checkpoint plus its physical observation.
-/// This certifies numeric reuse only; it never upgrades old raw-text bindings.
+/// Numeric coverage and a physical observation; never certifies old raw text.
+pub(super) const COMPLETE_OBSERVATIONS_SQL: &str =
+    "SELECT s.path,s.size,s.modified_ns,o.physical_stamp FROM sources s JOIN source_observations o
+        ON o.path=s.path AND o.size=s.size AND o.modified_ns=s.modified_ns
+     WHERE s.deleted=0 AND s.size>=0 AND s.append_ready=1 AND s.resume_offset=s.size
+        AND NOT EXISTS(SELECT 1 FROM pending_sources p WHERE p.source_id=s.source_id)
+        AND NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=s.source_id AND l.missing=1)
+        AND (EXISTS(SELECT 1 FROM event_enrichment_sources e WHERE e.path=s.path
+            AND e.revision=?1 AND e.parser_revision=?2
+            AND e.completed_size=s.size AND e.completed_prefix_sha256=s.prefix_sha256)
+          OR (NOT EXISTS(SELECT 1 FROM event_enrichment_sources e WHERE e.path=s.path)
+            AND EXISTS(SELECT 1 FROM metadata WHERE key='event_enrichment_revision' AND value=?1)))";
+
 pub(super) fn complete_observation(db: &Connection, path: &str) -> Result<Option<(u64, String, Option<String>)>, String> {
-    db.query_row(
-        "SELECT s.size,s.modified_ns,o.physical_stamp FROM sources s JOIN source_observations o
-            ON o.path=s.path AND o.size=s.size AND o.modified_ns=s.modified_ns
-         WHERE s.path=?1 AND s.deleted=0 AND s.append_ready=1 AND s.resume_offset=s.size
-            AND NOT EXISTS(SELECT 1 FROM pending_sources p WHERE p.source_id=s.source_id)
-            AND NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=s.source_id AND l.missing=1)
-            AND (EXISTS(SELECT 1 FROM event_enrichment_sources e WHERE e.path=s.path
-                AND e.revision=?2 AND e.parser_revision=?3
-                AND e.completed_size=s.size AND e.completed_prefix_sha256=s.prefix_sha256)
-              OR (NOT EXISTS(SELECT 1 FROM event_enrichment_sources e WHERE e.path=s.path)
-                AND EXISTS(SELECT 1 FROM metadata WHERE key='event_enrichment_revision' AND value=?2)))",
-        params![path, EVENT_ENRICHMENT_REVISION, STAGED_FULL_REBUILD_PARSER_REVISION],
-        |row| Ok((nonnegative_u64(row.get::<_, i64>(0)?), row.get(1)?, row.get(2)?)),
+    db.query_row(&format!("{COMPLETE_OBSERVATIONS_SQL} AND s.path=?3"),
+        params![EVENT_ENRICHMENT_REVISION, STAGED_FULL_REBUILD_PARSER_REVISION, path],
+        |row| Ok((nonnegative_u64(row.get::<_, i64>(1)?), row.get(2)?, row.get(3)?)),
     ).optional().map_err(|error| format!("无法读取完整来源观察：{error}"))
 }
 
@@ -149,6 +150,20 @@ pub(super) fn reuse_complete(
 }
 
 
+/// Existing bound text needs the observed physical version. A materialized
+/// metadata-only source proceeds to the mandatory old-chunk proof below.
+pub(super) fn current_excerpt_observation(db: &Connection, path: &Path, signature: FileSignature) -> Result<bool, String> {
+    let observation: Option<String> = db.query_row(
+        "SELECT physical_stamp FROM source_observations WHERE path=?1 AND size=?2 AND modified_ns=?3",
+        params![path.to_string_lossy(), checked_i64(signature.size, "摘录来源大小")?, signature.modified_ns.to_string()],
+        |row| row.get(0),
+    ).optional().map_err(|error| error.to_string())?;
+    if observation.as_deref().is_some_and(|stamp| signature.matches_physical(Some(stamp))) { return Ok(true); }
+    db.query_row("SELECT EXISTS(SELECT 1 FROM source_representations r JOIN sources s USING(source_id)
+        WHERE s.path=?1 AND r.verification='metadata_only')", params![path.to_string_lossy()],
+        |row| row.get(0)).map_err(|error| error.to_string())
+}
+
 // Metadata is sufficient for old numeric history, never for displaying old raw text.
 pub(super) fn verify_excerpt_source(db: &Connection, path: &Path) -> Result<bool,String> {
     if rollout_source::physical_path(path).map_err(|error| error.to_string())?
@@ -177,6 +192,7 @@ pub(super) fn verify_excerpt_source(db: &Connection, path: &Path) -> Result<bool
     reader.validate_decoded_end(size).map_err(|e|e.to_string())?;
     if file_signature_from_handle(&reader,path)?!=before || lightweight_file_signature(path, None)? != Some(before) {return Ok(false);}
     let proof = ExcerptProofSavepoint::begin(db)?;
+    record_source_observation(db, &path.to_string_lossy(), before)?;
     db.execute("UPDATE source_representations SET verification='verified_full' WHERE source_id=?1",params![source]).map_err(|e|e.to_string())?;
     db.execute("UPDATE usage_ledger_bindings SET available=1 WHERE source_id=?1 AND raw_generation=(SELECT raw_generation FROM usage_ledger_sources WHERE source_id=?1 AND missing=0)",params![source]).map_err(|e|e.to_string())?;
     proof.commit()?;

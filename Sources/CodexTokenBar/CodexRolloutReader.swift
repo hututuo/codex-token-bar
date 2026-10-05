@@ -74,6 +74,43 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
     private var position: UInt64 = 0
     private var closed = false
     private let cacheKey: String
+    // At most 8 KiB from this pinned reader; never a conversation-body cache.
+    private var probeHead = Data()
+    private var probeTail = Data()
+    private var probeTailEnd: UInt64 = 0
+
+    func cachedProbeWindows(size: UInt64) throws -> (head: Data, tail: Data)? {
+        guard isCompressed else { return nil }
+        let observed = try SourceFileObservation.readPhysical(handle: physicalHandle)
+        guard "\(physicalURL.path):\(observed.size):\(observed.modifiedAt):\(observed.physicalStamp)" == cacheKey else {
+            probeHead.removeAll(); probeTail.removeAll()
+            return nil
+        }
+        guard probeHead.count == Int(min(size, 4096)),
+              size <= 4096 || (probeTailEnd == size && probeTail.count == 4096) else { return nil }
+        return (probeHead, size > 4096 ? probeTail : Data())
+    }
+
+    private func retainProbeWindows(_ bytes: UnsafeRawBufferPointer, startingAt start: UInt64) {
+        guard !bytes.isEmpty else { return }
+        if start <= UInt64(probeHead.count), probeHead.count < 4096 {
+            let skip = Int(UInt64(probeHead.count) - start)
+            if skip < bytes.count {
+                let count = min(bytes.count - skip, 4096 - probeHead.count)
+                probeHead.append(contentsOf: bytes[skip..<(skip + count)])
+            }
+        }
+        if start != probeTailEnd { probeTail.removeAll(keepingCapacity: true) }
+        // Copy only the suffix, even if the decoder supplied a very large buffer.
+        if bytes.count >= 4096 {
+            probeTail = Data(bytes.suffix(4096))
+        } else {
+            let excess = max(0, probeTail.count + bytes.count - 4096)
+            if excess > 0 { probeTail.removeFirst(excess) }
+            probeTail.append(contentsOf: bytes)
+        }
+        probeTailEnd = start + UInt64(bytes.count)
+    }
 
     static func isRollout(_ file: URL) -> Bool {
         file.pathExtension == "jsonl" || file.lastPathComponent.hasSuffix(".jsonl.zst")
@@ -254,6 +291,7 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
         }
         let (next, overflow) = position.addingReportingOverflow(UInt64(out.pos))
         guard !overflow else { throw Self.failure("逻辑字节偏移溢出", file: physicalURL) }
+        retainProbeWindows(UnsafeRawBufferPointer(rebasing: output[..<out.pos]), startingAt: position)
         position = next
         if out.pos > 0 { Self.recordDecodedBytes(UInt64(out.pos)) }
         return out.pos

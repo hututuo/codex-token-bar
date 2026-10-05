@@ -13284,3 +13284,42 @@ fn watcher_recognizes_compressed_rollouts_outside_standard_directories_within_ho
     assert!(!super::is_monitored_exact_source_path(&root, Path::new("other/rollout.jsonl.zst")));
     assert!(!super::is_monitored_exact_source_path(&root, &root.join("custom/cache.zst")));
 }
+
+#[test]
+fn excerpt_batch_merges_plain_ranges_and_never_reads_compressed_twin() {
+    use super::session_parser::{read_event_excerpt_batch, ExactEventSourceOffsets, SourceByteRange};
+    let root = temp_root();
+    let file = root.join("batch.jsonl");
+    let prompt = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"shared prompt\"}}\n";
+    let assistant = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"shared answer\"}}\n";
+    fs::write(&file, format!("{prompt}{assistant}")).unwrap();
+    fs::write(file.with_extension("jsonl.zst"), [0x28,0xb5,0x2f,0xfd]).unwrap();
+    let offsets = ExactEventSourceOffsets {
+        user_prompt: Some(SourceByteRange { start: 0, end: prompt.len() as u64 }),
+        assistant_response: Some(SourceByteRange { start: prompt.len() as u64, end: (prompt.len() + assistant.len()) as u64 }),
+    };
+    let checks = std::cell::Cell::new(0);
+    super::rollout_source::reset_work_counters_for_current_thread();
+    let values = read_event_excerpt_batch(&file, &[offsets, offsets], |_| { checks.set(checks.get()+1); Ok(()) }).unwrap();
+    assert_eq!(values, vec![("shared prompt".into(), "shared answer".into()); 2]);
+    assert_eq!(checks.get(), 2, "validate the pinned descriptor both before and after reading");
+    assert_eq!(super::rollout_source::work_counters_for_current_thread().decoded_bytes, 0);
+    fs::remove_file(&file).unwrap();
+    assert_eq!(read_event_excerpt_batch(&file, &[offsets], |_| panic!("cold source cannot open an excerpt descriptor")).unwrap(), vec![(String::new(), String::new())]);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn excerpt_batch_rejects_descriptor_drift_and_bounded_huge_line() {
+    use super::session_parser::{read_event_excerpt_batch, ExactEventSourceOffsets, SourceByteRange};
+    let root = temp_root();
+    let file = root.join("budget.jsonl");
+    let bytes = vec![b'x'; 1024 * 1024 + 20];
+    fs::write(&file, &bytes).unwrap();
+    let offsets = ExactEventSourceOffsets { user_prompt: Some(SourceByteRange { start: 0, end: bytes.len() as u64 }), assistant_response: None };
+    let error = read_event_excerpt_batch(&file, &[offsets], |_| Ok(())).unwrap_err();
+    assert!(error.contains("单行超过显示预算"));
+    let error = read_event_excerpt_batch(&file, &[offsets], |_| Err("synthetic descriptor mismatch".into())).unwrap_err();
+    assert_eq!(error, "synthetic descriptor mismatch");
+    fs::remove_dir_all(root).unwrap();
+}

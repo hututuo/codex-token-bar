@@ -193,6 +193,25 @@ final class CompressedRolloutReaderTests: XCTestCase {
         return url
     }
 
+    func testPinnedReaderReusesBoundedProbeWindowsAndInvalidatesOnMutation() throws {
+        let root = try temporaryDirectory()
+        // Multiple raw frames exercise a large decoded body without external tools.
+        let block = Data(String(repeating: "x", count: 200).utf8)
+        let bytes = (0..<100).reduce(into: Data()) { data, _ in data.append(rawFrame(block, singleSegment: true)) }
+        let file = try write(bytes, named: "windows.jsonl.zst", in: root)
+        let reader = try CodexRolloutReader(forReadingFrom: file)
+        defer { try? reader.close() }
+        let decoded = try readAll(reader, chunkSize: 512)
+        let size = UInt64(decoded.count)
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let windows = try XCTUnwrap(reader.cachedProbeWindows(size: size))
+        XCTAssertEqual(windows.head, Data(decoded.prefix(4096)))
+        XCTAssertEqual(windows.tail, Data(decoded.suffix(4096)))
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        try Data([0x28,0xb5,0x2f,0xfd]).write(to: file)
+        XCTAssertNil(try reader.cachedProbeWindows(size: size))
+    }
+
     private func readAll(_ reader: CodexRolloutReader, chunkSize: Int = 5) throws -> Data {
         var output = Data()
         while let part = try reader.read(upToCount: chunkSize), !part.isEmpty {

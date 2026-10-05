@@ -261,6 +261,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let eventOffset: UInt64
         let userPromptOffset: UInt64?
         let assistantStartOffset: UInt64?
+        var observation: SourceFileObservation? = nil
     }
 
     struct SynchronizationResult {
@@ -411,6 +412,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let chunkCount: Int
         let resumeOffset: UInt64
         let parserState: CodexUsageAnalyzer.IndexedSessionParserState
+        let prefixSHA256: String
+        var sourceValidation: StageSourceValidation? = nil
+    }
+
+    /// Ephemeral, owner-local proof. Never persisted in the stage manifest.
+    private struct StageSourceValidation {
+        let source: SourceSignature
+        let stage: SourceFileObservation
+        let artifactID: String
     }
 
     private struct AttributionLineage {
@@ -3487,6 +3497,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var references: [String: TurnSourceReference] = [:]
         try driver.withConnection { connection in
             var checkedSources = Set<Int64>()
+            var sourceObservations: [Int64: SourceFileObservation] = [:]
             var failedSources = Set<Int64>()
             for stableID in stableIDs {
                 guard let identity = Self.parseStableID(stableID),
@@ -3500,7 +3511,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 if checkedSources.insert(identity.sourceID).inserted {
                     do {
-                        try verifyRestoredExcerptSource(identity.sourceID, connection: connection)
+                        guard let observation = try verifyRestoredExcerptSource(identity.sourceID, connection: connection) else {
+                            failedSources.insert(identity.sourceID)
+                            continue
+                        }
+                        sourceObservations[identity.sourceID] = observation
                     } catch {
                         if error is SQLiteDatabaseError || error is CancellationError { throw error }
                         let sourceError = error as NSError
@@ -3548,7 +3563,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     file: URL(fileURLWithPath: path),
                     eventOffset: UInt64(rawEventOffset),
                     userPromptOffset: row.userPromptOffset.flatMap { $0 >= 0 ? UInt64($0) : nil },
-                    assistantStartOffset: row.assistantStartOffset.flatMap { $0 >= 0 ? UInt64($0) : nil }
+                    assistantStartOffset: row.assistantStartOffset.flatMap { $0 >= 0 ? UInt64($0) : nil },
+                    observation: sourceObservations[identity.sourceID]
                 )
             }
         }
@@ -3559,7 +3575,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// Only a source actually requested for excerpts is decoded and checked against
     /// its existing chunk proofs. No token parsing or ledger reconciliation occurs.
     private func verifyRestoredExcerptSource(_ sourceID: Int64,
-                                               connection: SQLiteDatabaseConnection) throws {
+                                               connection: SQLiteDatabaseConnection) throws -> SourceFileObservation? {
         let pending = try connection.readRows("""
             SELECT s.path FROM sources s JOIN usage_ledger_sources l USING(source_id)
             LEFT JOIN source_representations r USING(source_id)
@@ -3574,17 +3590,37 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             SELECT EXISTS(SELECT 1 FROM usage_ledger_bindings
                 WHERE source_id=? AND (prompt_offset IS NOT NULL OR assistant_offset IS NOT NULL))
             """, bindings: [.int64(sourceID)]) { $0.int(0) == 1 }.first ?? false
-        guard needsText, let pending,
-              let source = try indexedSource(path: pending, connection: connection),
-              try sourceChunksMatch(file: URL(fileURLWithPath: pending), source: source, connection: connection, allowsCompressed: false)
-        else { return }
+        let path = try connection.readRows("SELECT path FROM sources WHERE source_id=?", bindings: [.int64(sourceID)]) { $0.text(0) }.first ?? nil
+        guard needsText, let path,
+              let source = try indexedSource(path: path, connection: connection) else { return nil }
+        let file = URL(fileURLWithPath: path)
+        if pending == nil, source.signature.physicalStamp != nil {
+            let physical = try SourceFileObservation.readPreferredPhysical(at: file)
+            guard !physical.file.lastPathComponent.hasSuffix(".jsonl.zst"),
+                  sourceMetadataMatches(source.signature, SourceSignature(size: physical.observation.size,
+                    modifiedAt: physical.observation.modifiedAt, contentProbe: "", physicalStamp: physical.observation.physicalStamp))
+            else { return nil }
+            return physical.observation
+        }
+        var proofObservation: SourceFileObservation?
+        guard try sourceChunksMatch(file: file, source: source, connection: connection,
+                allowsCompressed: false, onProof: { proofObservation = $0 }),
+              let observation = proofObservation else { return nil }
         try connection.transaction { tx in
+            let current = try SourceFileObservation.readPreferredPhysical(at: file)
+            guard !current.file.lastPathComponent.hasSuffix(".jsonl.zst"),
+                  observation.matches(current.observation) else {
+                throw CodexUsageSourceChangedError(path: path)
+            }
             try tx.execute("UPDATE source_representations SET verification='verified_full' WHERE source_id=?", bindings: [.int64(sourceID)])
+            try saveSourceObservation(sourceID: sourceID, signature: SourceSignature(size: observation.size,
+                modifiedAt: observation.modifiedAt, contentProbe: "", physicalStamp: observation.physicalStamp), connection: tx)
             try tx.execute("""
                 UPDATE usage_ledger_bindings SET available=1
                 WHERE source_id=? AND generation=(SELECT generation FROM usage_ledger_sources WHERE source_id=? AND missing=0)
                 """, bindings: [.int64(sourceID), .int64(sourceID)])
         }
+        return observation
     }
 
     static func clearForTesting() {
@@ -6445,7 +6481,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         file: URL,
         source: IndexedSource,
         connection: SQLiteDatabaseConnection,
-        allowsCompressed: Bool = true
+        allowsCompressed: Bool = true,
+        onProof: ((SourceFileObservation) -> Void)? = nil
     ) throws -> Bool {
         let expectedCount = chunkCount(for: source.signature.size)
         let stored: [CodexUsageAnalyzer.IndexedChunkHash] = try connection.readRows(
@@ -6484,7 +6521,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let pathBefore = try sourceSignatureMetadata(for: file, allowsCompressed: allowsCompressed)
         guard pathBefore.size == source.signature.size else { return false }
                 let handleBefore = try sourceSignatureMetadata(forOpenHandle: handle, file: file)
-        guard handleBefore.size == source.signature.size else { return false }
+        guard handleBefore.size == source.signature.size, handleBefore == pathBefore else { return false }
         for expected in stored {
             let actual = try hashSourceChunk(
                 file: file,
@@ -6497,9 +6534,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try handle.validateDecodedEnd(at: source.signature.size)
         let handleAfter = try sourceSignatureMetadata(forOpenHandle: handle, file: file)
         let pathAfter = try sourceSignatureMetadata(for: file, allowsCompressed: allowsCompressed)
-        return handleBefore == handleAfter
-            && pathBefore == pathAfter
-            && handleAfter.size == source.signature.size
+        guard handleBefore == handleAfter, pathBefore == pathAfter,
+              handleAfter == pathAfter, handleAfter.size == source.signature.size else { return false }
+        let observation = try SourceFileObservation.readPhysical(handle: handle.physicalHandle)
+        guard observation.physicalStamp == handleAfter.physicalStamp,
+              observation.modifiedAt == handleAfter.modifiedAt else { return false }
+        onProof?(observation)
+        return true
     }
 
     private func hashSourceChunk(
@@ -6963,31 +7004,21 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         expectedContentHash: String
     ) throws {
         try readHandle.validateDecodedEnd(at: committedSignature.size)
-        let handleSignature = try sourceSignature(
-            forOpenHandle: readHandle,
-            file: file
-        )
-        let pathSignature = try sourceSignature(for: file)
-        guard sourceCanContainPrefix(
-                  committedSignature,
-                  current: handleSignature
-              ),
-              sourceCanContainPrefix(
-                  committedSignature,
-                  current: pathSignature
-              ) else {
-            throw CodexUsageSourceChangedError(path: file.path)
-        }
-        guard handleSignature != committedSignature
-                || pathSignature != committedSignature else {
+        let handleMetadata = try sourceSignatureMetadata(forOpenHandle: readHandle, file: file)
+        let pathMetadata = try sourceSignatureMetadata(for: file, reusing: committedSignature)
+        guard committedSignature.physicalStamp != nil,
+              sourceMetadataMatches(committedSignature, handleMetadata)
+                && sourceMetadataMatches(committedSignature, pathMetadata) else {
+            let handleSignature = try sourceSignature(forOpenHandle: readHandle, file: file)
+            let pathSignature = try sourceSignature(for: file)
+            guard sourceCanContainPrefix(committedSignature, current: handleSignature),
+                  sourceCanContainPrefix(committedSignature, current: pathSignature),
+                  try contentHash(for: file, length: committedSignature.size) == expectedContentHash else {
+                throw CodexUsageSourceChangedError(path: file.path)
+            }
             return
         }
-        guard try contentHash(
-            for: file,
-            length: committedSignature.size
-        ) == expectedContentHash else {
-            throw CodexUsageSourceChangedError(path: file.path)
-        }
+        return
     }
 
     private func stageFullRebuild(
@@ -7292,7 +7323,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     fingerprintCount: fingerprintCount,
                     chunkCount: result.chunkHashes.count,
                     resumeOffset: result.resumeOffset,
-                    parserState: result.state
+                    parserState: result.state,
+                    prefixSHA256: result.contentHash
                 )
             }
             let quickCheck = try connection.readRows("PRAGMA quick_check;") {
@@ -7345,7 +7377,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 fingerprintCount: staged.fingerprintCount,
                 chunkCount: staged.chunkCount,
                 resumeOffset: staged.resumeOffset,
-                parserState: staged.parserState
+                parserState: staged.parserState,
+                prefixSHA256: staged.prefixSHA256,
+                sourceValidation: StageSourceValidation(source: staged.committedSignature,
+                    stage: try SourceFileObservation.read(at: databaseURL), artifactID: artifactID)
             )
             return staged
         }
@@ -7507,7 +7542,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func reusableStage(
         at databaseURL: URL,
-        for job: FullRebuildJob
+        for job: FullRebuildJob,
+        prior: StagedFullRebuild? = nil
     ) throws -> StagedFullRebuild? {
         guard fileManager.fileExists(atPath: databaseURL.path) else {
             return nil
@@ -7677,7 +7713,21 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 let storedChunkCount = try? stage.readRows(
                     "SELECT COUNT(*) FROM chunks;"
                 ) { $0.int(0) ?? -1 }.first
-                let currentSignature = try? self.sourceSignature(for: job.file)
+                let physical = try? SourceFileObservation.readPreferredPhysical(at: job.file)
+                let stageObservation = try? SourceFileObservation.read(at: databaseURL)
+                let reusableProof = prior.map { prior in
+                    guard let proof = prior.sourceValidation, let physical, let stageObservation,
+                          proof.source.physicalStamp != nil else { return false }
+                    return proof.source == signature && proof.artifactID == artifactID
+                        && prior.prefixSHA256 == prefixSHA256
+                        && proof.stage.matches(stageObservation)
+                        && physical.observation.physicalStamp == signature.physicalStamp
+                        && physical.observation.modifiedAt == signature.modifiedAt
+                        && (!physical.file.lastPathComponent.hasSuffix(".jsonl.zst")
+                            ? physical.observation.size == signature.size : true)
+                } ?? false
+                let currentSignature = reusableProof ? signature : (try? self.sourceSignature(for: job.file))
+                let cold = physical?.file.lastPathComponent.hasSuffix(".jsonl.zst") == true
                 guard databaseSize == actualBytes,
                       storedEventCount == eventCount,
                       storedFingerprintCount == fingerprintCount,
@@ -7692,7 +7742,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                           current: currentSignature
                       ),
                       rawResumeOffset <= rawSize,
-                      currentSignature == signature
+                      reusableProof || (!cold && currentSignature == signature)
                         || (try? self.contentHash(
                             for: job.file,
                             length: signature.size
@@ -7727,7 +7777,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         },
                         currentModel: row.text(21),
                         accountingState: [Self.stagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "") ? try UsageAccountingState.decode(row.text(24)) : nil
-                    )
+                    ),
+                    prefixSHA256: prefixSHA256,
+                    sourceValidation: currentSignature == signature && stageObservation != nil
+                        ? StageSourceValidation(source: signature, stage: stageObservation!, artifactID: artifactID) : nil
                 )
             }
             if let reusable = rows.compactMap({ $0 }).first {
@@ -7920,7 +7973,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ) throws {
         guard let validated = try reusableStage(
             at: staged.databaseURL,
-            for: staged.job
+            for: staged.job,
+            prior: staged
         ),
         validated.artifactID == staged.artifactID,
         validated.actualBytes == staged.actualBytes else {
@@ -8385,10 +8439,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func contentHash(for file: URL, length: UInt64) throws -> String {
+        let before = try SourceFileObservation.readPreferredPhysical(at: file)
         let handle = try CodexRolloutReader(forReadingFrom: file)
         defer { try? handle.close() }
-
-        return try contentHash(forOpenHandle: handle, length: length, file: file)
+        let opened = try SourceFileObservation.readPhysical(handle: handle.physicalHandle)
+        guard opened.matches(before.observation) else { throw CodexUsageSourceChangedError(path: file.path) }
+        let hash = try contentHash(forOpenHandle: handle, length: length, file: file)
+        let after = try SourceFileObservation.readPreferredPhysical(at: file)
+        guard before.file == after.file, before.observation.matches(after.observation),
+              opened.matches(try SourceFileObservation.readPhysical(handle: handle.physicalHandle)) else {
+            throw CodexUsageSourceChangedError(path: file.path)
+        }
+        return hash
     }
 
     private func contentHash(
@@ -8438,6 +8500,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         size: UInt64
     ) throws -> String {
         Self.sourceProbeTestState.record()
+        if let reader = handle as? CodexRolloutReader,
+           let windows = try reader.cachedProbeWindows(size: size) {
+            var data = Data("\(size):".utf8)
+            data.append(windows.head); data.append(windows.tail)
+            return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
         try handle.seek(toOffset: 0)
 
         let probeLength = 4_096

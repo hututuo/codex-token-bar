@@ -166,7 +166,7 @@ extension CodexUsageAnalyzer {
         var prompt: UInt64?
         var assistant: UInt64?
         var links: [MessageLinkScan.Link] = []
-        let stream = try streamIndexedSessionLines(from: file, endingAt: endOffset, chunkHashingFrom: 0, readHandle: handle) { offset, line in
+        let stream = try streamIndexedSessionLines(from: file, endingAt: endOffset, chunkHashingFrom: 0, readHandle: handle, maximumLineBytes: 1024 * 1024) { offset, line in
             if Task.isCancelled { throw CancellationError() }
             PaginatedHistoryBoundary.observeOwnTurn(line, metadata: metadata, state: &ownership)
             if fork == nil, let value = parseSessionMetaForkMetadata(line) { fork = value; replay = true }
@@ -438,13 +438,26 @@ extension CodexUsageAnalyzer {
             guard let file = fileReferences.first?.file,
                   let handle = try? CodexRolloutReader(forReadingFrom: file, allowsCompressed: false) else { continue }
             defer { try? handle.close() }
-            for reference in fileReferences {
-                guard let offset = reference.userPromptOffset,
-                      let line = try? readIndexedLine(from: file, at: offset, readHandle: handle),
-                      let message = parsePayloadMessageLine(line, expectedType: "user_message")?.message else {
-                    continue
-                }
-                prompts[reference.stableID] = excerpt(message, limit: 180)
+            guard let observation = fileReferences.first?.observation,
+                  (try? SourceFileObservation.readPhysical(handle: handle.physicalHandle).matches(observation)) == true,
+                  let before = try? SourceFileObservation.readPreferredPhysical(at: file),
+                  !before.file.lastPathComponent.hasSuffix(".jsonl.zst"),
+                  before.observation.matches(observation) else { continue }
+            var filePrompts: [String: String] = [:]
+            var fileAssistants: [String: String] = [:]
+            var remainingDisplayBytes = 8 * 1024 * 1024
+            let promptGroups = Dictionary(grouping: fileReferences.filter { $0.userPromptOffset != nil }) { $0.userPromptOffset! }
+            for offset in promptGroups.keys.sorted() {
+                guard remainingDisplayBytes > 0 else { break }
+                let attemptedBytes = min(remainingDisplayBytes, 1024 * 1024)
+                remainingDisplayBytes -= attemptedBytes
+                guard attemptedBytes > 1,
+                      let read = try? readIndexedLine(from: file, at: offset, readHandle: handle,
+                        maximumBytes: attemptedBytes - 1) else { continue }
+                remainingDisplayBytes += max(0, attemptedBytes - read.bytesRead)
+                guard let message = parsePayloadMessageLine(read.line, expectedType: "user_message")?.message else { continue }
+                let text = excerpt(message, limit: 180)
+                for reference in promptGroups[offset] ?? [] { filePrompts[reference.stableID] = text }
             }
 
             let assistantReferences = fileReferences.filter {
@@ -458,11 +471,14 @@ extension CodexUsageAnalyzer {
                 assistantReferences
             ) {
                 guard !Task.isCancelled else { break }
+                guard range.end - range.start <= UInt64(remainingDisplayBytes) else { continue }
+                remainingDisplayBytes -= Int(range.end - range.start)
                 _ = try? streamIndexedSessionLines(
                     from: file,
                     startingAt: range.start,
                     endingAt: range.end,
-                    readHandle: handle
+                    readHandle: handle,
+                    maximumLineBytes: 1024 * 1024
                 ) { lineOffset, lineString in
                     if Task.isCancelled { throw CancellationError() }
                     guard let message = parsePayloadMessageLine(
@@ -475,22 +491,29 @@ extension CodexUsageAnalyzer {
                         guard let start = reference.assistantStartOffset,
                               lineOffset >= start,
                               lineOffset < reference.eventOffset,
-                              (assistants[reference.stableID]?.count ?? 0) < 220 else {
+                              (fileAssistants[reference.stableID]?.count ?? 0) < 220 else {
                             continue
                         }
-                        assistants[reference.stableID] = appendingExcerpt(
-                            assistants[reference.stableID] ?? "",
+                        fileAssistants[reference.stableID] = appendingExcerpt(
+                            fileAssistants[reference.stableID] ?? "",
                             value: message,
                             limit: 220
                         )
                     }
                     if range.references.allSatisfy({
-                        (assistants[$0.stableID]?.count ?? 0) >= 220
+                        (fileAssistants[$0.stableID]?.count ?? 0) >= 220
                     }) {
                         throw AssistantExcerptHydrationControl.complete
                     }
                 }
             }
+            guard !Task.isCancelled,
+                  (try? SourceFileObservation.readPhysical(handle: handle.physicalHandle).matches(observation)) == true,
+                  let after = try? SourceFileObservation.readPreferredPhysical(at: file),
+                  !after.file.lastPathComponent.hasSuffix(".jsonl.zst"),
+                  after.observation.matches(observation) else { continue }
+            prompts.merge(filePrompts) { _, value in value }
+            assistants.merge(fileAssistants) { _, value in value }
         }
 
         let hydratedTurns = cacheUsage.turns.map { turn in
@@ -1128,6 +1151,7 @@ extension CodexUsageAnalyzer {
         chunkHashingFrom hashingStartOffset: UInt64? = nil,
         validationBoundary: UInt64? = nil,
         readHandle suppliedHandle: (any CodexReadHandle)? = nil,
+        maximumLineBytes: Int? = nil,
         handleLine: (UInt64, String) throws -> Void
     ) throws -> SessionLineStreamResult {
         let hashingOffset = hashingStartOffset ?? offset
@@ -1228,6 +1252,7 @@ extension CodexUsageAnalyzer {
             while let newlineRange = pending[searchStart...].range(of: newline) {
                 let lineRange = searchStart..<newlineRange.lowerBound
                 let lineData = pending[lineRange]
+                if let maximumLineBytes, lineData.count > maximumLineBytes { throw CocoaError(.fileReadTooLarge) }
                 let lineOffset = pendingStartOffset
                     + UInt64(pending.distance(from: pending.startIndex, to: searchStart))
                 if needsMessageOrUsage(lineData) {
@@ -1246,10 +1271,12 @@ extension CodexUsageAnalyzer {
                 pending.removeSubrange(pending.startIndex..<searchStart)
                 pendingStartOffset = consumedOffset
             }
+            if let maximumLineBytes, pending.count > maximumLineBytes { throw CocoaError(.fileReadTooLarge) }
         }
 
         var resumeOffset = pendingStartOffset
         if !pending.isEmpty {
+            if let maximumLineBytes, pending.count > maximumLineBytes { throw CocoaError(.fileReadTooLarge) }
             let line = String(decoding: pending, as: UTF8.self)
             if isCompleteIndexedJSONLine(pending) {
                 if needsMessageOrUsage(pending) {
@@ -1272,13 +1299,16 @@ extension CodexUsageAnalyzer {
         )
     }
 
-    private func readIndexedLine(from file: URL, at offset: UInt64, readHandle handle: any CodexReadHandle) throws -> String {
+    private func readIndexedLine(from file: URL, at offset: UInt64, readHandle handle: any CodexReadHandle,
+                                 maximumBytes: Int) throws -> (line: String, bytesRead: Int) {
         try handle.seek(toOffset: offset)
 
+        var bytesRead = 0
         var line = Data()
         let newline = UInt8(ascii: "\n")
-        while line.count < 1024 * 1024 {
-            let chunk = try handle.read(upToCount: 16_384) ?? Data()
+        while line.count <= maximumBytes {
+            let chunk = try handle.read(upToCount: min(16_384, maximumBytes + 1 - line.count)) ?? Data()
+            bytesRead += chunk.count
             if chunk.isEmpty {
                 break
             }
@@ -1288,7 +1318,8 @@ extension CodexUsageAnalyzer {
             }
             line.append(chunk)
         }
-        return String(decoding: line, as: UTF8.self)
+        guard line.count <= maximumBytes else { throw CocoaError(.fileReadTooLarge) }
+        return (String(decoding: line, as: UTF8.self), bytesRead)
     }
 
     private func parseDate(_ value: String) -> Date? {
