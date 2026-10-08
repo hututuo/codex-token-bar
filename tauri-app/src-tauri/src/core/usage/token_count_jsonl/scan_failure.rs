@@ -11,7 +11,7 @@ pub(super) fn compressed_twin_hint(candidate: &std::path::Path, home: &std::path
     let path = std::path::PathBuf::from(path);
     match std::fs::canonicalize(&path) {
         Ok(resolved) if resolved.starts_with(home) && resolved.is_file() => format!(
-            "；存在对应压缩文件：{}。当前统计扫描器只读取普通 JSONL；请核查 Codex 的本地聊天历史压缩设置", resolved.display()),
+            "；存在对应压缩文件：{}。当前统计扫描器支持普通 JSONL 和 JSONL.zst 压缩文件；请核查扫描诊断中的路径、访问权限及压缩文件完整性", resolved.display()),
         _ => String::new(),
     }
 }
