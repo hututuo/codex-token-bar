@@ -24,7 +24,7 @@ function Observe-App($exe, $version) {
 Save-Evidence
 try {
   $manifest = Get-Content candidate/candidate-manifest.json -Raw | ConvertFrom-Json
-  Assert-True ($manifest.source_sha -eq $expectedSha -and $manifest.version -eq '0.9.4' -and $manifest.run_id -eq '37749712589') 'Candidate identity differs'
+  Assert-True ($manifest.source_sha -eq $expectedSha -and $manifest.version -eq '0.9.4' -and $manifest.workflow_run_id -eq '37749712589') 'Candidate identity differs'
   foreach ($asset in $manifest.assets) {
     $path = Join-Path candidate $asset.name
     Assert-True ((Get-Item $path).Length -eq $asset.bytes) "Candidate size differs: $($asset.name)"
