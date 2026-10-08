@@ -32,6 +32,30 @@ try {
     Assert-True ((Get-Item $path).Length -eq $asset.bytes) "Candidate size differs: $($asset.name)"
     Assert-True ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -eq $asset.sha256) "Candidate digest differs: $($asset.name)"
   }
+  $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+  Assert-True (Test-Path $sevenZip) 'Hosted runner has no 7-Zip for independent NSIS payload verification'
+  $payloads = @()
+  foreach ($arch in @('x64','arm64')) {
+    $installer = (Resolve-Path "candidate/CodexTokenBar-v0.9.4-windows-$arch-setup.exe").Path
+    & $sevenZip t $installer | Out-File "upgrade-evidence/archive-$arch.log"
+    Assert-True ($LASTEXITCODE -eq 0) "NSIS archive integrity failed for $arch"
+    $unpack = Join-Path $env:RUNNER_TEMP "candidate-extracted-$arch"
+    & $sevenZip x -y "-o$unpack" $installer | Out-File "upgrade-evidence/extract-$arch.log"
+    Assert-True ($LASTEXITCODE -eq 0) "Cannot extract NSIS payload for $arch"
+    $binary = @(Get-ChildItem $unpack -Recurse -File -Filter codex-token-bar.exe)
+    Assert-True ($binary.Count -eq 1) "Ambiguous payload executable for $arch"
+    $bytes = [IO.File]::ReadAllBytes($binary[0].FullName)
+    Assert-True ($bytes[0] -eq 0x4d -and $bytes[1] -eq 0x5a) 'Payload is not PE'
+    $offset = [BitConverter]::ToInt32($bytes, 0x3c)
+    Assert-True ([BitConverter]::ToUInt32($bytes,$offset) -eq 0x00004550) 'Payload PE header differs'
+    $machine = [BitConverter]::ToUInt16($bytes,$offset+4)
+    $expected = if ($arch -eq 'x64') { 0x8664 } else { 0xaa64 }
+    Assert-True ($machine -eq $expected) "Payload architecture mismatch for $arch"
+    $v = [Diagnostics.FileVersionInfo]::GetVersionInfo($binary[0].FullName)
+    Assert-True ($v.ProductVersion -match '^0\.9\.4(?:\.|$)') "Payload version mismatch for $arch"
+    $payloads += @{arch=$arch; pe_machine=$machine; version=$v.ProductVersion; sha256=(Get-FileHash $binary[0].FullName).Hash.ToLowerInvariant()}
+  }
+  $evidence.payloads = $payloads
   $old = (Resolve-Path official/CodexTokenBar-v0.9.3-windows-x64-setup.exe).Path
   $checksum = Get-Content official/SHA256SUMS-v0.9.3.txt | Where-Object { $_ -match 'CodexTokenBar-v0.9.3-windows-x64-setup.exe$' }
   Assert-True ($checksum.Count -eq 1) 'Official checksum is ambiguous'
@@ -72,6 +96,7 @@ try {
   Assert-True ($v.ProductVersion -match '^0\.9\.4(?:\.|$)') "Restarted product version differs: $($v.ProductVersion)"
   $evidence.new_process = @{path=$live[0].Path; product_version=$v.ProductVersion; sha256=(Get-FileHash $exe).Hash.ToLowerInvariant(); pid=$live[0].Id}
   Assert-True ($evidence.old_process.sha256 -ne $evidence.new_process.sha256) 'Executable was not replaced'
+  Assert-True ($evidence.new_process.sha256 -eq ($payloads | Where-Object { $_.arch -eq 'x64' }).sha256) 'Running executable differs from verified candidate payload'
   Assert-True ((Get-Item 'HKCU:\Software\codex\Codex Token Bar').GetValue('') -eq $destination) 'New installation registry path differs'
   $evidence.shortcuts = @($before | ForEach-Object { $target=$shell.CreateShortcut($_.path).TargetPath; Assert-True ($target -eq $exe) 'Updated shortcut target differs'; @{path=$_.path; target=$target} })
   Assert-True ((Get-FileHash $sentinel).Hash -eq $sentinelHash) 'Application data sentinel changed'
