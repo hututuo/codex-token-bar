@@ -3,6 +3,35 @@
     <channel>
         <title>Codex Token Bar</title>
         <item>
+            <title>0.9.4</title>
+            <pubDate>Thu, 08 Oct 2026 12:32:34 +0000</pubDate>
+            <sparkle:version>904</sparkle:version>
+            <sparkle:shortVersionString>0.9.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Codex Token Bar v0.9.4
+
+## 简体中文
+
+- 修复压缩聊天历史的读取与索引，普通 JSONL 和 JSONL.zst 共用来源身份，切换存储格式或同时存在两种文件时避免重复计数。
+- 升级历史索引时保留已有消费记录和扫描断点；读取失败时保留可信历史数据，并提供有界扫描诊断。
+- 减少排行摘录和消息链接补全对冷压缩历史的重复读取，必要的统计仍会验证正文。
+- 加固 Windows 更新状态、安装器启动错误处理、安装路径和快捷方式检查，以及新进程对升级结果的确认。
+
+Windows 旧版更新器的行为由旧版程序决定。如自动更新失败，请使用本版本的官方安装器安装到原目录，并核对启动后的版本。请保留本地历史数据。
+
+## English
+
+- Fixes compressed history reading and indexing. Plain JSONL and JSONL.zst share source identity to avoid duplicate counts when storage formats change or both representations exist.
+- Preserves recorded usage and scan checkpoints during index upgrades, retaining trusted history and bounded diagnostics when reading fails.
+- Reduces repeated reads of cold compressed history for ranking excerpts and message links while still validating content required for statistics.
+- Hardens Windows update state, installer launch failure handling, installation paths, shortcuts, and upgrade confirmation by the new process.
+
+The old Windows executable controls its own updater behavior. If automatic updating fails, use this version's official installer in the original directory and check the version after launch. Keep local history data.
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.4/CodexTokenBar-v0.9.4-macos-arm64.app.zip" length="13169570" type="application/octet-stream" sparkle:edSignature="KEBbJ3ekpmU4nIi53iEtHLtBsXQoWscCFLbStdCueJttKQxJNDxMDlJO1d4YzUPHcL34hFRcxAKWW3PKVBDSCQ==" />
+        </item>
+        <item>
             <title>0.9.3</title>
             <pubDate>Wed, 30 Sep 2026 16:46:59 +0000</pubDate>
             <sparkle:version>903</sparkle:version>
@@ -173,75 +202,6 @@ v0.9.0 continues converging the exact-index, incremental-refresh, and aggregate-
 - After publication, download only from the official GitHub Release and verify the bundled `SHA256SUMS-v0.9.0.txt`.
 </description>
             <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.0/CodexTokenBar-v0.9.0-macos-arm64.app.zip" length="11588614" type="application/octet-stream" sparkle:edSignature="pRHHmq6FESKcGExMTMqu59Iu02tkiQNHasQVH3p1vFfMPrKUl1gumlQHc4N6Zi2WNnyX7HZMKvN+tali/X3TBQ==" />
-        </item>
-        <item>
-            <title>0.8.3</title>
-            <pubDate>Thu, 30 Jul 2026 11:19:51 +0800</pubDate>
-            <sparkle:version>803</sparkle:version>
-            <sparkle:shortVersionString>0.8.3</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"># Codex Token Bar v0.8.3
-
-## 推荐直接下载
-
-- **Mac（Apple 芯片）**：[直接下载 DMG 安装包](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-macos-arm64.dmg)
-- **Windows x64**：[直接下载安装程序](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-x64-setup.exe)
-- **Windows ARM64**：[直接下载安装程序](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-arm64-setup.exe)
-
-普通用户请选择上面的 DMG 或 EXE；`.app.zip`、`.sig` 和 `latest-windows.json` 主要供应用内自动更新与完整性校验使用。
-
-v0.8.3 是一次覆盖 Swift 原生版与跨平台版的统一更新，重点完善自动续跑、会话与 Provider 安全、精确历史、雷达实时口径、Windows 稳定性和双端界面一致性。
-
-## 更新亮点
-
-- **自动续跑改为任务监控**：可按会话创建、展开和修改保护任务，分别选择定时、额度恢复以及 Codex app-server 返回的中断/失败条件。无痕续跑优先在原线程调用空输入 `turn/start`，旧版 app-server 不兼容时才降级为可见续跑提示词；项目历史支持连续加载，不再停在固定 100 条。
-- **会话与 Provider 操作更安全**：Provider 修复、显式迁移、对话可见性重建、项目移动、会话删除与 Markdown 导出采用可恢复事务和跨端共享锁；多实例活动或目标 `CODEX_HOME` 无法可信确认时，破坏性操作会失败闭合，避免误删、误移或跨实例污染。
-- **隔离实例与同步能力**：支持创建隔离 Codex 实例并安全同步会话；同步、回滚和 Provider 双根恢复会核对文件身份、打开句柄与迁移阶段，异常退出后可以继续收敛。
-- **雷达与运行状态对齐网页实时口径**：官方雷达和众测雷达独立刷新并按网页当前值展示，兼容字段别名与短暂单源失败；主界面和悬浮窗可显示正在运行的主任务与子 Agent 数量，未读提醒只统计可确认的主会话。
-- **完整历史继续保持无上限精确**：精确索引覆盖所有可读取历史，不以文件数、字节数、事件数或扫描时长上限换性能；增量指纹、活跃文件暂存、损坏缓存重建和 Swift 分批释放临时对象降低了重复扫描、超时与高内存风险，已有兼容索引会继续复用。
-- **Windows 启动与界面修复**：首屏前仅执行最小同步工作，多个 WebView 延后到事件循环可用后创建，修复启动或反复重启仍卡死的风险；Windows 主应用图标改用 macOS 同源透明圆角图稿，浅色背景、字重、小字对比度和底部操作栏宽度也与 Swift 版进一步统一。
-- **后台与更新链路更稳健**：实时速率、未读刷新、设置保存、数据源切换、子进程输出和更新安装均缩短持锁窗口并增加可取消/有界回收；发布脚本在全部平台资产、签名和校验门禁通过后才原子更新 appcast。
-
-## 更新说明
-
-- 精确索引是本地缓存，不保存会话正文，也不会上传本地用量、历史或索引数据。
-- macOS 构建采用 ad-hoc 签名且未经过 Apple notarization；Windows 安装器未使用商业代码签名证书，首次安装可能出现系统安全提示。应用内更新资产仍使用独立的 Sparkle/Tauri 更新签名。
-- 请只从官方 GitHub Release 下载，并使用随包提供的统一 `SHA256SUMS-v0.8.3.txt` 核对文件。
-
----
-
-## English
-
-# Codex Token Bar v0.8.3
-
-## Recommended downloads
-
-- **Mac (Apple silicon)**: [Download the DMG installer](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-macos-arm64.dmg)
-- **Windows x64**: [Download the installer](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-x64-setup.exe)
-- **Windows ARM64**: [Download the installer](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-arm64-setup.exe)
-
-Most users should choose the DMG or EXE above. The `.app.zip`, `.sig`, and `latest-windows.json` files are primarily updater and integrity-verification assets.
-
-v0.8.3 is a unified update for the native Swift and cross-platform editions, focused on auto-resume, safe session and provider operations, exact history, live Radar semantics, Windows stability, and UI parity.
-
-## Highlights
-
-- **Auto-resume is now task-based monitoring**: create, expand, and edit a protected task per conversation, with separate timed, quota-recovery, and Codex app-server interruption/failure conditions. Invisible resume first starts an empty-input turn on the original thread; only older incompatible app-server versions fall back to a visible continuation prompt. Project history keeps loading beyond the initial 100 entries.
-- **Safer session and provider operations**: provider repair, explicit migration, conversation-visibility rebuilding, project moves, session deletion, and Markdown export now use recoverable transactions and shared cross-client locks. Destructive actions fail closed when multiple instances are active or the target `CODEX_HOME` cannot be proven, preventing operations against the wrong data root.
-- **Isolated instances and synchronization**: create isolated Codex instances and synchronize conversations safely. Synchronization, rollback, and dual-root provider recovery verify file identity, open handles, and migration phases so interrupted work can converge safely.
-- **Radar and running state match current web semantics**: official Radar and Crowd Radar refresh independently and show the website's current values, with field-alias compatibility and graceful single-source failure. The dashboard and floating panel show active main tasks and sub-agents, while unread alerts count only confirmed visible main conversations.
-- **Complete history remains exact and uncapped**: the index covers all readable history without file-count, byte, event, or scan-time caps. Incremental fingerprints, active-file staging, damaged-cache recovery, and batched Swift temporary-object release reduce rescans, timeouts, and memory pressure while preserving compatible existing indexes.
-- **Windows startup and interface fixes**: startup performs only minimal work before first paint, and additional WebViews are created after the event loop is available, addressing launch freezes that could survive repeated restarts. Windows now uses the same transparent rounded artwork as macOS, with lighter surfaces, normalized font weights, clearer small text, and a content-width bottom action rail.
-- **More robust background and update paths**: live-rate monitoring, unread refresh, settings persistence, source switching, child-process output, and update installation use shorter lock windows and cancellable bounded cleanup. The release pipeline publishes the appcast atomically only after every platform asset, signature, and checksum gate passes.
-
-## Update Notes
-
-- The exact index is local cache data. It does not retain conversation text or upload local usage, history, or index data.
-- The macOS build is ad-hoc signed and not Apple notarized. Windows installers do not use a commercial code-signing certificate, so the operating system may show a first-install warning. In-app updates still use separate Sparkle/Tauri updater signatures.
-- Download only from the official GitHub Release and verify files with the bundled unified `SHA256SUMS-v0.8.3.txt`.
-</description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-macos-arm64.app.zip" length="8409004" type="application/octet-stream" sparkle:edSignature="7zCbXup3Q6hn8fOiYVwF5IBtmn4h6zTjT80J1JMzyI0LkK4rF7Iu+QWdDNfGcG7cR0tSjLpIq70Lj9CnlJMkBg==" />
         </item>
     </channel>
 </rss>
