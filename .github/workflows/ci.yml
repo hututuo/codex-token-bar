@@ -1,227 +1,47 @@
-name: Hosted project checks
-
+name: Validate actual official package upgrade
 on:
   push:
-    branches: [main, 'cloud/**', 'fix/**', 'codex/**']
-    paths-ignore: ['docs/**', '**/*.md']
-  pull_request:
-    paths-ignore: ['docs/**', '**/*.md']
+    branches: [codex/validate-0.9.4-upgrade-control]
+    paths: ["scripts/validate_094*", ".github/workflows/ci.yml"]
   workflow_dispatch:
-    inputs:
-      source_sha:
-        description: 'Optional exact 40-character source commit; empty means this workflow commit'
-        type: string
-        default: ''
-  workflow_call:
-    inputs:
-      source_sha:
-        type: string
-        default: ''
-
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
-env:
-  CARGO_PROFILE_TEST_DEBUG: '0'
-  CARGO_PROFILE_DEV_DEBUG: '0'
-  CARGO_BUILD_JOBS: '3'
-  CARGO_INCREMENTAL: '0'
-  RUSTUP_TOOLCHAIN: '1.93.1'
-
+  actions: read
 jobs:
-  source:
-    runs-on: ubuntu-24.04
-    outputs:
-      sha: ${{ steps.resolve.outputs.sha }}
-    steps:
-      - id: resolve
-        env:
-          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
-        run: |
-          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact source SHA is required'; exit 1; }
-          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
-
-  frontend:
-    needs: source
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ needs.source.outputs.sha }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: tauri-app/package-lock.json
-      - run: npm ci --registry=https://registry.npmjs.org
-        working-directory: tauri-app
-      - run: node scripts/cloud/run-node-tests.mjs tauri-app/src
-      - run: node --test scripts/cloud/*.test.mjs
-      - run: npm run build
-        working-directory: tauri-app
-      - run: npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
-        working-directory: tauri-app
-
-  swift:
-    needs: source
-    runs-on: macos-15
-    timeout-minutes: 35
-    env:
-      GIT_LFS_SKIP_SMUDGE: '1'
-      DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
-      CODEX_CYCLE_LAYOUT_OUTPUT: ${{ github.workspace }}/visual-previews
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ needs.source.outputs.sha }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-      - name: Swift dependency cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            .build/artifacts
-            .build/checkouts
-            .build/repositories
-          key: swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-v1
-      - name: Prepare clean macOS host
-        run: |
-          swift --version
-          xcodebuild -version
-          command -v git-lfs >/dev/null || brew install git-lfs
-          bash scripts/prepare_tiktoken_lfs.sh
-      - name: Swift tests and release-script contracts
-        run: |
-          set -o pipefail
-          mkdir -p visual-previews
-          swift test 2>&1 | tee swift-tests.log
-          npm ci --prefix tauri-app --registry=https://registry.npmjs.org
-          node scripts/cloud/run-node-tests.mjs scripts 2>&1 | tee release-script-tests.log
-      - name: Preserve hosted crash diagnostics on failure
-        if: failure()
-        run: |
-          mkdir -p hosted-diagnostics
-          find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -name '*xctest*' -o -name '*CodexTokenBar*' \) -exec cp {} hosted-diagnostics/ \; 2>/dev/null || true
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: swift-check-logs-${{ github.run_id }}
-          path: |
-            *.log
-            hosted-diagnostics/
-          retention-days: 7
-      - name: Upload production-view visual previews
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: swift-visual-previews-${{ needs.source.outputs.sha }}
-          path: visual-previews/*.png
-          if-no-files-found: warn
-          retention-days: 14
-
-  native:
-    needs: source
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2025, macos-15]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ needs.source.outputs.sha }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: tauri-app/package-lock.json
-      - name: Rust registry cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
-      - name: Native compilation cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: tauri-app/src-tauri/target
-          key: rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ needs.source.outputs.sha }}
-          restore-keys: |
-            rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
-      - name: Prepare Rust and frontend
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install 1.93.1 --profile minimal
-          rustc --version
-          cd tauri-app
-          npm ci --registry=https://registry.npmjs.org
-          npm run build
-      - name: Full native regression including original pressure case
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee native-library.log
-      - name: Windows packaging self-test
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          . ./scripts/cloud/prepare-windows.ps1
-          ./scripts/build_tauri_windows_release.selftest.ps1
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: native-check-logs-${{ matrix.os }}-${{ github.run_id }}
-          path: '*.log'
-          retention-days: 7
-
-  windows-updater:
-    needs: source
+  upgrade:
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          ref: ${{ needs.source.outputs.sha }}
-      - name: Windows installer fault regression
+      - name: Wait for exact candidate build and download artifacts
         shell: pwsh
-        run: |
-          $nsis = Join-Path ${env:ProgramFiles(x86)} 'NSIS'
-          if (-not (Test-Path (Join-Path $nsis 'makensis.exe'))) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
-          }
-          $env:PATH = "$nsis;$env:PATH"
-          ./scripts/windows_update_faults.ps1
-
-  evidence:
-    needs: [source, frontend, swift, native, windows-updater]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Seal successful check identity
         env:
-          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 - <<'PY'
-          import json, os, pathlib
-          pathlib.Path('checked-source.json').write_text(json.dumps({
-            'source_sha':os.environ['SOURCE_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'passed':True
-          })+'\n')
-          PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          $ErrorActionPreference = 'Stop'
+          $deadline = (Get-Date).AddMinutes(45)
+          do {
+            $run = gh api repos/hututuo/codex-token-bar/actions/runs/37749712589 | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot read candidate run' }
+            if ($run.status -eq 'completed') { break }
+            if ((Get-Date) -ge $deadline) { throw 'Candidate build did not finish before validation deadline' }
+            Start-Sleep -Seconds 30
+          } while ($true)
+          if ($run.conclusion -ne 'success') { throw 'Candidate build failed' }
+          gh run download 37749712589 --repo hututuo/codex-token-bar --name candidate-windows-7e5d0333a68abdd57d008d66bd3e1a1c0f88d6fd --dir candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate download failed' }
+          gh release download v0.9.3 --repo hututuo/codex-token-bar --pattern '*windows-x64-setup.exe' --pattern SHA256SUMS-v0.9.3.txt --dir official
+          if ($LASTEXITCODE -ne 0) { throw 'Official baseline download failed' }
+      - name: Verify and install actual packages with legacy updater arguments
+        shell: pwsh
+        run: ./scripts/validate_094_installer_upgrade.ps1
+      - name: Preserve bounded package and process evidence
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: ci-passed-${{ needs.source.outputs.sha }}
-          path: checked-source.json
+          name: official-093-to-094-installer-evidence
+          path: upgrade-evidence/*.json
+          if-no-files-found: warn
           retention-days: 30

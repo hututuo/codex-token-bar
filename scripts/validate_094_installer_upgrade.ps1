@@ -17,7 +17,7 @@ function Observe-App($exe, $version) {
   $v = [Diagnostics.FileVersionInfo]::GetVersionInfo($live.Path)
   Assert-True ($v.ProductVersion -match ('^' + [regex]::Escape($version) + '(?:\.|$)')) "Running product version $($v.ProductVersion) differs"
   $result = @{path=$live.Path; product_version=$v.ProductVersion; sha256=(Get-FileHash $live.Path -Algorithm SHA256).Hash.ToLowerInvariant(); pid=$process.Id}
-  python scripts/validate_094_index.py before
+  python scripts/validate_094_index.py before | Out-Host
   Assert-True ($LASTEXITCODE -eq 0) 'Official executable did not produce the expected schema13 index'
   Stop-Process -Id $process.Id -Force
   $process.WaitForExit(15000) | Out-Null
@@ -77,10 +77,53 @@ try {
   $registered = (Get-Item 'HKCU:\Software\codex\Codex Token Bar').GetValue('')
   Assert-True ($registered -eq $destination) 'Old installation registry path differs'
   $links = @((Join-Path ([Environment]::GetFolderPath('Programs')) 'Codex Token Bar.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Codex Token Bar.lnk'))
+  Add-Type @'
+using System;
+using System.Text;
+using System.IO;
+using Microsoft.Win32.SafeHandles;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface UpgradeShellLinkW {
+ void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int length, IntPtr data, uint flags);
+}
+public static class UpgradeShortcut {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ static extern uint GetFinalPathNameByHandle(SafeFileHandle h,StringBuilder text,uint length,uint flags);
+ public static string FinalPath(string path) {
+  using(var file=File.Open(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete)) {
+   var text=new StringBuilder(4096);
+   uint length=GetFinalPathNameByHandle(file.SafeFileHandle,text,(uint)text.Capacity,0);
+   if(length==0 || length>=text.Capacity) throw new IOException("Cannot normalize shortcut target");
+   return text.ToString();
+  }
+ }
+ public static string Read(string path) {
+  object obj=Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
+  try {
+   ((IPersistFile)obj).Load(path,0);
+   var text=new StringBuilder(4096);
+   ((UpgradeShellLinkW)obj).GetPath(text,text.Capacity,IntPtr.Zero,4);
+   return text.ToString();
+  } finally { Marshal.FinalReleaseComObject(obj); }
+ }
+}
+'@
+
   $shell = New-Object -ComObject WScript.Shell
-  $before = @($links | Where-Object { Test-Path $_ } | ForEach-Object { @{path=$_; target=$shell.CreateShortcut($_).TargetPath} })
+  $before = @($links | Where-Object { Test-Path $_ } | ForEach-Object { @{path=$_; legacy_wscript_target=$shell.CreateShortcut($_).TargetPath; target=[UpgradeShortcut]::Read($_)} })
+  $evidence.expected_executable = $exe
+  $evidence.expected_executable_normalized = [UpgradeShortcut]::FinalPath($exe)
+  $evidence.official_shortcuts = $before
   Assert-True ($before.Count -gt 0) 'Official installation produced no canonical shortcut'
-  foreach ($link in $before) { Assert-True ($link.target -eq $exe) 'Official shortcut points outside old installation' }
+  Save-Evidence
+  foreach ($link in $before) {
+    try { $link.normalized_target = [UpgradeShortcut]::FinalPath($link.target) }
+    catch { $link.normalization_error = $_.Exception.Message; Save-Evidence; throw }
+    Save-Evidence
+    Assert-True ($link.normalized_target -eq $evidence.expected_executable_normalized) 'Official shortcut points outside old installation'
+  }
   $sentinel = Join-Path $supportPath 'upgrade-retention-sentinel.txt'
   New-Item -ItemType Directory $supportPath -Force | Out-Null
   Set-Content $sentinel 'synthetic retained application data' -Encoding utf8
@@ -98,7 +141,7 @@ try {
   Assert-True ($evidence.old_process.sha256 -ne $evidence.new_process.sha256) 'Executable was not replaced'
   Assert-True ($evidence.new_process.sha256 -eq ($payloads | Where-Object { $_.arch -eq 'x64' }).sha256) 'Running executable differs from verified candidate payload'
   Assert-True ((Get-Item 'HKCU:\Software\codex\Codex Token Bar').GetValue('') -eq $destination) 'New installation registry path differs'
-  $evidence.shortcuts = @($before | ForEach-Object { $target=$shell.CreateShortcut($_.path).TargetPath; Assert-True ($target -eq $exe) 'Updated shortcut target differs'; @{path=$_.path; target=$target} })
+  $evidence.shortcuts = @($before | ForEach-Object { $target=[UpgradeShortcut]::Read($_.path); $normalized=[UpgradeShortcut]::FinalPath($target); Assert-True ($normalized -eq $evidence.expected_executable_normalized) 'Updated shortcut target differs'; @{path=$_.path; target=$target; normalized_target=$normalized} })
   Assert-True ((Get-FileHash $sentinel).Hash -eq $sentinelHash) 'Application data sentinel changed'
   $evidence.data_sentinel_retained = $true
   python scripts/validate_094_index.py after
