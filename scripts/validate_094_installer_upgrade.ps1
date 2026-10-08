@@ -17,6 +17,8 @@ function Observe-App($exe, $version) {
   $v = [Diagnostics.FileVersionInfo]::GetVersionInfo($live.Path)
   Assert-True ($v.ProductVersion -match ('^' + [regex]::Escape($version) + '(?:\.|$)')) "Running product version $($v.ProductVersion) differs"
   $result = @{path=$live.Path; product_version=$v.ProductVersion; sha256=(Get-FileHash $live.Path -Algorithm SHA256).Hash.ToLowerInvariant(); pid=$process.Id}
+  python scripts/validate_094_index.py before
+  Assert-True ($LASTEXITCODE -eq 0) 'Official executable did not produce the expected schema13 index'
   Stop-Process -Id $process.Id -Force
   $process.WaitForExit(15000) | Out-Null
   return $result
@@ -41,9 +43,10 @@ try {
   $destination = Join-Path $env:RUNNER_TEMP '升级验证 中文 path\Codex Token Bar'
   $homePath = Join-Path $env:RUNNER_TEMP 'upgrade-synthetic-codex-home'
   New-Item -ItemType Directory $homePath -Force | Out-Null
-  $env:CODEX_HOME = $homePath
-  $env:CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR = Join-Path $env:RUNNER_TEMP 'upgrade-isolated-support'
-  $env:CODEX_TOKEN_BAR_TAURI_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'upgrade-isolated-cache'
+  $env:TOKENBAR_UPGRADE_HOME = $homePath
+  $supportPath = Join-Path $env:APPDATA 'CodexTokenBarTauri'
+  python scripts/validate_094_index.py fixture
+  Assert-True ($LASTEXITCODE -eq 0) 'Cannot prepare synthetic release history'
   Install-Package $old "/S /D=$destination"
   $exe = Join-Path $destination 'codex-token-bar.exe'
   $evidence.old_process = Observe-App $exe '0.9.3'
@@ -54,8 +57,8 @@ try {
   $before = @($links | Where-Object { Test-Path $_ } | ForEach-Object { @{path=$_; target=$shell.CreateShortcut($_).TargetPath} })
   Assert-True ($before.Count -gt 0) 'Official installation produced no canonical shortcut'
   foreach ($link in $before) { Assert-True ($link.target -eq $exe) 'Official shortcut points outside old installation' }
-  $sentinel = Join-Path $env:CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR 'upgrade-retention-sentinel.txt'
-  New-Item -ItemType Directory $env:CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR -Force | Out-Null
+  $sentinel = Join-Path $supportPath 'upgrade-retention-sentinel.txt'
+  New-Item -ItemType Directory $supportPath -Force | Out-Null
   Set-Content $sentinel 'synthetic retained application data' -Encoding utf8
   $sentinelHash = (Get-FileHash $sentinel).Hash
   # Exact legacy updater flags; deliberately no /D added by the new updater.
@@ -73,7 +76,9 @@ try {
   $evidence.shortcuts = @($before | ForEach-Object { $target=$shell.CreateShortcut($_.path).TargetPath; Assert-True ($target -eq $exe) 'Updated shortcut target differs'; @{path=$_.path; target=$target} })
   Assert-True ((Get-FileHash $sentinel).Hash -eq $sentinelHash) 'Application data sentinel changed'
   $evidence.data_sentinel_retained = $true
-  $evidence.index_migration = 'NOT_RUN (no real user index copied or synthesized)'
+  python scripts/validate_094_index.py after
+  Assert-True ($LASTEXITCODE -eq 0) 'Real packaged schema13-to14 migration did not retain synthetic history'
+  $evidence.index_migration = 'PASS (schema13 created by official 0.9.3 binary, migrated by candidate 0.9.4 binary; synthetic history only)'
   $evidence.status = 'PASS'
   $live | Stop-Process -Force
 } catch {
