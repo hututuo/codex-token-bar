@@ -6,6 +6,21 @@ change model context compaction, token accounting, prices, quotas or account
 selection. Sources are selected from actual files, independently of the Codex
 compression toggle.
 
+The follow-up [cold-storage read policy](compressed-history-cold-read-policy.md)
+records the 2026-10-05 audit and restrictions on automatic probes, legacy
+message-link repair and optional text hydration. The
+[implementation record](2026-10-05-cold-history-implementation.md) describes
+the implemented changes and their verification status. A compressed representation
+is a policy signal to avoid optional body reads; it does not prove that the
+user has not opened the thread. Trusted numeric history and current raw-text
+proof remain separate.
+
+The [read-entrypoint audit](compressed-history-read-entrypoints.md) maps the
+actual snapshot, source-probe, catalog, mutation-preflight, migration and
+optional-text call paths. Numeric reuse does not automatically suppress every
+other reader opening. Its tables retain the old source SHA and costs; the
+implementation record identifies the paths changed after that audit.
+
 ## Source identity and cost
 
 Both representations use the existing logical `.jsonl` path and source ID.
@@ -16,15 +31,21 @@ are never counted as usage or added as a second source.
 
 For a complete trusted checkpoint, a stable single frame with a declared
 logical size and preserved mtime can reuse the existing numeric ledger without
-parsing its body again. Pending or incomplete enrichment prevents that shortcut.
+parsing its body again. Required numeric model/accounting enrichment or an
+incomplete checkpoint prevents that shortcut; an optional message-link receipt
+must not be treated as a requirement to retain the trusted numeric ledger.
 The representation receipt records this as `metadata_only`: it is not a content
 hash proof. File identity and change time invalidate the process-local frame
 layout cache; they are not the ledger identity.
 
-Unindexed, partial, changed, unknown-length and multi-frame sources use streaming
-decoding and the existing staged parser and reconciliation. An unknown-length
-stream needs an initial length pass; the process caches that result for the same
-physical observation. There is no expanded temporary history file. Decoder
+Unindexed, partial or changed sources still use streaming decoding and the
+existing staged parser and reconciliation when numeric coverage requires it.
+Lightweight probes never measure an unknown-length stream: they reuse a complete
+indexed logical size tied to the same physical observation, use an existing
+layout-cache result, or return unknown to the formal owner. A stable indexed
+unknown-length or multi-frame source is not measured again on every refresh.
+The initial required formal read may include a length pass. There is no expanded
+temporary history file. Decoder
 windows are capped at 128 MiB, and I/O uses bounded buffers. Ordinary JSONL keeps
 its inexpensive metadata path.
 
@@ -53,12 +74,16 @@ The transaction either commits the table and marker together or leaves schema
 
 Missing source text does not delete published numeric history. A restored
 compressed source can recover its numeric association using metadata while its
-old raw-text bindings remain unavailable. On first excerpt access, the selected
-source's existing full chunk hashes are checked against decoded bytes, with EOF
-and physical stability checks, before bindings become available. This currently
-requires a full content proof for that selected source, not a range-only proof;
-it does not recount all historical sources. Later unchanged excerpts reuse that
-proof. Sources with no text offsets are not decoded merely to browse a turn.
+old raw-text bindings remain unavailable. Optional excerpts and message-link
+repair always defer an actual preferred compressed source before creating a
+decoder, independently of the compression setting. Numeric rows and saved
+titles remain available. After plain text is materialized, the selected source's
+existing full chunk hashes, EOF and physical stability are checked when an old
+raw binding needs restoration. This is a full proof for that selected plain
+source, not a range-only proof, and does not recount all historical sources.
+Later excerpts require the same observed physical version and read merged
+plain ranges through one pinned file. Sources with no text offsets are not read
+merely to browse a turn.
 If an already verified source disappears and returns, its revoked text bindings
 also require this proof before being restored, even when its physical stamp is
 unchanged. Numeric history and checkpoints are retained throughout.

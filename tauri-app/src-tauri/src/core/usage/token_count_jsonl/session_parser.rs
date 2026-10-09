@@ -1,4 +1,4 @@
-use super::rollout_source::RolloutReader;
+use super::rollout_source::{self, RolloutReader};
 use super::accounting::{AccountingState, Components, Snapshot, COUNTED};
 #[cfg(test)]
 use super::TokenEvent;
@@ -22,13 +22,13 @@ pub(super) type UsageSnapshotFingerprint = [u64; 11];
 pub(super) const USAGE_SNAPSHOT_FINGERPRINT_BYTES: usize =
     std::mem::size_of::<UsageSnapshotFingerprint>();
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(super) struct SourceByteRange {
     pub(super) start: u64,
     pub(super) end: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub(super) struct ExactEventSourceOffsets {
     pub(super) user_prompt: Option<SourceByteRange>,
     pub(super) assistant_response: Option<SourceByteRange>,
@@ -471,7 +471,8 @@ pub(super) struct MessageLinkScan {
 
 /// Marker-only pass: never invokes the accounting parser or admits events.
 pub(super) fn scan_message_links(file: &Path, size: u64, offsets: &std::collections::HashSet<u64>) -> Result<MessageLinkScan, String> {
-    let mut handle = RolloutReader::open(file).map_err(|e| e.to_string())?;
+    // Pin only the plain logical path. A conversion race cannot fall back to zst.
+    let mut handle = std::fs::File::open(rollout_source::logical_path(file)).map_err(|e| e.to_string())?;
     let metadata = paginated_subagent_metadata(&mut handle)?;
     let mut ownership = AccountingState::fresh();
     let mut fork: Option<ForkSessionMetadata> = None;
@@ -631,77 +632,69 @@ impl<R: Read> Read for PrefixHashingReader<R> {
     }
 }
 
-pub(super) fn read_event_excerpts(
-    file: &Path,
-    source_offsets: ExactEventSourceOffsets,
-) -> Result<(String, String), String> {
-    let user_prompt = match source_offsets.user_prompt {
-        Some(range) => {
-            let mut latest = String::new();
-            visit_source_range_lines(file, range, |line| {
-                if let Some(message) = parse_payload_message_line(line, "user_message", 180) {
-                    latest = message.message;
-                }
-            })?;
-            latest
-        }
-        None => String::new(),
-    };
-    let assistant_response = match source_offsets.assistant_response {
-        Some(range) => {
-            let mut combined = String::new();
-            visit_source_range_lines(file, range, |line| {
-                if let Some(message) = parse_payload_message_line(line, "agent_message", 220) {
-                    append_excerpt(&mut combined, &message.message, 220);
-                }
-            })?;
-            combined
-        }
-        None => String::new(),
-    };
-    Ok((user_prompt, assistant_response))
+#[cfg(test)]
+fn read_event_excerpts(file: &Path, offsets: ExactEventSourceOffsets) -> Result<(String, String), String> {
+    Ok(read_event_excerpt_batch(file, &[offsets], |_| Ok(()))?.into_iter().next().unwrap_or_default())
 }
 
-fn visit_source_range_lines(
+/// Optional text only: merge requested plain-file intervals, stream each byte
+/// at most once, and keep a bounded output per request. No decompression fallback.
+pub(super) fn read_event_excerpt_batch(
     file: &Path,
-    range: SourceByteRange,
-    mut visit: impl FnMut(&str),
-) -> Result<(), String> {
-    let byte_count = range
-        .end
-        .checked_sub(range.start)
-        .ok_or_else(|| format!("会话摘录字节区间无效：{}", file.display()))?;
-    let mut handle = RolloutReader::open(file)
-        .map_err(|error| format!("打开会话摘录源文件失败：{}（{}）", file.display(), error))?;
-    handle
-        .seek(SeekFrom::Start(range.start))
-        .map_err(|error| format!("定位会话摘录源文件失败：{}（{}）", file.display(), error))?;
-    let mut reader = BufReader::new(handle.take(byte_count));
+    requests: &[ExactEventSourceOffsets],
+    validate_handle: impl Fn(&std::fs::File) -> Result<(), String>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut output = vec![(String::new(), String::new()); requests.len()];
+    if !rollout_source::physical_path(file).is_ok_and(|physical| !rollout_source::is_compressed(&physical)) {
+        return Ok(output);
+    }
+    let mut handle = std::fs::File::open(rollout_source::logical_path(file))
+        .map_err(|error| format!("打开会话摘录失败：{}（{error}）", file.display()))?;
+    validate_handle(&handle)?;
+    let mut ranges = requests.iter().flat_map(|request| [request.user_prompt, request.assistant_response])
+        .flatten().collect::<Vec<_>>();
+    if ranges.iter().any(|range| range.end < range.start) {
+        return Err(format!("会话摘录字节区间无效：{}", file.display()));
+    }
+    ranges.sort_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<SourceByteRange> = Vec::new();
+    for range in ranges {
+        if let Some(last) = merged.last_mut().filter(|last| range.start <= last.end) {
+            last.end = last.end.max(range.end);
+        } else { merged.push(range); }
+    }
+    let bytes = merged.iter().try_fold(0u64, |sum, range| sum.checked_add(range.end - range.start));
+    if bytes.is_none_or(|bytes| bytes > 8 * 1024 * 1024) {
+        return Err(format!("会话摘录批次超过显示预算：{}", file.display()));
+    }
     let mut line_bytes = Vec::new();
-    let mut consumed = 0_u64;
-    loop {
-        reset_line_buffer(&mut line_bytes);
-        let bytes_read = reader
-            .read_until(b'\n', &mut line_bytes)
-            .map_err(|error| format!("读取会话摘录失败：{}（{}）", file.display(), error))?;
-        if bytes_read == 0 {
-            break;
+    for range in merged {
+        handle.seek(SeekFrom::Start(range.start)).map_err(|error| error.to_string())?;
+        let mut reader = BufReader::new((&mut handle).take(range.end - range.start));
+        let mut position = range.start;
+        loop {
+            reset_line_buffer(&mut line_bytes);
+            let count = (&mut reader).take(1024 * 1024 + 1)
+                .read_until(b'\n', &mut line_bytes).map_err(|error| error.to_string())?;
+            if count == 0 { break; }
+            if count > 1024 * 1024 { return Err(format!("会话摘录单行超过显示预算：{}", file.display())); }
+            let line = std::str::from_utf8(&line_bytes).map_err(|error| error.to_string())?.trim_end_matches(['\r','\n']);
+            let user = parse_payload_message_line(line, "user_message", 180);
+            let assistant = parse_payload_message_line(line, "agent_message", 220);
+            for (request, (prompt, response)) in requests.iter().zip(output.iter_mut()) {
+                if request.user_prompt.is_some_and(|range| position >= range.start && position < range.end) {
+                    if let Some(user) = &user { *prompt = user.message.clone(); }
+                }
+                if request.assistant_response.is_some_and(|range| position >= range.start && position < range.end) {
+                    if let Some(assistant) = &assistant { append_excerpt(response, &assistant.message, 220); }
+                }
+            }
+            position += count as u64;
         }
-        consumed = consumed.saturating_add(bytes_read as u64);
-        let line = std::str::from_utf8(&line_bytes)
-            .map_err(|error| format!("会话摘录不是 UTF-8：{}（{}）", file.display(), error))?
-            .trim_end_matches(['\r', '\n']);
-        visit(line);
+        if position != range.end { return Err(format!("会话摘录源文件已变化：{}", file.display())); }
     }
-    if consumed != byte_count {
-        return Err(format!(
-            "会话摘录源文件已变化：{}（预期 {} 字节，读取 {} 字节）",
-            file.display(),
-            byte_count,
-            consumed
-        ));
-    }
-    Ok(())
+    validate_handle(&handle)?;
+    Ok(output)
 }
 
 #[cfg(test)]

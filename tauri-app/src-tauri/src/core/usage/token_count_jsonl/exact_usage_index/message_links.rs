@@ -24,7 +24,8 @@ pub(super) fn repair(db: &mut ManagedIndexConnection, home: &Path, warnings: &mu
     let canonical_home = canonical_codex_home(home)?;
     for (position,(source,path,session,size,modified,generation)) in pending.iter().enumerate() {
         let ResolvedSessionFile::Accepted(file) = resolve_file_within_codex_home(&canonical_home,Path::new(path),"缓存排行轮次补全",warnings) else { continue; };
-        let Ok(before) = file_signature(&file) else { continue; };
+        if !rollout_source::physical_path(&file).is_ok_and(|physical| !rollout_source::is_compressed(&physical)) { continue; }
+        let Ok(Some(before)) = lightweight_file_signature(&file, None) else { continue; };
         if !before.matches_stored(*size,modified) { continue; }
         let bindings: HashMap<u64,i64> = db.prepare("SELECT b.raw_offset,b.event_id FROM usage_ledger_bindings b JOIN event_rows e ON e.id=b.event_id WHERE b.source_id=?1 AND b.available=1 AND b.raw_generation=?2 AND b.raw_offset IS NOT NULL AND e.user_prompt_start IS NULL")
             .map_err(|e|e.to_string())?.query_map(params![source,generation],|r|Ok((r.get(0)?,r.get(1)?)))
@@ -41,7 +42,7 @@ pub(super) fn repair(db: &mut ManagedIndexConnection, home: &Path, warnings: &mu
             .map_err(|e|e.to_string())?.collect::<Result<_,_>>().map_err(|e|e.to_string())?;
         if stored.len()!=scan.chunks.len() || !stored.iter().zip(&scan.chunks).all(|((index,count,hash),chunk)|
             *index==chunk.index && *count==chunk.byte_count && hash.as_slice()==chunk.sha256.as_slice())
-            || file_signature(&file).ok().as_ref()!=Some(&before) { continue; }
+            || lightweight_file_signature(&file, None).ok().flatten().as_ref()!=Some(&before) { continue; }
         db.mark_receipt_dirty();
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
         for (raw,prompt,assistant) in &scan.links {

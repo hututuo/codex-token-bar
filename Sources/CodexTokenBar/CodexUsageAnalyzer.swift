@@ -293,7 +293,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             let synchronizedSignature = sessionTreeSignature(
                 for: sessionFiles,
                 attributionProvenanceEpoch: synchronization.provenanceEpoch,
-                attributionGeneration: synchronization.attributionGeneration
+                attributionGeneration: synchronization.attributionGeneration,
+                historyIndex: historyIndex
             )
             let summary = CompactUsageSummary(
                 totalTokens: totals.totalTokens,
@@ -352,7 +353,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let sourceSignature = sessionTreeSignature(
             for: sessionFiles,
             attributionProvenanceEpoch: attributionState.provenanceEpoch,
-            attributionGeneration: attributionState.generation
+            attributionGeneration: attributionState.generation,
+            historyIndex: historyIndex
         )
         let signature = sourceSignature.withAggregateIdentity(
             try historyIndex.dashboardAggregateIdentity()
@@ -590,7 +592,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             : sessionTreeSignature(
                 for: sessionFiles,
                 attributionProvenanceEpoch: initialAttributionState.provenanceEpoch,
-                attributionGeneration: initialAttributionState.generation
+                attributionGeneration: initialAttributionState.generation,
+                historyIndex: historyIndex
             )
         let signature = sourceSignature.withAggregateIdentity(
             try historyIndex.dashboardAggregateIdentity()

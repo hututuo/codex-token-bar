@@ -13061,7 +13061,17 @@ fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
     assert_eq!(db.query_row("SELECT verification FROM source_representations",[],|r|r.get::<_,String>(0)).unwrap(),"metadata_only");
     assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     db.execute_batch("DROP TRIGGER stop_excerpt_proof").unwrap();
-    assert!(read_index().cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
+    super::rollout_source::reset_work_counters_for_current_thread();
+    assert!(read_index().cache_usage.turns.iter().all(|t| t.user_prompt.is_empty()));
+    assert_eq!(super::rollout_source::work_counters_for_current_thread().decoded_bytes, 0);
+    // Restoring plain text permits the existing lazy proof, even before numeric sync.
+    fs::write(&file, original).unwrap();
+    fs::File::options().write(true).open(&file).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    let mut materialized = ExactUsageIndex::open(&root).unwrap();
+    assert!(materialized.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap()
+        .cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
+    drop(materialized);
     assert_eq!(db.query_row("SELECT verification FROM source_representations",[],|r|r.get::<_,String>(0)).unwrap(),"verified_full");
     let checkpoint: (i64,i64,i64) = db.query_row("SELECT source_id,size,resume_offset FROM sources",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     // Observe a disappearance without changing the file's own physical stamp.
@@ -13070,21 +13080,34 @@ fn verified_compressed_text_reappearing_requires_proof_and_restores_links() {
     assert_eq!(db.query_row("SELECT source_id,size,resume_offset FROM sources",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap(),checkpoint);
     assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events",[],|r|r.get::<_,i64>(0)).unwrap(),120);
     assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),1);
-    // Revoke again, restore presence, then change the same-length body before
-    // the lazy proof. A preserved mtime must not reopen a changed prompt.
+    // Revoke again, then let the formal owner verify the restored plain body.
+    // A later same-length rewrite with preserved mtime must not reopen text,
+    // or let an optional excerpt read rewrite the last published raw binding.
     db.execute_batch("UPDATE usage_ledger_sources SET missing=1; UPDATE usage_ledger_bindings SET available=0;").unwrap();
     let mut exact = ExactUsageIndex::open(&root).unwrap();
     exact.sync(&root, &mut Vec::new()).unwrap();
+    let published_binding: (i64, i64) = db.query_row(
+        "SELECT raw_generation,available FROM usage_ledger_bindings", [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(published_binding.1, 1, "the formal owner verified the restored body");
     let changed = original.replace("synthetic prompt", "different prompt");
     assert_eq!(changed.len(), original.len());
-    fs::write(&zst, declared_zstd_frame(changed.as_bytes())).unwrap();
-    fs::File::options().write(true).open(&zst).unwrap()
+    fs::write(&file, changed.as_bytes()).unwrap();
+    fs::File::options().write(true).open(&file).unwrap()
         .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
     let rejected = exact.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap();
     assert_eq!(rejected.stats.total_tokens, 120);
     assert!(rejected.cache_usage.turns.iter().all(|t| t.user_prompt.is_empty()));
-    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(db.query_row("SELECT raw_generation,available FROM usage_ledger_bindings", [],
+        |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(), published_binding);
     drop(exact);
+    fs::write(&file, original).unwrap();
+    fs::File::options().write(true).open(&file).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    let restored = read_index();
+    assert_eq!(restored.stats.total_tokens, 120);
+    assert!(restored.cache_usage.turns.iter().any(|t| t.user_prompt=="synthetic prompt"));
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
@@ -13218,5 +13241,142 @@ fn history_compression_setting_accepts_boolean_only_and_ignores_prompt_text() {
         fs::write(root.join("config.toml"), config).unwrap();
         assert_eq!(history_compression_enabled(&root), expected);
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stable_unknown_size_compressed_history_probe_and_full_sync_do_not_decode() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/cold-unknown.jsonl.zst");
+    let line = r#"{"timestamp":"2026-10-01T00:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}
+"#;
+    // encode_all emits an unknown-size frame; the formal owner must parse it once.
+    fs::write(&file, zstd::stream::encode_all(line.as_bytes(), 3).unwrap()).unwrap();
+    let mut exact = ExactUsageIndex::open(&root).unwrap();
+    exact.sync(&root, &mut Vec::new()).unwrap();
+    drop(exact);
+    super::rollout_source::reset_work_counters_for_current_thread();
+    let probe = super::exact_usage_index::read_only_source_probe(&root, StdDuration::from_secs(2)).unwrap();
+    assert_eq!(probe.changed, Some(false));
+    let mut exact = ExactUsageIndex::open(&root).unwrap();
+    let discovery = exact.discover_sources(&root, StdDuration::from_secs(2), 0).unwrap();
+    assert_eq!(discovery.candidate_total, 1);
+    assert!(!exact.sources_changed(&root, &mut Vec::new()).unwrap());
+    exact.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(exact.dashboard_data(&root, OffsetDateTime::now_utc(), UtcOffset::UTC, &mut Vec::new()).unwrap().stats.total_tokens, 120);
+    let work = super::rollout_source::work_counters_for_current_thread();
+    assert_eq!(work.decoded_bytes, 0);
+    assert_eq!(work.structure_blocks, 0);
+    drop(exact);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unknown_compressed_discovery_keeps_candidate_without_decoding_corrupt_body() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    fs::write(root.join("sessions/new.jsonl.zst"), [0x28,0xb5,0x2f,0xfd]).unwrap();
+    super::rollout_source::reset_work_counters_for_current_thread();
+    let discovery = estimate_precise_scan_total_with_source_revision(&root, StdDuration::from_secs(2), 0).unwrap();
+    assert_eq!(discovery.candidate_total, 1);
+    let work = super::rollout_source::work_counters_for_current_thread();
+    assert_eq!(work.decoded_bytes, 0);
+    assert_eq!(work.structure_blocks, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_plain_after_discovery_preserves_publication_checkpoint_and_missing_state() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/dangling-after-discovery.jsonl");
+    let line = "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":120,\"cached_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":120}}}}\n";
+    fs::write(&file, line).unwrap();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    let before = db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get::<_, String>(0)).unwrap();
+    let source_id = db.query_row("SELECT source_id FROM sources", [], |r| r.get::<_, i64>(0)).unwrap();
+    let resume = db.query_row("SELECT resume_offset FROM sources", [], |r| r.get::<_, i64>(0)).unwrap();
+    let available = db.query_row("SELECT COALESCE(SUM(available),0) FROM usage_ledger_bindings", [], |r| r.get::<_, i64>(0)).unwrap();
+    // A new healthy candidate forces the formal pass rather than the unchanged
+    // discovery shortcut, so the stale first candidate is reopened by the owner.
+    fs::write(root.join("sessions/new.jsonl"), line.replace("120", "7")).unwrap();
+    let discovery = index.discover_sources(&root, StdDuration::from_secs(2), 1).unwrap();
+    assert_eq!(discovery.candidate_total, 2);
+    fs::write(file.with_extension("jsonl.zst"), zstd::stream::encode_all(line.as_bytes(), 3).unwrap()).unwrap();
+    fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink(root.join("missing.jsonl"), &file).unwrap();
+    let error = index.sync_with_scan_plan(&root, &mut Vec::new(), Some(discovery), Some(2)).unwrap_err();
+    assert!(error.contains("会话源扫描不完整"), "{error}");
+    assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get::<_, String>(0)).unwrap(), before);
+    assert_eq!(db.query_row("SELECT resume_offset FROM sources WHERE source_id=?1", [source_id], |r| r.get::<_, i64>(0)).unwrap(), resume);
+    assert_eq!(db.query_row("SELECT COALESCE(SUM(missing),0) FROM usage_ledger_sources", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(db.query_row("SELECT COALESCE(SUM(available),0) FROM usage_ledger_bindings", [], |r| r.get::<_, i64>(0)).unwrap(), available);
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events", [], |r| r.get::<_, i64>(0)).unwrap(), 120);
+    fs::remove_file(&file).unwrap();
+    fs::write(&file, line).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 127);
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 127);
+    drop(db);
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn watcher_recognizes_compressed_rollouts_outside_standard_directories_within_home() {
+    let root = PathBuf::from("test-home");
+    for name in ["custom/rollout.jsonl.zst", "custom/ROLLOUT.JSONL.ZST", "sessions/2026/removed"] {
+        assert!(super::is_monitored_exact_source_path(&root, &root.join(name)));
+    }
+    assert!(!super::is_monitored_exact_source_path(&root, Path::new("other/rollout.jsonl.zst")));
+    assert!(!super::is_monitored_exact_source_path(&root, &root.join("custom/cache.zst")));
+}
+
+#[test]
+fn excerpt_batch_merges_plain_ranges_and_never_reads_compressed_twin() {
+    use super::session_parser::{read_event_excerpt_batch, ExactEventSourceOffsets, SourceByteRange};
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("batch.jsonl");
+    let prompt = "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"shared prompt\"}}\n";
+    let assistant = "{\"timestamp\":\"2026-10-01T00:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"shared answer\"}}\n";
+    fs::write(&file, format!("{prompt}{assistant}")).unwrap();
+    fs::write(file.with_extension("jsonl.zst"), [0x28,0xb5,0x2f,0xfd]).unwrap();
+    let offsets = ExactEventSourceOffsets {
+        user_prompt: Some(SourceByteRange { start: 0, end: prompt.len() as u64 }),
+        assistant_response: Some(SourceByteRange { start: prompt.len() as u64, end: (prompt.len() + assistant.len()) as u64 }),
+    };
+    let checks = std::cell::Cell::new(0);
+    super::rollout_source::reset_work_counters_for_current_thread();
+    let values = read_event_excerpt_batch(&file, &[offsets, offsets], |_| { checks.set(checks.get()+1); Ok(()) }).unwrap();
+    assert_eq!(values, vec![("shared prompt".into(), "shared answer".into()); 2]);
+    assert_eq!(checks.get(), 2, "validate the pinned descriptor both before and after reading");
+    assert_eq!(super::rollout_source::work_counters_for_current_thread().decoded_bytes, 0);
+    fs::remove_file(&file).unwrap();
+    assert_eq!(read_event_excerpt_batch(&file, &[offsets], |_| panic!("cold source cannot open an excerpt descriptor")).unwrap(), vec![(String::new(), String::new())]);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn excerpt_batch_rejects_descriptor_drift_and_bounded_huge_line() {
+    use super::session_parser::{read_event_excerpt_batch, ExactEventSourceOffsets, SourceByteRange};
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("budget.jsonl");
+    let bytes = vec![b'x'; 1024 * 1024 + 20];
+    fs::write(&file, &bytes).unwrap();
+    let offsets = ExactEventSourceOffsets { user_prompt: Some(SourceByteRange { start: 0, end: bytes.len() as u64 }), assistant_response: None };
+    let error = read_event_excerpt_batch(&file, &[offsets], |_| Ok(())).unwrap_err();
+    assert!(error.contains("单行超过显示预算"));
+    let error = read_event_excerpt_batch(&file, &[offsets], |_| Err("synthetic descriptor mismatch".into())).unwrap_err();
+    assert_eq!(error, "synthetic descriptor mismatch");
     fs::remove_dir_all(root).unwrap();
 }

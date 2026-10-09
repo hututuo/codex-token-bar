@@ -156,7 +156,9 @@ extension CodexUsageAnalyzer {
     /// No token accounting, fingerprints, or conversation text is persisted.
     func scanMessageLinks(file: URL, endOffset: UInt64, eventOffsets: Set<UInt64>) throws -> MessageLinkScan {
         struct OrdinalEnvelope: Decodable { let ordinal: UInt64? }
-        let metadata = try PaginatedHistoryBoundary.metadata(file: file)
+        let handle = try CodexRolloutReader(forReadingFrom: file, allowsCompressed: false)
+        defer { try? handle.close() }
+        let metadata = try PaginatedHistoryBoundary.metadata(file: file, handle: handle)
         var ownership = UsageAccountingState.fresh
         var fork: ForkSessionMetadata?
         var replay = false
@@ -164,7 +166,7 @@ extension CodexUsageAnalyzer {
         var prompt: UInt64?
         var assistant: UInt64?
         var links: [MessageLinkScan.Link] = []
-        let stream = try streamIndexedSessionLines(from: file, endingAt: endOffset, chunkHashingFrom: 0) { offset, line in
+        let stream = try streamIndexedSessionLines(from: file, endingAt: endOffset, chunkHashingFrom: 0, readHandle: handle, maximumLineBytes: 1024 * 1024) { offset, line in
             if Task.isCancelled { throw CancellationError() }
             PaginatedHistoryBoundary.observeOwnTurn(line, metadata: metadata, state: &ownership)
             if fork == nil, let value = parseSessionMetaForkMetadata(line) { fork = value; replay = true }
@@ -433,14 +435,29 @@ extension CodexUsageAnalyzer {
         let grouped = Dictionary(grouping: references.values, by: \.file.path)
 
         for (_, fileReferences) in grouped {
-            guard let file = fileReferences.first?.file else { continue }
-            for reference in fileReferences {
-                guard let offset = reference.userPromptOffset,
-                      let line = try? readIndexedLine(from: file, at: offset),
-                      let message = parsePayloadMessageLine(line, expectedType: "user_message")?.message else {
-                    continue
-                }
-                prompts[reference.stableID] = excerpt(message, limit: 180)
+            guard let file = fileReferences.first?.file,
+                  let handle = try? CodexRolloutReader(forReadingFrom: file, allowsCompressed: false) else { continue }
+            defer { try? handle.close() }
+            guard let observation = fileReferences.first?.observation,
+                  (try? SourceFileObservation.readPhysical(handle: handle.physicalHandle).matches(observation)) == true,
+                  let before = try? SourceFileObservation.readPreferredPhysical(at: file),
+                  !before.file.lastPathComponent.hasSuffix(".jsonl.zst"),
+                  before.observation.matches(observation) else { continue }
+            var filePrompts: [String: String] = [:]
+            var fileAssistants: [String: String] = [:]
+            var remainingDisplayBytes = 8 * 1024 * 1024
+            let promptGroups = Dictionary(grouping: fileReferences.filter { $0.userPromptOffset != nil }) { $0.userPromptOffset! }
+            for offset in promptGroups.keys.sorted() {
+                guard remainingDisplayBytes > 0 else { break }
+                let attemptedBytes = min(remainingDisplayBytes, 1024 * 1024)
+                remainingDisplayBytes -= attemptedBytes
+                guard attemptedBytes > 1,
+                      let read = try? readIndexedLine(from: file, at: offset, readHandle: handle,
+                        maximumBytes: attemptedBytes - 1) else { continue }
+                remainingDisplayBytes += max(0, attemptedBytes - read.bytesRead)
+                guard let message = parsePayloadMessageLine(read.line, expectedType: "user_message")?.message else { continue }
+                let text = excerpt(message, limit: 180)
+                for reference in promptGroups[offset] ?? [] { filePrompts[reference.stableID] = text }
             }
 
             let assistantReferences = fileReferences.filter {
@@ -454,10 +471,14 @@ extension CodexUsageAnalyzer {
                 assistantReferences
             ) {
                 guard !Task.isCancelled else { break }
+                guard range.end - range.start <= UInt64(remainingDisplayBytes) else { continue }
+                remainingDisplayBytes -= Int(range.end - range.start)
                 _ = try? streamIndexedSessionLines(
                     from: file,
                     startingAt: range.start,
-                    endingAt: range.end
+                    endingAt: range.end,
+                    readHandle: handle,
+                    maximumLineBytes: 1024 * 1024
                 ) { lineOffset, lineString in
                     if Task.isCancelled { throw CancellationError() }
                     guard let message = parsePayloadMessageLine(
@@ -470,22 +491,29 @@ extension CodexUsageAnalyzer {
                         guard let start = reference.assistantStartOffset,
                               lineOffset >= start,
                               lineOffset < reference.eventOffset,
-                              (assistants[reference.stableID]?.count ?? 0) < 220 else {
+                              (fileAssistants[reference.stableID]?.count ?? 0) < 220 else {
                             continue
                         }
-                        assistants[reference.stableID] = appendingExcerpt(
-                            assistants[reference.stableID] ?? "",
+                        fileAssistants[reference.stableID] = appendingExcerpt(
+                            fileAssistants[reference.stableID] ?? "",
                             value: message,
                             limit: 220
                         )
                     }
                     if range.references.allSatisfy({
-                        (assistants[$0.stableID]?.count ?? 0) >= 220
+                        (fileAssistants[$0.stableID]?.count ?? 0) >= 220
                     }) {
                         throw AssistantExcerptHydrationControl.complete
                     }
                 }
             }
+            guard !Task.isCancelled,
+                  (try? SourceFileObservation.readPhysical(handle: handle.physicalHandle).matches(observation)) == true,
+                  let after = try? SourceFileObservation.readPreferredPhysical(at: file),
+                  !after.file.lastPathComponent.hasSuffix(".jsonl.zst"),
+                  after.observation.matches(observation) else { continue }
+            prompts.merge(filePrompts) { _, value in value }
+            assistants.merge(fileAssistants) { _, value in value }
         }
 
         let hydratedTurns = cacheUsage.turns.map { turn in
@@ -658,17 +686,19 @@ extension CodexUsageAnalyzer {
         for files: [URL],
         attributionProvenanceEpoch: String,
         attributionGeneration: Int64,
+        historyIndex: CodexUsageHistoryIndex? = nil,
         now: Date = Date(),
         timeZone: TimeZone = .current
     ) -> SessionTreeSignature {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.buildSessionTreeSignature", metadata: [
             "files": String(files.count)
         ])
+        let known = (try? historyIndex?.storedCompleteSourceObservations()) ?? [:]
         let signature = SessionTreeSignature(
             localDate: localDateString(for: now, timeZone: timeZone),
             utcOffsetSeconds: timeZone.secondsFromGMT(for: now),
             files: files
-                .compactMap(sessionCacheKey(for:))
+                .map { sessionCacheKey(for: $0, known: known) }
                 .sorted { $0.path < $1.path },
             stateDatabase: sessionCacheKey(for: dataSource.stateDatabase),
             attributionProvenanceEpoch: attributionProvenanceEpoch,
@@ -787,7 +817,7 @@ extension CodexUsageAnalyzer {
     }
 
     private func canonicalPath(for file: URL) -> String {
-        file.resolvingSymlinksInPath().path
+        CodexRolloutReader.canonicalLogicalURL(file).path
     }
 
     private func canonicalSelectedHome() throws -> URL {
@@ -1086,12 +1116,31 @@ extension CodexUsageAnalyzer {
         return existing + separator + prefix + suffix
     }
 
-    private func sessionCacheKey(for file: URL) -> SessionCacheKey? {
-        let canonical = file.resolvingSymlinksInPath()
-        guard let observation = try? SourceFileObservation.read(at: canonical) else { return nil }
+    private func sessionCacheKey(for file: URL, known: [String: SourceFileObservation] = [:]) -> SessionCacheKey {
+        let canonical = CodexRolloutReader.isRollout(file)
+            ? CodexRolloutReader.canonicalLogicalURL(file)
+            : file.resolvingSymlinksInPath()
+        // The state SQLite database is a plain metadata observation, not a rollout.
+        if !CodexRolloutReader.isRollout(canonical) {
+            guard let observation = try? SourceFileObservation.read(at: canonical) else {
+                return SessionCacheKey(path: canonical.path, size: UInt64.max, modifiedAt: 0, physicalStamp: "unresolved")
+            }
+            return SessionCacheKey(path: canonical.path, size: observation.size,
+                modifiedAt: observation.modifiedAt, physicalStamp: observation.physicalStamp)
+        }
+        guard let physical = try? SourceFileObservation.readPreferredPhysical(at: canonical) else {
+            return SessionCacheKey(path: canonical.path, size: UInt64.max, modifiedAt: 0, physicalStamp: "unresolved")
+        }
+        let observation = physical.observation
+        let logicalSize: UInt64
+        if physical.file.lastPathComponent.hasSuffix(".jsonl.zst") {
+            let stored = known[canonical.path]
+            logicalSize = stored?.physicalStamp == observation.physicalStamp
+                && stored?.modifiedAt == observation.modifiedAt ? stored!.size : UInt64.max
+        } else { logicalSize = observation.size }
         return SessionCacheKey(
             path: canonical.path,
-            size: observation.size,
+            size: logicalSize,
             modifiedAt: observation.modifiedAt,
             physicalStamp: observation.physicalStamp
         )
@@ -1104,6 +1153,7 @@ extension CodexUsageAnalyzer {
         chunkHashingFrom hashingStartOffset: UInt64? = nil,
         validationBoundary: UInt64? = nil,
         readHandle suppliedHandle: (any CodexReadHandle)? = nil,
+        maximumLineBytes: Int? = nil,
         handleLine: (UInt64, String) throws -> Void
     ) throws -> SessionLineStreamResult {
         let hashingOffset = hashingStartOffset ?? offset
@@ -1204,6 +1254,7 @@ extension CodexUsageAnalyzer {
             while let newlineRange = pending[searchStart...].range(of: newline) {
                 let lineRange = searchStart..<newlineRange.lowerBound
                 let lineData = pending[lineRange]
+                if let maximumLineBytes, lineData.count > maximumLineBytes { throw CocoaError(.fileReadTooLarge) }
                 let lineOffset = pendingStartOffset
                     + UInt64(pending.distance(from: pending.startIndex, to: searchStart))
                 if needsMessageOrUsage(lineData) {
@@ -1222,10 +1273,12 @@ extension CodexUsageAnalyzer {
                 pending.removeSubrange(pending.startIndex..<searchStart)
                 pendingStartOffset = consumedOffset
             }
+            if let maximumLineBytes, pending.count > maximumLineBytes { throw CocoaError(.fileReadTooLarge) }
         }
 
         var resumeOffset = pendingStartOffset
         if !pending.isEmpty {
+            if let maximumLineBytes, pending.count > maximumLineBytes { throw CocoaError(.fileReadTooLarge) }
             let line = String(decoding: pending, as: UTF8.self)
             if isCompleteIndexedJSONLine(pending) {
                 if needsMessageOrUsage(pending) {
@@ -1248,15 +1301,16 @@ extension CodexUsageAnalyzer {
         )
     }
 
-    private func readIndexedLine(from file: URL, at offset: UInt64) throws -> String {
-        let handle = try CodexRolloutReader(forReadingFrom: file)
-        defer { try? handle.close() }
+    private func readIndexedLine(from file: URL, at offset: UInt64, readHandle handle: any CodexReadHandle,
+                                 maximumBytes: Int) throws -> (line: String, bytesRead: Int) {
         try handle.seek(toOffset: offset)
 
+        var bytesRead = 0
         var line = Data()
         let newline = UInt8(ascii: "\n")
-        while true {
-            let chunk = try handle.read(upToCount: 16_384) ?? Data()
+        while line.count <= maximumBytes {
+            let chunk = try handle.read(upToCount: min(16_384, maximumBytes + 1 - line.count)) ?? Data()
+            bytesRead += chunk.count
             if chunk.isEmpty {
                 break
             }
@@ -1266,7 +1320,8 @@ extension CodexUsageAnalyzer {
             }
             line.append(chunk)
         }
-        return String(decoding: line, as: UTF8.self)
+        guard line.count <= maximumBytes else { throw CocoaError(.fileReadTooLarge) }
+        return (String(decoding: line, as: UTF8.self), bytesRead)
     }
 
     private func parseDate(_ value: String) -> Date? {

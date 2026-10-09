@@ -39,7 +39,164 @@ final class CompressedHistoryIndexTests: XCTestCase {
         XCTAssertTrue(try f.index.turnSourceReferences(for: turns.map(\.id), skipsCompressedSources: true).isEmpty)
         XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
         try f.db.execute("DROP TRIGGER stop_ranking_proof")
-        XCTAssertFalse(try f.index.turnSourceReferences(for: turns.map(\.id)).isEmpty)
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        XCTAssertTrue(try f.index.turnSourceReferences(for: turns.map(\.id)).isEmpty)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+    }
+
+    func testStableUnknownSizeColdHistoryUsesPhysicalObservationWithoutDecode() throws {
+        let f = try fixture()
+        let bytes = Data(line(120).utf8)
+        let known = frame(bytes)
+        let unknown = Data([0x28,0xb5,0x2f,0xfd,0,0]) + known.dropFirst(9)
+        try unknown.write(to: URL(fileURLWithPath: f.file.path + ".zst"))
+        try FileManager.default.removeItem(at: f.file)
+        _ = try f.synchronize()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let observations = try f.index.storedCompleteSourceObservations()
+        XCTAssertEqual(observations[f.file.resolvingSymlinksInPath().path]?.size, UInt64(bytes.count))
+        _ = f.analyzer.sessionTreeSignature(for: [f.file], attributionProvenanceEpoch: "test",
+            attributionGeneration: 1, historyIndex: f.index)
+        _ = try f.synchronize()
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        let work = CodexRolloutReader.workCountersForCurrentThread()
+        XCTAssertEqual(work.decoded_bytes, 0)
+        XCTAssertEqual(work.structure_blocks, 0)
+    }
+
+    func testStoredWitnessDoesNoFileIOAndChangedColdFileInvalidatesTreeSignature() throws {
+        let f = try fixture()
+        _ = try f.synchronize()
+        let sourcePath = f.file.resolvingSymlinksInPath().path
+        let zst = try compress(f)
+        _ = try f.synchronize()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let before = f.analyzer.sessionTreeSignature(for: [f.file],
+            attributionProvenanceEpoch: "test", attributionGeneration: 1,
+            historyIndex: f.index, now: now)
+        let stored = try XCTUnwrap(f.index.storedCompleteSourceObservations()[sourcePath])
+        XCTAssertEqual(before.files.first?.size, stored.size)
+        let bytes = try Data(contentsOf: zst)
+        // Rewrite the same bytes and restore mtime: the old stamp is still not
+        // proof of the replacement physical file, even with matching length.
+        try bytes.write(to: zst, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: stored.modifiedAt)],
+            ofItemAtPath: zst.path)
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        XCTAssertEqual(try f.index.storedCompleteSourceObservations()[sourcePath]?.physicalStamp, stored.physicalStamp)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().open, 0)
+        let after = f.analyzer.sessionTreeSignature(for: [f.file],
+            attributionProvenanceEpoch: "test", attributionGeneration: 1,
+            historyIndex: f.index, now: now)
+        XCTAssertNotEqual(before, after)
+        XCTAssertEqual(after.files.first?.size, UInt64.max)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().open, 1)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        try FileManager.default.removeItem(at: zst)
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        XCTAssertNotNil(try f.index.storedCompleteSourceObservations()[sourcePath])
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().open, 0)
+    }
+
+    func testPlainTreeSignatureUsesStatWithoutOpeningIndexedFiles() throws {
+        let f = try fixture()
+        _ = try f.synchronize()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let signature = f.analyzer.sessionTreeSignature(for: [f.file],
+            attributionProvenanceEpoch: "test", attributionGeneration: 1,
+            historyIndex: f.index)
+        XCTAssertEqual(signature.files.first?.size, UInt64(line(120).utf8.count))
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().open, 0)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+    }
+
+    func testParentDirectoryAliasKeepsColdSourceIdentityAndAvoidsRebuild() throws {
+        let f = try fixture()
+        _ = try f.synchronize()
+        let source = try scalar(f.db, "SELECT source_id FROM sources")
+        let path = try XCTUnwrap(f.db.readRows("SELECT path FROM sources") { $0.text(0) }.first ?? nil)
+        let alias = f.root.appendingPathComponent("directory-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: f.root)
+        let aliasFile = alias.appendingPathComponent(f.file.lastPathComponent)
+        _ = try compress(f)
+        _ = try f.synchronize()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let reused = try f.index.synchronize(files: [aliasFile], sessionID: f.analyzer.sessionID(from:)) { _,_,_,_,_ in
+            XCTFail("directory aliases must reuse the complete cold source")
+            throw CocoaError(.fileReadUnknown)
+        }
+        XCTAssertEqual(reused.unchangedFiles, 1)
+        XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM sources"), 1)
+        XCTAssertEqual(try scalar(f.db, "SELECT source_id FROM sources"), source)
+        XCTAssertEqual(try f.db.readRows("SELECT path FROM sources") { $0.text(0) }.first ?? nil, path)
+        let signature = f.analyzer.sessionTreeSignature(for: [aliasFile],
+            attributionProvenanceEpoch: "test", attributionGeneration: 1, historyIndex: f.index)
+        XCTAssertEqual(signature.files.first?.path, path)
+        XCTAssertEqual(signature.files.first?.size, UInt64(line(120).utf8.count))
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().structure_blocks, 0)
+        try Data((line(120) + line(7, second: 1)).utf8).write(to: f.file)
+        _ = try f.index.synchronize(files: [aliasFile], sessionID: f.analyzer.sessionID(from:)) {
+            file, id, request, fingerprint, emit in
+            try f.analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id,
+                request: request, insertFingerprint: fingerprint, emit: emit)
+        }
+        XCTAssertEqual(try scalar(f.db, "SELECT source_id FROM sources"), source)
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 127)
+    }
+
+    func testRecoveredStageRejectsCorruptZeroOutputTailAndKeepsOldLedger() throws {
+        let f = try fixture()
+        let padding = String(repeating: "\n", count: 8192)
+        try Data((padding + line(120)).utf8).write(to: f.file)
+        _ = try f.synchronize()
+        // Keep the byte-proved old consumption and force the full-stage path
+        // via an incomplete checkpoint. A rewritten unproved 127-token event
+        // must not replace the trusted 120-token ledger merely on retry.
+        try f.db.execute("UPDATE sources SET append_ready=0")
+        let replacement = Data((padding + line(120) + line(7, second: 1)).utf8)
+        try replacement.write(to: f.file)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(try f.synchronize())
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        let modified = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: f.file.path)[.modificationDate] as? Date)
+        let zst = URL(fileURLWithPath: f.file.path + ".zst")
+        let corruptTail = Data([0x28,0xb5,0x2f,0xfd,0x24,0,1,0,0,0,0,0,0])
+        try (frame(replacement) + corruptTail).write(to: zst)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: zst.path)
+        try FileManager.default.removeItem(at: f.file)
+        XCTAssertThrowsError(try f.synchronize())
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
+        try (frame(replacement) + frame(Data())).write(to: zst)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: zst.path)
+        _ = try f.synchronize()
+        _ = try f.synchronize()
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 127)
+    }
+
+    func testUnavailableColdSourceDoesNotHideHealthySourceReferences() throws {
+        let f = try promptFixture()
+        let healthy = f.root.appendingPathComponent("rollout-019e1234-1234-1234-1234-123456789abc.jsonl")
+        let text = String(decoding: try Data(contentsOf: f.file), as: UTF8.self)
+        try Data(text.replacingOccurrences(of: "synthetic prompt", with: "healthy prompt").utf8).write(to: healthy)
+        func syncBoth() throws {
+            _ = try f.index.synchronize(files: [f.file, healthy], sessionID: f.analyzer.sessionID(from:)) {
+                file, id, request, fingerprint, emit in
+                try f.analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request, insertFingerprint: fingerprint, emit: emit)
+            }
+        }
+        try syncBoth()
+        var ids: [String] = []
+        try f.index.forEachStoredEvent { ids.append($0.stableID) }
+        _ = try compress(f)
+        try syncBoth()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let refs = try f.index.turnSourceReferences(for: ids)
+        XCTAssertEqual(refs.count, 1)
+        XCTAssertEqual(refs.values.first?.file, healthy)
+        XCTAssertNotNil(refs.values.first?.observation)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 240)
     }
 
     private struct Fixture {
@@ -144,21 +301,25 @@ final class CompressedHistoryIndexTests: XCTestCase {
     }
     func testCompressedCatalogRetainsLogicalSizeAndSkipsWarmFirstLine() throws {
         let f = try fixture()
-        _ = try compress(f)
+        _ = try f.synchronize()
         let metadata = CodexUsageHistoryIndex.SessionCatalogMetadata(threadID: "thread",
             cwd: "/synthetic", sessionID: nil, forkedFromID: nil, parentThreadID: nil, source: "cli")
-        let cold = try f.index.synchronizeSessionCatalog(candidates: [.init(file: f.file, archived: false)]) { file in
-            let reader = try CodexRolloutReader(forReadingFrom: file)
-            defer { try? reader.close() }
-            XCTAssertFalse((try reader.read(upToCount: 1024) ?? Data()).isEmpty)
+        let alias = f.root.appendingPathComponent("catalog-directory-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: f.root)
+        let aliasFile = alias.appendingPathComponent(f.file.lastPathComponent)
+        _ = try f.index.synchronizeSessionCatalog(candidates: [.init(file: aliasFile, archived: false)]) { _ in metadata }
+        _ = try compress(f)
+        _ = try f.synchronize()
+        CodexRolloutReader.resetWorkCountersForCurrentThread()
+        let warm = try f.index.synchronizeSessionCatalog(candidates: [.init(file: aliasFile, archived: false)]) { _ in
+            XCTFail("compressed catalog must not reparse its first line")
             return metadata
         }
-        XCTAssertEqual(cold.entries.first?.sizeBytes, Int64(line(120).utf8.count))
-        let warm = try f.index.synchronizeSessionCatalog(candidates: [.init(file: f.file, archived: false)]) { _ in
-            XCTFail("warm compressed catalog must not reparse its first line")
-            return metadata
-        }
+        XCTAssertEqual(warm.entries.first?.sizeBytes, Int64(line(120).utf8.count))
+        XCTAssertEqual(warm.entries.first?.path, aliasFile.standardizedFileURL.path)
         XCTAssertEqual(warm.parsedFirstLines, 0)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().decoded_bytes, 0)
+        XCTAssertEqual(CodexRolloutReader.workCountersForCurrentThread().structure_blocks, 0)
     }
     func testRestoredCompressedTextOffsetsRequireOldChunkProof() throws {
         let f = try fixture()
@@ -174,6 +335,10 @@ final class CompressedHistoryIndexTests: XCTestCase {
         _ = try compress(f)
         _ = try f.synchronize()
         XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), 0)
+        XCTAssertTrue(try f.index.turnSourceReferences(for: ids).isEmpty)
+        let date = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: f.file.path + ".zst")[.modificationDate] as? Date)
+        try Data((prompt + line(120)).utf8).write(to: f.file)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: f.file.path)
         XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
         XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), Int64(ids.count))
         XCTAssertEqual(try scalar(f.db, "SELECT SUM(tokens) FROM events"), 120)
@@ -211,13 +376,13 @@ final class CompressedHistoryIndexTests: XCTestCase {
                 _ = try compress(f)
                 _ = try f.synchronize()
             }
-            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
+            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, compressed ? 0 : ids.count)
             try markMissing(f)
             _ = try f.synchronize()
             XCTAssertEqual(try scalar(f.db, "SELECT missing FROM usage_ledger_sources"), 0)
             XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), 0)
-            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
-            XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), Int64(ids.count))
+            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, compressed ? 0 : ids.count)
+            XCTAssertEqual(try scalar(f.db, "SELECT COUNT(*) FROM usage_ledger_bindings WHERE available=1"), compressed ? 0 : Int64(ids.count))
             _ = try f.synchronize()
             XCTAssertEqual(try eventIDs(f), ids)
             XCTAssertEqual(try scalar(f.db, "SELECT source_id FROM sources"), source)
@@ -232,7 +397,7 @@ final class CompressedHistoryIndexTests: XCTestCase {
             let original = try Data(contentsOf: f.file)
             let physical = try (compressed ? compress(f) : f.file)
             _ = try f.synchronize()
-            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, ids.count)
+            XCTAssertEqual(try f.index.turnSourceReferences(for: ids).count, compressed ? 0 : ids.count)
             try markMissing(f)
             _ = try f.synchronize()
             let date = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: physical.path)[.modificationDate] as? Date)

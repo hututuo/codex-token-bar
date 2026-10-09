@@ -15,15 +15,66 @@ pub(super) fn is_compressed(path: &Path) -> bool {
 pub(super) fn logical_path(path: &Path) -> PathBuf {
     if is_compressed(path) { path.with_extension("") } else { path.to_path_buf() }
 }
+fn plain_entry_exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(logical_path(path)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+#[cfg(test)]
+thread_local! {
+    static AFTER_PLAIN_ABSENCE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn after_plain_absence_for_testing(hook: impl FnOnce() + 'static) {
+    AFTER_PLAIN_ABSENCE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
 pub(super) fn physical_path(path: &Path) -> io::Result<PathBuf> {
     let logical = logical_path(path);
-    match fs::metadata(&logical) {
-        Ok(m) if m.is_file() => Ok(logical),
-        Ok(_) => Err(invalid("rollout is not a regular file")),
+    match fs::symlink_metadata(&logical) {
+        // If any plain entry exists, it remains authoritative. Follow valid
+        // file symlinks as before, but do not hide a dangling link or directory
+        // behind a compressed sibling.
+        Ok(_) => match fs::metadata(&logical) {
+            Ok(m) if m.is_file() => Ok(logical),
+            Ok(_) => Err(invalid("rollout is not a regular file")),
+            // A directory entry still exists. NotFound from following it is
+            // an unreadable/dangling entry, never evidence of source deletion.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(invalid("plain rollout entry exists but its target is unavailable")),
+            Err(e) => Err(e),
+        },
         Err(e) if e.kind() == io::ErrorKind::NotFound && logical.extension().is_some_and(|x| x == "jsonl") => {
+            #[cfg(test)]
+            AFTER_PLAIN_ABSENCE_HOOK.with(|slot| {
+                let hook = slot.borrow_mut().take();
+                if let Some(hook) = hook { hook(); }
+            });
             let mut compressed = logical.as_os_str().to_os_string();
             compressed.push(".zst");
-            Ok(PathBuf::from(compressed))
+            let compressed = PathBuf::from(compressed);
+            let metadata = match fs::metadata(&compressed) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    match fs::symlink_metadata(&compressed) {
+                        Ok(_) => return Err(invalid("compressed rollout entry exists but its target is unavailable")),
+                        Err(absent) if absent.kind() == io::ErrorKind::NotFound => {
+                            // Materialization publishes plain before deleting
+                            // zst. It may happen after our first plain lookup.
+                            // Recheck before claiming both representations gone.
+                            if plain_entry_exists(&logical)? {
+                                return Err(io::Error::new(io::ErrorKind::Interrupted,
+                                    "plain rollout appeared during compressed lookup; retry"));
+                            }
+                            return Err(error);
+                        }
+                        Err(other) => return Err(other),
+                    }
+                }
+                Err(error) => return Err(error),
+            };
+            if metadata.is_file() { Ok(compressed) }
+            else { Err(invalid("rollout is not a regular file")) }
         }
         Err(e) => Err(e),
     }
@@ -37,6 +88,63 @@ fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidDa
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Layout { pub logical_size: Option<u64>, pub single_frame: bool, pub declared_size: bool }
+
+fn layout_cache() -> &'static Mutex<HashMap<String, Layout>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Layout>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ReaderWorkCounters {
+    pub open: u64,
+    pub decoded_bytes: u64,
+    pub structure_blocks: u64,
+}
+
+#[cfg(test)]
+thread_local! {
+    static READER_WORK_COUNTERS: std::cell::Cell<ReaderWorkCounters> = const {
+        std::cell::Cell::new(ReaderWorkCounters { open: 0, decoded_bytes: 0, structure_blocks: 0 })
+    };
+}
+
+#[cfg(test)]
+pub(super) fn reset_work_counters_for_current_thread() {
+    READER_WORK_COUNTERS.with(|counters| counters.set(ReaderWorkCounters::default()));
+}
+
+#[cfg(test)]
+pub(super) fn work_counters_for_current_thread() -> ReaderWorkCounters {
+    READER_WORK_COUNTERS.with(|counters| counters.get())
+}
+
+#[cfg(test)]
+fn record_open() {
+    READER_WORK_COUNTERS.with(|counters| {
+        let mut value = counters.get();
+        value.open = value.open.saturating_add(1);
+        counters.set(value);
+    });
+}
+
+#[cfg(test)]
+fn record_decoded_bytes(count: u64) {
+    READER_WORK_COUNTERS.with(|counters| {
+        let mut value = counters.get();
+        value.decoded_bytes = value.decoded_bytes.saturating_add(count);
+        counters.set(value);
+    });
+}
+
+#[cfg(test)]
+fn record_structure_block() {
+    READER_WORK_COUNTERS.with(|counters| {
+        let mut value = counters.get();
+        value.structure_blocks = value.structure_blocks.saturating_add(1);
+        counters.set(value);
+    });
+}
 
 // The cache is only a process-local invalidation hint, not a content proof.
 // Include change time/file identity where supported; never use it to add usage.
@@ -93,6 +201,8 @@ fn inspect(file: &mut File) -> io::Result<Layout> {
         total=match (total,size) { (Some(a),Some(b))=>Some(a.checked_add(b).ok_or_else(||invalid("zstd logical size overflow"))?), _=>None };
         loop {
             blocks+=1; if blocks>1_000_000 { return Err(invalid("zstd structural work limit exceeded")); }
+            #[cfg(test)]
+            record_structure_block();
             let header=read_number(file,3)?;
             let kind=(header>>1)&3; let size=header>>3;
             if kind==3 || size>128*1024 { return Err(invalid("invalid zstd block header")); }
@@ -120,27 +230,76 @@ pub(super) struct RolloutReader {
     logical_position: u64,
 }
 impl RolloutReader {
-    pub fn open(path: &Path) -> io::Result<Self> {
+    /// Return the logical JSONL size only when it can be read from plain-file
+    /// metadata or an existing compressed-layout cache entry. This never
+    /// inspects a frame or constructs a decoder.
+    pub fn cached_logical_length(path: &Path) -> io::Result<Option<u64>> {
         for _ in 0..3 {
-            let physical = physical_path(path)?;
+            let physical = match physical_path(path) {
+                Ok(physical) => physical,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
             let file = match File::open(&physical) {
-                Ok(file) => file,
+                Ok(file) => {
+                    #[cfg(test)]
+                    record_open();
+                    file
+                }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            if is_compressed(&physical) && logical_path(path).try_exists()? {
+            if is_compressed(&physical) && plain_entry_exists(path)? {
+                continue;
+            }
+
+            if !is_compressed(&physical) {
+                return Ok(Some(file.metadata()?.len()));
+            }
+
+            let key = cache_key(&physical, &file)?;
+            // Recheck plain precedence after opening the compressed handle.
+            if plain_entry_exists(path)? {
+                continue;
+            }
+            let cached = layout_cache()
+                .lock()
+                .map_err(|_| invalid("zstd layout cache poisoned"))?
+                .get(&key)
+                .copied();
+            return Ok(cached.and_then(|layout| layout.logical_size));
+        }
+        Err(io::Error::new(io::ErrorKind::Interrupted, "rollout representations changed during open; retry"))
+    }
+
+    pub fn open(path: &Path) -> io::Result<Self> {
+        for _ in 0..3 {
+            let physical = match physical_path(path) {
+                Ok(physical) => physical,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            let file = match File::open(&physical) {
+                Ok(file) => {
+                    #[cfg(test)]
+                    record_open();
+                    file
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if is_compressed(&physical) && plain_entry_exists(path)? {
                 continue;
             }
             return Self::from_file(file, physical);
         }
-        Err(io::Error::new(io::ErrorKind::NotFound, "rollout representations changed during open; retry"))
+        Err(io::Error::new(io::ErrorKind::Interrupted, "rollout representations changed during open; retry"))
     }
     pub fn from_file(mut file: File, physical: PathBuf) -> io::Result<Self> {
         let before=cache_key(&physical,&file)?;
         let mut layout=Layout { logical_size:Some(file.metadata()?.len()),single_frame:false,declared_size:false };
         let storage=if is_compressed(&physical) {
-            static CACHE: OnceLock<Mutex<HashMap<String,Layout>>>=OnceLock::new();
-            let cache=CACHE.get_or_init(||Mutex::new(HashMap::new()));
+            let cache=layout_cache();
             let cached=cache.lock().map_err(|_|invalid("zstd layout cache poisoned"))?.get(&before).copied();
             layout=if let Some(value)=cached {value} else {
                 let value=inspect(&mut file).map_err(|e|io::Error::new(e.kind(),format!("zstd结构检查失败 {}：{e}",physical.display())))?;
@@ -155,6 +314,8 @@ impl RolloutReader {
                 // Unknown-size frames cannot use the metadata reuse lane.
                 let mut bytes=[0;128*1024]; let mut size=0u64;
                 loop { let n=d.read(&mut bytes).map_err(|e|io::Error::new(e.kind(),format!("zstd长度核对失败 {}：{e}",physical.display())))?; if n==0 {break;}
+                    #[cfg(test)]
+                    record_decoded_bytes(n as u64);
                     size=size.checked_add(n as u64).ok_or_else(||invalid("rollout logical size overflow"))?;
                 }
                 layout.logical_size=Some(size);
@@ -186,7 +347,10 @@ impl RolloutReader {
 }
 impl Read for RolloutReader {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let compressed = self.compressed();
         let n=match self.storage.as_mut().expect("reader storage") {Storage::Plain(f)=>f.read(bytes)?,Storage::Compressed(d)=>d.read(bytes).map_err(|e|io::Error::new(e.kind(),format!("zstd解码失败 {}：{e}",self.physical.display())))?};
+        #[cfg(test)]
+        if compressed { record_decoded_bytes(n as u64); }
         self.logical_position=self.logical_position.checked_add(n as u64).ok_or_else(||invalid("rollout offset overflow"))?;
         Ok(n)
     }

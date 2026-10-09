@@ -10,7 +10,7 @@ use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
 use super::session_parser::{
-    probe_explicit_subagent_session_file, read_event_excerpts, stream_session_file_exact,
+    probe_explicit_subagent_session_file, read_event_excerpt_batch, stream_session_file_exact,
     stream_session_file_exact_from, ExactChunkHash, ExactEventSourceOffsets, ExactSessionEventSink,
     ExactSessionParserState, ExactTokenEvent, ExplicitSubagentSessionFileProbe, SourceByteRange,
     UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE,
@@ -744,7 +744,7 @@ enum ThreadMetadataStage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PreciseScanCandidate {
     canonical_path: PathBuf,
-    signature: FileSignature,
+    signature: Option<FileSignature>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -875,7 +875,7 @@ pub(super) fn read_only_source_probe(
     }
     drop(statement);
 
-    let discovery = match estimate_precise_scan_total_with_source_revision(codex_home, timeout, 0) {
+    let discovery = match estimate_precise_scan_total_with_known_sources(codex_home, timeout, 0, &published_files) {
         Ok(discovery) => discovery,
         Err(_) => {
             return Ok(ReadOnlySourceProbe {
@@ -901,8 +901,8 @@ pub(super) fn read_only_source_probe(
         let unchanged = published_files
             .get(&path)
             .is_some_and(|(size, modified_ns, physical)| {
-                candidate.signature.matches_stored(*size, modified_ns)
-                    && candidate.signature.matches_physical(physical.as_deref())
+                candidate.signature.is_some_and(|signature| signature.matches_stored(*size, modified_ns)
+                    && signature.matches_physical(physical.as_deref()))
             });
         changed |= !unchanged;
     }
@@ -1017,6 +1017,17 @@ struct StagedFullRebuild {
     resume_offset: u64,
     parser_state: ExactSessionParserState,
     event_count: u64,
+    source_validation: Option<StageSourceValidation>,
+}
+
+/// Short-lived proof from this owner, bound to the sealed stage and source.
+/// Never serialized; recovered stages must first perform a real EOF proof.
+#[derive(Clone, Debug)]
+struct StageSourceValidation {
+    source: FileSignature,
+    prefix_sha256: [u8; 32],
+    artifact_id: String,
+    stage: FileSignature,
 }
 
 struct StagedFullRebuildResult {
@@ -2024,7 +2035,8 @@ impl ExactUsageIndex {
     {
         self.connection.mark_receipt_dirty();
         let existing = load_stored_session_catalog(&self.connection)?;
-        let observations = collect_session_catalog_observations(codex_home)?;
+        let known = complete_source_observations(&self.connection)?;
+        let observations = collect_session_catalog_observations(codex_home, &known)?;
         let published_generation =
             metadata_i64(&self.connection, "session_catalog_published_generation")?.unwrap_or(0);
         let generation = published_generation
@@ -2645,7 +2657,7 @@ impl ExactUsageIndex {
                         &mut scanned_paths,
                         scan_total,
                         &mut diagnostics,
-                        Some(candidate.signature),
+                        candidate.signature,
                         mode,
                     )?;
                 }
@@ -3345,6 +3357,13 @@ impl ExactUsageIndex {
         Ok(true)
     }
 
+    pub(super) fn discover_sources(
+        &self, codex_home: &Path, timeout: StdDuration, source_revision: u64,
+    ) -> Result<PreciseScanDiscovery, String> {
+        let known = complete_source_observations(&self.connection)?;
+        estimate_precise_scan_total_with_known_sources(codex_home, timeout, source_revision, &known)
+    }
+
     pub(super) fn sources_changed(
         &mut self,
         codex_home: &Path,
@@ -3369,8 +3388,9 @@ impl ExactUsageIndex {
                 if !seen_files.insert(path.clone()) {
                     return Ok(());
                 }
-                let signature = match file_signature(file) {
-                    Ok(signature) => signature,
+                let signature = match lightweight_file_signature(file, published_files.get(&path)) {
+                    Ok(Some(signature)) => signature,
+                    Ok(None) => { changed = true; return Ok(()); },
                     Err(error) => {
                         // A metadata/permission race is a source change, not
                         // proof that the file disappeared.  Let the durable
@@ -3425,8 +3445,8 @@ impl ExactUsageIndex {
             let unchanged = published_files
                 .get(&path)
                 .is_some_and(|(size, modified_ns, physical)| {
-                    candidate.signature.matches_stored(*size, modified_ns)
-                        && candidate.signature.matches_physical(physical.as_deref())
+                    candidate.signature.is_some_and(|signature| signature.matches_stored(*size, modified_ns)
+                        && signature.matches_physical(physical.as_deref()))
                 });
             changed |= !unchanged;
         }
@@ -4916,6 +4936,11 @@ impl ExactUsageIndex {
         }
 
         let canonical_home = canonical_codex_home(codex_home)?;
+        let mut requested_excerpts: HashMap<PathBuf, Vec<ExactEventSourceOffsets>> = HashMap::new();
+        for item in &selected {
+            requested_excerpts.entry(item.file_path.clone()).or_default().push(item.source_offsets);
+        }
+        let mut excerpt_batches: HashMap<PathBuf, Result<HashMap<ExactEventSourceOffsets, (String, String)>, String>> = HashMap::new();
         let mut verified_excerpts = HashMap::new();
         Ok(selected
             .into_iter()
@@ -4928,13 +4953,14 @@ impl ExactUsageIndex {
                 ) else {
                     return item.usage;
                 };
-                // Ranking never opens a zstd decoder in active-only mode.
-                // An eligible session can still have an older compressed shard.
-                if active_since.is_some() && !file.is_file() {
+                // Optional raw text is deferred for actual compressed storage,
+                // independent of the seven-day ranking preference.
+                if !rollout_source::physical_path(&file).is_ok_and(|physical| !rollout_source::is_compressed(&physical)) {
                     return item.usage;
                 }
-                let before = match file_signature(&file) {
-                    Ok(signature) => signature,
+                let before = match lightweight_file_signature(&file, None) {
+                    Ok(Some(signature)) => signature,
+                    Ok(None) => return item.usage,
                     Err(error) => {
                         warnings.push(excerpt_warning(error));
                         return item.usage;
@@ -4947,6 +4973,11 @@ impl ExactUsageIndex {
                     )));
                     return item.usage;
                 }
+                match representations::current_excerpt_observation(&self.connection, &file, before) {
+                    Ok(true) => {},
+                    Ok(false) => return item.usage,
+                    Err(error) => { warnings.push(excerpt_warning(error)); return item.usage; }
+                }
                 if item.source_offsets.user_prompt.is_none() && item.source_offsets.assistant_response.is_none() {
                     return item.usage;
                 }
@@ -4957,11 +4988,19 @@ impl ExactUsageIndex {
                     Ok(false) => return item.usage,
                     Err(error) => {warnings.push(excerpt_warning(error.clone())); return item.usage;}
                 }
-                match read_event_excerpts(&file, item.source_offsets) {
-                    Ok((user_prompt, assistant_response)) => match file_signature(&file) {
-                        Ok(after) if after == before => {
-                            item.usage.user_prompt = user_prompt;
-                            item.usage.assistant_response = assistant_response;
+                let batch = excerpt_batches.entry(file.clone()).or_insert_with(|| {
+                    let requests = requested_excerpts.get(&item.file_path).map(Vec::as_slice).unwrap_or(&[]);
+                    read_event_excerpt_batch(&file, requests, |handle| {
+                        if file_signature_from_handle(handle, &file)? == before { Ok(()) }
+                        else { Err(format!("会话摘录描述符在读取期间变化：{}", file.display())) }
+                    }).map(|values|
+                        requests.iter().copied().zip(values).collect())
+                });
+                match batch.as_ref().map(|values| values.get(&item.source_offsets)) {
+                    Ok(Some((user_prompt, assistant_response))) => match lightweight_file_signature(&file, None) {
+                        Ok(Some(after)) if after == before => {
+                            item.usage.user_prompt = user_prompt.clone();
+                            item.usage.assistant_response = assistant_response.clone();
                         }
                         Ok(_) => warnings.push(excerpt_warning(format!(
                             "会话摘录源文件在读取期间变化，将在下一次刷新重建：{}",
@@ -4969,7 +5008,8 @@ impl ExactUsageIndex {
                         ))),
                         Err(error) => warnings.push(excerpt_warning(error)),
                     },
-                    Err(error) => warnings.push(excerpt_warning(error)),
+                    Ok(None) => {},
+                    Err(error) => warnings.push(excerpt_warning(error.clone())),
                 }
                 item.usage
             })
@@ -6340,7 +6380,10 @@ fn build_staged_full_rebuild(
     drop(stage);
     sync_staging_database(&database_path, &staging_sync)?;
 
+    let stage_signature = file_signature_from_handle(&fs::File::open(&database_path).map_err(|error| error.to_string())?, &database_path)?;
     Ok(StagedFullRebuild {
+        source_validation: Some(StageSourceValidation { source: committed_signature,
+            prefix_sha256: parsed.prefix_sha256, artifact_id: artifact_id.clone(), stage: stage_signature }),
         job: FullRebuildJob {
             signature: committed_signature,
             ..job.clone()
@@ -6534,7 +6577,7 @@ fn reusable_staged_full_rebuild(
     let reusable = (|| {
         let stage = sqlite::open_read_only(database_path, StdDuration::from_secs(1))
             .map_err(|error| format!("无法只读打开精确 token 单文件暂存：{error}"))?;
-        validated_staged_full_rebuild(&stage, database_path, job, target_generation)
+        validated_staged_full_rebuild(&stage, database_path, job, target_generation, None)
     })();
     match reusable {
         Ok(Some(staged)) => Ok(Some(staged)),
@@ -6548,6 +6591,7 @@ fn validated_staged_full_rebuild(
     database_path: &Path,
     job: &FullRebuildJob,
     target_generation: i64,
+    proof: Option<&StageSourceValidation>,
 ) -> Result<Option<StagedFullRebuild>, String> {
     quick_check_index(connection, None)?;
     let manifest_schema_version =
@@ -6759,19 +6803,21 @@ fn validated_staged_full_rebuild(
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    let mut source_handle = match RolloutReader::open(&job.file) {
-        Ok(handle) => handle,
-        Err(_) => return Ok(None),
-    };
-    if validate_same_file_prefix(
-        &job.file,
-        &mut source_handle,
-        manifest_signature,
-        prefix_sha256,
-    )
-    .is_err()
-    {
-        return Ok(None);
+    let stage_signature = file_signature_from_handle(&fs::File::open(database_path).map_err(|error| error.to_string())?, database_path)?;
+    let known = (manifest_signature.size, manifest_signature.modified_ns.to_string(),
+        manifest_signature.physical.map(|stamp| stamp.encode()));
+    let reusable_proof = proof.is_some_and(|proof| proof.source == manifest_signature
+        && proof.source.physical.is_some() && proof.prefix_sha256 == prefix_sha256
+        && proof.artifact_id == manifest.artifact_id && proof.stage == stage_signature
+        && lightweight_file_signature(&job.file, Some(&known)).ok().flatten() == Some(manifest_signature));
+    if !reusable_proof {
+        let mut source_handle = match RolloutReader::open(&job.file) {
+            Ok(handle) => handle,
+            Err(_) => return Ok(None),
+        };
+        if validate_same_file_prefix(&job.file, &mut source_handle, manifest_signature, prefix_sha256).is_err() {
+            return Ok(None);
+        }
     }
     let event_count = connection
         .query_row("SELECT COUNT(*) FROM events", [], |row| {
@@ -6860,6 +6906,8 @@ fn validated_staged_full_rebuild(
     }
 
     Ok(Some(StagedFullRebuild {
+        source_validation: Some(StageSourceValidation { source: manifest_signature,
+            prefix_sha256, artifact_id: manifest.artifact_id.clone(), stage: stage_signature }),
         job: FullRebuildJob {
             signature: manifest_signature,
             ..job.clone()
@@ -6900,7 +6948,7 @@ fn import_staged_full_rebuild(
     let validated = {
         let stage = sqlite::open_read_only(&staged.database_path, StdDuration::from_secs(1))
             .map_err(|error| format!("无法只读打开待导入的精确 token 暂存：{error}"))?;
-        validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job, generation)?
+        validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job, generation, staged.source_validation.as_ref())?
             .ok_or_else(|| "精确 token 单文件暂存在导入前失效".to_string())?
     };
     if validated.artifact_id != staged.artifact_id || validated.actual_bytes != staged.actual_bytes
@@ -9514,6 +9562,22 @@ fn process_session_file(
     let canonical = rollout_source::canonical_logical_path(file).unwrap_or_else(|_| rollout_source::logical_path(file));
     let path = canonical.to_string_lossy().into_owned();
 
+    if let Some(stored) = representations::complete_observation(connection, &path)? {
+        if let Ok(Some(signature)) = lightweight_file_signature(file, Some(&stored)) {
+            if rollout_source::physical_path(file).is_ok_and(|physical| rollout_source::is_compressed(&physical))
+                && signature.matches_stored(stored.0, &stored.1)
+                && signature.matches_physical(stored.2.as_deref())
+            {
+                if expected_signature.is_some_and(|expected| expected != signature) {
+                    diagnostics.source_drift = true;
+                }
+                connection.execute("INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)", params![&path])
+                    .map_err(|error| format!("无法记录稳定压缩来源：{error}"))?;
+                return Ok(None);
+            }
+        }
+    }
+
     // 单个文件不可读（权限/锁定/iCloud 占位）属持久性错误：整轮报错会让 building
     // 滞留、后台无限重试且 dashboard 永不刷新。删除已经明确发生时不写入
     // exact_seen_files，让本轮正式发布安全登记删除墓碑；其他不可读错误仍抑制
@@ -10055,14 +10119,12 @@ fn revalidate_metadata_only_file(
         .checked_sub(1)
         .map_or(0, |offset| offset / EXACT_INDEX_CHUNK_SIZE + 1);
     let mut verification_order = Vec::with_capacity(usize::try_from(chunk_count).unwrap_or(0));
-    if chunk_count > 0 {
-        verification_order.push(0);
-    }
-    if chunk_count > 1 {
-        verification_order.push(chunk_count - 1);
-    }
-    if chunk_count > 2 {
-        verification_order.extend(1..chunk_count - 1);
+    if rollout_source::physical_path(file).is_ok_and(|physical| rollout_source::is_compressed(&physical)) {
+        verification_order.extend(0..chunk_count);
+    } else {
+        if chunk_count > 0 { verification_order.push(0); }
+        if chunk_count > 1 { verification_order.push(chunk_count - 1); }
+        if chunk_count > 2 { verification_order.extend(1..chunk_count - 1); }
     }
 
     let mut verified_bytes = 0_u64;
@@ -10777,6 +10839,15 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
     timeout: StdDuration,
     source_revision: u64,
 ) -> Result<PreciseScanDiscovery, String> {
+    estimate_precise_scan_total_with_known_sources(codex_home, timeout, source_revision, &HashMap::new())
+}
+
+fn estimate_precise_scan_total_with_known_sources(
+    codex_home: &Path,
+    timeout: StdDuration,
+    source_revision: u64,
+    known: &HashMap<String, (u64, String, Option<String>)>,
+) -> Result<PreciseScanDiscovery, String> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
@@ -10801,6 +10872,7 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
                 &mut directories,
                 &mut boundary_warnings,
                 &mut unresolved_boundary,
+                known,
             )?;
         }
     }
@@ -10812,6 +10884,7 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
         &mut directories,
         &mut boundary_warnings,
         &mut unresolved_boundary,
+        known,
     )?;
 
     ensure_estimate_deadline(&deadline)?;
@@ -10842,10 +10915,11 @@ fn estimate_session_directory(
     root: &Path,
     canonical_home: &Path,
     deadline: &Instant,
-    candidates: &mut HashMap<PathBuf, FileSignature>,
+    candidates: &mut HashMap<PathBuf, Option<FileSignature>>,
     directories: &mut HashMap<PathBuf, DirectorySignature>,
     boundary_warnings: &mut Vec<String>,
     unresolved_boundary: &mut bool,
+    known: &HashMap<String, (u64, String, Option<String>)>,
 ) -> Result<(), String> {
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -10923,7 +10997,7 @@ fn estimate_session_directory(
                 boundary_warnings.push(format!("拒绝读取非普通会话文件：{}", canonical.display()));
                 continue;
             }
-            match file_signature(&canonical) {
+            match lightweight_file_signature(&canonical, known.get(canonical.to_string_lossy().as_ref())) {
                 Ok(signature) => {
                     candidates.entry(canonical).or_insert(signature);
                 }
@@ -10941,10 +11015,11 @@ fn estimate_active_rollouts(
     codex_home: &Path,
     canonical_home: &Path,
     deadline: &Instant,
-    candidates: &mut HashMap<PathBuf, FileSignature>,
+    candidates: &mut HashMap<PathBuf, Option<FileSignature>>,
     directories: &mut HashMap<PathBuf, DirectorySignature>,
     boundary_warnings: &mut Vec<String>,
     unresolved_boundary: &mut bool,
+    known: &HashMap<String, (u64, String, Option<String>)>,
 ) -> Result<(), String> {
     ensure_estimate_deadline(deadline)?;
     let database = codex_home.join("state_5.sqlite");
@@ -11032,7 +11107,7 @@ fn estimate_active_rollouts(
         if let Some(parent) = canonical.parent() {
             directories.insert(parent.to_path_buf(), directory_signature(parent));
         }
-        match file_signature(&canonical) {
+        match lightweight_file_signature(&canonical, known.get(canonical.to_string_lossy().as_ref())) {
             Ok(signature) => {
                 candidates.entry(canonical).or_insert(signature);
             }
@@ -16978,6 +17053,7 @@ fn load_stored_session_catalog(
 
 fn collect_session_catalog_observations(
     codex_home: &Path,
+    known: &HashMap<String, (u64, String, Option<String>)>,
 ) -> Result<Vec<SessionCatalogObservation>, String> {
     let mut observations = Vec::new();
     for (relative_root, archived) in [("sessions", false), ("archived_sessions", true)] {
@@ -17032,7 +17108,7 @@ fn collect_session_catalog_observations(
                 let selected = rollout_source::physical_path(&logical).map_err(|e|format!("无法解析目录来源 {}：{e}",logical.display()))?;
                 let selected_metadata = fs::symlink_metadata(&selected).map_err(|e|e.to_string())?;
                 reject_session_catalog_reparse_point(&selected, &selected_metadata)?;
-                observations.push(session_catalog_observation(logical, archived, &selected_metadata)?);
+                observations.push(session_catalog_observation(logical.clone(), archived, &selected_metadata, known.get(logical.to_string_lossy().as_ref()))?);
             }
         }
     }
@@ -17045,10 +17121,12 @@ fn session_catalog_observation(
     path: PathBuf,
     archived: bool,
     metadata: &fs::Metadata,
+    known: Option<&(u64, String, Option<String>)>,
 ) -> Result<SessionCatalogObservation, String> {
     let modified = metadata.modified().ok();
     let created = metadata.created().ok();
-    let size = file_signature(&path)?.size;
+    let size = lightweight_file_signature(&path, known)?.ok_or_else(||
+        format!("压缩会话目录元数据未就绪，保留上次完整目录：{}", path.display()))?.size;
     Ok(SessionCatalogObservation {
         path,
         archived,
@@ -17079,8 +17157,11 @@ where
     F: FnMut(&[u8]) -> Result<IndexedSessionMetadata, String>,
 {
     let physical = rollout_source::physical_path(&observation.path).map_err(|e|e.to_string())?;
-    let raw = open_session_catalog_rollout(&physical)?;
-    let mut file = RolloutReader::from_file(raw, physical).map_err(|e|e.to_string())?;
+    if rollout_source::is_compressed(&physical) {
+        return Err(format!("压缩会话目录原文读取已延期，保留上次完整目录：{}", observation.path.display()));
+    }
+    // Plain-only pinning prevents a storage conversion from creating a decoder.
+    let mut file = open_session_catalog_rollout(&physical)?;
     let before = file_signature_from_handle(&file, &observation.path)?;
     if before.size != observation.size || before.modified_ns.to_string() != observation.modified_ns
     {
@@ -17124,6 +17205,7 @@ where
         observation.path.clone(),
         observation.archived,
         &path_metadata,
+        None,
     )?;
     if !session_catalog_observation_values_match(&observation, &path_observation) {
         return Err(format!(
@@ -17560,6 +17642,40 @@ fn physical_file_stamp(handle: &fs::File, _metadata: &fs::Metadata) -> Result<Op
 
 #[cfg(not(any(unix, windows)))]
 fn physical_file_stamp(_handle: &fs::File, _metadata: &fs::Metadata) -> Result<Option<PhysicalFileStamp>, String> { Ok(None) }
+
+fn lightweight_file_signature(
+    path: &Path, known: Option<&(u64, String, Option<String>)>,
+) -> Result<Option<FileSignature>, String> {
+    let physical = rollout_source::physical_path(path).map_err(|error| error.to_string())?;
+    let handle = fs::File::open(&physical).map_err(|error| error.to_string())?;
+    let before = file_signature_from_handle(&handle, path)?;
+    let compressed = rollout_source::is_compressed(&physical);
+    let logical = if !compressed {
+        Some(before.size)
+    } else if let Some((size, modified, stamp)) = known.filter(|(_, modified, stamp)| {
+        before.physical.is_some() && before.modified_ns.to_string() == *modified && before.matches_physical(stamp.as_deref())
+    }) {
+        let _ = (modified, stamp);
+        Some(*size)
+    } else {
+        RolloutReader::cached_logical_length(path).map_err(|error| error.to_string())?
+    };
+    let selected_after = rollout_source::physical_path(path).map_err(|error| error.to_string())?;
+    let after_handle = fs::File::open(&selected_after).map_err(|error| error.to_string())?;
+    if selected_after != physical || file_signature_from_handle(&handle, path)? != before
+        || file_signature_from_handle(&after_handle, path)? != before {
+        return Err(format!("会话物理来源在观察期间变化：{}", path.display()));
+    }
+    Ok(logical.map(|size| FileSignature { size, ..before }))
+}
+
+fn complete_source_observations(db: &Connection) -> Result<HashMap<String, (u64, String, Option<String>)>, String> {
+    let mut statement = db.prepare(representations::COMPLETE_OBSERVATIONS_SQL).map_err(|error| error.to_string())?;
+    let rows = statement.query_map(params![EVENT_ENRICHMENT_REVISION, STAGED_FULL_REBUILD_PARSER_REVISION], |row| {
+        Ok((row.get::<_, String>(0)?, (nonnegative_u64(row.get::<_, i64>(1)?), row.get(2)?, row.get(3)?)))
+    }).map_err(|error| error.to_string())?;
+    rows.collect::<Result<HashMap<_, _>, _>>().map_err(|error| error.to_string())
+}
 
 fn file_signature(path: &Path) -> Result<FileSignature, String> {
     let handle = RolloutReader::open(path)

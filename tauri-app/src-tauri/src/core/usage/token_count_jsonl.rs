@@ -444,6 +444,7 @@ fn is_monitored_exact_source_path(codex_home: &Path, path: &Path) -> bool {
         || relative
             .extension()
             .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("jsonl"))
+        || relative.file_name().is_some_and(|name| name.to_string_lossy().to_ascii_lowercase().ends_with(".jsonl.zst"))
 }
 
 fn mutation_event_requires_continuity_cutover(codex_home: &Path, event: &NotifyEvent) -> bool {
@@ -1395,7 +1396,7 @@ fn run_precise_refresh_inner(
             0,
             None,
         );
-        let discovery = match exact_usage_index::estimate_precise_scan_total_with_source_revision(
+        let discovery = match index.discover_sources(
             canonical_home,
             PRECISE_SCAN_ESTIMATE_TIMEOUT,
             flight.source_revision_at_start,
