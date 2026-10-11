@@ -816,11 +816,11 @@ export function tokenAreaPath(points: Point[], _width: number, plotHeight: numbe
 }
 
 export function hoverIndexForX(x: number, width: number, pointCount: number): number | null {
-  if (pointCount === 0 || x < 0 || x > width) {
+  if (pointCount <= 0 || !Number.isFinite(x) || !Number.isFinite(width) || width <= 0 || x < 0 || x > width) {
     return null;
   }
   const step = width / Math.max(pointCount - 1, 1);
-  return clamp(Math.round(x / Math.max(step, 1)), 0, pointCount - 1);
+  return clamp(Math.round(x / step), 0, pointCount - 1);
 }
 
 /**

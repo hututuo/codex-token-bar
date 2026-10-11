@@ -52,6 +52,7 @@ import {
   type Point,
   type RecentChartScrollDirection,
   type RecentChartRange,
+  type PreparedRecentChartData,
   type SeriesVisibility,
 } from "./recentUsageChart/model";
 import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/model";
@@ -125,10 +126,28 @@ export function RecentUsageChart({
   const scrollbarDragRef = useRef<{ pointerId: number; grabOffset: number } | null>(null);
   const [chartScrollLeft, setChartScrollLeft] = useState(0);
   const [chartViewportWidth, setChartViewportWidth] = useState(CHART_WIDTH);
-  const data = useMemo(
-    () => prepareRecentChartData(range, { recentUsage24h, recentUsage7d, recentUsage30d }),
-    [range, recentUsage24h, recentUsage7d, recentUsage30d],
+  // Retain at most three display snapshots for these source arrays. Changing
+  // tabs must not repeat normalization and model pricing for 8,640 buckets.
+  const preparedDataCache = useMemo(
+    () => new Map<RecentChartRange, PreparedRecentChartData>(),
+    [recentUsage24h, recentUsage7d, recentUsage30d],
   );
+  function preparedDataForRange(next: RecentChartRange) {
+    let prepared = preparedDataCache.get(next);
+    if (!prepared) {
+      prepared = prepareRecentChartData(next, { recentUsage24h, recentUsage7d, recentUsage30d });
+      preparedDataCache.set(next, prepared);
+    }
+    return prepared;
+  }
+  const data = preparedDataForRange(range);
+  const bucketCostCache = useMemo(
+    () => new Map<RecentUsagePoint[], number[]>(),
+    [preparedDataCache, quotaModel],
+  );
+  const costSource = data.bucketSeconds === 300
+    ? recentUsage24h
+    : data.range === "7d" ? recentUsage7d : recentUsage30d;
   const chartGeometry = recentChartGeometry(data.range);
   const { canvasHeight, plotTop, plotHeight, timeMarkerGap } = chartGeometry;
   const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth);
@@ -145,8 +164,15 @@ export function RecentUsageChart({
     [data, chartWidth, chartScrollLeft, chartViewportWidth],
   );
   const bucketCostsUSD = useMemo(
-    () => recentChartBucketCosts(data.points, quotaModel),
-    [data.points, quotaModel],
+    () => {
+      let costs = bucketCostCache.get(costSource);
+      if (!costs) {
+        costs = recentChartBucketCosts(data.points, quotaModel);
+        bucketCostCache.set(costSource, costs);
+      }
+      return costs;
+    },
+    [data.points, costSource, quotaModel, bucketCostCache],
   );
   const visibleWindowCostUSD = useMemo(() => {
     if (visibleWindowSummary.endIndex < visibleWindowSummary.startIndex) return 0;
@@ -222,16 +248,18 @@ export function RecentUsageChart({
     activeIndex,
     Math.max(data.points.length - 1, 0),
   );
-  const consumptionSelection = quotaSelectionState.startIndex !== null && quotaEndIndex !== null
-    ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, {
-      fiveHour: { resetAtUnix: fiveHourResetAtUnix, periodSeconds: 5 * 60 * 60 },
-      sevenDay: { resetAtUnix: sevenDayResetAtUnix, periodSeconds: 7 * 24 * 60 * 60 },
-    })
-    : null;
-  const selectionAttribution = fixedSelectionEndIndex !== null
+  const consumptionSelection = useMemo(() => (
+    quotaSelectionState.startIndex !== null && quotaEndIndex !== null
+      ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, {
+        fiveHour: { resetAtUnix: fiveHourResetAtUnix, periodSeconds: 5 * 60 * 60 },
+        sevenDay: { resetAtUnix: sevenDayResetAtUnix, periodSeconds: 7 * 24 * 60 * 60 },
+      })
+      : null
+  ), [data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, fiveHourResetAtUnix, sevenDayResetAtUnix]);
+  const selectionAttribution = useMemo(() => fixedSelectionEndIndex !== null
     && consumptionSelection !== null
     ? quotaSelectionAttribution(consumptionSelection, sharedAccountAttribution)
-    : null;
+    : null, [fixedSelectionEndIndex, consumptionSelection, sharedAccountAttribution]);
   const quotaEstimateVisibility = quotaEstimateWindowVisibility(data);
   const quotaGuideStep = !quotaGuideCompleted && data.points.length > 1
     ? fixedSelectionEndIndex !== null
@@ -404,6 +432,16 @@ export function RecentUsageChart({
 
 
   function updateRange(next: RecentChartRange) {
+    if (next === range) return;
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+      pendingScrollFrameRef.current = null;
+    }
+    const nextData = preparedDataForRange(next);
+    const nextLayout = recentChartScrollLayout(next, nextData.points.length, nextData.bucketSeconds, chartViewportWidth);
+    // Publish the new range and its trailing viewport together, so the first
+    // render cannot use an offset belonging to the previous range's geometry.
+    setChartScrollLeft(nextLayout.latestScrollLeft);
     setRange(next);
     setHoveredIndex(null);
     setPreviewDismissed(false);
@@ -565,6 +603,7 @@ export function RecentUsageChart({
 
       <div className="recent-chart-plot">
         <div
+          key={data.range}
           className={scrollLayout.className}
           ref={scrollRef}
           aria-label={scrollLayout.isHorizontal ? `${data.title}图表可左右滚动` : undefined}

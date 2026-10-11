@@ -196,8 +196,19 @@ extension RecentUsageChart {
     }
 
     func hoverIndex(at location: CGPoint, in plot: CGRect, step: CGFloat) -> Int? {
-        guard plot.contains(location), !preparedData.bins.isEmpty else { return nil }
-        let rawIndex = Int(round((location.x - plot.minX) / max(step, 1)))
-        return min(max(rawIndex, preparedData.bins.startIndex), preparedData.bins.index(before: preparedData.bins.endIndex))
+        RecentChartHitTesting.index(
+            at: location, in: plot, step: step, pointCount: preparedData.bins.count
+        )
+    }
+}
+
+enum RecentChartHitTesting {
+    static func index(at location: CGPoint, in plot: CGRect, step: CGFloat, pointCount: Int) -> Int? {
+        guard plot.contains(location), pointCount > 0,
+              step.isFinite, step > 0 else { return nil }
+        // Seven-day fine data has subpixel spacing. Clamping to one pixel
+        // points at older, often offscreen buckets instead of the drawn point.
+        let index = ((location.x - plot.minX) / step).rounded()
+        return Int(min(max(index, 0), CGFloat(pointCount - 1)))
     }
 }

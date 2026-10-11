@@ -4,6 +4,28 @@ import XCTest
 @testable import CodexTokenBar
 
 final class RecentChartSelectionInteractionTests: XCTestCase {
+    func testSevenDayFineSeriesHitTestingUsesTheDrawnSubpixelSpacing() {
+        let count = 30 * 24 * 12
+        let width: CGFloat = 980 * 30 / 7
+        let step = width / CGFloat(count - 1)
+        let plot = CGRect(x: 0, y: 27, width: width, height: 215)
+        XCTAssertLessThan(step, 1)
+        // Both endpoints are in the trailing seven-day viewport. A one-pixel
+        // denominator incorrectly resolves them to offscreen, older history.
+        for index in [count - 2_000, count - 1_000, count - 1] {
+            let x = min(CGFloat(index) * step, width - 0.000_001)
+            XCTAssertEqual(RecentChartHitTesting.index(
+                at: CGPoint(x: x, y: 100), in: plot, step: step, pointCount: count
+            ), index)
+        }
+        XCTAssertNil(RecentChartHitTesting.index(
+            at: CGPoint(x: 10, y: 10), in: plot, step: step, pointCount: count
+        ))
+        XCTAssertNil(RecentChartHitTesting.index(
+            at: CGPoint(x: 10, y: 100), in: plot, step: 0, pointCount: count
+        ))
+    }
+
     func testUnifiedScaleMapUsesExplicitPerSeriesVisualRanges() {
         let scaleMap = RecentChartScaleMap(
             tokenValues: [50, 100],

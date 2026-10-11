@@ -68,6 +68,18 @@ test("all recent chart ranges use the 278px canvas", () => {
   }
 });
 
+test("fine 7d hit testing preserves subpixel spacing across the trailing viewport", () => {
+  const count = 30 * 24 * 12;
+  const width = 980 * 30 / 7;
+  const step = width / (count - 1);
+  assert.ok(step < 1);
+  for (const index of [count - 2_000, count - 1_000, count - 1]) {
+    assert.equal(hoverIndexForX(index * step, width, count), index);
+  }
+  assert.equal(hoverIndexForX(1, 0, count), null);
+  assert.equal(hoverIndexForX(Number.NaN, width, count), null);
+});
+
 test("persistent scrollbar thumb represents and controls the visible chart window", () => {
   const layout = {
     viewportWidth: 1_000,

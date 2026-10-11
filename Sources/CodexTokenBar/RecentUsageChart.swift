@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-enum RecentChartRange: String, CaseIterable, Identifiable {
+enum RecentChartRange: String, CaseIterable, Identifiable, Sendable {
     case twentyFourHours = "24h"
     case sevenDays = "7d"
     case thirtyDays = "30d"
@@ -589,7 +589,7 @@ struct RecentChartEdgeFadeState: Equatable {
     }
 }
 
-struct RecentChartPreparationInput: Equatable {
+struct RecentChartPreparationInput: Equatable, Sendable {
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
@@ -599,7 +599,7 @@ struct RecentChartPreparationInput: Equatable {
     let quotaHourlyBins: [QuotaHistoryRecentBucket]
 }
 
-struct RecentChartPreparedData: Equatable {
+struct RecentChartPreparedData: Equatable, Sendable {
     let range: RecentChartRange
     let bins: [BinUsage]
     let bucketInterval: TimeInterval
@@ -1319,6 +1319,7 @@ struct RecentUsageChart: View, Equatable {
     @AppStorage("recentChartQuotaGuideCompletedV01") private var quotaGuideCompleted = false
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @StateObject private var seriesVisibility = RecentChartSeriesVisibilityStore()
+    @StateObject private var preparationStore = RecentChartPreparationStore()
     // Keep the render-facing state local to this view. The store remains the
     // persistence boundary, but a direct @State write makes line visibility
     // update in the same SwiftUI transaction as the button tap.
@@ -1442,9 +1443,11 @@ struct RecentUsageChart: View, Equatable {
         Binding(
             get: { selectedRange },
             set: { range in
+                guard range != selectedRange else { return }
                 selectedRangeRaw = range.rawValue
                 scrollPresentation = nil
                 clearConsumptionSelection()
+                refreshPreparedData(range: range)
             }
         )
     }
@@ -1519,6 +1522,8 @@ struct RecentUsageChart: View, Equatable {
                         ChartLegend(color: .green, label: "7d", value: Self.percentText(visibleWindowSummary.latestSevenDayRemaining))
                     }
                 }
+                .opacity(preparedData.range == selectedRange ? 1 : 0)
+                .accessibilityHidden(preparedData.range != selectedRange)
 
                 HStack(spacing: 5) {
                     ChartLineToggle(
@@ -1566,17 +1571,17 @@ struct RecentUsageChart: View, Equatable {
     ) -> some View {
         GeometryReader { proxy in
             let buttonWidth: CGFloat = 28
-            let canvasHeight = selectedRange.chartGeometry.canvasHeight
+            let canvasHeight = preparedData.range.chartGeometry.canvasHeight
             let scrollContainerHeight = canvasHeight + RecentChartPersistentScrollerMetrics.reservedHeight
             let viewportWidth = max(proxy.size.width, 1)
             let contentWidth = RecentChartScrollMetrics.contentWidth(
-                range: selectedRange,
+                range: preparedData.range,
                 bins: preparedData.bins,
                 bucketInterval: preparedData.bucketInterval,
                 viewportWidth: viewportWidth
             )
             let windowCount = RecentChartScrollMetrics.windowCount(
-                range: selectedRange,
+                range: preparedData.range,
                 bins: preparedData.bins,
                 bucketInterval: preparedData.bucketInterval
             )
@@ -1628,6 +1633,7 @@ struct RecentUsageChart: View, Equatable {
                             }
                         }
                         .defaultScrollAnchor(.trailing)
+                        .id(preparedData.range)
                         .scrollClipDisabled()
                         .mask(chartViewportMask)
                         .overlay(alignment: .topLeading) {
@@ -1726,7 +1732,7 @@ struct RecentUsageChart: View, Equatable {
                 .onAppear {
                     scrollChartToLatest(scrollProxy)
                 }
-                .onChange(of: selectedRangeRaw) { _, _ in
+                .onChange(of: preparedData.range) { _, _ in
                     scrollChartToLatest(scrollProxy)
                 }
                 .onChange(of: preparedData.bins) { previousBins, updatedBins in
@@ -1792,7 +1798,7 @@ struct RecentUsageChart: View, Equatable {
         consumptionSelection: QuotaConsumptionSelection?,
         hoveredIndexSnapshot: Int?
     ) -> some View {
-        let geometry = selectedRange.chartGeometry
+        let geometry = preparedData.range.chartGeometry
         let plot = CGRect(
             x: 0,
             y: geometry.plotTop,
@@ -2056,7 +2062,7 @@ struct RecentUsageChart: View, Equatable {
         hoveredIndexSnapshot: Int?
     ) -> some View {
         let chartBins = preparedData.bins
-        let geometry = selectedRange.chartGeometry
+        let geometry = preparedData.range.chartGeometry
         let resolvedHoverIndex = hoveredIndexSnapshot.flatMap {
             chartBins.indices.contains($0) ? $0 : nil
         }
@@ -2205,10 +2211,17 @@ struct RecentUsageChart: View, Equatable {
         )
         VStack(alignment: .leading, spacing: 18) {
             chartHeader
-            chartPlot(
-                consumptionSelection: consumptionSelection,
-                hoveredIndexSnapshot: liveHoverIndex
-            )
+            if preparedData.range == selectedRange {
+                chartPlot(
+                    consumptionSelection: consumptionSelection,
+                    hoveredIndexSnapshot: liveHoverIndex
+                )
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: selectedRange.chartGeometry.canvasHeight
+                        + RecentChartPersistentScrollerMetrics.reservedHeight)
+            }
             if let quotaGuideStep {
                 RecentChartQuotaGuide(
                     step: quotaGuideStep,
@@ -2228,6 +2241,9 @@ struct RecentUsageChart: View, Equatable {
         .onChange(of: preparationInput) { _, _ in
             refreshPreparedData()
         }
+        .onChange(of: preparationStore.revision) { _, _ in
+            refreshPreparedData()
+        }
         .onChange(of: selectedRangeRaw) { _, _ in
             clearConsumptionSelection()
             accessibilityCursorState.reset()
@@ -2237,6 +2253,7 @@ struct RecentUsageChart: View, Equatable {
             refreshBucketCosts()
         }
         .onDisappear {
+            preparationStore.cancel()
             seriesVisibility.flushPendingPersistence()
         }
     }
@@ -2289,20 +2306,14 @@ struct RecentUsageChart: View, Equatable {
     }
 
     private func refreshPreparedData(range: RecentChartRange) {
-        let updatedData = Self.prepare(
-            range: range,
-            recentBins: bins,
-            hourlyBins: hourlyBins,
-            cacheRecentBins: cacheRecentBins,
-            cacheHourlyBins: cacheHourlyBins,
-            attributionEvents: attributionEvents,
-            quotaRecentBins: quotaRecentBins,
-            quotaHourlyBins: quotaHourlyBins
+        preparationStore.prepare(
+            input: preparationInput,
+            priceModel: selectedQuotaEstimateModel,
+            preferredRange: range
         )
-        let updatedBucketCostsUSD = Self.bucketCosts(
-            for: updatedData,
-            priceModel: selectedQuotaEstimateModel
-        )
+        guard let snapshot = preparationStore.snapshot(for: range) else { return }
+        let updatedData = snapshot.data
+        let updatedBucketCostsUSD = snapshot.bucketCostsUSD
         let updatedFixedScales = Self.fixedScales(for: updatedData)
         guard updatedData != preparedData else {
             var renderInputsChanged = false
@@ -2322,6 +2333,9 @@ struct RecentUsageChart: View, Equatable {
             return
         }
         cachedFixedConsumptionSelection = nil
+        if preparedData.range != updatedData.range {
+            scrollPresentation = nil
+        }
         preparedData = updatedData
         cachedBucketCostsUSD = updatedBucketCostsUSD
         cachedFixedScales = updatedFixedScales
@@ -2335,16 +2349,7 @@ struct RecentUsageChart: View, Equatable {
     }
 
     private func refreshBucketCosts() {
-        cachedFixedConsumptionSelection = nil
-        let updated = Self.bucketCosts(
-            for: preparedData,
-            priceModel: selectedQuotaEstimateModel
-        )
-        if updated != cachedBucketCostsUSD {
-            cachedBucketCostsUSD = updated
-            renderGeneration &+= 1
-        }
-        rebuildFixedConsumptionSelectionCache()
+        refreshPreparedData()
     }
 
     private static func fixedScales(
@@ -2355,7 +2360,7 @@ struct RecentUsageChart: View, Equatable {
         )
     }
 
-    private static func bucketCosts(
+    nonisolated static func bucketCosts(
         for prepared: RecentChartPreparedData,
         priceModel: OfficialAPIPriceModel
     ) -> [Double] {

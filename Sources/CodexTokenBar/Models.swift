@@ -67,7 +67,7 @@ struct DayUsage: Codable, Identifiable, Equatable {
     let calls: Int
 }
 
-struct BinUsage: Codable, Identifiable, Equatable {
+struct BinUsage: Codable, Identifiable, Equatable, Sendable {
     var id: Date { start }
     let start: Date
     let tokens: Int
@@ -522,7 +522,7 @@ struct QuotaHistoryObservation: Equatable, Sendable {
     }
 }
 
-struct QuotaHistoryRecentBucket: Identifiable, Equatable {
+struct QuotaHistoryRecentBucket: Identifiable, Equatable, Sendable {
     var id: Date { start }
     let start: Date
     let fiveHourRemainingPercent: Double?

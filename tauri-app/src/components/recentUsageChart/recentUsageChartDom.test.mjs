@@ -643,6 +643,79 @@ function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
   };
 }
 
+test("long retained history switches ranges at the latest edge and selects visible 7d points", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  // Happy DOM has no layout engine; expose the actual content width written
+  // by the component, including the new scroll element on each range switch.
+  Object.defineProperties(window.HTMLElement.prototype, {
+    clientWidth: { configurable: true, get() { return 980; } },
+    scrollWidth: { configurable: true, get() {
+      return Number.parseFloat(this.firstElementChild?.style?.getPropertyValue("--recent-chart-content-width")) || 980;
+    } },
+  });
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      let pricingReads = 0;
+      const breakdown = { inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 100_000, calls: 1 };
+      const fine = Array.from({ length: 30 * 24 * 12 }, (_, i) => ({
+        ...point(1_800_000_000 + i * 300, 0.8, 0.9),
+        modelBreakdowns: [{ model: "gpt-5.6-sol", get breakdown() { pricingReads += 1; return breakdown; } }],
+      }));
+      const props = {
+        recentUsage24h: fine,
+        recentUsage7d: fine.filter((_, i) => i % 12 === 0),
+        recentUsage30d: fine.filter((_, i) => i % 72 === 0),
+      };
+      try {
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, props)));
+        const finePricingReads = pricingReads;
+        assert.ok(finePricingReads > 0);
+        for (const index of [1, 0, 1]) {
+          await React.act(async () => container.querySelectorAll(".recent-range-tabs button")[index].click());
+          const scroll = container.querySelector(".recent-chart-scroll");
+          assert.equal(scroll.scrollLeft, scroll.scrollWidth - 980);
+          assert.equal(container.querySelectorAll(".recent-range-tabs button")[index].getAttribute("aria-pressed"), "true");
+        }
+        assert.equal(pricingReads, finePricingReads, "24h and fine 7d reuse pricing without traversing model rows again");
+        const scroll = container.querySelector(".recent-chart-scroll");
+        const svg = container.querySelector("svg.usage-chart");
+        svg.getBoundingClientRect = () => ({ left: -scroll.scrollLeft, top: 0, width: scroll.scrollWidth, height: 278 });
+        for (const clientX of [200, 800]) {
+          await React.act(async () => svg.dispatchEvent(new window.PointerEvent("pointerdown", {
+            bubbles: true, clientX, clientY: 120, button: 0,
+          })));
+        }
+        const selection = svg.querySelector(".chart-selection-range");
+        assert.ok(selection);
+        assert.ok(Number(selection.getAttribute("x")) >= scroll.scrollLeft - 1);
+        assert.ok(Number(selection.getAttribute("x")) + Number(selection.getAttribute("width")) <= scroll.scrollLeft + 980 + 1);
+        assert.ok(container.querySelector(".chart-selection-summary-bubble"));
+        await React.act(async () => container.querySelectorAll(".recent-range-tabs button")[2].click());
+        assert.equal(container.querySelector(".chart-selection-layer"), null);
+        const readsAfterThirtyDays = pricingReads;
+        await React.act(async () => container.querySelectorAll(".recent-range-tabs button")[1].click());
+        assert.equal(pricingReads, readsAfterThirtyDays, "returning from 30d reuses the fine snapshot");
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, { ...props, recentUsage24h: [...fine] })));
+        assert.ok(pricingReads > readsAfterThirtyDays, "a new dashboard snapshot invalidates cached prices");
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 test("all range tabs render the 278px SVG canvas", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);

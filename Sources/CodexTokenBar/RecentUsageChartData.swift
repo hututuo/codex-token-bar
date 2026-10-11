@@ -1,7 +1,7 @@
 import Foundation
 
 extension RecentUsageChart {
-    static func prepare(
+    nonisolated static func prepare(
         range: RecentChartRange,
         recentBins: [BinUsage],
         hourlyBins: [BinUsage],
@@ -77,7 +77,7 @@ extension RecentUsageChart {
         )
     }
 
-    private static func modelBreakdowns(
+    nonisolated private static func modelBreakdowns(
         bins: [BinUsage],
         interval: TimeInterval,
         attributionEvents: [TokenCacheAttributionEvent]
@@ -92,7 +92,7 @@ extension RecentUsageChart {
         }
     }
 
-    private static func usageBins(for range: RecentChartRange, recentBins: [BinUsage], hourlyBins: [BinUsage]) -> [BinUsage] {
+    nonisolated private static func usageBins(for range: RecentChartRange, recentBins: [BinUsage], hourlyBins: [BinUsage]) -> [BinUsage] {
         switch range {
         case .twentyFourHours:
             return recentBins
@@ -107,7 +107,7 @@ extension RecentUsageChart {
         }
     }
 
-    private static func aggregateUsage(
+    nonisolated private static func aggregateUsage(
         _ bins: [BinUsage],
         interval: TimeInterval,
         pointCount: Int
@@ -128,7 +128,7 @@ extension RecentUsageChart {
         }
     }
 
-    private static func cacheBreakdowns(
+    nonisolated private static func cacheBreakdowns(
         for range: RecentChartRange,
         bins: [BinUsage],
         cacheRecentBins: [TokenCacheBucket],
@@ -152,7 +152,7 @@ extension RecentUsageChart {
         }
     }
 
-    private static func cacheMap(_ buckets: [TokenCacheBucket], interval: TimeInterval) -> [Int: TokenCacheBreakdown] {
+    nonisolated private static func cacheMap(_ buckets: [TokenCacheBucket], interval: TimeInterval) -> [Int: TokenCacheBreakdown] {
         buckets.reduce(into: [Int: TokenCacheBreakdown]()) { result, bucket in
             let key = timeBinKey(bucket.start, interval: interval)
             if let current = result[key] {
@@ -163,7 +163,7 @@ extension RecentUsageChart {
         }
     }
 
-    private static func quotaBuckets(
+    nonisolated private static func quotaBuckets(
         for range: RecentChartRange,
         bins: [BinUsage],
         quotaRecentBins: [QuotaHistoryRecentBucket],
@@ -192,13 +192,13 @@ extension RecentUsageChart {
         }
     }
 
-    private static func quotaMap(_ buckets: [QuotaHistoryRecentBucket], interval: TimeInterval) -> [Int: QuotaHistoryRecentBucket] {
+    nonisolated private static func quotaMap(_ buckets: [QuotaHistoryRecentBucket], interval: TimeInterval) -> [Int: QuotaHistoryRecentBucket] {
         Dictionary(uniqueKeysWithValues: buckets.map { bucket in
             (timeBinKey(bucket.start, interval: interval), bucket)
         })
     }
 
-    private static func averagedQuotaBucket(
+    nonisolated private static func averagedQuotaBucket(
         start: Date,
         buckets: [QuotaHistoryRecentBucket],
         expectedBucketCount: Int
@@ -235,7 +235,7 @@ extension RecentUsageChart {
         )
     }
 
-    private static func quotaObservations(
+    nonisolated private static func quotaObservations(
         _ buckets: [QuotaHistoryRecentBucket?],
         keyPath: KeyPath<QuotaHistoryRecentBucket, [QuotaHistoryObservation]>
     ) -> [QuotaHistoryObservation] {
@@ -259,16 +259,16 @@ extension RecentUsageChart {
         return deduplicated
     }
 
-    private static func average(_ values: [Double]) -> Double? {
+    nonisolated private static func average(_ values: [Double]) -> Double? {
         guard !values.isEmpty else { return nil }
         return values.reduce(0, +) / Double(values.count)
     }
 
-    private static func timeBinKey(_ date: Date, interval: TimeInterval) -> Int {
+    nonisolated private static func timeBinKey(_ date: Date, interval: TimeInterval) -> Int {
         Int(floor(date.timeIntervalSince1970 / interval))
     }
 
-    private static func markerIndices(for range: RecentChartRange, bins: [BinUsage], bucketInterval: TimeInterval) -> [Int] {
+    nonisolated private static func markerIndices(for range: RecentChartRange, bins: [BinUsage], bucketInterval: TimeInterval) -> [Int] {
         guard bins.count > 1 else { return [] }
 
         let last = bins.count - 1
@@ -280,12 +280,12 @@ extension RecentUsageChart {
         return indices
     }
 
-    static func percentText(_ value: Double?) -> String {
+    nonisolated static func percentText(_ value: Double?) -> String {
         guard let value else { return "--" }
         return "\(Int(value.rounded()))%"
     }
 
-    private static func observedCacheHitRates(cacheBreakdowns: [TokenCacheBreakdown]) -> [Double?] {
+    nonisolated private static func observedCacheHitRates(cacheBreakdowns: [TokenCacheBreakdown]) -> [Double?] {
         cacheBreakdowns.map { breakdown in
             breakdown.calls > 0 ? breakdown.cacheHitRate : nil
         }
