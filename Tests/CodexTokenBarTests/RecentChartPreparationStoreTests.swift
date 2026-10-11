@@ -2,8 +2,8 @@ import Foundation
 import XCTest
 @testable import CodexTokenBar
 
+@MainActor
 final class RecentChartPreparationStoreTests: XCTestCase {
-    @MainActor
     func testPreparationRunsOffMainAndTabChangesReuseAllThreeSnapshots() async throws {
         let store = RecentChartPreparationStore()
         defer { store.cancel() }
@@ -30,7 +30,6 @@ final class RecentChartPreparationStoreTests: XCTestCase {
         XCTAssertEqual(calls.count, 6)
     }
 
-    @MainActor
     func testSupersededWorkerCannotPublishOldHistoryAfterRefresh() async throws {
         let store = RecentChartPreparationStore()
         let started = expectation(description: "old background preparation started")
@@ -65,7 +64,6 @@ final class RecentChartPreparationStoreTests: XCTestCase {
         )
     }
 
-    @MainActor
     private func waitForSnapshots(_ store: RecentChartPreparationStore) async throws {
         let deadline = Date().addingTimeInterval(2)
         while RecentChartRange.allCases.contains(where: { store.snapshot(for: $0) == nil }), Date() < deadline {
