@@ -1340,6 +1340,7 @@ struct RecentUsageChart: View, Equatable {
     @State private var cachedFixedScales: RecentChartFixedScaleMap
     @State private var renderGeneration: Int
     @State private var renderFrameCache: RecentChartRenderFrameCache
+    @State private var hasPreparedData = false
     @State var preparedData: RecentChartPreparedData
 
     init(
@@ -1522,8 +1523,8 @@ struct RecentUsageChart: View, Equatable {
                         ChartLegend(color: .green, label: "7d", value: Self.percentText(visibleWindowSummary.latestSevenDayRemaining))
                     }
                 }
-                .opacity(preparedData.range == selectedRange ? 1 : 0)
-                .accessibilityHidden(preparedData.range != selectedRange)
+                .opacity(hasPreparedData && preparedData.range == selectedRange ? 1 : 0)
+                .accessibilityHidden(!hasPreparedData || preparedData.range != selectedRange)
 
                 HStack(spacing: 5) {
                     ChartLineToggle(
@@ -2211,7 +2212,7 @@ struct RecentUsageChart: View, Equatable {
         )
         VStack(alignment: .leading, spacing: 18) {
             chartHeader
-            if preparedData.range == selectedRange {
+            if hasPreparedData && preparedData.range == selectedRange {
                 chartPlot(
                     consumptionSelection: consumptionSelection,
                     hoveredIndexSnapshot: liveHoverIndex
@@ -2254,6 +2255,7 @@ struct RecentUsageChart: View, Equatable {
         }
         .onDisappear {
             preparationStore.cancel()
+            hasPreparedData = false
             seriesVisibility.flushPendingPersistence()
         }
     }
@@ -2315,6 +2317,7 @@ struct RecentUsageChart: View, Equatable {
         let updatedData = snapshot.data
         let updatedBucketCostsUSD = snapshot.bucketCostsUSD
         let updatedFixedScales = Self.fixedScales(for: updatedData)
+        hasPreparedData = true
         guard updatedData != preparedData else {
             var renderInputsChanged = false
             if updatedBucketCostsUSD != cachedBucketCostsUSD {

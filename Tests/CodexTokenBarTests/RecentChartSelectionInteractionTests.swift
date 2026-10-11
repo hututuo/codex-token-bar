@@ -541,7 +541,13 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         window.orderFrontRegardless()
         defer { window.orderOut(nil) }
         hostingView.layoutSubtreeIfNeeded()
-        runRecentChartMainLoop()
+        // Preparation now runs off the main thread. Wait for the production
+        // plot, so a click cannot accidentally exercise its loading state.
+        let preparationDeadline = Date().addingTimeInterval(2)
+        while firstRecentChartTrackingView(in: hostingView) == nil, Date() < preparationDeadline {
+            runRecentChartMainLoop()
+            hostingView.layoutSubtreeIfNeeded()
+        }
         let initialFittingHeight = hostingView.fittingSize.height
 
         var trackingView = try XCTUnwrap(firstRecentChartTrackingView(in: hostingView))
