@@ -584,12 +584,40 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     convenience init(
         codexHome: URL,
         fileManager: FileManager = .default,
+        createsFileIfMissing: Bool = true,
         onProgress: ((PreciseIndexProgress) -> Void)? = nil
     ) throws {
         let databaseURL = Self.databaseURL(for: codexHome)
         try Self.relocateLegacyIndex(from: Self.databaseURL(for: codexHome, legacyCache: true),
             to: databaseURL, fileManager: fileManager, onProgress: onProgress)
-        try self.init(databaseURL: databaseURL, fileManager: fileManager, onProgress: onProgress)
+        try self.init(databaseURL: databaseURL, fileManager: fileManager,
+            onProgress: onProgress, createsFileIfMissing: createsFileIfMissing)
+    }
+
+    /// Empty discovery may mean all raw sessions were deleted. The ledger is
+    /// independent of those files, but an empty Home must not create a ledger.
+    /// Probe both supported locations and pending migration receipts; only a
+    /// confirmed absent path is absence. Permission/I/O failures stay visible.
+    static func openExisting(
+        codexHome: URL,
+        fileManager: FileManager = .default,
+        onProgress: ((PreciseIndexProgress) -> Void)? = nil
+    ) throws -> CodexUsageHistoryIndex? {
+        let current = databaseURL(for: codexHome)
+        let legacy = databaseURL(for: codexHome, legacyCache: true)
+        for url in [current, candidateMigrationManifestURL(for: current),
+                    legacy, candidateMigrationManifestURL(for: legacy)] {
+            do {
+                _ = try fileManager.attributesOfItem(atPath: url.path)
+            } catch let error as CocoaError
+                where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+                continue
+            }
+            return try CodexUsageHistoryIndex(codexHome: codexHome,
+                fileManager: fileManager, createsFileIfMissing: false,
+                onProgress: onProgress)
+        }
+        return nil
     }
 
     convenience init(
@@ -628,7 +656,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         databaseURL: URL,
         fileManager: FileManager,
         onProgress: ((PreciseIndexProgress) -> Void)? = nil,
-        openMode: OpenMode = .active
+        openMode: OpenMode = .active,
+        createsFileIfMissing: Bool = true
     ) throws {
         let existedBeforeOpen = fileManager.fileExists(atPath: databaseURL.path)
         let gate = Self.operationGate(for: databaseURL)
@@ -648,6 +677,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         operationGate = gate
         driver = SQLiteDatabaseDriver(
             url: databaseURL,
+            createsFileIfMissing: createsFileIfMissing,
             busyTimeoutMilliseconds: 30_000,
             enableWAL: true,
             fileManager: fileManager
@@ -8530,7 +8560,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
               !fileManager.fileExists(atPath: destination.path),
               fileManager.fileExists(atPath: legacy.path)
                 || fileManager.fileExists(atPath: candidateMigrationManifestURL(for: legacy).path) else { return }
-        let source = try Self(databaseURL: legacy, fileManager: fileManager, onProgress: onProgress)
+        let source = try Self(databaseURL: legacy, fileManager: fileManager,
+            onProgress: onProgress, createsFileIfMissing: false)
         try source.withExclusiveAccess {
             try operationGate(for: destination).withLock {
                 guard !fileManager.fileExists(atPath: destination.path) else { return }
