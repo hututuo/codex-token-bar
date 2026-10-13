@@ -2210,7 +2210,7 @@ final class CodexUsageStoreTests: XCTestCase {
             store.snapshot.stats.totalTokens == 1_000 && !store.isRefreshing
         }
         XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, firstPreciseCoverageAt)
-        XCTAssertFalse(store.preciseTimeSeriesFresh, "the retained chart is trusted, but compact headline coverage has advanced")
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
         let chartDaysBeforeCompact = store.snapshot.dailyUsage
 
         // 仅紧凑 surface 可见：周期刷新走轻量 summary，不再全量重建。
@@ -2236,7 +2236,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.dailyUsage.count, 1)
         XCTAssertEqual(store.snapshot.recentBins.first?.tokens, 100)
         XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, firstPreciseCoverageAt)
-        XCTAssertTrue(store.preciseTimeSeriesFresh)
+        XCTAssertFalse(store.preciseTimeSeriesFresh, "the retained chart is trusted, but compact headline coverage has advanced")
         XCTAssertTrue(store.isCompactSummaryPending)
 
         // 仪表盘展开：立即触发一次全量刷新补齐重字段。
