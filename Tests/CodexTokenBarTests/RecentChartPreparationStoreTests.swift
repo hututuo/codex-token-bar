@@ -4,6 +4,74 @@ import XCTest
 
 @MainActor
 final class RecentChartPreparationStoreTests: XCTestCase {
+    func testRealClickFixturePrewarmsAllRangesWithoutLosingUsageOrQuotaObservations() async throws {
+        let input = makeRecentChartInteractionPreparationInput()
+        XCTAssertEqual(input.bins.count, 12)
+        XCTAssertEqual(input.hourlyBins.map(\.start), [28_800, 32_400].map {
+            Date(timeIntervalSince1970: Double($0))
+        })
+        XCTAssertEqual(input.hourlyBins.map(\.tokens), [36_000, 42_000])
+        XCTAssertEqual(input.hourlyBins.map(\.calls), [36, 42])
+        XCTAssertEqual(input.cacheHourlyBins.map { $0.breakdown.totalTokens }, [224_000, 112_000])
+        XCTAssertEqual(input.quotaHourlyBins.map(\.fiveHourRemainingPercent), [79, 67])
+        XCTAssertEqual(input.quotaHourlyBins.map(\.sevenDayRemainingPercent), [
+            input.quotaRecentBins[7].sevenDayRemainingPercent,
+            input.quotaRecentBins[11].sevenDayRemainingPercent
+        ])
+        let fiveHourObservations = input.quotaRecentBins.flatMap(\.fiveHourObservations)
+        let sevenDayObservations = input.quotaRecentBins.flatMap(\.sevenDayObservations)
+        XCTAssertEqual(input.quotaHourlyBins.flatMap(\.fiveHourObservations), fiveHourObservations)
+        XCTAssertEqual(input.quotaHourlyBins.flatMap(\.sevenDayObservations), sevenDayObservations)
+
+        let store = RecentChartPreparationStore()
+        defer { store.cancel() }
+        store.prepare(input: input, priceModel: .gpt56Sol, preferredRange: .twentyFourHours)
+        // The UI only waits for the active plot. Explicitly await 7d and 30d,
+        // so background prewarming cannot escape this regression's assertions.
+        try await waitForSnapshots(store)
+        XCTAssertEqual(store.revision, 3)
+        for range in RecentChartRange.allCases {
+            let snapshot = try XCTUnwrap(store.snapshot(for: range), range.rawValue)
+            XCTAssertEqual(snapshot.data.tokenTotal, 78_000, range.rawValue)
+            XCTAssertEqual(snapshot.data.callTotal, 78, range.rawValue)
+            XCTAssertEqual(snapshot.data.recentCacheBreakdown, input.cacheRecentBins.map(\.breakdown).combined, range.rawValue)
+            XCTAssertEqual(snapshot.bucketCostsUSD.count, snapshot.data.bins.count, range.rawValue)
+            if range == .thirtyDays {
+                XCTAssertEqual(snapshot.data.bins.count, 120)
+                // Two observed hours do not establish a complete six-hour
+                // quota value. Preserve that gap rather than inventing one.
+                XCTAssertFalse(snapshot.data.hasFiveHourQuota)
+                XCTAssertFalse(snapshot.data.hasSevenDayQuota)
+            } else {
+                XCTAssertEqual(snapshot.data.bins, input.bins, range.rawValue)
+                XCTAssertEqual(snapshot.data.fiveHourQuotaObservations, fiveHourObservations, range.rawValue)
+                XCTAssertEqual(snapshot.data.sevenDayQuotaObservations, sevenDayObservations, range.rawValue)
+            }
+        }
+
+        // Legacy history can lack the fine series; its 7d snapshot must use
+        // these hourly quota states and retain the original observations too.
+        let coarseInput = RecentChartPreparationInput(
+            bins: [],
+            hourlyBins: input.hourlyBins,
+            cacheRecentBins: [],
+            cacheHourlyBins: input.cacheHourlyBins,
+            attributionEvents: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: input.quotaHourlyBins
+        )
+        store.prepare(input: coarseInput, priceModel: .gpt56Sol, preferredRange: .sevenDays)
+        try await waitForSnapshots(store)
+        let coarse = try XCTUnwrap(store.snapshot(for: .sevenDays)).data
+        XCTAssertEqual(coarse.bins, input.hourlyBins)
+        XCTAssertEqual(coarse.tokenTotal, 78_000)
+        XCTAssertEqual(coarse.recentCacheBreakdown, input.cacheRecentBins.map(\.breakdown).combined)
+        XCTAssertEqual(coarse.fiveHourRemainingPercents, input.quotaHourlyBins.map(\.fiveHourRemainingPercent))
+        XCTAssertEqual(coarse.sevenDayRemainingPercents, input.quotaHourlyBins.map(\.sevenDayRemainingPercent))
+        XCTAssertEqual(coarse.fiveHourQuotaObservations, fiveHourObservations)
+        XCTAssertEqual(coarse.sevenDayQuotaObservations, sevenDayObservations)
+    }
+
     func testPreparationRunsOffMainAndTabChangesReuseAllThreeSnapshots() async throws {
         let store = RecentChartPreparationStore()
         defer { store.cancel() }

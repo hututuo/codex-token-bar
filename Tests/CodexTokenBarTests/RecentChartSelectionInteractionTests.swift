@@ -474,54 +474,14 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         )
         defer { defaults.removePersistentDomain(forName: defaultsSuite) }
 
-        let interval = RecentChartRange.twentyFourHours.bucketInterval
-        let base = Date(timeIntervalSince1970: 30_000)
-        let usageBins = bins(startingAt: base, count: 12, interval: interval)
-        let cacheBins = usageBins.map { bin in
-            TokenCacheBucket(
-                start: bin.start,
-                breakdown: TokenCacheBreakdown(
-                    inputTokens: 24_000,
-                    cachedInputTokens: 8_000,
-                    outputTokens: 4_000,
-                    reasoningOutputTokens: 0,
-                    totalTokens: 28_000,
-                    calls: 1
-                )
-            )
-        }
-        let resetDate = base.addingTimeInterval(7 * 24 * 60 * 60)
-        let quotaBins = usageBins.enumerated().map { index, bin in
-            let fiveHourRemaining = 100 - Double(index) * 3
-            let sevenDayRemaining = 100 - Double(index) * 0.3
-            let observedAt = bin.start.addingTimeInterval(interval / 2)
-            return QuotaHistoryRecentBucket(
-                start: bin.start,
-                fiveHourRemainingPercent: fiveHourRemaining,
-                sevenDayRemainingPercent: sevenDayRemaining,
-                fiveHourObservations: [
-                    QuotaHistoryObservation(
-                        observedAt: observedAt,
-                        remainingPercent: fiveHourRemaining,
-                        resetsAt: resetDate
-                    )
-                ],
-                sevenDayObservations: [
-                    QuotaHistoryObservation(
-                        observedAt: observedAt,
-                        remainingPercent: sevenDayRemaining,
-                        resetsAt: resetDate
-                    )
-                ]
-            )
-        }
+        let input = makeRecentChartInteractionPreparationInput()
         let chart = RecentUsageChart(
-            bins: usageBins,
-            hourlyBins: usageBins,
-            cacheRecentBins: cacheBins,
-            cacheHourlyBins: cacheBins,
-            quotaRecentBins: quotaBins,
-            quotaHourlyBins: quotaBins
+            bins: input.bins,
+            hourlyBins: input.hourlyBins,
+            cacheRecentBins: input.cacheRecentBins,
+            cacheHourlyBins: input.cacheHourlyBins,
+            quotaRecentBins: input.quotaRecentBins,
+            quotaHourlyBins: input.quotaHourlyBins
         )
         .defaultAppStorage(defaults)
         let hostingView = NSHostingView(
@@ -687,6 +647,101 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
             )
         }
     }
+}
+
+// Shared with the preparation-store regression so the real-click fixture must
+// remain valid when the production store prewarms every range, including 30d.
+func makeRecentChartInteractionPreparationInput() -> RecentChartPreparationInput {
+    let interval = RecentChartRange.twentyFourHours.bucketInterval
+    let base = Date(timeIntervalSince1970: 30_000)
+    let usageBins = (0..<12).map { index in
+        BinUsage(
+            start: base.addingTimeInterval(Double(index) * interval),
+            tokens: (index + 1) * 1_000,
+            calls: index + 1
+        )
+    }
+    let cacheBins = usageBins.map { bin in
+        TokenCacheBucket(
+            start: bin.start,
+            breakdown: TokenCacheBreakdown(
+                inputTokens: 24_000,
+                cachedInputTokens: 8_000,
+                outputTokens: 4_000,
+                reasoningOutputTokens: 0,
+                totalTokens: 28_000,
+                calls: 1
+            )
+        )
+    }
+    let resetDate = base.addingTimeInterval(7 * 24 * 60 * 60)
+    let quotaBins = usageBins.enumerated().map { index, bin in
+        let fiveHourRemaining = 100 - Double(index) * 3
+        let sevenDayRemaining = 100 - Double(index) * 0.3
+        let observedAt = bin.start.addingTimeInterval(interval / 2)
+        return QuotaHistoryRecentBucket(
+            start: bin.start,
+            fiveHourRemainingPercent: fiveHourRemaining,
+            sevenDayRemainingPercent: sevenDayRemaining,
+            fiveHourObservations: [
+                QuotaHistoryObservation(
+                    observedAt: observedAt,
+                    remainingPercent: fiveHourRemaining,
+                    resetsAt: resetDate
+                )
+            ],
+            sevenDayObservations: [
+                QuotaHistoryObservation(
+                    observedAt: observedAt,
+                    remainingPercent: sevenDayRemaining,
+                    resetsAt: resetDate
+                )
+            ]
+        )
+    }
+    // Hourly inputs represent one bucket per hour. Passing five-minute quota
+    // bins here aliases eight distinct samples to hour key 8 during 30d prewarm.
+    let hourInterval = RecentChartRange.sevenDays.bucketInterval
+    let indicesByHour = Dictionary(grouping: usageBins.indices) { index in
+        Int(floor(usageBins[index].start.timeIntervalSince1970 / hourInterval))
+    }
+    let hours = indicesByHour.keys.sorted()
+    let hourlyBins = hours.map { hour in
+        let indices = indicesByHour[hour] ?? []
+        return BinUsage(
+            start: Date(timeIntervalSince1970: Double(hour) * hourInterval),
+            tokens: indices.reduce(0) { $0 + usageBins[$1].tokens },
+            calls: indices.reduce(0) { $0 + usageBins[$1].calls }
+        )
+    }
+    let hourlyCacheBins = hours.map { hour in
+        TokenCacheBucket(
+            start: Date(timeIntervalSince1970: Double(hour) * hourInterval),
+            breakdown: (indicesByHour[hour] ?? []).map { cacheBins[$0].breakdown }.combined
+        )
+    }
+    let hourlyQuotaBins = hours.map { hour in
+        let indices = indicesByHour[hour] ?? []
+        let last = indices.last.map { quotaBins[$0] }
+        // Remaining quota is an end-of-bucket state, not an additive counter.
+        // Keep every observed sample for the selection's consumption estimate.
+        return QuotaHistoryRecentBucket(
+            start: Date(timeIntervalSince1970: Double(hour) * hourInterval),
+            fiveHourRemainingPercent: last?.fiveHourRemainingPercent,
+            sevenDayRemainingPercent: last?.sevenDayRemainingPercent,
+            fiveHourObservations: indices.flatMap { quotaBins[$0].fiveHourObservations },
+            sevenDayObservations: indices.flatMap { quotaBins[$0].sevenDayObservations }
+        )
+    }
+    return RecentChartPreparationInput(
+        bins: usageBins,
+        hourlyBins: hourlyBins,
+        cacheRecentBins: cacheBins,
+        cacheHourlyBins: hourlyCacheBins,
+        attributionEvents: [],
+        quotaRecentBins: quotaBins,
+        quotaHourlyBins: hourlyQuotaBins
+    )
 }
 
 @MainActor
