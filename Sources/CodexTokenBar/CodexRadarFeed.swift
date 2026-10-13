@@ -18,6 +18,7 @@ enum CodexRadarFeedParser {
         guard parser.parse() else {
             throw parser.parserError ?? CodexRadarFeedParserError.invalidXML
         }
+        guard delegate.isRSSFeed else { throw CodexRadarFeedParserError.invalidXML }
         return delegate.items
     }
 }
@@ -32,6 +33,10 @@ enum CodexRadarFeedParserError: LocalizedError, Sendable {
 
 private final class CodexRadarFeedXMLDelegate: NSObject, XMLParserDelegate {
     private(set) var items: [CodexRadarFeedItem] = []
+    private var elementStack: [String] = []
+    private var hasRSSRoot = false
+    private var channelCount = 0
+    var isRSSFeed: Bool { hasRSSRoot && channelCount == 1 }
     private var isInsideItem = false
     private var currentElement = ""
     private var buffer = ""
@@ -44,9 +49,12 @@ private final class CodexRadarFeedXMLDelegate: NSObject, XMLParserDelegate {
         qualifiedName qName: String?,
         attributes attributeDict: [String: String] = [:]
     ) {
+        if elementStack.isEmpty { hasRSSRoot = elementName == "rss" }
+        if elementStack == ["rss"], elementName == "channel" { channelCount += 1 }
+        elementStack.append(elementName)
         currentElement = elementName
         buffer = ""
-        if elementName == "item" {
+        if elementName == "item", elementStack == ["rss", "channel", "item"] {
             isInsideItem = true
             fields.removeAll(keepingCapacity: true)
         }
@@ -63,6 +71,7 @@ private final class CodexRadarFeedXMLDelegate: NSObject, XMLParserDelegate {
         namespaceURI: String?,
         qualifiedName qName: String?
     ) {
+        defer { if !elementStack.isEmpty { elementStack.removeLast() } }
         guard isInsideItem else { return }
 
         if elementName == "item" {

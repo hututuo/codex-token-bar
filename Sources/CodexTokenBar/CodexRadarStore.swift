@@ -76,7 +76,7 @@ struct LiveCodexRadarReader: CodexRadarReading, Sendable {
         }
         let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: data)
         guard let announcementTransport,
-              snapshot.window.countdownDeadline == nil,
+              !CodexRadarWindowCountdownParser.isValidDeadline(snapshot.window.countdownDeadline),
               snapshot.window.open != false,
               snapshot.windowOpen != false,
               CodexRadarPresentationText.effectiveAction(snapshot: snapshot) == "速登窗口" else {

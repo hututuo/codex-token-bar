@@ -388,8 +388,8 @@ export function normalizeCodexRadarSnapshot(raw: unknown): CodexRadarSnapshot {
   };
 }
 
-function radarPayloadSource(root: Record<string, unknown>): Record<string, unknown> {
-  const hasDirectBlocks = [
+function radarPayloadSource(root: Record<string, unknown>, depth = 0): Record<string, unknown> {
+  const blockKeys = [
     "window",
     "prediction",
     "modelIq",
@@ -402,14 +402,17 @@ function radarPayloadSource(root: Record<string, unknown>): Record<string, unkno
     "recent_windows",
     "recommendedAction",
     "recommended_action",
-  ].some((key) => read(root, key) !== undefined);
-  if (hasDirectBlocks) {
+  ];
+  const hasDirectBlocks = blockKeys.some((key) => read(root, key) !== undefined);
+  if (hasDirectBlocks || depth >= 5) {
     return root;
   }
   for (const key of ["data", "result", "snapshot", "payload"]) {
     const nested = asRecord(read(root, key));
     if (Object.keys(nested).length > 0) {
-      return nested;
+      const source = radarPayloadSource(nested, depth + 1);
+      if (blockKeys.some((key) => read(source, key) !== undefined)
+        || Boolean(stringValue(read(source, "status")))) return source;
     }
   }
   return root;
@@ -510,7 +513,10 @@ export function codexRadarDiagnosticLabel(snapshot: CodexRadarSnapshot | null, d
 export function parseCodexRadarFeedXml(xml: string): CodexRadarFeedItem[] {
   if (typeof DOMParser !== "undefined") {
     const parsed = new DOMParser().parseFromString(xml, "application/xml");
-    if (!parsed.querySelector("parsererror")) {
+    if (parsed.querySelector("parsererror") || parsed.documentElement?.tagName !== "rss"
+      || Array.from(parsed.documentElement.children).filter((child) => child.tagName === "channel").length !== 1) {
+      throw new Error("Codex Radar RSS 不是有效 RSS XML");
+    } else {
       return Array.from(parsed.querySelectorAll("item"))
         .map((item) => normalizeFeedItem({
           title: item.querySelector("title")?.textContent ?? "",
@@ -523,6 +529,7 @@ export function parseCodexRadarFeedXml(xml: string): CodexRadarFeedItem[] {
     }
   }
 
+  validateRadarRSSStructure(xml);
   return [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)]
     .map((match) => normalizeFeedItem({
       title: xmlTagText(match[1], "title"),
@@ -532,6 +539,50 @@ export function parseCodexRadarFeedXml(xml: string): CodexRadarFeedItem[] {
       description: xmlTagText(match[1], "description"),
     }))
     .filter(isCompleteFeedItem);
+}
+
+// The non-browser fallback must validate the complete document before extracting
+// items, so a truncated response cannot silently replace cached history.
+function validateRadarRSSStructure(xml: string): void {
+  const tokens = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<\/?[A-Za-z_][\w:.-]*(?:\s+[A-Za-z_:][\w:.-]*\s*=\s*(?:"[^"<]*"|'[^'<]*'))*\s*\/?>/g;
+  const stack: string[] = [];
+  let roots = 0;
+  let channels = 0;
+  let offset = 0;
+  const fail = (): never => { throw new Error("Codex Radar RSS 不是有效 RSS XML"); };
+  const validateText = (text: string): void => {
+    if (text.includes("<") || (!stack.length && text.trim())
+      || /&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);)/i.test(text)) fail();
+  };
+  for (const match of xml.matchAll(tokens)) {
+    validateText(xml.slice(offset, match.index));
+    const token = match[0];
+    offset = match.index + token.length;
+    if (token.startsWith("<!--")) {
+      if (token.slice(4, -3).includes("--")) fail();
+      continue;
+    }
+    if (token.startsWith("<![CDATA[")) {
+      if (!stack.length) fail();
+      continue;
+    }
+    if (token.startsWith("<?")) {
+      if (/^<\?xml\b/i.test(token) && roots !== 0) fail();
+      continue;
+    }
+    const name = /^<\/?([^\s/>]+)/.exec(token)![1];
+    if (token.startsWith("</")) {
+      if (!/^<\/[^\s/>]+\s*>$/.test(token) || stack.pop() !== name) fail();
+      continue;
+    }
+    if (!stack.length) {
+      if (roots++ !== 0 || name !== "rss") fail();
+    }
+    if (stack.length === 1 && stack[0] === "rss" && name === "channel") channels++;
+    if (!token.endsWith("/>")) stack.push(name);
+  }
+  validateText(xml.slice(offset));
+  if (stack.length || roots !== 1 || channels !== 1) fail();
 }
 
 export function selectCodexRadarDetailSnapshot(
@@ -720,7 +771,7 @@ export function radarSpeedWindowDeadlineMs(
  * HTML extraction small and fail closed when that optional page markup changes.
  */
 export function parseCodexRadarWindowCountdownDeadline(html: string): string | null {
-  const match = /<section\b[^>]*data-speed-window\s*=\s*["']open["'][^>]*>[\s\S]*?data-window-closes-at\s*=\s*["']([^"']+)["']/i.exec(html);
+  const match = /<section\b[^>]*data-speed-window\s*=\s*["']open["'][^>]*>(?:(?!<\/?section\b)[\s\S])*?data-window-closes-at\s*=\s*["']([^"']+)["']/i.exec(html);
   return match?.[1]?.trim() || null;
 }
 

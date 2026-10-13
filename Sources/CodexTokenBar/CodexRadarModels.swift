@@ -226,7 +226,7 @@ struct CodexRadarSnapshot: Decodable, Equatable, Sendable {
             || container.contains(.tiboPresence)
             || container.contains(.recentWindows)
             || container.contains(.recommendedAction)
-        if !hasDirectBlocks {
+        if !hasDirectBlocks, decoder.codingPath.count < 5 {
             for key in [CodingKeys.data, .result, .snapshot, .payload] {
                 if let nested = container.codexRadarDecodeSafely(CodexRadarSnapshot.self, forKey: key) {
                     self = nested

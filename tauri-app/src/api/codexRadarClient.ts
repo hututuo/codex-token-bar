@@ -138,6 +138,9 @@ async function fetchCodexRadarAnnouncementDeadline(
   if (snapshot.window.open === false || snapshot.windowOpen === false) {
     return null;
   }
+  if (snapshot.window.countdownDeadline && Number.isFinite(Date.parse(snapshot.window.countdownDeadline))) {
+    return undefined;
+  }
 
   if (isTauriRuntimeAvailable()) {
     return fetchCodexRadarAnnouncementDeadlineNative();
@@ -162,7 +165,7 @@ async function fetchCodexRadarAnnouncementDeadline(
     traceRadarPerformance(
       `radar_html success elapsed_ms=${Math.round(performance.now() - startedAt)} has_deadline=${deadline ? 1 : 0}`,
     );
-    return deadline;
+    return deadline ?? undefined;
   } catch (error) {
     traceRadarPerformance(
       `radar_html failure elapsed_ms=${Math.round(performance.now() - startedAt)} cause=${error instanceof Error ? error.message : String(error)}`,
@@ -185,7 +188,7 @@ async function fetchCodexRadarAnnouncementDeadlineNative(): Promise<string | nul
     traceRadarPerformance(
       `radar_html native_success elapsed_ms=${Math.round(performance.now() - startedAt)} has_deadline=${deadline ? 1 : 0}`,
     );
-    return deadline;
+    return deadline ?? undefined;
   } catch (error) {
     traceRadarPerformance(
       `radar_html native_failure elapsed_ms=${Math.round(performance.now() - startedAt)} cause=${error instanceof Error ? error.message : String(error)}`,

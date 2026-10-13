@@ -569,3 +569,40 @@ function radarSnapshotFixture(overrides = {}) {
  assert.equal(codexRadarDiagnosticLabel(current, [diagnostic]), "雷达旧数据");
  assert.match(codexRadarSurfaceStatus(current, [diagnostic]), /雷达读取失败/);
  });
+
+test("Radar countdown cannot cross from an open section into another section", () => {
+  const closed = '<section data-speed-window="closed"><time data-window-closes-at="2030-01-01T00:00:00Z"></time></section>';
+  assert.equal(parseCodexRadarWindowCountdownDeadline('<section data-speed-window="open">No clock</section>' + closed), null);
+  assert.equal(parseCodexRadarWindowCountdownDeadline('<section data-speed-window="open"><time data-window-closes-at="2029-01-01T00:00:00Z"></time></section>' + closed), '2029-01-01T00:00:00Z');
+});
+
+test("Radar summary unwraps nested known envelopes with a depth limit", () => {
+  const window = { window: { open: true, action: 'use_window' } };
+  assert.equal(normalizeCodexRadarSnapshot({ data: { 'PAY-LOAD': window } }).window.action, 'use_window');
+  assert.equal(normalizeCodexRadarSnapshot({ data: {}, payload: { snapshot: window } }).window.action, 'use_window');
+  let deep = window;
+  for (let depth = 0; depth < 6; depth++) deep = { data: deep };
+  assert.equal(codexRadarSnapshotHasContent(normalizeCodexRadarSnapshot(deep)), false);
+});
+
+test("Radar RSS rejects broken documents and maintenance HTML while allowing empty feeds", () => {
+  for (const xml of ['<rss><channel><item><title>truncated', '<rss><channel></rss>', '<html><body>maintenance</body></html>', '<rss/>']) {
+    assert.throws(() => parseCodexRadarFeedXml(xml), /RSS/);
+  }
+  assert.deepEqual(parseCodexRadarFeedXml('<?xml version="1.0"?><rss><channel/></rss>'), []);
+});
+
+test("browser XML parsing rejects malformed RSS instead of falling back to item extraction", async () => {
+  const { Window } = await import('happy-dom');
+  const previous = globalThis.DOMParser;
+  globalThis.DOMParser = new Window().DOMParser;
+  try {
+    for (const xml of ['<rss><channel><item><title>truncated', '<rss><channel></rss>', '<html><body>maintenance</body></html>']) {
+      assert.throws(() => parseCodexRadarFeedXml(xml), /RSS/);
+    }
+    assert.deepEqual(parseCodexRadarFeedXml('<rss><channel/></rss>'), []);
+  } finally {
+    if (previous === undefined) delete globalThis.DOMParser;
+    else globalThis.DOMParser = previous;
+  }
+});

@@ -364,3 +364,55 @@ function feedFixture(guid) {
     </rss>
   `;
 }
+
+test("valid JSON countdown wins over supplemental HTML and explicit closed windows stay hidden", async () => {
+  await withSsrModules(async (load) => {
+    const { __resetCodexRadarCacheForTests, readCodexRadarState } = await load('/src/api/codexRadarClient.ts');
+    for (const open of [true, false]) {
+      __resetCodexRadarCacheForTests();
+      const calls = withFetchQueue([
+        jsonResponse(snapshotFixture({ window_open: open, recommended_action: 'use_window', window: { open, action: 'use_window', countdown_deadline: '2030-01-01T00:00:00Z' } })),
+        textResponse('<rss><channel/></rss>'),
+      ]);
+      const state = await readCodexRadarState(null, { force: true });
+      assert.equal(calls.length, 2, 'a valid JSON deadline must not trigger an HTML read');
+      assert.equal(state.snapshot.window.countdownDeadline, open ? '2030-01-01T00:00:00Z' : null);
+    }
+  });
+});
+
+test("missing HTML countdown does not replace JSON with null", async () => {
+  await withSsrModules(async (load) => {
+    const { __resetCodexRadarCacheForTests, readCodexRadarState } = await load('/src/api/codexRadarClient.ts');
+    __resetCodexRadarCacheForTests();
+    withFetchQueue([
+      jsonResponse(snapshotFixture({ window_open: true, recommended_action: 'use_window', window: { open: true, action: 'use_window', countdown_deadline: 'unrecognized-date' } })),
+      textResponse('<rss><channel/></rss>'),
+      textResponse('<section data-speed-window="open">No clock</section>'),
+    ]);
+    const state = await readCodexRadarState(null, { force: true });
+    assert.equal(state.snapshot.window.countdownDeadline, 'unrecognized-date');
+  });
+});
+
+test("malformed RSS preserves history and a valid empty RSS intentionally clears it", async () => {
+  await withSsrModules(async (load) => {
+    const { __resetCodexRadarCacheForTests, readCodexRadarState } = await load('/src/api/codexRadarClient.ts');
+    __resetCodexRadarCacheForTests();
+    withFetchQueue([jsonResponse(snapshotFixture()), textResponse(feedFixture('kept-history'))]);
+    let previous = (await readCodexRadarState(null, { force: true })).snapshot;
+    for (const xml of ['<rss><channel><item><title>truncated', '<html><body>maintenance</body></html>']) {
+      withFetchQueue([jsonResponse(snapshotFixture()), textResponse(xml)]);
+      const state = await readCodexRadarState(previous, { force: true });
+      assert.deepEqual(state.snapshot.feedItems.map(item => item.guid), ['kept-history']);
+      assert.equal(state.feedStaleDataDisplayed, true);
+      assert.deepEqual(state.diagnostics.map(item => item.category), ['rss_failure']);
+      previous = state.snapshot;
+    }
+    withFetchQueue([jsonResponse(snapshotFixture()), textResponse('<rss><channel/></rss>')]);
+    const state = await readCodexRadarState(previous, { force: true });
+    assert.deepEqual(state.snapshot.feedItems, []);
+    assert.equal(state.feedStaleDataDisplayed, false);
+    assert.deepEqual(state.diagnostics, []);
+  });
+});
