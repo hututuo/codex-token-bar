@@ -4,6 +4,7 @@ import type { CodexRadarSnapshot } from "../domain/codexRadar/model";
 import {
   nextCodexCrowdRadarRecoveryDelayMs,
   readCodexCrowdRadarSnapshot,
+  mergeCodexCrowdRadarSnapshot,
   type CodexCrowdRadarSnapshot,
 } from "../api/codexCrowdRadarClient";
 
@@ -109,17 +110,23 @@ export function useFloatingCrowdRadar(
       void readCrowdRadar({ force })
         .then((next) => {
           if (cancelled) return;
-          snapshotRef.current = next;
+          const merged = mergeCodexCrowdRadarSnapshot(snapshotRef.current, next);
+          snapshotRef.current = merged;
           recoveryAttempt = 0;
           if (recoveryTimer !== null) {
             window.clearTimeout(recoveryTimer);
             recoveryTimer = null;
           }
-          setSnapshot(next);
+          setSnapshot(merged);
         })
-        .catch(() => {
+        .catch((error) => {
           if (cancelled) return;
-          if (clearOnError) {
+          if (snapshotRef.current?.benchmarkSource === "radar-bench") {
+            const retained = { ...snapshotRef.current, staleDataDisplayed: true,
+              endpointErrors: [...snapshotRef.current.endpointErrors ?? [], `刷新失败：${String(error)}`] };
+            snapshotRef.current = retained;
+            setSnapshot(retained);
+          } else if (clearOnError) {
             snapshotRef.current = null;
             setSnapshot(null);
           }

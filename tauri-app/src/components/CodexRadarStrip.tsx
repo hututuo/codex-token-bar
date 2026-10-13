@@ -1,4 +1,5 @@
 import { DiagnosticNotice } from "./DiagnosticNotice";
+import { radarBenchKnownMean } from "../domain/codexRadar/radarBench";
 import { memo, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { readCodexRadarFullSnapshot } from "../api/codexRadarDetailClient";
 import {
@@ -13,9 +14,13 @@ import { readCodexRadarState, subscribeCodexRadarState } from "../api/codexRadar
 import {
   bestCodexCrowdRadarModel,
   crowdRadarModelLabel,
+  crowdRadarScore,
+  crowdRadarScoreText,
+  crowdRadarCoverageText,
   nextCodexCrowdRadarRecoveryDelayMs,
   rankedCodexCrowdRadarModels,
   readCodexCrowdRadarSnapshot,
+  mergeCodexCrowdRadarSnapshot,
   type CodexCrowdRadarMode,
   type CodexCrowdRadarSnapshot,
 } from "../api/codexCrowdRadarClient";
@@ -153,10 +158,11 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       setCrowdRadarStatus(crowdRadarRef.current ? "正在更新众测雷达..." : "正在读取众测雷达...");
     });
     try {
-      const next = await readCodexCrowdRadarSnapshot({ force });
+      const received = await readCodexCrowdRadarSnapshot({ force });
       if (!requestIsCurrent()) {
         return;
       }
+      const next = mergeCodexCrowdRadarSnapshot(crowdRadarRef.current, received);
       crowdRadarRef.current = next;
       crowdRecoveryAttemptRef.current = 0;
       setCrowdRadarError(null);
@@ -180,7 +186,12 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       }
       const detail = error instanceof Error ? error.message : String(error);
       setCrowdRadarError(detail);
+      const retained = crowdRadarRef.current?.benchmarkSource === "radar-bench"
+        ? { ...crowdRadarRef.current, staleDataDisplayed: true }
+        : null;
+      if (retained) crowdRadarRef.current = retained;
       startTransition(() => {
+        if (retained) setCrowdRadar(retained);
         setCrowdRadarStatus(crowdRadarRef.current
           ? "众测刷新失败，继续显示上次数据"
           : "众测雷达暂不可用");
@@ -422,7 +433,8 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const crowdLeaders = useMemo(() => rankedCodexCrowdRadarModels(crowdRadar, 3), [crowdRadar]);
   const crowdBest = crowdLeaders[0] ?? null;
   const crowdRadarStale = crowdRadar !== null && (
-    crowdRadarStatus.startsWith("众测刷新失败")
+    crowdRadar.staleDataDisplayed === true
+    || crowdRadarStatus.startsWith("众测刷新失败")
     || [crowdRadar.provenance?.table, crowdRadar.provenance?.leaderboard]
       .some((source) => source?.stale === true)
   );
@@ -484,7 +496,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           </div>
         </RadarBlock>
 
-        <RadarBlock accentColor={primary ? radarScoreAccent(primary.point) : undefined} icon="IQ" title="官方雷达">
+        <RadarBlock accentColor={primary ? radarScoreAccent(primary.point) : undefined} icon="IQ" title="官方雷达 · 旧基准 IQ">
           <div
             className="radar-score-row"
             style={primary ? { "--radar-score-color": radarScoreAccent(primary.point) } as CSSProperties : undefined}
@@ -504,25 +516,28 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         </RadarBlock>
 
         <RadarBlock
-          accentColor={crowdBest ? semanticMetricColor(crowdBest.passRate * 100) : semanticMetricColor(70)}
+          accentColor={crowdBest ? semanticMetricColor((crowdRadarScore(crowdBest) ?? 0) / 1.5) : semanticMetricColor(70)}
           icon="众"
           title="众测雷达"
         >
           <div
+            aria-label={crowdRadar?.staleDataDisplayed ? "众测刷新失败，正在显示上次数据" : undefined}
             className="radar-score-row"
-            style={crowdBest ? { "--radar-score-color": semanticMetricColor(crowdBest.passRate * 100) } as CSSProperties : undefined}
+            style={crowdBest ? { "--radar-score-color": semanticMetricColor((crowdRadarScore(crowdBest) ?? 0) / 1.5) } as CSSProperties : undefined}
           >
-            <strong>{crowdBest ? `IQ ${(crowdBest.passRate * 150).toFixed(1)}` : "IQ --"}</strong>
-            <span>{crowdBest ? `${crowdRadarModelLabel(crowdBest)}${crowdRadarStale ? (crowdRadarStatus.startsWith("众测刷新失败") ? " · 刷新失败" : " · 来源缓存") : ""}` : "待读取"}</span>
+            <strong>{crowdBest ? crowdRadarScoreText(crowdBest) : crowdRadar?.benchmarkSource === "radar-bench" ? "雷达分 --" : "旧基准 IQ --"}</strong>
+            <span>{crowdBest ? `${crowdRadarModelLabel(crowdBest)}${crowdBest.benchScore !== undefined ? ` · ${crowdRadarCoverageText(crowdBest)}` : ""}${crowdRadarStale ? (crowdRadar.staleDataDisplayed ? " · 上次数据" : crowdRadarStatus.startsWith("众测刷新失败") ? " · 刷新失败" : " · 来源缓存") : ""}` : "待读取"}</span>
           </div>
           <div className="radar-model-row">
             {crowdLeaders.length > 1
               ? crowdLeaders.slice(1).map((row) => (
                   <span key={`${row.model}-${row.effort}`}>
-                    {crowdRadarModelLabel(row)} {(row.passRate * 150).toFixed(1)}
+                    {crowdRadarModelLabel(row)} {crowdRadarScoreText(row)}
                   </span>
                 ))
-              : <span>{crowdRadar ? `${crowdRadar.taskCount} 题 · ${crowdRadar.contributorCount} 人` : crowdRadarStatus}</span>}
+              : <span>{crowdBest?.benchScore !== undefined ? crowdRadarCoverageText(crowdBest)
+                : crowdRadar?.benchmarkSource === "radar-bench" ? "无成绩"
+                : crowdRadar ? `旧基准 · ${crowdRadar.taskCount} 题 · ${crowdRadar.contributorCount} 人` : crowdRadarStatus}</span>}
           </div>
         </RadarBlock>
 
@@ -962,7 +977,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   );
 });
 
-function CrowdRadarDetail({
+export function CrowdRadarDetail({
   error,
   snapshot,
   status,
@@ -972,8 +987,52 @@ function CrowdRadarDetail({
   status: string;
 }) {
   const [mode, setMode] = useState<CodexCrowdRadarMode>("realtime");
-  const rows = rankedCodexCrowdRadarModels(snapshot, 8, mode);
-  const best = bestCodexCrowdRadarModel(snapshot, mode);
+  const effectiveMode = snapshot?.benchmarkSource === "radar-bench" ? "realtime" : mode;
+  const rows = rankedCodexCrowdRadarModels(snapshot, snapshot?.benchmarkSource === "radar-bench" ? snapshot.models.length : 8, effectiveMode);
+  const best = bestCodexCrowdRadarModel(snapshot, effectiveMode);
+  if (snapshot?.benchmarkSource === "radar-bench") {
+    const missing = snapshot.models.filter(row => row.benchScore === null || row.benchFailure);
+    const benchRows = [...rows, ...missing];
+    return <RadarDetailSection icon="antenna.radiowaves.left.and.right" title="RadarBench 众测雷达">
+      {error ? <DiagnosticNotice summary="RadarBench 更新失败，保留上次数据" logs={error} /> : null}
+      {snapshot.staleDataDisplayed ? <p role="status">刷新失败，保留上次数据</p> : null}
+      {snapshot.endpointErrors?.length ? <p role="status">来源诊断：{snapshot.endpointErrors.join("；")}</p> : null}
+      <p className="codex-radar-paragraph">雷达分满分 150 · 每题最近 3 次判分等权 · 覆盖不足时显示阶段值</p>
+      <RadarKeyValueGrid rows={[
+        ["基准", snapshot.benchBinding?.benchmark ?? "--"],
+        ["读取时间", snapshot.provenance?.observedAt || "--"],
+        ["最近 UTC 判分日", snapshot.generatedAt ? snapshot.generatedAt.slice(0, 10) : "未知"],
+      ]} />
+      <RadarDetailSubsection title="雷达分排名">
+        <RadarTable headers={["模型", "雷达分", "任务覆盖", "已判分", "成绩状态"]} rows={benchRows.map(row => [
+          crowdRadarModelLabel(row), row.benchScore === null ? row.benchFailure ? "读取失败" : "无成绩" : row.benchScore!.toFixed(2),
+          row.benchCoverage === undefined ? "未知" : `${row.benchCoverage}/${row.benchRequiredTasks}`,
+          row.benchGradedRuns === undefined ? "未知" : `${row.benchGradedRuns}`,
+          row.benchFailure ? row.benchCoverage === undefined ? "读取失败" : "读取失败 · 上次数据（不参与当前排名）"
+            : row.benchStatus === "complete" ? "完整" : row.benchStatus === "provisional" ? "阶段值" : "无成绩",
+        ])} />
+      </RadarDetailSubsection>
+      <RadarDetailSubsection title="已知判分样本统计">
+        <p className="codex-radar-paragraph">API 等价成本，非订阅实扣；缺失耗时或成本不补零，均值仅代表已知样本。</p>
+        <RadarTable headers={["模型", "耗时已知样本均值（分钟）", "API 等价已知样本均值（USD）", "耗时已知/缺失", "成本已知/缺失"]} rows={benchRows.map(row => {
+          const elapsed = row.benchStatistics?.elapsedMs;
+          const cost = row.benchStatistics?.apiEquivalentUSD;
+          const elapsedMean = radarBenchKnownMean(elapsed);
+          const costMean = radarBenchKnownMean(cost);
+          return [crowdRadarModelLabel(row), elapsedMean === null ? "未知" : (elapsedMean / 60_000).toFixed(2),
+            costMean === null ? "未知" : costMean.toFixed(4),
+            elapsed ? `${elapsed.knownSamples}/${elapsed.missingSamples}` : "未知",
+            cost ? `${cost.knownSamples}/${cost.missingSamples}` : "未知"];
+        })} />
+      </RadarDetailSubsection>
+      <RadarDetailSubsection title="每日历史（UTC 判分日）">
+        <RadarTable headers={["模型", "UTC 日期", "雷达分", "任务覆盖"]} rows={benchRows.flatMap(row => (row.benchHistory ?? []).map(point => [
+          crowdRadarModelLabel(row), point.at.slice(0, 10), point.score === null ? "无成绩" : point.score.toFixed(2), `${point.coverage}/${point.requiredTasks}`,
+        ]))} />
+      </RadarDetailSubsection>
+      <a className="codex-radar-thanks" href="https://codexradar.com/" rel="noreferrer" target="_blank">打开 RadarBench</a>
+    </RadarDetailSection>;
+  }
   const staleDataDisplayed = snapshot !== null && (
     status.startsWith("众测刷新失败")
     || [snapshot.provenance?.table, snapshot.provenance?.leaderboard]
@@ -984,7 +1043,7 @@ function CrowdRadarDetail({
     ? "每格取最新 1 次有效结果"
     : "每格汇总最近 3 次有效结果";
   return (
-    <RadarDetailSection icon="antenna.radiowaves.left.and.right" title="众测雷达">
+    <RadarDetailSection icon="antenna.radiowaves.left.and.right" title="众测雷达 · 旧基准">
       {error ? (
         <DiagnosticNotice summary="众测雷达更新失败" logs={error} />
       ) : null}

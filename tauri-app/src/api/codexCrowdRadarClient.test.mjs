@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import {
   bestCodexCrowdRadarModel,
   crowdRadarModelLabel,
+  crowdRadarScore,
+  crowdRadarScoreText,
   normalizeCodexCrowdRadarPayload,
   pagedCodexCrowdRadarModels,
   rankedCodexCrowdRadarModels,
@@ -89,7 +91,7 @@ test("crowd radar reads through the bounded native command instead of browser CO
   const source = readFileSync(new URL("./codexCrowdRadarClient.ts", import.meta.url), "utf8");
   assert.match(source, /callCommandStrict<unknown>\(/);
   assert.match(source, /read_codex_crowd_radar_payload/);
-  assert.match(source, /CROWD_RADAR_COMMAND_TIMEOUT_MS = 22_000/);
+  assert.match(source, /CROWD_RADAR_COMMAND_TIMEOUT_MS = 25_000/);
   assert.doesNotMatch(source, /fetch\(TABLE_ENDPOINT/);
   assert.doesNotMatch(source, /fetch\(LEADERBOARD_ENDPOINT/);
 });

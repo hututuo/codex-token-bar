@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Window } from "happy-dom";
+import { readFileSync } from "node:fs";
+import { normalizeCodexCrowdRadarPayload, rankedCodexCrowdRadarModels } from "../api/codexCrowdRadarClient.ts";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
@@ -154,6 +156,59 @@ test("status crowd Radar clears a last-good realtime ranking when refresh fails"
     restoreGlobals();
     window.close();
   }
+});
+
+test("Bench hook retains a partial failed lane and keeps the last snapshot stale after total failure", async () => {
+  const binding = JSON.parse(readFileSync(new URL("../../../Tests/Fixtures/RadarBench/binding-v5.json", import.meta.url), "utf8"));
+  const summary = JSON.parse(readFileSync(new URL("../../../Tests/Fixtures/RadarBench/summary-v5.json", import.meta.url), "utf8"));
+  const normalized = summaries => normalizeCodexCrowdRadarPayload({ benchmarkSource: "radar-bench", benchBinding: binding,
+    benchSummaries: summaries, benchErrors: [], observedAt: "2026-10-13T05:00:00Z" });
+  const first = normalized([summary]);
+  const second = normalized([{ ...summary, effort: "ultra", history: null }]);
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const intervals = new Map();
+  let nextIntervalId = 1;
+  window.setInterval = callback => { const id = nextIntervalId++; intervals.set(id, callback); return id; };
+  window.clearInterval = id => intervals.delete(id);
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async load => {
+      const { useFloatingCrowdRadar } = await load("/src/floating/useFloatingRadar.ts");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      let reads = 0;
+      let current = null;
+      const readCrowdRadar = async () => {
+        reads += 1;
+        if (reads === 1) return first;
+        if (reads === 2) return second;
+        throw new Error("all Bench endpoints failed");
+      };
+      function Probe() {
+        current = useFloatingCrowdRadar(true, { clearOnError: true, readCrowdRadar });
+        return React.createElement("output", null, current ? "ready" : "none");
+      }
+      try {
+        await React.act(async () => root.render(React.createElement(Probe)));
+        await waitFor(() => current !== null);
+        const refresh = [...intervals.values()][0];
+        await React.act(async () => refresh());
+        await waitFor(() => reads === 2 && current.models.some(row => row.effort === "ultra" && !row.benchFailure));
+        const retained = current.models.find(row => row.model === summary.model && row.effort === "max");
+        assert.equal(retained.benchScore, summary.score);
+        assert.equal(retained.benchFailure, "读取失败");
+        assert.deepEqual(rankedCodexCrowdRadarModels(current).map(row => row.effort), ["ultra"]);
+        await React.act(async () => refresh());
+        await waitFor(() => reads === 3 && current.staleDataDisplayed === true);
+        assert.equal(current.models.find(row => row.model === summary.model && row.effort === "max").benchScore, summary.score);
+        assert.ok(current.endpointErrors.some(error => error.includes("all Bench endpoints failed")));
+      } finally { await React.act(async () => root.unmount()); }
+    });
+  } finally { delete globalThis.IS_REACT_ACT_ENVIRONMENT; restoreGlobals(); window.close(); }
 });
 
 function installDomGlobals(window) {

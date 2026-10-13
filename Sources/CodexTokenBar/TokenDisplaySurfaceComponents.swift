@@ -403,12 +403,12 @@ struct TokenDisplayCrowdRadarRow: View {
             .lineLimit(1)
             .minimumScaleFactor(0.76)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("众测雷达")
-            .accessibilityValue(accessibilityValue(leaders, start: start))
+            .accessibilityLabel(crowd.isRadarBench ? "RadarBench 雷达分" : "旧基准众测 IQ")
+            .accessibilityValue(crowd.floatingRankingAccessibilityValue(leaders, start: start))
         } else {
             HStack {
                 Spacer()
-                Text("排名待读取")
+                Text(presentation.crowdSnapshot?.emptyRankingText ?? "排名待读取")
                 Spacer()
             }
             .font(.system(
@@ -416,25 +416,23 @@ struct TokenDisplayCrowdRadarRow: View {
                 weight: .semibold
             ))
             .foregroundStyle(textPalette.secondaryColor)
+            .accessibilityElement(children: .ignore)
+            .accessibilityValue(presentation.crowdSnapshot?.floatingRankingAccessibilityValue([], start: 0) ?? "排名待读取")
         }
     }
 
     private func resultView(_ model: CodexCrowdRadarModel?, position: Int) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(model.map { "\(position) \($0.label)" } ?? "\(position) --")
+            Text((presentation.crowdSnapshot?.staleDataDisplayed == true && position == max(0, pageIndex) * 3 + 1 ? "上次数据 · " : "")
+                 + (model.map { "\(position) \($0.label)" } ?? "\(position) --"))
                 .fontWeight(.semibold)
-            Text(model.map { "IQ \(String(format: "%.1f", $0.iq)) · \($0.scorePassed)/\($0.scoreSamples)" } ?? "IQ -- · --/--")
+            Text(model?.rankingDetailText ?? "--")
                 .foregroundStyle(textPalette.secondaryColor)
                 .monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func accessibilityValue(_ leaders: [CodexCrowdRadarModel], start: Int) -> String {
-        leaders.enumerated().map { index, model in
-            "第\(start + index + 1)名 \(model.label)，IQ \(String(format: "%.1f", model.iq))，本口径通过 \(model.scorePassed)/\(model.scoreSamples)"
-        }.joined(separator: "；")
-    }
 }
 
 private func tokenDisplayRadarSecondaryIQText(_ snapshot: CodexRadarSnapshot?, limit: Int = 3) -> String {

@@ -284,11 +284,11 @@ private struct CodexCrowdRadarBlock: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 5) {
                 CodexRadarBlockTitle(
-                    "众测雷达",
+                    snapshot?.isRadarBench == false ? "旧基准众测 IQ" : "雷达Bench",
                     systemImage: "antenna.radiowaves.left.and.right",
                     accent: bestAccent ?? AppTheme.accentGreen
                 )
-                if staleDataDisplayed {
+                if staleDataDisplayed || !(snapshot?.sourceDiagnostics.isEmpty ?? true) {
                     Text("旧")
                         .font(.system(size: 8, weight: .bold, design: .rounded))
                         .foregroundStyle(.orange)
@@ -299,7 +299,8 @@ private struct CodexCrowdRadarBlock: View {
                 }
             }
             HStack(alignment: .lastTextBaseline, spacing: 8) {
-                Text(best.map { "IQ \(String(format: "%.1f", $0.iq))" } ?? "IQ --")
+                Text(best.map { "\(snapshot?.isRadarBench == true ? "雷达分" : "旧 IQ") \($0.scoreDisplayText)" }
+                    ?? (snapshot?.isRadarBench == true ? "待测" : "旧 IQ --"))
                     .font(.system(size: 20, weight: .semibold, design: .rounded))
                     .foregroundStyle(bestAccent ?? .primary)
                     .monospacedDigit()
@@ -312,7 +313,7 @@ private struct CodexCrowdRadarBlock: View {
             if leaders.count > 1 {
                 HStack(spacing: 8) {
                     ForEach(Array(leaders.dropFirst()), id: \.id) { model in
-                        Text("\(model.label) \(String(format: "%.1f", model.iq))")
+                        Text("\(model.label) \(model.scoreDisplayText)")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -320,7 +321,7 @@ private struct CodexCrowdRadarBlock: View {
                     }
                 }
             } else {
-                Text(snapshot == nil ? "等待众测排行" : "暂无更多排行")
+                Text(best?.radarBench?.coverageText ?? (snapshot == nil ? "等待雷达排行" : "暂无更多排行"))
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -518,13 +519,16 @@ private struct CodexCrowdRadarDetail: View {
     @State private var mode: CodexCrowdRadarMode = .realtime
 
     var body: some View {
-        CodexRadarDetailSection(title: "众测雷达", systemImage: "antenna.radiowaves.left.and.right") {
+        CodexRadarDetailSection(title: snapshot?.isRadarBench == false ? "旧基准众测 IQ" : "雷达Bench", systemImage: "antenna.radiowaves.left.and.right") {
             if staleDataDisplayed {
                 Label("众测刷新失败，显示上次排行", systemImage: "clock.arrow.circlepath")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.orange)
             }
             if let snapshot {
+                if snapshot.isRadarBench {
+                    CodexRadarBenchDetail(snapshot: snapshot)
+                } else {
                 Picker("统计口径", selection: $mode) {
                     ForEach(CodexCrowdRadarMode.allCases) { option in
                         Text(option.title).tag(option)
@@ -571,6 +575,7 @@ private struct CodexCrowdRadarDetail: View {
                         }
                     )
                 }
+                }
                 Link("打开分布式众测雷达", destination: URL(string: "https://deng.codexradar.com")!)
                     .font(.system(size: 11, weight: .semibold))
             } else {
@@ -578,6 +583,59 @@ private struct CodexCrowdRadarDetail: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+private struct CodexRadarBenchDetail: View {
+    let snapshot: CodexCrowdRadarSnapshot
+
+    private var rows: [CodexCrowdRadarModel] {
+        let ranked = snapshot.rankedModels
+        let rankedIDs = Set(ranked.map(\.id))
+        return ranked + snapshot.models.filter { !rankedIDs.contains($0.id) }
+    }
+
+    var body: some View {
+        Text("每题最近最多 3 次有效判分取均值，已覆盖题等权汇总；未覆盖不补零，合法零分计入。覆盖不足为阶段分。")
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+        if !snapshot.sourceDiagnostics.isEmpty {
+            Label("部分档位读取失败，保留同基准旧成绩并标陈旧；失败档位不参与当前排名", systemImage: "clock.arrow.circlepath")
+                .font(.system(size: 10)).foregroundStyle(.orange)
+                .help(snapshot.sourceDiagnostics.joined(separator: "\n"))
+        }
+        CodexRadarDetailSubsection(title: "当前雷达分 · 满分 150") {
+            CodexRadarTable(headers: ["模型", "雷达分", "覆盖", "已判分", "状态", "已知耗时均值", "已知 API 等价均值"], rows: rows.map { model in
+                let result = model.radarBench
+                return [model.label, model.scoreDisplayText, result?.coverageText ?? "--",
+                    result?.gradedRunsCount.map(String.init) ?? "--", result?.statusText ?? "未知",
+                    result?.statistics?.averageMinutes.map { String(format: "%.1f 分钟", $0) } ?? "--",
+                    result?.statistics?.averageAPIEquivalentUSD.map { String(format: "$%.2f", $0) } ?? "--"]
+            })
+            Text("耗时和费用仅表示已知样本均值；API 等价不是订阅实扣，证据不足保持未知。覆盖题数与已判分次数分别展示。")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            ForEach(rows.filter { $0.radarBench?.statistics != nil }) { model in
+                let statistics = model.radarBench!.statistics!
+                let elapsed = statistics.metrics["elapsed_ms"]
+                let cost = statistics.metrics["api_equivalent_usd"]
+                Text("\(model.label) · 耗时已知 \(elapsed?.knownSamples.map(String.init) ?? "--") / 缺失 \(elapsed?.missingSamples.map(String.init) ?? "--") · 费用已知 \(cost?.knownSamples.map(String.init) ?? "--") / 缺失 \(cost?.missingSamples.map(String.init) ?? "--")")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
+        let historyRows = rows.flatMap { model -> [[String]] in
+            (model.radarBench?.history?.points.sorted { $0.at < $1.at }.suffix(7) ?? []).map { point in
+                [model.label, String(point.at.prefix(10)), point.score.map { String(format: "%.1f", $0) } ?? "--",
+                 "\(point.coverage)/\(point.requiredTasks) 题", point.scoreStatus == "complete" ? "完整覆盖" : "阶段分"]
+            }
+        }
+        if !historyRows.isEmpty {
+            CodexRadarDetailSubsection(title: "UTC 判分日历史 · 每档最近 7 个日点") {
+                CodexRadarTable(headers: ["模型", "UTC 日期", "雷达分", "覆盖", "状态"], rows: historyRows)
+                Text("每点是该 UTC 判分日最后的累计成绩；无判分日不补点。此日期不是本机抓取时间。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        } else {
+            Text("未提供可验证的 UTC 判分日历史").font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
 }

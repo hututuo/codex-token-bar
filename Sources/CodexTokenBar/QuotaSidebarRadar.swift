@@ -79,7 +79,7 @@ struct QuotaSidebarRecommendations: View {
                                     Text(CodexRadarPresentationText.compactModelName(models[index].model) + " " + models[index].effort)
                                         .lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
                                 }.frame(height: 11)
-                                    .help("第 \(index + 1) 名 · \(models[index].model) \(models[index].effort) · IQ \(String(format: "%.1f", models[index].iq))")
+                                    .help("第 \(index + 1) 名 · \(models[index].model) \(models[index].effort) · \(models[index].radarBench == nil ? "旧 IQ" : "雷达分") \(models[index].scoreDisplayText)\(models[index].radarBench.map { " · \($0.coverageText)" } ?? "")")
                             }
                         }.id(pageIndex)
                             .transition(reduceMotion ? .identity : .asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .move(edge: .top).combined(with: .opacity)))
@@ -181,14 +181,14 @@ struct QuotaSidebarRadarContent: View {
                 }
             } else {
             HStack {
-                Text("众测实时模型排行").font(.system(size: 12, weight: .semibold))
+                Text(crowd?.isRadarBench == true ? "RadarBench 当前排行" : "旧基准众测排行").font(.system(size: 12, weight: .semibold))
                 Spacer()
-                if crowdStale { staleBadge }
+                if crowdStale || !(crowd?.sourceDiagnostics.isEmpty ?? true) { staleBadge }
             }
-            Text("每格最新一次 · ≥\(CodexCrowdRadarSnapshot.minimumRankedSampleCount) 样本 · \(QuotaSidebarRadarPresentation.timeText(crowd?.generatedAt ?? ""))")
+            Text(crowd?.isRadarBench == true ? "每题最近最多 3 次有效判分 · 已覆盖题等权 · 满分 150" : "旧基准 · 每格最新一次 · ≥\(CodexCrowdRadarSnapshot.minimumRankedSampleCount) 样本 · \(QuotaSidebarRadarPresentation.timeText(crowd?.generatedAt ?? ""))")
                 .font(.system(size: 9)).foregroundStyle(.gray).lineLimit(1)
             if rankings.isEmpty {
-                Text(crowd?.realtimeAvailable == false ? "实时排行暂不可用" : "暂无达到样本门槛的实时模型结果")
+                Text(crowd?.isRadarBench == true ? "当前档位待测或读取失败，未提供有效成绩" : (crowd?.realtimeAvailable == false ? "旧实时排行暂不可用" : "暂无达到旧样本门槛的结果"))
                     .font(.system(size: 11)).foregroundStyle(.gray).padding(.vertical, 8)
             } else {
                 VStack(spacing: 0) {
@@ -197,7 +197,7 @@ struct QuotaSidebarRadarContent: View {
                         if index < rankings.count - 1 { Divider().overlay(.white.opacity(0.06)) }
                     }
                 }.padding(.horizontal, 12).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
-                Text("按众测通过率降序 · 沿用雷达并列排序 · 与上方测评 IQ 分开")
+                Text(crowd?.isRadarBench == true ? "按服务端雷达分降序 · 覆盖不足为阶段分 · 与旧测评 IQ 分开" : "旧基准通过率降序 · 与上方测评 IQ 分开")
                     .font(.system(size: 9)).foregroundStyle(.gray).fixedSize(horizontal: false, vertical: true)
             }
             }
@@ -222,8 +222,9 @@ struct QuotaSidebarRadarContent: View {
             }
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 5) {
-                Text(String(format: "IQ %.1f", model.iq)).font(.system(size: 13, weight: .medium, design: .rounded)).monospacedDigit()
-                Text("\(model.scorePassed)/\(model.scoreSamples) 通过").font(.system(size: 9)).foregroundStyle(.gray)
+                Text("\(model.radarBench == nil ? "旧 IQ" : "雷达分") \(model.scoreDisplayText)").font(.system(size: 13, weight: .medium, design: .rounded)).monospacedDigit()
+                Text(model.radarBench.map { "\($0.coverageText) · 已判 \($0.gradedRunsCount.map { String($0) } ?? "--")" }
+                    ?? "\(model.scorePassed)/\(model.scoreSamples) 通过").font(.system(size: 9)).foregroundStyle(.gray)
             }
         }.padding(.vertical, 11)
     }

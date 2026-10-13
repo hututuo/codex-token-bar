@@ -35,6 +35,7 @@ struct CodexCrowdRadarModel: Equatable, Sendable, Identifiable {
     let scorePassed: Int
     let scoreSamples: Int
     let latestGradedAt: String?
+    let radarBench: CodexRadarBenchResult?
 
     init(
         model: String,
@@ -45,7 +46,8 @@ struct CodexCrowdRadarModel: Equatable, Sendable, Identifiable {
         cells: Int,
         scorePassed: Int? = nil,
         scoreSamples: Int? = nil,
-        latestGradedAt: String? = nil
+        latestGradedAt: String? = nil,
+        radarBench: CodexRadarBenchResult? = nil
     ) {
         self.model = model
         self.effort = effort
@@ -56,15 +58,33 @@ struct CodexCrowdRadarModel: Equatable, Sendable, Identifiable {
         self.scorePassed = scorePassed ?? passed
         self.scoreSamples = scoreSamples ?? graded
         self.latestGradedAt = latestGradedAt
+        self.radarBench = radarBench
     }
 
     var id: String { "\(model)|\(effort)" }
     var label: String {
+        if radarBench != nil { return "\(model) \(effort)".trimmingCharacters(in: .whitespacesAndNewlines) }
         let family = ["Astra", "Sol", "Terra", "Luna"].first { model.localizedCaseInsensitiveContains($0) } ?? model
         let rawLabel = "\(family) \(effort)".trimmingCharacters(in: .whitespacesAndNewlines)
         return CodexRadarPresentationText.compactModelName(rawLabel)
     }
-    var iq: Double { passRate * 150 }
+    var iq: Double { radarBench.map { $0.score ?? .nan } ?? passRate * 150 }
+    var scoreDisplayText: String {
+        if let radarBench { return radarBench.score.map { String(format: "%.1f", $0) } ?? "待测" }
+        return String(format: "%.1f", iq)
+    }
+    var rankingDetailText: String {
+        if let radarBench {
+            return "雷达分 \(scoreDisplayText) · \(radarBench.coverageText) · 已判 \(radarBench.gradedRunsCount.map { String($0) } ?? "--")"
+        }
+        return "旧 IQ \(scoreDisplayText) · \(scorePassed)/\(scoreSamples)"
+    }
+    var rankingAccessibilityText: String {
+        if let radarBench {
+            return "\(label)，雷达分 \(scoreDisplayText)，覆盖 \(radarBench.coverageText)，已判分 \(radarBench.gradedRunsCount.map { String($0) } ?? "未知")"
+        }
+        return "\(label)，旧 IQ \(scoreDisplayText)，本口径通过 \(scorePassed)/\(scoreSamples)"
+    }
 }
 
 struct CodexCrowdRadarSnapshot: Equatable, Sendable {
@@ -80,6 +100,23 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
     let recentModels: [CodexCrowdRadarModel]
     let realtimeAvailable: Bool
     var sourceDiagnostics: [String] = []
+    var staleDataDisplayed = false
+    let radarBenchBinding: CodexRadarBenchBinding?
+    var benchmarkSource: String { radarBenchBinding == nil ? "legacy-iq" : "radar-bench" }
+    var isRadarBench: Bool { radarBenchBinding != nil }
+    var emptyRankingText: String {
+        if staleDataDisplayed { return isRadarBench ? "上次数据 · 暂无成绩" : "上次排名数据" }
+        guard isRadarBench else { return "排名待读取" }
+        return sourceDiagnostics.isEmpty ? "暂无成绩 · 待测" : "当前档位读取失败"
+    }
+
+    func floatingRankingAccessibilityValue(_ leaders: [CodexCrowdRadarModel], start: Int) -> String {
+        let values = leaders.enumerated().map { index, model in
+            "第\(start + index + 1)名 \(model.rankingAccessibilityText)"
+        }.joined(separator: "；")
+        let content = values.isEmpty ? emptyRankingText : values
+        return staleDataDisplayed ? "陈旧，上次数据，\(content)" : content
+    }
 
     init(
         generatedAt: String,
@@ -90,7 +127,8 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
         errorGrades: Int,
         models: [CodexCrowdRadarModel],
         recentModels: [CodexCrowdRadarModel]? = nil,
-        realtimeAvailable: Bool = true
+        realtimeAvailable: Bool = true,
+        radarBenchBinding: CodexRadarBenchBinding? = nil
     ) {
         self.generatedAt = generatedAt
         self.taskCount = taskCount
@@ -101,11 +139,13 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
         self.realtimeModels = models
         self.recentModels = recentModels ?? models
         self.realtimeAvailable = realtimeAvailable
+        self.radarBenchBinding = radarBenchBinding
     }
 
     var models: [CodexCrowdRadarModel] { realtimeModels }
 
     func models(for mode: CodexCrowdRadarMode) -> [CodexCrowdRadarModel] {
+        if isRadarBench { return realtimeModels }
         switch mode {
         case .realtime:
             return realtimeModels
@@ -116,7 +156,7 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
 
     func rankedModels(for mode: CodexCrowdRadarMode) -> [CodexCrowdRadarModel] {
         models(for: mode)
-            .filter { $0.scoreSamples >= Self.minimumRankedSampleCount }
+            .filter { isRadarBench ? $0.radarBench?.score != nil && $0.radarBench?.failure == nil : $0.scoreSamples >= Self.minimumRankedSampleCount }
             .sorted(by: Self.ranksBefore)
     }
 
@@ -140,8 +180,19 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
         _ left: CodexCrowdRadarModel,
         _ right: CodexCrowdRadarModel
     ) -> Bool {
-        if left.passRate != right.passRate {
-            return left.passRate > right.passRate
+        if let leftBench = left.radarBench, let rightBench = right.radarBench {
+            let leftScore = leftBench.score ?? 0
+            let rightScore = rightBench.score ?? 0
+            if leftScore != rightScore { return leftScore > rightScore }
+            let leftCoverage = leftBench.coverage ?? 0
+            let rightCoverage = rightBench.coverage ?? 0
+            if leftCoverage != rightCoverage { return leftCoverage > rightCoverage }
+            return left.id.utf8.lexicographicallyPrecedes(right.id.utf8)
+        }
+        let leftScore = left.radarBench?.score ?? left.passRate * 150
+        let rightScore = right.radarBench?.score ?? right.passRate * 150
+        if leftScore != rightScore {
+            return leftScore > rightScore
         }
         let leftModelRank = modelRank(left.model)
         let rightModelRank = modelRank(right.model)
@@ -180,6 +231,11 @@ protocol CodexCrowdRadarReading: Sendable {
 }
 
 struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
+    private let benchReader: LiveCodexRadarBenchReader
+
+    init(benchReader: LiveCodexRadarBenchReader = LiveCodexRadarBenchReader()) {
+        self.benchReader = benchReader
+    }
     // The growing live table exceeded 8 MiB in September 2026.
     private static let maxResponseBytes = 32 * 1024 * 1024
     private static let sourceAttemptLimit = 3
@@ -195,6 +251,11 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
     ]
 
     func readCrowdRadar() async throws -> CodexCrowdRadarSnapshot {
+        try await benchReader.readCrowdRadar()
+    }
+
+    // Retained only for explicit historical reads. Never used as a current Bench fallback.
+    func readLegacyCrowdRadar() async throws -> CodexCrowdRadarSnapshot {
         async let tableData = readSourceResult(Self.tableSources, signalKeys: ["combos", "tasks", "cells", "baselineGeneratedAt"])
         async let leaderboardData = readSourceResult(Self.leaderboardSources, signalKeys: ["points", "models", "rankings", "modelStats"])
         let payloads = await (tableData, leaderboardData)

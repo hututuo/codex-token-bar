@@ -1,6 +1,8 @@
 import { diagnosticJournal } from "../diagnostics/diagnosticJournal.ts";
 import { compactRadarModelName } from "../domain/codexRadar/model.ts";
 import { isTauriRuntimeAvailable } from "../platform/runtime.ts";
+import { parseRadarBenchBinding, parseRadarBenchSummary, type RadarBenchBinding, type RadarBenchStatistics,
+  type RadarBenchHistoryPoint, type RadarBenchScoreStatus } from "../domain/codexRadar/radarBench.ts";
 
 export interface CodexCrowdRadarModel {
   model: string;
@@ -12,6 +14,14 @@ export interface CodexCrowdRadarModel {
   scorePassed: number;
   scoreSamples: number;
   latestGradedAt: string | null;
+  benchScore?: number | null;
+  benchCoverage?: number;
+  benchRequiredTasks?: number;
+  benchGradedRuns?: number;
+  benchStatus?: RadarBenchScoreStatus;
+  benchStatistics?: RadarBenchStatistics | null;
+  benchHistory?: RadarBenchHistoryPoint[];
+  benchFailure?: string;
 }
 
 export interface CodexCrowdRadarSourceProvenance {
@@ -44,6 +54,9 @@ export interface CodexCrowdRadarProvenance {
 export type CodexCrowdRadarMode = "realtime" | "recent";
 
 export interface CodexCrowdRadarSnapshot {
+  benchmarkSource?: "radar-bench" | "legacy";
+  benchBinding?: RadarBenchBinding;
+  staleDataDisplayed?: boolean;
   generatedAt: string;
   taskCount: number;
   cellCount: number;
@@ -60,7 +73,7 @@ export interface CodexCrowdRadarSnapshot {
 }
 
 const CROWD_RADAR_COMMAND = "read_codex_crowd_radar_payload";
-const CROWD_RADAR_COMMAND_TIMEOUT_MS = 22_000;
+const CROWD_RADAR_COMMAND_TIMEOUT_MS = 25_000;
 const WRAPPER_KEYS = ["data", "result", "snapshot", "payload", "response", "body"];
 const CROWD_RADAR_RECOVERY_DELAYS_MS = [2_000, 8_000] as const;
 const CROWD_RADAR_FAILURE_COOLDOWN_MS = 10_000;
@@ -134,6 +147,11 @@ export function nextCodexCrowdRadarRecoveryDelayMs(attempt: number): number | nu
 
 export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSnapshot {
   const nativePayload = asRecord(raw);
+  if (nativePayload?.benchmarkSource === "radar-bench") return normalizeRadarBenchPayload(nativePayload);
+  if ((nativePayload?.benchmarkSource !== undefined && nativePayload.benchmarkSource !== "legacy")
+      || nativePayload?.benchBinding !== undefined || nativePayload?.benchSummaries !== undefined) {
+    throw new Error("Unsupported RadarBench payload source");
+  }
   const provenance: CodexCrowdRadarProvenance = {
     observedAt: firstString(nativePayload, ["observedAt"]) || null,
     table: parseSourceProvenance(valueFor(nativePayload, ["tableProvenance"])),
@@ -178,6 +196,7 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
     throw new Error(nativeError || "众测雷达没有可排名的模型数据");
   }
   return {
+    benchmarkSource: "legacy",
     generatedAt: tableAggregation.latestGradedAt || firstString(table, [
       "baselineGeneratedAt",
       "generatedAt",
@@ -228,6 +247,78 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
   };
 }
 
+function normalizeRadarBenchPayload(raw: Record<string, unknown>): CodexCrowdRadarSnapshot {
+  const binding = parseRadarBenchBinding(raw.benchBinding);
+  if (!Array.isArray(raw.benchSummaries) || raw.benchSummaries.length > 128) throw new Error("RadarBench summaries must be a bounded array");
+  const endpointErrors = stringArrayValue(raw.benchErrors);
+  const models: CodexCrowdRadarModel[] = [];
+  const seen = new Set<string>();
+  for (const value of raw.benchSummaries) {
+    try {
+      const summary = parseRadarBenchSummary(value, binding);
+      const key = JSON.stringify([summary.model, summary.effort]);
+      if (seen.has(key)) throw new Error(`RadarBench duplicate summary ${key}`);
+      seen.add(key);
+      endpointErrors.push(...summary.diagnostics.map(error => `${summary.model}/${summary.effort}: ${error}`));
+      models.push({ model: summary.model, effort: summary.effort, graded: summary.gradedRuns,
+        // Legacy pass metrics are unknown for Bench, never inferred from its score.
+        passed: Number.NaN, passRate: Number.NaN, cells: summary.coverage,
+        scorePassed: Number.NaN, scoreSamples: Number.NaN, latestGradedAt: summary.latestGradedAt,
+        benchScore: summary.score, benchCoverage: summary.coverage, benchRequiredTasks: summary.requiredTasks,
+        benchGradedRuns: summary.gradedRuns, benchStatus: summary.status,
+        benchStatistics: summary.statistics, benchHistory: summary.history });
+    } catch (error) { endpointErrors.push(String(error)); }
+  }
+  if (!models.length) throw new Error(endpointErrors.join("；") || "RadarBench all summaries failed");
+  for (const pair of binding.modelEfforts) {
+    if (seen.has(JSON.stringify([pair.model, pair.effort]))) continue;
+    models.push({ ...pair, graded: Number.NaN, passed: Number.NaN, passRate: Number.NaN,
+      cells: Number.NaN, scorePassed: Number.NaN, scoreSamples: Number.NaN, latestGradedAt: null,
+      benchScore: null, benchRequiredTasks: binding.requiredTasks, benchFailure: "读取失败" });
+    endpointErrors.push(`${pair.model}/${pair.effort}: 读取失败`);
+  }
+  const generatedAt = models.map(row => row.latestGradedAt ?? "").sort().at(-1) ?? "";
+  return { benchmarkSource: "radar-bench", benchBinding: binding, generatedAt,
+    taskCount: binding.requiredTasks, cellCount: binding.totalCells,
+    contributorCount: Number.NaN, pendingGrades: Number.NaN, errorGrades: Number.NaN,
+    models, recentModels: [], realtimeAvailable: false,
+    provenance: { observedAt: firstString(raw, ["observedAt"]) || null, table: null, leaderboard: null },
+    endpointErrors };
+}
+
+/** Retain a failed lane only within the same catalog identity. Retained scores
+ * stay visibly stale and are excluded from the newly fetched ranking. */
+export function mergeCodexCrowdRadarSnapshot(previous: CodexCrowdRadarSnapshot | null, next: CodexCrowdRadarSnapshot): CodexCrowdRadarSnapshot {
+  const oldBinding = previous?.benchBinding;
+  const newBinding = next.benchBinding;
+  if (previous?.benchmarkSource !== "radar-bench" || next.benchmarkSource !== "radar-bench" || !oldBinding || !newBinding
+      || oldBinding.benchmark !== newBinding.benchmark || oldBinding.catalogVersion !== newBinding.catalogVersion
+      || oldBinding.taskSetHash !== newBinding.taskSetHash || oldBinding.requiredTasks !== newBinding.requiredTasks) return next;
+  const priorRows = new Map(previous.models.map(row => [JSON.stringify([row.model, row.effort]), row]));
+  const models = next.models.map(row => {
+    if (!row.benchFailure) return row;
+    const prior = priorRows.get(JSON.stringify([row.model, row.effort]));
+    if (prior?.benchCoverage === undefined) return row;
+    return { ...prior, benchFailure: row.benchFailure };
+  });
+  return { ...next, models };
+}
+
+export function crowdRadarScore(row: CodexCrowdRadarModel): number | null {
+  if (row.benchScore !== undefined) return row.benchScore;
+  return Number.isFinite(row.passRate) ? row.passRate * 150 : null;
+}
+export function crowdRadarScoreText(row: CodexCrowdRadarModel): string {
+  const score = crowdRadarScore(row);
+  return `${row.benchScore !== undefined ? "雷达分" : "旧基准 IQ"} ${score === null ? "--" : score.toFixed(1)}`;
+}
+export function crowdRadarCoverageText(row: CodexCrowdRadarModel): string {
+  return row.benchScore !== undefined
+    ? row.benchFailure && row.benchCoverage === undefined ? "读取失败"
+      : `覆盖 ${row.benchCoverage}/${row.benchRequiredTasks} · 已判分 ${row.benchGradedRuns}${row.benchFailure ? " · 上次数据" : row.benchStatus === "provisional" ? " · 阶段值" : ""}`
+    : `${row.scorePassed}/${row.scoreSamples}`;
+}
+
 function parseSourceProvenance(value: unknown): CodexCrowdRadarSourceProvenance | null {
   const record = asRecord(value);
   if (!record) return null;
@@ -270,6 +361,13 @@ export function rankedCodexCrowdRadarModels(
   limit = Number.MAX_SAFE_INTEGER,
   mode: CodexCrowdRadarMode = "realtime",
 ): CodexCrowdRadarModel[] {
+  if (snapshot?.benchmarkSource === "radar-bench") {
+    if (mode === "recent") return [];
+    return [...snapshot.models].filter(row => !row.benchFailure && typeof row.benchScore === "number" && Number.isFinite(row.benchScore))
+      .sort((a, b) => (b.benchScore! - a.benchScore!) || (b.benchCoverage! - a.benchCoverage!)
+        || compareASCII(`${a.model}|${a.effort}`, `${b.model}|${b.effort}`))
+      .slice(0, Math.max(0, Math.floor(limit)));
+  }
   const realtimeModels = snapshot?.realtimeAvailable === false ? [] : snapshot?.models;
   const requestedModels = mode === "recent" ? snapshot?.recentModels : realtimeModels;
   const fallbackModels = requestedModels && requestedModels.length > 0
@@ -281,7 +379,10 @@ export function rankedCodexCrowdRadarModels(
     .slice(0, Math.max(0, Math.floor(limit)));
 }
 
+function compareASCII(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
+
 export function crowdRadarModelLabel(row: CodexCrowdRadarModel): string {
+  if (row.benchScore !== undefined) return `${row.model} ${row.effort}`;
   const family = row.model.match(/(?:^|-)\s*(astra|sol|terra|luna)(?:$|-)/i)?.[1] ?? row.model;
   return compactRadarModelName(`${family} ${row.effort}`.trim());
 }

@@ -15,8 +15,12 @@ export interface SidebarRadar {
     primary: { model: string; effort: string; iq: number; passed: number; tasks: number } | null;
   };
   crowd: {
+    benchmarkSource?: "radar-bench" | "legacy";
     checkedAt?: string; available: boolean; stale: boolean | null; updatedAt: string; source: string; minimumSamples: number;
-    rows: { rank: number; model: string; effort: string; iq: number; passed: number; samples: number }[];
+    rows: { rank: number; model: string; effort: string; iq: number; passed: number; samples: number;
+      coverage?: number; requiredTasks?: number; gradedRuns?: number; provisional?: boolean }[];
+    benchOtherRows?: { model: string; effort: string; score: number | null; coverage?: number;
+      requiredTasks?: number; gradedRuns?: number; failure?: string }[];
   };
 }
 function sidebarRadarClockFields(official: CodexRadarSnapshot | null, nowMs: number) {
@@ -39,12 +43,15 @@ export function sidebarRadarAtTime(base: SidebarRadar, official: CodexRadarSnaps
 export function sidebarRadarSnapshot(official: CodexRadarSnapshot | null, crowd: CodexCrowdRadarSnapshot | null, nowMs = Date.now()): SidebarRadar {
   const primary = official ? primaryModelMeasurementRow(official.modelIq) : null;
   const provenance = crowd?.provenance?.table;
-  const stale = provenance?.stale === true || provenance?.fresh === false ? true
+  const isBench = crowd?.benchmarkSource === "radar-bench";
+  const stale = crowd?.staleDataDisplayed === true || provenance?.stale === true || provenance?.fresh === false ? true
     : provenance?.stale === false || provenance?.fresh === true ? false : null;
   const rows = rankedCodexCrowdRadarModels(crowd, 8, "realtime")
-    .filter(row => Number.isFinite(row.passRate))
+    .filter(row => isBench ? Number.isFinite(row.benchScore) : Number.isFinite(row.passRate))
     .map((row, index) => ({ rank: index + 1, model: row.model, effort: row.effort,
-      iq: row.passRate * 150, passed: row.scorePassed, samples: row.scoreSamples }));
+      iq: isBench ? row.benchScore! : row.passRate * 150, passed: row.scorePassed, samples: row.scoreSamples,
+      ...(isBench ? { coverage: row.benchCoverage, requiredTasks: row.benchRequiredTasks,
+        gradedRuns: row.benchGradedRuns, provisional: row.benchStatus === "provisional" } : {}) }));
   return {
     official: { available: official !== null, ...sidebarRadarClockFields(official, nowMs), stale: official?.staleDataDisplayed ?? false,
       deadlineMs: radarSpeedWindowDeadlineMs(official),
@@ -55,9 +62,13 @@ export function sidebarRadarSnapshot(official: CodexRadarSnapshot | null, crowd:
         effort: primary.reasoningEffort || primary.point.reasoningEffort || "未知",
         iq: primary.point.score, passed: primary.point.passed, tasks: primary.point.tasks } : null,
     },
-    crowd: { checkedAt: crowd?.provenance?.observedAt || "", available: crowd !== null && crowd.realtimeAvailable, stale,
-      updatedAt: crowd?.generatedAt || "", source: provenance?.endpoint || "Codex Radar 众测实时表",
-      minimumSamples: CROWD_RADAR_MINIMUM_RANKED_SAMPLE_COUNT, rows },
+    crowd: { benchmarkSource: crowd?.benchmarkSource, checkedAt: crowd?.provenance?.observedAt || "", available: crowd !== null && (isBench || crowd.realtimeAvailable), stale,
+      updatedAt: crowd?.generatedAt || "", source: isBench ? "RadarBench 公共摘要" : provenance?.endpoint || "Codex Radar 众测实时表",
+      minimumSamples: isBench ? 0 : CROWD_RADAR_MINIMUM_RANKED_SAMPLE_COUNT, rows,
+      ...(isBench ? { benchOtherRows: crowd.models.filter(row => row.benchFailure || row.benchScore === null).map(row => ({
+        model: row.model, effort: row.effort, score: row.benchScore ?? null, coverage: row.benchCoverage,
+        requiredTasks: row.benchRequiredTasks, gradedRuns: row.benchGradedRuns, failure: row.benchFailure,
+      })) } : {}) },
   };
 }
 // A stale retained window must never activate the edge signal.

@@ -37,7 +37,7 @@ import {
   floatingPanelAppearance,
   floatingPanelSettingsForVisibility,
 } from "./floatingPresentation";
-import { crowdRadarModelLabel, pagedCodexCrowdRadarModels, rankedCodexCrowdRadarModels, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
+import { crowdRadarModelLabel, crowdRadarScoreText, crowdRadarCoverageText, pagedCodexCrowdRadarModels, rankedCodexCrowdRadarModels, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
 import type { OfficialAPIPriceModel } from "../settings/quotaPriceModel";
 import {
   FLOATING_MODEL_USAGE_VISIBLE_LIMIT,
@@ -814,20 +814,20 @@ export function FloatingCrowdRadarRow({ pageIndex = 0, snapshot, style }: { page
   const leaders = pagedCodexCrowdRadarModels(snapshot, pageIndex);
   return (
     <div className="floating-row floating-crowd-radar" style={style}>
-      <FloatingCrowdRadarResult index={start} model={leaders[0]} />
+      <FloatingCrowdRadarResult index={start} model={leaders[0]} bench={snapshot?.benchmarkSource === "radar-bench"} stale={snapshot?.staleDataDisplayed} />
       <div className="floating-crowd-radar-trailing">
-        <FloatingCrowdRadarResult index={start + 1} model={leaders[1]} />
-        <FloatingCrowdRadarResult index={start + 2} model={leaders[2]} />
+        <FloatingCrowdRadarResult index={start + 1} model={leaders[1]} bench={snapshot?.benchmarkSource === "radar-bench"} />
+        <FloatingCrowdRadarResult index={start + 2} model={leaders[2]} bench={snapshot?.benchmarkSource === "radar-bench"} />
       </div>
     </div>
   );
 }
 
-function FloatingCrowdRadarResult({ index, model }: { index: number; model?: ReturnType<typeof rankedCodexCrowdRadarModels>[number] }) {
+function FloatingCrowdRadarResult({ index, model, bench, stale }: { index: number; model?: ReturnType<typeof rankedCodexCrowdRadarModels>[number]; bench?: boolean; stale?: boolean }) {
   return (
     <div className="floating-crowd-radar-result">
       <span>{index + 1} {model ? crowdRadarModelLabel(model) : "--"}</span>
-      <em>{model ? `IQ ${(model.passRate * 150).toFixed(1)} · ${model.scorePassed}/${model.scoreSamples}` : "IQ -- · --/--"}</em>
+      <em>{stale ? "上次数据 · " : ""}{model ? `${crowdRadarScoreText(model)} · ${crowdRadarCoverageText(model)}` : bench ? "雷达分 -- · 无成绩" : "旧基准 IQ -- · --/--"}</em>
     </div>
   );
 }

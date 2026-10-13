@@ -179,7 +179,9 @@ final class CodexRadarStoreTests: XCTestCase {
             store.crowdStaleDataDisplayed && !store.isRefreshing
         }
 
-        XCTAssertEqual(store.crowdSnapshot, crowdSnapshot)
+        var retained = crowdSnapshot
+        retained.staleDataDisplayed = true
+        XCTAssertEqual(store.crowdSnapshot, retained)
     }
 
     func testOfficialRadarFailureStillAppliesAFreshCrowdRanking() async throws {
@@ -243,7 +245,9 @@ final class CodexRadarStoreTests: XCTestCase {
             store.crowdStaleDataDisplayed && !store.isRefreshing
         }
 
-        XCTAssertEqual(store.crowdSnapshot, initialCrowd)
+        var retained = initialCrowd
+        retained.staleDataDisplayed = true
+        XCTAssertEqual(store.crowdSnapshot, retained)
         XCTAssertTrue(store.staleDataDisplayed)
     }
 

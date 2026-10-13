@@ -35,7 +35,7 @@ test("floating settings events win over a stale startup settings read", () => {
   );
 });
 
-test("crowd radar compares three compact results without a visual title or lower-value coverage fields", () => {
+test("crowd radar compares three compact results with source-specific score and coverage labels", () => {
   const crowdRow = /export function FloatingCrowdRadarRow[\s\S]*?\n}\n\nfunction floatingRadarSecondaryIQText/.exec(previewSource)?.[0] ?? "";
   assert.match(crowdRow, /const start = Math\.max\(0, Math\.trunc\(pageIndex\)\) \* 3/);
   assert.match(crowdRow, /pagedCodexCrowdRadarModels\(snapshot, pageIndex\)/);
@@ -43,7 +43,8 @@ test("crowd radar compares three compact results without a visual title or lower
   assert.match(crowdRow, /floating-crowd-radar-result/);
   assert.doesNotMatch(crowdRow, />众测</);
   assert.match(crowdRow, /index=\{start \+ 2\} model=\{leaders\[2\]\}/);
-  assert.match(crowdRow, /IQ .*model\.scorePassed.*model\.scoreSamples/);
+  assert.match(crowdRow, /crowdRadarScoreText\(model\).*crowdRadarCoverageText\(model\)/);
+  assert.match(crowdRow, /benchmarkSource === "radar-bench"/);
   assert.doesNotMatch(crowdRow, /IQ .*model\.scoreSamples.*判/);
   assert.doesNotMatch(crowdRow, /IQ .*model\.graded.*判/);
   assert.doesNotMatch(crowdRow, /snapshot\.taskCount|snapshot\.cellCount|snapshot\.contributorCount|pendingGrades|通过/);

@@ -512,18 +512,24 @@ export function RadarDetails({ radar, initialRanking = "official" }: { radar: Si
       <div className="qs-radar-action"><span>建议动作</span><strong>{official.action}</strong></div>
       <small title={official.source}>来源：Codex Radar · 更新 {sidebarLocalTime(official.updatedAt, null, true)}</small>
     </section>
-    <section className="qs-radar-iq"><div className="qs-section-heading"><h3>测评 IQ 摘要</h3><span>{official.stale ? "上次数据" : "Codex Radar 测评"}</span></div>
+    <section className="qs-radar-iq"><div className="qs-section-heading"><h3>测评 IQ 摘要 · 旧基准</h3><span>{official.stale ? "上次数据" : "Codex Radar 历史测评"}</span></div>
       {official.primary ? <><div><strong>{official.primary.iq.toFixed(1)}</strong><span>IQ</span><small>{official.primary.passed}/{official.primary.tasks} 通过</small></div><p>{official.primary.model}</p><small>推理强度 {official.primary.effort}</small></> : <p className="qs-muted">暂无可信 IQ 测评</p>}
     </section>
     <div id="qs-section-ranking" className="qs-ranking-tabs" role="tablist" aria-label="模型排名来源"><button role="tab" aria-selected={ranking === "official"} onClick={() => setRanking("official")}>雷达站</button><button role="tab" aria-selected={ranking === "crowd"} onClick={() => setRanking("crowd")}>众测雷达</button></div>
     {ranking === "official" ? <section className="qs-radar-ranking"><div className="qs-section-heading"><h3>雷达站模型排行</h3><span>按测评 IQ 排序</span></div>
       {!(official.rows?.length) ? <p className="qs-muted">暂无测评排名</p> : <ol>{official.rows.map(row => <li key={`${row.model}:${row.effort}`}><span className="qs-rank-number">{row.rank}</span><div><strong>{row.model}</strong><span>推理 {row.effort} · {row.passed}/{row.samples} 通过</span></div><b>{row.iq.toFixed(1)}<small>IQ</small></b></li>)}</ol>}
-    </section> : <section className="qs-radar-ranking"><div className="qs-section-heading"><h3>众测实时排行</h3><span>{!crowd.available ? "未知" : "每 5 分钟刷新"}</span></div>
-      <p className="qs-radar-basis">本机读取 {sidebarLocalTime(crowd.checkedAt, null, true)} · 每 5 分钟刷新<br />每格最新一次 · 至少 {crowd.minimumSamples} 个样本 · 沿用雷达排序</p>
-      {crowd.rows.length === 0 ? <p className="qs-empty">暂无达到样本门槛的实时排行</p> : <ol>{crowd.rows.map(row => <li key={`${row.model}:${row.effort}`}>
-        <span className="qs-rank-number">{row.rank}</span><div><strong>{row.model}</strong><span>推理 {row.effort || "未知"} · {row.passed}/{row.samples}</span></div><b>{row.iq.toFixed(1)}<small>IQ</small></b>
+    </section> : <section className="qs-radar-ranking"><div className="qs-section-heading"><h3>{crowd.benchmarkSource === "radar-bench" ? "RadarBench 雷达分排行" : "众测实时排行 · 旧基准"}</h3><span>{!crowd.available ? "未知" : crowd.stale ? "刷新失败，保留上次数据" : "每 5 分钟刷新"}</span></div>
+      <p className="qs-radar-basis">本机读取 {sidebarLocalTime(crowd.checkedAt, null, true)} · 每 5 分钟刷新<br />{crowd.benchmarkSource === "radar-bench" ? "150 分制 · 每题最近 3 次判分等权 · 低覆盖显示阶段值" : `旧基准 · 每格最新一次 · 至少 ${crowd.minimumSamples} 个样本 · 沿用雷达排序`}</p>
+      {crowd.rows.length === 0 ? <p className="qs-empty">{crowd.benchmarkSource === "radar-bench" ? "暂无成绩" : "暂无达到样本门槛的实时排行"}</p> : <ol>{crowd.rows.map(row => <li key={`${row.model}:${row.effort}`}>
+        <span className="qs-rank-number">{row.rank}</span><div><strong>{row.model}</strong><span>推理 {row.effort || "未知"} · {crowd.benchmarkSource === "radar-bench" ? `覆盖 ${row.coverage}/${row.requiredTasks} · 已判分 ${row.gradedRuns}${row.provisional ? " · 阶段值" : ""}` : `${row.passed}/${row.samples}`}</span></div><b>{row.iq.toFixed(1)}<small>{crowd.benchmarkSource === "radar-bench" ? "雷达分" : "旧基准 IQ"}</small></b>
       </li>)}</ol>}
-      <p className="qs-radar-source" title={crowd.source}>来源：Codex Radar 众测 · 数据时间 {sidebarLocalTime(crowd.updatedAt, null, true)}</p>
+      {crowd.benchOtherRows?.length ? <><h4>未进入当前排名的档位</h4><ol>{crowd.benchOtherRows.map(row => <li key={`${row.model}:${row.effort}`}>
+        <div><strong>{row.model} {row.effort}</strong>
+          <span>{row.failure ? row.coverage === undefined ? "读取失败" : "读取失败 · 上次数据（不参与当前排名）" : "无成绩"}</span>
+          <span>{row.coverage === undefined ? "覆盖未知" : `覆盖 ${row.coverage}/${row.requiredTasks}`} · {row.gradedRuns === undefined ? "已判分未知" : `已判分 ${row.gradedRuns}`}</span>
+        </div><b>{row.score === null ? "--" : row.score.toFixed(1)}<small>雷达分</small></b>
+      </li>)}</ol></> : null}
+      <p className="qs-radar-source" title={crowd.source}>来源：{crowd.source} · {crowd.benchmarkSource === "radar-bench" ? `最近 UTC 判分日 ${crowd.updatedAt ? crowd.updatedAt.slice(0, 10) : "未知"}` : `数据时间 ${sidebarLocalTime(crowd.updatedAt, null, true)}`}</p>
     </section>}
   </>;
 }

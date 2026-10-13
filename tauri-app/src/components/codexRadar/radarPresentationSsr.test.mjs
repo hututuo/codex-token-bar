@@ -280,12 +280,12 @@ test("Codex Radar summary carries accent color through labels and right-side val
 
   assert.match(component, /accentColor=\{semanticMetricColor\(86\)\} icon="\$" title="Radar 预估额度"/);
   assert.match(component, /title=\{windowBlockTitle\}/);
-  for (const title of ["官方雷达", "众测雷达", "预估额度"]) {
+  for (const title of ["官方雷达 · 旧基准 IQ", "众测雷达", "预估额度"]) {
     assert.match(component, new RegExp(`title="${title}"`));
   }
   const summaryTitles = [
     component.indexOf("title={windowBlockTitle}"),
-    ...["官方雷达", "众测雷达", "预估额度"].map((title) => component.indexOf(`title="${title}"`)),
+    ...["官方雷达 · 旧基准 IQ", "众测雷达", "预估额度"].map((title) => component.indexOf(`title="${title}"`)),
   ];
   assert.ok(summaryTitles.every((offset) => offset >= 0));
   assert.deepEqual(summaryTitles, [...summaryTitles].sort((left, right) => left - right));

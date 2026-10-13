@@ -413,6 +413,7 @@ final class CodexRadarStore: ObservableObject {
                         self.crowdStaleDataDisplayed = false
                     } else if crowdResult.failed {
                         self.crowdStaleDataDisplayed = self.crowdSnapshot != nil
+                        self.crowdSnapshot?.staleDataDisplayed = true
                     }
                     self.lastSuccessfulRefreshAt = now
                     self.staleDataDisplayed = false
@@ -454,6 +455,7 @@ final class CodexRadarStore: ObservableObject {
                         self.crowdStaleDataDisplayed = false
                     } else if crowdResult.failed {
                         self.crowdStaleDataDisplayed = self.crowdSnapshot != nil
+                        self.crowdSnapshot?.staleDataDisplayed = true
                     }
                     let diagnostic = CodexRadarDiagnostic.classify(source: .current, error: error, occurredAt: now)
                     self.lastFailureAt = now

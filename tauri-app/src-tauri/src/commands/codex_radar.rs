@@ -12,6 +12,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::async_runtime;
 
+#[path = "codex_radar_bench.rs"]
+mod radar_bench;
+
 const CODEX_RADAR_FULL_ENDPOINT: &str = "https://codexradar.com/api/v1/current";
 const CODEX_RADAR_HOME_ENDPOINT: &str = "https://codexradar.com/";
 const CODEX_CROWD_RADAR_TABLE_ENDPOINT: &str =
@@ -177,7 +180,7 @@ struct CrowdRadarFetchCoordinator {
 
 impl CrowdRadarFetchCoordinator {
     fn get_or_fetch(&self) -> Result<Value, String> {
-        self.get_or_fetch_with(fetch_codex_crowd_radar_payload_uncached)
+        self.get_or_fetch_with(radar_bench::fetch_payload)
     }
 
     fn get_or_fetch_with<F>(&self, fetch: F) -> Result<Value, String>
@@ -437,7 +440,9 @@ fn fetch_codex_crowd_radar_payload_uncached() -> Result<Value, String> {
 
 #[cfg(test)]
 fn fetch_codex_crowd_radar_payload() -> Result<Value, String> {
-    crowd_radar_fetch_coordinator().get_or_fetch()
+    // Compatibility-only probe for the historical IQ contract. The command and
+    // production coordinator always use RadarBench, including on failure.
+    fetch_codex_crowd_radar_payload_uncached()
 }
 
 fn fetch_public_json_from_sources(
@@ -1029,6 +1034,26 @@ mod tests {
         assert_eq!(first_error, "temporary network failure");
         assert_eq!(second_error, "temporary network failure");
         assert_eq!(failures.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn bench_fetch_failure_preserves_the_last_valid_coordinator_payload() {
+        let coordinator = CrowdRadarFetchCoordinator {
+            state: Mutex::new(CrowdRadarFetchState::default()),
+            wake: Condvar::new(),
+        };
+        let valid = json!({"benchmarkSource": "radar-bench", "benchSummaries": [{"score": 0}]});
+        assert_eq!(coordinator.get_or_fetch_with(|| Ok(valid.clone())), Ok(valid.clone()));
+        {
+            let mut state = coordinator.state.lock().expect("coordinator state");
+            state.success.as_mut().expect("cached success").fetched_at =
+                Instant::now() - CODEX_CROWD_RADAR_SUCCESS_CACHE_TTL - Duration::from_secs(1);
+        }
+        assert!(coordinator.get_or_fetch_with(|| Err("all Bench summaries failed".into())).is_err());
+        let state = coordinator.state.lock().expect("coordinator state");
+        assert_eq!(state.success.as_ref().expect("last valid payload").payload, valid);
+        assert!(!state.in_flight);
+        assert!(state.failure.is_some());
     }
 
     #[test]
