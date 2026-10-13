@@ -243,7 +243,7 @@ private struct CodexRadarModelIQBlock: View {
         }
         VStack(alignment: .leading, spacing: 6) {
             CodexRadarBlockTitle(
-                "官方雷达",
+                "官方雷达 · 旧基准",
                 systemImage: "brain.head.profile",
                 accent: primary.map {
                     AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
@@ -763,7 +763,7 @@ private struct CodexRadarIQDetail: View {
         let modelSeries = snapshot.modelIQ.chartSeries
         let activeIDs = activeSelectedIDs(for: modelSeries)
 
-        CodexRadarDetailSection(title: "降智雷达", systemImage: "brain.head.profile") {
+        CodexRadarDetailSection(title: "降智雷达 · 旧基准 IQ", systemImage: "brain.head.profile") {
             CodexRadarDetailSubsection(title: "IQ 趋势") {
                 HStack(spacing: 5) {
                     ForEach(Array(modelSeries.enumerated()), id: \.element.id) { index, series in

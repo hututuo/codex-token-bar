@@ -1677,7 +1677,16 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(crowdRow.contains("resultView(leaders.first, position: start + 1)"))
         XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst().first, position: start + 2)"))
         XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst(2).first, position: start + 3)"))
-        XCTAssertTrue(crowdRow.contains("· \\($0.scorePassed)/\\($0.scoreSamples)"))
+        XCTAssertTrue(crowdRow.contains("model?.rankingDetailText"))
+        let legacy = CodexCrowdRadarModel(model: "gpt-5.6-sol", effort: "high", graded: 200, passed: 100,
+            passRate: 0.5, cells: 50, scorePassed: 25, scoreSamples: 50)
+        XCTAssertEqual(legacy.rankingDetailText, "旧 IQ 75.0 · 25/50")
+        XCTAssertTrue(legacy.rankingAccessibilityText.contains("本口径通过 25/50"))
+        XCTAssertFalse(legacy.rankingDetailText.contains("100/200"))
+        let legacySnapshot = CodexCrowdRadarSnapshot(generatedAt: "", taskCount: 50, cellCount: 50,
+            contributorCount: 1, pendingGrades: 0, errorGrades: 0, models: [legacy])
+        XCTAssertTrue(legacySnapshot.floatingRankingAccessibilityValue(legacySnapshot.rankedModels, start: 0)
+            .contains("第1名 \(legacy.label)，旧 IQ 75.0，本口径通过 25/50"))
         XCTAssertFalse(crowdRow.contains("· \\($0.scoreSamples)判"))
         XCTAssertFalse(crowdRow.contains("· \\($0.graded)判"))
         XCTAssertFalse(crowdRow.contains("crowd.taskCount"))
@@ -1685,7 +1694,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(crowdRow.contains("crowd.contributorCount"))
         XCTAssertFalse(crowdRow.contains("crowd.pendingGrades"))
         XCTAssertFalse(crowdRow.contains("通过率"))
-        XCTAssertTrue(crowdRow.contains(".accessibilityLabel(\"众测雷达\")"))
+        XCTAssertTrue(crowdRow.contains(".accessibilityLabel(crowd.isRadarBench ? \"RadarBench 雷达分\" : \"旧基准众测 IQ\")"))
+        XCTAssertTrue(crowdRow.contains("crowd.floatingRankingAccessibilityValue(leaders, start: start)"))
     }
 
     func testFloatingPanelPresentationKeepsNoQuotaStatesCountSafe() {

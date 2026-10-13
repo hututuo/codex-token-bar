@@ -137,7 +137,7 @@ struct QuotaSidebarRadarContent: View {
                         .font(.system(size: 19, weight: .medium)).foregroundStyle(.cyan)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("雷达测评 IQ").font(.system(size: 9)).foregroundStyle(.gray)
+                    Text("雷达测评 IQ · 旧基准").font(.system(size: 9)).foregroundStyle(.gray)
                     Text(point.map { $0.score.isFinite ? CodexRadarModelIQPoint.display($0.score) : "未知" } ?? "未知")
                         .font(.system(size: 23, weight: .medium, design: .rounded)).monospacedDigit()
                     Text(point?.modelDisplayName ?? "暂无测评").font(.system(size: 9)).foregroundStyle(.gray)
@@ -161,12 +161,12 @@ struct QuotaSidebarRadarContent: View {
 
             Divider().overlay(.white.opacity(0.12))
             Picker("排名来源", selection: $showsCrowd) {
-                Text("雷达站").tag(false)
+                Text("旧基准 IQ").tag(false)
                 Text("众测雷达").tag(true)
             }.pickerStyle(.segmented).id("ranking")
             if !showsCrowd {
                 let rows = snapshot.map { ([$0.modelIQ.primaryModelRow] + $0.modelIQ.secondaryModelRows).filter { $0.point.hasMeasurement } } ?? []
-                Text("雷达站模型排行 · 按测评 IQ 排序").font(.system(size: 11)).foregroundStyle(.gray)
+                Text("雷达站旧基准排行 · 按测评 IQ 排序").font(.system(size: 11)).foregroundStyle(.gray)
                 if rows.isEmpty { Text("暂无测评排名").font(.system(size: 11)).foregroundStyle(.gray) }
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                     HStack(spacing: 10) {

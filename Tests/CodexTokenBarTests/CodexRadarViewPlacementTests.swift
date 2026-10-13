@@ -172,8 +172,9 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("CodexCrowdRadarBlock("))
         XCTAssertTrue(source.contains("staleDataDisplayed: crowdStaleDataDisplayed"))
         XCTAssertTrue(source.contains("private struct CodexCrowdRadarBlock"))
-        XCTAssertTrue(source.contains("\"官方雷达\""))
-        XCTAssertTrue(source.contains("\"众测雷达\""))
+        XCTAssertTrue(source.contains("\"官方雷达 · 旧基准\""))
+        XCTAssertTrue(source.contains("\"雷达Bench\""))
+        XCTAssertTrue(source.contains("\"旧基准众测 IQ\""))
         XCTAssertTrue(source.contains("Codex 雷达  codexradar.com"))
 
         let window = try XCTUnwrap(source.range(of: "CodexRadarWindowBlock(snapshot: snapshot)"))

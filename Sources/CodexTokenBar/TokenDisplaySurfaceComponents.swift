@@ -362,7 +362,7 @@ struct TokenDisplayRadarStrip: View {
             return presentation.compactAccessibilityText ?? "等待读取"
         }
         let score = snapshot.modelIQ.primaryModelPoint?.scoreDisplayText ?? "IQ --"
-        let base = "建议 \(CodexRadarPresentationText.actionDisplay(snapshot: snapshot))，\(score)"
+        let base = "建议 \(CodexRadarPresentationText.actionDisplay(snapshot: snapshot))，旧基准 \(score)"
         guard let compactAccessibility = presentation.compactAccessibilityText else {
             return base
         }
