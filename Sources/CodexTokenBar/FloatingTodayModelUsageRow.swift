@@ -22,6 +22,9 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
     let usesIndependentQuota: Bool
     let referenceCostUSD: Double?
     let color: Color
+    /// Known dated contributions when the complete row cannot be priced.
+    /// `costUSD` stays nil so this subtotal never implies a complete price.
+    var knownPartialCostUSD: Double? = nil
 
     func valueText(for page: FloatingTodayModelUsagePage) -> String {
         switch page {
@@ -158,8 +161,10 @@ enum FloatingTodayModelUsagePresentation {
         return rowsByKey.map { key, row in
             let independent = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil
             let costUSD: Double?
+            let knownPartialCostUSD: Double?
             if independent || (row.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
                 costUSD = nil
+                knownPartialCostUSD = nil
             } else {
                 let estimate = ModelAwareAPIPriceEstimator.estimate(
                     modelBreakdowns: [row],
@@ -169,6 +174,14 @@ enum FloatingTodayModelUsagePresentation {
                     rates: { $0.currentPriceRates }
                 )
                 costUSD = estimate.unpricedModels.isEmpty ? estimate.costUSD : nil
+                // An unpriced epoch does not erase the priced epochs of the
+                // same displayed model. No detected priced model means the
+                // estimator's zero (or coverage fallback) is not a measured
+                // partial subtotal.
+                knownPartialCostUSD = !estimate.unpricedModels.isEmpty
+                    && !estimate.detectedModels.isEmpty
+                    && estimate.fallbackCalls == 0
+                    ? estimate.costUSD : nil
             }
             let referenceCostUSD = IndependentQuotaReferencePricing.costUSD(
                 for: row.model,
@@ -183,7 +196,8 @@ enum FloatingTodayModelUsagePresentation {
                     costUSD: costUSD,
                     usesIndependentQuota: independent,
                     referenceCostUSD: referenceCostUSD,
-                    color: ModelUsagePresentation.color(for: row.model)
+                    color: ModelUsagePresentation.color(for: row.model),
+                    knownPartialCostUSD: knownPartialCostUSD
                 ),
                 defaultIndex: defaultOrder[key] ?? defaultModelKeys.count,
                 key: key
@@ -276,10 +290,11 @@ enum FloatingTodayModelUsagePresentation {
     }
 
     /// Ignore display-only zero rows and independently metered models.
+    /// Include priced epochs even when another epoch makes a row incomplete.
     /// No priced usage is different from a measured zero-dollar subtotal.
     static func knownCostUSD(in items: [FloatingTodayModelUsageItem]) -> Double? {
         let billable = items.filter { $0.tokens > 0 && !$0.usesIndependentQuota }
-        let knownCosts = billable.compactMap(\.costUSD)
+        let knownCosts = billable.compactMap { $0.knownPartialCostUSD ?? $0.costUSD }
         if knownCosts.isEmpty && billable.contains(where: { $0.costUSD == nil }) {
             return nil
         }
