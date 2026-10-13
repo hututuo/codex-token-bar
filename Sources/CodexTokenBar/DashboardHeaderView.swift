@@ -998,6 +998,10 @@ struct StatStrip: View, @preconcurrency Equatable {
             && left.cacheUsage.recentBins.last == right.cacheUsage.recentBins.last
             && lhs.quotaCycleHistory.actualCycles == rhs.quotaCycleHistory.actualCycles
             && lhs.quotaCycleHistory.cycleIdentity == rhs.quotaCycleHistory.cycleIdentity
+            && lhs.quotaCycleHistory.isStale == rhs.quotaCycleHistory.isStale
+            && lhs.quotaCycleHistory.projectionVersion == rhs.quotaCycleHistory.projectionVersion
+            && left.exactGeneration == right.exactGeneration
+            && left.observedThrough == right.observedThrough
             && lhs.cycleCodexHome == rhs.cycleCodexHome
             && lhs.quotaSnapshot == rhs.quotaSnapshot
             && lhs.todayModelBreakdowns == rhs.todayModelBreakdowns
@@ -1203,6 +1207,8 @@ struct DashboardModelCostRow: View {
     let sevenDayDataAvailable: Bool
     let sevenDayModelDisplayState: ModelAttributionDisplayState
     let sevenDayEstimateSource: String?
+    var sevenDayPendingRows: [ModelTokenBreakdown] = []
+    var sevenDayStatisticsThrough: Date? = nil
     var periodLabel = "本期"
     var cycles: [QuotaActualCycle] = []
     var selectedCycle: QuotaActualCycle?
@@ -1287,6 +1293,11 @@ struct DashboardModelCostRow: View {
             : visibleReferenceEntries.joined(separator: " · ")
         let visiblePrimaryItems = FloatingTodayModelUsagePresentation.dashboardPrimaryItems(from: visibleItems)
         let visibleSecondaryItems = FloatingTodayModelUsagePresentation.dashboardSecondaryItems(from: visibleItems)
+        let pendingItems = scope == .sevenDay ? FloatingTodayModelUsagePresentation.items(
+            from: sevenDayPendingRows, fallbackModel: fallbackModel
+        ) : []
+        let pendingCost = FloatingTodayModelUsagePresentation.knownCostUSD(in: pendingItems)
+        let pendingHasUnknownPrices = pendingItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
         let selectedAvailable = selectedDataAvailable
         let modelDetailAvailable = hasModelDetail
 
@@ -1330,9 +1341,9 @@ struct DashboardModelCostRow: View {
 
                 Spacer(minLength: 4)
 
-                if selectedAvailable, modelDetailAvailable, !visibleItems.isEmpty {
+                if selectedAvailable, modelDetailAvailable, !visibleItems.isEmpty || !pendingItems.isEmpty {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("\(hasUnknownPrices ? "已知价格小计" : "合计") \(visibleTotalCostText)")
+                        Text("\(scope == .sevenDay ? (hasUnknownPrices ? "已确认已知价格小计" : "已确认") : (hasUnknownPrices ? "已知价格小计" : "合计")) \(visibleTotalCostText)")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(AppTheme.accentBlue)
                             .monospacedDigit()
@@ -1349,15 +1360,30 @@ struct DashboardModelCostRow: View {
                                 .monospacedDigit()
                                 .fixedSize()
                         }
-                        if scope == .sevenDay, sevenDayBoundaryTokens > 0 {
-                            Text("\(sevenDayBoundaryTokens.abbreviatedTokens) Token 发生在周期切换附近，暂未计入合计")
-                                .help("无法判断这些用量属于重置前还是重置后。记录仍然保留，没有丢失，也不会在两个周期重复计算。")
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                                .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            if scope == .sevenDay, selectedAvailable {
+                if let sevenDayStatisticsThrough {
+                    Text("统计截至 \(sevenDayStatisticsThrough.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if sevenDayBoundaryTokens > 0 {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("待归属 \(pendingHasUnknownPrices ? "已知价格小计 " : "")API \(pendingCost.map { $0.quotaEstimatorMoneyText } ?? "—") · \(sevenDayBoundaryTokens.abbreviatedTokens) Token")
+                            .font(.system(size: 10, weight: .semibold)).monospacedDigit()
+                        Text(pendingItems.map { "\($0.label) \($0.valueText(for: .cost))" }.joined(separator: " · "))
+                            .font(.system(size: 9)).monospacedDigit()
+                        Text("周期边界附近的用量暂未计入已确认金额；相邻周期引用同一笔待归属用量，请勿相加。")
+                            .font(.system(size: 9))
+                        if pendingHasUnknownPrices {
+                            Text("部分模型价格未知，未计入待归属金额").font(.system(size: 9))
                         }
                     }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
 
@@ -1391,7 +1417,7 @@ struct DashboardModelCostRow: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if visibleItems.isEmpty {
-                Text(emptyDetailText)
+                Text(pendingItems.isEmpty ? emptyDetailText : "已确认范围暂无用量")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

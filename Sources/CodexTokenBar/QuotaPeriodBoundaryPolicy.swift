@@ -86,6 +86,39 @@ struct QuotaPeriodBoundaryBreakdown: Equatable, Sendable {
 }
 
 extension QuotaPeriodBoundaryPolicy {
+    struct AtomicSlice: Sendable {
+        let event: TokenCacheAttributionEvent
+        let end: Date
+    }
+
+    /// Minute detail is usable only when it reconciles with its source row.
+    /// Consumers classify these same indivisible slices instead of subtracting
+    /// token totals, which loses model, cache and dated pricing information.
+    static func atomicSlices(for event: TokenCacheAttributionEvent) -> [AtomicSlice] {
+        let eventEnd = event.start.addingTimeInterval(bucketDuration)
+        guard let minutes = event.minuteBuckets, !minutes.isEmpty,
+              Set(minutes.map(\.start)).count == minutes.count,
+              minutes.allSatisfy({
+                  $0.start >= event.start && $0.start < eventEnd
+                      && $0.start.timeIntervalSince1970.truncatingRemainder(dividingBy: 60) == 0
+                      && $0.breakdown.inputTokens >= 0
+                      && $0.breakdown.cachedInputTokens >= 0
+                      && $0.breakdown.cachedInputTokens <= $0.breakdown.inputTokens
+                      && $0.breakdown.outputTokens >= 0
+                      && $0.breakdown.reasoningOutputTokens >= 0
+                      && $0.breakdown.totalTokens >= 0
+                      && $0.breakdown.calls >= 0
+              }), minutes.map(\.breakdown).combined == event.breakdown else {
+            return [AtomicSlice(event: event, end: eventEnd)]
+        }
+        return minutes.map { minute in
+            AtomicSlice(event: TokenCacheAttributionEvent(
+                id: "\(event.id):minute:\(Int64(minute.start.timeIntervalSince1970))",
+                start: minute.start, model: event.model, breakdown: minute.breakdown
+            ), end: minute.start.addingTimeInterval(60))
+        }
+    }
+
     /// Compatibility adapter: keep complete five-minute rows unchanged, and
     /// split only the two edge rows when exact minute detail reconciles.
     /// Missing/invalid detail retains the historical five-minute policy.
@@ -95,8 +128,6 @@ extension QuotaPeriodBoundaryPolicy {
         periodEnd: Date
     ) -> (events: [TokenCacheAttributionEvent], boundary: QuotaPeriodBoundaryBreakdown) {
         guard periodEnd > periodStart else { return ([], .empty) }
-        let firstMinute = ceil(periodStart.timeIntervalSince1970 / 60) * 60
-        let lastMinuteEnd = floor(periodEnd.timeIntervalSince1970 / 60) * 60
         var included: [TokenCacheAttributionEvent] = []
         var leading: [TokenCacheBreakdown] = []
         var trailing: [TokenCacheBreakdown] = []
@@ -109,42 +140,16 @@ extension QuotaPeriodBoundaryPolicy {
                 included.append(event)
                 continue
             }
-            let minutes = event.minuteBuckets
-            let hasExactMinutes = minutes.map { values in
-                !values.isEmpty
-                    && Set(values.map(\.start)).count == values.count
-                    && values.allSatisfy {
-                        $0.start >= event.start && $0.start < eventEnd
-                            && $0.start.timeIntervalSince1970.truncatingRemainder(dividingBy: 60) == 0
-                            && $0.breakdown.inputTokens >= 0
-                            && $0.breakdown.cachedInputTokens >= 0
-                            && $0.breakdown.cachedInputTokens <= $0.breakdown.inputTokens
-                            && $0.breakdown.outputTokens >= 0
-                            && $0.breakdown.reasoningOutputTokens >= 0
-                            && $0.breakdown.totalTokens >= 0
-                            && $0.breakdown.calls >= 0
-                    }
-                    && values.map(\.breakdown).combined == event.breakdown
-            } ?? false
-            let slices = hasExactMinutes ? (minutes ?? []) : [
-                TokenCacheBucket(start: event.start, breakdown: event.breakdown)
-            ]
-            let duration: TimeInterval = hasExactMinutes ? 60 : bucketDuration
-            for slice in slices {
-                let sliceEnd = slice.start.addingTimeInterval(duration)
-                if hasExactMinutes,
-                   slice.start.timeIntervalSince1970 >= firstMinute,
-                   slice.start.timeIntervalSince1970 < lastMinuteEnd {
-                    included.append(TokenCacheAttributionEvent(
-                        id: "\(event.id):minute:\(Int64(slice.start.timeIntervalSince1970))",
-                        start: slice.start, model: event.model, breakdown: slice.breakdown
-                    ))
-                } else if slice.start < periodStart && sliceEnd > periodStart {
-                    leading.append(slice.breakdown)
-                    leadingStart = min(leadingStart ?? slice.start, slice.start)
-                } else if slice.start < periodEnd && sliceEnd > periodEnd {
-                    trailing.append(slice.breakdown)
-                    trailingStart = min(trailingStart ?? slice.start, slice.start)
+            for slice in atomicSlices(for: event) {
+                let value = slice.event
+                if value.start >= periodStart, slice.end <= periodEnd {
+                    included.append(value)
+                } else if value.start < periodStart && slice.end > periodStart {
+                    leading.append(value.breakdown)
+                    leadingStart = min(leadingStart ?? value.start, value.start)
+                } else if value.start < periodEnd && slice.end > periodEnd {
+                    trailing.append(value.breakdown)
+                    trailingStart = min(trailingStart ?? value.start, value.start)
                 }
             }
         }

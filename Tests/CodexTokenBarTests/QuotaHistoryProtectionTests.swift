@@ -31,10 +31,15 @@ final class QuotaHistoryProtectionTests: XCTestCase {
         XCTAssertGreaterThan(cases.count, 40)
         for item in cases {
             let projection = QuotaHistoryProtection.project(item.samples, plan: item.plan, now: item.now)
+            // These v1 fixtures rejected a stable, strongly confirmed reset
+            // solely because consumption exceeded a plan rate. Swift v2
+            // retains that evidence; the separate 20-second/unconfirmed and
+            // old-reset-return fixtures must continue rejecting anomalies.
+            let confirmedStableReset = ["plus_above_10_rejected", "pro_above_2_rejected", "jump_uses_adjacent_observations"].contains(item.name)
             XCTAssertEqual(projection.fiveRejected.sorted(), item.fiveRejected, item.name)
-            XCTAssertEqual(projection.sevenRejected.sorted(), item.sevenRejected, item.name)
+            XCTAssertEqual(projection.sevenRejected.sorted(), confirmedStableReset ? [] : item.sevenRejected, item.name)
             XCTAssertEqual(projection.fiveBridges, Dictionary(uniqueKeysWithValues: item.fiveBridges.map { ($0[0], $0[1]) }), item.name)
-            XCTAssertEqual(projection.sevenBridges, Dictionary(uniqueKeysWithValues: item.sevenBridges.map { ($0[0], $0[1]) }), item.name)
+            XCTAssertEqual(projection.sevenBridges, confirmedStableReset ? [:] : Dictionary(uniqueKeysWithValues: item.sevenBridges.map { ($0[0], $0[1]) }), item.name)
         }
     }
     func testWindowCyclePoliciesRemainIndependent() {

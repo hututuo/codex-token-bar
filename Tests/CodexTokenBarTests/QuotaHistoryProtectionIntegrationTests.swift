@@ -164,7 +164,7 @@ extension QuotaHistoryProtectionIntegrationTests {
         XCTAssertEqual(raw[1].1, glitch.sevenDay!.resetsAt!.timeIntervalSince1970)
     }
 
-    func testJumpAloneConnectsUpwardRemainingAcrossChangedCycle() throws {
+    func testConfirmedStableNewResetPreservesItsLowPointAcrossChangedCycle() throws {
         let url = try databaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date(timeIntervalSince1970: 1_900_000_000)
@@ -176,7 +176,8 @@ extension QuotaHistoryProtectionIntegrationTests {
         }
         let result = try database.loadSnapshot(for: input(20, at: now, reset: reset), now: now)
         let middle = try XCTUnwrap(result.recentBins.first { abs($0.start.addingTimeInterval(300).timeIntervalSince(now.addingTimeInterval(-300))) < 0.001 })
-        XCTAssertEqual(try XCTUnwrap(middle.sevenDayRemainingPercent), 20 + 20 * 300 / 580, accuracy: 0.001)
-        XCTAssertEqual(result.recentBins.flatMap(\.sevenDayObservations).map(\.remainingPercent), [20,40])
+        XCTAssertEqual(try XCTUnwrap(middle.sevenDayRemainingPercent), 99 - 59 * 10 / 290, accuracy: 0.001)
+        XCTAssertEqual(result.recentBins.flatMap(\.sevenDayObservations).map(\.remainingPercent), [20,99,40])
+        XCTAssertEqual(result.actualCycles.count, 2)
     }
 }

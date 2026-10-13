@@ -19,7 +19,7 @@ final class QuotaActualCycleTests: XCTestCase {
     func testLateAbruptReturnCancelsProvisionalReset() {
         let c = QuotaActualCycleProjector.project([
             o(0, 50, 10000), o(60, 30, 20000), o(180, 31, 20000),
-            o(2400, 50, 20000), o(2460, 51, 20000)
+            o(2400, 50, 10000), o(2460, 51, 10000)
         ], now: d(2500))
         XCTAssertEqual(c.count, 1)
     }
@@ -48,8 +48,6 @@ final class QuotaActualCycleTests: XCTestCase {
     func testUnconfirmedOrCorrectionNeverCreatesActualCycle() {
         for observations in [
             [o(0, 50, 10000), o(300, 0, 20000)],
-            [o(0, 50, 10000), o(300, 51, 20000), o(420, 52, 20000)],
-            [o(0, 50, 10000), o(300, 0, 9000), o(420, 1, 9000)],
             [o(0, 60, 10000), o(300, 1, 20000), o(420, 60, 20000)],
             [o(0, 60, 10000), o(300, 2, 20000), o(420, 1, 20000)]
         ] {
@@ -57,7 +55,21 @@ final class QuotaActualCycleTests: XCTestCase {
             XCTAssertEqual(cycles.count, 1)
             XCTAssertTrue(cycles[0].resetChangePending)
             XCTAssertEqual(cycles[0].certainEnd, d(0))
+            XCTAssertEqual(cycles[0].lastObservedAt, observations.last?.at)
         }
+        let forward = QuotaActualCycleProjector.project([
+            o(0, 50, 10000), o(300, 51, 20000), o(420, 52, 20000)
+        ], now: d(500))
+        XCTAssertEqual(forward.count, 1)
+        XCTAssertTrue(forward[0].resetChangePending, "the schedule is unconfirmed, not a usage boundary")
+        XCTAssertNil(forward[0].pendingBoundary)
+        XCTAssertEqual(forward[0].certainEnd, d(420))
+        let backward = QuotaActualCycleProjector.project([
+            o(0, 50, 10000), o(300, 0, 9000), o(420, 1, 9000)
+        ], now: d(500))
+        XCTAssertEqual(backward.count, 1)
+        XCTAssertFalse(backward[0].resetChangePending)
+        XCTAssertEqual(backward[0].certainEnd, d(420))
     }
 
     func testJitterAndDuplicateFreshnessCannotConfirmReset() {

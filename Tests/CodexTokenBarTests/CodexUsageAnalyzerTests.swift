@@ -4641,6 +4641,55 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
     }
 
+    func testCycleLedgerRefinesAllFourUncertainBoundaryBucketsInOneRead() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "QuotaCycleFourEdges")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let home = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-4ccc-8ddd-000000000041"
+        let file = home.appendingPathComponent("sessions/2026-06-17-\(sessionID).jsonl")
+        let base = Date(timeIntervalSince1970: floor(Date().addingTimeInterval(-40 * 86400).timeIntervalSince1970 / 300) * 300)
+        func at(_ seconds: Double) -> Date { base.addingTimeInterval(seconds) }
+        let lines = try (0..<20).map { index in try tokenCountLine(
+            timestamp: at(Double(index * 60)),
+            total: Usage(input: (index + 1) * 100, cachedInput: 0, output: 0, reasoning: 0, total: (index + 1) * 100),
+            last: Usage(input: 100, cachedInput: 0, output: 0, reasoning: 0, total: 100)) }
+        try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
+        let index = try CodexUsageHistoryIndex(codexHome: home)
+        let synced = try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:)) {
+            file, parsedSessionID, request, fingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: parsedSessionID,
+                request: request, insertFingerprint: fingerprint, emit: emit)
+        }
+        let edges = [at(31), at(361), at(691), at(1021)]
+        let normal = try index.attributionSourceBuckets(provenanceEpoch: synced.provenanceEpoch,
+            from: base, before: at(1200), minuteBucketStarts: edges,
+            expectedGeneration: synced.attributionGeneration)
+        XCTAssertEqual(normal.filter { $0.minuteBuckets != nil }.count, 2, "ordinary comparison remains bounded to two buckets")
+        let refined = try CodexUsageHistoryIndex.quotaCycleSourceBuckets(codexHome: home,
+            provenanceEpoch: synced.provenanceEpoch, generation: synced.attributionGeneration,
+            from: base, before: at(1200), minuteBucketStarts: edges)
+        XCTAssertEqual(refined.count, 4)
+        XCTAssertTrue(refined.allSatisfy { $0.minuteBuckets != nil })
+        XCTAssertEqual(refined.map(\.breakdown).combined, normal.map(\.breakdown).combined)
+        let cycle = QuotaActualCycle(id: "four-edges", start: .init(earliest: at(31), latest: at(361)),
+            end: .init(earliest: at(691), latest: at(1021)), scheduledResetAt: at(1500),
+            firstObservedAt: at(31), lastObservedAt: at(1200), endedEarly: true,
+            resetChangePending: false, isCurrent: false)
+        let usage = QuotaCycleUsage(events: refined, cycle: cycle, coverageEnd: at(1200))
+        XCTAssertEqual(usage.total.totalTokens, 400)
+        XCTAssertEqual(usage.unassignedTokens, 1400)
+        XCTAssertEqual([usage.total, usage.unassignedTotal].combined.totalTokens, 1800)
+        XCTAssertEqual(try index.attributionState().generation, synced.attributionGeneration)
+    }
+
     func testCompactSynchronizationPersistsSourceBucketsBeforeSourceDeletion() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerCompactLedger")

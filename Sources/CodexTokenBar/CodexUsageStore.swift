@@ -876,6 +876,9 @@ final class CodexUsageStore: ObservableObject {
                             // coverage timestamp makes the older boundary
                             // explicit instead of falsely marking it failed.
                             self.isCompactSummaryPending = true
+                            if QuotaCycleUsageRequest.preciseCoverageIsBehind(self.snapshot) {
+                                self.preciseTimeSeriesFresh = false
+                            }
                             self.didRunPreciseScan = true
                             self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: summary.generatedAt))"
                             trace?.mark("compactSummary.end", metadata: [
@@ -2342,7 +2345,8 @@ final class CodexUsageStore: ObservableObject {
 
     private func aggregateIsBehind(now: Date) -> Bool {
         guard let published = snapshot.preciseTimeSeriesGeneratedAt else { return true }
-        return published < UsageRefreshCadencePolicy.latestEligibleBoundary(now: now)
+        return QuotaCycleUsageRequest.preciseCoverageIsBehind(snapshot)
+            || published < UsageRefreshCadencePolicy.latestEligibleBoundary(now: now)
     }
 
     private func requestAggregateRefresh() {

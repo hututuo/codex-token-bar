@@ -25,9 +25,11 @@ struct QuotaActualCycle: Identifiable, Equatable, Sendable {
     let endedEarly: Bool
     let resetChangePending: Bool
     let isCurrent: Bool
+    // A possible reset limits certain attribution, not observation freshness.
+    var pendingBoundary: QuotaCycleBoundary? = nil
 
     var certainStart: Date { start?.latest ?? firstObservedAt }
-    var certainEnd: Date { end?.earliest ?? lastObservedAt }
+    var certainEnd: Date { end?.earliest ?? pendingBoundary?.earliest ?? lastObservedAt }
     var hasCompleteBoundaries: Bool { start?.isExact == true && end?.isExact == true }
     var statusText: String {
         if resetChangePending { return "时间待确认" }
@@ -39,8 +41,31 @@ struct QuotaActualCycle: Identifiable, Equatable, Sendable {
     }
 }
 
+struct QuotaCycleDiagnosticEvent: Equatable, Sendable, Identifiable {
+    enum Kind: String, Sendable { case corrected, candidate, confirmed, withdrawn }
+    let kind: Kind
+    let at: Date
+    let before: QuotaCycleObservation
+    let after: QuotaCycleObservation
+    var id: String { "\(kind.rawValue):\(at.timeIntervalSince1970):\(before.resetsAt.timeIntervalSince1970):\(after.resetsAt.timeIntervalSince1970)" }
+    var detail: String {
+        "\(kind.rawValue) at=\(at.ISO8601Format()) reset=\(before.resetsAt.ISO8601Format())→\(after.resetsAt.ISO8601Format()) used=\(before.usedPercent)→\(after.usedPercent) beforeAt=\(before.at.ISO8601Format())"
+    }
+}
+
+struct QuotaCycleProjection {
+    let cycles: [QuotaActualCycle]
+    let diagnostics: [QuotaCycleDiagnosticEvent]
+}
+
 enum QuotaActualCycleProjector {
+    static let projectionVersion = 2
+
     static func project(_ input: [QuotaCycleObservation], now: Date) -> [QuotaActualCycle] {
+        projectWithDiagnostics(input, now: now).cycles
+    }
+
+    static func projectWithDiagnostics(_ input: [QuotaCycleObservation], now: Date) -> QuotaCycleProjection {
         let observations = input.filter {
             $0.at <= now && $0.at.timeIntervalSince1970.isFinite
                 && $0.resetsAt.timeIntervalSince1970.isFinite && $0.resetsAt > $0.at
@@ -48,45 +73,60 @@ enum QuotaActualCycleProjector {
         }.sorted { $0.at < $1.at }.reduce(into: [QuotaCycleObservation]()) { result, item in
             if result.last?.at != item.at { result.append(item) }
         }
-        guard let first = observations.first else { return [] }
+        guard let first = observations.first else { return .init(cycles: [], diagnostics: []) }
         var output: [QuotaActualCycle] = []
+        var diagnostics: [QuotaCycleDiagnosticEvent] = []
+        var diagnosticIDs = Set<String>()
         var firstObserved = first
-        var lastAccepted = first
+        var latest = first
+        var lastCertain = first
         var anchor = first.resetsAt
         var start: QuotaCycleBoundary?
         var pending = false
+        var pendingBoundary: QuotaCycleBoundary?
         func make(end: QuotaCycleBoundary?, early: Bool, current: Bool) -> QuotaActualCycle {
             QuotaActualCycle(id: "observed:\(firstObserved.at.timeIntervalSince1970)", start: start,
                 end: end, scheduledResetAt: anchor, firstObservedAt: firstObserved.at,
-                lastObservedAt: lastAccepted.at, endedEarly: early,
-                resetChangePending: pending, isCurrent: current)
+                lastObservedAt: latest.at, endedEarly: early,
+                resetChangePending: pending, isCurrent: current, pendingBoundary: pendingBoundary)
+        }
+        func record(_ kind: QuotaCycleDiagnosticEvent.Kind, before: QuotaCycleObservation,
+                    after: QuotaCycleObservation, at: Date? = nil) {
+            let event = QuotaCycleDiagnosticEvent(kind: kind, at: at ?? after.at, before: before, after: after)
+            if diagnosticIDs.insert(event.id).inserted { diagnostics.append(event) }
         }
         for index in observations.indices.dropFirst() {
             let item = observations[index]
+            let previous = latest
             let delta = item.resetsAt.timeIntervalSince(anchor)
-            if abs(delta) <= 5 {
-                lastAccepted = item
+            if delta <= 900 {
+                // Jitter, small forward corrections and backward corrections
+                // do not establish a boundary. Advance the observation and
+                // accepted schedule together, including cumulative drift.
+                if pending { record(.withdrawn, before: previous, after: item) }
+                else if abs(delta) > 5 { record(.corrected, before: previous, after: item) }
+                latest = item
+                lastCertain = item
+                anchor = item.resetsAt
                 pending = false
+                pendingBoundary = nil
                 continue
             }
-            guard delta > 900 else {
-                // Larger backward and small forward corrections are not proof
-                // of a new period; keep the last unambiguous observation.
-                pending = true
-                continue
-            }
-            let natural = item.at >= anchor && lastAccepted.at < anchor
+            let natural = item.at >= anchor && lastCertain.at < anchor
             // A second app can repeat the same provider reading seconds later.
             // Require a clear replenishment followed by consumption; weak
             // drops and immediate rebounds remain unconfirmed corrections.
             var confirmedEarly = false
-            if item.at < anchor && lastAccepted.usedPercent - item.usedPercent >= 5 {
+            var confirmationAt: Date?
+            let replenished = item.at < anchor && previous.usedPercent - item.usedPercent >= 5
+            if replenished {
                 for next in observations.dropFirst(index + 1) {
                     guard abs(next.resetsAt.timeIntervalSince(item.resetsAt)) <= 5,
                           next.usedPercent >= item.usedPercent,
-                          next.usedPercent < lastAccepted.usedPercent else { break }
+                          next.usedPercent < previous.usedPercent else { break }
                     if next.at.timeIntervalSince(item.at) >= 60 && next.usedPercent > item.usedPercent {
                         confirmedEarly = true
+                        confirmationAt = next.at
                         break
                     }
                 }
@@ -97,28 +137,48 @@ enum QuotaActualCycleProjector {
                 var prior = item
                 for next in observations.dropFirst(index + 1) {
                     if next.at.timeIntervalSince(item.at) > 90 * 60 { break }
-                    if abs(next.usedPercent - lastAccepted.usedPercent) <= 3
-                        && next.usedPercent - prior.usedPercent >= 5 {
+                    if abs(next.usedPercent - previous.usedPercent) <= 3
+                        && next.usedPercent - prior.usedPercent >= 5
+                        && abs(next.resetsAt.timeIntervalSince(anchor)) <= 5 {
                         confirmedEarly = false
+                        record(.withdrawn, before: item, after: next)
                         break
                     }
                     prior = next
                 }
             }
-            guard natural || confirmedEarly else { pending = true; continue }
-            let boundary = natural ? QuotaCycleBoundary.exact(anchor)
-                : QuotaCycleBoundary(earliest: lastAccepted.at, latest: item.at)
+            if replenished, pendingBoundary == nil { record(.candidate, before: previous, after: item) }
+            guard natural || confirmedEarly else {
+                if replenished, pendingBoundary == nil {
+                    pendingBoundary = .init(earliest: previous.at, latest: item.at)
+                }
+                // Without a replenishment, only the schedule is uncertain;
+                // same-period usage is still certain and may keep advancing.
+                if pendingBoundary == nil { lastCertain = item }
+                latest = item
+                pending = true
+                continue
+            }
+            let boundary: QuotaCycleBoundary = if natural {
+                // A pre-expiry unconfirmed drop cannot make expiry exact.
+                pendingBoundary.map { .init(earliest: $0.earliest, latest: anchor) } ?? .exact(anchor)
+            } else {
+                .init(earliest: pendingBoundary?.earliest ?? previous.at, latest: item.at)
+            }
+            record(.confirmed, before: previous, after: item, at: confirmationAt ?? item.at)
             pending = false
+            pendingBoundary = nil
             output.append(make(end: boundary, early: confirmedEarly, current: false))
             // A long offline gap may contain unknown cycles. Preserve the old
             // observed expiry but never backfill invented intermediate periods.
-            start = natural && item.at.timeIntervalSince(lastAccepted.at) >= 7 * 24 * 60 * 60 ? nil : boundary
+            start = natural && item.at.timeIntervalSince(lastCertain.at) >= 7 * 24 * 60 * 60 ? nil : boundary
             firstObserved = item
-            lastAccepted = item
+            latest = item
+            lastCertain = item
             anchor = item.resetsAt
         }
         let expired = now >= anchor
-        output.append(make(end: expired ? QuotaCycleBoundary(earliest: lastAccepted.at, latest: anchor) : nil, early: false, current: !expired))
-        return output.reversed()
+        output.append(make(end: expired ? QuotaCycleBoundary(earliest: lastCertain.at, latest: anchor) : nil, early: false, current: !expired))
+        return .init(cycles: output.reversed(), diagnostics: diagnostics.sorted { $0.at < $1.at })
     }
 }

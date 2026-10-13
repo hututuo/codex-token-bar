@@ -207,6 +207,106 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
         }
     }
 
+    func testConfirmedResetSurvivesLaterTenSecondCorrectionInProFilter() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("quota.sqlite")
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let samples = [quota(0, 7, 10000, plan: "Pro"), quota(60, 0, 20000, plan: "Pro"),
+                       quota(120, 1, 20000, plan: "Pro"), quota(180, 4, 20010, plan: "Pro")]
+        for sample in samples { XCTAssertTrue(try database.record(sample)) }
+        let loaded = try database.loadSnapshot(for: samples.last!, now: d(200))
+        XCTAssertEqual(loaded.actualCycles.count, 2)
+        XCTAssertEqual(loaded.actualCycles.first?.certainStart, d(60))
+        XCTAssertEqual(loaded.actualCycles.first?.scheduledResetAt, d(20010))
+        XCTAssertTrue(loaded.recentBins.flatMap(\.sevenDayObservations).contains { $0.remainingPercent == 100 })
+        XCTAssertEqual(try rawValues(url), [7, 0, 1, 4])
+    }
+
+    func testLaterConfirmationCannotPromoteEarlierPendingUsageToOldCycle() throws {
+        let cycles = QuotaActualCycleProjector.project([
+            o(0, 60, 10000), o(300, 30, 20000), o(360, 29, 20000),
+            o(600, 15, 20000), o(660, 16, 20000)
+        ], now: d(700))
+        XCTAssertEqual(cycles.count, 2)
+        guard cycles.count == 2 else { return }
+        XCTAssertEqual(cycles[1].certainEnd, d(0))
+        XCTAssertEqual(cycles[0].start, .init(earliest: d(0), latest: d(600)))
+        let last = TokenCacheAttributionEvent(id: "new", start: d(600), model: "gpt-5.6-sol",
+            breakdown: breakdown(300), minuteBuckets: [.init(start: d(600), breakdown: breakdown(300))])
+        let events = [event(0, 100), event(300, 200), last]
+        let old = QuotaCycleUsage(events: events, cycle: cycles[1], coverageEnd: d(700))
+        let current = QuotaCycleUsage(events: events, cycle: cycles[0], coverageEnd: d(700))
+        XCTAssertEqual(old.total.totalTokens, 0)
+        XCTAssertEqual(old.unassignedTokens, 300)
+        XCTAssertEqual(current.total.totalTokens, 300)
+        XCTAssertEqual(current.unassignedTokens, 300)
+        XCTAssertEqual(old.total.totalTokens + current.total.totalTokens + current.unassignedTokens, 600)
+    }
+
+    func testLaterPendingResetCannotEraseEarlierConfirmedResetThroughProFilter() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("quota.sqlite")
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let samples = [quota(0, 7, 10000, plan: "Pro"), quota(60, 0, 20000, plan: "Pro"),
+                       quota(120, 1, 20000, plan: "Pro"), quota(240, 6, 20000, plan: "Pro"),
+                       quota(300, 0, 30000, plan: "Pro"), quota(330, 3, 30000, plan: "Pro")]
+        for sample in samples { XCTAssertTrue(try database.record(sample)) }
+        let rawBefore = try rawValues(url)
+        XCTAssertEqual(rawBefore, [7, 0, 1, 6, 0, 3])
+        for db in [database, QuotaHistoryDatabase(databaseURL: url)] {
+            let loaded = try db.loadSnapshot(for: samples.last!, now: d(350))
+            XCTAssertEqual(loaded.actualCycles.count, 2)
+            let current = try XCTUnwrap(loaded.actualCycles.first)
+            XCTAssertEqual(current.certainStart, d(60))
+            XCTAssertEqual(current.certainEnd, d(240))
+            XCTAssertEqual(current.lastObservedAt, d(330))
+            XCTAssertEqual(current.pendingBoundary, .init(earliest: d(240), latest: d(300)))
+            XCTAssertTrue(current.resetChangePending)
+            XCTAssertTrue(loaded.actualCycles.last?.endedEarly == true)
+            let observations = loaded.recentBins.flatMap(\.sevenDayObservations)
+            XCTAssertTrue(observations.contains { $0.remainingPercent == 100 && $0.observedAt == d(60) })
+            XCTAssertTrue(observations.contains { $0.remainingPercent == 99 && $0.observedAt == d(120) })
+        }
+        XCTAssertEqual(try rawValues(url), rawBefore)
+    }
+
+    func testConfirmedStartProtectionStillRejectsReturnToOldResetThroughDatabase() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("quota.sqlite")
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let samples = [quota(0, 7, 10000, plan: "Pro"), quota(60, 0, 20000, plan: "Pro"),
+                       quota(120, 1, 20000, plan: "Pro"), quota(180, 2, 10000, plan: "Pro")]
+        for sample in samples { XCTAssertTrue(try database.record(sample)) }
+        let rawBefore = try rawValues(url)
+        for db in [database, QuotaHistoryDatabase(databaseURL: url)] {
+            let loaded = try db.loadSnapshot(for: samples.last!, now: d(200))
+            XCTAssertEqual(loaded.actualCycles.count, 1)
+            XCTAssertEqual(loaded.actualCycles.first?.lastObservedAt, d(180))
+            let observations = loaded.recentBins.flatMap(\.sevenDayObservations)
+            XCTAssertFalse(observations.contains { $0.observedAt == d(60) || $0.observedAt == d(120) })
+            XCTAssertTrue(observations.contains { $0.remainingPercent == 98 && $0.observedAt == d(180) })
+        }
+        XCTAssertEqual(rawBefore, [7, 0, 1, 2])
+        XCTAssertEqual(try rawValues(url), rawBefore)
+    }
+
+    func testDiagnosticsContainOnlyChangesAndDoNotRepeatNormalMinuteReadings() {
+        let ordinary = [o(0, 3, 10000), o(60, 4, 10000), o(120, 5, 10000)]
+        XCTAssertTrue(QuotaActualCycleProjector.projectWithDiagnostics(ordinary, now: d(180)).diagnostics.isEmpty)
+        let projection = QuotaActualCycleProjector.projectWithDiagnostics([
+            o(0, 3, 10000), o(60, 4, 10010), o(120, 50, 10010),
+            o(300, 0, 20000), o(360, 1, 20000), o(420, 2, 20000)
+        ], now: d(450))
+        XCTAssertEqual(projection.diagnostics.map(\.kind), [.corrected, .candidate, .confirmed])
+        XCTAssertEqual(projection.diagnostics.map(\.at), [d(60), d(300), d(360)])
+    }
+
     private func quota(_ at: Double, _ used: Int, _ reset: Double, plan: String,
                        account: String = "a", home: String = "/fixture", limit: String = "codex") -> AccountQuotaSnapshot {
         .init(sevenDay: .init(label: "7d", usedPercent: used, resetsAt: d(reset)), planType: plan,

@@ -621,7 +621,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         // epoch; the read transaction and unsafe-source fence still apply.
         return try reader.attributionSourceBuckets(provenanceEpoch: provenanceEpoch,
             from: start, before: end, minuteBucketStarts: minuteBucketStarts,
-            expectedGeneration: generation, useLatestPublishedGeneration: useLatestPublishedGeneration)
+            expectedGeneration: generation, useLatestPublishedGeneration: useLatestPublishedGeneration,
+            maximumMinuteBucketCount: 4)
     }
 
     private init(
@@ -2958,7 +2959,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         before end: Date,
         minuteBucketStarts: [Date] = [],
         expectedGeneration: Int64? = nil,
-        useLatestPublishedGeneration: Bool = false
+        useLatestPublishedGeneration: Bool = false,
+        maximumMinuteBucketCount: Int = 2
     ) throws -> [TokenCacheAttributionEvent] {
         try driver.withConnection { connection in
             try configure(connection)
@@ -3028,11 +3030,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         }
                 .compactMap { $0 }
 
-                // Only the two caller-selected quota edge buckets may carry
-                // minute detail. Interior/history rows remain five-minute only.
+                // Normal quota comparisons refine two edges. Actual cycles
+                // may have two uncertain boundaries with four distinct edge
+                // buckets. Interior/history rows remain five-minute only.
                 let requested = Array(Set(minuteBucketStarts.map {
                     Int64(floor($0.timeIntervalSince1970 / 300) * 300)
-                })).sorted().prefix(2).filter {
+                })).sorted().prefix(min(max(maximumMinuteBucketCount, 0), 4)).filter {
                     Double($0) >= start.timeIntervalSince1970 && Double($0) < end.timeIntervalSince1970
                 }
                 guard !requested.isEmpty else { return ledger }

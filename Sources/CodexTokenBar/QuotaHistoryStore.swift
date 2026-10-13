@@ -62,6 +62,8 @@ final class QuotaHistoryStore: ObservableObject {
     private var operationTask: Task<Void, Never>?
     private var operationGeneration = 0
     private var currentQuota: AccountQuotaSnapshot?
+    private var diagnosticIdentity: QuotaHistoryIdentity?
+    private var diagnosticObservedThrough: Date?
 
     init(historyClient: any QuotaHistoryLoading = LiveQuotaHistoryClient()) {
         self.historyClient = historyClient
@@ -108,13 +110,14 @@ final class QuotaHistoryStore: ObservableObject {
                     trace?.end("stale-after-load")
                     return
                 }
-                snapshot = loaded
+                applyProjection(loaded)
                 trace?.end("ok")
             } catch {
                 guard !Task.isCancelled, isCurrentOperation(generation: generation) else {
                     trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
                     return
                 }
+                recordHistoryFailure(error)
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
         }
@@ -150,13 +153,14 @@ final class QuotaHistoryStore: ObservableObject {
                     trace?.end("stale-after-record")
                     return
                 }
-                snapshot = loaded
+                applyProjection(loaded)
                 trace?.end("ok")
             } catch {
                 guard !Task.isCancelled, isCurrentOperation(generation: generation) else {
                     trace?.end("stale-record-failed", metadata: ["error": error.localizedDescription])
                     return
                 }
+                recordHistoryFailure(error)
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
                 // Quota history is helpful context, not the source of truth for quota display.
             }
@@ -186,6 +190,38 @@ final class QuotaHistoryStore: ObservableObject {
         operationGeneration += 1
         currentQuota = nil
         snapshot = .empty
+        diagnosticIdentity = nil
+        diagnosticObservedThrough = nil
+    }
+
+    private func applyProjection(_ loaded: QuotaHistorySnapshot) {
+        if diagnosticIdentity != loaded.cycleIdentity, let identity = loaded.cycleIdentity {
+            diagnosticIdentity = identity
+            DiagnosticLogHistory.shared.record(summary: "周期投影重算", logs:
+                "version=\(loaded.projectionVersion) cycles=\(loaded.actualCycles.count) observedThrough=\(loaded.latest?.ISO8601Format() ?? "none") raw history retained",
+                source: "quota-cycle-projection")
+        } else if let previous = diagnosticObservedThrough {
+            let changes = loaded.cycleDiagnostics.filter { $0.at > previous }
+            if !changes.isEmpty {
+                DiagnosticLogHistory.shared.record(summary: "周期判定节点", logs:
+                    changes.suffix(10).map(\.detail).joined(separator: "\n"), source: "quota-cycle-projection")
+            }
+        }
+        diagnosticObservedThrough = loaded.latest
+        var published = loaded
+        if let expected = currentQuota?.updatedAt,
+           loaded.latest.map({ $0 < expected.addingTimeInterval(-0.000_001) }) ?? true {
+            published.isStale = true
+        }
+        snapshot = published
+        if !published.isStale {
+            DiagnosticLogHistory.shared.record(summary: "额度历史更新", logs: "", source: "quota-cycle-history")
+        }
+    }
+
+    private func recordHistoryFailure(_ error: Error) {
+        snapshot.isStale = true
+        DiagnosticLogHistory.shared.record(summary: "额度历史更新失败", logs: DiagnosticErrorDetails.text(error), source: "quota-cycle-history")
     }
 
     private func isCurrentOperation(generation: Int) -> Bool {
@@ -818,9 +854,10 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             guard let used = row.sevenDayUsedPercent, let reset = row.sevenDayResetsAt else { return nil }
             return QuotaCycleObservation(at: row.createdAt, usedPercent: used, resetsAt: reset)
         }
+        let projection = QuotaActualCycleProjector.projectWithDiagnostics(observations, now: now)
         return QuotaHistorySnapshot(daily: daily, recentBins: recentBins, hourlyBins: hourlyBins,
             latest: sorted.last?.createdAt,
-            actualCycles: QuotaActualCycleProjector.project(observations, now: now), cycleIdentity: identity)
+            actualCycles: projection.cycles, cycleIdentity: identity, cycleDiagnostics: projection.diagnostics)
     }
 
     private static func sanitizedRows(_ rows: [QuotaHistoryRow], now: Date, filterAnomalies: Bool = true) -> [QuotaHistoryRow] {

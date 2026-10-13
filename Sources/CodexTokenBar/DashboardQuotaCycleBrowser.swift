@@ -58,20 +58,118 @@ struct DashboardQuotaCycleControls: View {
 struct QuotaCycleUsage: Sendable {
     let rows: [ModelTokenBreakdown]
     let total: TokenCacheBreakdown
-    let unassignedTokens: Int
+    let unassignedRows: [ModelTokenBreakdown]
+    let unassignedTotal: TokenCacheBreakdown
+    /// Stable source slice IDs are shared references across adjacent cycles.
+    /// Their pending values must never be summed across cycle views.
+    let unassignedSliceIDs: Set<String>
+    var unassignedTokens: Int { unassignedTotal.totalTokens }
 
     init(events: [TokenCacheAttributionEvent], cycle: QuotaActualCycle, coverageEnd: Date) {
-        let inside = QuotaPeriodBoundaryPolicy.partition(events: events,
-            periodStart: cycle.certainStart, periodEnd: min(cycle.certainEnd, coverageEnd))
-        rows = ModelUsagePresentation.rows(from: inside.events)
-        total = inside.events.map(\.breakdown).combined
-        // Clip to the possible period before counting its ambiguity. Exact
-        // minute detail must not label known next-cycle tokens as uncertain.
-        let possible = QuotaPeriodBoundaryPolicy.partition(events: events,
-            periodStart: cycle.start?.earliest ?? cycle.firstObservedAt,
-            periodEnd: min(cycle.end?.latest ?? cycle.lastObservedAt, coverageEnd))
-        unassignedTokens = max(0, possible.events.map(\.breakdown).combined.totalTokens
-            + possible.boundary.totalTokens - total.totalTokens)
+        let certainEnd = min(cycle.certainEnd, coverageEnd)
+        let outerStart = cycle.start?.earliest ?? cycle.firstObservedAt
+        let outerEnd = min(cycle.end?.latest ?? cycle.lastObservedAt, coverageEnd)
+        var confirmed: [TokenCacheAttributionEvent] = []
+        var pending: [TokenCacheAttributionEvent] = []
+        if outerEnd > outerStart {
+            for slice in events.flatMap({ QuotaPeriodBoundaryPolicy.atomicSlices(for: $0) }) {
+                let event = slice.event
+                guard slice.end > outerStart, event.start < outerEnd else { continue }
+                if certainEnd > cycle.certainStart,
+                   event.start >= cycle.certainStart, slice.end <= certainEnd {
+                    confirmed.append(event)
+                } else {
+                    pending.append(event)
+                }
+            }
+        }
+        rows = ModelUsagePresentation.rows(from: confirmed)
+        total = confirmed.map(\.breakdown).combined
+        unassignedRows = ModelUsagePresentation.rows(from: pending)
+        unassignedTotal = pending.map(\.breakdown).combined
+        unassignedSliceIDs = Set(pending.map(\.id))
+    }
+}
+
+/// A precise coverage timestamp belongs to the retained attribution generation.
+/// Compact headline timestamps and generations cannot extend this query.
+struct QuotaCycleUsageRequest: Hashable, Sendable {
+    let identity: QuotaHistoryIdentity
+    let home: URL
+    let cycleID: String
+    let start: Date
+    let end: Date
+    let outerStart: Date
+    let outerEnd: Date
+    let coverage: Date
+    let epoch: String
+    let generation: Int64
+    let projectionVersion: Int
+    let isCurrent: Bool
+
+    static func make(cycle: QuotaActualCycle, identity: QuotaHistoryIdentity,
+                     home: URL, snapshot: DashboardSnapshot) -> Self? {
+        guard identity.homeIdentity == home.standardizedFileURL.path,
+              snapshot.homeIdentity.map({
+                  $0 == "usage-path:\(home.standardizedFileURL.resolvingSymlinksInPath().path)"
+              }) ?? true,
+              snapshot.hasPreciseTokenUsage, snapshot.cacheUsage.attributionModelBucketsComplete,
+              !snapshot.cacheUsage.attributionCurrentScanUnsafeCauseDetected,
+              let epoch = snapshot.cacheUsage.attributionProvenanceEpoch,
+              let generation = snapshot.cacheUsage.attributionGeneration,
+              let coverage = snapshot.preciseTimeSeriesGeneratedAt else { return nil }
+        let outerStart = cycle.start?.earliest ?? cycle.firstObservedAt
+        let outerEnd = min(cycle.end?.latest ?? cycle.lastObservedAt, coverage)
+        // Empty confirmed interiors still have visible, priced pending usage.
+        guard outerEnd > outerStart else { return nil }
+        return Self(identity: identity, home: home.standardizedFileURL, cycleID: cycle.id,
+                    start: cycle.certainStart, end: min(cycle.certainEnd, coverage),
+                    outerStart: outerStart, outerEnd: outerEnd, coverage: coverage,
+                    epoch: epoch, generation: generation,
+                    projectionVersion: QuotaActualCycleProjector.projectionVersion,
+                    isCurrent: cycle.isCurrent)
+    }
+
+    func canDisplay(_ previous: Self) -> Bool {
+        guard projectionVersion == QuotaActualCycleProjector.projectionVersion,
+              previous.projectionVersion == projectionVersion,
+              identity == previous.identity, home == previous.home,
+              cycleID == previous.cycleID, epoch == previous.epoch else { return false }
+        if self == previous { return true }
+        // Only an expanding current cycle can retain an older result as stale.
+        // A moved start, retracted coverage or finalized boundary invalidates it.
+        return isCurrent && previous.isCurrent && generation >= previous.generation
+            && start == previous.start && outerStart == previous.outerStart
+            && end >= previous.end && outerEnd >= previous.outerEnd
+            && coverage >= previous.coverage
+    }
+
+    func isCurrentResult(for snapshot: DashboardSnapshot, preciseFresh: Bool) -> Bool {
+        preciseFresh && projectionVersion == QuotaActualCycleProjector.projectionVersion
+            && !Self.preciseCoverageIsBehind(snapshot)
+            && snapshot.cacheUsage.attributionGeneration == generation
+            && snapshot.preciseTimeSeriesGeneratedAt == coverage
+    }
+
+    static func preciseCoverageIsBehind(_ snapshot: DashboardSnapshot) -> Bool {
+        if let headline = snapshot.exactGeneration,
+           headline != snapshot.cacheUsage.attributionGeneration { return true }
+        if let observed = snapshot.observedThrough,
+           let coverage = snapshot.preciseTimeSeriesGeneratedAt,
+           UsageRefreshCadencePolicy.latestEligibleBoundary(now: observed) > coverage { return true }
+        return false
+    }
+
+    var minuteBoundaries: [Date] {
+        Array(Set([outerStart, start, end, outerEnd].filter {
+            $0 >= outerStart && $0 <= outerEnd
+        })).sorted()
+    }
+
+    var diagnosticDetails: String {
+        "start=\(start.timeIntervalSince1970) end=\(end.timeIntervalSince1970) "
+            + "outerStart=\(outerStart.timeIntervalSince1970) outerEnd=\(outerEnd.timeIntervalSince1970) "
+            + "coverage=\(coverage.timeIntervalSince1970) generation=\(generation) version=\(projectionVersion)"
     }
 }
 
@@ -85,47 +183,22 @@ struct DashboardQuotaCycleBrowser: View {
     let preciseFresh: Bool
     @State private var selectedID: String?
     @State private var result: QuotaCycleUsage?
-    @State private var resultKey: Request?
+    @State private var resultKey: QuotaCycleUsageRequest?
     @State private var errorText: String?
-    @State private var cache: [Request: QuotaCycleUsage] = [:]
+    @State private var cache: [QuotaCycleUsageRequest: QuotaCycleUsage] = [:]
+    @State private var lastLoggedRequest: QuotaCycleUsageRequest?
+    @State private var lastLoggedFailure: String?
 
-    private struct Request: Hashable {
-        let identity: QuotaHistoryIdentity
-        let home: URL
-        let cycleID: String
-        let start: Date
-        let end: Date
-        let outerStart: Date
-        let outerEnd: Date
-        let epoch: String
-        let generation: Int64
-
-        func canDisplay(_ previous: Request) -> Bool {
-            identity == previous.identity && home == previous.home && cycleID == previous.cycleID
-                && epoch == previous.epoch && start == previous.start && outerStart == previous.outerStart
-                && end >= previous.end && outerEnd >= previous.outerEnd
-        }
-    }
     private var cycles: [QuotaActualCycle] {
-        guard identity != nil, history.cycleIdentity == identity else { return [] }
+        guard identity != nil, history.cycleIdentity == identity,
+              history.projectionVersion == QuotaActualCycleProjector.projectionVersion else { return [] }
         return history.actualCycles
     }
     private var selected: QuotaActualCycle? { cycles.first { $0.id == selectedID } ?? cycles.first }
-    private var request: Request? {
-        guard let selected, let identity, let codexHome,
-              identity.homeIdentity == codexHome.standardizedFileURL.path,
-              snapshot.hasPreciseTokenUsage, snapshot.cacheUsage.attributionModelBucketsComplete,
-              !snapshot.cacheUsage.attributionCurrentScanUnsafeCauseDetected,
-              let epoch = snapshot.cacheUsage.attributionProvenanceEpoch,
-              let generation = snapshot.cacheUsage.attributionGeneration,
-              let coverage = snapshot.preciseTimeSeriesGeneratedAt else { return nil }
-        let end = min(selected.certainEnd, coverage)
-        guard end > selected.certainStart else { return nil }
-        return Request(identity: identity, home: codexHome, cycleID: selected.id,
-            start: selected.certainStart, end: end,
-            outerStart: selected.start?.earliest ?? selected.firstObservedAt,
-            outerEnd: min(selected.end?.latest ?? selected.lastObservedAt, coverage),
-            epoch: epoch, generation: generation)
+    private var request: QuotaCycleUsageRequest? {
+        guard let selected, let identity, let codexHome else { return nil }
+        return QuotaCycleUsageRequest.make(cycle: selected, identity: identity,
+                                          home: codexHome, snapshot: snapshot)
     }
     private var visibleResult: QuotaCycleUsage? {
         guard let request, let resultKey, request.canDisplay(resultKey) else { return nil }
@@ -144,12 +217,16 @@ struct DashboardQuotaCycleBrowser: View {
     private var cycleSummary: String {
         var parts: [String] = []
         if let selected {
-            parts.append("\(selected.start.map { boundaryText($0) } ?? "从 \(dateText(selected.firstObservedAt)) 开始记录") → \(selected.end.map { boundaryText($0) } ?? "至今")")
+            parts.append("\(selected.start.map { boundaryText($0) } ?? "从 \(dateText(selected.firstObservedAt)) 开始记录") → \(selected.end.map { boundaryText($0) } ?? "最近额度观测 \(dateText(selected.lastObservedAt))")")
             if selected.isCurrent { parts.append("计划重置 \(dateText(selected.scheduledResetAt))") }
         } else { parts.append("暂无周期记录") }
+        if let resultKey, visibleResult != nil {
+            parts.append("统计截至 \(dateText(resultKey.outerEnd))")
+        }
         if let value = visibleResult {
             parts.append("\(value.total.totalTokens.abbreviatedTokens) Token · 输入 \(value.total.inputTokens.abbreviatedTokens) · 缓存 \(value.total.cachedInputTokens.abbreviatedTokens) · 输出 \(value.total.outputTokens.abbreviatedTokens) · \(value.total.calls) 次")
         }
+        if history.isStale { parts.append("额度周期记录待更新") }
         if let errorText { parts.append(errorText) }
         return parts.joined(separator: " · ")
     }
@@ -162,8 +239,10 @@ struct DashboardQuotaCycleBrowser: View {
                 sevenDayBoundaryTokens: visibleResult?.unassignedTokens ?? 0,
                 fallbackModel: fallbackModel, dataAvailable: visibleResult != nil,
                 todayModelDisplayState: .pending, sevenDayDataAvailable: visibleResult != nil,
-                sevenDayModelDisplayState: visibleResult == nil ? .pending : (preciseFresh && resultKey == request ? .current : .stale),
-                sevenDayEstimateSource: "该周期本机记录", periodLabel: selected?.isCurrent == false ? "所选周期" : "本期",
+                sevenDayModelDisplayState: visibleResult == nil ? .pending : (!history.isStale && request?.isCurrentResult(for: snapshot, preciseFresh: preciseFresh) == true && resultKey == request ? .current : .stale),
+                sevenDayEstimateSource: "该周期本机记录",
+                sevenDayPendingRows: visibleResult?.unassignedRows ?? [],
+                sevenDayStatisticsThrough: visibleResult == nil ? nil : resultKey?.outerEnd, periodLabel: selected?.isCurrent == false ? "所选周期" : "本期",
                 cycles: cycles, selectedCycle: selected, cycleSummary: cycleSummary,
                 onSelectCycle: { id in selectedID = cycles.first(where: { $0.id == id })?.isCurrent == true ? nil : id })
         }
@@ -186,19 +265,32 @@ struct DashboardQuotaCycleBrowser: View {
                 let end = Date(timeIntervalSince1970: ceil(key.outerEnd.timeIntervalSince1970 / 300) * 300)
                 let events = try CodexUsageHistoryIndex.quotaCycleSourceBuckets(codexHome: key.home,
                     provenanceEpoch: key.epoch, generation: key.generation, from: start, before: end,
-                    minuteBucketStarts: [key.start, key.end], useLatestPublishedGeneration: true)
+                    minuteBucketStarts: key.minuteBoundaries,
+                    useLatestPublishedGeneration: false)
                 return QuotaCycleUsage(events: events, cycle: cycle, coverageEnd: key.outerEnd)
             }.value
             guard !Task.isCancelled, request == key else { return }
             if cache.count >= 12 { cache.removeAll() }
-            DiagnosticLogHistory.shared.record(summary: "周期明细读取", logs: "", source: "quota-cycle")
+            if lastLoggedRequest.map({
+                $0.identity != key.identity || $0.epoch != key.epoch || $0.cycleID != key.cycleID
+                    || $0.projectionVersion != key.projectionVersion || $0.start != key.start
+                    || $0.outerStart != key.outerStart || $0.isCurrent != key.isCurrent
+            }) ?? true {
+                DiagnosticLogHistory.shared.record(summary: "周期明细重建", logs: key.diagnosticDetails, source: "quota-cycle")
+            }
+            lastLoggedRequest = key; lastLoggedFailure = nil
             cache[key] = value; result = value; resultKey = key
         } catch {
             guard !Task.isCancelled, request == key else { return }
             // An actual validation failure invalidates the display; normal refreshes
             // retain the same cycle until a newer committed result arrives.
             result = nil; resultKey = nil
-            DiagnosticLogHistory.shared.record(summary: "周期明细读取失败", logs: DiagnosticErrorDetails.text(error), source: "quota-cycle")
+            let failure = DiagnosticErrorDetails.text(error)
+            if lastLoggedFailure != failure {
+                DiagnosticLogHistory.shared.record(summary: "周期明细读取失败",
+                    logs: key.diagnosticDetails + "\n" + failure, source: "quota-cycle")
+                lastLoggedFailure = failure
+            }
             errorText = "周期明细待更新"
         }
     }

@@ -42,6 +42,19 @@ struct QuotaHistoryProtection {
 
     static func project(_ samples: [Sample], plan: String?, now: Double) -> Projection {
         var result = Projection()
+        // Strong reset evidence must survive the anomaly projection. Use the
+        // same cycle rule, including its rollback evidence, rather than a
+        // second, weaker rate-based definition of a real reset.
+        let rawObservations = samples.compactMap { sample -> QuotaCycleObservation? in
+            guard let used = valid(sample.sevenUsed), let reset = sample.sevenReset else { return nil }
+            return .init(at: Date(timeIntervalSince1970: sample.at), usedPercent: used,
+                         resetsAt: Date(timeIntervalSince1970: reset))
+        }
+        let rawCycles = QuotaActualCycleProjector.project(rawObservations, now: Date(timeIntervalSince1970: now))
+        let confirmedStarts = Set(rawCycles.indices.compactMap { index -> Double? in
+            guard index + 1 < rawCycles.count, rawCycles[index + 1].endedEarly else { return nil }
+            return rawCycles[index].firstObservedAt.timeIntervalSince1970
+        })
         var candidate: Candidate?
         var previous: Int?
         var seen: Double?
@@ -95,7 +108,12 @@ struct QuotaHistoryProtection {
                    let old = base.sevenReset, old.isFinite, !resetSame { c.resetLeft = true }
                 c.leftBand = c.leftBand || !inBand
                 c.last = i
-                if returned || jumped || resetReturn {
+                // A later possible reset can shorten this cycle's certain
+                // interior without withdrawing its already confirmed start.
+                // Keep that evidence for the candidate's bounded lifetime;
+                // a return to the old reset still rejects it below.
+                let confirmedReset = confirmedStarts.contains(samples[c.start].at)
+                if resetReturn || ((returned || jumped) && !confirmedReset) {
                     reject(c, returned ? .returnToBaseline : (jumped ? .jump : .resetReturned))
                     candidate = nil
                     suppressed = used <= 2

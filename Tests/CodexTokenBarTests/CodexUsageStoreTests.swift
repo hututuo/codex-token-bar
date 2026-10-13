@@ -2210,7 +2210,7 @@ final class CodexUsageStoreTests: XCTestCase {
             store.snapshot.stats.totalTokens == 1_000 && !store.isRefreshing
         }
         XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, firstPreciseCoverageAt)
-        XCTAssertTrue(store.preciseTimeSeriesFresh)
+        XCTAssertFalse(store.preciseTimeSeriesFresh, "the retained chart is trusted, but compact headline coverage has advanced")
         let chartDaysBeforeCompact = store.snapshot.dailyUsage
 
         // 仅紧凑 surface 可见：周期刷新走轻量 summary，不再全量重建。
