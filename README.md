@@ -1,5 +1,8 @@
 # Codex Token Bar
 
+> **开发接手：缓存间隔诊断最终算法（2026-10-14 / v7）**  
+> 请先读 [本地动态 P95＋明显下降点完整 Markdown 规范](docs/design/cache-retention-dynamic-p95-drop.md)，以及其中的[单图两线合成示意](docs/design/assets/cache-retention-dynamic-synthetic.svg)。两线由用户本机逐轮数据按日期/模型重算；旧柱状图、固定分钟线和 P90/P95 并列预览仅作历史。当前为设计交接，生产接入尚未完成。
+
 简体中文 | [English](#english)
 
 <table align="center">
