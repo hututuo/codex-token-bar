@@ -3057,6 +3057,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try driver.withConnection { connection in
             try configure(connection)
             return try connection.readTransaction { connection in
+                let projectionPending = try connection.readRows("SELECT 1 FROM schema_meta WHERE key='canonical_projection_pending'") { $0.int(0) }.first != nil
+                guard !projectionPending else {
+                    throw SQLiteDatabaseError(operation:"Read exact usage attribution ledger",
+                        code:SQLITE_ABORT,message:"Canonical migration has not published its generation",path:driver.url.path)
+                }
                 let current = try currentAttributionState(connection: connection)
                 guard current.provenanceEpoch == provenanceEpoch,
                       expectedGeneration.map({

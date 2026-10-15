@@ -17,6 +17,21 @@ final class LedgerGenerationPublicationTests: XCTestCase {
         let certificate: UsageIndexCoverageCertificate?
     }
 
+    func testReadOnlyCycleQueryRejectsAnUnpublishedCanonicalMigration() throws {
+        try withFixture { fixture in
+            let baseline=try fixture.writeRollout(id:"019eaaaa-bbbb-4ccc-8ddd-000000000000",tokens:100)
+            _ = try synchronize([baseline],in:fixture,parser:productionParser(fixture.analyzer))
+            let before=try snapshot(fixture)
+            let directory=fixture.home.deletingLastPathComponent().appendingPathComponent("cache/CodexTokenBarSwift/exact-usage-history-v1")
+            let file=try XCTUnwrap(FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil).first { $0.pathExtension == "sqlite" })
+            let driver=SQLiteDatabaseDriver(url:file)
+            try driver.execute("INSERT INTO schema_meta VALUES ('canonical_projection_pending','1')")
+            XCTAssertThrowsError(try attributionTotal(fixture.home,state:before.state))
+            try driver.execute("DELETE FROM schema_meta WHERE key='canonical_projection_pending'")
+            XCTAssertEqual(try attributionTotal(fixture.home,state:before.state),100)
+        }
+    }
+
     func testFailedLaterProductionBatchPreservesPublishedRowsGenerationEpochAndQuery() throws {
         try withFixture { fixture in
             let baseline = try fixture.writeRollout(id: "019eaaaa-bbbb-4ccc-8ddd-000000000000", tokens: 100)
