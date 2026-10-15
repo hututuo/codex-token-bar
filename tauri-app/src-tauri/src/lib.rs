@@ -26,6 +26,7 @@ pub fn run() {
         .manage(commands::thread_activity::ThreadActivityRegistry::default())
         .manage(commands::update::UpdateMonitorRegistry::default())
         .manage(commands::auto_resume::AutoResumeRegistry::default())
+        .manage(commands::modeltrace::ModelTraceRegistry::default())
         .manage(core::provider_repair::ProviderRecoveryState::default())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
@@ -71,6 +72,8 @@ pub fn run() {
                 .initialize_and_start(app.handle().clone());
             app.state::<commands::auto_resume::AutoResumeRegistry>()
                 .initialize_and_start(app.handle().clone());
+            app.state::<commands::modeltrace::ModelTraceRegistry>()
+                .initialize(app.handle().clone());
             let deferred_app = app.handle().clone();
             let deferred_live = app
                 .state::<commands::live::LiveRateMonitorRegistry>()
@@ -114,6 +117,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::modeltrace::read_modeltrace_snapshot,
+            commands::modeltrace::start_modeltrace_plan,
+            commands::modeltrace::cancel_modeltrace_plan,
+            commands::modeltrace::read_modeltrace_history,
             commands::dashboard::get_codex_home,
             commands::dashboard::set_codex_home,
             commands::dashboard::reset_codex_home,

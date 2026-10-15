@@ -8,6 +8,7 @@ pub(crate) mod cross_process_lock;
 pub mod dashboard;
 pub mod live_rate;
 pub mod localtime;
+pub(crate) mod modeltrace;
 pub mod provider_repair;
 pub(crate) mod process_tail;
 pub mod quota;

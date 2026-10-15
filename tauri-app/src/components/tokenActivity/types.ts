@@ -1,6 +1,6 @@
 import type { ActivityDay } from "../../types/dashboard";
 
-export type ActivityMode = "daily" | "weekly" | "cumulative" | "model" | "modelCost" | "cache" | "quota";
+export type ActivityMode = "daily" | "weekly" | "cumulative" | "model" | "modelCost" | "cache" | "quota" | "modelTrace";
 
 export interface HeatmapDay {
   day: ActivityDay;
@@ -20,4 +20,5 @@ export const activityModes: Array<{ id: ActivityMode; label: string }> = [
   { id: "modelCost", label: "费用" },
   { id: "cache", label: "命中率" },
   { id: "quota", label: "额度" },
+  { id: "modelTrace", label: "模型检测" },
 ];

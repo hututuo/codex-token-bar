@@ -106,6 +106,24 @@ policy, and official Codex app-server visibility rebuild. This attribution is
 provided as product-design provenance and does not relicense any part of Codex
 Token Bar under CC BY-NC-SA 4.0.
 
+## ModelTrace fingerprint attribution
+
+The Tauri model detection feature includes the ModelTrace unified fingerprint
+bank and a Rust port of its global JavaScript scoring algorithm.
+
+- Upstream: https://github.com/xqy2006/ModelTrace
+- Source revision: `d4131b30243dfa05e70180b5eedde742103f1d73`
+- Source files: `static/fingerprint-core.js`, `static/data/unified_bank.json`
+- License: MIT; full text in `LICENSES/ModelTrace-MIT.txt` and bundled as
+  `OpenSourceLicenses/ModelTrace-MIT.txt`
+- Local implementation: `tauri-app/src-tauri/src/core/modeltrace/scoring.rs`
+- Bundled data: `tauri-app/src-tauri/resources/modeltrace/unified_bank.json`
+- Bank SHA-256: `e514c76928ea38d23bc0f14d3935f23c97b1efb6d96b18a19bdc88ad2d830536`
+
+The synthetic parity fixtures contain generated integer arrays, not user model
+responses. `scripts/modeltrace-fixtures.mjs` regenerates them against that
+upstream revision. See `docs/modeltrace.md` for the score's interpretation.
+
 ## Tauri updater Windows launch patch
 
 The Tauri application includes tauri-plugin-updater 2.10.1, with a narrow local
