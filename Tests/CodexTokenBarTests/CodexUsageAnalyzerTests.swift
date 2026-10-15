@@ -5406,6 +5406,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(duplicate.cacheUsage.attributionEvents.count, 1)
         XCTAssertEqual(duplicate.cacheUsage.attributionEvents[0].breakdown.totalTokens, 120)
         XCTAssertEqual(duplicate.cacheUsage.attributionEvents[0].breakdown.calls, 1)
+        XCTAssertEqual(duplicate.stats.totalTokens, 120)
+        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
 
         let duplicateEpoch = try XCTUnwrap(
             duplicate.cacheUsage.attributionProvenanceEpoch

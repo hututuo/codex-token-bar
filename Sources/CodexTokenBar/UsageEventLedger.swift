@@ -4,7 +4,7 @@ import Foundation
 /// never primary keys for newly observed consumption. Ordinary queries keep a
 /// single accounting source while parsers operate on current-generation input.
 enum UsageEventLedger {
-    static let revision = "1"
+    static let revision = "2"
     private static let firstAllocatedID: Int64 = 1 << 62
 
     struct Candidate {
@@ -60,8 +60,12 @@ enum UsageEventLedger {
             return
         }
         let value = try db.readRows("SELECT value FROM usage_ledger_meta WHERE key='revision'") { $0.text(0) }.first ?? nil
-        guard value == revision else {
+        guard value == revision || value == "1" else {
             throw CodexUsageIndexUpgradeRequiredError(component: "usage ledger", stored: value ?? "missing", supported: revision)
+        }
+        if value == revision {
+            let present = try db.readRows("SELECT COUNT(*) FROM sqlite_master WHERE (type='table' AND name='usage_ledger_duplicates') OR (type='view' AND name='canonical_usage_events')") { $0.int(0) }.first ?? 0
+            guard present == 2 else { throw CodexUsageIndexRepairRequiredError(reason:"历史账本投影缺失，已保留原库") }
         }
         for table in ["usage_ledger_bindings", "usage_ledger_identities", "usage_ledger_turns", "usage_ledger_unresolved", "usage_ledger_sources", "usage_ledger_corrections"] {
             let present = try db.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", bindings: [.text(table)]) { $0.int(0) }.first != nil
@@ -72,7 +76,20 @@ enum UsageEventLedger {
     static func install(on db: SQLiteDatabaseConnection) throws {
         try validate(on: db)
         let installed = try db.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_ledger_meta'") { $0.int(0) }.first != nil
-        if installed { return }
+        if installed {
+            let old = try db.readRows("SELECT value FROM usage_ledger_meta WHERE key='revision'") { $0.text(0) }.first ?? nil
+            if old == "1" {
+                try db.transaction { tx in
+                    try CanonicalUsageProjection.install(on:tx)
+                    try tx.execute("UPDATE usage_ledger_meta SET value=? WHERE key='revision'",bindings:[.text(revision)])
+                    try tx.execute("INSERT OR REPLACE INTO schema_meta VALUES ('canonical_projection_pending','1')")
+                }
+            } else {
+                let present = try db.readRows("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('canonical_usage_events','usage_ledger_duplicates')") { $0.int(0) }.first ?? 0
+                guard present == 2 else { throw CodexUsageIndexRepairRequiredError(reason:"历史账本投影缺失，已保留原库") }
+            }
+            return
+        }
         try db.transaction { tx in
             try tx.execute("""
                 CREATE TABLE usage_ledger_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -124,6 +141,7 @@ enum UsageEventLedger {
                 SELECT DISTINCT e.source_id,s.last_seen_generation,e.user_prompt_offset,e.user_prompt_offset
                 FROM events e JOIN sources s USING(source_id) WHERE e.user_prompt_offset IS NOT NULL;
                 """)
+            try CanonicalUsageProjection.install(on:tx)
             let maxID = try tx.readRows("SELECT COALESCE(MAX(source_offset),0) FROM events") { $0.int64(0) }.first ?? 0
             guard let maxID, maxID < firstAllocatedID else {
                 throw CodexUsageIndexRepairRequiredError(reason: "旧事件标识超出账本保留范围，已停止迁移")

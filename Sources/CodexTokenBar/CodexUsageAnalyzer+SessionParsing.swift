@@ -601,7 +601,8 @@ extension CodexUsageAnalyzer {
                 dataSource.sessionsRoot,
                 canonicalHome.appendingPathComponent("archived_sessions", isDirectory: true)
             ]
-            for root in historyRoots where fileManager.fileExists(atPath: root.path) {
+            for root in historyRoots {
+                guard try discoveryPathExists(root) else { continue }
                 let sessionFiles = try jsonlFiles(
                     under: root,
                     canonicalHome: canonicalHome
@@ -615,6 +616,22 @@ extension CodexUsageAnalyzer {
         } catch {
             trace?.end("failed", metadata: ["errorType": String(describing: type(of: error))])
             throw error
+        }
+    }
+
+    /// `fileExists` also returns false for access and I/O failures. Preserve
+    /// those errors so discovery cannot publish an empty scan as complete.
+    private func discoveryPathExists(_ url: URL) throws -> Bool {
+        do {
+            _ = try fileManager.attributesOfItem(atPath: url.path)
+            return true
+        } catch let error as CocoaError
+            where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return false
+        } catch {
+            throw CodexUsageDiscoveryError.traversalFailed(
+                path: url.path, reason: error.localizedDescription
+            )
         }
     }
 
@@ -713,7 +730,7 @@ extension CodexUsageAnalyzer {
     }
 
     private func activeStateRolloutFiles(canonicalHome: URL) throws -> [URL] {
-        guard fileManager.fileExists(atPath: dataSource.stateDatabase.path) else {
+        guard try discoveryPathExists(dataSource.stateDatabase) else {
             return []
         }
         let columns = try threadColumnNames()
@@ -842,7 +859,7 @@ extension CodexUsageAnalyzer {
     private func trustedJSONLFile(_ file: URL, canonicalHome: URL) throws -> URL? {
         guard CodexRolloutReader.isRollout(file) else { return nil }
         let physical = try CodexRolloutReader.physicalURL(for: file)
-        guard fileManager.fileExists(atPath: physical.path) else { return nil }
+        guard try discoveryPathExists(physical) else { return nil }
         guard let values = fileResourceValues(for: physical) else {
             throw CodexUsageDiscoveryError.traversalFailed(path: physical.path, reason: "无法读取会话文件属性")
         }

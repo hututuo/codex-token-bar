@@ -91,7 +91,7 @@ final class CacheRetentionPipelineTests: XCTestCase {
         XCTAssertEqual(pairs[1].nextID, CacheRetentionIdentity.hash(ownTurnB))
     }
 
-    func testStableUUIDCopiesDeduplicateConflictsInvalidateAndRemovalResolves() async throws {
+    func testStableUUIDCopiesDeduplicateConflictsAndRemovalPreservesEvidence() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let databaseURL = fixture.root.appendingPathComponent("private/cache-retention.sqlite")
@@ -112,6 +112,7 @@ final class CacheRetentionPipelineTests: XCTestCase {
         XCTAssertEqual(duplicateFailures, 0)
         XCTAssertEqual(duplicate.points.count, 1, "Identical stable turn UUID evidence has one representative")
         XCTAssertEqual(duplicate.sourceCount, 1)
+        XCTAssertEqual(duplicate.ownRoundCount, 2, "Stable session/turn identity prevents copied files from double-counting turns")
 
         try jsonl(engineRecords(nextFirstCached: 80)).write(to: secondFile)
         let conflictFailures = try await engine.synchronize(progress: { _, _ in })
@@ -123,8 +124,8 @@ final class CacheRetentionPipelineTests: XCTestCase {
         let removalFailures = try await engine.synchronize(progress: { _, _ in })
         let resolved = try await engine.snapshot(scope: .init())
         XCTAssertEqual(removalFailures, 0)
-        XCTAssertEqual(resolved.points.count, 1, "Removing the conflicting source restores the remaining evidence")
-        XCTAssertEqual(resolved.points.first?.cached, 90)
+        XCTAssertTrue(resolved.points.isEmpty, "A missing file retains its historical conflict evidence")
+        XCTAssertEqual(resolved.ownRoundCount, conflict.ownRoundCount, "Removing a source does not remove its historical own-round evidence")
     }
 
     func testEngineAppendPartialTailTruncateAndSameSizeRewritePreserveCorrectCounts() async throws {
@@ -183,8 +184,8 @@ final class CacheRetentionPipelineTests: XCTestCase {
         let truncated = try await engine.snapshot(scope: .init())
         let truncatedCheckpoint = try XCTUnwrap(database.checkpoint(sourceKey))
         XCTAssertEqual(truncateFailures, 0)
-        XCTAssertEqual(truncated.points.count, 1)
-        XCTAssertEqual(truncated.ownRoundCount, 2)
+        XCTAssertEqual(truncated.points.count, 2, "Truncating to a new generation keeps the prior generation's appended pair")
+        XCTAssertEqual(truncated.ownRoundCount, 3, "Stable own turns from the archived generation remain in history")
         XCTAssertNotEqual(truncatedCheckpoint.generation, appendCheckpoint.generation)
 
         let rewrittenData = try jsonl(engineRecords(nextFirstCached: 80))
@@ -196,8 +197,9 @@ final class CacheRetentionPipelineTests: XCTestCase {
         let rewrittenCheckpoint = try XCTUnwrap(database.checkpoint(sourceKey))
         XCTAssertEqual(rewriteFailures, 0)
         XCTAssertEqual(rewritten.points.count, 1)
-        XCTAssertEqual(rewritten.ownRoundCount, 2)
-        XCTAssertEqual(rewritten.points.first?.cached, 80)
+        XCTAssertEqual(rewritten.ownRoundCount, 3)
+        XCTAssertEqual(rewritten.points.first?.cached, 85,
+            "Conflicting stable-pair evidence across generations is excluded instead of choosing the rewrite")
         XCTAssertNotEqual(rewrittenCheckpoint.generation, truncatedCheckpoint.generation)
     }
 

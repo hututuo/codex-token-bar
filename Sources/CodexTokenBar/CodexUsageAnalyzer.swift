@@ -217,7 +217,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
 
     // 紧凑 surface 的轻量刷新：同步索引（增量）后只跑轻量聚合 SQL，
     // 不重放历史事件、不构建时间序列/排行/摘录，也不写 snapshot 缓存。
-    // 无 token JSONL 文件时返回 nil，调用方回退全量路径。
+    // 无 token JSONL 时仍读取已存在的账本；没有历史账本才返回 nil。
     func loadCompactSummary(
         onProgress: ((PreciseIndexProgress) -> Void)? = nil
     ) throws -> CompactUsageSummary? {
@@ -225,25 +225,26 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             "source": dataSource.displayPath
         ])
         do {
+            let discoveryStartedAt = Date()
             let sessionFiles = try usageJSONLFiles()
-            guard !sessionFiles.isEmpty else {
-                trace?.end("no-token-jsonl-files")
-                return nil
-            }
             var structureMigrationReported = false
-            let historyIndex = try CodexUsageHistoryIndex(
-                codexHome: dataSource.codexHome,
+            guard let historyIndex = try usageHistoryIndex(
+                for: sessionFiles,
                 onProgress: { progress in
                     if progress.phase == .migrating {
                         structureMigrationReported = true
                     }
                     onProgress?(progress)
                 }
-            )
+            ) else {
+                trace?.end("no-token-jsonl-files-or-history")
+                return nil
+            }
             let synchronization = try historyIndex.synchronize(
                 files: sessionFiles,
                 sessionID: sessionID(from:),
-                messageScanner: { try self.scanMessageLinks(file: $0, endOffset: $1, eventOffsets: $2) }
+                messageScanner: { try self.scanMessageLinks(file: $0, endOffset: $1, eventOffsets: $2) },
+                observedAt: discoveryStartedAt
             ) { [self] file, sessionID, request, insertFingerprint, emit in
                 try parseSessionIntoHistoryIndex(
                     file: file,
@@ -263,6 +264,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     completed: completed,
                     total: total
                 ))
+            }
+            if sessionFiles.isEmpty, try historyIndex.aggregatedSessionCount() == 0 {
+                trace?.end("no-token-events")
+                return nil
             }
             let now = Date()
             let todayStart = calendar.startOfDay(for: now)
@@ -306,13 +311,13 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 dataUpdatedAt: dataUpdatedAt,
                 homeIdentity: dataSource.usageIdentityKey,
                 coverageKind: .summary,
-                observedThrough: summaryGeneratedAt,
+                observedThrough: synchronization.coverageObservedAt,
                 exactGeneration: synchronization.attributionGeneration,
                 exactSynchronizationReceipt: CompactUsageSummary.ExactSynchronizationReceipt(
                     homeIdentity: dataSource.usageIdentityKey,
                     sourcePaths: sessionFiles.map { $0.standardizedFileURL.path },
                     signature: synchronizedSignature,
-                    observedAt: summaryGeneratedAt,
+                    observedAt: synchronization.coverageObservedAt ?? discoveryStartedAt,
                     eventEnrichmentComplete: synchronization.eventEnrichmentComplete
                 )
             )
@@ -343,12 +348,25 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         }
     }
 
+    private func usageHistoryIndex(
+        for sessionFiles: [URL],
+        onProgress: ((PreciseIndexProgress) -> Void)? = nil
+    ) throws -> CodexUsageHistoryIndex? {
+        if sessionFiles.isEmpty {
+            return try CodexUsageHistoryIndex.openExisting(
+                codexHome: dataSource.codexHome, onProgress: onProgress
+            )
+        }
+        return try CodexUsageHistoryIndex(
+            codexHome: dataSource.codexHome, onProgress: onProgress
+        )
+    }
+
     private func cachedPreciseSnapshot() throws -> DashboardFastSnapshotResult? {
         let sessionFiles = try usageJSONLFiles()
-        guard !sessionFiles.isEmpty else {
+        guard let historyIndex = try usageHistoryIndex(for: sessionFiles) else {
             return nil
         }
-        let historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
         let attributionState = try historyIndex.attributionState()
         let sourceSignature = sessionTreeSignature(
             for: sessionFiles,
@@ -371,18 +389,31 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 freshness: .current
             )
         }
-        guard let persistent = Self.sessionEventCache.persistentExactSnapshot(
+        if let persistent = Self.sessionEventCache.persistentExactSnapshot(
             for: dataSource.codexHome.path,
             homeIdentityKey: dataSource.usageIdentityKey,
             signature: signature,
             attributionState: attributionState
-        ), (persistent.snapshot.cacheUsage.rankingActiveSince != nil) == compressionEnabled else {
-            return nil
+        ), (persistent.snapshot.cacheUsage.rankingActiveSince != nil) == compressionEnabled {
+            return DashboardFastSnapshotResult(
+                snapshot: persistent.snapshot,
+                freshness: persistent.freshness
+            )
         }
-        return DashboardFastSnapshotResult(
-            snapshot: persistent.snapshot,
-            freshness: persistent.freshness
-        )
+        // With no raw sessions, metadata fallback would hide the only durable
+        // history after derived snapshots are cleared. Rebuild from the ledger;
+        // discovery above has already distinguished an empty Home from failure.
+        if sessionFiles.isEmpty {
+            do {
+                return DashboardFastSnapshotResult(
+                    snapshot: try loadFromTokenCountJSONL(),
+                    freshness: .current
+                )
+            } catch is CodexUsagePreciseDataUnavailableError {
+                return nil
+            }
+        }
+        return nil
     }
 
     private func loadFromTokenCountJSONL(
@@ -526,6 +557,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let requestedReceipt = synchronizationReceipt.flatMap { receipt in
             receipt.homeIdentity == dataSource.usageIdentityKey ? receipt : nil
         }
+        let discoveryStartedAt = Date()
         trace?.mark("jsonlFiles.begin")
         var sessionFiles: [URL]
         if let requestedReceipt {
@@ -542,23 +574,24 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             completed: 0,
             total: sessionFiles.count
         ))
-        guard !sessionFiles.isEmpty else {
-            trace?.end("missing-token-jsonl-files")
-            throw CodexUsagePreciseDataUnavailableError(
-                reason: .noTokenJSONLFiles,
-                path: dataSource.displayPath
-            )
-        }
         let historyIndex: CodexUsageHistoryIndex
         let initialAttributionState: CodexUsageHistoryIndex.AttributionState
         let initialEventEnrichmentComplete: Bool
         do {
-            historyIndex = try CodexUsageHistoryIndex(
-                codexHome: dataSource.codexHome,
-                onProgress: onProgress
-            )
+            guard let existingOrNewIndex = try usageHistoryIndex(
+                for: sessionFiles, onProgress: onProgress
+            ) else {
+                trace?.end("missing-token-jsonl-files-and-history")
+                throw CodexUsagePreciseDataUnavailableError(
+                    reason: .noTokenJSONLFiles,
+                    path: dataSource.displayPath
+                )
+            }
+            historyIndex = existingOrNewIndex
             initialAttributionState = try historyIndex.attributionState()
             initialEventEnrichmentComplete = try historyIndex.eventEnrichmentIsComplete()
+        } catch let error as CodexUsagePreciseDataUnavailableError {
+            throw error
         } catch {
             let operation = CodexCrossProcessFileLock.isContention(error)
                 ? "获取精确索引所有权"
@@ -576,16 +609,12 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             // Discard the process-local receipt and perform a normal discovery
             // and synchronization rather than aggregating the wrong generation.
             sessionFiles = try usageJSONLFiles()
-            guard !sessionFiles.isEmpty else {
-                throw CodexUsagePreciseDataUnavailableError(
-                    reason: .noTokenJSONLFiles,
-                    path: dataSource.displayPath
-                )
-            }
         }
+        let publishedCertificate = try historyIndex.coverageCertificate()
         let preciseCoverageAt = receiptMatchesPublishedIndex
-            ? requestedReceipt?.observedAt ?? Date()
-            : Date()
+            ? min(requestedReceipt?.observedAt ?? discoveryStartedAt,
+                  publishedCertificate?.observedAt ?? discoveryStartedAt)
+            : discoveryStartedAt
         trace?.mark("signature.begin")
         let sourceSignature = receiptMatchesPublishedIndex
             ? requestedReceipt!.signature
@@ -612,7 +641,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             "attributionGeneration": String(signature.attributionGeneration)
         ])
         let compressionEnabled = CacheRankingHistoryPolicy.isEnabled(codexHome: dataSource.codexHome)
-        if initialEventEnrichmentComplete,
+        if publishedCertificate != nil, initialEventEnrichmentComplete,
            !initialAttributionState.currentScanUnsafeCauseDetected,
            let cached = Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature),
            cached.cacheUsage.attributionEventsComplete,
@@ -654,13 +683,13 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 pluginUsage: cached.pluginUsage,
                 cacheUsage: stableCacheUsage,
                 usagePrecision: .precise,
-                preciseTimeSeriesGeneratedAt: preciseCoverageAt,
+                preciseTimeSeriesGeneratedAt: cached.preciseTimeSeriesGeneratedAt,
                 generatedAt: Date(),
                 lastCheckedAt: Date(),
                 dataUpdatedAt: cached.dataUpdatedAt ?? sourceDataUpdatedAt,
                 homeIdentity: dataSource.usageIdentityKey,
                 coverageKind: .full,
-                observedThrough: preciseCoverageAt,
+                observedThrough: publishedCertificate?.observedAt,
                 settledThrough: cached.settledThrough
                     ?? cached.preciseTimeSeriesGeneratedAt,
                 exactGeneration: initialAttributionState.generation,
@@ -723,7 +752,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 synchronization = try historyIndex.synchronize(
                     files: sessionFiles,
                     sessionID: sessionID(from:),
-                messageScanner: { try self.scanMessageLinks(file: $0, endOffset: $1, eventOffsets: $2) }
+                messageScanner: { try self.scanMessageLinks(file: $0, endOffset: $1, eventOffsets: $2) },
+                observedAt: preciseCoverageAt
                 ) { [self] file, sessionID, request, insertFingerprint, emit in
                     try parseSessionIntoHistoryIndex(
                         file: file,

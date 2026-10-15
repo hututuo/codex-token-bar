@@ -1119,25 +1119,39 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     }
 
     func transaction<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
-        try execute("BEGIN IMMEDIATE;")
-        do {
-            let result = try body(self)
-            try execute("COMMIT;")
-            return result
-        } catch {
-            try? execute("ROLLBACK;")
-            throw error
-        }
+        try withTransactionScope(beginStatement: "BEGIN IMMEDIATE;", body)
     }
 
     func readTransaction<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
-        try execute("BEGIN;")
+        try withTransactionScope(beginStatement: "BEGIN;", body)
+    }
+
+    private func withTransactionScope<T>(
+        beginStatement: String,
+        _ body: (SQLiteDatabaseConnection) throws -> T
+    ) throws -> T {
+        let isNested = sqlite3_get_autocommit(database) == 0
+        let savepointName = isNested
+            ? "codex_internal_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+            : nil
+        let openingStatement = savepointName.map { "SAVEPOINT \"\($0)\";" } ?? beginStatement
+        try execute(openingStatement)
+
         do {
             let result = try body(self)
-            try execute("COMMIT;")
+            if let savepointName {
+                try execute("RELEASE SAVEPOINT \"\(savepointName)\";")
+            } else {
+                try execute("COMMIT;")
+            }
             return result
         } catch {
-            try? execute("ROLLBACK;")
+            if let savepointName {
+                try? execute("ROLLBACK TO SAVEPOINT \"\(savepointName)\";")
+                try? execute("RELEASE SAVEPOINT \"\(savepointName)\";")
+            } else {
+                try? execute("ROLLBACK;")
+            }
             throw error
         }
     }

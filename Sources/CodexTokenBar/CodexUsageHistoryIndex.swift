@@ -278,6 +278,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let attributionUnsafe: Bool
         let eventEnrichmentTotal: Int
         let eventEnrichmentComplete: Bool
+        var coverageObservedAt: Date? = nil
 
         var attributionSourceMutationDetected: Bool {
             attributionUnsafe
@@ -584,12 +585,40 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     convenience init(
         codexHome: URL,
         fileManager: FileManager = .default,
+        createsFileIfMissing: Bool = true,
         onProgress: ((PreciseIndexProgress) -> Void)? = nil
     ) throws {
         let databaseURL = Self.databaseURL(for: codexHome)
         try Self.relocateLegacyIndex(from: Self.databaseURL(for: codexHome, legacyCache: true),
             to: databaseURL, fileManager: fileManager, onProgress: onProgress)
-        try self.init(databaseURL: databaseURL, fileManager: fileManager, onProgress: onProgress)
+        try self.init(databaseURL: databaseURL, fileManager: fileManager,
+            onProgress: onProgress, createsFileIfMissing: createsFileIfMissing)
+    }
+
+    /// Empty discovery may mean all raw sessions were deleted. The ledger is
+    /// independent of those files, but an empty Home must not create a ledger.
+    /// Probe both supported locations and pending migration receipts; only a
+    /// confirmed absent path is absence. Permission/I/O failures stay visible.
+    static func openExisting(
+        codexHome: URL,
+        fileManager: FileManager = .default,
+        onProgress: ((PreciseIndexProgress) -> Void)? = nil
+    ) throws -> CodexUsageHistoryIndex? {
+        let current = databaseURL(for: codexHome)
+        let legacy = databaseURL(for: codexHome, legacyCache: true)
+        for url in [current, candidateMigrationManifestURL(for: current),
+                    legacy, candidateMigrationManifestURL(for: legacy)] {
+            do {
+                _ = try fileManager.attributesOfItem(atPath: url.path)
+            } catch let error as CocoaError
+                where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+                continue
+            }
+            return try CodexUsageHistoryIndex(codexHome: codexHome,
+                fileManager: fileManager, createsFileIfMissing: false,
+                onProgress: onProgress)
+        }
+        return nil
     }
 
     convenience init(
@@ -629,7 +658,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         databaseURL: URL,
         fileManager: FileManager,
         onProgress: ((PreciseIndexProgress) -> Void)? = nil,
-        openMode: OpenMode = .active
+        openMode: OpenMode = .active,
+        createsFileIfMissing: Bool = true
     ) throws {
         let existedBeforeOpen = fileManager.fileExists(atPath: databaseURL.path)
         let gate = Self.operationGate(for: databaseURL)
@@ -649,6 +679,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         operationGate = gate
         driver = SQLiteDatabaseDriver(
             url: databaseURL,
+            createsFileIfMissing: createsFileIfMissing,
             busyTimeoutMilliseconds: 30_000,
             enableWAL: true,
             fileManager: fileManager
@@ -692,6 +723,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     let exists = try connection.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_observations';") { $0.int(0) }.first == 1
                     if !exists {
                         try connection.execute("CREATE TABLE source_observations(source_id INTEGER PRIMARY KEY, size_bytes INTEGER NOT NULL, modified_at REAL NOT NULL, physical_stamp TEXT NOT NULL);")
+                    }
+                }
+                try driver.withConnection { connection in
+                    try connection.transaction { tx in
+                        let pending = try tx.readRows("SELECT value FROM schema_meta WHERE key='canonical_projection_pending'") { $0.text(0) }.first != nil
+                        let changed = try CanonicalUsageProjection.refresh(on:tx)
+                        if pending || changed {
+                            try reconcileCanonicalAggregates(connection:tx)
+                            let generation = try bumpAttributionGeneration(connection:tx)
+                            try tx.execute("INSERT OR REPLACE INTO schema_meta VALUES ('dashboard_aggregate_exact_generation',?)",bindings:[.text(String(generation))])
+                            try tx.execute("DELETE FROM schema_meta WHERE key IN ('usage_scan_certificate','dashboard_aggregate_published_generation')")
+                        }
                     }
                 }
                 // Accounting may have added optional evidence columns.
@@ -1977,6 +2020,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         files: [URL],
         sessionID: (URL) -> String,
         messageScanner: MessageScanner? = nil,
+        observedAt: Date = Date(),
         parser: @escaping SessionParser,
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
@@ -1986,6 +2030,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 files: files,
                 sessionID: sessionID,
                 messageScanner: messageScanner,
+                observedAt: observedAt,
                 parser: parser,
                 onProgress: onProgress
             )
@@ -1994,6 +2039,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         Self.scheduleStorageMaintenance(databaseURL: driver.url)
         return result
+    }
+
+    func coverageCertificate() throws -> UsageIndexCoverageCertificate? {
+        try driver.withConnection { connection in
+            try connection.readTransaction { tx in
+                let state=try currentAttributionState(connection:tx)
+                guard let receipt=try UsageIndexCoverageCertificate.read(on:tx),
+                      receipt.revision==1,receipt.generation==state.generation,
+                      receipt.provenanceEpoch==state.provenanceEpoch else { return nil }
+                return receipt
+            }
+        }
     }
 
     func attributionState() throws -> AttributionState {
@@ -2444,8 +2501,35 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         files: [URL],
         sessionID: (URL) -> String,
         messageScanner: MessageScanner?,
+        observedAt: Date = Date(),
         parser: @escaping SessionParser,
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
+    ) throws -> SynchronizationResult {
+        var stagedArtifacts: [URL] = []
+        let result = try driver.withConnection { connection in
+            try configure(connection)
+            return try connection.transaction { transaction in
+                try synchronizeInTransaction(files: files, sessionID: sessionID,
+                    messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: onProgress,
+                    connection: transaction, stagedArtifacts: &stagedArtifacts)
+            }
+        }
+        // A batch savepoint is not a publication. Keep retry artifacts until
+        // the entire generation and its coverage receipt have committed.
+        for artifact in stagedArtifacts { removeStagingDatabase(at: artifact) }
+        removeStagingDirectoryIfEmpty()
+        return result
+    }
+
+    private func synchronizeInTransaction(
+        files: [URL],
+        sessionID: (URL) -> String,
+        messageScanner: MessageScanner?,
+        observedAt: Date = Date(),
+        parser: @escaping SessionParser,
+        onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)?,
+        connection: SQLiteDatabaseConnection,
+        stagedArtifacts: inout [URL]
     ) throws -> SynchronizationResult {
         let generation = UUID().uuidString
         let canonicalFiles = Array(Set(files.map { CodexRolloutReader.canonicalLogicalURL($0) })).sorted { $0.path < $1.path }
@@ -2476,8 +2560,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             .scanning
         )
 
-        try driver.withConnection { connection in
-            try configure(connection)
+        do {
             let indexedSources = try indexedSources(connection: connection, includeMissing: true)
             let missingSourceIDs = Set(try connection.readRows("SELECT source_id FROM usage_ledger_sources WHERE missing=1") { $0.int64(0) }.compactMap { $0 })
             let representedSourceIDs = Set(try connection.readRows("SELECT source_id FROM source_representations") { $0.int64(0) }.compactMap { $0 })
@@ -2660,18 +2743,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var lineagesRequiringMaximumMerge = Set<String>()
         var provenanceRotated = false
         let stagingBatches = stagingBatches(for: fullRebuildJobs)
-        let finalSynchronization = try driver.withConnection { connection in
-            try configure(connection)
+        let finalSynchronization = try connection.transaction { connection in
             let preRotationAttributionState = try currentAttributionState(
                 connection: connection
             )
             var completedEventEnrichmentJobs = 0
 
-            // Never leave every source staged at once. A bounded batch is
-            // parsed and validated first, then every source in that batch is
-            // imported by one target-database transaction. Artifacts are
-            // deleted only after that transaction commits, so a crash can
-            // never expose half of one batch or lose an uncommitted artifact.
+            // Parse and validate a bounded batch, then import it through a
+            // savepoint on this round's one publication connection. Durable
+            // artifacts remain available until the outer generation commits;
+            // failure never publishes an earlier successful batch.
             for batch in stagingBatches {
                 try ensureStagingCapacity(for: batch)
                 let completedBeforeBatch = completedEventEnrichmentJobs
@@ -2779,8 +2860,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     changedFiles += 1
                     indexedEvents += staged.eventCount
                     sourceMutationDetected = true
-                    removeStagingDatabase(at: staged.databaseURL)
+                    stagedArtifacts.append(staged.databaseURL)
                 }
+            }
+
+            let projectionChanged = try CanonicalUsageProjection.refresh(on:connection)
+            let projectionPending = try connection.readRows("SELECT value FROM schema_meta WHERE key='canonical_projection_pending'") { $0.text(0) }.first != nil
+            if projectionChanged || projectionPending {
+                try reconcileCanonicalAggregates(connection:connection)
+                sourceMutationDetected = true
             }
 
             let messageLinksChanged = try messageScanner.map {
@@ -2906,6 +2994,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         connection: transaction
                     )
                 }
+                let certifiedState = try currentAttributionState(connection:transaction)
+                try UsageIndexCoverageCertificate.publish(epoch:certifiedState.provenanceEpoch,
+                    generation:certifiedState.generation,scanID:generation,observedAt:observedAt,
+                    sourceCount:canonicalFiles.count,on:transaction)
                 return (
                     state: try currentAttributionState(connection: transaction),
                     eventEnrichmentComplete: eventEnrichmentComplete,
@@ -2913,7 +3005,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             }
         }
-        removeStagingDirectoryIfEmpty()
         if eventEnrichmentTotal > 0 {
             if finalSynchronization.eventEnrichmentComplete {
                 onProgress?(eventEnrichmentTotal, eventEnrichmentTotal, .publishing)
@@ -2942,7 +3033,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             lineageAmbiguityDetected: lineageAmbiguityDetected,
             attributionUnsafe: finalSynchronization.state.requiresSyntheticCutover,
             eventEnrichmentTotal: eventEnrichmentTotal,
-            eventEnrichmentComplete: finalSynchronization.eventEnrichmentComplete
+            eventEnrichmentComplete: finalSynchronization.eventEnrichmentComplete,
+            coverageObservedAt: observedAt
         )
     }
 
@@ -3051,7 +3143,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                            SUM(e.input_tokens), SUM(e.cached_input_tokens),
                            SUM(e.output_tokens), SUM(e.reasoning_output_tokens),
                            SUM(e.tokens), COUNT(*)
-                    FROM events e JOIN sources s ON s.source_id = e.source_id
+                    FROM canonical_usage_events e JOIN sources s ON s.source_id = e.source_id
                     WHERE e.tokens > 0 AND (\(predicate))
                     GROUP BY e.source_id, CAST(e.timestamp / 60 AS INTEGER), COALESCE(e.model, '')
                     ORDER BY 3, e.source_id, 4;
@@ -3159,6 +3251,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try withExclusiveAccess {
             try driver.withConnection { connection in
                 try connection.transaction { transaction in
+                    let state=try currentAttributionState(connection:transaction)
+                    guard state.generation==exactGeneration,
+                          let receipt=try UsageIndexCoverageCertificate.read(on:transaction),
+                          receipt.provenanceEpoch==state.provenanceEpoch,
+                          receipt.generation==exactGeneration,
+                          settledThrough<=receipt.observedAt else {
+                        throw CodexUsageIndexRepairRequiredError(reason:"索引已更新或覆盖证明不匹配，暂缓发布派生快照")
+                    }
                     try transaction.execute(
                         """
                         INSERT INTO schema_meta(key, value)
@@ -3446,7 +3546,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 events.output_tokens,
                 events.reasoning_output_tokens,
                 events.model
-            FROM events
+            FROM canonical_usage_events AS events
             JOIN sources ON sources.source_id = events.source_id
             WHERE events.tokens > 0
             ORDER BY sources.session_id, events.timestamp, events.source_id, events.source_offset;
@@ -4541,9 +4641,25 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         )
     }
 
+    private func reconcileCanonicalAggregates(connection: SQLiteDatabaseConnection) throws {
+        try rebuildDashboardAggregates(connection:connection)
+        let state = try currentAttributionState(connection:connection)
+        let rows = try connection.readRows("SELECT source_id,session_id FROM sources ORDER BY source_id") { ($0.int64(0)!, $0.text(1)!) }
+        var published=Set<String>()
+        for (source,session) in rows {
+            let lineage=attributionLineage(sessionID:session,sourceID:source)
+            if published.insert(lineage.key).inserted {
+                try publishAttributionLedger(lineage:lineage,sourceID:source,provenanceEpoch:state.provenanceEpoch,
+                    affectedBuckets:nil,replacing:false,preservingExistingMaximum:true,connection:connection,refreshCanonicalProjection:false)
+            }
+        }
+        try connection.execute("DELETE FROM schema_meta WHERE key='canonical_projection_pending'")
+    }
+
     private func rebuildDashboardAggregates(
         connection: SQLiteDatabaseConnection
     ) throws {
+        try CanonicalUsageProjection.install(on:connection)
         try connection.execute(
             """
             DELETE FROM dashboard_source_5m;
@@ -4566,7 +4682,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 SUM(reasoning_output_tokens),
                 SUM(tokens),
                 COUNT(*)
-            FROM events
+            FROM canonical_usage_events
             WHERE tokens > 0
             GROUP BY source_id, CAST(timestamp / 300 AS INTEGER), COALESCE(model, '');
 
@@ -4591,7 +4707,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             JOIN sources s ON s.source_id = b.source_id
             JOIN (
                 SELECT source_id, MIN(timestamp) AS first_timestamp, MAX(timestamp) AS last_timestamp
-                FROM events
+                FROM canonical_usage_events
                 WHERE tokens > 0
                 GROUP BY source_id
             ) e ON e.source_id = b.source_id
@@ -4617,7 +4733,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         PARTITION BY e.source_id, s.session_id, e.user_prompt_offset
                         ORDER BY e.timestamp DESC, e.source_offset DESC
                     ) AS snapshot_rank
-                FROM events e
+                FROM canonical_usage_events e
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE e.tokens > 0 AND e.user_prompt_offset IS NOT NULL
             ), grouped AS (
@@ -4784,7 +4900,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         PARTITION BY e.source_id, s.session_id, e.user_prompt_offset
                         ORDER BY e.timestamp DESC, e.source_offset DESC
                     ) AS snapshot_rank
-                FROM events e
+                FROM canonical_usage_events e
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE e.tokens > 0 AND e.user_prompt_offset IS NOT NULL
                   AND s.session_id IN (
@@ -4902,7 +5018,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 SUM(reasoning_output_tokens),
                 SUM(tokens),
                 COUNT(*)
-            FROM events
+            FROM canonical_usage_events
             WHERE tokens > 0 AND source_id = ? \(predicate)
             GROUP BY source_id, CAST(timestamp / 300 AS INTEGER), COALESCE(model, '');
             """,
@@ -4938,8 +5054,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 ?, ?,
                 SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
                 SUM(reasoning_output_tokens), SUM(total_tokens), SUM(calls),
-                (SELECT MIN(timestamp) FROM events WHERE tokens > 0 AND source_id = ?),
-                (SELECT MAX(timestamp) FROM events WHERE tokens > 0 AND source_id = ?)
+                (SELECT MIN(timestamp) FROM canonical_usage_events WHERE tokens > 0 AND source_id = ?),
+                (SELECT MAX(timestamp) FROM canonical_usage_events WHERE tokens > 0 AND source_id = ?)
             FROM dashboard_source_5m
             WHERE source_id = ?
             HAVING SUM(calls) > 0;
@@ -5237,8 +5353,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         affectedBuckets: ClosedRange<Int64>?,
         replacing: Bool,
         preservingExistingMaximum: Bool = false,
-        connection: SQLiteDatabaseConnection
+        connection: SQLiteDatabaseConnection,
+        refreshCanonicalProjection: Bool = true
     ) throws {
+        try CanonicalUsageProjection.install(on:connection)
+        if refreshCanonicalProjection, try CanonicalUsageProjection.refresh(on:connection) {
+            try connection.execute("INSERT OR REPLACE INTO schema_meta VALUES ('canonical_projection_pending','1')")
+            try rebuildDashboardAggregates(connection:connection)
+        }
         if replacing {
             try connection.execute(
                 """
@@ -5307,7 +5429,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     SUM(e.reasoning_output_tokens) AS reasoning_output_tokens,
                     SUM(e.tokens) AS total_tokens,
                     COUNT(*) AS calls
-                FROM events e
+                FROM canonical_usage_events e
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE e.tokens > 0 AND \(sourcePredicate)
                 \(bucketPredicate)
@@ -5330,12 +5452,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 ?,
                 bucket_start,
                 model,
-                MAX(input_tokens),
-                MAX(cached_input_tokens),
-                MAX(output_tokens),
-                MAX(reasoning_output_tokens),
-                MAX(total_tokens),
-                MAX(calls)
+                SUM(input_tokens),
+                SUM(cached_input_tokens),
+                SUM(output_tokens),
+                SUM(reasoning_output_tokens),
+                SUM(total_tokens),
+                SUM(calls)
             FROM per_source
             GROUP BY bucket_start, model
             ON CONFLICT(provenance_epoch, source_lineage, bucket_start, model)
@@ -7940,17 +8062,25 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         sourceID: Int64,
         connection: SQLiteDatabaseConnection
     ) throws -> Bool {
-        try connection.execute(
-            "ATTACH DATABASE ? AS event_enrichment_stage;",
-            bindings: [.text(staged.databaseURL.path)]
-        )
-        defer {
-            try? connection.execute("DETACH DATABASE event_enrichment_stage;")
+        // ATTACH/DETACH cannot release a database participating in the outer
+        // publication transaction. Copy only comparison integers into TEMP;
+        // this keeps any number of staged batches on the same connection.
+        try connection.execute("""
+            CREATE TEMP TABLE event_enrichment_comparison(
+                source_offset INTEGER,tokens INTEGER,input_tokens INTEGER,
+                cached_input_tokens INTEGER,output_tokens INTEGER,reasoning_output_tokens INTEGER);
+            """)
+        defer { try? connection.execute("DROP TABLE temp.event_enrichment_comparison") }
+        let stage=SQLiteDatabaseDriver(url:staged.databaseURL,readOnly:true,createsFileIfMissing:false)
+        let insert=try connection.prepare("INSERT INTO temp.event_enrichment_comparison VALUES (?,?,?,?,?,?)")
+        try stage.forEachRow("SELECT source_offset,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens FROM events") { row in
+            let values=(0..<6).map { SQLiteBinding.int64(row.int64(Int32($0))!) }
+            _ = try insert.execute(values)
         }
         let mismatch = try connection.readRows(
             """
             SELECT EXISTS(
-                SELECT 1 FROM event_enrichment_stage.events staged
+                SELECT 1 FROM temp.event_enrichment_comparison staged
                 LEFT JOIN usage_ledger_bindings b ON b.source_id=? AND b.raw_offset=staged.source_offset
                     AND b.available=1 AND b.generation=(SELECT generation FROM usage_ledger_sources WHERE source_id=?)
                 LEFT JOIN events published ON published.source_id=b.source_id AND published.source_offset=b.event_id
@@ -8533,7 +8663,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
               !fileManager.fileExists(atPath: destination.path),
               fileManager.fileExists(atPath: legacy.path)
                 || fileManager.fileExists(atPath: candidateMigrationManifestURL(for: legacy).path) else { return }
-        let source = try Self(databaseURL: legacy, fileManager: fileManager, onProgress: onProgress)
+        let source = try Self(databaseURL: legacy, fileManager: fileManager,
+            onProgress: onProgress, createsFileIfMissing: false)
         try source.withExclusiveAccess {
             try operationGate(for: destination).withLock {
                 guard !fileManager.fileExists(atPath: destination.path) else { return }
