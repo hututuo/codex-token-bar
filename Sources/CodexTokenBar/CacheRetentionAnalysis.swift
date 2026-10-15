@@ -31,6 +31,19 @@ struct CacheRetentionAnalysis: Codable, Equatable, Sendable {
     /// `not_run`, `exact`, or `bounded_candidate_grid`.
     let searchMode: String
 
+    struct EarlierDecline: Codable, Equatable, Sendable {
+        let microseconds: Double
+        let leftMicroseconds: Int64
+        let rightMicroseconds: Int64
+        let count: Int
+        let segments: [Segment]
+        let searchMode: String
+    }
+
+    /// Separately fit only observations strictly before the main decline.
+    /// An absent value means there is no supported second, earlier boundary.
+    var earlierDecline: EarlierDecline? = nil
+
     private static let maximumCount = 100_000
     private static let minimumHighCount = 20
     private static let minimumSegmentCount = 20
@@ -60,6 +73,22 @@ struct CacheRetentionAnalysis: Codable, Equatable, Sendable {
     }
 
     static func calculate(_ points: [CacheRetentionPoint]) -> CacheRetentionAnalysis {
+        var result = fit(points)
+        guard let main = result.dropMicroseconds, let lastBefore = result.dropLeftMicroseconds else { return result }
+        let prefix = points.filter { $0.gapMicroseconds <= lastBefore }
+        let earlier = fit(prefix)
+        if let value = earlier.dropMicroseconds, value < main,
+           let left = earlier.dropLeftMicroseconds, let right = earlier.dropRightMicroseconds {
+            result.earlierDecline = EarlierDecline(microseconds: value, leftMicroseconds: left,
+                rightMicroseconds: right, count: prefix.count, segments: earlier.segments,
+                searchMode: earlier.searchMode)
+        }
+        return result
+    }
+
+    // Shared monotone 1/2/3-segment fit and model penalty. No fixed
+    // percentage-point drop threshold or desired minute enters this method.
+    private static func fit(_ points: [CacheRetentionPoint]) -> CacheRetentionAnalysis {
         let count = points.count
         let highCount = points.reduce(into: 0) { total, point in
             if point.highReuse { total += 1 }

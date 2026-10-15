@@ -65,9 +65,15 @@ enum CacheRetentionCopy {
         return minutes < 1 ? String(format: "%.0f 秒", microseconds / 1_000_000) : String(format: "%.1f 分钟", (minutes * 10).rounded() / 10)
     }
     static func recommendation(_ analysis: CacheRetentionAnalysis) -> String {
+        guard let earlier = analysis.earlierDecline else {
+            return analysis.dropMicroseconds == nil ? "暂未找到可靠的续问时间建议" : "暂未找到更早的下降点"
+        }
+        return "建议尽量在约 \(minutes(earlier.microseconds))内续问"
+    }
+    static func coverage(_ analysis: CacheRetentionAnalysis) -> String {
         if analysis.p95State == .rangeTooLarge { return "历史记录较多，请在图表中缩小范围" }
-        guard let value = analysis.p95Microseconds else { return "正在积累续问建议" }
-        return "建议在约 \(minutes(Double(value)))内续问"
+        guard let value = analysis.p95Microseconds else { return "正在积累高命中历史" }
+        return "过去高命中的续问，95% 在约 \(minutes(Double(value)))内"
     }
     static func risk(_ analysis: CacheRetentionAnalysis) -> String {
         guard let value = analysis.dropMicroseconds else { return "暂未找到明显风险分界" }

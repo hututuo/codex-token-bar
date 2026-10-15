@@ -30,7 +30,7 @@ struct CacheUsageAdviceView: View {
                         Text(advice.idleGapSeconds.map { "本轮实际间隔：\(CacheRetentionCopy.minutes($0*1_000_000))" } ?? "本轮实际间隔：暂未取得")
                         Text("等待较久、切换模型或上下文变化都可能影响缓存。")
                         Button(action: onOpenSuggestions) {
-                            Label("查看续问建议",systemImage: "chart.xyaxis.line").fontWeight(.semibold)
+                            Label("查看间隔图表",systemImage: "chart.xyaxis.line").fontWeight(.semibold)
                         }.buttonStyle(.borderedProminent).tint(.teal).controlSize(.small)
                     }
                     Spacer(minLength: 4)

@@ -28,7 +28,7 @@ struct CacheRetentionChartData: Sendable {
     }
     func color(_ count: Int) -> Color {
         let value = maximum > 1 ? log(Double(max(1, count))) / log(Double(maximum)) : 0
-        return Color(red: 0.82 - 0.79 * value, green: 0.91 - 0.68 * value, blue: 0.89 - 0.60 * value)
+        return Color(red: 0.58 - 0.55 * value, green: 0.76 - 0.53 * value, blue: 0.76 - 0.47 * value)
     }
 }
 
@@ -71,18 +71,13 @@ struct CacheRetentionChartView: View {
                     context.stroke(line, with: .color(.secondary.opacity(0.16)), lineWidth: 0.6)
                     text("\(rate)%", .init(x: plot.minX-8,y: yy), .secondary, 10, .trailing)
                 }
-                // Background counts and points share precisely the same cell
-                // colors. No smoothing or alpha accumulation changes density.
-                for (cell, count) in data.cells {
-                    let left = x(Double(cell.gap)/6), right = x(Double(cell.gap+1)/6)
-                    let box = CGRect(x: left,y: y(Double(cell.hit+1)/20),width: max(0.01,right-left),height: plot.height/20)
-                    context.fill(Path(box), with: .color(data.color(count)))
-                }
+                // Fixed data-space cells supply color counts only. Every sample
+                // uses the same glyph in every axis segment; no stretched tiles.
                 for point in data.points {
                     let center = CGPoint(x: x(Double(point.gapMicroseconds)/60_000_000),y: y(point.hitRate))
                     let circle = Path(ellipseIn: CGRect(x: center.x-1.7,y: center.y-1.7,width: 3.4,height: 3.4))
                     context.fill(circle, with: .color(data.color(data.cells[CacheRetentionChartData.cell(point)] ?? 1)))
-                    context.stroke(circle,with: .color(.white.opacity(0.45)),lineWidth: 0.3)
+                    context.stroke(circle,with: .color(.white.opacity(0.22)),lineWidth: 0.2)
                 }
                 let ticks: [Double] = focus ? [0,1,2,3,4,5,15,30,60,180,720,data.endMinutes] : [0,15,30,60,120,180,360,720,data.endMinutes]
                 for tick in ticks {
@@ -98,7 +93,7 @@ struct CacheRetentionChartView: View {
                     context.stroke(line,with: .color(color),style: .init(lineWidth: 1.7,dash: [5,4]))
                     text(label,.init(x: min(plot.maxX-110,max(plot.minX+110,xx)),y: height),color,10)
                 }
-                if let p95 = analysis.p95Microseconds { marker(Double(p95),color: recommended,label: CacheRetentionCopy.recommendation(analysis),height: 12) }
+                if let earlier = analysis.earlierDecline { marker(earlier.microseconds,color: recommended,label: CacheRetentionCopy.recommendation(analysis),height: 12) }
                 if let drop = analysis.dropMicroseconds { marker(drop,color: risk,label: CacheRetentionCopy.risk(analysis),height: 31) }
                 text(focus ? "间隔（分钟） · 前 5 分钟展开，// 处改变比例；右侧保留全部长尾" : "间隔（分钟） · // 处改变横轴比例",.init(x: plot.midX,y: plot.maxY+43),.secondary,10)
             }
@@ -136,13 +131,13 @@ struct CacheRetentionSummaryView: View {
         HStack(spacing: 14) {
             Image(systemName: "clock.arrow.circlepath").font(.system(size: 23)).foregroundStyle(.teal)
             VStack(alignment: .leading,spacing: 4) {
-                Text("缓存续问建议").font(.system(size: 14,weight: .semibold))
+                Text("缓存续问参考").font(.system(size: 14,weight: .semibold))
                 Text(store.snapshot.updatedAt == nil || (store.isUpdating && store.adviceAnalysis.count == 0) ? "正在读取历史并计算建议…" : CacheRetentionCopy.recommendation(store.adviceAnalysis)).font(.system(size: 12))
                 Text(store.isUpdating ? store.status : "\(store.adviceAnalysis.count) 轮有效续问 · 完全在本机计算")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            Button(action: onOpen) { Label("查看续问建议",systemImage: "chart.xyaxis.line").fontWeight(.semibold) }
+            Button(action: onOpen) { Label("查看间隔图表",systemImage: "chart.xyaxis.line").fontWeight(.semibold) }
                 .buttonStyle(.borderedProminent).tint(.teal)
         }
         .padding(14).frame(maxWidth: 980,alignment: .leading)
@@ -160,7 +155,7 @@ struct CacheRetentionDetailView: View {
         VStack(alignment: .leading,spacing: 14) {
             HStack {
                 VStack(alignment: .leading,spacing: 5) {
-                    Text("多久以后续问，缓存更容易复用？").font(.system(size: 20,weight: .semibold))
+                    Text("续问间隔与缓存命中").font(.system(size: 20,weight: .semibold))
                     Text(preparing ? "正在读取本机历史，完成后显示有效续问轮数" : "\(store.snapshot.points.count) 轮有效续问 · \(Set(store.snapshot.points.map(\.sessionKey)).count) 个主会话 · 全部本地记录 · 已排除子 Agent")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -181,7 +176,7 @@ struct CacheRetentionDetailView: View {
                 Toggle("展开前 5 分钟",isOn: $focus).toggleStyle(.checkbox)
             }.font(.system(size: 11))
             HStack(alignment: .top,spacing: 12) {
-                explanation(title: "建议续问线",text: preparing ? "正在计算建议时间…" : CacheRetentionCopy.recommendation(store.snapshot.analysis),detail: preparing ? "读取完成后自动显示，无需重新打开图表。" : store.snapshot.analysis.p95Microseconds == nil ? "合格轮次还不够，积累一些续问后会自动给出建议。" : "历史上多数高复用续问落在这段时间内，可作为日常参考。",color: .purple)
+                explanation(title: "建议续问线",text: preparing ? "正在寻找较早的下降…" : CacheRetentionCopy.recommendation(store.snapshot.analysis),detail: preparing ? "读取完成后自动显示，无需重新打开图表。" : store.snapshot.analysis.earlierDecline == nil ? "风险线之前还没有清楚的更早分界，暂不补画。" : "风险线之前最明显的下降；尽量在这之前续问。它仍是历史参考。",color: .purple)
                 explanation(title: "低命中风险线",text: preparing ? "正在寻找风险分界…" : CacheRetentionCopy.risk(store.snapshot.analysis),detail: preparing ? "根据本机历史计算，请稍候。" : store.snapshot.analysis.dropMicroseconds == nil ? "历史数据还没有清楚的下降分界，暂不提供最晚参考。" : "尽量别拖到这条线以后；切换模型或改动上下文也会影响缓存。",color: .orange)
             }
             if store.snapshot.analysis.p95State == .rangeTooLarge {
@@ -193,13 +188,14 @@ struct CacheRetentionDetailView: View {
                 HStack(spacing: 8) {
                     Text("稀疏").foregroundStyle(.secondary)
                     LinearGradient(colors: [store.chart.color(1),store.chart.color(max(1,store.chart.maximum/10)),store.chart.color(store.chart.maximum)],startPoint: .leading,endPoint: .trailing).frame(width: 110,height: 8).clipShape(Capsule())
-                    Text("密集 · 每格 10 秒 × 5 个百分点，最密集 \(store.chart.maximum) 轮").foregroundStyle(.secondary)
+                    Text("密集 · 按 10 秒 × 5 个百分点计数，最高 \(store.chart.maximum) 轮").foregroundStyle(.secondary)
                     Spacer()
-                    Text("原始散点 + 密度底色").foregroundStyle(.secondary)
+                    Text("点色越深，同区间轮次越多").foregroundStyle(.secondary)
                 }.font(.system(size: 10))
             }
+            Text("历史补充：" + CacheRetentionCopy.coverage(store.snapshot.analysis)).font(.system(size: 10)).foregroundStyle(.secondary)
             Text(store.status).font(.system(size: 10)).foregroundStyle(.secondary)
-            Text("两条线来自当前筛选的本机历史，只作经验参考；实际命中还会受模型和上下文变化影响。")
+            Text("横轴按段改变比例。线条描述当前筛选的历史分布，实际命中还受模型和上下文变化影响。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         .padding(24).frame(minWidth: 850,idealWidth: 1060,minHeight: 650).background(AppTheme.pageBackground)
