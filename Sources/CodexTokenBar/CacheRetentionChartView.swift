@@ -33,31 +33,35 @@ struct CacheRetentionChartData: Sendable {
 }
 
 struct CacheRetentionAxis {
-    let boundaries: [Double]
-    let positions: [Double]
-    init(end: Double, focus: Bool) {
-        boundaries = focus ? [0,5,30,180,720,end] : [0,60,180,720,end]
-        positions = focus ? [0,0.40,0.63,0.80,0.91,1] : [0,0.32,0.60,0.85,1]
-    }
+    static let uncompressedMinutes = 80.0
+    static let mainWidth = 0.82
+    static let breakWidth = 0.025
+    let end: Double
+    init(end: Double) { self.end = max(Self.uncompressedMinutes + 1, end) }
+    var breakPosition: Double { Self.mainWidth + Self.breakWidth / 2 }
+    var ticks: [Double] { Array(stride(from: 0.0, through: 80.0, by: 10.0)) + [end] }
     func position(_ value: Double) -> Double {
-        for i in 1..<boundaries.count where value <= boundaries[i] {
-            return positions[i-1] + (value-boundaries[i-1])/(boundaries[i]-boundaries[i-1])*(positions[i]-positions[i-1])
+        if value <= Self.uncompressedMinutes {
+            return max(0, value) / Self.uncompressedMinutes * Self.mainWidth
         }
-        return 1
+        // A single visual break follows the linear 0–80 minute range.
+        // Log compression keeps every later observation in the same tail.
+        let tailStart = Self.mainWidth + Self.breakWidth
+        let fraction = log(value / Self.uncompressedMinutes) / log(end / Self.uncompressedMinutes)
+        return tailStart + min(1, max(0, fraction)) * (1 - tailStart)
     }
 }
 
 struct CacheRetentionChartView: View {
     let data: CacheRetentionChartData
     let analysis: CacheRetentionAnalysis
-    @Binding var focus: Bool
     @State private var hovered: CacheRetentionPoint?
     private let recommended = Color(red: 0.47, green: 0.36, blue: 0.64)
     private let risk = Color(red: 0.75, green: 0.40, blue: 0.22)
 
     var body: some View {
         GeometryReader { geometry in
-            let axis = CacheRetentionAxis(end: data.endMinutes, focus: focus)
+            let axis = CacheRetentionAxis(end: data.endMinutes)
             let plot = CGRect(x: 48, y: 48, width: max(1, geometry.size.width-75), height: max(1, geometry.size.height-101))
             Canvas { context, _ in
                 func x(_ minutes: Double) -> CGFloat { plot.minX + axis.position(minutes) * plot.width }
@@ -71,6 +75,10 @@ struct CacheRetentionChartView: View {
                     context.stroke(line, with: .color(.secondary.opacity(0.16)), lineWidth: 0.6)
                     text("\(rate)%", .init(x: plot.minX-8,y: yy), .secondary, 10, .trailing)
                 }
+                for minute in stride(from: 0.0, through: 80.0, by: 10.0) {
+                    var line = Path(); line.move(to: .init(x: x(minute), y: plot.minY)); line.addLine(to: .init(x: x(minute), y: plot.maxY))
+                    context.stroke(line, with: .color(.secondary.opacity(0.10)), lineWidth: 0.5)
+                }
                 // Fixed data-space cells supply color counts only. Every sample
                 // uses the same glyph in every axis segment; no stretched tiles.
                 for point in data.points {
@@ -79,14 +87,10 @@ struct CacheRetentionChartView: View {
                     context.fill(circle, with: .color(data.color(data.cells[CacheRetentionChartData.cell(point)] ?? 1)))
                     context.stroke(circle,with: .color(.white.opacity(0.22)),lineWidth: 0.2)
                 }
-                let ticks: [Double] = focus ? [0,1,2,3,4,5,15,30,60,180,720,data.endMinutes] : [0,15,30,60,120,180,360,720,data.endMinutes]
-                for tick in ticks {
+                for tick in axis.ticks {
                     text(tick >= 1440 ? String(format: "%.1f天",tick/1440) : String(format: "%.0f",tick), .init(x: x(tick),y: plot.maxY+17))
                 }
-                for (i, value) in axis.boundaries.enumerated().dropFirst().dropLast() {
-                    text("//",.init(x: plot.minX+axis.positions[i]*plot.width,y: plot.maxY-2), .secondary, 15)
-                    _ = value
-                }
+                text("//",.init(x: plot.minX+axis.breakPosition*plot.width,y: plot.maxY-2), .secondary, 15)
                 func marker(_ microseconds: Double, color: Color, label: String, height: CGFloat) {
                     let xx = x(microseconds/60_000_000)
                     var line = Path(); line.move(to: .init(x: xx,y: plot.minY)); line.addLine(to: .init(x: xx,y: plot.maxY))
@@ -95,7 +99,7 @@ struct CacheRetentionChartView: View {
                 }
                 if let earlier = analysis.earlierDecline { marker(earlier.microseconds,color: recommended,label: CacheRetentionCopy.recommendation(analysis),height: 12) }
                 if let drop = analysis.dropMicroseconds { marker(drop,color: risk,label: CacheRetentionCopy.risk(analysis),height: 31) }
-                text(focus ? "间隔（分钟） · 前 5 分钟展开，// 处改变比例；右侧保留全部长尾" : "间隔（分钟） · // 处改变横轴比例",.init(x: plot.midX,y: plot.maxY+43),.secondary,10)
+                text("间隔（分钟） · 0–80 分钟等比例，// 后压缩显示全部长尾",.init(x: plot.midX,y: plot.maxY+43),.secondary,10)
             }
             .onContinuousHover { phase in
                 switch phase {
@@ -149,7 +153,6 @@ struct CacheRetentionSummaryView: View {
 struct CacheRetentionDetailView: View {
     @ObservedObject var store: CacheRetentionStore
     var onClose: () -> Void
-    @State private var focus = true
     private var preparing: Bool { store.snapshot.updatedAt == nil || (store.isUpdating && store.snapshot.points.isEmpty) }
     var body: some View {
         VStack(alignment: .leading,spacing: 14) {
@@ -173,7 +176,7 @@ struct CacheRetentionDetailView: View {
                     ForEach(store.snapshot.models,id: \.self) { Text($0).tag($0) }
                 }.frame(width: 255)
                 Spacer()
-                Toggle("展开前 5 分钟",isOn: $focus).toggleStyle(.checkbox)
+                Text("0–80 分钟等比例 · 每格 10 分钟").foregroundStyle(.secondary)
             }.font(.system(size: 11))
             HStack(alignment: .top,spacing: 12) {
                 explanation(title: "建议续问线",text: preparing ? "正在寻找较早的下降…" : CacheRetentionCopy.recommendation(store.snapshot.analysis),detail: preparing ? "读取完成后自动显示，无需重新打开图表。" : store.snapshot.analysis.earlierDecline == nil ? "风险线之前还没有清楚的更早分界，暂不补画。" : "风险线之前最明显的下降；尽量在这之前续问。它仍是历史参考。",color: .purple)
@@ -184,7 +187,7 @@ struct CacheRetentionDetailView: View {
             } else if store.chart.points.isEmpty {
                 ContentUnavailableView(preparing ? "正在读取真实历史" : "这个范围还没有足够的完整续问",systemImage: "chart.xyaxis.line",description: Text(store.status))
             } else {
-                CacheRetentionChartView(data: store.chart,analysis: store.snapshot.analysis,focus: $focus).frame(minHeight: 330)
+                CacheRetentionChartView(data: store.chart,analysis: store.snapshot.analysis).frame(minHeight: 330)
                 HStack(spacing: 8) {
                     Text("稀疏").foregroundStyle(.secondary)
                     LinearGradient(colors: [store.chart.color(1),store.chart.color(max(1,store.chart.maximum/10)),store.chart.color(store.chart.maximum)],startPoint: .leading,endPoint: .trailing).frame(width: 110,height: 8).clipShape(Capsule())
@@ -195,7 +198,7 @@ struct CacheRetentionDetailView: View {
             }
             Text("历史补充：" + CacheRetentionCopy.coverage(store.snapshot.analysis)).font(.system(size: 10)).foregroundStyle(.secondary)
             Text(store.status).font(.system(size: 10)).foregroundStyle(.secondary)
-            Text("横轴按段改变比例。线条描述当前筛选的历史分布，实际命中还受模型和上下文变化影响。")
+            Text("80 分钟后压缩横轴，保留全部历史长尾。线条是历史参考，实际命中还受模型和上下文变化影响。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         .padding(24).frame(minWidth: 850,idealWidth: 1060,minHeight: 650).background(AppTheme.pageBackground)

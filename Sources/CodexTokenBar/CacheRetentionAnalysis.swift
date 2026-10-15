@@ -28,7 +28,7 @@ struct CacheRetentionAnalysis: Codable, Equatable, Sendable {
     let dropState: State
     let segments: [Segment]
     let bestSegments: Int?
-    /// `not_run`, `exact`, or `bounded_candidate_grid`.
+    /// `not_run`, `exact`, `bounded_candidate_grid`, or `exact_two_bounded_three`.
     let searchMode: String
 
     struct EarlierDecline: Codable, Equatable, Sendable {
@@ -76,7 +76,7 @@ struct CacheRetentionAnalysis: Codable, Equatable, Sendable {
         var result = fit(points)
         guard let main = result.dropMicroseconds, let lastBefore = result.dropLeftMicroseconds else { return result }
         let prefix = points.filter { $0.gapMicroseconds <= lastBefore }
-        let earlier = fit(prefix)
+        let earlier = fit(prefix, earlierSearch: true)
         if let value = earlier.dropMicroseconds, value < main,
            let left = earlier.dropLeftMicroseconds, let right = earlier.dropRightMicroseconds {
             result.earlierDecline = EarlierDecline(microseconds: value, leftMicroseconds: left,
@@ -88,7 +88,7 @@ struct CacheRetentionAnalysis: Codable, Equatable, Sendable {
 
     // Shared monotone 1/2/3-segment fit and model penalty. No fixed
     // percentage-point drop threshold or desired minute enters this method.
-    private static func fit(_ points: [CacheRetentionPoint]) -> CacheRetentionAnalysis {
+    private static func fit(_ points: [CacheRetentionPoint], earlierSearch: Bool = false) -> CacheRetentionAnalysis {
         let count = points.count
         let highCount = points.reduce(into: 0) { total, point in
             if point.highReuse { total += 1 }
@@ -171,8 +171,12 @@ struct CacheRetentionAnalysis: Codable, Equatable, Sendable {
 
         var searchMode = "exact"
         var candidateCuts = Array(1..<groupCount)
-        if candidateCuts.count > exactCutLimit {
-            searchMode = "bounded_candidate_grid"
+        // Early advice must not inherit a coarse grid at ordinary history sizes.
+        // Always search every two-segment boundary in linear time; cap only
+        // the quadratic three-segment search for unusually large inputs.
+        let fullResolutionLimit = earlierSearch ? 2_048 : exactCutLimit
+        if candidateCuts.count > fullResolutionLimit {
+            searchMode = earlierSearch ? "exact_two_bounded_three" : "bounded_candidate_grid"
             var candidates = Set<Int>()
             for gridIndex in 1...exactCutLimit {
                 // ceil(gridIndex * n / 513), equivalent to bisect_left over
@@ -211,7 +215,8 @@ struct CacheRetentionAnalysis: Codable, Equatable, Sendable {
         var fits: [Int: Fit] = [1: Fit(logLikelihood: whole.logLikelihood, cuts: [])]
         var hasSupportedTwoSegmentSplit = false
 
-        for cut in candidateCuts {
+        let twoSegmentCuts = earlierSearch ? Array(1..<groupCount) : candidateCuts
+        for cut in twoSegmentCuts {
             guard let left = segmentStats(from: 0, to: cut),
                   let right = segmentStats(from: cut, to: groupCount) else {
                 continue

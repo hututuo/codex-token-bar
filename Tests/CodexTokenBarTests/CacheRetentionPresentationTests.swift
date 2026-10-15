@@ -2,6 +2,21 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CacheRetentionPresentationTests: XCTestCase {
+    func testFirstEightyMinutesUseUniformTenMinuteSpacingBeforeOneTailBreak() {
+        let axis = CacheRetentionAxis(end: 36_864)
+        let positions = (0...8).map { axis.position(Double($0) * 10) }
+        for index in 1..<positions.count {
+            XCTAssertEqual(positions[index] - positions[index-1], CacheRetentionAxis.mainWidth / 8, accuracy: 1e-12)
+        }
+        XCTAssertEqual(axis.position(0), 0)
+        XCTAssertEqual(axis.position(80), CacheRetentionAxis.mainWidth)
+        XCTAssertGreaterThan(axis.position(80.01), axis.breakPosition)
+        XCTAssertLessThan(axis.position(180), axis.position(720))
+        XCTAssertLessThan(axis.position(720), axis.position(axis.end))
+        XCTAssertEqual(axis.position(axis.end), 1, accuracy: 1e-12)
+        XCTAssertEqual(Array(axis.ticks.prefix(9)), [0,10,20,30,40,50,60,70,80])
+    }
+
     func testCoverageCopyDoesNotTreatHighSampleQuantileAsRecommendation() {
         func point(_ id: String, gap: Int64, cached: Int64) -> CacheRetentionPoint {
             .init(id: id, sourceKey: "source", sessionKey: "session", model: "model",

@@ -34,6 +34,23 @@ final class CacheRetentionEarlierDeclineTests: XCTestCase {
         XCTAssertLessThan(result.earlierDecline!.rightMicroseconds, result.dropRightMicroseconds!)
     }
 
+    func testEarlierSearchDoesNotSkipARealBoundaryBetweenCoarseGridCandidates() {
+        // 800 distinct gaps precede the main decline. The former 512-point
+        // count grid omitted cut 399, even though it is the exact optimum.
+        let points: [CacheRetentionPoint] = (1...1_000).flatMap { second in
+            let high = second <= 399 ? 9 : second <= 800 ? 7 : 0
+            return (0..<10).map { index in
+                CacheRetentionPoint(id: "\(second)-\(index)", sourceKey: "source", sessionKey: "session", model: "model",
+                    gapMicroseconds: Int64(second) * 1_000_000, startedAtMicroseconds: 0,
+                    previousInput: 100, previousCached: 90, input: 100, cached: index < high ? 90 : 0)
+            }
+        }
+        let result = CacheRetentionAnalysis.calculate(points)
+        XCTAssertEqual(result.dropMicroseconds, 800_500_000)
+        XCTAssertEqual(result.earlierDecline?.microseconds, 399_500_000)
+        XCTAssertEqual(result.earlierDecline?.searchMode, "exact")
+    }
+
     private func group(gap: Int64, high: Int) -> [CacheRetentionPoint] {
         (0..<1_000).map { index in
             .init(id: "\(gap)-\(index)", sourceKey: "source", sessionKey: "session", model: "model",
