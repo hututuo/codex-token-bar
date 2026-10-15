@@ -3,6 +3,8 @@ import SwiftUI
 /// Shares the existing monitor's publication cadence; no view-owned timer.
 struct CacheUsageAdviceView: View {
     @ObservedObject var monitor: LiveRateMonitor
+    @ObservedObject var retention: CacheRetentionStore
+    var onOpenSuggestions: () -> Void
     @AppStorage("cacheHitAdviceEnabled") private var enabled = true
     @AppStorage("cacheHitAdviceDismissed") private var dismissedID = ""
 
@@ -21,8 +23,16 @@ struct CacheUsageAdviceView: View {
             }
             if let advice, warning {
                 HStack(alignment: .top) {
-                    Text("本次请求缓存命中偏低 · \(advice.displayTitle)\(advice.affectedThreads > 1 ? " 等 \(advice.affectedThreads) 个会话" : "")\n可能与切换模型或上下文变化有关，请检查最近的相关操作。")
-                        .help("会话 ID：\(advice.threadID)")
+                    VStack(alignment: .leading,spacing: 5) {
+                        Text("本次缓存命中偏低（\(advice.hitRate*100,specifier: "%.1f")%） · \(advice.displayTitle)\(advice.affectedThreads > 1 ? " 等 \(advice.affectedThreads) 个会话" : "")")
+                            .help("会话 ID：\(advice.threadID)")
+                        Text(CacheRetentionCopy.recommendation(retention.adviceAnalysis)).fontWeight(.semibold)
+                        Text(advice.idleGapSeconds.map { "本轮实际间隔：\(CacheRetentionCopy.minutes($0*1_000_000))" } ?? "本轮实际间隔：暂未取得")
+                        Text("等待较久、切换模型或上下文变化都可能影响缓存。")
+                        Button(action: onOpenSuggestions) {
+                            Label("查看续问建议",systemImage: "chart.xyaxis.line").fontWeight(.semibold)
+                        }.buttonStyle(.borderedProminent).tint(.teal).controlSize(.small)
+                    }
                     Spacer(minLength: 4)
                     Button { dismissedID = advice.presentationID } label: {
                         Label("关闭提醒", systemImage: "xmark").fontWeight(.semibold)

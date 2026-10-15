@@ -70,7 +70,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     func show(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore,
-              tasks: TaskCompletionMonitor, radar: CodexRadarStore, history: QuotaHistoryStore, edge: QuotaSidebarEdge, onOpenDashboard: @escaping () -> Void = {}) {
+              tasks: TaskCompletionMonitor, radar: CodexRadarStore, history: QuotaHistoryStore, retention: CacheRetentionStore, edge: QuotaSidebarEdge, onOpenDashboard: @escaping () -> Void = {}) {
         guard !isTrackingPress, !isDragging else { return }
         dashboardOpenAction = onOpenDashboard
         let resolvedEdge = QuotaSidebarPlacement.resolvedEdge(requested: edge, defaults: settings)
@@ -86,7 +86,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             }
             makeDetail = { [weak self] in
                 guard let self else { return AnyView(EmptyView()) }
-                return AnyView(QuotaSidebarDetailView(controller: self, store: store, monitor: monitor, quota: quota, tasks: tasks, radar: radar, history: history))
+                return AnyView(QuotaSidebarDetailView(controller: self, store: store, monitor: monitor, quota: quota, tasks: tasks, radar: radar, history: history, retention: retention))
             }
             railPanel = makePanel(identifier: "CodexTokenBarQuotaSidebar")
             railPanel?.trackPrimaryPress = { [weak self] event in self?.trackPress(event) ?? false }

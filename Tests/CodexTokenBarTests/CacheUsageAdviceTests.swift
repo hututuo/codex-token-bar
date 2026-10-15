@@ -3,6 +3,32 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CacheUsageAdviceTests: XCTestCase {
+    func testTurnBoundariesExposeActualIdleGapAndRejectUnmatchedCompletion() throws {
+        var tracker = CacheUsageAdviceTracker()
+        tracker.consume(.init(timestamp: 100, boundary: .completed, turnID: "previous"), threadID: "a", now: 100)
+        tracker.consume(.init(timestamp: 220, boundary: .started, turnID: "next"), threadID: "a", now: 220)
+        tracker.consume(.init(timestamp: 221, model: "model-a", context: true), threadID: "a", now: 221)
+        tracker.consume(sample(222, total: 20_000), threadID: "a", now: 222)
+        tracker.consume(sample(223, total: 40_000), threadID: "a", now: 223)
+        XCTAssertEqual(tracker.latest(now: 223)?.idleGapSeconds, 120)
+        XCTAssertEqual(tracker.latest(now: 223)?.model, "model-a")
+        tracker.consume(.init(timestamp: 230, boundary: .completed, turnID: "unmatched"), threadID: "a", now: 230)
+        tracker.consume(.init(timestamp: 240, boundary: .started, turnID: "third"), threadID: "a", now: 240)
+        tracker.consume(sample(241, total: 60_000), threadID: "a", now: 241)
+        XCTAssertNil(tracker.latest(now: 241)?.idleGapSeconds)
+        tracker.reset(threadID: "a")
+        tracker.consume(sample(242, total: 80_000), threadID: "a", now: 242)
+        XCTAssertNil(tracker.latest(now: 242)?.idleGapSeconds)
+    }
+
+    func testBoundaryParserAcceptsISOTimestamp() throws {
+        let sample = try XCTUnwrap(CacheUsageSample.parse(object: ["type": "event_msg"],
+            payload: ["type": "task_started", "turn_id": "a", "started_at": "2026-10-15T00:00:00Z"], timestamp: 1))
+        XCTAssertEqual(sample.timestamp, 1_792_022_400)
+        XCTAssertEqual(sample.turnID, "a")
+        XCTAssertNotNil(sample.boundary)
+    }
+
     func testStateReaderUsesExplicitNameAndReviewSource() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("cache-advice-title-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

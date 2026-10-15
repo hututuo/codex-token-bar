@@ -968,7 +968,7 @@ final class LiveRateMonitor: ObservableObject {
             if isReviewThread { cacheAdviceTracker.reset(threadID: read.threadID) }
             for sample in read.cacheSamples {
                 if isReviewThread { continue }
-                guard sample.context || sample.reset || sample.timestamp >= cacheAdviceNotBefore || !sample.timestamp.isFinite else { continue }
+                guard sample.context || sample.reset || sample.boundary != nil || sample.timestamp >= cacheAdviceNotBefore || !sample.timestamp.isFinite else { continue }
                 cacheAdviceTracker.consume(sample, threadID: read.threadID, now: now)
             }
             for event in read.events {

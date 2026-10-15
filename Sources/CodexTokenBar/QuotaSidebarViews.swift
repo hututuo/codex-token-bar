@@ -421,6 +421,7 @@ struct QuotaSidebarDetailView: View {
     @ObservedObject var tasks: TaskCompletionMonitor
     @ObservedObject var radar: CodexRadarStore
     @ObservedObject var history: QuotaHistoryStore
+    @ObservedObject var retention: CacheRetentionStore
 
     var body: some View {
         // Capture one projection for every quota, usage and running field in
@@ -429,7 +430,12 @@ struct QuotaSidebarDetailView: View {
                                                   runningThreads: tasks.runningThreadSummary)
         VStack(alignment: .leading, spacing: 6) {
             header(snapshot.quota)
-            if monitor.monitoringEnabled { CacheUsageAdviceView(monitor: monitor) }
+            if monitor.monitoringEnabled {
+                CacheUsageAdviceView(monitor: monitor,retention: retention,onOpenSuggestions: {
+                    retention.isChartPresented = true
+                    controller.openDashboard()
+                })
+            }
             HStack(spacing: 22) {
                 tab("额度概览", detail: .overview)
                 tab("任务", detail: .tasks)
