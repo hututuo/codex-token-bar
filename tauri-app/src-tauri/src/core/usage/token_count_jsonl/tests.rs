@@ -13393,18 +13393,19 @@ fn canonical_ledger_deduplicates_only_same_uuid_copies_and_preserves_missing_his
     let a=root.join("sessions/a").join(name);let b=root.join("sessions/b").join(name);
     fs::create_dir_all(a.parent().unwrap()).unwrap();fs::create_dir_all(b.parent().unwrap()).unwrap();
     let at=recent_test_timestamp(30);let later=recent_test_timestamp(20);
-    let line=|at:&str,n:u64|serde_json::json!({"timestamp":at,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}}}}).to_string();
-    write_lines(&a,&[line(&at,100)]);write_lines(&b,&[line(&at,100),line(&later,300)]);
+    let line=|at:&str,n:u64,total:u64|serde_json::json!({"timestamp":at,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":total,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":total},"last_token_usage":{"input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}}}}).to_string();
+    write_lines(&a,&[line(&at,100,100)]);write_lines(&b,&[line(&at,100,100),line(&later,300,400)]);
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,400);
     let path=super::exact_usage_index::database_path(&root).unwrap();
     let db=Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events",[],|r|r.get::<_,i64>(0)).unwrap(),400);
     assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),500);
     assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_duplicates",[],|r|r.get::<_,i64>(0)).unwrap(),1);
     assert_eq!(db.query_row("SELECT SUM(tokens) FROM attribution_source_buckets",[],|r|r.get::<_,i64>(0)).unwrap(),400);
     let old:Vec<(i64,i64,i64)>=db.prepare("SELECT id,source_id,tokens FROM event_rows ORDER BY id").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap();
     drop(db);
     // A later request in this copy is its own usage, not another duplicate.
-    let mut file=fs::OpenOptions::new().append(true).open(&b).unwrap();writeln!(file,"{}",line(&recent_test_timestamp(10),200)).unwrap();drop(file);
+    let mut file=fs::OpenOptions::new().append(true).open(&b).unwrap();writeln!(file,"{}",line(&recent_test_timestamp(10),200,600)).unwrap();drop(file);
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,600);
     fs::remove_file(&a).unwrap();fs::remove_file(&b).unwrap();
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,600);
@@ -13416,10 +13417,29 @@ fn canonical_ledger_deduplicates_only_same_uuid_copies_and_preserves_missing_his
 }
 
 #[test]
+fn canonical_ledger_preserves_copies_without_complete_usage_fingerprints() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let name = "rollout-019e1111-1111-4111-8111-000000000001.jsonl";
+    let line = serde_json::json!({"timestamp":recent_test_timestamp(10),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":0,"total_tokens":100}}}}).to_string();
+    for directory in ["a", "b"] {
+        let file = root.join("sessions").join(directory).join(name);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_lines(&file, &[line.clone()]);
+    }
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 200);
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_duplicates", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events", [], |r| r.get::<_,i64>(0)).unwrap(), 200);
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn canonical_ledger_never_merges_a_different_fork_uuid() {
     let _test_state=app_paths::app_path_test_env_guard(&[]);
     let root=temp_root();fs::create_dir_all(root.join("sessions")).unwrap();
-    let line=serde_json::json!({"timestamp":recent_test_timestamp(10),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":0,"total_tokens":100}}}}).to_string();
+    let line=serde_json::json!({"timestamp":recent_test_timestamp(10),"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":0,"total_tokens":100}}}}).to_string();
     for id in ["019e1111-1111-4111-8111-000000000001","019e1111-1111-4111-8111-000000000002"] {write_lines(&root.join(format!("sessions/rollout-{id}.jsonl")),&[line.clone()]);}
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,200);
     let db=Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();

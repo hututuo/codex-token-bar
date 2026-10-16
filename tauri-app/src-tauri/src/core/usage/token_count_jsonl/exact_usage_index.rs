@@ -1547,13 +1547,14 @@ impl ExactUsageIndex {
         } else {
             (MigrationAssessment::Compatible, false)
         };
-        // Schema 11 already has the structural/catalog layout. Its component
-        // accounting conversion must not reinitialize every derived schema or
-        // write unchanged catalog markers before the semantic transaction.
+        // Schema 11 already has the structural/catalog layout. Component
+        // accounting, representation and canonical-ledger upgrades install
+        // their own schemas; they must not rewrite catalog markers before
+        // the structural receipt is reused by the semantic transaction.
         let needs_migration_work = matches!(
             &migration_assessment,
             MigrationAssessment::KnownMigrationRequired(stages)
-                if stages.iter().any(|stage| !["accounting", "representation"].contains(stage))
+                if stages.iter().any(|stage| !["accounting", "representation", "canonicalLedger"].contains(stage))
         );
         preparation.advance("open_integrity");
         let (mut connection, recovered_corrupt_index) = open_index_connection_with_recovery(
@@ -1874,6 +1875,7 @@ impl ExactUsageIndex {
         ledger::install(&connection)?;
         preparation.advance("accounting_migration");
         apply_accounting_migration(&mut connection, accounting_receipt)?;
+        canonical::ensure_published_projection(&connection)?;
         representations::migrate(&mut connection, &path, existed_before)?;
         retention::install(&connection)?;
         preparation.advance("finalize_open");

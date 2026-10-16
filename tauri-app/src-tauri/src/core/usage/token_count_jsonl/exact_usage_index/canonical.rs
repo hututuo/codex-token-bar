@@ -11,10 +11,6 @@ pub(super) fn install(db: &Connection) -> Result<(), String> {
         CREATE VIEW IF NOT EXISTS canonical_usage_events AS
             SELECT e.* FROM events e WHERE NOT EXISTS(
                 SELECT 1 FROM usage_ledger_duplicates d WHERE d.event_id=e.id AND d.source_id=e.source_id);
-        DROP VIEW IF EXISTS published_events;
-        CREATE VIEW published_events AS
-            SELECT e.* FROM canonical_usage_events e JOIN published_files f
-              ON f.source_id=e.source_id AND f.generation=e.file_generation WHERE e.tokens>0;
         CREATE TABLE IF NOT EXISTS usage_ledger_attribution_floors(
             source_id TEXT NOT NULL,bucket_start INTEGER NOT NULL,
             tokens INTEGER NOT NULL,calls INTEGER NOT NULL,input_tokens INTEGER NOT NULL,
@@ -25,6 +21,7 @@ pub(super) fn install(db: &Connection) -> Result<(), String> {
             provenance_epoch TEXT NOT NULL, scan_id TEXT NOT NULL,
             source_count INTEGER NOT NULL, source_witness TEXT NOT NULL, discovery_started_us INTEGER NOT NULL);
     "#).map_err(|e| format!("无法安装可逆账本投影：{e}"))?;
+    ensure_published_projection(db)?;
     capture_legacy_floors(db)
 }
 
@@ -225,4 +222,39 @@ pub(super) fn restore_legacy_floors(db: &Connection, epoch: &str) -> Result<(), 
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub(super) fn ensure_published_projection(db: &Connection) -> Result<(), String> {
+    let sql: Option<String> = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='view' AND name='published_events'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if sql.is_some_and(|s| s.contains("canonical_usage_events")) {
+        return Ok(());
+    }
+    db.execute_batch("SAVEPOINT canonical_reader_projection")
+        .map_err(|e| e.to_string())?;
+    let result = db
+        .execute_batch(
+            r#"DROP VIEW IF EXISTS published_events;
+        CREATE VIEW published_events AS SELECT e.* FROM canonical_usage_events e
+          JOIN published_files f ON f.source_id=e.source_id AND f.generation=e.file_generation
+          WHERE e.tokens>0;"#,
+        )
+        .map_err(|e| e.to_string());
+    match result {
+        Ok(()) => db
+            .execute_batch("RELEASE canonical_reader_projection")
+            .map_err(|e| e.to_string()),
+        Err(error) => {
+            let _ = db.execute_batch(
+                "ROLLBACK TO canonical_reader_projection; RELEASE canonical_reader_projection",
+            );
+            Err(error)
+        }
+    }
 }
