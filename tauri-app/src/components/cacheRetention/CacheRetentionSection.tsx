@@ -55,7 +55,7 @@ function RetentionOwner({ sourceToken, children }: { sourceToken: CodexHomeSourc
     alive.current = true;
     if (!sourceToken) { setStatus("请先选择 Codex 数据目录"); return; }
     void readCacheRetentionSnapshot(sourceToken).then(result => {
-      if (alive.current && !loading.current) setAll(result);
+      if (alive.current && !loading.current) setAll(current => current && current.revision > result.revision ? current : result);
     }).catch(() => {}).finally(() => { if (alive.current) void refresh(); });
     const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, 180_000);
     return () => { alive.current = false; window.clearInterval(timer); };

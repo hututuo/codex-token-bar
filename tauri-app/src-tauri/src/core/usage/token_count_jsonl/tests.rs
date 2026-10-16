@@ -12228,6 +12228,10 @@ fn convert_current_index_to_v091_schema9(index_path: &Path) {
         .execute_batch(
             r#"
             DROP VIEW published_events;
+            DROP VIEW IF EXISTS canonical_usage_events;
+            DROP TABLE IF EXISTS usage_ledger_duplicates;
+            DROP TABLE IF EXISTS usage_ledger_attribution_floors;
+            DROP TABLE IF EXISTS usage_scan_certificate;
             DROP VIEW published_files;
             DROP VIEW dashboard_turn_candidates;
             DROP VIEW dashboard_5m;

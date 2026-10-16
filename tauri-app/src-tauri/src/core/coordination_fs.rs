@@ -1437,7 +1437,7 @@ mod tests {
         let home = test_home("windows-parent-reparse");
         let outside = test_home("windows-parent-reparse-outside");
         if let Err(error) = symlink_dir(&outside, home.join("backups_state")) {
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
+            if error.kind() == std::io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(1314) {
                 let _ = fs::remove_dir_all(home);
                 let _ = fs::remove_dir_all(outside);
                 return;

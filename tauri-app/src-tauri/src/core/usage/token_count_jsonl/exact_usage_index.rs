@@ -4220,7 +4220,7 @@ impl ExactUsageIndex {
                     ON published_files(path);
                 CREATE TEMP VIEW published_events AS
                 SELECT e.*
-                FROM main.events e
+                FROM main.canonical_usage_events e
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
@@ -15864,8 +15864,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 e.assistant_response_start, e.assistant_response_end, e.source_id, e.accounting_kind, e.reported_total_tokens, e.token_source_offset, e.legacy_tokens
             FROM event_rows e
             JOIN sources s ON s.source_id = e.source_id
-            JOIN published_files f ON f.source_id = e.source_id WHERE e.tokens > 0
-              AND NOT EXISTS(SELECT 1 FROM usage_ledger_duplicates d WHERE d.event_id=e.id AND d.source_id=e.source_id);
+            JOIN published_files f ON f.source_id = e.source_id WHERE e.tokens > 0;
             "#,
         )
         .map_err(|error| format!("无法初始化 schema 11 精确 token 索引结构：{error}"))?;
