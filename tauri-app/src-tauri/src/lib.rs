@@ -137,6 +137,8 @@ pub fn run() {
             commands::dashboard::read_account_quota,
             commands::dashboard::read_account_reset_credits,
             commands::dashboard::read_dashboard_snapshot,
+            commands::dashboard::read_cache_retention_snapshot,
+            commands::dashboard::refresh_cache_retention_snapshot,
             commands::dashboard::read_cached_dashboard_snapshot,
             commands::dashboard::read_sidebar_trend,
             commands::dashboard::read_precise_dashboard_snapshot,

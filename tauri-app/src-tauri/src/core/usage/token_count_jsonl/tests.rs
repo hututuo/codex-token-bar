@@ -13380,3 +13380,89 @@ fn excerpt_batch_rejects_descriptor_drift_and_bounded_huge_line() {
     assert_eq!(error, "synthetic descriptor mismatch");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn canonical_ledger_deduplicates_only_same_uuid_copies_and_preserves_missing_history() {
+    let _test_state=app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();
+    let name="rollout-019e1111-1111-4111-8111-000000000001.jsonl";
+    let a=root.join("sessions/a").join(name);let b=root.join("sessions/b").join(name);
+    fs::create_dir_all(a.parent().unwrap()).unwrap();fs::create_dir_all(b.parent().unwrap()).unwrap();
+    let at=recent_test_timestamp(30);let later=recent_test_timestamp(20);
+    let line=|at:&str,n:u64|serde_json::json!({"timestamp":at,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}}}}).to_string();
+    write_lines(&a,&[line(&at,100)]);write_lines(&b,&[line(&at,100),line(&later,300)]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,400);
+    let path=super::exact_usage_index::database_path(&root).unwrap();
+    let db=Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),500);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_duplicates",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM attribution_source_buckets",[],|r|r.get::<_,i64>(0)).unwrap(),400);
+    let old:Vec<(i64,i64,i64)>=db.prepare("SELECT id,source_id,tokens FROM event_rows ORDER BY id").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap();
+    drop(db);
+    // A later request in this copy is its own usage, not another duplicate.
+    let mut file=fs::OpenOptions::new().append(true).open(&b).unwrap();writeln!(file,"{}",line(&recent_test_timestamp(10),200)).unwrap();drop(file);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,600);
+    fs::remove_file(&a).unwrap();fs::remove_file(&b).unwrap();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,600);
+    let db=Connection::open(&path).unwrap();
+    for (id,source,tokens) in old {assert_eq!(db.query_row("SELECT source_id,tokens FROM event_rows WHERE id=?1",params![id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(),(source,tokens));}
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM attribution_source_buckets",[],|r|r.get::<_,i64>(0)).unwrap(),600);
+    assert_eq!(db.query_row("SELECT generation=(SELECT CAST(value AS INTEGER) FROM metadata WHERE key='published_generation') FROM usage_scan_certificate",[],|r|r.get::<_,bool>(0)).unwrap(),true);
+    drop(db);fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn canonical_ledger_never_merges_a_different_fork_uuid() {
+    let _test_state=app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();fs::create_dir_all(root.join("sessions")).unwrap();
+    let line=serde_json::json!({"timestamp":recent_test_timestamp(10),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":0,"total_tokens":100}}}}).to_string();
+    for id in ["019e1111-1111-4111-8111-000000000001","019e1111-1111-4111-8111-000000000002"] {write_lines(&root.join(format!("sessions/rollout-{id}.jsonl")),&[line.clone()]);}
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,200);
+    let db=Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_duplicates",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    drop(db);fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn canonical_ledger_publication_rolls_back_certificate_and_every_reader_together() {
+    let _test_state=app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();fs::create_dir_all(root.join("sessions")).unwrap();
+    let file=root.join("sessions/rollout-019e1111-1111-4111-8111-000000000001.jsonl");
+    let line=|n:u64|serde_json::json!({"timestamp":recent_test_timestamp(10),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}}}}).to_string();
+    write_lines(&file,&[line(100)]);assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,100);
+    let path=super::exact_usage_index::database_path(&root).unwrap();let db=Connection::open(&path).unwrap();
+    let old:(i64,String)=db.query_row("SELECT generation,scan_id FROM usage_scan_certificate",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_certificate BEFORE INSERT ON usage_scan_certificate BEGIN SELECT RAISE(ABORT,'injected certificate failure'); END;").unwrap();drop(db);
+    let mut output=fs::OpenOptions::new().append(true).open(&file).unwrap();writeln!(output,"{}",line(200)).unwrap();drop(output);
+    let mut index=ExactUsageIndex::open(&root).unwrap();assert!(index.sync(&root,&mut Vec::new()).unwrap_err().contains("injected certificate failure"));drop(index);
+    let db=Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM published_events",[],|r|r.get::<_,i64>(0)).unwrap(),100);
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM attribution_source_buckets",[],|r|r.get::<_,i64>(0)).unwrap(),100);
+    assert_eq!(db.query_row("SELECT generation,scan_id FROM usage_scan_certificate",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?))).unwrap(),old);
+    db.execute_batch("DROP TRIGGER fail_certificate").unwrap();drop(db);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,300);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn canonical_ledger_v1_upgrade_preserves_attribution_only_floor_and_physical_keys() {
+    let _test_state=app_paths::app_path_test_env_guard(&[]);
+    let root=temp_root();fs::create_dir_all(root.join("sessions")).unwrap();
+    let file=root.join("sessions/rollout-019e1111-1111-4111-8111-000000000001.jsonl");
+    write_lines(&file,&[serde_json::json!({"timestamp":recent_test_timestamp(10),"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":0,"total_tokens":100}}}}).to_string()]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,100);
+    let path=super::exact_usage_index::database_path(&root).unwrap();let db=Connection::open(&path).unwrap();
+    let before:(i64,i64,i64)=db.query_row("SELECT id,source_id,tokens FROM event_rows",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    db.execute("INSERT INTO attribution_source_buckets SELECT value,'legacy-orphan',0,700,1,700,0,0 FROM metadata WHERE key='attribution_provenance_epoch'",[]).unwrap();
+    db.execute_batch("UPDATE usage_ledger_meta SET value='1' WHERE key='revision';DROP VIEW published_events;DROP VIEW canonical_usage_events;DROP TABLE usage_ledger_duplicates;DROP TABLE usage_scan_certificate;DROP TABLE usage_ledger_attribution_floors;CREATE VIEW published_events AS SELECT e.* FROM events e JOIN published_files f ON f.source_id=e.source_id AND f.generation=e.file_generation WHERE e.tokens>0;").unwrap();drop(db);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens,100);
+    let db=Connection::open(&path).unwrap();
+    assert_eq!(db.query_row("SELECT id,source_id,tokens FROM event_rows",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap(),before);
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM attribution_source_buckets",[],|r|r.get::<_,i64>(0)).unwrap(),800);
+    assert_eq!(db.query_row("SELECT tokens FROM usage_ledger_attribution_floors WHERE source_id='legacy-orphan'",[],|r|r.get::<_,i64>(0)).unwrap(),700);
+    assert_eq!(db.query_row("SELECT value FROM usage_ledger_meta WHERE key='revision'",[],|r|r.get::<_,String>(0)).unwrap(),"2");
+    db.execute("UPDATE usage_ledger_meta SET value='99' WHERE key='revision'",[]).unwrap();drop(db);
+    assert!(ExactUsageIndex::open(&root).is_err());
+    let db=Connection::open(&path).unwrap();assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),100);drop(db);
+    fs::remove_dir_all(root).unwrap();
+}

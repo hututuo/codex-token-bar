@@ -4,6 +4,28 @@ import XCTest
 final class CacheRetentionAnalysisTests: XCTestCase {
     private let minute: Int64 = 60_000_000
 
+    func testComparableEarlyFitsChooseLargerDeclineAcrossSmallSampleChanges() {
+        let cohorts = [
+            [(1778,1417),(583,429),(163,115),(263,158),(321,48)],
+            [(1787,1426),(585,431),(165,117),(260,158),(327,50)]
+        ]
+        for cohort in cohorts {
+            let points = cohort.enumerated().flatMap { group, block in
+                (0..<block.0).map { index in
+                    makePoint(index: "synthetic-\(group)-\(index)",
+                        gap: Int64([1,5,10,20,100][group]) * minute,
+                        cached: index < block.1 ? 1_000 : 0)
+                }
+            }
+            let result = CacheRetentionAnalysis.calculate(points)
+            XCTAssertEqual(result.earlierDecline?.microseconds, Double(15 * minute))
+            let scaled = points.map { point in
+                makePoint(index: point.id, gap: point.gapMicroseconds * 2, cached: point.cached)
+            }
+            XCTAssertEqual(CacheRetentionAnalysis.calculate(scaled).earlierDecline?.microseconds, Double(30 * minute))
+        }
+    }
+
     func testPublishedSyntheticVectorAndModelScopes() {
         let points = syntheticPoints()
         let all = CacheRetentionAnalysis.calculate(points)

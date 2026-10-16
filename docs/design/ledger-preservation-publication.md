@@ -1,6 +1,6 @@
 # 数值索引的保留与发布契约（2026-10-16）
 
-适用：原生 macOS Swift 路径。原始 JSONL、exact 数值账本、续问建议侧库分别保存；侧库不能改写主账本。Windows/Tauri 未在本次修改或验收。
+适用：原生 macOS Swift 与 0.9.5 Windows/Tauri 候选。原始 JSONL、exact 数值账本、续问建议侧库分别保存；侧库不能改写主账本。Swift 整轮外层事务与 Windows durable pending 发布分别见下文；各端验收以维护报告为准。
 
 ## 一条写入流程
 
@@ -34,3 +34,15 @@ physical `events` 不删除。`usage_ledger_duplicates` 记录可逆排除关系
 只回退程序会遇到 revision 2 拒绝写入，因此不可直接用旧程序覆盖新程序后继续运行。回退需先停止 Bar 并备份当前新库；保留新增事实，使用兼容 revision 2 的修正版优先。若必须恢复升级前库，先保留升级后的完整库与 WAL，明确这会暂时隐藏升级后新增用量，禁止自动覆盖。
 
 验证结果、备份路径、安装身份及未验证边界见本次运行目录的报告。
+
+## Windows/Tauri 对应流程（0.9.5 候选）
+
+Windows 沿用已有的 durable pending generation：逐文件导入只写 pending 层，最终一个事务发布实体事件、canonical 排除关系、派生统计、epoch/generation 和扫描证明。它与 Swift 的整轮外层事务实现不同，但共同对外约束是“上一份完整发布或下一份完整发布”，不能暴露中间批次。
+
+新增组件 revision 2、可逆 `usage_ledger_duplicates` 和统一 `canonical_usage_events`，所有普通数值查询使用同一投影。归因按受影响会话的完整 canonical SUM 重算，不取某一个物理副本的 MAX。无法对应现存来源的旧归因墓碑先保存为 `usage_ledger_attribution_floors`，升级与重算保留其下限；这部分不会冒充重新验证出的原始事件。旧 writer 不得写 revision 2。
+
+扫描证明与发布事务一起提交，记录已发布 generation、epoch、scan ID、发现开始时间、发现数量及全部保留来源位置/签名/可用性的摘要。发现或 staging 失败停止最终发布，pending 可在重启后继续。该证明不声称对正在写入的整个 Codex 目录取得文件系统原子快照。
+
+续问诊断使用单独 schema 2 数据库。后台 writer 使用独立进程锁；只读窗口不取得写锁，WAL 读者在长扫描期间可查看上一份结果。归档/缺失只改变 present，重写先归档上一代。稳定身份跨来源、跨代去重；存在冲突时保留证据并停止采用该配对。500 MiB 预算只暂停写入，不自动清理旧样本。
+
+验收以本次维护报告和发布 locator 为准；本节描述实现契约，不代替 Windows 构建、迁移、安装及运行证据。

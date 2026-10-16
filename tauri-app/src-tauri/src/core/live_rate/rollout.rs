@@ -57,9 +57,20 @@ struct CacheUsageSample {
     request_id: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum CacheUsageBoundary {
+    Started,
+    Completed,
+}
+
 enum CacheObservation {
     Sample(CacheUsageSample),
     Context { model: Option<String> },
+    Boundary {
+        timestamp: Option<f64>,
+        kind: CacheUsageBoundary,
+        turn_id: Option<String>,
+    },
     Reset,
 }
 
@@ -91,6 +102,9 @@ struct CacheAdviceThreadState {
     advice: Option<CacheAdvice>,
     touched_at: Instant,
     has_observed_request: bool,
+    last_completed: Option<f64>,
+    current_turn_id: Option<String>,
+    gap: Option<f64>,
 }
 
 impl Default for CacheAdviceThreadState {
@@ -102,6 +116,9 @@ impl Default for CacheAdviceThreadState {
             advice: None,
             touched_at: Instant::now(),
             has_observed_request: false,
+            last_completed: None,
+            current_turn_id: None,
+            gap: None,
         }
     }
 }
@@ -142,13 +159,27 @@ impl CacheAdviceStore {
         match observation {
             CacheObservation::Context { model } => {
                 if state.model != model {
+                    let has_observed_request = state.has_observed_request;
+                    let last_completed = state.last_completed;
+                    let current_turn_id = state.current_turn_id.clone();
+                    let gap = state.gap;
                     *state = CacheAdviceThreadState {
                         model,
                         touched_at: monotonic_now,
-                        has_observed_request: state.has_observed_request,
+                        has_observed_request,
+                        last_completed,
+                        current_turn_id,
+                        gap,
                         ..CacheAdviceThreadState::default()
                     };
                 }
+            }
+            CacheObservation::Boundary {
+                timestamp,
+                kind,
+                turn_id,
+            } => {
+                state.consume_boundary(timestamp, kind, turn_id, now);
             }
             CacheObservation::Sample(sample) => {
                 state.consume_sample(sample, thread_id, now, monotonic_now);
@@ -209,6 +240,43 @@ impl CacheAdviceStore {
 impl CacheAdviceThreadState {
     fn clear_observation(&mut self) {
         self.advice = None;
+    }
+
+    fn consume_boundary(
+        &mut self,
+        timestamp: Option<f64>,
+        kind: CacheUsageBoundary,
+        turn_id: Option<String>,
+        now: f64,
+    ) {
+        let Some(timestamp) = timestamp.filter(|timestamp| {
+            timestamp.is_finite() && *timestamp >= 0.0 && *timestamp <= now + 1.0
+        }) else {
+            return;
+        };
+        let Some(turn_id) = turn_id.filter(|turn_id| !turn_id.is_empty()) else {
+            return;
+        };
+
+        match kind {
+            CacheUsageBoundary::Started => {
+                if self.current_turn_id.as_deref() != Some(turn_id.as_str()) {
+                    self.current_turn_id = Some(turn_id);
+                    self.gap = self
+                        .last_completed
+                        .filter(|completed| timestamp >= *completed)
+                        .map(|completed| timestamp - completed);
+                    self.last_completed = None;
+                }
+            }
+            CacheUsageBoundary::Completed => {
+                if self.current_turn_id.is_none()
+                    || self.current_turn_id.as_deref() == Some(turn_id.as_str())
+                {
+                    self.last_completed = Some(timestamp);
+                }
+            }
+        }
     }
 
     fn consume_sample(
@@ -294,6 +362,8 @@ impl CacheAdviceThreadState {
             low,
             timestamp,
             affected_threads: 0,
+            idle_gap_seconds: self.gap,
+            model: self.model.clone(),
         });
     }
 }
@@ -782,6 +852,21 @@ fn cache_observation(
                 .map(ToOwned::to_owned),
         });
     }
+    if record_type == "event_msg" && matches!(payload_type, "task_started" | "task_complete") {
+        let (kind, time_key) = if payload_type == "task_started" {
+            (CacheUsageBoundary::Started, "started_at")
+        } else {
+            (CacheUsageBoundary::Completed, "completed_at")
+        };
+        return Some(CacheObservation::Boundary {
+            timestamp: parse_event_timestamp(payload.get(time_key)).or(timestamp),
+            kind,
+            turn_id: payload
+                .get("turn_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        });
+    }
     if record_type == "compacted"
         || matches!(payload_type, "context_compacted" | "thread_rolled_back")
     {
@@ -820,6 +905,22 @@ fn cache_observation(
             .and_then(Value::as_u64),
         request_id,
     }))
+}
+
+fn parse_event_timestamp(value: Option<&Value>) -> Option<f64> {
+    let timestamp = match value? {
+        Value::String(text) => parse_timestamp(Some(text))?,
+        Value::Number(number) => number.as_f64()?,
+        _ => return None,
+    };
+    let microseconds = timestamp * 1_000_000.0;
+    if !microseconds.is_finite()
+        || microseconds <= i64::MIN as f64
+        || microseconds >= i64::MAX as f64
+    {
+        return None;
+    }
+    Some(microseconds.round() / 1_000_000.0)
 }
 
 #[cfg(test)]
@@ -898,6 +999,192 @@ mod cache_advice_tests {
         assert_eq!(store.latest(109.).unwrap().timestamp, 108.);
         store.observe("a", identified(110., "r2"), 110., now);
         assert!(store.latest(110.).unwrap().low);
+    }
+
+    fn boundary(
+        at: Option<f64>,
+        kind: CacheUsageBoundary,
+        turn_id: Option<&str>,
+    ) -> CacheObservation {
+        CacheObservation::Boundary {
+            timestamp: at,
+            kind,
+            turn_id: turn_id.map(ToOwned::to_owned),
+        }
+    }
+
+    #[test]
+    fn idle_gap_survives_duplicate_start_and_model_change() {
+        let mut store = CacheAdviceStore::default();
+        let start = Instant::now();
+        store.observe(
+            "a",
+            CacheObservation::Context {
+                model: Some("old-model".into()),
+            },
+            100.0,
+            start,
+        );
+        store.observe("a", sample(100.0, Some(20_000), 100), 100.0, start);
+        store.observe(
+            "a",
+            boundary(Some(101.0), CacheUsageBoundary::Completed, Some("turn-1")),
+            101.0,
+            start,
+        );
+        store.observe(
+            "a",
+            boundary(Some(106.0), CacheUsageBoundary::Started, Some("turn-2")),
+            106.0,
+            start,
+        );
+        store.observe(
+            "a",
+            boundary(Some(109.0), CacheUsageBoundary::Started, Some("turn-2")),
+            109.0,
+            start,
+        );
+        store.observe(
+            "a",
+            CacheObservation::Context {
+                model: Some("new-model".into()),
+            },
+            110.0,
+            start,
+        );
+        store.observe("a", sample(111.0, Some(40_000), 100), 111.0, start);
+
+        let advice = store.latest(111.0).unwrap();
+        assert!(advice.low);
+        assert_eq!(advice.idle_gap_seconds, Some(5.0));
+        assert_eq!(advice.model.as_deref(), Some("new-model"));
+    }
+
+    #[test]
+    fn reset_and_unpaired_or_corrupt_boundaries_leave_gap_unknown() {
+        let mut store = CacheAdviceStore::default();
+        let start = Instant::now();
+
+        store.observe(
+            "a",
+            boundary(Some(100.0), CacheUsageBoundary::Started, Some("turn-a")),
+            100.0,
+            start,
+        );
+        store.observe(
+            "a",
+            boundary(Some(101.0), CacheUsageBoundary::Completed, Some("turn-b")),
+            101.0,
+            start,
+        );
+        store.observe(
+            "a",
+            boundary(Some(105.0), CacheUsageBoundary::Started, Some("turn-c")),
+            105.0,
+            start,
+        );
+        store.observe("a", sample(106.0, Some(20_000), 100), 106.0, start);
+        assert_eq!(store.latest(106.0).unwrap().idle_gap_seconds, None);
+
+        store.observe(
+            "a",
+            boundary(Some(107.0), CacheUsageBoundary::Completed, Some("turn-c")),
+            107.0,
+            start,
+        );
+        store.observe(
+            "a",
+            boundary(Some(500.0), CacheUsageBoundary::Started, Some("turn-d")),
+            108.0,
+            start,
+        );
+        store.observe(
+            "a",
+            boundary(Some(110.0), CacheUsageBoundary::Started, Some("turn-d")),
+            110.0,
+            start,
+        );
+        store.observe("a", sample(111.0, Some(40_000), 100), 111.0, start);
+        assert_eq!(store.latest(111.0).unwrap().idle_gap_seconds, Some(3.0));
+
+        store.observe("a", CacheObservation::Reset, 112.0, start);
+        store.observe(
+            "a",
+            boundary(
+                Some(113.0),
+                CacheUsageBoundary::Started,
+                Some("turn-after-reset"),
+            ),
+            113.0,
+            start,
+        );
+        store.observe("a", sample(114.0, Some(60_000), 100), 114.0, start);
+        let advice = store.latest(114.0).unwrap();
+        assert!(!advice.low);
+        assert_eq!(advice.idle_gap_seconds, None);
+        assert_eq!(advice.model, None);
+
+        let bad_lines = [
+            "not json",
+            r#"{"type":"event_msg","payload":{"type":"task_started","started_at":100,"turn_id":""}}"#,
+        ];
+        for line in bad_lines {
+            let mut observations = Vec::new();
+            let events = rollout_line_metrics(
+                "a",
+                Path::new("fixture"),
+                0,
+                line,
+                200.0,
+                &mut HashMap::new(),
+                &mut |observation| observations.push(observation),
+            );
+            assert!(events.is_empty());
+            if line == "not json" {
+                assert!(observations.is_empty());
+            } else {
+                assert!(
+                    matches!(observations.first(), Some(CacheObservation::Boundary { turn_id: Some(id), .. }) if id.is_empty())
+                );
+                for observation in observations {
+                    store.observe("a", observation, 200.0, start);
+                }
+            }
+        }
+        store.observe("a", sample(200.0, Some(80_000), 100), 200.0, start);
+        assert_eq!(store.latest(200.0).unwrap().idle_gap_seconds, None);
+    }
+
+    #[test]
+    fn boundary_parser_uses_inner_time_or_envelope_fallback() {
+        let parse = |line: &str| {
+            let value: Value = serde_json::from_str(line).unwrap();
+            let payload = value["payload"].as_object().unwrap();
+            cache_observation(
+                &value,
+                payload,
+                "event_msg",
+                payload["type"].as_str().unwrap(),
+                value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(|text| parse_timestamp(Some(text))),
+            )
+            .unwrap()
+        };
+        let numeric = parse(
+            r#"{"timestamp":"1970-01-01T00:01:40Z","type":"event_msg","payload":{"type":"task_started","started_at":101.25,"turn_id":"t"}}"#,
+        );
+        assert!(
+            matches!(numeric, CacheObservation::Boundary { timestamp: Some(at), kind: CacheUsageBoundary::Started, .. } if (at - 101.25).abs() < 0.000001)
+        );
+
+        let fallback = parse(
+            r#"{"timestamp":"1970-01-01T00:01:40Z","type":"event_msg","payload":{"type":"task_complete","completed_at":false,"turn_id":"t"}}"#,
+        );
+        assert!(
+            matches!(fallback, CacheObservation::Boundary { timestamp: Some(at), kind: CacheUsageBoundary::Completed, .. } if at == 100.0)
+        );
     }
 
     #[test]

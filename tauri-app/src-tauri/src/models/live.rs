@@ -11,6 +11,8 @@ pub struct CacheAdvice {
     pub low: bool,
     pub timestamp: f64,
     pub affected_threads: usize,
+    pub idle_gap_seconds: Option<f64>,
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

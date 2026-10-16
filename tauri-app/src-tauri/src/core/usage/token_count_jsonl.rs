@@ -25,6 +25,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 use uuid::Uuid;
 
+pub(crate) mod cache_retention;
 mod accounting;
 #[cfg(test)]
 mod accounting_index_tests;

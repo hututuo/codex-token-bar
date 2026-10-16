@@ -9,6 +9,8 @@ export interface CacheUsageAdvice {
   affectedThreads?: number;
   low: boolean;
   timestamp: number;
+  idleGapSeconds?: number | null;
+  model?: string | null;
 }
 
 export interface LiveRateSnapshot {

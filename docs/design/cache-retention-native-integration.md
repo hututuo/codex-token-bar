@@ -55,3 +55,9 @@ PASS：定向 115 项、1 项环境跳过、0 失败；包含 9 个百分点下�
 横轴固定0–80分钟线性区占绘图区82%，每10分钟有标签及细网格；之后留2.5%宽的双斜杠断轴间距，其余长尾用对数映射。悬停与绘制复用同一坐标函数；移除前5分钟展开开关。
 
 PASS：117项定向回归、1项环境跳过、0失败；新增候选网格遗漏真实最优边界、0–80分钟均匀刻度及断轴后长尾映射检查。打包deep/strict签名通过。本机实际新窗口3109轮/269主会话（比固定绘图数据新增1轮），显示15.0/49.4分钟，已查看真实窗口确认0–80线性刻度、仅一个长尾断轴、无旧的5分钟开关。当前二进制SHA256为`91255db99170b10083e3a284ba622899000ca4ddaa19a1cac3824fc5bb038a19`。证据：`linear80-tests.log`、`linear80-package.log`、`earlier-decline-diagnosis.json`、`diagnose-earlier-decline.py`、`linear80-real-analysis.json`和`native-linear80.png`（生产Canvas静态导出，固定3108轮）。原安装前备份与回滚脚本保留；自然低命中提醒本轮仍未主动触发。
+
+## 0.9.5 双端实现与建议稳定性
+
+Windows 的对应链路为 `session_parser/cache_retention_parser.rs` → `cache_retention/database.rs` → 受 source token 约束的命令 → `cacheRetentionClient.ts` → 共用 React 图表与提醒入口。重用生产 fork 所有权判断，不能从“最新 usage 的轮次汇总”反推首次 usage。原始会话内容不写入诊断侧库。
+
+早期建议的模型阶数仍按 BIC 选择；在所选两段模型中，对 ΔBIC ≤ 2 的相近支持候选取高命中比例下降最大的边界，同幅度取更早位置。这是对近似等价候选的选择规则，不固定为 15 分钟，也不要求下降达到 10%。风险线和 P95 保留原本含义。Swift 与 TypeScript 使用相同边界、同样的整数高命中判断及相同合成扰动回归。

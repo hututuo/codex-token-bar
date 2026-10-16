@@ -4,7 +4,7 @@
 use super::*;
 use rusqlite::types::Value;
 
-const REVISION: &str = "1";
+const REVISION: &str = "2";
 const FIELDS: &str = "id,source_id,ordinal,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,accounting_kind,reported_total_tokens,token_source_offset,legacy_tokens";
 const BINDINGS: &str = "event_id,source_id,raw_generation,raw_offset,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,fingerprint,available";
 const GROUP_BASE: i64 = 1_i64 << 62;
@@ -17,7 +17,13 @@ pub(super) fn validate(db: &Connection) -> Result<(),String> {
         return Ok(());
     }
     let revision: Option<String> = db.query_row("SELECT value FROM usage_ledger_meta WHERE key='revision'",[],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
-    if revision.as_deref()!=Some(REVISION) { return Err("历史账本版本高于或不符合当前支持范围，已保留原库".into()); }
+    if !matches!(revision.as_deref(),Some("1")|Some(REVISION)) { return Err("历史账本版本高于或不符合当前支持范围，已保留原库".into()); }
+    if revision.as_deref()==Some(REVISION) {
+        for name in ["usage_ledger_duplicates","canonical_usage_events","usage_scan_certificate","usage_ledger_attribution_floors"] {
+            let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",params![name],|r|r.get(0)).map_err(|e|e.to_string())?;
+            if !exists {return Err(format!("历史账本缺少 {name}，已保留原库"))}
+        }
+    }
     for table in ["usage_ledger_sources","usage_ledger_bindings","usage_ledger_pending_bindings","usage_ledger_pending_missing","usage_ledger_unresolved","usage_ledger_turns","usage_ledger_corrections"] {
         if !table_exists_checked(db,table)? { return Err(format!("历史账本缺少 {table}，已保留原库")); }
     }
@@ -26,7 +32,17 @@ pub(super) fn validate(db: &Connection) -> Result<(),String> {
 
 pub(super) fn install(db: &Connection) -> Result<(),String> {
     validate(db)?;
-    if table_exists_checked(db,"usage_ledger_meta")? { return Ok(()); }
+    if table_exists_checked(db,"usage_ledger_meta")? {
+        let revision:String=db.query_row("SELECT value FROM usage_ledger_meta WHERE key='revision'",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if revision=="1" {
+            let tx=db.unchecked_transaction().map_err(|e|e.to_string())?;
+            canonical::install(&tx)?;
+            set_metadata(&tx,"canonical_projection_pending","1")?;
+            tx.execute("UPDATE usage_ledger_meta SET value=?1 WHERE key='revision'",params![REVISION]).map_err(|e|e.to_string())?;
+            tx.commit().map_err(|e|e.to_string())?;
+        }
+        return Ok(());
+    }
     let raw = if column_exists_checked(db,"event_rows","token_source_offset")? { "e.token_source_offset" } else { "NULL" };
     let tx = db.unchecked_transaction().map_err(|e|e.to_string())?;
     tx.execute_batch(&format!(r#"
@@ -67,6 +83,8 @@ pub(super) fn install(db: &Connection) -> Result<(),String> {
             FROM event_rows e JOIN sources s USING(source_id) WHERE e.user_prompt_start IS NOT NULL;
         INSERT INTO usage_ledger_meta VALUES('revision','{REVISION}');
     "#)).map_err(|e|format!("无法安装持久用量账本：{e}"))?;
+    canonical::install(&tx)?;
+    set_metadata(&tx,"canonical_projection_pending","1")?;
     tx.commit().map_err(|e|e.to_string())
 }
 

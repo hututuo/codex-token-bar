@@ -281,7 +281,26 @@ struct CacheRetentionAnalysis: Codable, Equatable, Sendable {
         let bestSegments = scores.keys.sorted().first { segmentCount in
             scores[segmentCount]! <= minimumScore + 1e-10
         }!
-        let bestFit = fits[bestSegments]!
+        var bestFit = fits[bestSegments]!
+        if earlierSearch, bestSegments == 2 {
+            // A profile within two BIC points has comparable support. Choose
+            // its largest rate decline, rather than letting round-off or a
+            // handful of new observations swap distant near-equal optima.
+            let optimum = bestFit.logLikelihood
+            var largest = -Double.infinity
+            for cut in twoSegmentCuts {
+                guard let left = segmentStats(from: 0, to: cut),
+                      let right = segmentStats(from: cut, to: groupCount),
+                      left.rate >= right.rate else { continue }
+                let likelihood = left.logLikelihood + right.logLikelihood
+                guard 2 * (optimum - likelihood) <= 2 + 1e-10 else { continue }
+                let decline = left.rate - right.rate
+                if decline > largest + 1e-12 {
+                    largest = decline
+                    bestFit = Fit(logLikelihood: likelihood, cuts: [cut])
+                }
+            }
+        }
         let boundaries = [0] + bestFit.cuts + [groupCount]
         let fittedSegments = zip(boundaries, boundaries.dropFirst()).compactMap {
             segmentStats(from: $0.0, to: $0.1)?.segment

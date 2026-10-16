@@ -1,3 +1,4 @@
+import "./components/cacheRetention/retention.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { recordStartupEvent } from "./api/client";

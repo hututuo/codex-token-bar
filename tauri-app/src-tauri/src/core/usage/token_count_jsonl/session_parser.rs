@@ -15,6 +15,8 @@ use std::path::Path;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
+pub(crate) mod cache_retention_parser;
+
 const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
 const RETAINED_JSONL_LINE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const EXACT_INDEX_CHUNK_SIZE: u64 = 4 * 1024 * 1024;
@@ -1315,10 +1317,10 @@ pub(super) fn paginated_subagent_boundary(handle: &mut (impl Read + Seek)) -> Re
     paginated_subagent_metadata(handle).map(|m| m.map(|m| m.ordinal))
 }
 
-struct PaginatedSubagentMetadata {
-    ordinal: u64,
-    child_created_milliseconds: Option<u64>,
-    is_main_fork: bool,
+pub(super) struct PaginatedSubagentMetadata {
+    pub(super) ordinal: u64,
+    pub(super) child_created_milliseconds: Option<u64>,
+    pub(super) is_main_fork: bool,
 }
 
 fn uuid_milliseconds(value: &str) -> Option<u64> {
@@ -1326,7 +1328,7 @@ fn uuid_milliseconds(value: &str) -> Option<u64> {
     (id.get_version_num() == 7).then_some((id.as_u128() >> 80) as u64)
 }
 
-fn paginated_subagent_metadata(handle: &mut (impl Read + Seek)) -> Result<Option<PaginatedSubagentMetadata>, String> {
+pub(super) fn paginated_subagent_metadata(handle: &mut (impl Read + Seek)) -> Result<Option<PaginatedSubagentMetadata>, String> {
     let position = handle.stream_position().map_err(|e| e.to_string())?;
     let result = (|| {
         handle.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;

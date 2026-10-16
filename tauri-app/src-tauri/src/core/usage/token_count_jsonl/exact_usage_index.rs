@@ -3,6 +3,7 @@ pub(super) mod cycle_range;
 mod retention;
 mod reconciler;
 mod ledger;
+mod canonical;
 mod message_links;
 mod empty_sources;
 mod representations;
@@ -1360,6 +1361,10 @@ fn assess_index_migration(
     }
 
     let mut stages = Vec::new();
+    if !table_exists_checked(connection,"usage_ledger_duplicates")?
+        || metadata_i64(connection,"canonical_projection_pending")?.unwrap_or(0)!=0 {
+        stages.push("canonicalLedger");
+    }
     if schema < INDEX_SCHEMA_VERSION
         || !column_exists_checked(connection, "files", "current_model")?
         || !column_exists_checked(connection, "files", "is_explicit_subagent_fork")?
@@ -3536,14 +3541,14 @@ impl ExactUsageIndex {
                 SELECT
                     COALESCE((
                         SELECT SUM(e.tokens)
-                        FROM (SELECT * FROM events WHERE tokens > 0) e
+                        FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
                         JOIN published_files f
                           ON f.generation = e.file_generation
                          AND f.path = e.file_path
                     ), 0),
                     COALESCE((
                         SELECT SUM(e.tokens)
-                        FROM (SELECT * FROM events WHERE tokens > 0) e
+                        FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
                         JOIN published_files f
                           ON f.generation = e.file_generation
                          AND f.path = e.file_path
@@ -3551,7 +3556,7 @@ impl ExactUsageIndex {
                     ), 0),
                     COALESCE((
                         SELECT COUNT(*)
-                        FROM (SELECT * FROM events WHERE tokens > 0) e
+                        FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
                         JOIN published_files f
                           ON f.generation = e.file_generation
                          AND f.path = e.file_path
@@ -3672,7 +3677,7 @@ impl ExactUsageIndex {
                     COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN MIN(e.cached_input_tokens, e.input_tokens) ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.output_tokens ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM (SELECT * FROM events WHERE tokens > 0) e
+                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
@@ -3734,7 +3739,7 @@ impl ExactUsageIndex {
                     COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN MIN(cached_input_tokens, input_tokens) ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN output_tokens ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM (SELECT * FROM events WHERE tokens > 0)
+                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0)
                 WHERE file_generation = ?3 AND file_path = ?4
                 GROUP BY model
                 "#,
@@ -3859,7 +3864,7 @@ impl ExactUsageIndex {
                     COALESCE(SUM(e.output_tokens), 0),
                     COALESCE(SUM(e.tokens), 0),
                     COUNT(*), MIN(e.timestamp)
-                FROM (SELECT * FROM events WHERE tokens > 0) e
+                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
@@ -7508,6 +7513,7 @@ fn begin_or_resume_generation(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始精确 token 同步状态事务：{error}"))?;
     let published = metadata_i64(&transaction, "published_generation")?.unwrap_or(0);
+    set_metadata(&transaction,"building_discovery_started_us",&(OffsetDateTime::now_utc().unix_timestamp_nanos()/1000).to_string())?;
     if let Some(building) = metadata_i64(&transaction, "building_generation")? {
         if building > published {
             // A scan started by an older binary may not have initialized the
@@ -7611,7 +7617,7 @@ fn incremental_rebuild_published_dashboard_aggregates(
                  AND t.generation = b.file_generation
                 UNION ALL
                 SELECT e.timestamp - (e.timestamp % 300)
-                FROM (SELECT * FROM events WHERE tokens > 0) e
+                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
                 JOIN files current
                   ON current.generation = e.file_generation
                  AND current.path = e.file_path
@@ -7676,7 +7682,7 @@ fn incremental_rebuild_published_dashboard_aggregates(
                 SUM(e.output_tokens),
                 MIN(e.timestamp),
                 MAX(e.timestamp)
-            FROM (SELECT * FROM events WHERE tokens > 0) e
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
             JOIN (
                 SELECT path, MAX(generation) AS generation
                 FROM files
@@ -7708,7 +7714,7 @@ fn incremental_rebuild_published_dashboard_aggregates(
                 SUM(e.input_tokens),
                 SUM(MIN(e.cached_input_tokens, e.input_tokens)),
                 SUM(e.output_tokens)
-            FROM (SELECT * FROM events WHERE tokens > 0) e
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
             JOIN (
                 SELECT path, MAX(generation) AS generation
                 FROM files
@@ -7775,7 +7781,7 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                 COALESCE(SUM(e.output_tokens), 0),
                 MIN(e.timestamp),
                 MAX(e.timestamp)
-            FROM (SELECT * FROM events WHERE tokens > 0) e
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
             JOIN published_files f
               ON f.generation = e.file_generation
              AND f.path = e.file_path
@@ -7804,7 +7810,7 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                 COALESCE(SUM(e.input_tokens), 0),
                 COALESCE(SUM(MIN(e.cached_input_tokens, e.input_tokens)), 0),
                 COALESCE(SUM(e.output_tokens), 0)
-            FROM (SELECT * FROM events WHERE tokens > 0) e
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
             JOIN published_files f
               ON f.generation = e.file_generation
              AND f.path = e.file_path
@@ -7855,7 +7861,7 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                             e.user_prompt_start, e.user_prompt_end
                         ORDER BY e.timestamp DESC, e.ordinal DESC
                     ) AS snapshot_rank
-                FROM (SELECT * FROM events WHERE tokens > 0) e
+                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
@@ -7983,7 +7989,7 @@ fn refresh_dashboard_file_aggregates(
                 file_generation, file_path, MAX(session_id), SUM(tokens), COUNT(*),
                 SUM(input_tokens), SUM(MIN(cached_input_tokens, input_tokens)),
                 SUM(output_tokens), MIN(timestamp), MAX(timestamp)
-            FROM (SELECT * FROM events WHERE tokens > 0)
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2
             GROUP BY file_generation, file_path
             "#,
@@ -8008,7 +8014,7 @@ fn refresh_dashboard_file_aggregates(
                 SUM(input_tokens),
                 SUM(MIN(cached_input_tokens, input_tokens)),
                 SUM(output_tokens)
-            FROM (SELECT * FROM events WHERE tokens > 0)
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2
             GROUP BY file_generation, file_path, timestamp - (timestamp % 300), COALESCE(model, '')
             "#,
@@ -8116,7 +8122,7 @@ fn refresh_dashboard_turn_candidates_for_session(
                             e.user_prompt_start, e.user_prompt_end
                         ORDER BY e.timestamp DESC, e.ordinal DESC
                     ) AS snapshot_rank
-                FROM (SELECT * FROM events WHERE tokens > 0) e
+                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
                 JOIN visible_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
@@ -8361,7 +8367,7 @@ fn update_dashboard_append_aggregates(
             SELECT
                 MIN(timestamp - (timestamp % 300)),
                 MAX(timestamp - (timestamp % 300))
-            FROM (SELECT * FROM events WHERE tokens > 0)
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
             "#,
             params![generation, path, previous_ordinal],
@@ -8380,7 +8386,7 @@ fn update_dashboard_append_aggregates(
                 ?4, SUM(tokens), COUNT(*),
                 SUM(input_tokens), SUM(MIN(cached_input_tokens, input_tokens)),
                 SUM(output_tokens), MIN(timestamp), MAX(timestamp)
-            FROM (SELECT * FROM events WHERE tokens > 0)
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
             HAVING COUNT(*) > 0
             ON CONFLICT(source_id) DO UPDATE SET
@@ -8420,7 +8426,7 @@ fn update_dashboard_append_aggregates(
                 SUM(input_tokens),
                 SUM(MIN(cached_input_tokens, input_tokens)),
                 SUM(output_tokens)
-            FROM (SELECT * FROM events WHERE tokens > 0)
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0)
             WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
             GROUP BY timestamp - (timestamp % 300), COALESCE(model, '')
             ON CONFLICT(source_id, bucket_start, model_key) DO UPDATE SET
@@ -8459,7 +8465,7 @@ fn backfill_missing_dashboard_aggregates_for_generation(
                 e.file_generation, e.file_path, MAX(e.session_id), SUM(e.tokens), COUNT(*),
                 SUM(e.input_tokens), SUM(MIN(e.cached_input_tokens, e.input_tokens)),
                 SUM(e.output_tokens), MIN(e.timestamp), MAX(e.timestamp)
-            FROM (SELECT * FROM events WHERE tokens > 0) e
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
             LEFT JOIN dashboard_file_totals t
               ON t.file_generation = e.file_generation
              AND t.file_path = e.file_path
@@ -8487,7 +8493,7 @@ fn backfill_missing_dashboard_aggregates_for_generation(
                 SUM(e.input_tokens),
                 SUM(MIN(e.cached_input_tokens, e.input_tokens)),
                 SUM(e.output_tokens)
-            FROM (SELECT * FROM events WHERE tokens > 0) e
+            FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
             WHERE e.file_generation = ?1
             GROUP BY e.file_generation, e.file_path,
                 e.timestamp - (e.timestamp % 300), COALESCE(e.model, '')
@@ -8932,6 +8938,9 @@ fn finalize_generation(
     let derived_was_current = metadata_i64(&transaction,DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?
         == metadata_i64(&transaction,"published_generation")?;
     ledger::preserve_pending_missing(&transaction)?;
+    let canonical_changed=canonical::refresh(&transaction,generation)?;
+    let canonical_repair=canonical_changed || metadata_i64(&transaction,"canonical_projection_pending")?.unwrap_or(0)!=0;
+    if canonical_repair { mark_dashboard_changed(&transaction)?; }
 
     let missing_count = transaction
         .query_row(
@@ -8977,7 +8986,7 @@ fn finalize_generation(
     if mode.builds_dashboard_derived_data() {
         backfill_missing_dashboard_aggregates_for_generation(&transaction, generation)?;
     }
-    let rotate_attribution_provenance =
+    let rotate_attribution_provenance = canonical_changed ||
         metadata_i64(&transaction, BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY)?.unwrap_or(0) != 0;
     let source_index_changed =
         metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?.unwrap_or(0) != 0;
@@ -9012,7 +9021,7 @@ fn finalize_generation(
                 generation,
                 source_index_changed,
                 rotate_for_new_unsafe_incident,
-                ledger_integrity_mismatch,
+                ledger_integrity_mismatch || canonical_repair,
             )? {
                 mark_dashboard_changed(&transaction)?;
             }
@@ -9088,6 +9097,11 @@ fn finalize_generation(
         current_revision
     };
     set_metadata(&transaction, "revision", &revision.to_string())?;
+    if canonical_repair {
+        rebuild_published_dashboard_aggregates(&transaction)?;
+        let published=metadata_i64(&transaction,"published_generation")?.unwrap_or(0);
+        set_metadata(&transaction,DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY,&published.to_string())?;
+    }
     let current_dashboard_revision =
         metadata_i64(&transaction, DASHBOARD_REVISION_KEY)?.unwrap_or(current_revision);
     let dashboard_revision = if dashboard_changed {
@@ -9137,6 +9151,7 @@ fn finalize_generation(
             [],
         )
         .map_err(|error| format!("无法结束精确 token 同步状态：{error}"))?;
+    canonical::certify(&transaction)?;
     transaction
         .commit()
         .map_err(|error| format!("无法原子发布完整精确 token 代次：{error}"))?;
@@ -9257,32 +9272,22 @@ fn synchronize_attribution_ledger(
             COALESCE(SUM(e.input_tokens), 0),
             COALESCE(SUM(MIN(e.cached_input_tokens, e.input_tokens)), 0),
             COALESCE(SUM(e.output_tokens), 0)
-        FROM (SELECT * FROM events WHERE tokens > 0) e
+        FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
         JOIN visible_files f
           ON f.generation = e.file_generation
          AND f.path = e.file_path
         GROUP BY 1, 2
         ORDER BY 1, 2
     "#;
-    let incremental_query = r#"
-        SELECT
-            timestamp - (timestamp % ?2),
-            session_id,
-            COALESCE(SUM(tokens), 0),
-            COUNT(*),
-            COALESCE(SUM(input_tokens), 0),
-            COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
-            COALESCE(SUM(output_tokens), 0)
-        FROM (SELECT * FROM events WHERE tokens > 0)
-        WHERE file_generation = ?1
-        GROUP BY 1, 2
-        ORDER BY 1, 2
-    "#;
+    let incremental_query = full_query.replace(
+        "GROUP BY 1, 2",
+        "AND lower(e.session_id) IN (SELECT lower(s.session_id) FROM pending_sources p JOIN sources s USING(source_id) WHERE p.target_generation=?1) GROUP BY 1, 2"
+    );
     let mut source_rows = transaction
         .prepare(if rebuild {
             full_query
         } else {
-            incremental_query
+            incremental_query.as_str()
         })
         .map_err(|error| format!("无法准备精确 token 归因来源账本：{error}"))?;
     let mut rows = source_rows
@@ -9302,11 +9307,11 @@ fn synchronize_attribution_ledger(
                 output_tokens
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             ON CONFLICT(provenance_epoch, source_id, bucket_start) DO UPDATE SET
-                tokens = MAX(tokens, excluded.tokens),
-                calls = MAX(calls, excluded.calls),
-                input_tokens = MAX(input_tokens, excluded.input_tokens),
-                cached_input_tokens = MAX(cached_input_tokens, excluded.cached_input_tokens),
-                output_tokens = MAX(output_tokens, excluded.output_tokens)
+                tokens = excluded.tokens,
+                calls = excluded.calls,
+                input_tokens = excluded.input_tokens,
+                cached_input_tokens = excluded.cached_input_tokens,
+                output_tokens = excluded.output_tokens
             "#,
         )
         .map_err(|error| format!("无法准备写入精确 token 归因来源账本：{error}"))?;
@@ -9352,6 +9357,7 @@ fn synchronize_attribution_ledger(
     }
     drop(rows);
     drop(source_rows);
+    canonical::restore_legacy_floors(transaction,&provenance_epoch)?;
     set_metadata(transaction, ATTRIBUTION_LEDGER_EPOCH_KEY, &provenance_epoch)?;
     set_metadata(
         transaction,
@@ -15858,7 +15864,8 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 e.assistant_response_start, e.assistant_response_end, e.source_id, e.accounting_kind, e.reported_total_tokens, e.token_source_offset, e.legacy_tokens
             FROM event_rows e
             JOIN sources s ON s.source_id = e.source_id
-            JOIN published_files f ON f.source_id = e.source_id WHERE e.tokens > 0;
+            JOIN published_files f ON f.source_id = e.source_id WHERE e.tokens > 0
+              AND NOT EXISTS(SELECT 1 FROM usage_ledger_duplicates d WHERE d.event_id=e.id AND d.source_id=e.source_id);
             "#,
         )
         .map_err(|error| format!("无法初始化 schema 11 精确 token 索引结构：{error}"))?;
@@ -18074,7 +18081,8 @@ fn migration_markers_complete(
     connection: &Connection,
     replay_migration_complete: bool,
 ) -> Result<bool, String> {
-    Ok(replay_migration_complete
+    Ok(metadata_i64(connection,"canonical_projection_pending")?.unwrap_or(0)==0
+        && replay_migration_complete
         && metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
             == Some(FORK_REPLAY_BOUNDARY_REVISION)
         && metadata_text(connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()

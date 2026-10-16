@@ -3399,3 +3399,27 @@ pub async fn read_quota_cycle_usage(
             observed_start_unix:start, observed_end_unix:end })
     }).await
 }
+
+
+/// Sidecar facts share the existing source-token validation; no diagnostic read
+/// is allowed to escape a Codex-home transition.
+#[tauri::command]
+pub async fn read_cache_retention_snapshot(
+    window: tauri::WebviewWindow, app: AppHandle, source_token: CodexHomeSourceToken,
+    days: Option<u32>, model: Option<String>,
+) -> Result<token_count_jsonl::cache_retention::Snapshot,String> {
+    require_window_label(&window,"read_cache_retention_snapshot")?;
+    run_statistics_bound_dashboard_read(&app,source_token,move |home| {
+        token_count_jsonl::cache_retention::read(&home,days,model.as_deref(),false)
+    }).await
+}
+
+#[tauri::command]
+pub async fn refresh_cache_retention_snapshot(
+    window: tauri::WebviewWindow, app: AppHandle, source_token: CodexHomeSourceToken,
+) -> Result<token_count_jsonl::cache_retention::Snapshot,String> {
+    require_window_label(&window,"refresh_cache_retention_snapshot")?;
+    run_statistics_bound_dashboard_read(&app,source_token,move |home| {
+        token_count_jsonl::cache_retention::read(&home,None,None,true)
+    }).await
+}

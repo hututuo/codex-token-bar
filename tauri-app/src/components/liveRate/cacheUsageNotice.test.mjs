@@ -45,7 +45,7 @@ test("dismissal applies to this request only and the reminder switch persists", 
       try {
         await render(sample);
         assert.ok(window.document.querySelector('[role="status"]'));
-        await React.act(async () => window.document.querySelector("button").click());
+        await React.act(async () => window.document.querySelector('[aria-label="关闭本次缓存提醒"]').click());
         await render({ ...sample });
         assert.equal(window.document.querySelector('[role="status"]'), null);
         await render({ ...sample, timestamp: sample.timestamp + 1 });
