@@ -35,6 +35,33 @@ test("an existing range start becomes the initial roving tab stop", async () => 
   });
 });
 
+test("month labels stay on one row without overlapping grid tracks or extending past the calendar", async () => {
+  await withSsrModules(async (load) => {
+    const { HeatmapGrid } = await load("/src/components/tokenActivity/HeatmapGrid.tsx");
+    const { buildCalendarDays, buildMonthMarkers } = await load("/src/components/tokenActivity/calendar.ts");
+    // Cover the reported October layout, a final label at column 53, and a
+    // leading partial month that shares its column with the next month.
+    for (const date of ["2026-10-15", "2026-10-01", "2026-10-24", "2026-10-30"]) {
+      const days = buildCalendarDays([{ ...calendarDays()[0], date }]);
+      const html = renderToStaticMarkup(React.createElement(HeatmapGrid, heatmapProps({
+        days: days.map(day => ({ day, intensity: 0 })),
+        monthMarkers: buildMonthMarkers(days),
+      })));
+      const labels = [...html.matchAll(/<span[^>]*style="([^"]+)"[^>]*>([^<]+)<\/span>/g)];
+      let nextFreeColumn = 1;
+      for (const [, style] of labels) {
+        const [, column, span] = style.match(/grid-column:(\d+) \/ span (\d+)/);
+        assert.match(style, /grid-row:1/);
+        assert.ok(Number(column) >= nextFreeColumn, date);
+        nextFreeColumn = Number(column) + Number(span);
+        assert.ok(nextFreeColumn <= 54, date);
+      }
+      assert.ok(labels.length >= 12);
+      if (date === "2026-10-15") assert.equal(labels.length, 13);
+    }
+  });
+});
+
 function heatmapProps(overrides = {}) {
   return {
     days: calendarDays().map((day) => ({ day, intensity: day.tokens > 0 ? 1 : 0 })),

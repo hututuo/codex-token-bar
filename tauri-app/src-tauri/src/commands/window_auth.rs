@@ -118,6 +118,12 @@ pub(crate) fn require_window_label(
 }
 
 pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
+    if matches!(command, "read_modeltrace_snapshot" | "read_modeltrace_history") {
+        return matches!(label, "main" | "quota-sidebar" | "quota-sidebar-detail");
+    }
+    if matches!(command, "start_modeltrace_plan" | "cancel_modeltrace_plan") {
+        return matches!(label, "main" | "quota-sidebar-detail");
+    }
     if MAIN_WINDOW_ONLY_COMMANDS.contains(&command) {
         return label == MAIN_WINDOW_LABEL;
     }
@@ -154,6 +160,18 @@ fn is_app_surface_label(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modeltrace_read_and_run_permissions_are_separate() {
+        for command in ["read_modeltrace_snapshot", "read_modeltrace_history"] {
+            for label in ["main", "quota-sidebar", "quota-sidebar-detail"] { assert!(allows_window_label(command,label)); }
+            for label in ["floating", "status", "unknown"] { assert!(!allows_window_label(command,label)); }
+        }
+        for command in ["start_modeltrace_plan", "cancel_modeltrace_plan"] {
+            for label in ["main", "quota-sidebar-detail"] { assert!(allows_window_label(command,label)); }
+            for label in ["quota-sidebar", "floating", "status", "unknown"] { assert!(!allows_window_label(command,label)); }
+        }
+    }
 
     #[test]
     fn detail_can_open_dashboard_without_receiving_data_or_geometry_authority() {

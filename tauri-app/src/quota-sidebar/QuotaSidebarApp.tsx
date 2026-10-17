@@ -40,6 +40,9 @@ import { quotaWindowDisplayLabel, quotaWindowShortLabel } from "../utils/quota";
 import { prepareResetCreditsForDisplay } from "../components/quota/resetCredits";
 import type { SidebarSection } from "./model";
 import { SidebarTrend, type TrendPoint } from "./SidebarTrend";
+import { ModelTracePanel } from "../modelTrace/ModelTracePanel";
+import { useModelTrace } from "../modelTrace/useModelTrace";
+import { activePlan, statusLabel } from "../modelTrace/model";
 
 type SidebarData = Pick<CompactPanelData, "snapshot" | "runningThreads"> & {
   trend?: TrendPoint[];
@@ -63,6 +66,8 @@ function RailSurface() {
   const [quotaRefreshRevision, requestQuotaRefresh] = useReducer((value: number) => value + 1, 0);
   const [cadence, setCadence] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const [state, dispatch] = useReducer(sidebarReducer, initialSidebarState);
+  const trace = useModelTrace(display.quotaSidebarEnabled && state.mode !== "rest");
+  const traceStatus = trace.error ? "读取失败" : activePlan(trace.snapshot?.plan) ? statusLabel(trace.snapshot!.plan!.status) : trace.snapshot?.latest ? statusLabel(trace.snapshot.latest.status) : "未检测";
   const [error, setError] = useState<string | null>(null);
   const { sourceReady, sourceToken } = useCompactPanelSource(display.quotaSidebarEnabled);
   const data = useCompactPanelData({ active: display.quotaSidebarEnabled && sourceReady,
@@ -239,11 +244,11 @@ function RailSurface() {
   useEffect(() => { publisher.current?.update(presentation, display.quotaSidebarEnabled && state.mode === "detail"); }, [presentation, display.quotaSidebarEnabled, state.mode]);
   if (!display.quotaSidebarEnabled) return null;
   return <main className={sidebarRailClassName(display.quotaSidebarSide, state.mode)} onPointerDown={startDrag} onPointerEnter={enter} onPointerLeave={leave} data-dragging={dragging} aria-label="额度侧栏">
-    <SidebarRailContent data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error} onDismissReminder={dismissReminder} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })} />
+    <SidebarRailContent data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error} traceStatus={traceStatus} onDismissReminder={dismissReminder} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })} />
   </main>;
 }
-export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh, onDismissReminder }: {
-  data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
+export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, traceStatus = "未检测", onOpen, onPin, onRefresh, onDismissReminder }: {
+  data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; traceStatus?: string; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
 }) {
   const ratePercent = sidebarRatePercent(data.snapshot, liveRateEnabled, rateFullScale);
   const { warning: cacheWarning, dismiss: dismissCacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice, liveRateEnabled && data.snapshot.liveRateAvailable === true);
@@ -293,6 +298,7 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
         <button aria-label="刷新数据" title="刷新数据" onClick={onRefresh}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg></button>
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
+      <button className="qs-modeltrace-trigger" onClick={() => onOpen("modelTrace", "top")} aria-label={`打开模型检测，${traceStatus}`} title="模型检测"><span>✦ 模型检测</span><small>{traceStatus}</small></button>
       <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
       {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
       <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>
@@ -362,8 +368,8 @@ function DetailSurface() {
   return <main key={value?.state.mode === "detail" ? "open" : "closed"} className={`qs-detail qs-${value?.side ?? "right"}`} onPointerEnter={() => void emitTo(railLabel, "quota-sidebar-union-hover", true)} onPointerLeave={() => void emitTo(railLabel, "quota-sidebar-union-hover", false)}>
     {value === null ? <p className="qs-muted">正在读取侧栏快照…</p> : <>
       <header><div><strong>Codex</strong><span className="qs-plan">{value.data.quota.account.planLabel || "套餐未知"}</span><small className="qs-account">{value.data.quota.account.displayName || "账户待读取"}</small><small className="qs-update" title={value.data.quota.updatedAt}>更新 {sidebarLocalTime(value.data.quota.updatedAt, null, true)}</small></div><div className="qs-actions"><button aria-label="打开主界面" title="打开主界面" onClick={() => void desktopPlatform.showDashboardWindow()}>主界面 ↗</button><button className="qs-pin" aria-label={value.state.pinned ? "取消固定详情" : "固定详情"} title={value.state.pinned ? "取消固定详情" : "固定详情"} aria-pressed={value.state.pinned} onClick={() => action({ type: "pin" })}><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill={value.state.pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 3h6l-1 7 4 4v2H6v-2l4-4-1-7Z"/><path d="M12 16v6"/></svg></button><button aria-label="关闭详情" onClick={() => action({ type: "close" })}>×</button></div></header>
-      <nav><button aria-selected={value.state.tab === "quota"} onClick={() => action({ type: "open", tab: "quota" })}>额度概览</button><button aria-selected={value.state.tab === "running"} onClick={() => action({ type: "open", tab: "running" })}>运行会话 <b>{value.data.runningThreads.total ?? "—"}</b></button><button aria-selected={value.state.tab === "radar"} onClick={() => action({ type: "open", tab: "radar" })}>雷达</button><button aria-selected={value.state.tab === "credits"} onClick={() => action({ type: "open", tab: "credits" })}>重置卡</button></nav>
-      <div className="qs-detail-content">{value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} /> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
+      <nav><button aria-selected={value.state.tab === "quota"} onClick={() => action({ type: "open", tab: "quota" })}>额度概览</button><button aria-selected={value.state.tab === "running"} onClick={() => action({ type: "open", tab: "running" })}>运行会话 <b>{value.data.runningThreads.total ?? "—"}</b></button><button aria-selected={value.state.tab === "radar"} onClick={() => action({ type: "open", tab: "radar" })}>雷达</button><button aria-selected={value.state.tab === "credits"} onClick={() => action({ type: "open", tab: "credits" })}>重置卡</button><button aria-selected={value.state.tab === "modelTrace"} onClick={() => action({ type: "open", tab: "modelTrace" })}>模型检测</button></nav>
+      <div className="qs-detail-content">{value.state.tab === "modelTrace" ? (value.state.mode === "detail" ? <ModelTracePanel /> : null) : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} /> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
       <footer><span>额度 · 用量 · 会话</span><span>{value.state.pinned ? "已固定 · 点击 × 收起" : "移出后收起 · 点击固定"}</span></footer>
       {value.error && <details className="qs-diagnostic"><summary>窗口状态说明</summary><p>{value.error}</p></details>}
     </>}

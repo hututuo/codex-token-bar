@@ -15,6 +15,8 @@ import {
 } from "./heatmapNavigation";
 
 interface HeatmapGridProps {
+  accessibleLabel?: string;
+  cellPresentation?: (day: HeatmapDay["day"]) => { label: string; background: string; className?: string };
   days: HeatmapDay[];
   mode: ActivityMode;
   modelCostDataAvailable?: boolean;
@@ -28,6 +30,8 @@ interface HeatmapGridProps {
 }
 
 export function HeatmapGrid({
+  accessibleLabel = "过去一年 Token 活动热图；使用方向键移动，Enter 或空格选择日期",
+  cellPresentation,
   days,
   mode,
   modelCostDataAvailable = true,
@@ -39,6 +43,12 @@ export function HeatmapGrid({
   rangeEnd,
   rangeStart,
 }: HeatmapGridProps) {
+  // A short leading month can share a week with the next month. Keep the
+  // later label when there is not enough room for both on the same row.
+  const visibleMonthMarkers = monthMarkers.filter((marker, index) => {
+    const next = monthMarkers[index + 1];
+    return !next || next.column - marker.column >= 2;
+  });
   const dates = useMemo(() => days.map(({ day }) => day.date), [days]);
   const [focusedDate, setFocusedDate] = useState<string | null>(() => (
     resolveHeatmapFocusDate(dates, null, hoveredDate, rangeStart)
@@ -110,7 +120,7 @@ export function HeatmapGrid({
   return (
     <>
       <div
-        aria-label="过去一年 Token 活动热图；使用方向键移动，Enter 或空格选择日期"
+        aria-label={accessibleLabel}
         className="heatmap-grid"
         onBlurCapture={handleGridBlur}
         onFocusCapture={() => {
@@ -120,16 +130,18 @@ export function HeatmapGrid({
         role="group"
       >
         {days.map(({ day, intensity }, index) => {
+          const presentation = cellPresentation?.(day);
           const selected = isInRange(day.date, rangeStart, rangeEnd);
           const hovered = hoveredDate === day.date;
           const classes = [
             "heatmap-cell",
             selected ? "heatmap-cell--selected" : "",
             hovered ? "heatmap-cell--hovered" : "",
+            presentation?.className,
           ].filter(Boolean).join(" ");
           return (
             <button
-              aria-label={cellLabel(day, mode, priceModel, modelCostDataAvailable)}
+              aria-label={presentation?.label ?? cellLabel(day, mode, priceModel, modelCostDataAvailable)}
               aria-pressed={selected}
               className={classes}
               key={day.date}
@@ -150,22 +162,29 @@ export function HeatmapGrid({
                 }
               }}
               style={{
-                background: mode === "modelCost"
+                background: presentation?.background ?? (mode === "modelCost"
                   ? modelCostCellBackground(day, intensity, priceModel, modelCostDataAvailable)
                   : mode === "model"
                     ? modelCellColor(day, intensity)
-                    : cellColor(mode, intensity),
+                    : cellColor(mode, intensity)),
               }}
               tabIndex={validFocusedDate === day.date ? 0 : -1}
-              title={cellLabel(day, mode, priceModel, modelCostDataAvailable)}
+              title={presentation?.label ?? cellLabel(day, mode, priceModel, modelCostDataAvailable)}
               type="button"
             />
           );
         })}
       </div>
       <div className="heatmap-months" aria-hidden="true">
-        {monthMarkers.map((marker) => (
-          <span key={`${marker.label}-${marker.column}`} style={{ gridColumn: `${marker.column} / span 4` }}>
+        {visibleMonthMarkers.map((marker) => (
+          <span
+            key={`${marker.label}-${marker.column}`}
+            style={{
+              gridColumn: `${marker.column} / span ${Math.min(2, 54 - marker.column)}`,
+              gridRow: 1,
+              justifySelf: marker.column === 53 ? "end" : undefined,
+            }}
+          >
             {marker.label}
           </span>
         ))}

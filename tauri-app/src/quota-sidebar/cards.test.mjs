@@ -24,8 +24,8 @@ test('radar tabs select independent official and crowd rankings',async()=>{
    const expires=Math.floor(Date.now()/1000)+3600;
    const data={snapshot:{todayModelBreakdowns:[],sevenDayAvailability:'measured',sevenDayRemainingPercent:.5,fiveHourAvailability:'absent'},runningThreads:{total:2,status:'ready'},quota:{quota:{resetCredit:{updatedAt:'known',availableCount:3,credits:[{cardId:'one',status:'可用',expiresAtUnix:expires,redeemedAt:''}]}}}};
    await React.act(async()=>root.render(React.createElement(SidebarRailContent,{data,radar,state:{mode:'hover'},onOpen:(...args)=>calls.push(args)})));
-   for(const selector of ['.qs-rate-trigger','.qs-model-trigger','.qs-running-trigger','.qs-reset-count','.qs-recommendations']) await React.act(async()=>window.document.querySelector(selector).click());
-   assert.deepEqual(calls,[['quota','usage'],['quota','models'],['running','top'],['credits','top'],['radar','ranking']]);
+   for(const selector of ['.qs-rate-trigger','.qs-model-trigger','.qs-running-trigger','.qs-reset-count','.qs-recommendations','.qs-modeltrace-trigger']) await React.act(async()=>window.document.querySelector(selector).click());
+   assert.deepEqual(calls,[['quota','usage'],['quota','models'],['running','top'],['credits','top'],['radar','ranking'],['modelTrace','top']]);
    assert.match(window.document.querySelector('.qs-reset-count').textContent,/重置卡 3 张/);
 
   }finally{await React.act(async()=>root.unmount());}

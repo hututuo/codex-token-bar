@@ -17,15 +17,17 @@ test("primary rows retain large targets while the centered summary scrolls withi
     const window = new Window();
     try {
       const css = await readFile(new URL("./QuotaSidebar.css", import.meta.url), "utf8");
+      const traceCss = await readFile(new URL("../modelTrace/modelTrace.css", import.meta.url), "utf8");
       window.document.documentElement.className = "quota-sidebar-document";
-      window.document.body.innerHTML = `<style>${css}</style>${renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover", pinned: false, tab: "quota" }, error: "test", onOpen() {} }))}`;
+      window.document.body.innerHTML = `<style>${css}${traceCss}</style>${renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover", pinned: false, tab: "quota" }, error: "test", onOpen() {} }))}`;
       const edge = window.document.querySelector(".qs-radar-edge");
       const edgeStyle = window.getComputedStyle(edge);
       assert.equal(edgeStyle.position, "absolute"); assert.match(css, /\.qs-radar-edge\{[^}]*inset:0[;}]/);
       assert.equal(edgeStyle.pointerEvents, "none"); assert.equal(edgeStyle.display, "none");
       assert.ok(css.includes("@media(prefers-reduced-motion:reduce){.qs-radar-edge[data-active=true]{animation:none;opacity:1}}"));
       const buttons = [...window.document.querySelectorAll(".qs-summary>button")];
-      assert.equal(buttons.length, 6);
+      assert.equal(buttons.length, 7);
+      assert.ok(window.document.querySelector('.qs-modeltrace-trigger'));
       for (const button of buttons.filter(button => button.matches(".qs-quota-trigger,.qs-running-trigger"))) {
         const style = window.getComputedStyle(button);
         assert.equal(style.width, "80px"); assert.ok(parseFloat(style.minHeight) >= 44);
