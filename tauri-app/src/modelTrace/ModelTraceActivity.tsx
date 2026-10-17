@@ -75,7 +75,7 @@ export function ModelTraceActivityView({runs, days, error, loading}: {
         onDateSelect={chooseDate} onDayHover={setHovered} hoveredDate={hovered?.date ?? null} rangeStart={rangeStart} rangeEnd={rangeEnd}
         accessibleLabel="过去一年模型检测；方向键移动，Enter 或空格选择日期"
         cellPresentation={day => {const view = dayPresentation(byDay.get(day.date) ?? []); return {...view, label: `${day.date}：${view.label}`};}} />
-      <div className="modeltrace-legend-row"><div className="chart-legend modeltrace-legend"><span className="chart-legend-item"><i className="legend-dot" style={{background: "var(--green)"}} />相符</span><span className="chart-legend-item"><i className="legend-dot" style={{background: "var(--orange)"}} />不符</span><span className="chart-legend-item"><i className="legend-dot" style={{background: "linear-gradient(135deg,var(--green) 50%,var(--orange) 50%)"}} />混合</span><span className="chart-legend-item" title="失败、取消、中断、缺测或无法判定"><i className="legend-dot" style={{background: "var(--muted)"}} />其他</span><span className="chart-legend-item"><i className="legend-dot" style={{background: "var(--heatmap-empty)"}} />未检测</span></div>
+      <div className="modeltrace-legend-row"><div className="chart-legend modeltrace-legend"><span className="chart-legend-item"><i className="legend-dot" style={{background: "var(--green)"}} />相符</span><span className="chart-legend-item"><i className="legend-dot" style={{background: "var(--orange)"}} />不符</span><span className="chart-legend-item" title="失败、取消、中断、缺测或无法判定"><i className="legend-dot" style={{background: "var(--muted)"}} />其他</span><span className="chart-legend-item"><i className="legend-dot" style={{background: "var(--heatmap-empty)"}} />未检测</span></div>
         {rangeStart && <button className="toolbar-button modeltrace-clear" type="button" onClick={() => {setRangeStart(null);setRangeEnd(null);setListLimit(RECORDS_PER_PAGE);}}>清除选择</button>}</div>
       <div className="range-summary modeltrace-history-summary">
         {error ? <span className="modeltrace-error" role="alert" title={error}>{error}</span>
@@ -88,7 +88,9 @@ export function ModelTraceActivityView({runs, days, error, loading}: {
         <div className="modeltrace-records-scroll"><ul className="modeltrace-history-list" aria-label="检测记录列表">{selected.slice(0, listLimit).map(run => {
           const date = new Date(run.startedAt * 1000);
           const minute = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-          return <li className="modeltrace-record-row" key={run.id}><time dateTime={date.toISOString()} title={`${dateKey(run.startedAt)} ${minute}`}>{dateKey(run.startedAt).slice(5)} {minute}</time><span className="modeltrace-record-model" title={modelLabel(run.model)}>{modelLabel(run.model)}</span><span className="modeltrace-badge" data-status={run.status}>{statusLabel(run.status)}</span></li>;
+          const detectedModel = run.attribution?.prediction;
+          const tooltip = detectedModel ? `实测为：${modelLabel(detectedModel).replace(/-(\w)/g, (_, letter: string) => ` ${letter.toUpperCase()}`)}` : "暂无检测结果";
+          return <li className="modeltrace-record-row" key={run.id} title={tooltip}><time dateTime={date.toISOString()} title={`${dateKey(run.startedAt)} ${minute}\n${tooltip}`}>{dateKey(run.startedAt).slice(5)} {minute}</time><span className="modeltrace-record-model">{modelLabel(run.model)}</span><span className="modeltrace-badge" data-status={run.status}>{statusLabel(run.status)}</span></li>;
         })}</ul></div>
         {selected.length > listLimit && <button className="live-reset-button modeltrace-more" type="button" onClick={() => setListLimit(value => value + RECORDS_PER_PAGE)}>继续加载<span>· 再显示 3 行</span></button>}
       </details>

@@ -13,14 +13,19 @@ The model and round count are locked while a plan is active and show that plan's
 actual settings without overwriting the saved preference.
 
 The result lists three candidates by default, expandable to five. The main
-dashboard's **Token 活动 → 模型检测** calendar shows matches, differences, mixed
-days and unsuccessful rounds. Select one day or two endpoints to inspect
+dashboard's **Token 活动 → 模型检测** calendar uses green for matches, orange for
+differences, gray for other outcomes, and an empty color for untested days.
+Each day's present categories share equal diagonal bands; band size indicates
+category presence rather than round counts. Selected dates keep a blue outline.
+Select one day or two endpoints to inspect
 individual rounds across all tested models for the current account and Home.
 Dates use the viewing computer's local timezone.
 Detection records are collapsed initially. Expanding shows three columns and
 up to nine records; **继续加载** reveals nine more (three rows) each time.
 Times in the compact list use `MM-DD HH:mm`; the full date is available in the
 time tooltip. Each record displays its time, model and status in one row.
+Hovering a record shows its first-ranked attributed model, or **暂无检测结果**
+when attribution is unavailable.
 The sidebar's detection panel displays the latest round's full attribution result.
 The date summary always includes all rounds in the selected range, not just
 those currently displayed.

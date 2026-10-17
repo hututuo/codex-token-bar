@@ -33,6 +33,13 @@ export function summarize(runs: TraceRun[]) {
 }
 export function dayPresentation(runs: TraceRun[]) {
   const summary = summarize(runs);
-  const colors: Record<string, string> = {matches: "var(--green)", differs: "var(--orange)", mixed: "linear-gradient(135deg,var(--green) 50%,var(--orange) 50%)", other: "var(--muted)", empty: "var(--heatmap-empty)"};
-  return { label: summary.label, background: colors[summary.state], className: summary.other ? "modeltrace-day-warning" : "" };
+  const colors = [
+    ...(summary.matches ? ["var(--green)"] : []),
+    ...(summary.differs ? ["var(--orange)"] : []),
+    ...(summary.other ? ["var(--muted)"] : []),
+  ];
+  const background = colors.length > 1
+    ? `linear-gradient(135deg,${colors.map((color, index) => `${color} ${index * 100 / colors.length}% ${(index + 1) * 100 / colors.length}%`).join(",")})`
+    : colors[0] ?? "var(--heatmap-empty)";
+  return { label: summary.label, background };
 }
