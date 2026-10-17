@@ -5,6 +5,7 @@ import { App } from "./app/App";
 import { sidebarCanvasClasses } from "./quota-sidebar/canvas";
 import "./styles/global.css";
 import "./quota-sidebar/QuotaSidebar.css";
+import "./modelTrace/modelTrace.css";
 
 const startupSurface = new URLSearchParams(window.location.search).get("surface") ?? "main";
 if (startupSurface === "quota-sidebar" || startupSurface === "quota-sidebar-detail") document.documentElement.classList.add("quota-sidebar-document");

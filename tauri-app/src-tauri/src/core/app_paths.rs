@@ -42,6 +42,10 @@ pub fn quota_history_database_path() -> Option<PathBuf> {
     tauri_app_support_dir().map(|path| path.join("quota-history.sqlite"))
 }
 
+pub fn modeltrace_data_dir() -> Option<PathBuf> {
+    tauri_app_support_dir().map(|path| path.join("modeltrace"))
+}
+
 pub fn startup_trace_log_path() -> Option<PathBuf> {
     // Roaming AppData can be redirected to OneDrive or a network profile. Startup
     // diagnostics must never add that dependency to the UI thread on Windows.

@@ -3,6 +3,7 @@ pub(crate) mod codex_radar;
 pub(crate) mod codex_instances;
 pub(crate) mod dashboard;
 pub(crate) mod live;
+pub(crate) mod modeltrace;
 pub(crate) mod provider_repair;
 pub(crate) mod session_management;
 pub(crate) mod settings;

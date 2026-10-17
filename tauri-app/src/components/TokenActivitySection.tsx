@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ActivityDay } from "../types/dashboard";
 import { ActivityModeSelector } from "./tokenActivity/ActivityModeSelector";
 import { HeatmapGrid } from "./tokenActivity/HeatmapGrid";
+import { ModelTraceActivity } from "../modelTrace/ModelTraceActivity";
 import {
   buildCalendarDays,
   buildHeatmapDays,
@@ -80,7 +81,7 @@ export function TokenActivitySection({ days, modelCostDataAvailable = true }: To
         <ActivityModeSelector mode={mode} onModeChange={setMode} />
       </div>
 
-      <HeatmapGrid
+      {mode === "modelTrace" ? <ModelTraceActivity /> : <><HeatmapGrid
         days={heatmapDays}
         mode={mode}
         modelCostDataAvailable={modelCostDataAvailable}
@@ -102,6 +103,7 @@ export function TokenActivitySection({ days, modelCostDataAvailable = true }: To
           {summary.value}
         </strong>
       </div>
+      </>}
     </section>
   );
 }

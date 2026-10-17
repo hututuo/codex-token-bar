@@ -23,6 +23,7 @@
     "licenseFile": "../../LICENSE",
     "resources": {
       "../../LICENSE": "OpenSourceLicenses/AGPL-3.0.txt",
+      "../../LICENSES/ModelTrace-MIT.txt": "OpenSourceLicenses/ModelTrace-MIT.txt",
       "../../LICENSES/CodexTokenBar-MIT.txt": "OpenSourceLicenses/CodexTokenBar-MIT.txt",
       "../../LICENSES/Zstandard-BSD-3-Clause.txt": "OpenSourceLicenses/Zstandard-BSD-3-Clause.txt",
       "../../LICENSES/Zstd-rs-MIT.txt": "OpenSourceLicenses/Zstd-rs-MIT.txt",
