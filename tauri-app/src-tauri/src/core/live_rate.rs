@@ -7,7 +7,7 @@ use crate::models::{
 use logs::read_recent_log_rows;
 pub use monitor::LiveRateMonitorService;
 use rusqlite::Result;
-use rollout::read_rollout_metrics;
+use state::{read_thread_options_result, read_thread_title, UsageSummary};
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -16,7 +16,6 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(test)]
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
-use state::{read_thread_options_result, read_thread_title, UsageSummary};
 use stream::{rollup_metric_events, rollup_stream_rows};
 
 const LOOKBACK_SECONDS: f64 = 8.0;
@@ -51,8 +50,10 @@ struct StoreFileSignature {
     modified_at: Option<SystemTime>,
 }
 
+mod c_curve;
 mod logs;
 mod monitor;
+mod observed;
 mod rollout;
 mod state;
 mod stream;
@@ -64,7 +65,10 @@ pub struct LiveRateSourceScope {
 }
 
 impl LiveRateSourceScope {
-    pub fn new(canonical_home_key: impl Into<String>, physical_home_key: impl Into<String>) -> Self {
+    pub fn new(
+        canonical_home_key: impl Into<String>,
+        physical_home_key: impl Into<String>,
+    ) -> Self {
         Self {
             canonical_home_key: canonical_home_key.into(),
             physical_home_key: physical_home_key.into(),
@@ -155,6 +159,12 @@ fn idle_snapshot_with_warnings(
         requests_today: summary.today_requests,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        c_curve: Vec::new(),
+        speed_samples: Vec::new(),
+        model_speeds: Vec::new(),
+        model_speeds_15m: Vec::new(),
+        model_speeds_30m: Vec::new(),
+        measurement_status: "no_observed_deltas".into(),
         cache_advice: None,
         unread_summary,
         warnings,
@@ -181,6 +191,12 @@ pub(super) fn pending_snapshot_with_unread(
         requests_today: 0,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        c_curve: Vec::new(),
+        speed_samples: Vec::new(),
+        model_speeds: Vec::new(),
+        model_speeds_15m: Vec::new(),
+        model_speeds_30m: Vec::new(),
+        measurement_status: "no_observed_deltas".into(),
         cache_advice: None,
         unread_summary,
         warnings: Vec::new(),
@@ -219,34 +235,83 @@ fn read_snapshot_result_at(
         }
     };
     let stream_rollup = rollup_stream_rows(&rows, now, None);
-    let stream_selected_rollup = selected_thread_id
-        .map(|thread_id| rollup_stream_rows(&rows, now, Some(thread_id)))
-        .unwrap_or_default();
-    let rollout_metrics = match read_rollout_metrics(codex_home, source_scope, now) {
-        Ok(metrics) => metrics,
-        Err(error) => {
-            rollout::clear_cache_advice(source_scope);
-            warnings.push(live_rate_warning(format!(
-                "读取新版 rollout 会话索引失败：{}（{}）",
-                codex_home.join("state_5.sqlite").display(),
-                error
-            )));
-            Vec::new()
+    let (rollout_metrics, rollout_signals) =
+        match rollout::read_rollout_metrics_with_signals(codex_home, source_scope, now) {
+            Ok(result) => result,
+            Err(error) => {
+                rollout::clear_cache_advice(source_scope);
+                warnings.push(live_rate_warning(format!(
+                    "读取新版 rollout 会话索引失败：{}（{}）",
+                    codex_home.join("state_5.sqlite").display(),
+                    error
+                )));
+                (Vec::new(), Vec::new())
+            }
+        };
+    let (pre_delta_signals, post_delta_signals): (Vec<_>, Vec<_>) =
+        rollout_signals.iter().cloned().partition(|signal| {
+            matches!(
+                signal,
+                c_curve::RolloutSignal::Context { .. }
+                    | c_curve::RolloutSignal::TurnStarted { .. }
+                    | c_curve::RolloutSignal::ReasoningCompleted { .. }
+            )
+        });
+    c_curve::apply_signals(source_scope, &pre_delta_signals, now);
+    let _initial_speed_snapshot = observed::process_rows(source_scope, &rows, now);
+    for signal in &post_delta_signals {
+        match signal {
+            c_curve::RolloutSignal::ItemCompleted {
+                thread_id,
+                turn_id,
+                item_id,
+                at,
+            } => {
+                observed::finish_item(
+                    source_scope,
+                    thread_id,
+                    turn_id.as_deref(),
+                    item_id,
+                    *at,
+                    false,
+                );
+            }
+            c_curve::RolloutSignal::TurnCompleted {
+                thread_id,
+                turn_id,
+                failed,
+                at,
+            } => {
+                observed::finish_turn(source_scope, thread_id, turn_id.as_deref(), *at, *failed);
+            }
+            _ => {}
         }
+    }
+    c_curve::apply_signals(source_scope, &post_delta_signals, now);
+    let speed_snapshot = observed::process_rows(source_scope, &[], now);
+    let (c_curve_tokens_per_second, selected_c_curve_tokens_per_second, c_curve_points) =
+        c_curve::snapshot(source_scope, now, selected_thread_id);
+    if let Some(message) = speed_snapshot.storage_warning.clone() {
+        warnings.push(live_rate_warning(format!(
+            "observed speed history: {message}"
+        )));
+    }
+    let measurement_status = if speed_snapshot.storage_warning.is_some() {
+        "observed_storage_error"
+    } else if speed_snapshot.has_active_sample || stream_rollup.tokens_per_second > 0.0 {
+        "observing_deltas"
+    } else if speed_snapshot.has_observed_samples {
+        "observed_history"
+    } else if c_curve_tokens_per_second > 0.0 || !c_curve_points.is_empty() {
+        "provisional_curve"
+    } else {
+        "no_observed_deltas"
     };
     let rollout_rollup = rollup_metric_events(&rollout_metrics, now, None);
-    let rollout_selected_rollup = selected_thread_id
-        .map(|thread_id| rollup_metric_events(&rollout_metrics, now, Some(thread_id)))
-        .unwrap_or_default();
     let rollup = if stream_rollup.tokens_per_second > 0.0 {
         stream_rollup
     } else {
         rollout_rollup
-    };
-    let selected_rollup = if stream_selected_rollup.tokens_per_second > 0.0 {
-        stream_selected_rollup
-    } else {
-        rollout_selected_rollup
     };
     let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
     let _observed_live_source_tokens = rollup.breakdown.observed_total();
@@ -259,7 +324,8 @@ fn read_snapshot_result_at(
         .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "选择会话查看单会话速率".into());
     let cache_advice = rollout::latest_cache_advice(source_scope, now).map(|mut advice| {
-        advice.thread_title = read_thread_title_or_warn(codex_home, &advice.thread_id, &mut warnings);
+        advice.thread_title =
+            read_thread_title_or_warn(codex_home, &advice.thread_id, &mut warnings);
         advice
     });
 
@@ -268,13 +334,19 @@ fn read_snapshot_result_at(
         thread_title,
         selected_thread_id: selected_thread_id.map(ToOwned::to_owned),
         selected_thread_title,
-        selected_tokens_per_second: selected_rollup.tokens_per_second,
-        tokens_per_second: rollup.tokens_per_second,
+        selected_tokens_per_second: selected_c_curve_tokens_per_second,
+        tokens_per_second: c_curve_tokens_per_second,
         total_tokens: summary.total_tokens,
         total_tokens_today: summary.today_tokens,
         requests_today: summary.today_requests,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        c_curve: c_curve_points,
+        speed_samples: speed_snapshot.speed_samples,
+        model_speeds: speed_snapshot.model_speeds,
+        model_speeds_15m: speed_snapshot.model_speeds_15m,
+        model_speeds_30m: speed_snapshot.model_speeds_30m,
+        measurement_status: measurement_status.into(),
         cache_advice,
         unread_summary: empty_unread_summary(),
         warnings,
@@ -438,8 +510,7 @@ fn read_thread_title_or_warn(
         Err(error) => {
             warnings.push(live_rate_thread_title_warning(format!(
                 "读取实时速率会话标题失败：{}（{}）",
-                thread_id,
-                error
+                thread_id, error
             )));
             None
         }

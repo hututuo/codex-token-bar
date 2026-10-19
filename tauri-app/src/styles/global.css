@@ -12849,3 +12849,27 @@ details.session-management-banner {
   color: var(--text-muted);
   max-width: 34rem;
 }
+
+.observed-speed { margin-top: 14px; padding-top: 14px; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); min-width: 0; }
+.observed-speed-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.observed-speed-heading h3 { margin: 0; font-size: 14px; }
+.observed-speed-heading > span, .observed-speed-note, .observed-speed-empty { font-size: 11px; opacity: .65; line-height: 1.65; }
+.observed-speed-models { display: grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: 8px; margin: 10px 0; }
+.observed-speed-models > div { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb,currentColor 4%,transparent); }
+.observed-speed-models strong { font: 11px ui-monospace,monospace; overflow-wrap: anywhere; }
+.observed-speed-models b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.observed-speed-models small, .observed-speed-models span { font-size: 10px; opacity: .65; }
+.observed-speed summary { cursor: pointer; font-size: 12px; padding: 6px 0; }
+.observed-speed-samples { display: grid; gap: 8px; margin-top: 8px; }
+.observed-speed-samples article { padding: 12px; background: color-mix(in srgb,currentColor 4%,transparent); border-radius: 10px; font-size: 11px; min-width: 0; }
+.observed-speed-samples header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.observed-speed-samples header > b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.observed-speed-samples [data-confidence] { padding: 2px 6px; border-radius: 6px; background: #53a87918; color: #538f71; font-size: 10px; }
+.observed-speed-samples [data-confidence=low], .observed-speed-warning { color: #bd863d; }
+.observed-speed-samples dl { display: grid; grid-template-columns: 56px minmax(0,1fr); gap: 4px 8px; margin: 10px 0; font-size: 10px; }
+.observed-speed-samples dd { margin: 0; user-select: text; overflow-wrap: anywhere; font-family: ui-monospace,monospace; }
+.observed-speed-samples dt, .observed-speed-samples time { opacity: .6; }
+
+.observed-speed-window { display:flex; gap:5px; margin-top:8px; }
+.observed-speed-window button { border:0; border-radius:6px; padding:4px 9px; font-size:11px; color:inherit; background:color-mix(in srgb,currentColor 6%,transparent); cursor:pointer; }
+.observed-speed-window button[aria-pressed=true] { background:#3388ff24; color:#539ce6; }

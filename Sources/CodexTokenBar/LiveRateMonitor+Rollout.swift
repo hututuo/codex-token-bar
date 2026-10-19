@@ -21,6 +21,7 @@ extension LiveRateMonitor {
                 events: result.events,
                 cacheSamples: result.cacheSamples,
                 cacheReset: result.cacheReset,
+                telemetry: result.telemetry,
                 currentTurnID: result.state.currentTurnID,
                 fileIdentity: result.state.fileIdentity,
                 boundarySignature: result.state.boundarySignature,
@@ -32,9 +33,9 @@ extension LiveRateMonitor {
     nonisolated static func rolloutEvents(
         path: String,
         state: RolloutReadState
-    ) throws -> (state: RolloutReadState, events: [RolloutMetricEvent], cacheSamples: [CacheUsageSample], cacheReset: Bool) {
+    ) throws -> (state: RolloutReadState, events: [RolloutMetricEvent], cacheSamples: [CacheUsageSample], cacheReset: Bool, telemetry: [ThroughputSignal]) {
         guard FileManager.default.fileExists(atPath: path) else {
-            return (RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil), [], [], true)
+            return (RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil), [], [], true, [])
         }
 
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path, isDirectory: false))
@@ -61,7 +62,7 @@ extension LiveRateMonitor {
                     fileIdentity: metadata.identity,
                     discardLeadingPartialLine: discardLeadingPartialLine
                 ),
-                [], [], restarted
+                [], [], restarted, []
             )
         }
         try handle.seek(toOffset: readOffset)
@@ -75,7 +76,7 @@ extension LiveRateMonitor {
                     fileIdentity: metadata.identity,
                     discardLeadingPartialLine: discardLeadingPartialLine
                 ),
-                [], [], restarted
+                [], [], restarted, []
             )
         }
 
@@ -90,7 +91,7 @@ extension LiveRateMonitor {
                         fileIdentity: metadata.identity,
                         discardLeadingPartialLine: true
                     ),
-                    [], [], restarted
+                    [], [], restarted, []
                 )
             }
             skippedByteCount = data.distance(from: data.startIndex, to: data.index(after: firstNewline))
@@ -108,7 +109,7 @@ extension LiveRateMonitor {
                     fileIdentity: metadata.identity,
                     discardLeadingPartialLine: false
                 ),
-                [], [], restarted
+                [], [], restarted, []
             )
         }
         let completeEnd = remaining.index(after: lastNewline)
@@ -124,7 +125,7 @@ extension LiveRateMonitor {
                     fileIdentity: metadata.identity,
                     discardLeadingPartialLine: false
                 ),
-                [], [], restarted
+                [], [], restarted, []
             )
         }
 
@@ -141,7 +142,7 @@ extension LiveRateMonitor {
                 fileIdentity: metadata.identity,
                 discardLeadingPartialLine: false
             ),
-            parsed.events, restarted ? [] : parsed.cacheSamples, restarted
+            parsed.events, restarted ? [] : parsed.cacheSamples, restarted, parsed.telemetry
         )
     }
 
@@ -189,7 +190,7 @@ extension LiveRateMonitor {
     nonisolated static func rolloutEvents(
         fromLines lines: [String],
         previousTurnID: String?, includeCacheSamples: Bool = true
-    ) -> (events: [RolloutMetricEvent], currentTurnID: String?, cacheSamples: [CacheUsageSample]) {
+    ) -> (events: [RolloutMetricEvent], currentTurnID: String?, cacheSamples: [CacheUsageSample], telemetry: [ThroughputSignal]) {
         var callStarts: [String: TimeInterval] = [:]
         var currentTurnID = previousTurnID
         var cacheSamples: [CacheUsageSample] = []
@@ -215,7 +216,7 @@ extension LiveRateMonitor {
                 }
             }
         )
-        return (events, currentTurnID, cacheSamples)
+        return (events.filter { $0.telemetry == nil }, currentTurnID, cacheSamples, events.compactMap(\.telemetry))
     }
 
     nonisolated static func rolloutEvents(fromLine line: String) -> [RolloutMetricEvent] {
@@ -251,6 +252,13 @@ extension LiveRateMonitor {
         let payloadType = payload["type"] as? String
         let keyPrefix = (payload["call_id"] as? String) ?? (payload["id"] as? String) ?? UUID().uuidString
         let turnID = rolloutTurnID(object: object, payload: payload) ?? currentTurnID
+
+        if let telemetry = ThroughputSignal.parse(object: object, payload: payload, at: timestamp, turn: turnID) {
+            var event = RolloutMetricEvent(timestamp: timestamp,
+                key: "telemetry:\(telemetry.kind):\(telemetry.itemID):\(timestamp)", turnID: turnID, category: nil, text: "")
+            event.telemetry = telemetry
+            return [event]
+        }
 
         if recordType == "response_item", payloadType == "function_call" {
             callStarts[keyPrefix] = timestamp

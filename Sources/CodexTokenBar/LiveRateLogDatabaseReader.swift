@@ -97,11 +97,17 @@ final class LiveRateLogDatabaseReader: LiveRateLogReading, @unchecked Sendable {
           OR feedback_log_body LIKE '%"type":"response.function_call_arguments.delta"%'
           OR feedback_log_body LIKE '%"type":"response.custom_tool_call_input.delta"%'
           OR feedback_log_body LIKE '%"type":"response.output_item.added"%'
+          OR feedback_log_body LIKE '%"type":"response.output_item.done"%'
+          OR feedback_log_body LIKE '%"type":"response.completed"%'
         )
         """
         return """
         (
           (
+            target IN ('codex_core::responses_retry', 'codex_api::endpoint::responses_websocket')
+            AND (feedback_log_body LIKE '%stream disconnected%' OR feedback_log_body LIKE '%error sending request%' OR feedback_log_body LIKE '%websocket error%')
+          )
+          OR (
             target = 'codex_api::sse::responses'
             AND feedback_log_body LIKE 'SSE event:%'
             AND \(usefulTypes)

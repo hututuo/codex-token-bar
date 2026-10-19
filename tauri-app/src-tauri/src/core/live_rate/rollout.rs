@@ -1,3 +1,4 @@
+use super::c_curve::RolloutSignal;
 use super::state::read_recent_rollout_threads;
 use super::stream::{
     latest_scheduled_timestamp, LiveMetricEvent, LiveTokenCategory, WINDOW_SECONDS,
@@ -65,7 +66,9 @@ enum CacheUsageBoundary {
 
 enum CacheObservation {
     Sample(CacheUsageSample),
-    Context { model: Option<String> },
+    Context {
+        model: Option<String>,
+    },
     Boundary {
         timestamp: Option<f64>,
         kind: CacheUsageBoundary,
@@ -132,7 +135,10 @@ struct CacheAdviceStore {
 
 impl CacheAdviceStore {
     fn begin_poll(&mut self, now: f64, monotonic: Instant) {
-        if self.last_poll.is_some_and(|last| monotonic.duration_since(last) > Duration::from_secs(5)) {
+        if self
+            .last_poll
+            .is_some_and(|last| monotonic.duration_since(last) > Duration::from_secs(5))
+        {
             self.threads.clear();
             self.not_before = now;
         }
@@ -146,7 +152,8 @@ impl CacheAdviceStore {
         now: f64,
         monotonic_now: Instant,
     ) {
-        if matches!(&observation, CacheObservation::Sample(sample) if sample.timestamp.is_some_and(|at| at < self.not_before)) {
+        if matches!(&observation, CacheObservation::Sample(sample) if sample.timestamp.is_some_and(|at| at < self.not_before))
+        {
             return;
         }
         if matches!(observation, CacheObservation::Reset) {
@@ -320,11 +327,7 @@ impl CacheAdviceThreadState {
             .as_ref()
             .map(|request_id| !self.request_ids.seen.contains(request_id))
             .unwrap_or(false);
-        if sample
-            .request_id
-            .as_ref()
-            .is_some_and(|_| !request_is_new)
-        {
+        if sample.request_id.as_ref().is_some_and(|_| !request_is_new) {
             return;
         }
 
@@ -392,8 +395,17 @@ pub(super) fn read_rollout_metrics(
     source_scope: &LiveRateSourceScope,
     now: f64,
 ) -> rusqlite::Result<Vec<LiveMetricEvent>> {
+    read_rollout_metrics_with_signals(codex_home, source_scope, now).map(|(metrics, _)| metrics)
+}
+
+pub(super) fn read_rollout_metrics_with_signals(
+    codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
+    now: f64,
+) -> rusqlite::Result<(Vec<LiveMetricEvent>, Vec<RolloutSignal>)> {
     let (threads, generation) = recent_rollout_threads(codex_home, source_scope)?;
     let mut metrics = Vec::new();
+    let mut signals = Vec::new();
     let mut cache_observations = Vec::new();
 
     for thread in threads {
@@ -420,19 +432,24 @@ pub(super) fn read_rollout_metrics(
         let (offset, reset_for_rewrite) = {
             let mut state = rollout_state();
             if state.scope_generations.get(source_scope) != Some(&generation) {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), Vec::new()));
             }
             if let Some(previous) = state.offsets.get(&key).cloned() {
                 let identity_changed = matches!(
                     (&previous.identity, &signature.identity),
                     (Some(previous), Some(current)) if previous != current
                 );
-                let same_length_rewrite = previous.offset == file_size
-                    && previous.modified_at != signature.modified_at;
-                let boundary_changed = (previous.modified_at != signature.modified_at || previous.offset != file_size)
-                    && previous.boundary.as_ref().is_some_and(|expected|
-                        read_boundary(&path, previous.offset).as_ref() != Some(expected));
-                let reset = previous.offset > file_size || identity_changed || same_length_rewrite || boundary_changed;
+                let same_length_rewrite =
+                    previous.offset == file_size && previous.modified_at != signature.modified_at;
+                let boundary_changed = (previous.modified_at != signature.modified_at
+                    || previous.offset != file_size)
+                    && previous.boundary.as_ref().is_some_and(|expected| {
+                        read_boundary(&path, previous.offset).as_ref() != Some(expected)
+                    });
+                let reset = previous.offset > file_size
+                    || identity_changed
+                    || same_length_rewrite
+                    || boundary_changed;
                 if reset {
                     state.offsets.insert(
                         key.clone(),
@@ -482,10 +499,16 @@ pub(super) fn read_rollout_metrics(
         {
             let mut state = rollout_state();
             if state.scope_generations.get(source_scope) != Some(&generation) {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), Vec::new()));
             }
-            let boundary = if new_offset != offset { read_boundary(&path, new_offset) }
-                else { state.offsets.get(&key).and_then(|previous| previous.boundary.clone()) };
+            let boundary = if new_offset != offset {
+                read_boundary(&path, new_offset)
+            } else {
+                state
+                    .offsets
+                    .get(&key)
+                    .and_then(|previous| previous.boundary.clone())
+            };
             state.offsets.insert(
                 key,
                 RolloutOffset {
@@ -499,6 +522,9 @@ pub(super) fn read_rollout_metrics(
         let mut call_starts = HashMap::new();
         for line in lines {
             let thread_id = thread.id.clone();
+            if let Some(signal) = rollout_signal(&thread_id, &line.text, now) {
+                signals.push(signal);
+            }
             let mut observe = |observation| {
                 if include_cache_advice {
                     cache_observations.push((thread_id.clone(), observation));
@@ -518,7 +544,7 @@ pub(super) fn read_rollout_metrics(
 
     let mut state = rollout_state();
     if state.scope_generations.get(source_scope) != Some(&generation) {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let cache_advice = state.cache_advice.entry(source_scope.clone()).or_default();
     cache_advice.begin_poll(now, Instant::now());
@@ -539,7 +565,122 @@ pub(super) fn read_rollout_metrics(
             .into_iter()
             .filter(|metric| fingerprints.insert(metric.fingerprint())),
     );
-    Ok(retained.clone())
+    Ok((retained.clone(), signals))
+}
+
+fn rollout_signal(thread_id: &str, line: &str, now: f64) -> Option<RolloutSignal> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    let payload = value.get("payload")?.as_object()?;
+    let record_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let payload_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let turn_id = payload
+        .get("turn_id")
+        .and_then(Value::as_str)
+        .filter(|turn_id| !turn_id.is_empty() && turn_id.len() <= 512)
+        .map(ToOwned::to_owned);
+    let timestamp = parse_timestamp(value.get("timestamp").and_then(Value::as_str))
+        .filter(|timestamp| timestamp.is_finite())
+        .unwrap_or(now);
+    match (record_type, payload_type) {
+        ("turn_context", _) => Some(RolloutSignal::Context {
+            thread_id: thread_id.to_owned(),
+            turn_id,
+            model: payload
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|model| model.len() <= 256 && !model.is_empty() && *model != "unknown")
+                .map(ToOwned::to_owned),
+            at: timestamp,
+        }),
+        ("event_msg", "task_started") => Some(RolloutSignal::TurnStarted {
+            thread_id: thread_id.to_owned(),
+            turn_id,
+            at: parse_event_timestamp(payload.get("started_at")).unwrap_or(timestamp),
+        }),
+        ("event_msg", "task_complete") => Some(RolloutSignal::TurnCompleted {
+            thread_id: thread_id.to_owned(),
+            turn_id,
+            failed: payload.get("error").is_some_and(|error| !error.is_null()),
+            at: parse_event_timestamp(payload.get("completed_at")).unwrap_or(timestamp),
+        }),
+        ("event_msg", "task_aborted" | "turn_aborted") => Some(RolloutSignal::TurnCompleted {
+            thread_id: thread_id.to_owned(),
+            turn_id,
+            failed: true,
+            at: parse_event_timestamp(payload.get("completed_at"))
+                .or_else(|| parse_event_timestamp(payload.get("aborted_at")))
+                .unwrap_or(timestamp),
+        }),
+        ("event_msg", "item_completed") => {
+            let item = payload.get("item").and_then(Value::as_object);
+            let item_id = item
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str)
+                .or_else(|| payload.get("item_id").and_then(Value::as_str))
+                .filter(|item_id| !item_id.is_empty() && item_id.len() <= 512)
+                .unwrap_or("unknown")
+                .to_owned();
+            let item_type = item
+                .and_then(|item| item.get("type"))
+                .and_then(Value::as_str);
+            let completed_ms =
+                parse_event_timestamp(payload.get("completed_at_ms")).or_else(|| {
+                    item.and_then(|item| parse_event_timestamp(item.get("completed_at_ms")))
+                });
+            let item_completed_at = completed_ms
+                .map(|milliseconds| milliseconds / 1_000.0)
+                .unwrap_or(timestamp);
+            if !item_type.is_some_and(|item_type| item_type.eq_ignore_ascii_case("reasoning")) {
+                return Some(RolloutSignal::ItemCompleted {
+                    thread_id: thread_id.to_owned(),
+                    turn_id,
+                    item_id,
+                    at: item_completed_at,
+                });
+            }
+            let started = parse_event_timestamp(payload.get("started_at_ms")).or_else(|| {
+                item.and_then(|item| parse_event_timestamp(item.get("started_at_ms")))
+            })? / 1_000.0;
+            let completed = completed_ms? / 1_000.0;
+            if !started.is_finite() || !completed.is_finite() {
+                return None;
+            }
+            let duration_seconds = (completed - started).max(0.0);
+            if !duration_seconds.is_finite() {
+                return None;
+            }
+            Some(RolloutSignal::ReasoningCompleted {
+                thread_id: thread_id.to_owned(),
+                turn_id,
+                item_id,
+                duration_seconds,
+                at: completed,
+            })
+        }
+        (_, "token_usage_record") => {
+            let usage = payload.get("usage")?.as_object()?;
+            Some(RolloutSignal::UsageSettled {
+                thread_id: thread_id.to_owned(),
+                turn_id,
+                output_tokens: usage
+                    .get("output_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                reasoning_tokens: usage
+                    .get("reasoning_output_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                at: timestamp,
+            })
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn latest_cache_advice(
@@ -647,9 +788,9 @@ fn recent_rollout_threads_with_reader(
                     refreshed_at: Instant::now(),
                 },
             );
-            state.offsets.retain(|(scope, path), _| {
-                scope != source_scope || valid_paths.contains(path)
-            });
+            state
+                .offsets
+                .retain(|(scope, path), _| scope != source_scope || valid_paths.contains(path));
             if let Some(cache_advice) = state.cache_advice.get_mut(source_scope) {
                 cache_advice.retain_threads(&valid_thread_ids);
             }
@@ -676,7 +817,9 @@ fn evict_oldest_scope_if_needed(state: &mut RolloutState) {
     state.recent_threads.remove(&scope);
     state.retained_metrics.remove(&scope);
     state.cache_advice.remove(&scope);
-    state.offsets.retain(|(candidate, _), _| candidate != &scope);
+    state
+        .offsets
+        .retain(|(candidate, _), _| candidate != &scope);
     #[cfg(test)]
     state.load_counts.remove(&scope);
 }
@@ -732,10 +875,7 @@ pub(super) fn expire_cache_for_test(scope: &LiveRateSourceScope) {
 }
 
 #[cfg(test)]
-pub(super) fn publish_scope_threads_for_test(
-    scope: &LiveRateSourceScope,
-    thread_id: &str,
-) {
+pub(super) fn publish_scope_threads_for_test(scope: &LiveRateSourceScope, thread_id: &str) {
     let mut state = rollout_state();
     if !state.scope_generations.contains_key(scope) {
         state.next_generation = state.next_generation.saturating_add(1);
@@ -764,7 +904,13 @@ pub(super) fn cached_scope_thread_ids_for_test(scope: &LiveRateSourceScope) -> V
     rollout_state()
         .recent_threads
         .get(scope)
-        .map(|cached| cached.threads.iter().map(|thread| thread.id.clone()).collect())
+        .map(|cached| {
+            cached
+                .threads
+                .iter()
+                .map(|thread| thread.id.clone())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -896,7 +1042,9 @@ fn cache_observation(
 
     Some(CacheObservation::Sample(CacheUsageSample {
         timestamp,
-        input_tokens: last.and_then(|usage| usage.get("input_tokens")).and_then(Value::as_u64),
+        input_tokens: last
+            .and_then(|usage| usage.get("input_tokens"))
+            .and_then(Value::as_u64),
         cached_input_tokens: last
             .and_then(|usage| usage.get("cached_input_tokens"))
             .and_then(Value::as_u64),
@@ -928,23 +1076,45 @@ mod cache_advice_tests {
     use super::*;
 
     fn sample(at: f64, total: Option<u64>, cached: u64) -> CacheObservation {
-        CacheObservation::Sample(CacheUsageSample { timestamp: Some(at), input_tokens: Some(20_000),
-            cached_input_tokens: Some(cached), total_tokens: total, request_id: None })
+        CacheObservation::Sample(CacheUsageSample {
+            timestamp: Some(at),
+            input_tokens: Some(20_000),
+            cached_input_tokens: Some(cached),
+            total_tokens: total,
+            request_id: None,
+        })
     }
 
     #[test]
     fn shared_cross_platform_fixtures() {
-        let fixtures: Value = serde_json::from_str(include_str!("../../../../../fixtures/cache-usage-advice.json")).unwrap();
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../../../../../fixtures/cache-usage-advice.json"
+        ))
+        .unwrap();
         let start = Instant::now();
         for fixture in fixtures.as_array().unwrap() {
             let mut store = CacheAdviceStore::default();
             for row in fixture["steps"].as_array().unwrap() {
                 let at = row["at"].as_f64().unwrap();
-                store.observe(row["thread"].as_str().unwrap_or("a"), CacheObservation::Sample(CacheUsageSample {
-                    timestamp: Some(at), input_tokens: row["input"].as_u64(),
-                    cached_input_tokens: row["cached"].as_u64(), total_tokens: row["total"].as_u64(), request_id: None,
-                }), at, start + Duration::from_secs_f64(at));
-                assert_eq!(store.latest(at).map(|advice| advice.low), row["low"].as_bool(), "{} at {}", fixture["name"], at);
+                store.observe(
+                    row["thread"].as_str().unwrap_or("a"),
+                    CacheObservation::Sample(CacheUsageSample {
+                        timestamp: Some(at),
+                        input_tokens: row["input"].as_u64(),
+                        cached_input_tokens: row["cached"].as_u64(),
+                        total_tokens: row["total"].as_u64(),
+                        request_id: None,
+                    }),
+                    at,
+                    start + Duration::from_secs_f64(at),
+                );
+                assert_eq!(
+                    store.latest(at).map(|advice| advice.low),
+                    row["low"].as_bool(),
+                    "{} at {}",
+                    fixture["name"],
+                    at
+                );
             }
         }
     }
@@ -953,13 +1123,36 @@ mod cache_advice_tests {
     fn parser_extracts_cache_with_zero_reasoning_without_rate_events() {
         let line = r#"{"timestamp":"2026-09-16T00:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"total_tokens":20000}}}}"#;
         let mut observations = Vec::new();
-        let events = rollout_line_metrics("a", Path::new("fixture"), 0, line, 0.0, &mut HashMap::new(), &mut |sample| observations.push(sample));
+        let events = rollout_line_metrics(
+            "a",
+            Path::new("fixture"),
+            0,
+            line,
+            0.0,
+            &mut HashMap::new(),
+            &mut |sample| observations.push(sample),
+        );
         assert!(events.is_empty());
-        assert!(matches!(&observations[0], CacheObservation::Sample(sample) if sample.input_tokens == Some(20_000) && sample.cached_input_tokens == Some(0)));
+        assert!(
+            matches!(&observations[0], CacheObservation::Sample(sample) if sample.input_tokens == Some(20_000) && sample.cached_input_tokens == Some(0))
+        );
         for invalid in ["true", "-1", "2.5", "null", "\"20000\""] {
-            let value: Value = serde_json::from_str(&line.replace("\"input_tokens\":20000", &format!("\"input_tokens\":{invalid}"))).unwrap();
-            let observation = cache_observation(&value, value["payload"].as_object().unwrap(), "event_msg", "token_count", Some(100.0)).unwrap();
-            assert!(matches!(observation, CacheObservation::Sample(sample) if sample.input_tokens.is_none()));
+            let value: Value = serde_json::from_str(&line.replace(
+                "\"input_tokens\":20000",
+                &format!("\"input_tokens\":{invalid}"),
+            ))
+            .unwrap();
+            let observation = cache_observation(
+                &value,
+                value["payload"].as_object().unwrap(),
+                "event_msg",
+                "token_count",
+                Some(100.0),
+            )
+            .unwrap();
+            assert!(
+                matches!(observation, CacheObservation::Sample(sample) if sample.input_tokens.is_none())
+            );
         }
     }
 
@@ -982,17 +1175,42 @@ mod cache_advice_tests {
     fn context_reset_recovery_and_request_identity() {
         let mut store = CacheAdviceStore::default();
         let now = Instant::now();
-        for (at, total, cached) in [(100., 20_000, 100), (101., 40_000, 100), (102., 60_000, 19_000), (103., 80_000, 100), (104., 100_000, 100)] {
-            store.observe("a", sample(at, Some(total), cached), at, now + Duration::from_secs_f64(at));
+        for (at, total, cached) in [
+            (100., 20_000, 100),
+            (101., 40_000, 100),
+            (102., 60_000, 19_000),
+            (103., 80_000, 100),
+            (104., 100_000, 100),
+        ] {
+            store.observe(
+                "a",
+                sample(at, Some(total), cached),
+                at,
+                now + Duration::from_secs_f64(at),
+            );
         }
         assert!(store.latest(104.).unwrap().low);
-        store.observe("a", CacheObservation::Context { model: Some("new-model".into()) }, 105., now);
+        store.observe(
+            "a",
+            CacheObservation::Context {
+                model: Some("new-model".into()),
+            },
+            105.,
+            now,
+        );
         store.observe("a", sample(106., Some(120_000), 100), 106., now);
         assert!(store.latest(106.).unwrap().low);
         store.observe("a", CacheObservation::Reset, 107., now);
         assert!(store.latest(107.).is_none());
-        let identified = |at, id: &str| CacheObservation::Sample(CacheUsageSample {
-            timestamp: Some(at), input_tokens: Some(20_000), cached_input_tokens: Some(0), total_tokens: None, request_id: Some(id.into()) });
+        let identified = |at, id: &str| {
+            CacheObservation::Sample(CacheUsageSample {
+                timestamp: Some(at),
+                input_tokens: Some(20_000),
+                cached_input_tokens: Some(0),
+                total_tokens: None,
+                request_id: Some(id.into()),
+            })
+        };
         store.observe("a", identified(108., "r1"), 108., now);
         store.observe("a", identified(109., "r1"), 109., now);
         assert!(!store.latest(109.).unwrap().low);
@@ -1189,7 +1407,14 @@ mod cache_advice_tests {
 
     #[test]
     fn invalid_utf8_does_not_shift_byte_cursor() {
-        let path = std::env::temp_dir().join(format!("cache-advice-offset-{}-{}", std::process::id(), SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let path = std::env::temp_dir().join(format!(
+            "cache-advice-offset-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         fs::write(&path, [0xff, b'\n', b'{', b'}', b'\n', b'x']).unwrap();
         let (offset, lines) = read_new_lines(&path, 0).unwrap();
         assert_eq!(offset, 5);
@@ -1205,18 +1430,59 @@ mod cache_advice_tests {
         store.begin_poll(100., start);
         store.observe("a", sample(100., Some(20_000), 100), 100., start);
         store.begin_poll(110., start + Duration::from_secs(10));
-        store.observe("a", sample(101., Some(40_000), 100), 110., start + Duration::from_secs(10));
+        store.observe(
+            "a",
+            sample(101., Some(40_000), 100),
+            110.,
+            start + Duration::from_secs(10),
+        );
         assert!(store.latest(110.).is_none());
-        store.observe("a", sample(111., Some(60_000), 100), 111., start + Duration::from_secs(11));
+        store.observe(
+            "a",
+            sample(111., Some(60_000), 100),
+            111.,
+            start + Duration::from_secs(11),
+        );
         assert!(!store.latest(111.).unwrap().low);
-        store.observe("a", sample(112., Some(80_000), 100), 112., start + Duration::from_secs(12));
+        store.observe(
+            "a",
+            sample(112., Some(80_000), 100),
+            112.,
+            start + Duration::from_secs(12),
+        );
         assert!(store.latest(112.).unwrap().low);
-        let path = std::env::temp_dir().join(format!("cache-advice-boundary-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("cache-advice-boundary-{}", std::process::id()));
         fs::write(&path, b"original\n").unwrap();
         let original = read_boundary(&path, 9).unwrap();
         fs::write(&path, b"rewritten and longer\n").unwrap();
         assert_ne!(read_boundary(&path, 9).unwrap(), original);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn parser_reads_actual_event_msg_reasoning_milliseconds_and_abort_events() {
+        let timestamp = OffsetDateTime::parse("2026-10-20T00:00:00Z", &Rfc3339).unwrap();
+        let start_ms = (timestamp.unix_timestamp() - 1) * 1_000;
+        let end_ms = timestamp.unix_timestamp() * 1_000;
+        let line = format!(
+            r#"{{"timestamp":"2026-10-20T00:00:00Z","type":"event_msg","payload":{{"type":"item_completed","thread_id":"thread-a","turn_id":"turn-a","started_at_ms":{start_ms},"completed_at_ms":{end_ms},"item":{{"type":"Reasoning","id":"reason-a"}}}}}}"#
+        );
+        let signal = rollout_signal("thread-a", &line, timestamp.unix_timestamp() as f64);
+        assert!(matches!(
+            signal,
+            Some(RolloutSignal::ReasoningCompleted {
+                duration_seconds,
+                item_id,
+                ..
+            }) if duration_seconds == 1.0 && item_id == "reason-a"
+        ));
+
+        let aborted = r#"{"timestamp":"2026-10-20T00:00:00Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-a"}}"#;
+        assert!(matches!(
+            rollout_signal("thread-a", aborted, timestamp.unix_timestamp() as f64),
+            Some(RolloutSignal::TurnCompleted { failed: true, .. })
+        ));
     }
 }
 
@@ -1237,15 +1503,17 @@ fn rollout_line_metrics(
     };
     let parsed_timestamp = parse_timestamp(value.get("timestamp").and_then(Value::as_str));
     let timestamp = parsed_timestamp.unwrap_or(now);
-    let record_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
-    let payload_type = payload.get("type").and_then(Value::as_str).unwrap_or_default();
-    if let Some(observation) = cache_observation(
-        &value,
-        payload,
-        record_type,
-        payload_type,
-        parsed_timestamp,
-    ) {
+    let record_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let payload_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if let Some(observation) =
+        cache_observation(&value, payload, record_type, payload_type, parsed_timestamp)
+    {
         observe_cache(observation);
     }
     let key_prefix = payload
@@ -1258,7 +1526,10 @@ fn rollout_line_metrics(
     if record_type == "response_item" && payload_type == "function_call" {
         call_starts.insert(key_prefix.clone(), timestamp);
         let name = payload.get("name").and_then(Value::as_str);
-        let arguments = payload.get("arguments").and_then(Value::as_str).unwrap_or("");
+        let arguments = payload
+            .get("arguments")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if arguments.is_empty() {
             return Vec::new();
         }
@@ -1326,7 +1597,11 @@ fn rollout_line_metrics(
 
     if record_type == "response_item"
         && (payload_type == "message" || payload_type == "assistant")
-        && payload.get("role").and_then(Value::as_str).unwrap_or("assistant") == "assistant"
+        && payload
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("assistant")
+            == "assistant"
     {
         let text = message_text(&Value::Object(payload.clone()));
         if text.is_empty() {

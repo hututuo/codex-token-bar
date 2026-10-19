@@ -45,6 +45,7 @@ struct LiveRateView: View {
                 }
             }
             .frame(height: LiveRatePanelLayout.contentHeight)
+            ObservedSpeedView(monitor: monitor)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -197,7 +198,7 @@ struct LiveRateInstrument: View {
                         }
                     }
 
-                    Text("官方为避免高频日志写入损耗硬盘，砍掉了很多流式输出日志；大部分速率只是估算，只用于判断 Codex 是否正在干活，不代表真实速率。")
+                    Text("活动曲线包含预估与结算校准；真实测速单独统计。中断立即停止，正常结束最多收尾 5 秒。")
                         .font(.system(size: 8.4, weight: .medium))
                         .foregroundStyle(.secondary.opacity(0.78))
                         .lineLimit(2)

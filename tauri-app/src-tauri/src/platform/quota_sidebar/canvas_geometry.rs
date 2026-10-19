@@ -1,5 +1,5 @@
-//! Pixel geometry for the fixed 88x560 logical sidebar canvas on Windows.
-use super::SidebarFrame;
+//! Pixel geometry for the fixed 88x680 logical sidebar canvas on Windows.
+use super::{SidebarFrame, SIDEBAR_CANVAS_HEIGHT};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CanvasFrame {
@@ -27,7 +27,7 @@ pub(super) fn layout(frame: SidebarFrame, left: bool, scale: f64) -> Result<Canv
     let width = frame.width.round() as i32;
     let height = frame.height.round() as i32;
     let canvas_width = (88.0 * scale).round() as i32;
-    let canvas_height = (560.0 * scale).round() as i32;
+    let canvas_height = (SIDEBAR_CANVAS_HEIGHT * scale).round() as i32;
     let x = if left { frame.x.round() as i32 } else { (frame.x + frame.width).round() as i32 - width };
     let y = frame.y.round() as i32;
     let canvas_x = if left { x } else { x + width - canvas_width };
@@ -50,7 +50,7 @@ mod tests {
     fn every_expansion_sample_keeps_viewport_edge_and_content_center() {
         for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.5] {
             for left in [true, false] {
-                for expanded_height in [470.0, 560.0] {
+                for expanded_height in [590.0, 680.0] {
                     for step in 0..=120 {
                         let t = step as f64 / 120.0;
                         let width = (16.0 + 72.0 * t) * scale;
@@ -60,7 +60,7 @@ mod tests {
                         let f = layout(SidebarFrame { x: if left { edge } else { edge - width },
                             y: center - height / 2.0, width, height }, left, scale).unwrap();
                         assert_eq!(f.canvas_width, (88.0 * scale).round() as i32);
-                        assert_eq!(f.canvas_height, (560.0 * scale).round() as i32);
+                        assert_eq!(f.canvas_height, (SIDEBAR_CANVAS_HEIGHT * scale).round() as i32);
                         let canvas_edge = f.canvas_x + if left { 0 } else { f.canvas_width };
                         assert_eq!(canvas_edge, edge as i32);
                         let canvas_center = f.canvas_y as f64 + f.canvas_height as f64 / 2.0;
@@ -78,9 +78,9 @@ mod tests {
     fn constrained_workarea_and_free_drag_keep_the_canvas_centered() {
         for left in [true, false] {
             let f = layout(SidebarFrame { x: -2500.4, y: -120.2, width: 50.4, height: 210.5 }, left, 1.25).unwrap();
-            assert_eq!((f.canvas_width, f.canvas_height), (110, 700));
+            assert_eq!((f.canvas_width, f.canvas_height), (110, 850));
             assert_eq!(f.height, 211);
-            assert!(((350.0 - f.clip_y as f64) - f.height as f64 / 2.0).abs() <= 1.0);
+            assert!(((425.0 - f.clip_y as f64) - f.height as f64 / 2.0).abs() <= 1.0);
         }
     }
 

@@ -44,11 +44,11 @@ test("primary rows retain large targets while the centered summary scrolls withi
       window.document.documentElement.classList.add("quota-sidebar-fixed-canvas");
       // Startup sets this class before mounting; recreate the DOM in that order.
       window.document.body.innerHTML = window.document.body.innerHTML;
-      for (const height of [134, 220, 470, 560]) {
+      for (const height of [134, 220, 470, 560, 590, 680]) {
         window.happyDOM.setWindowSize({ width: 16, height });
         const rootStyle = window.getComputedStyle(window.document.documentElement);
-        assert.equal(rootStyle.width, "88px"); assert.equal(rootStyle.height, "560px");
-        assert.equal(window.getComputedStyle(window.document.querySelector(".qs-summary")).top, "280px");
+        assert.equal(rootStyle.width, "88px"); assert.equal(rootStyle.height, "680px");
+        assert.equal(window.getComputedStyle(window.document.querySelector(".qs-summary")).top, "340px");
       }
     } finally { window.close(); }
   });

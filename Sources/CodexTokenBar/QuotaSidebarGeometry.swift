@@ -18,7 +18,7 @@ struct QuotaSidebarSettings: Equatable {
     }
 }
 
-enum QuotaSidebarDetail: Equatable { case overview, tasks, radar, credits }
+enum QuotaSidebarDetail: Equatable { case overview, tasks, radar, credits, speeds }
 
 struct QuotaSidebarInteraction: Equatable {
     private(set) var expanded = false
@@ -48,6 +48,11 @@ struct QuotaSidebarInteraction: Equatable {
     mutating func dismiss() { expanded = false; detail = nil; pinned = false; cacheNoticeID = nil; cacheNoticePointerEntered = false }
 }
 
+enum QuotaSidebarLayout {
+    static let expandedCanvasHeight: CGFloat = 680
+    static let weeklyExpandedHeight: CGFloat = 590
+}
+
 struct QuotaSidebarFrames: Equatable {
     let rail: CGRect
     let detail: CGRect
@@ -65,7 +70,7 @@ struct QuotaSidebarFrames: Equatable {
                           width: max(0, floor(source.maxX * safeScale) / safeScale - left),
                           height: max(0, floor(source.maxY * safeScale) / safeScale - bottom))
         let railWidth = min(expanded ? 88.0 : 16.0, area.width)
-        let contentHeight = expanded ? (hasFiveHour ? 560.0 : 470.0) : (hasFiveHour ? 250.0 : 192.0)
+        let contentHeight = expanded ? (hasFiveHour ? QuotaSidebarLayout.expandedCanvasHeight : QuotaSidebarLayout.weeklyExpandedHeight) : (hasFiveHour ? 250.0 : 192.0)
         let railHeight = min(contentHeight, area.height)
         let gap = min(12.0, max(0, area.width - railWidth))
         let detailWidth = min(420.0, max(0, area.width - railWidth - gap))

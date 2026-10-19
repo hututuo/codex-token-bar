@@ -223,8 +223,8 @@ final class QuotaSidebarTests: XCTestCase {
             for expanded in [false, true] {
                 let full = QuotaSidebarFrames.make(usableFrame: area, edge: edge, expanded: expanded, scale: 2, hasFiveHour: true)
                 let weekly = QuotaSidebarFrames.make(usableFrame: area, edge: edge, expanded: expanded, scale: 2, hasFiveHour: false)
-                XCTAssertEqual(full.rail.height, expanded ? 560 : 250)
-                XCTAssertEqual(weekly.rail.height, expanded ? 470 : 192)
+                XCTAssertEqual(full.rail.height, expanded ? 680 : 250)
+                XCTAssertEqual(weekly.rail.height, expanded ? 590 : 192)
                 XCTAssertEqual(weekly.rail.midY, full.rail.midY)
                 XCTAssertEqual(weekly.rail.minX, full.rail.minX)
                 XCTAssertEqual(weekly.rail.width, full.rail.width)
@@ -362,9 +362,9 @@ final class QuotaSidebarTests: XCTestCase {
                 let x = edge == .right ? 1440 - width : 0
                 canvas.frame = CGRect(x: x, y: 600 - height / 2, width: width, height: height)
                 canvas.layout()
-                XCTAssertEqual(host.frame.size, CGSize(width: 88, height: 560))
+                XCTAssertEqual(host.frame.size, CGSize(width: 88, height: 680))
                 XCTAssertEqual(canvas.frame.minX + host.frame.minX, edge == .right ? 1352 : 0)
-                XCTAssertEqual(canvas.frame.minY + host.frame.minY, 320)
+                XCTAssertEqual(canvas.frame.minY + host.frame.minY, 260)
                 XCTAssertTrue(canvas.layer?.masksToBounds == true)
             }
         }

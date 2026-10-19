@@ -105,13 +105,13 @@ html.quota-sidebar-document,html.quota-sidebar-document body,html.quota-sidebar-
 
 /* Match the native macOS canvas exactly. WebKit's visible viewport may be
    smaller than its NSView during clipping; vh/vw must not drive content. */
-html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-sidebar-fixed-canvas #root{width:88px!important;height:560px!important;min-width:88px!important;min-height:560px!important}
-.quota-sidebar-fixed-canvas .qs-rail{width:88px;height:560px;border-radius:0;background:transparent}
+html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-sidebar-fixed-canvas #root{width:88px!important;height:680px!important;min-width:88px!important;min-height:680px!important}
+.quota-sidebar-fixed-canvas .qs-rail{width:88px;height:680px;border-radius:0;background:transparent}
 /* Windows clips the painted canvas with the native rounded window region. */
 .quota-sidebar-windows-canvas .qs-rail{background:#080a09}
-.quota-sidebar-fixed-canvas .qs-summary{top:280px}
-.quota-sidebar-fixed-canvas .qs-bars{height:560px}
-.quota-sidebar-fixed-canvas .qs-radar-edge{top:calc((560px - var(--qs-native-height,560px))/2);width:var(--qs-native-width,88px);height:var(--qs-native-height,560px);border-radius:8px}
+.quota-sidebar-fixed-canvas .qs-summary{top:340px}
+.quota-sidebar-fixed-canvas .qs-bars{height:680px}
+.quota-sidebar-fixed-canvas .qs-radar-edge{top:calc((680px - var(--qs-native-height,680px))/2);width:var(--qs-native-width,88px);height:var(--qs-native-height,680px);border-radius:8px}
 
 /* Both layers keep their layout across mode changes; only opacity is animated.
    Inert removes hidden summary buttons from pointer and keyboard hit testing. */
@@ -188,3 +188,22 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 /* Keep all returned Reserve windows reachable within the existing native clip. */
 .quota-sidebar-document .qs-summary[data-scrollable=true]{height:calc(var(--qs-native-height,100vh) - 24px);max-height:calc(var(--qs-native-height,100vh) - 24px);justify-content:flex-start;overflow-y:auto;overscroll-behavior:contain;padding:8px 0}
 .quota-sidebar-document .qs-cache-dismiss{min-height:32px;margin-top:0;padding:5px 2px;border:1px solid #efc07788;border-radius:5px;background:#efc07729;color:#ffdda7;font-size:10px;line-height:16px;font-weight:650;cursor:pointer}.quota-sidebar-document .qs-cache-dismiss:hover{background:#efc07740;color:#fff0d6}.quota-sidebar-document .qs-cache-dismiss:focus-visible{outline:2px solid #ffe4b8;outline-offset:2px}
+
+.qs-model-speeds { display: flex; flex-shrink: 0; flex-direction: column; align-items: center; gap: 4px; width: 100%; padding: 5px 3px; color: #78b7ff; background: transparent; border: 0; cursor: pointer; }
+.qs-model-speeds > span:first-child { color: #929a9c; font-size: 9px; }
+.qs-model-speeds > span { display: flex; flex-direction: column; gap: 1px; max-width: 72px; }
+.qs-model-speeds small { font-size: 9px; overflow: hidden; text-overflow: ellipsis; max-width: 70px; white-space: nowrap; }
+.qs-model-speeds strong { font-size: 10px; font-variant-numeric: tabular-nums; }
+.qs-model-speeds:hover { background: #ffffff08; border-radius: 8px; }
+.qs-detail .observed-speed-models { grid-template-columns: 1fr; }
+
+/* Center short summaries inside the native visible clip; overflow keeps a reachable top. */
+.quota-sidebar-document .qs-summary[data-scrollable=true][data-reminder=false] > :first-child { margin-top: auto; }
+.quota-sidebar-document .qs-summary[data-scrollable=true][data-reminder=false] > :last-child { margin-bottom: auto; }
+.qs-speed-window { display:flex; justify-content:center; gap:3px; }
+.qs-speed-window button { color:#929a9c; border:0; border-radius:4px; padding:3px 4px; background:transparent; font-size:8px; }
+.qs-speed-window button[aria-pressed=true] { color:#78b7ff; background:#ffffff13; }
+
+.qs-model-speeds > button { display:flex; flex-direction:column; align-items:center; gap:4px; border:0; background:transparent; color:inherit; padding:0; cursor:pointer; width:100%; }
+.qs-model-speeds > button > span { display:flex; flex-direction:column; align-items:center; gap:1px; max-width:72px; }
+.qs-model-speeds > button > span:first-child { font-size:9px; color:#929a9c; }

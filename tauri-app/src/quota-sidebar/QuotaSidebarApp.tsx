@@ -1,3 +1,5 @@
+import { useObservedSpeedWindow } from "../components/liveRate/observedSpeedWindow";
+import { ObservedSpeedDetails } from "../components/liveRate/ObservedSpeedDetails";
 import { CacheUsageNotice } from "../components/liveRate/CacheUsageNotice";
 import { cacheAdviceTitle } from "../components/liveRate/cacheAdvicePresentation";
 import { useCacheUsageAdvice } from "../components/liveRate/useCacheUsageAdvice";
@@ -245,6 +247,8 @@ function RailSurface() {
 export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh, onDismissReminder }: {
   data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
 }) {
+  const [speedMinutes, setSpeedMinutes] = useObservedSpeedWindow();
+  const modelSpeeds = (speedMinutes === 15 ? data.snapshot.modelSpeeds15m : data.snapshot.modelSpeeds30m) ?? [];
   const ratePercent = sidebarRatePercent(data.snapshot, liveRateEnabled, rateFullScale);
   const { warning: cacheWarning, dismiss: dismissCacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice, liveRateEnabled && data.snapshot.liveRateAvailable === true);
   const rateLabel = !liveRateEnabled ? "实时速率已关闭" : ratePercent === null ? "实时速率不可用" : `实时速率 ${formatLiveRateValue(data.snapshot.tokensPerSecond)} t/s · 量程 ${sanitizeRateFullScale(rateFullScale)} t/s`;
@@ -294,6 +298,14 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
       <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
+      <div className="qs-model-speeds">
+        <button type="button" onClick={() => onOpen("quota", "speeds")} title="查看近期模型均速与采样明细">
+          <span>均速 · {speedMinutes}分钟</span>
+          {modelSpeeds.slice(0, 3).map(model => <span key={model.model}><small>{model.model.replace(/^gpt-/, "")}</small><strong>{model.tokensPerSecond.toFixed(1)} t/s</strong></span>)}
+          {!modelSpeeds.length && <small>暂无样本</small>}
+        </button>
+        <div className="qs-speed-window">{([15, 30] as const).map(minutes => <button type="button" key={minutes} aria-pressed={speedMinutes === minutes} onClick={() => setSpeedMinutes(minutes)}>{minutes}m</button>)}</div>
+      </div>
       {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
       <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>
       {reserveWindows.map(window => {
@@ -437,6 +449,7 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
         <Metric label={modelCostLabel} value={modelCostText} />
       </div>
     </section>
+    <ObservedSpeedDetails data={snapshot} />
     <section className="qs-model-usage" id="qs-section-models"><div className="qs-section-heading"><h3>今日模型用量</h3><span>今日占比 · 全部模型为分母</span></div>
       {models.length === 0 ? <p className="qs-empty">暂无可信的今日模型用量</p> : models.map(model => <div className="qs-model-row" key={model.key}>
         <div><strong title={model.key}>{model.label}</strong><span>{formatTokens(model.tokens)} <small>{(model.share * 100).toFixed(1)}%</small></span></div>

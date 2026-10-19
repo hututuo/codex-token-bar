@@ -13,7 +13,11 @@ private struct ReserveSidebarScroll: ViewModifier {
     let enabled: Bool
     func body(content: Content) -> some View {
         if enabled {
-            ScrollView(.vertical) { content.padding(.vertical, 12) }.scrollIndicators(.hidden)
+            GeometryReader { proxy in
+                ScrollView(.vertical) {
+                    content.padding(.vertical, 12).frame(minHeight: proxy.size.height, alignment: .center)
+                }.scrollIndicators(.hidden)
+            }
         } else {
             content
         }
@@ -129,6 +133,29 @@ struct QuotaSidebarRail: View {
                             .accessibilityIdentifier("quota-sidebar-dashboard")
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
                     rateRing
+                    Button { controller.select(.speeds) } label: {
+                        VStack(spacing: 4) {
+                            Text("均速 · \(monitor.speedWindowMinutes)分钟").font(.system(size: 9)).foregroundStyle(.gray)
+                            if monitor.modelSpeeds.isEmpty {
+                                Text("暂无样本").font(.system(size: 9)).foregroundStyle(.gray)
+                            }
+                            ForEach(monitor.modelSpeeds.prefix(3)) { model in
+                                VStack(spacing: 1) {
+                                    Text(model.model.replacingOccurrences(of: "gpt-", with: "")).lineLimit(1).minimumScaleFactor(0.65)
+                                    Text("\(model.tokensPerSecond, specifier: "%.1f") t/s").monospacedDigit()
+                                }.font(.system(size: 9)).foregroundStyle(SidebarPalette.blue)
+                            }
+                        }.frame(maxWidth: .infinity).padding(.vertical, 4).contentShape(Rectangle())
+                    }.buttonStyle(SidebarPulseButtonStyle()).help("查看真实测速明细与样本质量")
+                    HStack(spacing: 4) {
+                        ForEach([15, 30], id: \.self) { minutes in
+                            Button("\(minutes)m") { monitor.setSpeedWindowMinutes(minutes) }
+                                .foregroundStyle(monitor.speedWindowMinutes == minutes ? SidebarPalette.blue : .gray)
+                                .padding(.horizontal, 4).padding(.vertical, 3)
+                                .background(.white.opacity(monitor.speedWindowMinutes == minutes ? 0.09 : 0), in: RoundedRectangle(cornerRadius: 5))
+                        }
+                    }.font(.system(size: 8)).buttonStyle(.plain)
+
                     if let fiveHour = quota.snapshot.fiveHour {
                         ring(label: "5h", window: fiveHour, color: SidebarPalette.green)
                     }
@@ -192,7 +219,8 @@ struct QuotaSidebarRail: View {
                         }.buttonStyle(SidebarPulseButtonStyle())
                     }
                 }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
-                    .modifier(ReserveSidebarScroll(enabled: !quota.snapshot.reserveWindows.isEmpty))
+                    .modifier(ReserveSidebarScroll(enabled: true))
+                    .frame(height: controller.expandedContentHeight)
                     .frame(maxHeight: .infinity, alignment: .center)
                     .transition(.opacity)
                 }
@@ -436,8 +464,9 @@ struct QuotaSidebarDetailView: View {
                     controller.openDashboard()
                 })
             }
-            HStack(spacing: 22) {
+            HStack(spacing: 14) {
                 tab("额度概览", detail: .overview)
+                tab("测速", detail: .speeds)
                 tab("任务", detail: .tasks)
                 tab("雷达", detail: .radar)
                 tab("重置卡", detail: .credits)
@@ -447,7 +476,8 @@ struct QuotaSidebarDetailView: View {
             Divider().overlay(.white.opacity(0.12))
             ScrollViewReader { proxy in
             ScrollView {
-                if controller.interaction.detail == .tasks { taskContent(snapshot.runningThreads) }
+                if controller.interaction.detail == .speeds { ObservedSpeedView(monitor: monitor).id("top") }
+                else if controller.interaction.detail == .tasks { taskContent(snapshot.runningThreads) }
                 else if controller.interaction.detail == .credits { resetCreditList(snapshot.quota).id("top") }
                 else if controller.interaction.detail == .radar {
                     QuotaSidebarRadarContent(snapshot: radar.snapshot, crowd: radar.crowdSnapshot,

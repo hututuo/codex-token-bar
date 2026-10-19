@@ -224,6 +224,99 @@ fn stream_event(row: &LogRow) -> Option<ResponseStreamEvent> {
     serde_json::from_str(json_text).ok()
 }
 
+pub(super) fn observed_stream_event(row: &LogRow) -> Option<ObservedStreamEvent> {
+    let event = stream_event(row)?;
+    let item_id = event
+        .item_id
+        .or_else(|| event.item.as_ref().and_then(|item| item.id.clone()));
+    if event.event_type == "response.output_item.added" {
+        return Some(ObservedStreamEvent::ItemStarted {
+            thread_id: row.thread_id.clone()?,
+            item_id: item_id.filter(|id| id != "unknown")?,
+            timestamp: row.timestamp(),
+        });
+    }
+    if let Some(delta) = event.delta.filter(|delta| !delta.is_empty()) {
+        let category = match event.event_type.as_str() {
+            "response.output_text.delta" => LiveTokenCategory::VisibleText,
+            "response.function_call_arguments.delta" | "response.custom_tool_call_input.delta" => {
+                let item_name = event.item.as_ref().and_then(|item| item.name.as_deref());
+                if item_name == Some("apply_patch") {
+                    LiveTokenCategory::PatchInput
+                } else {
+                    LiveTokenCategory::ToolArguments
+                }
+            }
+            _ => return None,
+        };
+        return Some(ObservedStreamEvent::Delta {
+            thread_id: row.thread_id.clone()?,
+            item_id: item_id.filter(|id| id != "unknown")?,
+            timestamp: row.timestamp(),
+            retry: event
+                .retry
+                .as_ref()
+                .and_then(|value| {
+                    value.as_bool().or_else(|| {
+                        value.as_str().map(|text| {
+                            text.eq_ignore_ascii_case("retry") || text.eq_ignore_ascii_case("true")
+                        })
+                    })
+                })
+                .unwrap_or(false),
+            category,
+            delta,
+        });
+    }
+    if matches!(
+        event.event_type.as_str(),
+        "response.output_item.done"
+            | "response.completed"
+            | "response.failed"
+            | "response.incomplete"
+    ) {
+        return Some(ObservedStreamEvent::Finished {
+            thread_id: row.thread_id.clone()?,
+            turn_id: event.turn_id.filter(|id| !id.is_empty() && id.len() <= 512),
+            item_id: item_id.filter(|id| !id.is_empty() && id.len() <= 512),
+            failed: matches!(
+                event.event_type.as_str(),
+                "response.failed" | "response.incomplete"
+            ),
+            timestamp: row.timestamp(),
+        });
+    }
+    None
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum ObservedStreamEvent {
+    ItemStarted {
+        thread_id: String,
+        item_id: String,
+        timestamp: f64,
+    },
+    Delta {
+        thread_id: String,
+        item_id: String,
+        timestamp: f64,
+        retry: bool,
+        category: LiveTokenCategory,
+        delta: String,
+    },
+    Finished {
+        thread_id: String,
+        turn_id: Option<String>,
+        item_id: Option<String>,
+        failed: bool,
+        timestamp: f64,
+    },
+}
+
+pub(super) fn estimate_observed_tokens(text: &str, category: LiveTokenCategory) -> u32 {
+    estimate_token_count(text, category)
+}
+
 fn metric_event(event: ResponseStreamEvent, row: &LogRow) -> Option<LiveMetricEvent> {
     let delta = event.delta?;
     if delta.is_empty() {
@@ -273,7 +366,11 @@ fn metric_event(event: ResponseStreamEvent, row: &LogRow) -> Option<LiveMetricEv
 }
 
 fn thread_rate_key(metric: &LiveMetricEvent) -> String {
-    if let Some(thread_id) = metric.thread_id.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(thread_id) = metric
+        .thread_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         return format!("thread:{thread_id}");
     }
     if metric.item_id != "unknown" && !metric.item_id.is_empty() {
@@ -282,13 +379,13 @@ fn thread_rate_key(metric: &LiveMetricEvent) -> String {
     if let Some(sequence_number) = metric.sequence_number {
         return format!("unknown-seq:{}:{sequence_number}", metric.event_type);
     }
-    format!("unknown-event:{}:{:.3}", metric.event_type, metric.timestamp)
+    format!(
+        "unknown-event:{}:{:.3}",
+        metric.event_type, metric.timestamp
+    )
 }
 
-fn rolling_rate_by_thread(
-    rolling_deltas: &[(String, f64, u32)],
-    now: f64,
-) -> HashMap<String, f64> {
+fn rolling_rate_by_thread(rolling_deltas: &[(String, f64, u32)], now: f64) -> HashMap<String, f64> {
     let mut grouped = HashMap::<String, Vec<(f64, u32)>>::new();
     for (thread_id, time, tokens) in rolling_deltas {
         grouped
@@ -323,34 +420,61 @@ fn rolling_rate_for_entries(rolling_deltas: &[(f64, u32)], now: f64) -> f64 {
 }
 
 fn estimate_token_count(text: &str, category: LiveTokenCategory) -> u32 {
-    let mut tokens = 0.0;
-    let mut ascii_run = 0_u32;
-    let ascii_divisor = if category == LiveTokenCategory::VisibleText {
-        4.2
-    } else {
-        3.0
-    };
+    let mut estimator = ObservedTokenEstimator::new(category);
+    estimator.extend(text)
+}
 
-    fn flush_ascii(tokens: &mut f64, ascii_run: &mut u32, divisor: f64) {
-        if *ascii_run > 0 {
-            *tokens += (f64::from(*ascii_run) / divisor).max(1.0);
-            *ascii_run = 0;
+#[derive(Clone, Debug)]
+pub(super) struct ObservedTokenEstimator {
+    category: LiveTokenCategory,
+    weighted_tokens: f64,
+    ascii_run: u32,
+}
+
+impl ObservedTokenEstimator {
+    pub(super) fn new(category: LiveTokenCategory) -> Self {
+        Self {
+            category,
+            weighted_tokens: 0.0,
+            ascii_run: 0,
         }
     }
 
-    for character in text.chars() {
-        if character.is_ascii() && !character.is_ascii_whitespace() {
-            ascii_run += 1;
+    /// Append one chunk while carrying any unfinished ASCII run across chunk boundaries.
+    pub(super) fn extend(&mut self, text: &str) -> u32 {
+        let ascii_divisor = if self.category == LiveTokenCategory::VisibleText {
+            4.2
         } else {
-            flush_ascii(&mut tokens, &mut ascii_run, ascii_divisor);
-            if !character.is_whitespace() {
-                tokens += non_ascii_token_weight(character, category);
+            3.0
+        };
+        for character in text.chars() {
+            if character.is_ascii() && !character.is_ascii_whitespace() {
+                self.ascii_run = self.ascii_run.saturating_add(1);
+            } else {
+                self.flush_ascii(ascii_divisor);
+                if !character.is_whitespace() {
+                    self.weighted_tokens += non_ascii_token_weight(character, self.category);
+                }
             }
         }
+        self.estimated_tokens(ascii_divisor)
     }
-    flush_ascii(&mut tokens, &mut ascii_run, ascii_divisor);
 
-    tokens.round() as u32
+    fn flush_ascii(&mut self, divisor: f64) {
+        if self.ascii_run > 0 {
+            self.weighted_tokens += (f64::from(self.ascii_run) / divisor).max(1.0);
+            self.ascii_run = 0;
+        }
+    }
+
+    fn estimated_tokens(&self, divisor: f64) -> u32 {
+        let pending_ascii = if self.ascii_run > 0 {
+            (f64::from(self.ascii_run) / divisor).max(1.0)
+        } else {
+            0.0
+        };
+        (self.weighted_tokens + pending_ascii).round() as u32
+    }
 }
 
 fn non_ascii_token_weight(character: char, category: LiveTokenCategory) -> f64 {
@@ -393,7 +517,7 @@ pub(super) struct LogRow {
 }
 
 impl LogRow {
-    fn timestamp(&self) -> f64 {
+    pub(super) fn timestamp(&self) -> f64 {
         self.ts as f64 + self.ts_nanos as f64 / 1_000_000_000.0
     }
 }
@@ -405,8 +529,11 @@ struct ResponseStreamEvent {
     delta: Option<String>,
     #[serde(rename = "item_id")]
     item_id: Option<String>,
+    #[serde(rename = "turn_id")]
+    turn_id: Option<String>,
     #[serde(rename = "sequence_number")]
     sequence_number: Option<i64>,
+    retry: Option<serde_json::Value>,
     item: Option<ResponseStreamItem>,
 }
 

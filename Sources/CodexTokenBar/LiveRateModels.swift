@@ -185,6 +185,7 @@ struct LiveMetricEvent {
 }
 
 struct RolloutMetricEvent {
+    var telemetry: ThroughputSignal? = nil
     let timestamp: TimeInterval
     let startTimestamp: TimeInterval?
     let key: String

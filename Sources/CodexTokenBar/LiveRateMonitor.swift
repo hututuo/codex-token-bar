@@ -33,6 +33,17 @@ final class LiveRateMonitor: ObservableObject {
     @Published private(set) var preciseTokenCountingEnabled: Bool
     @Published private(set) var monitoringEnabled: Bool
 
+    @Published private(set) var speedSamples: [ObservedSpeedSample] = []
+    @Published private(set) var modelSpeeds: [ModelSpeedSummary] = []
+    @Published private(set) var measurementStatus = "等待可用的流式增量；结算记录不作为真实测速"
+    @Published private(set) var speedWindowMinutes = UserDefaults.standard.integer(forKey: "observedSpeedWindowMinutes") == 15 ? 15 : 30
+    var throughputCurve = ThroughputCurve()
+    var speedContexts = ObservedStreamContexts()
+    var speedCollector = ObservedSpeedCollector()
+    private var savedSpeedRevision = -1
+    private var lastModelSpeedSummaryAt = 0.0
+    private var speedSourceIdentity: String?
+
     private let resolver = CodexDataSourceResolver()
     let logReaderFactory: LiveRateLogReaderMaking
     private let recentThreadsLoader: @Sendable (String) throws -> [ThreadRow]
@@ -200,6 +211,14 @@ final class LiveRateMonitor: ObservableObject {
         Task {
             await resetToLatestThread(activityGeneration: activityGeneration)
         }
+    }
+
+    func setSpeedWindowMinutes(_ minutes: Int) {
+        guard [15, 30].contains(minutes), speedWindowMinutes != minutes else { return }
+        speedWindowMinutes = minutes
+        UserDefaults.standard.set(minutes, forKey: "observedSpeedWindowMinutes")
+        modelSpeeds = speedCollector.summaries(now: Date().timeIntervalSince1970, windowSeconds: Double(minutes * 60))
+        lastModelSpeedSummaryAt = 0
     }
 
     func selectThread(_ id: String) {
@@ -930,7 +949,10 @@ final class LiveRateMonitor: ObservableObject {
             lastGlobalLogID = max(lastGlobalLogID, streamScannedThroughID)
         }
         var processedRolloutEvents = false
-        let processedStreamEvents = processStreamRows(streamRows)
+        for read in rolloutReads {
+            for signal in read.telemetry { speedContexts.consume(signal, thread: read.threadID) }
+        }
+        let processedStreamEvents = processStreamRows(streamRows, now: now)
         discardPendingRolloutsMatchedByStream()
         if processRolloutReads(rolloutReads, now: now) {
             processedRolloutEvents = true
@@ -947,11 +969,24 @@ final class LiveRateMonitor: ObservableObject {
         return true
     }
 
-    private func processStreamRows(_ rows: [LogRow]) -> Bool {
+    private func ensureSpeedSource() {
+        let identity = dataSource?.stableIdentityKey
+        if speedSourceIdentity != identity {
+            speedSourceIdentity = identity
+            // Store metadata only in TokenBar support, partitioned by a non-reversible source hash.
+            let digest = identity.map { ObservedSpeedCollector.sourceKey($0) } ?? "default"
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            speedCollector = ObservedSpeedCollector(storeURL: base.appendingPathComponent("CodexTokenBar/observed-speed-\(digest).json"))
+            savedSpeedRevision = -1
+        }
+    }
+
+    private func processStreamRows(_ rows: [LogRow], now: Double) -> Bool {
+        ensureSpeedSource()
         var processedStreamEvents = false
         for row in rows {
             lastGlobalLogID = max(lastGlobalLogID, row.id)
-            if add(row: row) {
+            if add(row: row, now: now) {
                 processedStreamEvents = true
             }
         }
@@ -959,6 +994,7 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     private func processRolloutReads(_ reads: [RolloutRead], now: TimeInterval) -> Bool {
+        ensureSpeedSource()
         var processedEvents = false
 
         for read in reads {
@@ -971,6 +1007,16 @@ final class LiveRateMonitor: ObservableObject {
                 guard sample.context || sample.reset || sample.boundary != nil || sample.timestamp >= cacheAdviceNotBefore || !sample.timestamp.isFinite else { continue }
                 cacheAdviceTracker.consume(sample, threadID: read.threadID, now: now)
             }
+            for signal in read.telemetry {
+                    throughputCurve.consume(signal, thread: read.threadID, now: now)
+                    if signal.kind == "itemDone" {
+                        speedCollector.finish(thread: read.threadID, turn: signal.turnID.isEmpty ? nil : signal.turnID, item: signal.itemID, estimator: { self.estimateTokenCount($0, category: .visibleText) })
+                    } else if ["complete", "abort", "failure"].contains(signal.kind) {
+                        speedCollector.finish(thread: read.threadID, turn: signal.turnID.isEmpty ? nil : signal.turnID, warning: signal.kind == "complete" ? nil : "本轮中断或失败，样本未完整结束", estimator: { self.estimateTokenCount($0, category: .visibleText) })
+                    }
+                    processedEvents = true
+                }
+
             for event in read.events {
                 guard !countedRolloutFingerprints.contains(
                     rolloutFingerprint(event, threadID: read.threadID)
@@ -1083,15 +1129,44 @@ final class LiveRateMonitor: ObservableObject {
         return true
     }
 
-    private func add(row: LogRow) -> Bool {
+    private func add(row: LogRow, now: Double = Date().timeIntervalSince1970) -> Bool {
         updateTraceAttribution(from: row)
+        let receipt = Double(row.ts) + Double(row.tsNanos) / 1_000_000_000
+        if let faultThread = row.threadID,
+           (row.target == "codex_core::responses_retry" || row.target == "codex_api::endpoint::responses_websocket"),
+           ["stream disconnected", "error sending request", "WebSocket error", "websocket error"].contains(where: { row.feedbackLogBody.contains($0) }),
+           let current = throughputCurve.sessions[faultThread], receipt >= current.lastQuantity {
+            throughputCurve.consume(.init(kind: "pause", timestamp: receipt, turnID: current.turn), thread: faultThread, now: now)
+            speedCollector.finish(thread: faultThread, warning: "模型连接重试或断开，样本可能受网络影响", estimator: { self.estimateTokenCount($0, category: .visibleText) })
+            return true
+        }
         guard let streamEvent = Self.streamEvent(from: row) else { return false }
         updateAttribution(from: streamEvent, row: row)
+        let streamItemID = streamEvent.item?.id ?? streamEvent.itemID
+        let streamThread = row.threadID ?? streamItemID.flatMap { itemThreadIDs[$0] }
+        if streamEvent.type == "response.output_item.added", let streamThread, let streamItemID {
+            speedCollector.start(thread: streamThread, item: streamItemID)
+        } else if streamEvent.type == "response.output_item.done", let streamThread, let streamItemID {
+            speedCollector.finish(thread: streamThread, item: streamItemID, estimator: { self.estimateTokenCount($0, category: .visibleText) })
+        } else if streamEvent.type == "response.completed", let streamThread, let completedTurn = streamEvent.turnID {
+            speedCollector.finish(thread: streamThread, turn: completedTurn, estimator: { self.estimateTokenCount($0, category: .visibleText) })
+        }
+
 
         var processedEvent = false
         for event in Self.metricEvents(from: streamEvent, row: row, toolNames: itemToolNames) {
             let resolvedThreadID = resolveThreadID(for: event)
-            guard shouldCountStreamEvent(event, resolvedThreadID: resolvedThreadID) else { continue }
+            guard shouldCountStreamEvent(event, resolvedThreadID: resolvedThreadID, receiptID: row.id) else { continue }
+            if event.isDelta, let resolvedThreadID, event.category?.contributesToLiveRate == true {
+                if let context = speedContexts.resolve(thread: resolvedThreadID, at: event.timestamp,
+                    explicitTurn: event.turnID ?? itemTurnIDs[event.itemID]) {
+                    throughputCurve.consume(.init(kind: "observed", timestamp: event.timestamp, turnID: context.turn,
+                        itemID: "delta:\(row.id):\(event.itemID)", output: Double(estimateTokenCount(event.text, category: event.category ?? .visibleText))), thread: resolvedThreadID, now: now)
+                    speedCollector.append(thread: resolvedThreadID, turn: context.turn,
+                        item: event.itemID, model: context.model, text: event.text, at: event.timestamp)
+                }
+            }
+
             if add(event: event, keyThreadID: "all", to: &totalRate) {
                 processedEvent = true
             }
@@ -1173,13 +1248,13 @@ final class LiveRateMonitor: ObservableObject {
         return false
     }
 
-    private func shouldCountStreamEvent(_ event: LiveMetricEvent, resolvedThreadID: String?) -> Bool {
+    private func shouldCountStreamEvent(_ event: LiveMetricEvent, resolvedThreadID: String?, receiptID: Int? = nil) -> Bool {
         guard event.source != .rollout,
               let category = event.category,
               !event.text.isEmpty else {
             return true
         }
-        let sequence = event.sequenceNumber.map(String.init) ?? "text:\(event.text.hashValue)"
+        let sequence = event.sequenceNumber.map(String.init) ?? receiptID.map { "row:\($0)" } ?? "text:\(event.text.hashValue)"
         let resolvedTurnID = event.turnID ?? itemTurnIDs[event.itemID]
         let fingerprint = "\(resolvedThreadID ?? "unknown"):\(resolvedTurnID ?? "unknown"):\(event.itemID):\(category.rawValue):\(sequence)"
         guard countedStreamFingerprints.insertIfNew(fingerprint) else { return false }
@@ -1264,6 +1339,23 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     private func updateSnapshots(now: TimeInterval) {
+        ensureSpeedSource()
+        throughputCurve.tick(now: now)
+        speedCollector.finish(warning: "未收到完整结束标记；闲置后结束采样", before: now - 10,
+            estimator: { self.estimateTokenCount($0, category: .visibleText) })
+        let samplesChanged = speedCollector.revision != savedSpeedRevision
+        if samplesChanged {
+            speedCollector.persist(); savedSpeedRevision = speedCollector.revision
+            speedSamples = speedCollector.samples.sorted { $0.endedAt > $1.endedAt }
+        }
+        if samplesChanged || now - lastModelSpeedSummaryAt >= 60 {
+            let models = speedCollector.summaries(now: now, windowSeconds: Double(speedWindowMinutes * 60))
+            if models != modelSpeeds { modelSpeeds = models }
+            lastModelSpeedSummaryAt = now
+        }
+        let status = speedCollector.persistenceError ?? (speedSamples.isEmpty ? "暂无真实流式样本：当前 Codex 日志未提供可关联的连续输出增量" : "本地接收计时 · 分词估算 · 所选时窗有效样本加权")
+        if status != measurementStatus { measurementStatus = status }
+
         selectedRate.prune(now: now, windowSeconds: windowSeconds)
         totalRate.prune(now: now, windowSeconds: windowSeconds)
         for key in Array(totalSessionRates.keys) {
@@ -1283,14 +1375,8 @@ final class LiveRateMonitor: ObservableObject {
         }
         lastSnapshotPublishAt = now
 
-        let selectedHasRecentActivity = selectedRate.hasRecentActivity(now: now, windowSeconds: windowSeconds)
-        let selectedRawRate = selectedRate.rollingRate(now: now, windowSeconds: windowSeconds, minimumSpan: minimumRateSpanSeconds)
-        let selectedDisplayRate = Self.displayRawRate(selectedRawRate, scope: .selectedSession)
-        selectedSmoothedTokensPerSecond = Self.smoothedDisplayRate(
-            previous: selectedSmoothedTokensPerSecond,
-            raw: selectedDisplayRate,
-            hasRecentActivity: selectedHasRecentActivity
-        )
+        let selectedHasRecentActivity = throughputCurve.rate(thread: threadID) > 0
+        selectedSmoothedTokensPerSecond = throughputCurve.rate(thread: threadID)
         if let updated = updatedSnapshot(
             from: snapshot,
             rate: selectedRate,
@@ -1302,16 +1388,8 @@ final class LiveRateMonitor: ObservableObject {
         ) {
             snapshot = updated
         }
-        let totalHasRecentActivity = totalRate.hasRecentActivity(now: now, windowSeconds: windowSeconds)
-        let totalSessionRawRates = totalSessionRates.values.map {
-            $0.rollingRate(now: now, windowSeconds: windowSeconds, minimumSpan: minimumRateSpanSeconds)
-        }
-        let totalDisplayRate = Self.combinedAllSessionsDisplayRate(totalSessionRawRates)
-        totalSmoothedTokensPerSecond = Self.smoothedDisplayRate(
-            previous: totalSmoothedTokensPerSecond,
-            raw: totalDisplayRate,
-            hasRecentActivity: totalHasRecentActivity
-        )
+        let totalHasRecentActivity = throughputCurve.total > 0
+        totalSmoothedTokensPerSecond = throughputCurve.total
         if let updated = updatedSnapshot(
             from: totalSnapshot,
             rate: totalRate,

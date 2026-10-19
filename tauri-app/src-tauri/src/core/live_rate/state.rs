@@ -127,8 +127,14 @@ pub(super) fn read_recent_rollout_threads(
 
 pub(super) fn read_thread_title(codex_home: &Path, thread_id: &str) -> Result<Option<String>> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
-    let name_expression = if column_exists(&connection, "threads", "name") { "name" } else { "''" };
-    let sql = format!("SELECT {name_expression}, title, first_user_message FROM threads WHERE id = ?1 LIMIT 1;");
+    let name_expression = if column_exists(&connection, "threads", "name") {
+        "name"
+    } else {
+        "''"
+    };
+    let sql = format!(
+        "SELECT {name_expression}, title, first_user_message FROM threads WHERE id = ?1 LIMIT 1;"
+    );
     let mut statement = connection.prepare(&sql)?;
     let mut rows = statement.query(params![thread_id])?;
     let Some(row) = rows.next()? else {
@@ -136,7 +142,9 @@ pub(super) fn read_thread_title(codex_home: &Path, thread_id: &str) -> Result<Op
     };
 
     let name = compact_title(&row.get::<_, Option<String>>(0)?.unwrap_or_default());
-    if !name.is_empty() { return Ok(Some(name)); }
+    if !name.is_empty() {
+        return Ok(Some(name));
+    }
     let title = row.get::<_, Option<String>>(1)?.unwrap_or_default();
     let first_message = row.get::<_, Option<String>>(2)?.unwrap_or_default();
     // Codex often fills title with the first prompt before it has a real name.

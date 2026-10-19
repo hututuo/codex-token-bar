@@ -1,11 +1,13 @@
+import { ObservedSpeedDetails } from "./liveRate/ObservedSpeedDetails";
 import { CacheUsageNotice } from "./liveRate/CacheUsageNotice";
 import { canUseQuotaSidebar } from "../settings/displaySettings";
-import type { LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
+import type { LiveRateSnapshot, LiveThreadOption, PlatformCapabilities } from "../types/dashboard";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { LiveRateMeter } from "./liveRate/LiveRateMeter";
 import { liveRateNotice } from "./liveRate/liveRateNotice";
 
 interface LiveRateCardProps {
+  liveThreadOptions?: LiveThreadOption[];
   floatingSettings: FloatingWindowSettings;
   floatingEnabled: boolean;
   quotaSidebarEnabled: boolean;
@@ -27,6 +29,7 @@ interface LiveRateCardProps {
 }
 
 export function LiveRateCard({
+  liveThreadOptions = [],
   floatingSettings,
   floatingEnabled,
   quotaSidebarEnabled,
@@ -124,7 +127,7 @@ export function LiveRateCard({
             onFullScaleChange={onTokenRateFullScaleChange}
           />
           <p className="live-rate-note">
-            官方为减少磁盘写入关闭了部分流式日志，因此这里显示的是估算速率，主要用于判断 Codex 是否正在工作，不代表真实 tok/s。
+            活动曲线包含思考预估与结算校准；真实测速单独统计。中断立即停止，正常结束最多收尾 5 秒。
           </p>
         </div>
 
@@ -188,6 +191,7 @@ export function LiveRateCard({
           </div>
         </div>
       </div>
+      <ObservedSpeedDetails data={snapshot} threads={liveThreadOptions} />
     </section>
   );
 }

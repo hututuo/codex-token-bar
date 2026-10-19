@@ -142,3 +142,18 @@ test("rate scale defaults to 150 while preserving configured 200 and 260", () =>
   assert.equal(sanitizeRateFullScale(1), 50);
   assert.equal(rateFillScale(150, DEFAULT_TOKEN_RATE_FULL_SCALE), 1);
 });
+
+test("C curve keeps its finite filter and immediate stop without another frontend EMA", () => {
+  const active = snapshot({ measurementStatus: "provisional_curve", tokensPerSecond: 220, selectedTokensPerSecond: 220 });
+  const displayed = smoothLiveRateSnapshot(active, snapshot({ tokensPerSecond: 10 }));
+  assert.equal(displayed.tokensPerSecond, 220);
+  assert.equal(displayed.selectedTokensPerSecond, 220);
+  const stopped = smoothLiveRateSnapshot(snapshot({ measurementStatus: "no_observed_deltas" }), active);
+  assert.equal(stopped.tokensPerSecond, 0);
+});
+
+test("a finished speed sample publishes even while the activity curve is zero", () => {
+  const before = liveRateDisplayBucket(snapshot({ measurementStatus: "no_observed_deltas", speedSamples: [] }));
+  const after = liveRateDisplayBucket(snapshot({ measurementStatus: "observed_history", speedSamples: [{ id: "stream-1" }] }));
+  assert.notEqual(before, after);
+});

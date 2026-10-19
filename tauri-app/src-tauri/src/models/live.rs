@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::LocalDataWarning;
 
@@ -29,9 +29,66 @@ pub struct LiveRateSnapshot {
     pub requests_today: u32,
     pub max_tokens_per_second: f64,
     pub precise_enabled: bool,
+    #[serde(default)]
+    pub c_curve: Vec<CurvePoint>,
+    #[serde(default)]
+    pub speed_samples: Vec<SpeedSample>,
+    #[serde(default)]
+    pub model_speeds: Vec<ModelSpeedSummary>,
+    #[serde(default)]
+    pub model_speeds_15m: Vec<ModelSpeedSummary>,
+    #[serde(default)]
+    pub model_speeds_30m: Vec<ModelSpeedSummary>,
+    #[serde(default)]
+    pub measurement_status: String,
     pub cache_advice: Option<CacheAdvice>,
     pub unread_summary: UnreadSummary,
     pub warnings: Vec<LocalDataWarning>,
+}
+
+/// A completed sample based only on timestamped response stream deltas.
+/// Content itself is deliberately never serialized or persisted.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedSample {
+    pub id: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub model: Option<String>,
+    pub started_at: f64,
+    pub ended_at: f64,
+    pub output_tokens: u32,
+    pub output_characters: u64,
+    pub output_bytes: u64,
+    pub chunk_count: u32,
+    pub duration_seconds: f64,
+    pub tokens_per_second: f64,
+    pub confidence: String,
+    pub network_warning: bool,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CurvePoint {
+    pub timestamp: f64,
+    pub tokens_per_second: f64,
+    pub remaining_budget: f64,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub model: Option<String>,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSpeedSummary {
+    pub model: String,
+    pub tokens_per_second: f64,
+    pub sample_count: u32,
+    pub output_tokens: u64,
+    pub duration_seconds: f64,
 }
 
 #[derive(Debug, Serialize)]

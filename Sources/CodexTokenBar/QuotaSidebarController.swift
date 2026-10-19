@@ -39,7 +39,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private(set) var railPanel: QuotaSidebarPanel?
     private(set) var detailPanel: QuotaSidebarPanel?
     @Published private(set) var edge = QuotaSidebarEdge.right
-    @Published private(set) var expandedContentHeight: CGFloat = 470
+    @Published private(set) var expandedContentHeight: CGFloat = QuotaSidebarLayout.weeklyExpandedHeight
     private(set) var hasFiveHour = false
     private var quotaObservation: AnyCancellable?
     private let settings: UserDefaults
@@ -390,7 +390,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                                           expanded: interaction.expanded, scale: screen.backingScaleFactor,
                                           hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5)
         let previous = frames
-        // The host remains 560pt tall for reveal animation, but a weekly-only
+        // The host keeps a stable canvas for reveal animation, but a weekly-only
         // or short-screen rail clips that canvas. Fit full-panel notices to
         // the settled visible height, not the stable animation canvas.
         if interaction.expanded && expandedContentHeight != next.rail.height {
@@ -492,7 +492,7 @@ final class QuotaSidebarCanvasView: NSView {
     private func layoutCanvas() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let hostFrame = CGRect(x: edge == .right ? bounds.width - 88 : 0,
-                               y: (bounds.height - 560) / 2, width: 88, height: 560)
+                               y: (bounds.height - QuotaSidebarLayout.expandedCanvasHeight) / 2, width: 88, height: QuotaSidebarLayout.expandedCanvasHeight)
         if host.frame != hostFrame { host.frame = hostFrame }
         if let signal, signal.frame != bounds { signal.frame = bounds }
         layer?.cornerRadius = min(22, max(8, 8 + (bounds.width - 16) * 14 / 72))

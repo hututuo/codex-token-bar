@@ -312,13 +312,13 @@ mod tests {
     #[test]
     fn arbitrary_vertical_anchor_survives_mode_changes_with_workarea_clamping() {
         let screen = screen("main", 0.0, 24.0, 1440.0, 1200.0, 1.0);
-        for center in [0.0, 0.27, 0.75, 1.0] {
+        for center in [0.0, 0.4, 0.75, 1.0] {
             for mode in [SidebarMode::Rest, SidebarMode::Hover, SidebarMode::Detail] {
                 let (rail, card) = screen_frames(&screen, "left", mode, true, center);
                 for frame in [rail, card] {
                     assert!(frame.y >= screen.work.y); assert!(frame.y + frame.height <= screen.work.y + screen.work.height);
                 }
-                if center == 0.27 { assert!((normalized_center(rail, screen.work) - center).abs() < 1e-9); }
+                if center == 0.4 { assert!((normalized_center(rail, screen.work) - center).abs() < 1e-9); }
                 assert_eq!(rail.x, screen.work.x);
             }
         }
@@ -327,7 +327,7 @@ mod tests {
     fn mixed_dpi_geometry_keeps_global_physical_origin_and_logical_width() {
         let screen = screen("two", -2880.0, -300.0, 2880.0, 1800.0, 2.0);
         let (rail, detail) = screen_frames(&screen, "left", SidebarMode::Hover, false, 0.4);
-        assert_eq!(rail.x, -2880.0); assert_eq!(rail.width, 176.0); assert_eq!(rail.height, 940.0);
+        assert_eq!(rail.x, -2880.0); assert_eq!(rail.width, 176.0); assert_eq!(rail.height, 1180.0);
         assert_eq!(detail.x - rail.x - rail.width, 32.0);
         assert!((normalized_center(rail, screen.work) - 0.4).abs() < 1e-9);
         let surviving = [screen.clone()];

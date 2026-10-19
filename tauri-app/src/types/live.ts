@@ -14,6 +14,11 @@ export interface CacheUsageAdvice {
 }
 
 export interface LiveRateSnapshot {
+  speedSamples?: SpeedSample[];
+  modelSpeeds?: ModelSpeedSummary[];
+  modelSpeeds15m?: ModelSpeedSummary[];
+  modelSpeeds30m?: ModelSpeedSummary[];
+  measurementStatus?: string;
   cacheAdvice?: CacheUsageAdvice | null;
   scopeLabel: string;
   threadTitle: string;
@@ -44,6 +49,11 @@ export interface LiveRateStreamLease {
 }
 
 export interface FloatingPanelSnapshot {
+  speedSamples?: SpeedSample[];
+  modelSpeeds?: ModelSpeedSummary[];
+  modelSpeeds15m?: ModelSpeedSummary[];
+  modelSpeeds30m?: ModelSpeedSummary[];
+  measurementStatus?: string;
   cacheAdvice?: CacheUsageAdvice | null;
   tokensPerSecond: number;
   maxTokensPerSecond: number;
@@ -85,4 +95,30 @@ export interface UnreadSummary {
 export interface UnreadSummaryChangedPayload {
   sourceToken: CodexHomeSourceToken;
   summary: UnreadSummary;
+}
+
+export interface SpeedSample {
+  id: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  model: string | null;
+  startedAt: number;
+  endedAt: number;
+  outputTokens: number;
+  outputCharacters: number;
+  outputBytes: number;
+  chunkCount: number;
+  durationSeconds: number;
+  tokensPerSecond: number;
+  confidence: string;
+  networkWarning?: string | boolean | null;
+  source: string;
+}
+export interface ModelSpeedSummary {
+  model: string;
+  tokensPerSecond: number;
+  sampleCount: number;
+  outputTokens: number;
+  durationSeconds: number;
 }

@@ -55,6 +55,11 @@ export function floatingSnapshotForLiveRate(
   const liveRateStatus = compactLiveRateStatus(liveRate);
   const snapshot: FloatingPanelSnapshot = {
     ...baseFloatingPanelSnapshot,
+    speedSamples: liveRate.speedSamples,
+    modelSpeeds: liveRate.modelSpeeds,
+    modelSpeeds15m: liveRate.modelSpeeds15m,
+    modelSpeeds30m: liveRate.modelSpeeds30m,
+    measurementStatus: liveRate.measurementStatus,
     tokensPerSecond: liveRate.tokensPerSecond,
     cacheAdvice: liveRate.cacheAdvice ?? null,
     maxTokensPerSecond: liveRate.maxTokensPerSecond,

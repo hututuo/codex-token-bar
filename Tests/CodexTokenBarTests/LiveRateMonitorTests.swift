@@ -528,7 +528,7 @@ final class LiveRateMonitorTests: XCTestCase {
 
         let rows = try LiveRateLogDatabaseReader(path: databaseURL.path).globalLogRows(afterID: 0)
 
-        XCTAssertEqual(rows.map(\.id), [2, 3, 4, 6, 7])
+        XCTAssertEqual(rows.map(\.id), [2, 3, 4, 5, 6, 7])
     }
 
     func testLiveRateLogReaderAdvancesAcrossLargeTailsWithNoUsableRows() throws {
@@ -769,11 +769,9 @@ final class LiveRateMonitorTests: XCTestCase {
         let instrumentSource = String(viewSource[instrumentRange.lowerBound..<scaleSliderRange.lowerBound])
         let controlsSource = String(viewSource[controlsRange.lowerBound..<viewSource.endIndex])
 
-        XCTAssertTrue(viewSource.contains("官方为避免高频日志写入损耗硬盘"))
-        XCTAssertTrue(viewSource.contains("砍掉了很多流式输出日志"))
-        XCTAssertTrue(viewSource.contains("大部分速率只是估算"))
-        XCTAssertTrue(viewSource.contains("只用于判断 Codex 是否正在干活"))
-        XCTAssertTrue(viewSource.contains("不代表真实速率"))
+        XCTAssertTrue(viewSource.contains("活动曲线包含预估与结算校准"))
+        XCTAssertTrue(viewSource.contains("真实测速单独统计"))
+        XCTAssertTrue(viewSource.contains("正常结束最多收尾 5 秒"))
         XCTAssertTrue(instrumentSource.contains("isMonitoringEnabled"))
         XCTAssertTrue(instrumentSource.contains("LiveRatePowerToggle"))
         XCTAssertTrue(instrumentSource.contains("实时速率已关闭"))
@@ -931,7 +929,7 @@ final class LiveRateMonitorTests: XCTestCase {
         let expected = monitor.estimateTokenCount("stream visible", category: .visibleText)
             + monitor.estimateTokenCount("rollout visible", category: .visibleText)
         XCTAssertEqual(monitor.snapshot.breakdown.visibleText, expected)
-        XCTAssertGreaterThan(monitor.snapshot.rollingTokensPerSecond, 0)
+        XCTAssertEqual(monitor.snapshot.rollingTokensPerSecond, 0, "单个无轮次的增量和完成文本不能伪装成即时测速")
     }
 
     @MainActor
@@ -1469,11 +1467,12 @@ final class LiveRateMonitorTests: XCTestCase {
         let visibleText = monitor.snapshot.breakdown.visibleText
         XCTAssertGreaterThan(visibleText, 0)
 
+        let displayedRate = monitor.snapshot.rollingTokensPerSecond
         monitor.setDataSource(source)
 
         XCTAssertEqual(monitor.selectedThreadID, "thread-1")
         XCTAssertEqual(monitor.snapshot.breakdown.visibleText, visibleText)
-        XCTAssertGreaterThan(monitor.snapshot.rollingTokensPerSecond, 0)
+        XCTAssertEqual(monitor.snapshot.rollingTokensPerSecond, displayedRate)
     }
 
     @MainActor
@@ -1965,6 +1964,9 @@ final class LiveRateMonitorTests: XCTestCase {
         baseline.testProcessPollInputs(streamRows: streamRows, rolloutReads: [], now: 1_000.5)
 
         XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+        // The finite curve publishes active snapshots at 1 Hz; compare after the next publication.
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: [], now: 1_001.6)
+        baseline.testProcessPollInputs(streamRows: [], rolloutReads: [], now: 1_001.6)
         XCTAssertEqual(monitor.snapshot.breakdown, baseline.snapshot.breakdown)
         XCTAssertEqual(monitor.totalSnapshot.breakdown, baseline.totalSnapshot.breakdown)
         XCTAssertEqual(

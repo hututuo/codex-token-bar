@@ -83,7 +83,7 @@ extension LiveRateMonitor {
     }
 
     func hasActiveRollingWindow(now: TimeInterval) -> Bool {
-        selectedRate.hasRecentActivity(now: now, windowSeconds: windowSeconds)
+        throughputCurve.active || selectedRate.hasRecentActivity(now: now, windowSeconds: windowSeconds)
             || totalRate.hasRecentActivity(now: now, windowSeconds: windowSeconds)
     }
 
@@ -92,6 +92,9 @@ extension LiveRateMonitor {
     }
 
     func clearStreamState() {
+        throughputCurve = ThroughputCurve()
+        speedContexts = ObservedStreamContexts()
+        speedCollector.pending.removeAll()
         turnThreadIDs.removeAll()
         itemTurnIDs.removeAll()
         itemThreadIDs.removeAll()

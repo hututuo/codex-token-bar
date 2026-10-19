@@ -22,16 +22,16 @@ test('Windows black rail and summary retain layout through narrow, intermediate 
     for (const side of ['left', 'right']) {
       const rail = window.document.querySelector('main');
       rail.className = `qs-rail qs-${side}`;
-      for (const [width, height] of [[16, 192], [40, 300], [88, 470], [88, 560], [16, 250]]) {
+      for (const [width, height] of [[16, 192], [40, 300], [88, 470], [88, 560], [88, 590], [88, 680], [16, 250]]) {
         window.happyDOM.setWindowSize({ width, height });
         window.document.documentElement.style.setProperty('--qs-native-width', `${width}px`);
         window.document.documentElement.style.setProperty('--qs-native-height', `${height}px`);
         const style = window.getComputedStyle(rail);
         assert.equal(style.width, '88px');
-        assert.equal(style.height, '560px');
+        assert.equal(style.height, '680px');
         assert.equal(style.backgroundColor, '#080a09');
         const summary = window.getComputedStyle(window.document.querySelector('.qs-summary'));
-        assert.equal(summary.top, '280px');
+        assert.equal(summary.top, '340px');
         assert.equal(summary.width, '88px');
         assert.equal(summary.transform, 'translateY(-50%)');
       }

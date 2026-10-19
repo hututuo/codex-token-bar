@@ -180,7 +180,10 @@ impl LiveRateMonitorService {
         after_claim: impl FnOnce(),
     ) -> LiveRateSnapshot {
         let (refresh_nonce, reset_generation) = loop {
-            let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(mut snapshot) = state.cached_snapshot_before_signature(selected_thread_id) {
                 snapshot.unread_summary = unread_summary.clone();
                 return fresh_cache_snapshot(snapshot);
@@ -216,7 +219,10 @@ impl LiveRateMonitorService {
         after_claim();
         let signature = log_store_signature(&self.codex_home, &self.source_scope);
         {
-            let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.refresh_in_flight != Some(refresh_nonce)
                 || state.reset_generation != reset_generation
             {
@@ -263,7 +269,10 @@ impl LiveRateMonitorService {
             snapshot.clone()
         };
 
-        let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.refresh_in_flight == Some(refresh_nonce)
             && state.reset_generation == reset_generation
         {
@@ -274,7 +283,10 @@ impl LiveRateMonitorService {
             });
             state.last_signature = Some(signature);
             state.last_refresh = Some(Instant::now());
-            if snapshot.tokens_per_second > 0.05 || snapshot.selected_tokens_per_second > 0.05 {
+            if snapshot.tokens_per_second > 0.05
+                || snapshot.selected_tokens_per_second > 0.05
+                || snapshot.measurement_status == "observing_deltas"
+            {
                 state.last_active_at = Some(Instant::now());
             }
             state.refresh_count += 1;
@@ -300,7 +312,10 @@ impl LiveRateMonitorService {
     }
 
     pub fn reset(&self) {
-        let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.all_snapshot = None;
         state.selected_snapshot = None;
         state.last_signature = None;
@@ -503,10 +518,13 @@ mod immediate_snapshot_tests {
 // Expire observational advice even when the underlying files and rate are idle.
 // This runs on the existing caller cadence and never schedules a read.
 fn fresh_cache_snapshot(mut snapshot: LiveRateSnapshot) -> LiveRateSnapshot {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default().as_secs_f64();
-    if snapshot.cache_advice.as_ref().is_some_and(|advice|
-        !advice.timestamp.is_finite() || advice.timestamp > now || now - advice.timestamp > 120.0) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    if snapshot.cache_advice.as_ref().is_some_and(|advice| {
+        !advice.timestamp.is_finite() || advice.timestamp > now || now - advice.timestamp > 120.0
+    }) {
         snapshot.cache_advice = None;
     }
     snapshot

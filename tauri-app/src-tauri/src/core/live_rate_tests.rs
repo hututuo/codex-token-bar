@@ -26,24 +26,41 @@ fn cache_advice_snapshot_uses_affected_thread_title_and_keeps_missing_title_unkn
         let now = event_time.unix_timestamp() as f64;
         read_snapshot_result_at(&root, &scope, Some("selected"), now - 1.0).unwrap();
         append_rollout_line_at(
-            &rollout_path, event_time, "event_msg",
+            &rollout_path,
+            event_time,
+            "event_msg",
             r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":2000},"total_token_usage":{"total_tokens":20000}}}"#,
         );
         let first = read_snapshot_result_at(&root, &scope, Some("selected"), now + 0.25).unwrap();
         assert!(first.cache_advice.as_ref().is_none_or(|advice| !advice.low));
         append_rollout_line_at(
-            &rollout_path, event_time, "event_msg",
+            &rollout_path,
+            event_time,
+            "event_msg",
             r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":2000},"total_token_usage":{"total_tokens":40000}}}"#,
         );
         let snapshot = read_snapshot_result_at(&root, &scope, Some("selected"), now + 0.5).unwrap();
-        let advice = snapshot.cache_advice.as_ref().expect("second low request should alert");
+        let advice = snapshot
+            .cache_advice
+            .as_ref()
+            .expect("second low request should alert");
         assert_eq!(advice.thread_id, "low");
-        assert_eq!(advice.thread_title.as_deref(), if title.trim().is_empty() { None } else { Some(title) });
+        assert_eq!(
+            advice.thread_title.as_deref(),
+            if title.trim().is_empty() {
+                None
+            } else {
+                Some(title)
+            }
+        );
         assert_eq!(snapshot.selected_thread_title, "当前选中任务");
         assert_eq!(snapshot.tokens_per_second, 0.0);
         assert!(advice.low);
         let json = serde_json::to_value(advice).unwrap();
-        assert_eq!(json["threadTitle"], serde_json::to_value(&advice.thread_title).unwrap());
+        assert_eq!(
+            json["threadTitle"],
+            serde_json::to_value(&advice.thread_title).unwrap()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -54,10 +71,17 @@ fn cache_advice_uses_explicit_name_instead_of_first_prompt() {
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "named", "first prompt text", 0);
     let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
-    connection.execute_batch("ALTER TABLE threads ADD COLUMN name TEXT;").unwrap();
+    connection
+        .execute_batch("ALTER TABLE threads ADD COLUMN name TEXT;")
+        .unwrap();
     connection.execute("UPDATE threads SET name = '正式会话标题', first_user_message = 'first prompt text' WHERE id = 'named'", []).unwrap();
-    assert_eq!(state::read_thread_title(&root, "named").unwrap().as_deref(), Some("正式会话标题"));
-    connection.execute("UPDATE threads SET name = '' WHERE id = 'named'", []).unwrap();
+    assert_eq!(
+        state::read_thread_title(&root, "named").unwrap().as_deref(),
+        Some("正式会话标题")
+    );
+    connection
+        .execute("UPDATE threads SET name = '' WHERE id = 'named'", [])
+        .unwrap();
     assert_eq!(state::read_thread_title(&root, "named").unwrap(), None);
     drop(connection);
     fs::remove_dir_all(root).unwrap();
@@ -113,7 +137,8 @@ fn read_snapshot_counts_recent_stream_deltas() {
     });
 
     let snapshot = read_snapshot(&root, None);
-    assert!(snapshot.tokens_per_second > 0.0);
+    assert_eq!(snapshot.tokens_per_second, 0.0);
+    assert_eq!(snapshot.measurement_status, "observing_deltas");
     assert_eq!(snapshot.thread_title, "实时测速测试");
     assert_eq!(snapshot.total_tokens_today, 0);
     assert_eq!(snapshot.requests_today, 0);
@@ -147,8 +172,8 @@ fn read_snapshot_deduplicates_sse_and_websocket_sequence_events() {
     });
 
     let snapshot = read_snapshot(&root, None);
-    assert!(snapshot.tokens_per_second > 0.0);
-    assert!(snapshot.tokens_per_second < 20.0);
+    assert_eq!(snapshot.tokens_per_second, 0.0);
+    assert_eq!(snapshot.measurement_status, "observing_deltas");
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -173,12 +198,8 @@ fn sqlite_tool_argument_deltas_are_distributed_to_avoid_fake_spikes() {
     });
 
     let snapshot = read_snapshot(&root, None);
-    assert!(snapshot.tokens_per_second > 0.0);
-    assert!(
-        snapshot.tokens_per_second < 90.0,
-        "tool input should be conservatively distributed, got {} tok/s",
-        snapshot.tokens_per_second
-    );
+    assert_eq!(snapshot.tokens_per_second, 0.0);
+    assert_eq!(snapshot.measurement_status, "observing_deltas");
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -200,7 +221,8 @@ fn read_snapshot_counts_received_message_log_stream_delta() {
     });
 
     let snapshot = read_snapshot(&root, None);
-    assert!(snapshot.tokens_per_second > 0.0);
+    assert_eq!(snapshot.tokens_per_second, 0.0);
+    assert_eq!(snapshot.measurement_status, "observing_deltas");
     assert_eq!(snapshot.thread_title, "log target 会话");
 
     fs::remove_dir_all(root).unwrap();
@@ -233,10 +255,85 @@ fn read_snapshot_includes_selected_thread_rate() {
 
     let all_snapshot = read_snapshot(&root, None);
     let selected_snapshot = read_snapshot(&root, Some("thread-a"));
-    assert!(all_snapshot.tokens_per_second > selected_snapshot.selected_tokens_per_second);
-    assert!(selected_snapshot.selected_tokens_per_second > 0.0);
-    assert_eq!(selected_snapshot.selected_thread_id.as_deref(), Some("thread-a"));
+    assert_eq!(all_snapshot.tokens_per_second, 0.0);
+    assert_eq!(selected_snapshot.selected_tokens_per_second, 0.0);
+    assert_eq!(selected_snapshot.measurement_status, "observing_deltas");
+    assert_eq!(
+        selected_snapshot.selected_thread_id.as_deref(),
+        Some("thread-a")
+    );
     assert_eq!(selected_snapshot.selected_thread_title, "被选中的会话");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn read_snapshot_uses_explicit_turn_reasoning_and_usage_for_the_c_curve() {
+    let root = temp_root("live-rate-c-curve-lifecycle");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "explicit C curve", 0);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    create_logs_database(&root, |_connection, _now| {});
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+
+    let base = current_time_seconds().floor() as i64 - 1;
+    // Prime the incremental rollout reader while the file is empty so the
+    // following append is observed as new lifecycle data, not treated as an
+    // initial historical backlog.
+    let scope = LiveRateSourceScope::legacy(&root);
+    let _ = read_snapshot_result_at(&root, &scope, Some("thread-a"), base as f64);
+    let start = OffsetDateTime::from_unix_timestamp(base + 1).unwrap();
+    let reasoning_done = OffsetDateTime::from_unix_timestamp(base + 2).unwrap();
+    let usage_time = reasoning_done + time::Duration::milliseconds(500);
+    append_rollout_line_at(
+        &rollout_path,
+        start,
+        "turn_context",
+        r#"{"turn_id":"turn-a","model":"gpt-test"}"#,
+    );
+    append_rollout_line_at(
+        &rollout_path,
+        start,
+        "event_msg",
+        r#"{"type":"task_started","turn_id":"turn-a"}"#,
+    );
+    append_rollout_line_at(
+        &rollout_path,
+        reasoning_done,
+        "event_msg",
+        &format!(
+            r#"{{"type":"item_completed","turn_id":"turn-a","started_at_ms":{},"completed_at_ms":{},"item":{{"type":"Reasoning","id":"reason-1"}}}}"#,
+            (base + 1) * 1_000,
+            (base + 2) * 1_000,
+        ),
+    );
+    append_rollout_line_at(
+        &rollout_path,
+        usage_time,
+        "token_usage_record",
+        r#"{"turn_id":"turn-a","response_id":"response-a","usage":{"output_tokens":100,"reasoning_output_tokens":64}}"#,
+    );
+
+    let snapshot =
+        read_snapshot_result_at(&root, &scope, Some("thread-a"), base as f64 + 3.25).unwrap();
+    assert!(
+        snapshot.tokens_per_second > 0.0,
+        "status={} curve={:?} warnings={:?}",
+        snapshot.measurement_status,
+        snapshot.c_curve,
+        snapshot.warnings
+    );
+    assert_eq!(
+        snapshot.selected_tokens_per_second,
+        snapshot.tokens_per_second
+    );
+    assert!(snapshot
+        .c_curve
+        .iter()
+        .any(|point| point.turn_id == "turn-a" && point.model.as_deref() == Some("gpt-test")));
+    assert_eq!(snapshot.speed_samples.len(), 0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -470,7 +567,8 @@ fn monitor_keeps_fast_refresh_window_after_recent_activity() {
 
     let monitor = LiveRateMonitorService::new(root.clone());
     let first = monitor.snapshot(None);
-    assert!(first.tokens_per_second > 0.0);
+    assert_eq!(first.tokens_per_second, 0.0);
+    assert_eq!(first.measurement_status, "observing_deltas");
     let refreshes_after_first = monitor.test_refresh_count();
 
     std::thread::sleep(Duration::from_millis(300));
@@ -730,7 +828,7 @@ fn read_snapshot_falls_back_to_rollout_assistant_message_when_logs_have_no_new_r
     );
 
     let snapshot = read_snapshot(&root, None);
-    assert!(snapshot.tokens_per_second > 0.0);
+    assert_eq!(snapshot.tokens_per_second, 0.0);
     assert_eq!(snapshot.thread_title, "rollout 实时会话");
 
     fs::remove_dir_all(root).unwrap();
@@ -766,7 +864,7 @@ fn trace_only_log_rows_do_not_block_rollout_fallback() {
 
     let snapshot = read_snapshot(&root, None);
     assert!(
-        snapshot.tokens_per_second > 0.0,
+        snapshot.tokens_per_second == 0.0,
         "trace-only rows must not suppress the rollout source"
     );
 
@@ -804,7 +902,7 @@ fn stale_stream_rows_do_not_block_current_rollout_fallback() {
 
     let snapshot = read_snapshot(&root, None);
     assert!(
-        snapshot.tokens_per_second > 0.0,
+        snapshot.tokens_per_second == 0.0,
         "stream rows outside the rolling window must not suppress current rollout output"
     );
 
@@ -976,11 +1074,8 @@ fn live_rate_rollup_is_independent_of_cross_file_event_order() {
         dedupe_key: Some("newer".into()),
     };
 
-    let chronological = stream::rollup_metric_events(
-        &[older.clone(), newer.clone()],
-        t0 + 2.0,
-        None,
-    );
+    let chronological =
+        stream::rollup_metric_events(&[older.clone(), newer.clone()], t0 + 2.0, None);
     let reversed = stream::rollup_metric_events(&[newer, older], t0 + 2.0, None);
 
     assert_eq!(reversed.tokens_per_second, chronological.tokens_per_second);
@@ -1023,19 +1118,14 @@ fn live_rate_stream_tick_keeps_rollout_warm_for_selected_and_empty_handoff() {
     );
 
     let stream_tick = read_snapshot_result_at(&root, &scope, Some("thread-a"), t0 + 0.5).unwrap();
-    assert!(stream_tick.tokens_per_second > 0.0);
-    assert!(
-        stream_tick.selected_tokens_per_second > 0.0,
-        "selected thread should independently fall back to its rollout"
-    );
+    assert_eq!(stream_tick.tokens_per_second, 0.0);
+    assert_eq!(stream_tick.selected_tokens_per_second, 0.0);
+    assert_eq!(stream_tick.measurement_status, "observing_deltas");
 
     connection.execute("DELETE FROM logs", []).unwrap();
     let handoff = read_snapshot_result_at(&root, &scope, Some("thread-a"), t0 + 0.75).unwrap();
-    assert!(
-        handoff.tokens_per_second > 0.0,
-        "empty stream should hand off to the rollout retained during the positive stream tick"
-    );
-    assert!(handoff.selected_tokens_per_second > 0.0);
+    assert_eq!(handoff.tokens_per_second, 0.0);
+    assert_eq!(handoff.selected_tokens_per_second, 0.0);
 
     drop(connection);
     fs::remove_dir_all(root).unwrap();
@@ -1061,9 +1151,9 @@ fn rollout_fallback_retains_recent_metrics_across_poll_ticks() {
 
     let first = read_snapshot(&root, None);
     let second = read_snapshot(&root, None);
-    assert!(first.tokens_per_second > 0.0);
+    assert_eq!(first.tokens_per_second, 0.0);
     assert!(
-        second.tokens_per_second > 0.0,
+        second.tokens_per_second == 0.0,
         "the next poll must reuse metrics still inside the rolling window"
     );
 
@@ -1191,12 +1281,7 @@ fn read_snapshot_counts_agent_message_but_deduplicates_response_item_copy() {
     );
 
     let snapshot = read_snapshot(&root, None);
-    assert!(snapshot.tokens_per_second > 0.0);
-    assert!(
-        snapshot.tokens_per_second < 1_000.0,
-        "assistant completion payload should be distributed, got {} tok/s",
-        snapshot.tokens_per_second
-    );
+    assert_eq!(snapshot.tokens_per_second, 0.0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1220,7 +1305,7 @@ fn read_snapshot_counts_rollout_agent_message_when_response_item_is_missing() {
     );
 
     let snapshot = read_snapshot(&root, None);
-    assert!(snapshot.tokens_per_second > 0.0);
+    assert_eq!(snapshot.tokens_per_second, 0.0);
     assert_eq!(snapshot.thread_title, "rollout agent 会话");
 
     fs::remove_dir_all(root).unwrap();
@@ -1245,12 +1330,8 @@ fn rollout_token_count_reasoning_does_not_drive_live_rate() {
     );
 
     let now = current_time_seconds();
-    let metrics = rollout::read_rollout_metrics(
-        &root,
-        &LiveRateSourceScope::legacy(&root),
-        now,
-    )
-    .unwrap();
+    let metrics =
+        rollout::read_rollout_metrics(&root, &LiveRateSourceScope::legacy(&root), now).unwrap();
     let rollup = stream::rollup_metric_events(&metrics, now, None);
     assert!(rollup.breakdown.reasoning > 0);
     assert_eq!(rollup.tokens_per_second, 0.0);
@@ -1328,8 +1409,12 @@ fn recent_rollout_threads_refresh_on_wal_change_and_ttl() {
     fs::write(&rollout_a, "").unwrap();
     set_thread_rollout_path(&root, "thread-a", &rollout_a);
     let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
-    connection.pragma_update(None, "journal_mode", "WAL").unwrap();
-    connection.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    connection
+        .pragma_update(None, "journal_mode", "WAL")
+        .unwrap();
+    connection
+        .pragma_update(None, "wal_autocheckpoint", 0)
+        .unwrap();
     let scope = LiveRateSourceScope::new(root.display().to_string(), "physical-a");
 
     let first = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
@@ -1345,7 +1430,10 @@ fn recent_rollout_threads_refresh_on_wal_change_and_ttl() {
         .execute(
             r#"INSERT INTO threads (id, title, rollout_path, updated_at, updated_at_ms, tokens_used)
                VALUES ('thread-b', 'B', ?1, 9999999999, 9999999999000, 1)"#,
-            [root.join("sessions/thread-b.jsonl").to_string_lossy().as_ref()],
+            [root
+                .join("sessions/thread-b.jsonl")
+                .to_string_lossy()
+                .as_ref()],
         )
         .unwrap();
     let changed = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
@@ -1368,8 +1456,12 @@ fn slow_old_sqlite_read_cannot_overwrite_newer_same_scope_cache() {
     fs::write(&rollout_a, "").unwrap();
     set_thread_rollout_path(&root, "thread-a", &rollout_a);
     let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
-    connection.pragma_update(None, "journal_mode", "WAL").unwrap();
-    connection.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    connection
+        .pragma_update(None, "journal_mode", "WAL")
+        .unwrap();
+    connection
+        .pragma_update(None, "wal_autocheckpoint", 0)
+        .unwrap();
     let scope = LiveRateSourceScope::new(root.display().to_string(), "physical-race");
     let (read_tx, read_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -1463,15 +1555,13 @@ fn read_snapshot_excludes_large_rollout_tool_output_from_live_rate() {
     append_rollout_line(
         &rollout_path,
         "response_item",
-        &format!(r#"{{"type":"function_call_output","call_id":"call-a","output":"{large_output}"}}"#),
+        &format!(
+            r#"{{"type":"function_call_output","call_id":"call-a","output":"{large_output}"}}"#
+        ),
     );
     let now = current_time_seconds();
-    let metrics = rollout::read_rollout_metrics(
-        &root,
-        &LiveRateSourceScope::legacy(&root),
-        now,
-    )
-    .unwrap();
+    let metrics =
+        rollout::read_rollout_metrics(&root, &LiveRateSourceScope::legacy(&root), now).unwrap();
     let rollup = stream::rollup_metric_events(&metrics, now, None);
     assert!(rollup.breakdown.tool_output > 0);
     assert_eq!(rollup.tokens_per_second, 0.0);
@@ -1482,7 +1572,7 @@ fn read_snapshot_excludes_large_rollout_tool_output_from_live_rate() {
         r#"{"type":"function_call","call_id":"call-b","name":"shell","arguments":"model generated tool arguments"}"#,
     );
     let tool_arguments = read_snapshot(&root, None);
-    assert!(tool_arguments.tokens_per_second > 0.0);
+    assert_eq!(tool_arguments.tokens_per_second, 0.0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1518,8 +1608,7 @@ fn read_snapshot_prefers_sqlite_stream_rows_without_double_counting_rollout() {
     );
 
     let snapshot = read_snapshot(&root, None);
-    assert!(snapshot.tokens_per_second > 0.0);
-    assert!(snapshot.tokens_per_second < 25.0);
+    assert_eq!(snapshot.tokens_per_second, 0.0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1552,8 +1641,8 @@ fn read_snapshot_aggregates_multiple_rollout_paths() {
     );
 
     let snapshot = read_snapshot(&root, Some("thread-a"));
-    assert!(snapshot.tokens_per_second > snapshot.selected_tokens_per_second);
-    assert!(snapshot.selected_tokens_per_second > 0.0);
+    assert_eq!(snapshot.tokens_per_second, 0.0);
+    assert_eq!(snapshot.selected_tokens_per_second, 0.0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1578,7 +1667,7 @@ fn read_snapshot_counts_subagent_active_rollout_path() {
     );
 
     let snapshot = read_snapshot(&root, None);
-    assert!(snapshot.tokens_per_second > 0.0);
+    assert_eq!(snapshot.tokens_per_second, 0.0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1690,9 +1779,10 @@ struct TauriSupportEnvGuard {
 impl TauriSupportEnvGuard {
     fn new(path: &Path) -> Self {
         Self {
-            _state: crate::core::usage::cache_lifecycle::usage_cache_test_state_guard(&[
-                ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", path.to_path_buf()),
-            ]),
+            _state: crate::core::usage::cache_lifecycle::usage_cache_test_state_guard(&[(
+                "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+                path.to_path_buf(),
+            )]),
         }
     }
 }
@@ -1739,7 +1829,10 @@ fn set_thread_rollout_path(root: &Path, thread_id: &str, rollout_path: &Path) {
 fn mark_thread_source(root: &Path, thread_id: &str, thread_source: &str) {
     let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
     connection
-        .execute("ALTER TABLE threads ADD COLUMN thread_source TEXT DEFAULT 'user';", [])
+        .execute(
+            "ALTER TABLE threads ADD COLUMN thread_source TEXT DEFAULT 'user';",
+            [],
+        )
         .unwrap();
     connection
         .execute(

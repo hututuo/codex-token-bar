@@ -5,7 +5,7 @@ use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSEdgeInsets, NSPoint
 
 const CANVAS_ID: &str = "quota-sidebar-canvas";
 const WIDTH: f64 = 88.0;
-const HEIGHT: f64 = 560.0;
+const HEIGHT: f64 = super::SIDEBAR_CANVAS_HEIGHT;
 
 fn webview(view: &NSView) -> Option<Retained<NSView>> {
     for child in view.subviews().iter() {

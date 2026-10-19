@@ -57,6 +57,7 @@ export function smoothLiveRateSnapshot(
   snapshot: LiveRateSnapshot,
   previous: LiveRateSnapshot | null,
 ): LiveRateSnapshot {
+  if (snapshot.measurementStatus !== undefined) return snapshot; // C curve is already filtered and has bounded stop timing.
   return {
     ...snapshot,
     tokensPerSecond: smoothLiveRateValue(
@@ -74,6 +75,12 @@ export function liveRateDisplayBucket(snapshot: LiveRateSnapshot): string {
   return [
     formatLiveRateValue(snapshot.tokensPerSecond),
     formatLiveRateValue(snapshot.selectedTokensPerSecond),
+    snapshot.speedSamples?.length ?? 0,
+    snapshot.speedSamples?.[0]?.id ?? "",
+    JSON.stringify(snapshot.modelSpeeds ?? []),
+    JSON.stringify(snapshot.modelSpeeds15m ?? []),
+    JSON.stringify(snapshot.modelSpeeds30m ?? []),
+    snapshot.measurementStatus ?? "",
     snapshot.threadTitle,
     snapshot.selectedThreadId ?? "",
     snapshot.selectedThreadTitle,

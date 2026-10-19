@@ -15,6 +15,9 @@ mod canvas_geometry;
 mod canvas_windows;
 use placement::apply_frames;
 
+pub(super) const SIDEBAR_CANVAS_HEIGHT: f64 = 680.0;
+pub(super) const SIDEBAR_WEEKLY_HEIGHT: f64 = 590.0;
+
 const LABEL: &str = "quota-sidebar";
 const DETAIL: &str = "quota-sidebar-detail";
 static STATE: Mutex<Option<(DisplaySurfaceSettingsSnapshot, SidebarMode, bool)>> = Mutex::new(None);
@@ -37,8 +40,8 @@ fn frames_for_at(work: SidebarFrame, side: &str, mode: SidebarMode, shows_five_h
     let (rail_width, rail_height): (f64, f64) = match (mode, shows_five_hour) {
         (SidebarMode::Rest, true) => (16.0, 250.0),
         (SidebarMode::Rest, false) => (16.0, 192.0),
-        (_, true) => (88.0, 560.0),
-        (_, false) => (88.0, 470.0),
+        (_, true) => (88.0, SIDEBAR_CANVAS_HEIGHT),
+        (_, false) => (88.0, SIDEBAR_WEEKLY_HEIGHT),
     };
     let width = rail_width.min(work.width.max(1.0));
     let height = rail_height.min(work.height.max(1.0));
@@ -236,7 +239,7 @@ mod tests {
                     let (detail, _) = frames_for_at(work, side, SidebarMode::Detail, five, center);
                     assert_eq!(hover, detail);
                     assert_eq!(hover.width, 88.0);
-                    assert_eq!(hover.height, if five { 560.0 } else { 470.0 });
+                    assert_eq!(hover.height, if five { SIDEBAR_CANVAS_HEIGHT } else { SIDEBAR_WEEKLY_HEIGHT });
                 }
             }
         }
@@ -248,8 +251,8 @@ mod tests {
             for mode in [SidebarMode::Rest, SidebarMode::Hover, SidebarMode::Detail] {
                 let (three, detail_three) = frames_for(work, side, mode, true);
                 let (two, detail_two) = frames_for(work, side, mode, false);
-                assert_eq!(three.height, if mode == SidebarMode::Rest { 250.0 } else { 560.0 });
-                assert_eq!(two.height, if mode == SidebarMode::Rest { 192.0 } else { 470.0 });
+                assert_eq!(three.height, if mode == SidebarMode::Rest { 250.0 } else { SIDEBAR_CANVAS_HEIGHT });
+                assert_eq!(two.height, if mode == SidebarMode::Rest { 192.0 } else { SIDEBAR_WEEKLY_HEIGHT });
                 assert_eq!(three.y + three.height / 2.0, two.y + two.height / 2.0);
                 assert_eq!(three.x, two.x); assert_eq!(three.width, two.width);
                 assert_eq!(detail_three, detail_two);

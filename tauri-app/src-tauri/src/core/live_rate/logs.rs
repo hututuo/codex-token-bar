@@ -8,7 +8,10 @@ pub(super) fn read_recent_log_rows(codex_home: &Path, since: f64) -> Result<Vec<
     read_recent_log_rows_from_connection(&connection, since)
 }
 
-fn read_recent_log_rows_from_connection(connection: &Connection, since: f64) -> Result<Vec<LogRow>> {
+fn read_recent_log_rows_from_connection(
+    connection: &Connection,
+    since: f64,
+) -> Result<Vec<LogRow>> {
     let since_seconds = since.floor() as i64;
     let index_hint = if logs_ts_index_exists(connection) {
         " INDEXED BY idx_logs_ts"
@@ -35,11 +38,26 @@ fn read_recent_log_rows_from_connection(connection: &Connection, since: f64) -> 
                 target = 'log'
                 AND feedback_log_body LIKE 'Received message %'
               )
+              OR (
+                target IN ('codex_core::responses_retry', 'codex_api::endpoint::responses_websocket')
+                AND (
+                  feedback_log_body LIKE '%stream disconnected%'
+                  OR feedback_log_body LIKE '%error sending request%'
+                  OR feedback_log_body LIKE '%WebSocket error%'
+                  OR feedback_log_body LIKE '%websocket error%'
+                )
+              )
             )
             AND (
               feedback_log_body LIKE '%"type":"response.output_text.delta"%'
               OR feedback_log_body LIKE '%"type":"response.function_call_arguments.delta"%'
               OR feedback_log_body LIKE '%"type":"response.custom_tool_call_input.delta"%'
+              OR feedback_log_body LIKE '%"type":"response.output_item.added"%'
+              OR feedback_log_body LIKE '%"type":"response.output_item.done"%'
+              OR feedback_log_body LIKE '%"type":"response.completed"%'
+              OR feedback_log_body LIKE '%"type":"response.failed"%'
+              OR feedback_log_body LIKE '%"type":"response.incomplete"%'
+              OR target IN ('codex_core::responses_retry', 'codex_api::endpoint::responses_websocket')
             )
           ORDER BY id DESC
           LIMIT 2000
