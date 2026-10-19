@@ -29,7 +29,7 @@ struct ObservedSpeedView: View {
                     }
                 }
             }
-            Text("只测文本和模型生成的工具输入流；工具执行结果、隐藏思考和结算均速不混入。按采样 token 总量 ÷ 总时长加权；短样本或有停顿的样本仅列明细。置信度是样本质量评级，不是统计概率。")
+            Text("Desktop 接口测正文更新，原始流日志可用时也测模型生成的工具输入；工具执行结果、隐藏思考和结算均速不混入。按采样 token 总量 ÷ 总时长加权；短样本或有停顿的样本仅列明细。置信度是样本质量评级，不是统计概率。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             DisclosureGroup("采样明细（\(monitor.speedSamples.count) 段，按轮次追溯）") {
                 LazyVStack(alignment: .leading, spacing: 12) {
@@ -49,7 +49,7 @@ struct ObservedSpeedView: View {
                             Text("会话：\(monitor.threadOptions.first { $0.id == sample.threadID }?.displayTitle ?? sample.threadID)")
                             Text("会话 ID：\(sample.threadID)\n轮次 ID：\(sample.turnID)\n输出项：\(sample.itemID)")
                                 .font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
-                            Text("采样 \(sample.outputTokens) token（估） · \(sample.outputCharacters) 字符 / \(sample.outputBytes) 字节 · \(sample.chunkCount) 包 · \(sample.durationSeconds, specifier: "%.2f") 秒")
+                            Text("采样 \(sample.outputTokens) token（估） · \(sample.outputCharacters) 字符 / \(sample.outputBytes) 字节 · \(sample.chunkCount) 次更新 · \(sample.durationSeconds, specifier: "%.2f") 秒")
                             Text(Date(timeIntervalSince1970: sample.endedAt).formatted(date: .abbreviated, time: .standard))
                                 .foregroundStyle(.secondary)
                             Text(sample.networkWarning ?? "未发现明显接收停顿；仍无法排除网络缓冲或服务端批量发送。")
@@ -64,7 +64,7 @@ struct ObservedSpeedView: View {
                     }
                 }.padding(.top, 8)
             }.font(.subheadline)
-            Text("计时从首包到末包，首包 token 不计入分子；分词结果为本地估算。≥500 token、≥5秒、≥10包且无明显停顿评为较高；≥100 token、≥2秒、≥4包评为中等。")
+            Text("计时从首次到末次更新，首次更新的 token 不计入分子；Desktop 事件经过本机转发和短时合并，不能视为服务器原始网络包。分词结果为本地估算。≥500 token、≥5秒、≥10次更新且无明显停顿评为较高；≥100 token、≥2秒、≥4次更新评为中等。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(.top, 10)
         .accessibilityIdentifier("observed-speed-details")

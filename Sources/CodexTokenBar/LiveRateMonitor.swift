@@ -42,6 +42,11 @@ final class LiveRateMonitor: ObservableObject {
     var speedCollector = ObservedSpeedCollector()
     private var savedSpeedRevision = -1
     private var lastModelSpeedSummaryAt = 0.0
+    private var desktopStreamClient: CodexDesktopStreamClient?
+    private var desktopStreamHome: String?
+    private var desktopStreamEpoch = 0
+    private var desktopStreamStatus = "Desktop 流式接口未连接"
+    private var desktopStreamLiveThreads: [String: Double] = [:]
     private var speedSourceIdentity: String?
 
     private let resolver = CodexDataSourceResolver()
@@ -160,6 +165,8 @@ final class LiveRateMonitor: ObservableObject {
         }
     }
 
+    deinit { desktopStreamClient?.stop() }
+
     var currentDataSourceIdentity: String? {
         dataSource?.stableIdentityKey
     }
@@ -259,6 +266,7 @@ final class LiveRateMonitor: ObservableObject {
             totalSmoothedTokensPerSecond = 0
             start()
         } else {
+            stopDesktopStream()
             pollingActivityGeneration += 1
             timer?.invalidate()
             timer = nil
@@ -289,6 +297,7 @@ final class LiveRateMonitor: ObservableObject {
             configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
             scheduleNextPoll(after: 0.02)
         } else {
+            stopDesktopStream()
             pollingActivityGeneration += 1
             timer?.invalidate()
             timer = nil
@@ -301,6 +310,7 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     func resetSourceLocalState(for source: CodexDataSource?) {
+        stopDesktopStream()
         logsDirectorySource?.cancel()
         logsDirectorySource = nil
         watchedLogsDirectory = ""
@@ -354,6 +364,7 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     func rebindSourcePaths(from previousSource: CodexDataSource?, to source: CodexDataSource?) {
+        stopDesktopStream()
         let oldHome = previousSource?.codexHome.standardizedFileURL.path
         let newHome = source?.codexHome.standardizedFileURL.path
 
@@ -969,6 +980,76 @@ final class LiveRateMonitor: ObservableObject {
         return true
     }
 
+    private func stopDesktopStream() {
+        desktopStreamEpoch += 1
+        desktopStreamClient?.stop(); desktopStreamClient = nil; desktopStreamHome = nil
+        if !desktopStreamLiveThreads.isEmpty {
+            speedCollector.finish(warning: "Desktop 事件观察暂停或数据源切换，采样提前结束",
+                estimator: { self.estimateTokenCount($0, category: .visibleText) })
+        }
+        desktopStreamLiveThreads.removeAll()
+    }
+
+    private func syncDesktopStream(now: Double) {
+        guard monitoringEnabled, pollingActive, let source = dataSource else { return }
+        let home = source.codexHome.standardizedFileURL.path
+        if desktopStreamHome != home {
+            stopDesktopStream()
+            let epoch = desktopStreamEpoch, generation = sourceGeneration, binding = sourceBindingGeneration
+            desktopStreamHome = home
+            let client = CodexDesktopStreamClient(home: source.codexHome, onEvent: { [weak self] event in
+                Task { @MainActor [weak self] in
+                    guard let self, self.desktopStreamEpoch == epoch,
+                          self.isCurrentSource(generation: generation, bindingGeneration: binding),
+                          self.monitoringEnabled, self.pollingActive else { return }
+                    self.consumeDesktopStream(event)
+                }
+            }, onStatus: { [weak self] status in
+                Task { @MainActor [weak self] in
+                    guard let self, self.desktopStreamEpoch == epoch else { return }
+                    self.desktopStreamStatus = status
+                }
+            })
+            desktopStreamClient = client; client.start()
+        }
+        // Existing rollout context finds running chats; Desktop is never asked to resume them.
+        let running = speedContexts.threads.compactMap { key, values -> (String, Double)? in
+            guard let context = values.last, context.end == nil else { return nil }
+            return (key, context.start)
+        }.sorted { $0.1 > $1.1 }.map(\.0)
+        var interests = Array(running.prefix(4))
+        if interests.isEmpty { interests = threadOptions.filter { Double($0.updatedAtMS) / 1000 >= now - 300 }.prefix(4).map(\.id) }
+        if !selectedThreadID.isEmpty, !interests.contains(selectedThreadID), interests.count < 4 { interests.append(selectedThreadID) }
+        desktopStreamClient?.update(threads: Set(interests))
+    }
+
+    private func consumeDesktopStream(_ event: DesktopStreamEvent) {
+        ensureSpeedSource()
+        let warning = "Desktop 事件流中断、重同步或本轮中止，采样提前结束"
+        switch event.kind {
+        case .start:
+            speedCollector.start(thread: event.thread, item: event.item)
+        case .delta:
+            desktopStreamLiveThreads[event.thread] = event.at
+            desktopStreamStatus = "正在接收 Codex Desktop 正文流 · 转发接收计时 / 本地分词估算"
+            speedCollector.append(thread: event.thread, turn: event.turn, item: event.item, model: event.model,
+                text: event.text, at: event.at, source: "Codex Desktop 正文事件流 · 转发接收计时 / 本地分词估算")
+            throughputCurve.consume(.init(kind: "observed", timestamp: event.at, turnID: event.turn,
+                model: event.model, itemID: "desktop:\(event.item):\(event.at)",
+                output: Double(estimateTokenCount(event.text, category: .visibleText))), thread: event.thread, now: event.at)
+            extendFastPolling(from: event.at)
+        case .finish, .interrupted, .reset:
+            speedCollector.finish(thread: event.thread.isEmpty ? nil : event.thread,
+                turn: event.turn.isEmpty ? nil : event.turn, item: event.item.isEmpty ? nil : event.item,
+                warning: event.kind == .finish ? nil : warning,
+                estimator: { self.estimateTokenCount($0, category: .visibleText) })
+            if event.kind == .reset {
+                if event.thread.isEmpty { desktopStreamLiveThreads.removeAll() } else { desktopStreamLiveThreads.removeValue(forKey: event.thread) }
+            }
+        }
+        updateSnapshots(now: Date().timeIntervalSince1970)
+    }
+
     private func ensureSpeedSource() {
         let identity = dataSource?.stableIdentityKey
         if speedSourceIdentity != identity {
@@ -1009,9 +1090,9 @@ final class LiveRateMonitor: ObservableObject {
             }
             for signal in read.telemetry {
                     throughputCurve.consume(signal, thread: read.threadID, now: now)
-                    if signal.kind == "itemDone" {
+                    if signal.kind == "itemDone", desktopStreamLiveThreads[read.threadID].map({ now - $0 < 20 }) != true {
                         speedCollector.finish(thread: read.threadID, turn: signal.turnID.isEmpty ? nil : signal.turnID, item: signal.itemID, estimator: { self.estimateTokenCount($0, category: .visibleText) })
-                    } else if ["complete", "abort", "failure"].contains(signal.kind) {
+                    } else if ["complete", "abort", "failure"].contains(signal.kind), desktopStreamLiveThreads[read.threadID].map({ now - $0 < 20 }) != true {
                         speedCollector.finish(thread: read.threadID, turn: signal.turnID.isEmpty ? nil : signal.turnID, warning: signal.kind == "complete" ? nil : "本轮中断或失败，样本未完整结束", estimator: { self.estimateTokenCount($0, category: .visibleText) })
                     }
                     processedEvents = true
@@ -1157,7 +1238,8 @@ final class LiveRateMonitor: ObservableObject {
         for event in Self.metricEvents(from: streamEvent, row: row, toolNames: itemToolNames) {
             let resolvedThreadID = resolveThreadID(for: event)
             guard shouldCountStreamEvent(event, resolvedThreadID: resolvedThreadID, receiptID: row.id) else { continue }
-            if event.isDelta, let resolvedThreadID, event.category?.contributesToLiveRate == true {
+            if event.isDelta, let resolvedThreadID, event.category?.contributesToLiveRate == true,
+               desktopStreamLiveThreads[resolvedThreadID].map({ now - $0 < 20 }) != true {
                 if let context = speedContexts.resolve(thread: resolvedThreadID, at: event.timestamp,
                     explicitTurn: event.turnID ?? itemTurnIDs[event.itemID]) {
                     throughputCurve.consume(.init(kind: "observed", timestamp: event.timestamp, turnID: context.turn,
@@ -1340,6 +1422,7 @@ final class LiveRateMonitor: ObservableObject {
 
     private func updateSnapshots(now: TimeInterval) {
         ensureSpeedSource()
+        syncDesktopStream(now: now)
         throughputCurve.tick(now: now)
         speedCollector.finish(warning: "未收到完整结束标记；闲置后结束采样", before: now - 10,
             estimator: { self.estimateTokenCount($0, category: .visibleText) })
@@ -1353,7 +1436,7 @@ final class LiveRateMonitor: ObservableObject {
             if models != modelSpeeds { modelSpeeds = models }
             lastModelSpeedSummaryAt = now
         }
-        let status = speedCollector.persistenceError ?? (speedSamples.isEmpty ? "暂无真实流式样本：当前 Codex 日志未提供可关联的连续输出增量" : "本地接收计时 · 分词估算 · 所选时窗有效样本加权")
+        let status = speedCollector.persistenceError ?? (desktopStreamStatus + (speedSamples.isEmpty ? "；尚无完整采样段" : " · 所选时窗有效样本加权"))
         if status != measurementStatus { measurementStatus = status }
 
         selectedRate.prune(now: now, windowSeconds: windowSeconds)

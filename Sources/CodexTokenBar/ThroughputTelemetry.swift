@@ -177,6 +177,7 @@ struct ObservedSpeedCollector {
     struct Pending {
         var thread: String; var turn: String; var item: String; var model: String
         var first: Double; var last: Double
+        var source = "Codex 本地流式增量 · 接收计时 / 本地分词估算"
         var firstText = ""; var text = ""; var chunks = 0; var maxGap = 0.0; var truncated = false; var sawStart = false
     }
     var pending: [String: Pending] = [:]
@@ -203,12 +204,13 @@ struct ObservedSpeedCollector {
         if startedItems.count > 512 { startedItems.removeAll() }
         startedItems.insert("\(thread)/\(item)")
     }
-    mutating func append(thread: String, turn: String, item: String, model: String, text: String, at: Double) {
+    mutating func append(thread: String, turn: String, item: String, model: String, text: String, at: Double, source: String? = nil) {
         guard !text.isEmpty, !thread.isEmpty, !turn.isEmpty, !item.isEmpty, item != "unknown" else { return }
         let key = "\(thread)/\(turn)/\(item)"
         var p = pending[key] ?? Pending(thread: thread, turn: turn, item: item, model: model, first: at, last: at)
         guard at >= p.last else { return }
         if !model.isEmpty, model != "unknown" { p.model = model }
+        if let source { p.source = source }
         if p.chunks == 0 { p.firstText = text; p.sawStart = startedItems.contains("\(thread)/\(item)") }
         p.maxGap = max(p.maxGap, at - p.last); p.last = at; p.chunks += 1
         if p.text.utf8.count + text.utf8.count <= 1_048_576 { p.text += text } else { p.truncated = true }
@@ -230,7 +232,7 @@ struct ObservedSpeedCollector {
                 model: p.model, startedAt: p.first, endedAt: p.last, outputTokens: count,
                 outputCharacters: max(0, p.text.count - p.firstText.count), outputBytes: max(0, p.text.utf8.count - p.firstText.utf8.count), chunkCount: p.chunks, durationSeconds: duration,
                 tokensPerSecond: Double(count) / duration, confidence: confidence,
-                networkWarning: problem, source: "Codex 本地流式增量 · 接收计时 / 本地分词估算")
+                networkWarning: problem, source: p.source)
             samples.removeAll { $0.id == sample.id }; samples.append(sample); revision += 1
         }
         samples = Array(samples.suffix(10_000))

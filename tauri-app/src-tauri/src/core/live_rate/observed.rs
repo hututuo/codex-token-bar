@@ -48,6 +48,7 @@ struct CachedSummaries {
 }
 
 struct ActiveSample {
+    source: String,
     thread_id: String,
     turn_id: String,
     item_id: String,
@@ -98,6 +99,25 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
     let mut changed = false;
 
     for row in rows {
+        if !is_retry_row(row) {
+            if let Some(
+                ObservedStreamEvent::Delta {
+                    thread_id, item_id, ..
+                }
+                | ObservedStreamEvent::ItemStarted {
+                    thread_id, item_id, ..
+                },
+            ) = super::stream::observed_stream_event(row)
+            {
+                if store
+                    .active
+                    .get(&(thread_id, item_id))
+                    .is_some_and(|sample| sample.source == "codex_desktop.forwarded_text_stream")
+                {
+                    continue;
+                }
+            }
+        }
         if !store.seen_rows.insert(row.id) {
             continue;
         }
@@ -337,6 +357,160 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
     }
 }
 
+/// Desktop carries explicit turn/item identity, unlike legacy log deltas. Never infer its turn
+/// from the currently selected chat or the latest rollout context.
+pub(super) fn process_desktop(
+    scope: &LiveRateSourceScope,
+    events: &[crate::core::desktop_stream::DesktopStreamEvent],
+    now: f64,
+) {
+    use crate::core::desktop_stream::DesktopStreamEventKind as Kind;
+    let stores = SPEED_STORES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut all = stores.lock().unwrap_or_else(|e| e.into_inner());
+    let store = all.entry(scope.clone()).or_default();
+    ensure_loaded(store, scope);
+    let mut changed = false;
+    for event in events {
+        if !event.at.is_finite() || event.at > now + 1.0 {
+            continue;
+        }
+        match event.kind {
+            Kind::Status => {}
+            Kind::Start => {
+                if let Some(item) = &event.item_id {
+                    store
+                        .item_starts
+                        .insert((event.thread_id.clone(), item.clone()), event.at);
+                }
+            }
+            Kind::Delta => {
+                let (Some(turn), Some(item)) = (&event.turn_id, &event.item_id) else {
+                    continue;
+                };
+                if event.text.is_empty()
+                    || event.thread_id.is_empty()
+                    || turn.is_empty()
+                    || item.is_empty()
+                    || now - event.at > 20.0
+                {
+                    continue;
+                }
+                let key = (event.thread_id.clone(), item.clone());
+                if store.active.get(&key).is_some_and(|a| {
+                    a.turn_id != *turn || a.source != "codex_desktop.forwarded_text_stream"
+                }) {
+                    if let Some(mut active) = store.active.remove(&key) {
+                        if let Some(sample) = finalize_active(&mut active, now, true) {
+                            changed |= add_sample(store, sample);
+                        }
+                    }
+                }
+                let added = if let Some(active) = store.active.get_mut(&key) {
+                    accumulate(active, event.at, &event.text, false)
+                } else {
+                    if store.active.len() >= MAX_ACTIVE_ITEMS {
+                        continue;
+                    }
+                    let saw_start = store
+                        .item_starts
+                        .remove(&key)
+                        .is_some_and(|at| at <= event.at);
+                    let added = start_active(
+                        store,
+                        key.clone(),
+                        event.thread_id.clone(),
+                        turn.clone(),
+                        Some(event.model.clone()),
+                        item.clone(),
+                        LiveTokenCategory::VisibleText,
+                        event.at,
+                        event.text.clone(),
+                        false,
+                        saw_start,
+                    );
+                    if let Some(active) = store.active.get_mut(&key) {
+                        active.source = "codex_desktop.forwarded_text_stream".into();
+                    }
+                    added
+                };
+                c_curve::apply_signals(
+                    scope,
+                    &[c_curve::RolloutSignal::Context {
+                        thread_id: event.thread_id.clone(),
+                        turn_id: Some(turn.clone()),
+                        model: Some(event.model.clone()),
+                        at: event.at,
+                    }],
+                    now,
+                );
+                c_curve::add_observed_output(scope, &event.thread_id, turn, added, event.at);
+            }
+            Kind::Finish | Kind::Interrupted | Kind::Reset => {
+                let keys = store
+                    .active
+                    .iter()
+                    .filter(|(_, active)| {
+                        active.source == "codex_desktop.forwarded_text_stream"
+                            && (event.thread_id.is_empty() || event.thread_id == active.thread_id)
+                            && event.turn_id.as_ref().is_none_or(|t| *t == active.turn_id)
+                            && event.item_id.as_ref().is_none_or(|i| *i == active.item_id)
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>();
+                for key in keys {
+                    if let Some(mut active) = store.active.remove(&key) {
+                        mark_finished(&mut active, event.at, event.kind != Kind::Finish);
+                        if let Some(sample) =
+                            finalize_active(&mut active, now, event.kind != Kind::Finish)
+                        {
+                            changed |= add_sample(store, sample);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if changed {
+        if let Err(e) = persist(store, scope) {
+            store.storage_error = Some(e);
+        } else {
+            store.storage_error = None;
+        }
+    }
+}
+
+pub(super) fn desktop_active(
+    scope: &LiveRateSourceScope,
+    thread: &str,
+    item: Option<&str>,
+) -> bool {
+    let stores = SPEED_STORES.get_or_init(|| Mutex::new(HashMap::new()));
+    let all = stores.lock().unwrap_or_else(|e| e.into_inner());
+    all.get(scope).is_some_and(|s| {
+        s.active.values().any(|a| {
+            a.source == "codex_desktop.forwarded_text_stream"
+                && a.thread_id == thread
+                && item.is_none_or(|i| i == a.item_id)
+        })
+    })
+}
+
+pub(super) fn reset_desktop(scope: &LiveRateSourceScope, now: f64) {
+    process_desktop(
+        scope,
+        &[crate::core::desktop_stream::DesktopStreamEvent {
+            kind: crate::core::desktop_stream::DesktopStreamEventKind::Reset,
+            thread_id: String::new(),
+            turn_id: None,
+            item_id: None,
+            model: "unknown".into(),
+            text: String::new(),
+            at: now,
+        }],
+        now,
+    );
+}
+
 pub(super) fn finish_item(
     scope: &LiveRateSourceScope,
     thread_id: &str,
@@ -458,6 +632,7 @@ fn start_active(
     store.active.insert(
         key,
         ActiveSample {
+            source: "logs_2.sqlite.response_stream".into(),
             thread_id,
             turn_id,
             item_id,
@@ -573,7 +748,7 @@ fn finalize_active(active: &mut ActiveSample, _now: f64, incomplete: bool) -> Op
         tokens_per_second: output_tokens as f64 / duration,
         confidence: confidence.into(),
         network_warning: active.network_warning,
-        source: "logs_2.sqlite.response_stream".into(),
+        source: active.source.clone(),
     })
 }
 
@@ -786,6 +961,7 @@ mod tests {
         let mut token_estimator = ObservedTokenEstimator::new(LiveTokenCategory::VisibleText);
         let estimated_tokens = token_estimator.extend(text);
         let mut active = ActiveSample {
+            source: "logs_2.sqlite.response_stream".into(),
             thread_id: "thread".into(),
             turn_id: "turn".into(),
             item_id: "item".into(),
@@ -843,6 +1019,7 @@ mod tests {
         let text = "first chunk plus second chunk";
         let estimated_tokens = token_estimator.extend(text);
         let mut active = ActiveSample {
+            source: "logs_2.sqlite.response_stream".into(),
             thread_id: "thread".into(),
             turn_id: "turn".into(),
             item_id: "item".into(),
@@ -876,6 +1053,7 @@ mod tests {
         let mut token_estimator = ObservedTokenEstimator::new(LiveTokenCategory::VisibleText);
         let estimated_tokens = token_estimator.extend("new turn content");
         let active = ActiveSample {
+            source: "logs_2.sqlite.response_stream".into(),
             thread_id: "thread".into(),
             turn_id: "turn-new".into(),
             item_id: "item-new".into(),
@@ -930,6 +1108,7 @@ mod tests {
         store.active.insert(
             ("thread".into(), "item-new".into()),
             ActiveSample {
+                source: "logs_2.sqlite.response_stream".into(),
                 thread_id: "thread".into(),
                 turn_id: "turn-new".into(),
                 item_id: "item-new".into(),
@@ -1100,5 +1279,72 @@ mod tests {
         .unwrap();
         assert!(!encoded.contains("hello"));
         assert!(encoded.contains("outputBytes"));
+    }
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::*;
+    use crate::core::desktop_stream::{DesktopStreamEvent as E, DesktopStreamEventKind as K};
+    fn event(kind: K, text: &str, at: f64) -> E {
+        E {
+            kind,
+            thread_id: "desktop-thread".into(),
+            turn_id: Some("explicit-turn".into()),
+            item_id: Some("item".into()),
+            model: "desktop-model".into(),
+            text: text.into(),
+            at,
+        }
+    }
+    #[test]
+    fn desktop_explicit_identity_does_not_require_or_borrow_current_rollout_turn() {
+        let scope = LiveRateSourceScope::new("desktop-test-identity", "desktop-physical-identity");
+        let mut events = vec![event(K::Start, "", 100.0)];
+        for i in 0..12 {
+            events.push(event(
+                K::Delta,
+                &"hello world ".repeat(50),
+                101.0 + i as f64 * 0.6,
+            ));
+        }
+        events.push(event(K::Finish, "", 108.0));
+        process_desktop(&scope, &events, 108.0);
+        let snapshot = process_rows(&scope, &[], 108.0);
+        assert_eq!(snapshot.speed_samples.len(), 1);
+        let sample = &snapshot.speed_samples[0];
+        assert_eq!(sample.turn_id, "explicit-turn");
+        assert_eq!(sample.model.as_deref(), Some("desktop-model"));
+        assert_eq!(sample.source, "codex_desktop.forwarded_text_stream");
+        assert!(!sample.network_warning);
+        assert_eq!(sample.chunk_count, 12);
+        assert_eq!(snapshot.model_speeds_30m.len(), 1);
+    }
+    #[test]
+    fn desktop_reset_separates_resumed_segments_and_excludes_them_from_average() {
+        let scope = LiveRateSourceScope::new("desktop-test-reset", "desktop-physical-reset");
+        process_desktop(
+            &scope,
+            &[
+                event(K::Start, "", 100.0),
+                event(K::Delta, "hello ", 101.0),
+                event(K::Delta, "world ", 102.0),
+            ],
+            102.0,
+        );
+        reset_desktop(&scope, 103.0);
+        process_desktop(
+            &scope,
+            &[
+                event(K::Delta, "new hello ", 104.0),
+                event(K::Delta, "new world ", 105.0),
+                event(K::Finish, "", 106.0),
+            ],
+            106.0,
+        );
+        let snapshot = process_rows(&scope, &[], 106.0);
+        assert_eq!(snapshot.speed_samples.len(), 2);
+        assert!(snapshot.speed_samples[1].network_warning);
+        assert!(snapshot.model_speeds_30m.is_empty());
     }
 }

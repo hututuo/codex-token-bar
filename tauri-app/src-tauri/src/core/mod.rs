@@ -6,6 +6,7 @@ pub mod codex_instances;
 pub(crate) mod coordination_fs;
 pub(crate) mod cross_process_lock;
 pub mod dashboard;
+pub mod desktop_stream;
 pub mod live_rate;
 pub mod localtime;
 pub mod provider_repair;

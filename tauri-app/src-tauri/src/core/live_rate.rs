@@ -51,6 +51,7 @@ struct StoreFileSignature {
 }
 
 mod c_curve;
+mod desktop;
 mod logs;
 mod monitor;
 mod observed;
@@ -258,6 +259,19 @@ fn read_snapshot_result_at(
             )
         });
     c_curve::apply_signals(source_scope, &pre_delta_signals, now);
+    let mut interests = read_thread_options_result(codex_home, 4)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|thread| thread.id)
+        .collect::<Vec<_>>();
+    if let Some(selected) = selected_thread_id {
+        if !interests.iter().any(|id| id == selected) {
+            interests.truncate(3);
+            interests.push(selected.to_owned());
+        }
+    }
+    let desktop_events = desktop::poll(source_scope, interests, now);
+    observed::process_desktop(source_scope, &desktop_events, now);
     let _initial_speed_snapshot = observed::process_rows(source_scope, &rows, now);
     for signal in &post_delta_signals {
         match signal {
@@ -267,6 +281,9 @@ fn read_snapshot_result_at(
                 item_id,
                 at,
             } => {
+                if observed::desktop_active(source_scope, thread_id, Some(item_id)) {
+                    continue;
+                }
                 observed::finish_item(
                     source_scope,
                     thread_id,
@@ -282,7 +299,15 @@ fn read_snapshot_result_at(
                 failed,
                 at,
             } => {
-                observed::finish_turn(source_scope, thread_id, turn_id.as_deref(), *at, *failed);
+                if !observed::desktop_active(source_scope, thread_id, None) {
+                    observed::finish_turn(
+                        source_scope,
+                        thread_id,
+                        turn_id.as_deref(),
+                        *at,
+                        *failed,
+                    );
+                }
             }
             _ => {}
         }
