@@ -1025,13 +1025,16 @@ final class LiveRateMonitor: ObservableObject {
 
     private func consumeDesktopStream(_ event: DesktopStreamEvent) {
         ensureSpeedSource()
+        var event = event
+        if event.model.isEmpty || event.model == "unknown" {
+            event.model = speedContexts.resolve(thread: event.thread, at: event.at, explicitTurn: event.turn)?.model ?? "unknown"
+        }
         let warning = "Desktop 事件流中断、重同步或本轮中止，采样提前结束"
         switch event.kind {
         case .start:
             speedCollector.start(thread: event.thread, item: event.item)
         case .delta:
             desktopStreamLiveThreads[event.thread] = event.at
-            desktopStreamStatus = "正在接收 Codex Desktop 正文流 · 转发接收计时 / 本地分词估算"
             speedCollector.append(thread: event.thread, turn: event.turn, item: event.item, model: event.model,
                 text: event.text, at: event.at, source: "Codex Desktop 正文事件流 · 转发接收计时 / 本地分词估算")
             throughputCurve.consume(.init(kind: "observed", timestamp: event.at, turnID: event.turn,
@@ -1420,6 +1423,14 @@ final class LiveRateMonitor: ObservableObject {
         return nil
     }
 
+    static func desktopMeasurementStatus(connection: String, lastDelta: Double?, now: Double) -> String {
+        guard connection.hasPrefix("已连接") else { return connection }
+        guard let lastDelta else { return "已连接 Codex Desktop，等待正文增量；工具执行和思考期间不计正文速度" }
+        let elapsed = max(0, now - lastDelta)
+        if elapsed <= 2 { return "最近 2 秒收到正文增量 · 转发接收计时 / 本地分词估算" }
+        return "已连接 Codex Desktop，等待下一段正文增量 · 距上次接收 \(Int(elapsed)) 秒"
+    }
+
     private func updateSnapshots(now: TimeInterval) {
         ensureSpeedSource()
         syncDesktopStream(now: now)
@@ -1436,7 +1447,9 @@ final class LiveRateMonitor: ObservableObject {
             if models != modelSpeeds { modelSpeeds = models }
             lastModelSpeedSummaryAt = now
         }
-        let status = speedCollector.persistenceError ?? (desktopStreamStatus + (speedSamples.isEmpty ? "；尚无完整采样段" : " · 所选时窗有效样本加权"))
+        let streamStatus = Self.desktopMeasurementStatus(connection: desktopStreamStatus,
+            lastDelta: desktopStreamLiveThreads.values.max(), now: now)
+        let status = speedCollector.persistenceError ?? (streamStatus + (speedSamples.isEmpty ? "；尚无完整采样段" : " · 所选时窗有效样本加权"))
         if status != measurementStatus { measurementStatus = status }
 
         selectedRate.prune(now: now, windowSeconds: windowSeconds)

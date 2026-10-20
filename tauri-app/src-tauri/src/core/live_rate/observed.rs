@@ -395,6 +395,16 @@ pub(super) fn process_desktop(
                 {
                     continue;
                 }
+                // Snapshot params.model may be null. Resolve only the exact explicit turn;
+                // a different currently selected/running turn cannot supply its model.
+                let model = if !event.model.is_empty() && event.model != "unknown" {
+                    Some(event.model.clone())
+                } else {
+                    c_curve::current_context(scope, &event.thread_id)
+                        .filter(|context| context.0 == *turn)
+                        .and_then(|context| context.1)
+                        .filter(|model| !model.is_empty() && model != "unknown")
+                };
                 let key = (event.thread_id.clone(), item.clone());
                 if store.active.get(&key).is_some_and(|a| {
                     a.turn_id != *turn || a.source != "codex_desktop.forwarded_text_stream"
@@ -406,6 +416,9 @@ pub(super) fn process_desktop(
                     }
                 }
                 let added = if let Some(active) = store.active.get_mut(&key) {
+                    if model.is_some() {
+                        active.model = model.clone();
+                    }
                     accumulate(active, event.at, &event.text, false)
                 } else {
                     if store.active.len() >= MAX_ACTIVE_ITEMS {
@@ -420,7 +433,7 @@ pub(super) fn process_desktop(
                         key.clone(),
                         event.thread_id.clone(),
                         turn.clone(),
-                        Some(event.model.clone()),
+                        model.clone(),
                         item.clone(),
                         LiveTokenCategory::VisibleText,
                         event.at,
@@ -438,7 +451,7 @@ pub(super) fn process_desktop(
                     &[c_curve::RolloutSignal::Context {
                         thread_id: event.thread_id.clone(),
                         turn_id: Some(turn.clone()),
-                        model: Some(event.model.clone()),
+                        model: model.clone(),
                         at: event.at,
                     }],
                     now,
@@ -1346,5 +1359,45 @@ mod desktop_tests {
         assert_eq!(snapshot.speed_samples.len(), 2);
         assert!(snapshot.speed_samples[1].network_warning);
         assert!(snapshot.model_speeds_30m.is_empty());
+    }
+    #[test]
+    fn desktop_null_model_uses_only_matching_turn_context() {
+        for matches in [true, false] {
+            let name = format!("desktop-model-fallback-{matches}");
+            let scope = LiveRateSourceScope::new(&name, &name);
+            c_curve::apply_signals(
+                &scope,
+                &[c_curve::RolloutSignal::Context {
+                    thread_id: "desktop-thread".into(),
+                    turn_id: Some(
+                        if matches {
+                            "explicit-turn"
+                        } else {
+                            "different-turn"
+                        }
+                        .into(),
+                    ),
+                    model: Some("rollout-model".into()),
+                    at: 100.0,
+                }],
+                100.0,
+            );
+            let mut events = vec![
+                event(K::Start, "", 100.0),
+                event(K::Delta, "hello ", 101.0),
+                event(K::Delta, "world ", 102.0),
+                event(K::Finish, "", 103.0),
+            ];
+            for e in &mut events {
+                e.model = "unknown".into();
+            }
+            process_desktop(&scope, &events, 103.0);
+            let snapshot = process_rows(&scope, &[], 103.0);
+            assert_eq!(snapshot.speed_samples.len(), 1);
+            assert_eq!(
+                snapshot.speed_samples[0].model.as_deref(),
+                if matches { Some("rollout-model") } else { None }
+            );
+        }
     }
 }

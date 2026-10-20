@@ -79,4 +79,85 @@ final class CodexDesktopStreamTests: XCTestCase {
         XCTAssertEqual(e.first?.kind, .interrupted)
         XCTAssertEqual(e.first?.turn, "turn-a")
     }
+    let entityPath: [Any] = ["turnHistory", "history", "entitiesByKey", "entity"]
+    func testPendingSnapshotHydratesIDStatusModelAndPreservesObservedStart() {
+        var d = DesktopStreamDecoder()
+        let pending = envelope(["type": "snapshot", "revision": 10, "conversationState": ["id": "thread",
+            "turnHistory": ["history": ["entitiesByKey": ["entity": ["turnId": NSNull(), "status": "pending", "items": []]]]]]])
+        XCTAssertTrue(d.consume(pending, at: 100, interests: interests).isEmpty)
+        XCTAssertTrue(d.consume(patch(11, patches: [["op": "add", "path": entityPath + ["items", 0],
+            "value": ["id": "message", "type": "agentMessage", "text": ""]]]), at: 101, interests: interests).isEmpty)
+        let events = d.consume(patch(12, patches: [
+            ["op": "replace", "path": entityPath + ["turnId"], "value": "real-turn"],
+            ["op": "replace", "path": entityPath + ["status"], "value": "inProgress"],
+            ["op": "replace", "path": entityPath + ["params", "model"], "value": "real-model"]
+        ], changes: [text("first", at: 0)]), at: 102, interests: interests)
+        XCTAssertEqual(events.map(\.kind), [.start, .delta])
+        XCTAssertTrue(events.allSatisfy { $0.turn == "real-turn" && $0.model == "real-model" })
+        XCTAssertEqual(d.consume(patch(13, changes: [text(" second", at: 5)]), at: 103, interests: interests).map(\.kind), [.delta])
+    }
+    func testPendingEntityAddedAfterSnapshotCanActivate() {
+        var d = DesktopStreamDecoder()
+        _ = d.consume(snapshot(), at: 100, interests: interests)
+        let prefix: [Any] = ["turnHistory", "history", "entitiesByKey", "placeholder"]
+        _ = d.consume(patch(11, patches: [["op": "add", "path": prefix,
+            "value": ["turnId": NSNull(), "status": "pending", "items": []]]]), at: 101, interests: interests)
+        let e = d.consume(patch(12, patches: [
+            ["op": "replace", "path": prefix + ["turnId"], "value": "next"],
+            ["op": "replace", "path": prefix + ["status"], "value": "inProgress"],
+            ["op": "add", "path": prefix + ["items", 0], "value": ["id": "message", "type": "agentMessage", "text": ""]]
+        ], changes: [text("x", at: 0, entity: "placeholder")]), at: 102, interests: interests)
+        XCTAssertEqual(e.map(\.kind), [.start, .delta])
+        XCTAssertEqual(e.last?.turn, "next")
+    }
+    func testUnknownAcceptedEntityResynchronizesRatherThanSilentlyAdvancing() {
+        var d = DesktopStreamDecoder()
+        _ = d.consume(snapshot(), at: 100, interests: interests)
+        XCTAssertEqual(d.consume(patch(11, changes: [text("lost", at: 0, entity: "missing")]), at: 101, interests: interests).map(\.kind), [.reset])
+        XCTAssertEqual(d.resubscribe, "thread")
+        XCTAssertNil(d.threads["thread"])
+    }
+    func testTerminalStatusWithFinalDeltaDeliversDeltaBeforeFinish() {
+        var d = DesktopStreamDecoder()
+        _ = d.consume(snapshot(), at: 100, interests: interests)
+        let events = d.consume(patch(11, patches: [["op": "replace", "path": entityPath + ["status"], "value": "completed"]],
+            changes: [text(" last", at: 3)]), at: 101, interests: interests)
+        XCTAssertEqual(events.map(\.kind), [.delta, .finish])
+        XCTAssertNil(d.resubscribe)
+        XCTAssertTrue(d.threads["thread"]!.turns.isEmpty)
+    }
+    func testRemoveReplacementAndMoveInvalidateExistingSample() {
+        for operation in ["remove", "replace", "move"] {
+            var d = DesktopStreamDecoder()
+            _ = d.consume(snapshot(), at: 100, interests: interests)
+            var p: [String: Any] = ["op": operation, "path": entityPath]
+            if operation == "replace" { p["value"] = ["turnId": "turn-a", "status": "completed", "items": []] }
+            if operation == "move" { p["from"] = ["turnHistory", "history", "entitiesByKey", "other"] }
+            XCTAssertEqual(d.consume(patch(11, patches: [p]), at: 101, interests: interests).last?.kind, .reset)
+            if operation == "move" { XCTAssertEqual(d.resubscribe, "thread") }
+            else { XCTAssertTrue(d.threads["thread"]!.turns.isEmpty) }
+        }
+    }
+    func testProjectionKeepsOnlyMetadataAndAdoptsUTF16OffsetWithoutReplayingHistory() throws {
+        var original = snapshot(text: String(repeating: "SECRET BODY", count: 1000))
+        let encoded = try JSONSerialization.data(withJSONObject: original)
+        let projected = try XCTUnwrap(DesktopSnapshotProjection.project(encoded))
+        let compact = try JSONSerialization.data(withJSONObject: projected)
+        XCTAssertLessThan(compact.count, 1500)
+        XCTAssertFalse(String(decoding: compact, as: UTF8.self).contains("SECRET BODY"))
+        var d = DesktopStreamDecoder()
+        XCTAssertTrue(d.consume(projected, at: 100, interests: interests).isEmpty)
+        XCTAssertEqual(d.consume(patch(11, changes: [text("🐈", at: 20000)]), at: 101, interests: interests).map(\.kind), [.delta])
+        XCTAssertEqual(d.consume(patch(12, changes: [text("a", at: 20002)]), at: 102, interests: interests).first?.text, "a")
+        XCTAssertEqual(d.consume(patch(13, changes: [text("bad", at: 1)]), at: 103, interests: interests).last?.kind, .reset)
+        original["version"] = 12
+        XCTAssertNil(DesktopSnapshotProjection.project(try JSONSerialization.data(withJSONObject: original)))
+    }
+    @MainActor func testMeasurementStatusDoesNotClaimReceptionForever() {
+        XCTAssertTrue(LiveRateMonitor.desktopMeasurementStatus(connection: "已连接", lastDelta: nil, now: 100).contains("等待正文增量"))
+        XCTAssertTrue(LiveRateMonitor.desktopMeasurementStatus(connection: "已连接", lastDelta: 99, now: 100).contains("最近 2 秒"))
+        XCTAssertTrue(LiveRateMonitor.desktopMeasurementStatus(connection: "已连接", lastDelta: 90, now: 100).contains("距上次接收 10 秒"))
+        XCTAssertEqual(LiveRateMonitor.desktopMeasurementStatus(connection: "连接断开", lastDelta: 99, now: 100), "连接断开")
+    }
+
 }

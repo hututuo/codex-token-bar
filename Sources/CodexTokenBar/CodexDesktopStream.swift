@@ -18,12 +18,15 @@ struct DesktopStreamDecoder {
     struct Item {
         var id: String
         var type: String
-        var length: Int
+        var length: Int?
         var completed: Bool
+        var observedCreation = false
+        var startEmitted = false
     }
     struct Turn {
         var id: String
         var model: String
+        var status = "inProgress"
         var items: [Int: Item] = [:]
     }
     struct Thread {
@@ -49,11 +52,11 @@ struct DesktopStreamDecoder {
             let history = (state["turnHistory"] as? [String: Any])?["history"] as? [String: Any]
             let entities = history?["entitiesByKey"] as? [String: [String: Any]] ?? [:]
             // Only retain identities/lengths of running turns; never retain or replay historical text.
-            for (key, value) in entities where value["status"] as? String == "inProgress" {
+            for (key, value) in entities where Self.isLive(value) {
                 if let turn = Self.turn(value), thread.turns.count < 8 { thread.turns[key] = turn }
             }
             if let turns = state["turns"] as? [[String: Any]] {
-                for (index, value) in turns.enumerated() where value["status"] as? String == "inProgress" {
+                for (index, value) in turns.enumerated() where Self.isLive(value) {
                     if let turn = Self.turn(value), thread.turns.count < 8 { thread.turns["legacy:\(index)"] = turn }
                 }
             }
@@ -70,35 +73,65 @@ struct DesktopStreamDecoder {
         for patch in change["patches"] as? [[String: Any]] ?? [] {
             guard let path = patch["path"] as? [Any], let location = Self.location(path) else { continue }
             let key = location.key, tail = location.tail
+            if ["move", "copy"].contains(patch["op"] as? String ?? "") {
+                threads.removeValue(forKey: threadID); resubscribe = threadID
+                return [.init(kind: .reset, thread: threadID, at: at)]
+            }
             if tail.isEmpty {
-                if patch["op"] as? String == "remove" { thread.turns.removeValue(forKey: key); continue }
-                if let value = patch["value"] as? [String: Any], value["status"] as? String == "inProgress", let turn = Self.turn(value) {
+                if patch["op"] as? String == "remove" {
+                    if let removed = thread.turns.removeValue(forKey: key), !removed.id.isEmpty {
+                        endings.append(.init(kind: .reset, thread: threadID, turn: removed.id, at: at))
+                    }
+                    continue
+                }
+                if let old = thread.turns.removeValue(forKey: key), !old.id.isEmpty {
+                    endings.append(.init(kind: .reset, thread: threadID, turn: old.id, at: at))
+                }
+                if let value = patch["value"] as? [String: Any], Self.isLive(value), let turn = Self.turn(value) {
                     // Full replacements are baselines, not output packets.
-                    if thread.turns[key] != nil { endings.append(.init(kind: .reset, thread: threadID, turn: turn.id, at: at)) }
                     thread.turns[key] = turn
                 }
                 continue
             }
             guard var turn = thread.turns[key] else { continue }
-            if tail.count == 1, tail[0] as? String == "turnId", let id = patch["value"] as? String { turn.id = id }
+            if tail.count == 1, tail[0] as? String == "turnId", let id = patch["value"] as? String {
+                if !turn.id.isEmpty, turn.id != id { endings.append(.init(kind: .reset, thread: threadID, turn: turn.id, at: at)) }
+                turn.id = id
+            }
+            if tail.count == 1, tail[0] as? String == "status", let status = patch["value"] as? String { turn.status = status }
             if tail.count == 2, tail[0] as? String == "params", tail[1] as? String == "model", let model = patch["value"] as? String { turn.model = model }
             if tail.count == 2, tail[0] as? String == "items", let index = tail[1] as? Int {
                 if patch["op"] as? String == "remove" {
                     endings.append(.init(kind: .reset, thread: threadID, turn: turn.id, at: at)); turn.items.removeAll()
                 } else if let value = patch["value"] as? [String: Any], let item = Self.item(value, completed: false) {
                     let fresh = turn.items[index] == nil
-                    turn.items[index] = item
-                    if fresh, item.type == "agentMessage", item.length == 0 {
-                        events.append(.init(kind: .start, thread: threadID, turn: turn.id, item: item.id, model: turn.model, at: at))
+                    var added = item
+                    added.observedCreation = fresh && item.length == 0
+                    turn.items[index] = added
+                    if turn.items.count > 512 {
+                        let keep = Set(turn.items.keys.sorted().suffix(512))
+                        turn.items = turn.items.filter { keep.contains($0.key) }
                     }
                 }
             }
             if tail.count == 2, tail[0] as? String == "completedItemIds", let itemID = tail[1] as? String, patch["value"] as? Bool == true {
                 for index in Array(turn.items.keys) where turn.items[index]?.id == itemID { turn.items[index]?.completed = true }
-                endings.append(.init(kind: .finish, thread: threadID, turn: turn.id, item: itemID, model: turn.model, at: at))
+                if !turn.id.isEmpty { endings.append(.init(kind: .finish, thread: threadID, turn: turn.id, item: itemID, model: turn.model, at: at)) }
             }
-            if tail.count == 1, tail[0] as? String == "status", let status = patch["value"] as? String, status != "inProgress" {
+            if tail.count == 1, tail[0] as? String == "status", let status = patch["value"] as? String, ["completed", "interrupted", "failed"].contains(status), !turn.id.isEmpty {
                 endings.append(.init(kind: status == "completed" ? .finish : .interrupted, thread: threadID, turn: turn.id, at: at))
+            }
+            thread.turns[key] = turn
+        }
+        // A placeholder may receive its empty item before the real turn ID/status.
+        // Emit a start only for an empty item whose creation we actually observed.
+        for key in Array(thread.turns.keys) {
+            guard var turn = thread.turns[key], !turn.id.isEmpty, turn.status == "inProgress" else { continue }
+            for index in Array(turn.items.keys) {
+                guard var item = turn.items[index], item.observedCreation, !item.startEmitted,
+                      item.type == "agentMessage" else { continue }
+                events.append(.init(kind: .start, thread: threadID, turn: turn.id, item: item.id, model: turn.model, at: at))
+                item.startEmitted = true; turn.items[index] = item
             }
             thread.turns[key] = turn
         }
@@ -106,16 +139,22 @@ struct DesktopStreamDecoder {
             guard textChange["type"] as? String == "text", let key = textChange["key"] as? [String: Any],
                   key["hostId"] as? String == "local", key["threadId"] as? String == threadID,
                   let entity = key["entityKey"] as? String, let itemID = key["itemId"] as? String,
-                  var turn = thread.turns[entity], let index = turn.items.first(where: { $0.value.id == itemID })?.key,
-                  var item = turn.items[index], item.type == "agentMessage",
-                  (!item.completed || endings.contains { $0.item == itemID && $0.kind == .finish }),
                   let target = textChange["target"] as? [String: Any], target["field"] as? String == "text",
                   let edits = textChange["edits"] as? [[String: Any]] else { continue }
+            guard var turn = thread.turns[entity], !turn.id.isEmpty,
+                  turn.status == "inProgress" || endings.contains(where: { $0.turn == turn.id && $0.item.isEmpty && ($0.kind == .finish || $0.kind == .interrupted) }),
+                  let index = turn.items.first(where: { $0.value.id == itemID })?.key else {
+                threads.removeValue(forKey: threadID); resubscribe = threadID
+                return events.filter { $0.kind != .delta } + [.init(kind: .reset, thread: threadID, at: at)]
+            }
+            guard var item = turn.items[index], item.type == "agentMessage",
+                  (!item.completed || endings.contains { $0.item == itemID && $0.kind == .finish }) else { continue }
             var delta = "", valid = true
             for edit in edits {
-                guard edit["at"] as? Int == item.length, edit["deleteCount"] as? Int == 0, let insert = edit["insert"] as? String,
+                guard let offset = edit["at"] as? Int, offset >= 0,
+                      item.length == nil || offset == item.length, edit["deleteCount"] as? Int == 0, let insert = edit["insert"] as? String,
                       insert.utf8.count <= 1_048_576 else { valid = false; break }
-                item.length += insert.utf16.count; delta += insert
+                item.length = offset + insert.utf16.count; delta += insert
             }
             if valid, !delta.isEmpty {
                 events.append(.init(kind: .delta, thread: threadID, turn: turn.id, item: item.id, model: turn.model, text: delta, at: at))
@@ -136,9 +175,10 @@ struct DesktopStreamDecoder {
         return events + endings
     }
     private static func turn(_ value: [String: Any]) -> Turn? {
-        guard let id = value["turnId"] as? String, !id.isEmpty else { return nil }
+        let id = value["turnId"] as? String ?? ""
         let params = value["params"] as? [String: Any]
         var result = Turn(id: id, model: params?["model"] as? String ?? "unknown")
+        result.status = value["status"] as? String ?? "pending"
         let completed = value["completedItemIds"] as? [String: Bool] ?? [:]
         for (index, value) in (value["items"] as? [[String: Any]] ?? []).enumerated().suffix(512) {
             if let item = item(value, completed: completed[value["id"] as? String ?? ""] == true) { result.items[index] = item }
@@ -147,7 +187,10 @@ struct DesktopStreamDecoder {
     }
     private static func item(_ value: [String: Any], completed: Bool) -> Item? {
         guard let id = value["id"] as? String, let type = value["type"] as? String else { return nil }
-        return Item(id: id, type: type, length: (value["text"] as? String ?? "").utf16.count, completed: completed)
+        return Item(id: id, type: type, length: value["_tokenbarUnknownTextLength"] as? Bool == true ? nil : (value["text"] as? String ?? "").utf16.count, completed: completed)
+    }
+    private static func isLive(_ value: [String: Any]) -> Bool {
+        ["inProgress", "pending", "queued", "starting", "waiting"].contains(value["status"] as? String ?? "pending")
     }
     private static func location(_ path: [Any]) -> (key: String, tail: [Any])? {
         if path.count >= 4, path[0] as? String == "turnHistory", path[1] as? String == "history", path[2] as? String == "entitiesByKey", let key = path[3] as? String {
@@ -218,7 +261,7 @@ final class CodexDesktopStreamClient: @unchecked Sendable {
         var client = "initializing-client", subscribed = Set<String>(), decoder = DesktopStreamDecoder()
         guard write(["type": "request", "requestId": UUID().uuidString, "sourceClientId": client, "version": 0,
                      "method": "initialize", "params": ["clientType": "tokenbar-readonly-observer"]], fd: fd) else { return }
-        var buffer = Data(), skipBytes = 0, initialized = false
+        var buffer = Data(), initialized = false
         let connectedAt = ProcessInfo.processInfo.systemUptime
         let wallAnchor = Date().timeIntervalSince1970 - connectedAt
         var readBuffer = [UInt8](repeating: 0, count: 65_536)
@@ -239,22 +282,19 @@ final class CodexDesktopStreamClient: @unchecked Sendable {
             if ready == 0 { if !initialized, ProcessInfo.processInfo.systemUptime - connectedAt > 5 { return }; continue }
             let count = Darwin.read(fd, &readBuffer, readBuffer.count)
             guard count > 0 else { if !configuration().stop { onStatus("Desktop 流式连接断开，等待重连") }; return }
-            var incoming = Data(readBuffer.prefix(count))
-            if skipBytes > 0 { let skipped = min(skipBytes, incoming.count); incoming.removeFirst(skipped); skipBytes -= skipped }
-            buffer.append(incoming)
+            buffer.append(contentsOf: readBuffer.prefix(count))
             while buffer.count >= 4 {
                 let length = buffer.prefix(4).enumerated().reduce(0) { $0 | (Int($1.element) << ($1.offset * 8)) }
                 guard length > 0, length <= 268_435_456 else { onStatus("Desktop 流式协议不兼容，已停止本次采样"); return }
-                if length > 67_108_864 {
-                    // Oversized initial history is discarded without allocating its declared size.
-                    let available = min(length, buffer.count - 4); buffer.removeFirst(available + 4); skipBytes = length - available
-                    onStatus("部分 Desktop 历史快照超过采样上限，已跳过")
-                    continue
-                }
                 guard buffer.count >= length + 4 else { break }
                 let frame = Data(buffer.dropFirst(4).prefix(length)); buffer.removeFirst(length + 4)
                 let keepReading = autoreleasepool { () -> Bool in
-                    guard let message = try? JSONSerialization.jsonObject(with: frame) as? [String: Any] else { return false }
+                    guard let message = length > 67_108_864
+                        ? DesktopSnapshotProjection.project(frame)
+                        : (try? JSONSerialization.jsonObject(with: frame) as? [String: Any]) else {
+                        onStatus("Desktop 状态帧无法安全解析，重新建立采样基线")
+                        return false
+                    }
                 if message["type"] as? String == "response", message["method"] as? String == "initialize",
                    message["resultType"] as? String == "success", let result = message["result"] as? [String: Any], let id = result["clientId"] as? String {
                     client = id; initialized = true; onStatus("已连接 Codex Desktop 流式事件，等待正文输出")

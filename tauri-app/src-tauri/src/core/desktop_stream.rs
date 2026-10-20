@@ -5,8 +5,10 @@
 //! transport sends initialize, follow/unfollow, and negative discovery replies; it never
 //! creates an IPC server or asks Desktop to resume or control a turn.
 
+use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -17,7 +19,7 @@ const MAX_INTERESTS: usize = 4;
 const MAX_TRACKED_TURNS: usize = 8;
 const MAX_TRACKED_ITEMS: usize = 512;
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
-const MAX_DRAIN_BYTES: usize = 256 * 1024 * 1024;
+const MAX_PROJECTED_FRAME_BYTES: usize = 256 * 1024 * 1024;
 const MAX_DELTA_BYTES: usize = 1024 * 1024;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const READ_CHUNK_BYTES: usize = 64 * 1024;
@@ -75,13 +77,16 @@ impl DesktopStreamEvent {
 struct TrackedItem {
     id: String,
     item_type: String,
-    utf16_length: usize,
+    utf16_length: Option<usize>,
     completed: bool,
+    observed_creation: bool,
+    start_emitted: bool,
 }
 
 #[derive(Clone, Debug)]
 struct TrackedTurn {
     id: String,
+    status: String,
     model: String,
     items: BTreeMap<usize, TrackedItem>,
 }
@@ -194,16 +199,13 @@ impl DesktopStreamDecoder {
             turns: BTreeMap::new(),
         };
 
-        // `turnHistory.history.entitiesByKey` is the current schema. Keep only active turns,
-        // and only identities/lengths from their items.
+        // Keep a bounded shadow for pending turns too: Desktop can publish an entity before it
+        // assigns a turn ID or changes its status to inProgress.
         if let Some(entities) = state
             .pointer("/turnHistory/history/entitiesByKey")
             .and_then(Value::as_object)
         {
             for (key, value) in entities {
-                if value.get("status").and_then(Value::as_str) != Some("inProgress") {
-                    continue;
-                }
                 if let Some(turn) = parse_turn(value) {
                     if tracked.turns.len() >= MAX_TRACKED_TURNS {
                         return self.invalidate(thread_id, at, true);
@@ -216,9 +218,6 @@ impl DesktopStreamDecoder {
         // Keep compatibility with the older array-shaped state observed during rollout.
         if let Some(turns) = state.get("turns").and_then(Value::as_array) {
             for (index, value) in turns.iter().enumerate() {
-                if value.get("status").and_then(Value::as_str) != Some("inProgress") {
-                    continue;
-                }
                 if let Some(turn) = parse_turn(value) {
                     if tracked.turns.len() >= MAX_TRACKED_TURNS {
                         return self.invalidate(thread_id, at, true);
@@ -266,6 +265,13 @@ impl DesktopStreamDecoder {
 
         if let Some(patches) = change.get("patches").and_then(Value::as_array) {
             for patch in patches {
+                if matches!(
+                    patch.get("op").and_then(Value::as_str),
+                    Some("move" | "copy")
+                ) {
+                    self.resubscribe = Some(thread_id.to_owned());
+                    return vec![DesktopStreamEvent::reset(thread_id, at)];
+                }
                 let Some(path) = patch.get("path").and_then(Value::as_array) else {
                     continue;
                 };
@@ -274,32 +280,86 @@ impl DesktopStreamDecoder {
                 };
                 if tail.is_empty() {
                     if patch.get("op").and_then(Value::as_str) == Some("remove") {
-                        thread.turns.remove(&key);
+                        if let Some(removed) = thread.turns.remove(&key) {
+                            if removed.status == "inProgress"
+                                && !removed.id.is_empty()
+                                && !ended_turns.contains(&key)
+                            {
+                                self.resubscribe = Some(thread_id.to_owned());
+                                return vec![DesktopStreamEvent::reset(thread_id, at)];
+                            }
+                        }
                         continue;
                     }
                     if let Some(value) = patch.get("value") {
-                        if value.get("status").and_then(Value::as_str) == Some("inProgress") {
-                            if let Some(turn) = parse_turn(value) {
-                                if thread.turns.contains_key(&key) {
-                                    endings.push(DesktopStreamEvent::reset(thread_id, at));
-                                } else if thread.turns.len() >= MAX_TRACKED_TURNS {
-                                    self.threads.remove(thread_id);
-                                    self.resubscribe = Some(thread_id.to_owned());
-                                    return vec![DesktopStreamEvent::reset(thread_id, at)];
-                                }
-                                thread.turns.insert(key, turn);
+                        let replacement_status = value.get("status").and_then(Value::as_str);
+                        if replacement_status.is_some_and(is_terminal_status)
+                            && thread.turns.get(&key).is_some_and(|turn| {
+                                turn.status == "inProgress" && !turn.id.is_empty()
+                            })
+                        {
+                            self.resubscribe = Some(thread_id.to_owned());
+                            return vec![DesktopStreamEvent::reset(thread_id, at)];
+                        }
+                        if let Some(old) = thread.turns.remove(&key) {
+                            if !old.id.is_empty() {
+                                endings.push(DesktopStreamEvent::reset(thread_id, at));
                             }
                         }
+                        if let Some(turn) = parse_turn(value) {
+                            if thread.turns.len() >= MAX_TRACKED_TURNS {
+                                self.threads.remove(thread_id);
+                                self.resubscribe = Some(thread_id.to_owned());
+                                return vec![DesktopStreamEvent::reset(thread_id, at)];
+                            }
+                            thread.turns.insert(key, turn);
+                        }
+                    }
+                    if patch.get("op").and_then(Value::as_str) == Some("move") {
+                        self.resubscribe = Some(thread_id.to_owned());
+                        return vec![DesktopStreamEvent::reset(thread_id, at)];
                     }
                     continue;
                 }
 
+                if !thread.turns.contains_key(&key) {
+                    let is_turn_field = matches!(
+                        tail.first().and_then(Value::as_str),
+                        Some("status" | "turnId" | "params" | "items")
+                    );
+                    if !is_turn_field {
+                        continue;
+                    }
+                    if thread.turns.len() >= MAX_TRACKED_TURNS {
+                        self.resubscribe = Some(thread_id.to_owned());
+                        return vec![DesktopStreamEvent::reset(thread_id, at)];
+                    }
+                    thread.turns.insert(
+                        key.clone(),
+                        TrackedTurn {
+                            id: String::new(),
+                            status: "pending".to_owned(),
+                            model: "unknown".to_owned(),
+                            items: BTreeMap::new(),
+                        },
+                    );
+                }
                 let Some(turn) = thread.turns.get_mut(&key) else {
                     continue;
                 };
+                let was_live = turn.status == "inProgress" && !turn.id.is_empty();
                 if tail.len() == 1 && tail[0].as_str() == Some("turnId") {
                     if let Some(id) = patch.get("value").and_then(Value::as_str) {
+                        if was_live && !id.is_empty() && id != turn.id {
+                            self.resubscribe = Some(thread_id.to_owned());
+                            return vec![DesktopStreamEvent::reset(thread_id, at)];
+                        }
                         turn.id = id.to_owned();
+                    }
+                }
+                if tail.len() == 1 && tail[0].as_str() == Some("params") {
+                    if let Some(model) = patch.pointer("/value/model").and_then(Value::as_str) {
+                        turn.model = model.to_owned();
                     }
                 }
                 if tail.len() == 2
@@ -310,27 +370,50 @@ impl DesktopStreamDecoder {
                         turn.model = model.to_owned();
                     }
                 }
+                if tail.len() == 1 && tail[0].as_str() == Some("items") {
+                    if let Some(values) = patch.get("value").and_then(Value::as_array) {
+                        if values.len() > MAX_TRACKED_ITEMS {
+                            self.resubscribe = Some(thread_id.to_owned());
+                            return vec![DesktopStreamEvent::reset(thread_id, at)];
+                        }
+                        turn.items.clear();
+                        for (index, value) in values.iter().enumerate() {
+                            if let Some(item) = parse_item(value, false) {
+                                turn.items.insert(index, item);
+                            }
+                        }
+                    }
+                }
                 if tail.len() == 2 && tail[0].as_str() == Some("items") {
                     if let Some(index) = tail[1].as_u64().and_then(|n| usize::try_from(n).ok()) {
                         if patch.get("op").and_then(Value::as_str) == Some("remove") {
-                            endings.push(DesktopStreamEvent::reset(thread_id, at));
+                            if turn.status == "inProgress" && !turn.id.is_empty() {
+                                endings.push(DesktopStreamEvent::reset(thread_id, at));
+                            }
                             turn.items.clear();
                         } else if let Some(value) = patch.get("value") {
                             if let Some(item) = parse_item(value, false) {
                                 let fresh = !turn.items.contains_key(&index);
+                                if fresh && turn.items.len() >= MAX_TRACKED_ITEMS {
+                                    self.resubscribe = Some(thread_id.to_owned());
+                                    return vec![DesktopStreamEvent::reset(thread_id, at)];
+                                }
+                                let mut item = item;
                                 if fresh
                                     && item.item_type == "agentMessage"
-                                    && item.utf16_length == 0
+                                    && item.utf16_length == Some(0)
                                 {
-                                    let mut event = DesktopStreamEvent::new(
-                                        DesktopStreamEventKind::Start,
-                                        thread_id,
-                                        at,
-                                    );
-                                    event.turn_id = Some(turn.id.clone());
-                                    event.item_id = Some(item.id.clone());
-                                    event.model = turn.model.clone();
-                                    events.push(event);
+                                    item.observed_creation = true;
+                                    if turn.status == "inProgress" && !turn.id.is_empty() {
+                                        item.start_emitted = true;
+                                        events.push(start_event(
+                                            thread_id,
+                                            &turn.id,
+                                            &turn.model,
+                                            &item,
+                                            at,
+                                        ));
+                                    }
                                 }
                                 turn.items.insert(index, item);
                             }
@@ -343,31 +426,50 @@ impl DesktopStreamDecoder {
                             for item in turn.items.values_mut().filter(|item| item.id == item_id) {
                                 item.completed = true;
                             }
-                            let mut event = DesktopStreamEvent::new(
-                                DesktopStreamEventKind::Finish,
-                                thread_id,
-                                at,
-                            );
-                            event.turn_id = Some(turn.id.clone());
-                            event.item_id = Some(item_id.to_owned());
-                            event.model = turn.model.clone();
-                            endings.push(event);
+                            if turn.status == "inProgress" && !turn.id.is_empty() {
+                                let mut event = DesktopStreamEvent::new(
+                                    DesktopStreamEventKind::Finish,
+                                    thread_id,
+                                    at,
+                                );
+                                event.turn_id = Some(turn.id.clone());
+                                event.item_id = Some(item_id.to_owned());
+                                event.model = turn.model.clone();
+                                endings.push(event);
+                            }
                         }
                     }
                 }
                 if tail.len() == 1 && tail[0].as_str() == Some("status") {
                     if let Some(status) = patch.get("value").and_then(Value::as_str) {
-                        if status != "inProgress" {
-                            let kind = if status == "completed" {
-                                DesktopStreamEventKind::Finish
-                            } else {
-                                DesktopStreamEventKind::Interrupted
-                            };
-                            let mut event = DesktopStreamEvent::new(kind, thread_id, at);
-                            event.turn_id = Some(turn.id.clone());
-                            event.model = turn.model.clone();
-                            endings.push(event);
+                        turn.status = status.to_owned();
+                        if is_terminal_status(status) {
+                            if was_live {
+                                let kind = if status == "completed" {
+                                    DesktopStreamEventKind::Finish
+                                } else {
+                                    DesktopStreamEventKind::Interrupted
+                                };
+                                let mut event = DesktopStreamEvent::new(kind, thread_id, at);
+                                event.turn_id = Some(turn.id.clone());
+                                event.model = turn.model.clone();
+                                endings.push(event);
+                            }
                             ended_turns.insert(key.clone());
+                        }
+                    }
+                }
+                if !was_live && turn.status == "inProgress" && !turn.id.is_empty() {
+                    let turn_id = turn.id.clone();
+                    let model = turn.model.clone();
+                    for item in turn.items.values_mut() {
+                        if item.item_type == "agentMessage"
+                            && item.observed_creation
+                            && !item.completed
+                            && !item.start_emitted
+                        {
+                            item.start_emitted = true;
+                            events.push(start_event(thread_id, &turn_id, &model, item, at));
                         }
                     }
                 }
@@ -394,13 +496,24 @@ impl DesktopStreamDecoder {
                     continue;
                 };
                 let Some(turn) = thread.turns.get_mut(entity_key) else {
-                    continue;
+                    self.resubscribe = Some(thread_id.to_owned());
+                    events.retain(|event| event.kind != DesktopStreamEventKind::Delta);
+                    events.extend(endings);
+                    events.push(DesktopStreamEvent::reset(thread_id, at));
+                    return events;
                 };
                 let Some(index) = turn
                     .items
                     .iter()
                     .find_map(|(index, item)| (item.id == item_id).then_some(*index))
                 else {
+                    if turn.status == "inProgress" && !turn.id.is_empty() {
+                        self.resubscribe = Some(thread_id.to_owned());
+                        events.retain(|event| event.kind != DesktopStreamEventKind::Delta);
+                        events.extend(endings);
+                        events.push(DesktopStreamEvent::reset(thread_id, at));
+                        return events;
+                    }
                     continue;
                 };
                 let Some(item) = turn.items.get_mut(&index) else {
@@ -430,8 +543,20 @@ impl DesktopStreamDecoder {
                         valid = false;
                         break;
                     };
-                    if edit.get("at").and_then(Value::as_u64)
-                        != u64::try_from(item.utf16_length).ok()
+                    let Some(offset) = edit
+                        .get("at")
+                        .and_then(Value::as_u64)
+                        .and_then(|offset| usize::try_from(offset).ok())
+                    else {
+                        valid = false;
+                        break;
+                    };
+                    if item.utf16_length.is_none() {
+                        // Large projected snapshots intentionally omit text. The first accepted
+                        // edit supplies the pre-insert UTF-16 offset without replaying history.
+                        item.utf16_length = Some(offset);
+                    }
+                    if item.utf16_length != Some(offset)
                         || edit.get("deleteCount").and_then(Value::as_u64) != Some(0)
                         || insert.len() > MAX_DELTA_BYTES
                         || delta.len().saturating_add(insert.len()) > MAX_DELTA_BYTES
@@ -439,10 +564,26 @@ impl DesktopStreamDecoder {
                         valid = false;
                         break;
                     }
-                    item.utf16_length += insert.encode_utf16().count();
+                    item.utf16_length = item
+                        .utf16_length
+                        .and_then(|length| length.checked_add(insert.encode_utf16().count()));
+                    if item.utf16_length.is_none() {
+                        valid = false;
+                        break;
+                    }
                     delta.push_str(insert);
                 }
-                if valid && !delta.is_empty() {
+                let terminal_same_frame = endings.iter().any(|event| {
+                    event.turn_id.as_deref() == Some(turn.id.as_str())
+                        && event.item_id.is_none()
+                        && (event.kind == DesktopStreamEventKind::Finish
+                            || event.kind == DesktopStreamEventKind::Interrupted)
+                });
+                if valid
+                    && !delta.is_empty()
+                    && (turn.status == "inProgress" || terminal_same_frame)
+                    && !turn.id.is_empty()
+                {
                     let mut event =
                         DesktopStreamEvent::new(DesktopStreamEventKind::Delta, thread_id, at);
                     event.turn_id = Some(turn.id.clone());
@@ -499,10 +640,14 @@ impl DesktopStreamDecoder {
 }
 
 fn parse_turn(value: &Value) -> Option<TrackedTurn> {
-    let id = value.get("turnId")?.as_str()?;
-    if id.is_empty() {
+    let status = value.get("status")?.as_str()?;
+    if is_terminal_status(status) {
         return None;
     }
+    let id = value
+        .get("turnId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let model = value
         .pointer("/params/model")
         .and_then(Value::as_str)
@@ -520,15 +665,25 @@ fn parse_turn(value: &Value) -> Option<TrackedTurn> {
                 .and_then(Value::as_bool)
                 == Some(true);
             if let Some(item) = parse_item(item_value, is_completed) {
-                items.insert(index, item);
+                let original_index = item_value
+                    .get("_tokenbarOriginalIndex")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(index);
+                items.insert(original_index, item);
             }
         }
     }
     Some(TrackedTurn {
         id: id.to_owned(),
+        status: status.to_owned(),
         model,
         items,
     })
+}
+
+fn is_terminal_status(status: &str) -> bool {
+    matches!(status, "completed" | "interrupted" | "failed")
 }
 
 fn parse_item(value: &Value, completed: bool) -> Option<TrackedItem> {
@@ -537,13 +692,488 @@ fn parse_item(value: &Value, completed: bool) -> Option<TrackedItem> {
     Some(TrackedItem {
         id: id.to_owned(),
         item_type: item_type.to_owned(),
-        utf16_length: value
-            .get("text")
-            .and_then(Value::as_str)
-            .map(|text| text.encode_utf16().count())
-            .unwrap_or(0),
+        utf16_length: if value
+            .get("_tokenbarUnknownTextLength")
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            None
+        } else {
+            Some(
+                value
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| text.encode_utf16().count())
+                    .unwrap_or(0),
+            )
+        },
         completed,
+        observed_creation: false,
+        start_emitted: false,
     })
+}
+
+const MAX_PROJECTED_STRING_BYTES: usize = 4096;
+
+#[derive(Debug)]
+struct BoundedString(String);
+
+impl<'de> Deserialize<'de> for BoundedString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct StringVisitor;
+
+        impl Visitor<'_> for StringVisitor {
+            type Value = BoundedString;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a bounded string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if value.len() > MAX_PROJECTED_STRING_BYTES {
+                    return Err(E::custom("projected string exceeded its limit"));
+                }
+                Ok(BoundedString(value.to_owned()))
+            }
+
+            fn visit_borrowed_str<E>(self, value: &'_ str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_str(value)
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if value.len() > MAX_PROJECTED_STRING_BYTES {
+                    return Err(E::custom("projected string exceeded its limit"));
+                }
+                Ok(BoundedString(value))
+            }
+        }
+
+        deserializer.deserialize_string(StringVisitor)
+    }
+}
+
+#[derive(Default)]
+struct LimitedEntities(Vec<(String, ProjectedTurn)>);
+
+impl<'de> Deserialize<'de> for LimitedEntities {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct EntitiesVisitor;
+
+        impl<'de> Visitor<'de> for EntitiesVisitor {
+            type Value = LimitedEntities;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a bounded entity map")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut entities = Vec::new();
+                while let Some((key, turn)) = map.next_entry::<BoundedString, ProjectedTurn>()? {
+                    if turn
+                        .status
+                        .as_ref()
+                        .is_some_and(|status| !is_terminal_status(&status.0))
+                    {
+                        if entities.len() >= MAX_TRACKED_TURNS {
+                            return Err(serde::de::Error::custom(
+                                "snapshot exceeded the active turn limit",
+                            ));
+                        }
+                        entities.push((key.0, turn));
+                    }
+                }
+                Ok(LimitedEntities(entities))
+            }
+        }
+
+        deserializer.deserialize_map(EntitiesVisitor)
+    }
+}
+
+#[derive(Default)]
+struct LimitedItems(Vec<(usize, ProjectedItem)>);
+
+impl<'de> Deserialize<'de> for LimitedItems {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ItemsVisitor;
+
+        impl<'de> Visitor<'de> for ItemsVisitor {
+            type Value = LimitedItems;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an item array")
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut items = VecDeque::with_capacity(MAX_TRACKED_ITEMS);
+                let mut index = 0usize;
+                while let Some(item) = sequence.next_element::<ProjectedItem>()? {
+                    if item.id.is_some() && item.item_type.is_some() {
+                        if items.len() == MAX_TRACKED_ITEMS {
+                            items.pop_front();
+                        }
+                        items.push_back((index, item));
+                    }
+                    index = index
+                        .checked_add(1)
+                        .ok_or_else(|| serde::de::Error::custom("snapshot item index overflow"))?;
+                }
+                Ok(LimitedItems(items.into_iter().collect()))
+            }
+        }
+
+        deserializer.deserialize_seq(ItemsVisitor)
+    }
+}
+
+#[derive(Default)]
+struct LimitedCompletedIds(Vec<(String, bool)>);
+
+impl<'de> Deserialize<'de> for LimitedCompletedIds {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CompletedVisitor;
+
+        impl<'de> Visitor<'de> for CompletedVisitor {
+            type Value = LimitedCompletedIds;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a completed item map")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut completed = VecDeque::with_capacity(MAX_TRACKED_ITEMS);
+                while let Some((key, value)) = map.next_entry::<BoundedString, bool>()? {
+                    if completed.len() == MAX_TRACKED_ITEMS {
+                        completed.pop_front();
+                    }
+                    completed.push_back((key.0, value));
+                }
+                Ok(LimitedCompletedIds(completed.into_iter().collect()))
+            }
+        }
+
+        deserializer.deserialize_map(CompletedVisitor)
+    }
+}
+
+#[derive(Default)]
+struct LimitedTurns(Vec<ProjectedTurn>);
+
+impl<'de> Deserialize<'de> for LimitedTurns {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TurnsVisitor;
+
+        impl<'de> Visitor<'de> for TurnsVisitor {
+            type Value = LimitedTurns;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a turn array")
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut turns = Vec::new();
+                while let Some(turn) = sequence.next_element::<ProjectedTurn>()? {
+                    if turn
+                        .status
+                        .as_ref()
+                        .is_some_and(|status| !is_terminal_status(&status.0))
+                    {
+                        if turns.len() >= MAX_TRACKED_TURNS {
+                            return Err(serde::de::Error::custom(
+                                "snapshot exceeded the active turn limit",
+                            ));
+                        }
+                        turns.push(turn);
+                    }
+                }
+                Ok(LimitedTurns(turns))
+            }
+        }
+
+        deserializer.deserialize_seq(TurnsVisitor)
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedItem {
+    id: Option<BoundedString>,
+    #[serde(rename = "type")]
+    item_type: Option<BoundedString>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedModel {
+    model: Option<BoundedString>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedTurn {
+    #[serde(rename = "turnId")]
+    turn_id: Option<BoundedString>,
+    status: Option<BoundedString>,
+    params: Option<ProjectedModel>,
+    items: Option<LimitedItems>,
+    #[serde(rename = "completedItemIds")]
+    completed_item_ids: Option<LimitedCompletedIds>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedHistory {
+    #[serde(rename = "entitiesByKey")]
+    entities_by_key: Option<LimitedEntities>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedTurnHistory {
+    history: Option<ProjectedHistory>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedConversationState {
+    id: Option<BoundedString>,
+    #[serde(rename = "turnHistory")]
+    turn_history: Option<ProjectedTurnHistory>,
+    turns: Option<LimitedTurns>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedChange {
+    #[serde(rename = "type")]
+    change_type: Option<BoundedString>,
+    revision: Option<i64>,
+    #[serde(rename = "conversationState")]
+    conversation_state: Option<ProjectedConversationState>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedParams {
+    #[serde(rename = "hostId")]
+    host_id: Option<BoundedString>,
+    #[serde(rename = "conversationId")]
+    conversation_id: Option<BoundedString>,
+    change: Option<ProjectedChange>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedResult {
+    #[serde(rename = "clientId")]
+    client_id: Option<BoundedString>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ProjectedEnvelope {
+    #[serde(rename = "type")]
+    message_type: Option<BoundedString>,
+    method: Option<BoundedString>,
+    version: Option<i64>,
+    #[serde(rename = "sourceClientId")]
+    source_client_id: Option<BoundedString>,
+    #[serde(rename = "requestId")]
+    request_id: Option<BoundedString>,
+    #[serde(rename = "resultType")]
+    result_type: Option<BoundedString>,
+    result: Option<ProjectedResult>,
+    params: Option<ProjectedParams>,
+}
+
+fn parse_frame(payload: &[u8]) -> Result<Value, ()> {
+    parse_frame_with_raw_limit(payload, MAX_FRAME_BYTES)
+}
+
+fn parse_frame_with_raw_limit(payload: &[u8], raw_limit: usize) -> Result<Value, ()> {
+    if payload.is_empty() || payload.len() > MAX_PROJECTED_FRAME_BYTES {
+        return Err(());
+    }
+    if payload.len() <= raw_limit {
+        return serde_json::from_slice(payload).map_err(|_| ());
+    }
+    parse_projected_snapshot(payload)
+}
+
+fn parse_projected_snapshot(payload: &[u8]) -> Result<Value, ()> {
+    let envelope: ProjectedEnvelope = serde_json::from_slice(payload).map_err(|_| ())?;
+    let message_type = envelope.message_type.map(|value| value.0);
+    let method = envelope.method.map(|value| value.0);
+    let source_client_id = envelope.source_client_id.map(|value| value.0);
+    let mut output = serde_json::Map::new();
+    if let Some(value) = message_type.as_deref() {
+        output.insert("type".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = method.as_deref() {
+        output.insert("method".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = envelope.version {
+        output.insert("version".to_owned(), Value::Number(value.into()));
+    }
+    if let Some(value) = source_client_id {
+        output.insert("sourceClientId".to_owned(), Value::String(value));
+    }
+    if let Some(value) = envelope.request_id.map(|value| value.0) {
+        output.insert("requestId".to_owned(), Value::String(value));
+    }
+    if let Some(value) = envelope.result_type.map(|value| value.0) {
+        output.insert("resultType".to_owned(), Value::String(value));
+    }
+    if let Some(value) = envelope
+        .result
+        .and_then(|result| result.client_id)
+        .map(|value| value.0)
+    {
+        output.insert("result".to_owned(), serde_json::json!({"clientId": value}));
+    }
+
+    let is_target_stream = message_type.as_deref() == Some("broadcast")
+        && method.as_deref() == Some("thread-stream-state-changed")
+        && envelope.version == Some(11);
+    let Some(params) = envelope.params else {
+        return Ok(Value::Object(output));
+    };
+    let host_id = params.host_id.map(|value| value.0);
+    let conversation_id = params.conversation_id.map(|value| value.0);
+    if !is_target_stream || host_id.as_deref() != Some("local") {
+        return Ok(Value::Object(output));
+    }
+    let conversation_id = conversation_id.ok_or(())?;
+    let change = params.change.ok_or(())?;
+    if change.change_type.as_ref().map(|value| value.0.as_str()) != Some("snapshot") {
+        // Large patches could contain accepted text. Reconnect and resubscribe instead of
+        // silently skipping a delta or materializing the whole frame as JSON Values.
+        return Err(());
+    }
+    let revision = change.revision.ok_or(())?;
+    let state = change.conversation_state.ok_or(())?;
+    if state.id.as_ref().map(|value| value.0.as_str()) != Some(conversation_id.as_str()) {
+        return Err(());
+    }
+
+    let mut entities = serde_json::Map::new();
+    if let Some(history) = state.turn_history.and_then(|history| history.history) {
+        if let Some(tracked) = history.entities_by_key {
+            for (key, turn) in tracked.0 {
+                let value = project_turn(turn)?;
+                entities.insert(key, value);
+            }
+        }
+    }
+    let mut turns = Vec::new();
+    if let Some(legacy) = state.turns {
+        for turn in legacy.0 {
+            turns.push(project_turn(turn)?);
+        }
+    }
+    let projected_state = serde_json::json!({
+        "id": conversation_id,
+        "turnHistory": { "history": { "entitiesByKey": entities } },
+        "turns": turns,
+    });
+    let projected_change = serde_json::json!({
+        "type": "snapshot",
+        "revision": revision,
+        "conversationState": projected_state,
+    });
+    let projected_params = serde_json::json!({
+        "hostId": "local",
+        "conversationId": projected_state["id"],
+        "change": projected_change,
+    });
+    output.insert("params".to_owned(), projected_params);
+    Ok(Value::Object(output))
+}
+
+fn project_turn(turn: ProjectedTurn) -> Result<Value, ()> {
+    let status = turn.status.map(|value| value.0).ok_or(())?;
+    if is_terminal_status(&status) {
+        return Err(());
+    }
+    let items = turn.items.unwrap_or_default();
+    let mut item_values = Vec::with_capacity(items.0.len());
+    let mut item_ids = HashSet::new();
+    for (original_index, item) in items.0 {
+        let id = item.id.map(|value| value.0).ok_or(())?;
+        let item_type = item.item_type.map(|value| value.0).ok_or(())?;
+        item_ids.insert(id.clone());
+        item_values.push(serde_json::json!({
+            "id": id,
+            "type": item_type,
+            "_tokenbarUnknownTextLength": true,
+            "_tokenbarOriginalIndex": original_index,
+        }));
+    }
+    let mut completed = serde_json::Map::new();
+    if let Some(completed_ids) = turn.completed_item_ids {
+        for (item_id, is_completed) in completed_ids.0 {
+            if is_completed && item_ids.contains(&item_id) {
+                completed.insert(item_id, Value::Bool(true));
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "turnId": turn.turn_id.map(|value| value.0).unwrap_or_default(),
+        "status": status,
+        "params": { "model": turn.params.and_then(|params| params.model).map(|value| value.0).unwrap_or_else(|| "unknown".to_owned()) },
+        "items": item_values,
+        "completedItemIds": completed,
+    }))
+}
+
+fn start_event(
+    thread_id: &str,
+    turn_id: &str,
+    model: &str,
+    item: &TrackedItem,
+    at: f64,
+) -> DesktopStreamEvent {
+    let mut event = DesktopStreamEvent::new(DesktopStreamEventKind::Start, thread_id, at);
+    event.turn_id = Some(turn_id.to_owned());
+    event.item_id = Some(item.id.clone());
+    event.model = model.to_owned();
+    event
 }
 
 fn patch_location(path: &[Value]) -> Option<(String, &[Value])> {
@@ -732,50 +1362,37 @@ mod windows_transport {
         ) -> i32;
     }
 
-    enum Frame {
-        Json(Vec<u8>),
-        Oversized,
-    }
-
     #[derive(Default)]
     struct FrameReader {
         bytes: Vec<u8>,
-        skip_remaining: usize,
     }
 
     impl FrameReader {
-        fn push(&mut self, mut incoming: &[u8]) {
-            if self.skip_remaining > 0 {
-                let skipped = self.skip_remaining.min(incoming.len());
-                self.skip_remaining -= skipped;
-                incoming = &incoming[skipped..];
-            }
+        fn push(&mut self, incoming: &[u8]) {
             if !incoming.is_empty() {
                 self.bytes.extend_from_slice(incoming);
             }
         }
 
-        fn next(&mut self) -> Result<Option<Frame>, ()> {
+        fn next(&mut self) -> Result<Option<Vec<u8>>, ()> {
             if self.bytes.len() < 4 {
                 return Ok(None);
             }
             let length = u32::from_le_bytes(self.bytes[..4].try_into().map_err(|_| ())?) as usize;
-            if length == 0 || length > MAX_DRAIN_BYTES {
+            if length == 0 || length > MAX_PROJECTED_FRAME_BYTES {
                 return Err(());
-            }
-            if length > MAX_FRAME_BYTES {
-                self.bytes.drain(..4);
-                let discarded = length.min(self.bytes.len());
-                self.bytes.drain(..discarded);
-                self.skip_remaining = length - discarded;
-                return Ok(Some(Frame::Oversized));
             }
             if self.bytes.len() < length + 4 {
                 return Ok(None);
             }
-            let payload = self.bytes[4..length + 4].to_vec();
-            self.bytes.drain(..length + 4);
-            Ok(Some(Frame::Json(payload)))
+            // Keep a single allocation for the large payload. Any trailing bytes are at most
+            // the current read chunk; move them aside before compacting the frame in place.
+            let mut frame = std::mem::take(&mut self.bytes);
+            let trailing = frame.split_off(length + 4);
+            frame.copy_within(4..length + 4, 0);
+            frame.truncate(length);
+            self.bytes = trailing;
+            Ok(Some(frame))
         }
     }
 
@@ -893,68 +1510,63 @@ mod windows_transport {
             pipe.read_exact(&mut read_buffer[..count]).map_err(|_| ())?;
             frames.push(&read_buffer[..count]);
             loop {
-                let frame = match frames.next()? {
-                    Some(frame) => frame,
+                let payload = match frames.next()? {
+                    Some(payload) => payload,
                     None => break,
                 };
-                match frame {
-                    Frame::Oversized => {
-                        set_status(
-                            last_status,
-                            "A Desktop IPC frame exceeded 64 MiB and was drained without parsing.",
-                            sender,
-                            overflow_notice,
-                        );
-                    }
-                    Frame::Json(payload) => {
-                        let message: Value = serde_json::from_slice(&payload).map_err(|_| ())?;
-                        if message.get("type").and_then(Value::as_str) == Some("response")
-                            && message.get("method").and_then(Value::as_str) == Some("initialize")
-                            && message.get("resultType").and_then(Value::as_str) == Some("success")
-                        {
-                            let Some(id) =
-                                message.pointer("/result/clientId").and_then(Value::as_str)
-                            else {
-                                return Err(());
-                            };
-                            client_id = id.to_owned();
-                            initialized = true;
-                            connected_at = std::time::Instant::now();
-                            wall_anchor = wall_time();
-                            set_status(
+                let projected = payload.len() > MAX_FRAME_BYTES;
+                let message = parse_frame(&payload)?;
+                if projected {
+                    set_status(
+                        last_status,
+                        "A large Desktop IPC snapshot was selectively projected within the 256 MiB frame limit.",
+                        sender,
+                        overflow_notice,
+                    );
+                }
+                if message.get("type").and_then(Value::as_str) == Some("response")
+                    && message.get("method").and_then(Value::as_str) == Some("initialize")
+                    && message.get("resultType").and_then(Value::as_str) == Some("success")
+                {
+                    let Some(id) = message.pointer("/result/clientId").and_then(Value::as_str)
+                    else {
+                        return Err(());
+                    };
+                    client_id = id.to_owned();
+                    initialized = true;
+                    connected_at = std::time::Instant::now();
+                    wall_anchor = wall_time();
+                    set_status(
                                 last_status,
                                 "Following selected Codex Desktop threads read-only; waiting for accepted text changes.",
                                 sender,
                                 overflow_notice,
                             );
-                        } else if message.get("type").and_then(Value::as_str)
-                            == Some("client-discovery-request")
-                        {
-                            let Some(request_id) = message.get("requestId").and_then(Value::as_str)
-                            else {
-                                continue;
-                            };
-                            write_message(
-                                pipe,
-                                &serde_json::json!({
-                                    "type": "client-discovery-response",
-                                    "requestId": request_id,
-                                    "response": { "canHandle": false }
-                                }),
-                            )?;
-                        } else if initialized {
-                            let interests = subscribed.clone();
-                            let events = decoder.consume(
-                                &message,
-                                wall_anchor + connected_at.elapsed().as_secs_f64(),
-                                &interests,
-                            );
-                            emit_many(sender, overflow_notice, events);
-                            if let Some(thread_id) = decoder.resubscribe.take() {
-                                write_follow(pipe, &client_id, &thread_id, false)?;
-                                write_follow(pipe, &client_id, &thread_id, true)?;
-                            }
-                        }
+                } else if message.get("type").and_then(Value::as_str)
+                    == Some("client-discovery-request")
+                {
+                    let Some(request_id) = message.get("requestId").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    write_message(
+                        pipe,
+                        &serde_json::json!({
+                            "type": "client-discovery-response",
+                            "requestId": request_id,
+                            "response": { "canHandle": false }
+                        }),
+                    )?;
+                } else if initialized {
+                    let interests = subscribed.clone();
+                    let events = decoder.consume(
+                        &message,
+                        wall_anchor + connected_at.elapsed().as_secs_f64(),
+                        &interests,
+                    );
+                    emit_many(sender, overflow_notice, events);
+                    if let Some(thread_id) = decoder.resubscribe.take() {
+                        write_follow(pipe, &client_id, &thread_id, false)?;
+                        write_follow(pipe, &client_id, &thread_id, true)?;
                     }
                 }
             }
@@ -1109,7 +1721,7 @@ mod tests {
             .is_empty());
         let thread = decoder.threads.get("thread-1").unwrap();
         let item = thread.turns["entity-1"].items.get(&0).unwrap();
-        assert_eq!(item.utf16_length, "old answer".encode_utf16().count());
+        assert_eq!(item.utf16_length, Some("old answer".encode_utf16().count()));
         assert_eq!(item.id, "item-1");
     }
 
@@ -1165,6 +1777,247 @@ mod tests {
         assert!(events
             .iter()
             .all(|event| event.kind != DesktopStreamEventKind::Delta));
+    }
+
+    #[test]
+    fn pending_nil_id_turn_hydrates_until_it_can_emit_start_and_delta() {
+        let mut decoder = DesktopStreamDecoder::new();
+        let mut initial = snapshot("owner-1", 5, "");
+        let entity = &mut initial["params"]["change"]["conversationState"]["turnHistory"]
+            ["history"]["entitiesByKey"]["entity-1"];
+        entity["status"] = Value::String("pending".to_owned());
+        entity.as_object_mut().unwrap().remove("turnId");
+        entity["items"] = json!([]);
+        assert!(decoder.consume(&initial, 10.0, &interested()).is_empty());
+
+        let item_added = patches(
+            "owner-1",
+            6,
+            5,
+            json!([{
+                "op": "add",
+                "path": ["turnHistory", "history", "entitiesByKey", "entity-1", "items", 0],
+                "value": { "id": "item-pending", "type": "agentMessage", "text": "" }
+            }]),
+            json!([]),
+        );
+        assert!(decoder.consume(&item_added, 11.0, &interested()).is_empty());
+
+        let status = patches(
+            "owner-1",
+            7,
+            6,
+            json!([
+                { "op": "replace", "path": ["turnHistory", "history", "entitiesByKey", "entity-1", "status"], "value": "inProgress" },
+                { "op": "replace", "path": ["turnHistory", "history", "entitiesByKey", "entity-1", "params", "model"], "value": "gpt-pending" }
+            ]),
+            json!([]),
+        );
+        assert!(decoder.consume(&status, 12.0, &interested()).is_empty());
+
+        let id = patches(
+            "owner-1",
+            8,
+            7,
+            json!([{
+                "op": "replace",
+                "path": ["turnHistory", "history", "entitiesByKey", "entity-1", "turnId"],
+                "value": "turn-pending"
+            }]),
+            json!([]),
+        );
+        let starts = decoder.consume(&id, 13.0, &interested());
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].kind, DesktopStreamEventKind::Start);
+        assert_eq!(starts[0].turn_id.as_deref(), Some("turn-pending"));
+        assert_eq!(starts[0].item_id.as_deref(), Some("item-pending"));
+        assert_eq!(starts[0].model, "gpt-pending");
+
+        let delta = patches(
+            "owner-1",
+            9,
+            8,
+            json!([]),
+            json!([{
+                "type": "text",
+                "key": { "hostId": "local", "threadId": "thread-1", "entityKey": "entity-1", "itemId": "item-pending" },
+                "target": { "field": "text" },
+                "edits": [{ "at": 0, "deleteCount": 0, "insert": "new output" }]
+            }]),
+        );
+        let events = decoder.consume(&delta, 14.0, &interested());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, DesktopStreamEventKind::Delta);
+        assert_eq!(events[0].text, "new output");
+    }
+
+    #[test]
+    fn unknown_accepted_entity_resubscribes_instead_of_dropping_delta() {
+        let mut decoder = DesktopStreamDecoder::new();
+        decoder.consume(&snapshot("owner-1", 5, ""), 10.0, &interested());
+        let frame = patches(
+            "owner-1",
+            6,
+            5,
+            json!([]),
+            json!([{
+                "type": "text",
+                "key": { "hostId": "local", "threadId": "thread-1", "entityKey": "new-entity", "itemId": "item-1" },
+                "target": { "field": "text" },
+                "edits": [{ "at": 0, "deleteCount": 0, "insert": "must not be lost" }]
+            }]),
+        );
+        let events = decoder.consume(&frame, 11.0, &interested());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, DesktopStreamEventKind::Reset);
+        assert_eq!(decoder.resubscribe.as_deref(), Some("thread-1"));
+        assert!(!decoder.threads.contains_key("thread-1"));
+    }
+
+    #[test]
+    fn active_entity_rekey_removal_invalidates_and_resubscribes() {
+        let mut decoder = DesktopStreamDecoder::new();
+        decoder.consume(&snapshot("owner-1", 5, ""), 10.0, &interested());
+        let removal = patches(
+            "owner-1",
+            6,
+            5,
+            json!([{
+                "op": "remove",
+                "path": ["turnHistory", "history", "entitiesByKey", "entity-1"]
+            }]),
+            json!([]),
+        );
+        let events = decoder.consume(&removal, 11.0, &interested());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, DesktopStreamEventKind::Reset);
+        assert_eq!(decoder.resubscribe.as_deref(), Some("thread-1"));
+        assert!(!decoder.threads.contains_key("thread-1"));
+    }
+
+    #[test]
+    fn same_frame_terminal_status_keeps_the_final_accepted_append() {
+        let mut decoder = DesktopStreamDecoder::new();
+        decoder.consume(&snapshot("owner-1", 5, ""), 10.0, &interested());
+        let frame = patches(
+            "owner-1",
+            6,
+            5,
+            json!([{
+                "op": "replace",
+                "path": ["turnHistory", "history", "entitiesByKey", "entity-1", "status"],
+                "value": "completed"
+            }]),
+            json!([{
+                "type": "text",
+                "key": { "hostId": "local", "threadId": "thread-1", "entityKey": "entity-1", "itemId": "item-1" },
+                "target": { "field": "text" },
+                "edits": [{ "at": 0, "deleteCount": 0, "insert": "final" }]
+            }]),
+        );
+        let events = decoder.consume(&frame, 11.0, &interested());
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, DesktopStreamEventKind::Delta);
+        assert_eq!(events[0].text, "final");
+        assert_eq!(events[1].kind, DesktopStreamEventKind::Finish);
+        assert!(!decoder.threads["thread-1"].turns.contains_key("entity-1"));
+    }
+
+    #[test]
+    fn pending_queue_statuses_remain_shadow_turns() {
+        let mut decoder = DesktopStreamDecoder::new();
+        let mut initial = snapshot("owner-1", 5, "");
+        let entity = &mut initial["params"]["change"]["conversationState"]["turnHistory"]
+            ["history"]["entitiesByKey"]["entity-1"];
+        entity["status"] = Value::String("queued".to_owned());
+        entity.as_object_mut().unwrap().remove("turnId");
+        assert!(decoder.consume(&initial, 10.0, &interested()).is_empty());
+        assert_eq!(
+            decoder.threads["thread-1"].turns["entity-1"].status,
+            "queued"
+        );
+
+        let waiting = patches(
+            "owner-1",
+            6,
+            5,
+            json!([{
+                "op": "replace",
+                "path": ["turnHistory", "history", "entitiesByKey", "entity-1", "status"],
+                "value": "waiting"
+            }]),
+            json!([]),
+        );
+        assert!(decoder.consume(&waiting, 11.0, &interested()).is_empty());
+        assert_eq!(
+            decoder.threads["thread-1"].turns["entity-1"].status,
+            "waiting"
+        );
+    }
+
+    #[test]
+    fn full_terminal_entity_replacement_invalidates_old_baseline() {
+        let mut decoder = DesktopStreamDecoder::new();
+        decoder.consume(&snapshot("owner-1", 5, ""), 10.0, &interested());
+        let replacement = patches(
+            "owner-1",
+            6,
+            5,
+            json!([{
+                "op": "replace",
+                "path": ["turnHistory", "history", "entitiesByKey", "entity-1"],
+                "value": {
+                    "turnId": "turn-1",
+                    "status": "completed",
+                    "params": { "model": "gpt-test" },
+                    "items": [{ "id": "item-1", "type": "agentMessage", "text": "" }]
+                }
+            }]),
+            json!([]),
+        );
+        let events = decoder.consume(&replacement, 11.0, &interested());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, DesktopStreamEventKind::Reset);
+        assert_eq!(decoder.resubscribe.as_deref(), Some("thread-1"));
+        assert!(!decoder.threads.contains_key("thread-1"));
+    }
+
+    #[test]
+    fn selective_snapshot_projection_discards_text_and_adopts_first_utf16_offset() {
+        let text = "old 🐈";
+        let payload = serde_json::to_vec(&snapshot("owner-1", 5, text)).unwrap();
+        let projected = parse_frame_with_raw_limit(&payload, 0).unwrap();
+        let serialized = serde_json::to_string(&projected).unwrap();
+        assert!(!serialized.contains(text));
+        assert!(!serialized.contains("_tokenbarOriginalText"));
+
+        let mut decoder = DesktopStreamDecoder::new();
+        assert!(decoder.consume(&projected, 10.0, &interested()).is_empty());
+        assert_eq!(
+            decoder.threads["thread-1"].turns["entity-1"].items[&0].utf16_length,
+            None
+        );
+        let offset = text.encode_utf16().count();
+        let append = patches(
+            "owner-1",
+            6,
+            5,
+            json!([]),
+            json!([{
+                "type": "text",
+                "key": { "hostId": "local", "threadId": "thread-1", "entityKey": "entity-1", "itemId": "item-1" },
+                "target": { "field": "text" },
+                "edits": [{ "at": offset, "deleteCount": 0, "insert": " 🌱" }]
+            }]),
+        );
+        let events = decoder.consume(&append, 11.0, &interested());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, DesktopStreamEventKind::Delta);
+        assert_eq!(events[0].text, " 🌱");
+        assert_eq!(
+            decoder.threads["thread-1"].turns["entity-1"].items[&0].utf16_length,
+            Some(offset + " 🌱".encode_utf16().count())
+        );
     }
 
     #[test]
