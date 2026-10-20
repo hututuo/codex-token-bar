@@ -58,6 +58,51 @@ fn read_all(reader: &mut RolloutReader) -> Vec<u8> {
 }
 
 #[test]
+fn confirmed_missing_requires_both_representations_and_available_home_boundary() {
+    let fixture = FixtureDir::new();
+    let home = fs::canonicalize(&fixture.0).unwrap();
+    let plain = home.join("sessions/2026/08/06/deleted.jsonl");
+    assert!(rollout_source::confirmed_missing_reference(&plain, &home));
+    assert!(rollout_source::confirmed_missing_reference(&plain.with_extension("jsonl.zst"), &home));
+    fs::create_dir_all(plain.parent().unwrap()).unwrap();
+    fs::write(plain.with_extension("jsonl.zst"), b"invalid compressed data is still an existing source").unwrap();
+    assert!(!rollout_source::confirmed_missing_reference(&plain, &home));
+    fs::remove_file(plain.with_extension("jsonl.zst")).unwrap();
+    fs::write(&plain, b"plain").unwrap();
+    assert!(!rollout_source::confirmed_missing_reference(&plain, &home));
+    fs::remove_file(&plain).unwrap();
+    assert!(!rollout_source::confirmed_missing_reference(&plain, &home.join("unavailable-home")));
+    let outside = FixtureDir::new();
+    assert!(rollout_source::confirmed_missing_reference(&outside.0.join("old-home.jsonl"), &home));
+    let existing_outside = outside.write("existing.jsonl", b"outside source");
+    assert!(!rollout_source::confirmed_missing_reference(&existing_outside, &home));
+    // Joining onto a verbatim Windows path normalizes away `..`. Construct the
+    // raw spelling so this really exercises the classifier's traversal guard.
+    let raw_parent = format!("{}{}sessions{}..{}deleted.jsonl", home.display(),
+        std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR);
+    assert!(!rollout_source::confirmed_missing_reference(std::path::Path::new(&raw_parent), &home));
+    assert!(!rollout_source::confirmed_missing_reference(&home.join("state_5.sqlite"), &home));
+}
+
+#[cfg(unix)]
+#[test]
+fn confirmed_missing_does_not_hide_dangling_or_escaping_parent_links() {
+    let fixture = FixtureDir::new();
+    let home = fs::canonicalize(&fixture.0).unwrap();
+    let outside = FixtureDir::new();
+    let alias = home.join("linked");
+    std::os::unix::fs::symlink(&outside.0, &alias).unwrap();
+    assert!(!rollout_source::confirmed_missing_reference(&alias.join("missing.jsonl"), &home));
+    fs::remove_file(&alias).unwrap();
+    std::os::unix::fs::symlink(home.join("missing-target"), &alias).unwrap();
+    assert!(!rollout_source::confirmed_missing_reference(&alias.join("missing.jsonl"), &home));
+    fs::remove_file(&alias).unwrap();
+    let plain = home.join("dangling.jsonl");
+    std::os::unix::fs::symlink(home.join("missing-target"), &plain).unwrap();
+    assert!(!rollout_source::confirmed_missing_reference(&plain, &home));
+}
+
+#[test]
 fn plain_jsonl_is_read_and_preferred_over_compressed_sibling() {
     let fixture = FixtureDir::new();
     let logical = fixture.write("rollout.jsonl", b"plain source\n");

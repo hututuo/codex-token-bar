@@ -1791,16 +1791,108 @@ fn codex_home_replacement_during_precise_scan_blocks_generation_publish() {
 }
 
 #[test]
-fn missing_active_rollout_keeps_last_good_and_blocks_publish() {
-    assert_missing_active_rollout_keeps_last_good(false);
+fn missing_active_rollout_retains_history_and_continues_append_restore_and_archive() {
+    for use_plan in [false, true] {
+        let _test_state = app_paths::app_path_test_env_guard(&[]);
+        let root = temp_root();
+        let sessions = root.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let removed = sessions.join("rollout-019e1111-1111-4111-8111-000000000001.jsonl");
+        let continuing = sessions.join("rollout-019e1111-1111-4111-8111-000000000002.jsonl");
+        let line = |at: &str, count: u64| serde_json::json!({
+            "timestamp": at, "type": "event_msg", "payload": {"type": "token_count", "info": {
+                "last_token_usage": {"input_tokens": count, "cached_input_tokens": 0, "output_tokens": 0, "total_tokens": count}
+            }}
+        }).to_string();
+        let old = line(&recent_test_timestamp(30), 120);
+        write_lines(&removed, &[old.clone()]);
+        write_lines(&continuing, &[line(&recent_test_timestamp(20), 80)]);
+        create_state_database_with_rollout(&root, "019e1111-1111-4111-8111-000000000001", &removed);
+        assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 200);
+        let index_path = super::exact_usage_index::database_path(&root).unwrap();
+        let db = Connection::open(&index_path).unwrap();
+        db.execute_batch("CREATE TABLE preservation_expected AS SELECT * FROM event_rows;").unwrap();
+        let generation = |db: &Connection| db.query_row("SELECT value FROM metadata WHERE key='published_generation'", [], |r| r.get::<_, String>(0)).unwrap().parse::<i64>().unwrap();
+        let published_before = generation(&db);
+        drop(db);
+        fs::remove_file(&removed).unwrap();
+        let mut out = fs::OpenOptions::new().append(true).open(&continuing).unwrap();
+        writeln!(out, "{}", line(&recent_test_timestamp(10), 50)).unwrap();
+        drop(out);
+        let mut index = ExactUsageIndex::open(&root).unwrap();
+        let mut warnings = Vec::new();
+        let plan = use_plan.then(|| estimate_precise_scan_total_with_source_revision(&root, StdDuration::from_secs(2), 1).unwrap());
+        if let Some(plan) = &plan { assert_eq!(plan.candidate_total, 1); }
+        index.sync_with_scan_plan(&root, &mut warnings, plan, None).unwrap();
+        assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 250);
+        assert!(!warnings.iter().any(|w| w.message.contains("无法确认 active rollout")), "{warnings:?}");
+        drop(index);
+        let db = Connection::open(&index_path).unwrap();
+        assert_eq!(db.query_row("SELECT COUNT(*) FROM (SELECT * FROM preservation_expected EXCEPT SELECT * FROM event_rows)", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "all original event fields must survive");
+        assert!(generation(&db) > published_before);
+        assert_eq!(db.query_row("SELECT SUM(tokens) FROM attribution_source_buckets", [], |r| r.get::<_, i64>(0)).unwrap(), 250);
+        drop(db);
+        // Restoring the bytes must reuse the historical identity, not recount.
+        write_lines(&removed, &[old]);
+        assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 250);
+        let archive = root.join("archived_sessions");
+        fs::create_dir_all(&archive).unwrap();
+        fs::rename(&removed, archive.join(removed.file_name().unwrap())).unwrap();
+        // Deliberately leave state archived=0 and rollout_path at the old location.
+        assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 250);
+        assert_eq!(dashboard_usage_summary(&root).unwrap().total_tokens, 250);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn missing_active_rollout_never_indexed_does_not_fabricate_usage_or_block_first_scan() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let missing = root.join("sessions/2026/08/06/rollout-missing.jsonl");
+    create_state_database_with_rollout(&root, "missing-thread", &missing);
+    let mut warnings = Vec::new();
+    let plan = estimate_precise_scan_total_with_source_revision(&root, StdDuration::from_secs(2), 1).unwrap();
+    assert_eq!(plan.candidate_total, 0);
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync_with_scan_plan(&root, &mut warnings, Some(plan), None).unwrap();
+    assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 0);
+    drop(index);
+    // The full exact dashboard uses its existing no-events result for a fresh
+    // empty ledger. Absence must not turn that into an incomplete-scan error.
+    let empty = dashboard_snapshot(&root).unwrap_err();
+    assert!(empty.starts_with("No token_count events found"), "{empty}");
+    assert!(!empty.contains("会话源扫描不完整"), "{empty}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn relocated_home_ignores_confirmed_missing_old_absolute_reference() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let old = root.with_extension("previous-home").join("sessions/rollout-old.jsonl");
+    assert!(!old.exists());
+    create_state_database_with_rollout(&root, "relocated-thread", &old);
+    let current = root.join("sessions/rollout-current.jsonl");
+    let line = |at: &str, n: u64| serde_json::json!({"timestamp":at,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}}}}).to_string();
+    write_lines(&current, &[line(&recent_test_timestamp(20), 120)]);
+    let plan = estimate_precise_scan_total_with_source_revision(&root, StdDuration::from_secs(2), 1).unwrap();
+    assert_eq!(plan.candidate_total, 1);
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync_with_scan_plan(&root, &mut Vec::new(), Some(plan), None).unwrap();
+    assert_eq!(index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap().total_tokens, 120);
+    drop(index);
+    let mut output = fs::OpenOptions::new().append(true).open(&current).unwrap();
+    writeln!(output, "{}", line(&recent_test_timestamp(10), 40)).unwrap();
+    drop(output);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 160);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn corrupt_compressed_active_rollout_keeps_last_good_and_reports_error() {
-    assert_missing_active_rollout_keeps_last_good(true);
-}
-
-fn assert_missing_active_rollout_keeps_last_good(compressed: bool) {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1827,12 +1919,10 @@ fn assert_missing_active_rollout_keeps_last_good(compressed: bool) {
     let missing_rollout = root
         .join("active-rollouts")
         .join("rollout-019emissing-active-0000-0000-0000.jsonl");
-    if compressed {
-        fs::create_dir_all(missing_rollout.parent().unwrap()).unwrap();
-        let mut compressed_path = missing_rollout.as_os_str().to_os_string();
-        compressed_path.push(".zst");
-        fs::write(PathBuf::from(compressed_path), b"compressed payload is never read by diagnosis").unwrap();
-    }
+    fs::create_dir_all(missing_rollout.parent().unwrap()).unwrap();
+    let mut compressed_path = missing_rollout.as_os_str().to_os_string();
+    compressed_path.push(".zst");
+    fs::write(PathBuf::from(compressed_path), b"invalid compressed payload").unwrap();
     create_state_database_with_rollout(
         &root,
         "019emissing-active-0000-0000-0000-rollout",
@@ -1842,13 +1932,7 @@ fn assert_missing_active_rollout_keeps_last_good(compressed: bool) {
     assert!(error.contains("会话源扫描不完整"), "{error}");
     assert!(error.contains("扫描诊断"), "{error}");
     assert!(error.contains("失败阶段：sync_error"), "{error}");
-    if compressed {
-        assert!(error.contains("zstd") || error.contains("压缩") || error.contains("会话文件"), "{error}");
-    }
-    assert!(
-        compressed || error.contains("无法确认 active rollout 会话文件边界"),
-        "the command failure must preserve the scanner reason: {error}"
-    );
+    assert!(error.contains("zstd") || error.contains("压缩") || error.contains("会话文件"), "{error}");
     // Windows TEMP can use an 8.3 spelling (RUNNER~1) while discovery reports
     // the canonical long path. Compare the complete logical path in that form.
     let canonical_rollout = fs::canonicalize(&root).unwrap()

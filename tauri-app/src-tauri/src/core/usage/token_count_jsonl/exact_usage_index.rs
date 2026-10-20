@@ -10752,6 +10752,9 @@ fn visit_session_files(
                 let metadata = match fs::symlink_metadata(&path) {
                     Ok(metadata) => metadata,
                     Err(error) => {
+                        if error.kind() == std::io::ErrorKind::NotFound
+                            && rollout_source::confirmed_missing_reference(&path, &canonical_home)
+                        { continue; }
                         scan_completeness.mark_incomplete();
                         warnings.push(scan_warning(format!(
                             "读取会话目录项元数据失败，本轮跳过该条目：{}（{}）",
@@ -10781,7 +10784,7 @@ fn visit_session_files(
                         ResolvedSessionFile::Accepted(file) => {
                             visit(connection, &file, warnings, scan_completeness)?;
                         }
-                        ResolvedSessionFile::Rejected => {}
+                        ResolvedSessionFile::Rejected | ResolvedSessionFile::Absent => {}
                         ResolvedSessionFile::Unresolved => scan_completeness.mark_incomplete(),
                     }
                 }
@@ -10952,6 +10955,9 @@ fn estimate_session_directory(
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) => {
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && rollout_source::confirmed_missing_reference(&path, canonical_home)
+                    { continue; }
                     *unresolved_boundary = true;
                     boundary_warnings.push(format!(
                         "无法读取会话目录项元数据：{}（{}）",
@@ -10972,6 +10978,9 @@ fn estimate_session_directory(
             let canonical = match rollout_source::canonical_logical_path(&path) {
                 Ok(canonical) => canonical,
                 Err(error) => {
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && rollout_source::confirmed_missing_reference(&path, canonical_home)
+                    { continue; }
                     *unresolved_boundary = true;
                     boundary_warnings.push(format!(
                         "无法确认会话文件边界：{}（{}）",
@@ -10992,6 +11001,9 @@ fn estimate_session_directory(
             let metadata = match rollout_source::metadata(&canonical) {
                 Ok(metadata) => metadata,
                 Err(error) => {
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && rollout_source::confirmed_missing_reference(&canonical, canonical_home)
+                    { continue; }
                     *unresolved_boundary = true;
                     boundary_warnings.push(format!(
                         "无法读取会话文件元数据：{}（{}）",
@@ -11076,6 +11088,9 @@ fn estimate_active_rollouts(
         let canonical = match rollout_source::canonical_logical_path(&path) {
             Ok(canonical) => canonical,
             Err(error) => {
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && rollout_source::confirmed_missing_reference(&path, canonical_home)
+                { continue; }
                 *unresolved_boundary = true;
                 boundary_warnings.push(format!(
                     "无法确认 active rollout 会话文件边界：{}（{}）{}",
@@ -11096,6 +11111,9 @@ fn estimate_active_rollouts(
         let metadata = match rollout_source::metadata(&canonical) {
             Ok(metadata) => metadata,
             Err(error) => {
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && rollout_source::confirmed_missing_reference(&canonical, canonical_home)
+                { continue; }
                 *unresolved_boundary = true;
                 boundary_warnings.push(format!(
                     "无法读取 active rollout 会话文件元数据：{}（{}）",
@@ -11290,7 +11308,7 @@ fn visit_active_rollouts(
             ResolvedSessionFile::Accepted(file) => {
                 visit(index_connection, &file, warnings, scan_completeness)?;
             }
-            ResolvedSessionFile::Rejected => {}
+            ResolvedSessionFile::Rejected | ResolvedSessionFile::Absent => {}
             ResolvedSessionFile::Unresolved => scan_completeness.mark_incomplete(),
         }
     }
@@ -17509,6 +17527,9 @@ enum ResolvedSessionFile {
     /// The target was resolved completely and is intentionally outside the
     /// accepted statistics boundary (for example, an escaping symlink).
     Rejected,
+    /// Both plain and compressed entries of this reference are confirmed absent.
+    /// The durable ledger remains authoritative; missing text is not zero use.
+    Absent,
     /// The target could not be resolved completely, so the source enumeration
     /// is not authoritative and the current generation must not publish.
     Unresolved,
@@ -17525,6 +17546,9 @@ fn resolve_file_within_codex_home(
     let canonical = match rollout_source::canonical_logical_path(candidate) {
         Ok(canonical) => canonical,
         Err(error) => {
+            if error.kind() == std::io::ErrorKind::NotFound
+                && rollout_source::confirmed_missing_reference(candidate, canonical_home)
+            { return ResolvedSessionFile::Absent; }
             warnings.push(scan_warning(format!(
                 "无法确认 {source} 会话文件边界：{}（{}）{}",
                 candidate.display(),
@@ -17545,6 +17569,9 @@ fn resolve_file_within_codex_home(
     let metadata = match rollout_source::metadata(&canonical) {
         Ok(metadata) => metadata,
         Err(error) => {
+            if error.kind() == std::io::ErrorKind::NotFound
+                && rollout_source::confirmed_missing_reference(candidate, canonical_home)
+            { return ResolvedSessionFile::Absent; }
             warnings.push(scan_warning(format!(
                 "无法读取 {source} 会话文件元数据：{}（{}）",
                 canonical.display(),

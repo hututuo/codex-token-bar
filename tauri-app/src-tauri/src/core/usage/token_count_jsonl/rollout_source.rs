@@ -84,6 +84,46 @@ pub(super) fn canonical_logical_path(path: &Path) -> io::Result<PathBuf> {
 }
 pub(super) fn metadata(path: &Path) -> io::Result<Metadata> {fs::metadata(physical_path(path)?)}
 
+/// A stale state-database reference is not a failed source scan. Only accept
+/// absence when both representations have no directory entry and an existing,
+/// readable ancestor resolves while the selected Home is still available. A
+/// stale absolute reference may point outside a relocated Home; confirming its
+/// absence does not read its body or admit an outside source into statistics.
+/// Do not turn permission errors, dangling links, or a missing Home into deletion.
+pub(super) fn confirmed_missing_reference(path: &Path, canonical_home: &Path) -> bool {
+    if !is_rollout(path) || !path.is_absolute()
+        || path.components().any(|part| matches!(part, std::path::Component::ParentDir))
+        || fs::canonicalize(canonical_home).ok().as_deref() != Some(canonical_home)
+    {
+        return false;
+    }
+    let logical = logical_path(path);
+    let mut compressed = logical.as_os_str().to_os_string();
+    compressed.push(".zst");
+    let compressed = PathBuf::from(compressed);
+    let absent = |file: &Path| matches!(fs::symlink_metadata(file),
+        Err(error) if error.kind() == io::ErrorKind::NotFound);
+    if !absent(&logical) || !absent(&compressed) { return false; }
+    let mut ancestor = logical.parent();
+    while let Some(directory) = ancestor {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() { return false; }
+                let Ok(resolved) = fs::canonicalize(directory) else { return false; };
+                if !matches!(fs::metadata(&resolved), Ok(metadata) if metadata.is_dir()) {
+                    return false;
+                }
+                // Recheck after resolving the parent: compression/materialization
+                // may have published a representation in the meantime.
+                return absent(&logical) && absent(&compressed);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => ancestor = directory.parent(),
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
 fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message) }
 
 #[derive(Clone, Copy, Debug)]
