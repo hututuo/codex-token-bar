@@ -169,6 +169,9 @@ struct ModelSpeedSummary: Equatable, Identifiable {
     var sampleCount: Int
     var outputTokens: Int
     var durationSeconds: Double
+    var activeSampleCount = 0
+    var qualifiedSampleCount = 0
+    var confidence = "low"
     var id: String { model }
 }
 
@@ -179,6 +182,7 @@ struct ObservedSpeedCollector {
         var first: Double; var last: Double
         var source = "Codex 本地流式增量 · 接收计时 / 本地分词估算"
         var firstText = ""; var text = ""; var chunks = 0; var maxGap = 0.0; var truncated = false; var sawStart = false
+        var liveTokens = 0
     }
     var pending: [String: Pending] = [:]
     var startedItems: Set<String> = []
@@ -204,7 +208,7 @@ struct ObservedSpeedCollector {
         if startedItems.count > 512 { startedItems.removeAll() }
         startedItems.insert("\(thread)/\(item)")
     }
-    mutating func append(thread: String, turn: String, item: String, model: String, text: String, at: Double, source: String? = nil) {
+    mutating func append(thread: String, turn: String, item: String, model: String, text: String, at: Double, source: String? = nil, estimatedTokens: Int = 0) {
         guard !text.isEmpty, !thread.isEmpty, !turn.isEmpty, !item.isEmpty, item != "unknown" else { return }
         let key = "\(thread)/\(turn)/\(item)"
         var p = pending[key] ?? Pending(thread: thread, turn: turn, item: item, model: model, first: at, last: at)
@@ -212,6 +216,7 @@ struct ObservedSpeedCollector {
         if !model.isEmpty, model != "unknown" { p.model = model }
         if let source { p.source = source }
         if p.chunks == 0 { p.firstText = text; p.sawStart = startedItems.contains("\(thread)/\(item)") }
+        if p.chunks > 0 { p.liveTokens += max(0, estimatedTokens) }
         p.maxGap = max(p.maxGap, at - p.last); p.last = at; p.chunks += 1
         if p.text.utf8.count + text.utf8.count <= 1_048_576 { p.text += text } else { p.truncated = true }
         pending[key] = p
@@ -238,12 +243,48 @@ struct ObservedSpeedCollector {
         samples = Array(samples.suffix(10_000))
     }
     func summaries(now: Double, windowSeconds: Double = 7 * 86400) -> [ModelSpeedSummary] {
-        Dictionary(grouping: samples.filter { $0.endedAt >= now - windowSeconds && $0.endedAt <= now && $0.networkWarning == nil && $0.confidence != "low" && $0.model != "unknown" }, by: \.model)
-            .map { model, records in
-                let tokens = records.reduce(0) { $0 + $1.outputTokens }
-                let duration = records.reduce(0.0) { $0 + $1.durationSeconds }
-                return ModelSpeedSummary(model: model, tokensPerSecond: Double(tokens) / max(0.001, duration), sampleCount: records.count, outputTokens: tokens, durationSeconds: duration)
-            }.sorted { $0.sampleCount > $1.sampleCount }
+        displaySummaries(now: now, windowSeconds: windowSeconds, includeShortAndActive: false)
+    }
+    /// Display all complete, uninterrupted short segments as well as current receipt samples.
+    /// The strict long-sample summary remains available through summaries().
+    func displaySummaries(now: Double, windowSeconds: Double, includeShortAndActive: Bool = true) -> [ModelSpeedSummary] {
+        struct Part { var model: String; var tokens: Int; var duration: Double; var chunks: Int; var active: Bool; var qualified: Bool }
+        var parts = samples.filter {
+            $0.endedAt >= now - windowSeconds && $0.endedAt <= now && $0.networkWarning == nil
+                && $0.model != "unknown" && !$0.model.isEmpty && $0.durationSeconds > 0 && $0.durationSeconds.isFinite
+                && (includeShortAndActive || $0.confidence != "low")
+        }.map { Part(model: $0.model, tokens: $0.outputTokens, duration: $0.durationSeconds,
+            chunks: $0.chunkCount, active: false, qualified: $0.confidence != "low") }
+        parts += pending.values.filter {
+            includeShortAndActive && $0.last >= now - min(windowSeconds, 2) && $0.last <= now && $0.last > $0.first
+                && $0.chunks >= 2 && $0.sawStart && !$0.truncated && $0.maxGap <= 2
+                && $0.model != "unknown" && !$0.model.isEmpty
+        }.map { Part(model: $0.model, tokens: $0.liveTokens, duration: $0.last - $0.first,
+            chunks: $0.chunks, active: true, qualified: false) }
+        return Dictionary(grouping: parts, by: \.model).map { model, rows in
+            let tokens = rows.reduce(0) { $0 + $1.tokens }, duration = rows.reduce(0.0) { $0 + $1.duration }
+            let chunks = rows.reduce(0) { $0 + $1.chunks }
+            var result = ModelSpeedSummary(model: model, tokensPerSecond: Double(tokens) / duration,
+                sampleCount: rows.count, outputTokens: tokens, durationSeconds: duration)
+            result.activeSampleCount = rows.filter(\.active).count
+            result.qualifiedSampleCount = rows.filter(\.qualified).count
+            result.confidence = tokens >= 500 && duration >= 5 && chunks >= 10 ? "high" : (tokens >= 100 && duration >= 2 && chunks >= 4 ? "medium" : "low")
+            return result
+        }.sorted { $0.sampleCount == $1.sampleCount ? $0.model < $1.model : $0.sampleCount > $1.sampleCount }
+    }
+    mutating func resolveModels(_ models: [String: [String: String]]) {
+        var changed = false
+        for index in samples.indices where samples[index].model.isEmpty || samples[index].model == "unknown" {
+            if let model = models[samples[index].threadID]?[samples[index].turnID] {
+                samples[index].model = model; changed = true
+            }
+        }
+        for key in Array(pending.keys) {
+            guard var part = pending[key], part.model.isEmpty || part.model == "unknown",
+                  let model = models[part.thread]?[part.turn] else { continue }
+            part.model = model; pending[key] = part
+        }
+        if changed { revision += 1 }
     }
     static func sourceKey(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined() }
     mutating func persist() {

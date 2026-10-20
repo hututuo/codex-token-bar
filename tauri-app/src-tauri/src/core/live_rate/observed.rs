@@ -8,7 +8,7 @@ use crate::models::{ModelSpeedSummary, SpeedSample};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 const MAX_PERSISTED_SAMPLES: usize = 10_000;
@@ -28,7 +28,6 @@ static SPEED_STORES: OnceLock<Mutex<HashMap<LiveRateSourceScope, SpeedStore>>> =
 struct SpeedStore {
     loaded: bool,
     samples: VecDeque<SpeedSample>,
-    sample_revision: u64,
     summary_cache: Option<CachedSummaries>,
     active: HashMap<(String, String), ActiveSample>,
     item_starts: HashMap<(String, String), f64>,
@@ -40,8 +39,7 @@ struct SpeedStore {
 
 #[derive(Clone)]
 struct CachedSummaries {
-    revision: u64,
-    minute: i64,
+    refreshed_at: f64,
     model_speeds_15m: Vec<ModelSpeedSummary>,
     model_speeds_30m: Vec<ModelSpeedSummary>,
     model_speeds_7d: Vec<ModelSpeedSummary>,
@@ -306,6 +304,8 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
         }
     }
 
+    changed |= backfill_unknown_models(store, scope, now);
+
     if changed {
         if let Err(error) = persist(store, scope) {
             store.storage_error = Some(error);
@@ -313,14 +313,9 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
             store.storage_error = None;
         }
     }
-    let sample_count_before_prune = store.samples.len();
     store
         .samples
         .retain(|sample| now - sample.ended_at <= SUMMARY_WINDOW_SECONDS);
-    if store.samples.len() != sample_count_before_prune {
-        store.sample_revision = store.sample_revision.saturating_add(1);
-        store.summary_cache = None;
-    }
     let speed_samples = store
         .samples
         .iter()
@@ -328,18 +323,30 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
         .take(MAX_RETURNED_SAMPLES)
         .cloned()
         .collect::<Vec<_>>();
-    let minute = (now.max(0.0) / 60.0).floor() as i64;
-    if !store
-        .summary_cache
-        .as_ref()
-        .is_some_and(|cache| cache.revision == store.sample_revision && cache.minute == minute)
-    {
+    let refresh_summaries = store.summary_cache.as_ref().is_none_or(|cache| {
+        !now.is_finite() || now < cache.refreshed_at || now - cache.refreshed_at >= 1.0
+    });
+    if refresh_summaries {
         store.summary_cache = Some(CachedSummaries {
-            revision: store.sample_revision,
-            minute,
-            model_speeds_15m: summarize(&store.samples, now, SUMMARY_15M_SECONDS),
-            model_speeds_30m: summarize(&store.samples, now, SUMMARY_30M_SECONDS),
-            model_speeds_7d: summarize(&store.samples, now, SUMMARY_WINDOW_SECONDS),
+            refreshed_at: now,
+            model_speeds_15m: display_summarize(
+                &store.samples,
+                &store.active,
+                now,
+                SUMMARY_15M_SECONDS,
+            ),
+            model_speeds_30m: display_summarize(
+                &store.samples,
+                &store.active,
+                now,
+                SUMMARY_30M_SECONDS,
+            ),
+            model_speeds_7d: display_summarize(
+                &store.samples,
+                &store.active,
+                now,
+                SUMMARY_WINDOW_SECONDS,
+            ),
         });
     }
     let summaries = store
@@ -713,7 +720,9 @@ fn finalize_active(active: &mut ActiveSample, _now: f64, incomplete: bool) -> Op
     if output_tokens == 0 || active.output_bytes == 0 {
         return None;
     }
-    if incomplete {
+    if incomplete || !active.saw_item_start {
+        // `network_warning` also carries observer-quality exclusions such as a
+        // midstream start so legacy persisted records can be rejected uniformly.
         active.network_warning = true;
     }
     let confidence = if output_tokens >= 500
@@ -777,17 +786,289 @@ fn add_sample(store: &mut SpeedStore, sample: SpeedSample) -> bool {
     while store.samples.len() > MAX_PERSISTED_SAMPLES {
         store.samples.pop_front();
     }
-    store.sample_revision = store.sample_revision.saturating_add(1);
-    store.summary_cache = None;
     true
 }
 
+fn backfill_unknown_models(store: &mut SpeedStore, scope: &LiveRateSourceScope, now: f64) -> bool {
+    let mut thread_turns = Vec::<(String, Vec<String>)>::new();
+    let mut positions = HashMap::<String, usize>::new();
+    let mut turns_by_thread = HashMap::<String, HashSet<String>>::new();
+
+    let mut active = store
+        .active
+        .values()
+        .filter(|sample| is_unknown_model(sample.model.as_deref()))
+        .map(|sample| {
+            (
+                sample.thread_id.clone(),
+                sample.turn_id.clone(),
+                sample.last_timestamp,
+            )
+        })
+        .collect::<Vec<_>>();
+    active.sort_by(|left, right| {
+        right
+            .2
+            .total_cmp(&left.2)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    for (thread, turn, _) in active {
+        append_model_request(
+            &mut thread_turns,
+            &mut positions,
+            &mut turns_by_thread,
+            thread,
+            turn,
+        );
+    }
+
+    let mut samples = store
+        .samples
+        .iter()
+        .filter(|sample| should_resolve_sample_model(sample, now))
+        .map(|sample| {
+            (
+                sample.thread_id.clone(),
+                sample.turn_id.clone(),
+                sample.ended_at,
+            )
+        })
+        .collect::<Vec<_>>();
+    samples.sort_by(|left, right| {
+        right
+            .2
+            .total_cmp(&left.2)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    for (thread, turn, _) in samples {
+        append_model_request(
+            &mut thread_turns,
+            &mut positions,
+            &mut turns_by_thread,
+            thread,
+            turn,
+        );
+    }
+
+    if thread_turns.is_empty() {
+        return false;
+    }
+    let source_key =
+        super::speed_models::source_key(&scope.canonical_home_key, &scope.physical_home_key);
+    let resolved = super::speed_models::poll(
+        source_key,
+        Path::new(&scope.canonical_home_key),
+        &thread_turns,
+    );
+    let mut changed = false;
+    for sample in &mut store.samples {
+        if !is_unknown_model(sample.model.as_deref()) {
+            continue;
+        }
+        if let Some(model) = resolved
+            .get(&sample.thread_id)
+            .and_then(|turns| turns.get(&sample.turn_id))
+        {
+            sample.model = Some(model.clone());
+            changed = true;
+        }
+    }
+    for sample in store.active.values_mut() {
+        if !is_unknown_model(sample.model.as_deref()) {
+            continue;
+        }
+        if let Some(model) = resolved
+            .get(&sample.thread_id)
+            .and_then(|turns| turns.get(&sample.turn_id))
+        {
+            sample.model = Some(model.clone());
+        }
+    }
+    changed
+}
+
+fn should_resolve_sample_model(sample: &SpeedSample, now: f64) -> bool {
+    is_unknown_model(sample.model.as_deref())
+        && sample.ended_at <= now + 1.0
+        && now - sample.ended_at <= SUMMARY_30M_SECONDS
+}
+
+fn append_model_request(
+    requested: &mut Vec<(String, Vec<String>)>,
+    positions: &mut HashMap<String, usize>,
+    turns_by_thread: &mut HashMap<String, HashSet<String>>,
+    thread: String,
+    turn: String,
+) {
+    if thread.is_empty() || turn.is_empty() || turn.len() > 512 {
+        return;
+    }
+    let position = if let Some(position) = positions.get(&thread).copied() {
+        Some(position)
+    } else if requested.len() < 8 {
+        let position = requested.len();
+        requested.push((thread.clone(), Vec::new()));
+        positions.insert(thread.clone(), position);
+        turns_by_thread.insert(thread.clone(), HashSet::new());
+        Some(position)
+    } else {
+        None
+    };
+    let Some(position) = position else {
+        return;
+    };
+    let turns = turns_by_thread.entry(thread).or_default();
+    if turns.len() < 64 && turns.insert(turn.clone()) {
+        requested[position].1.push(turn);
+    }
+}
+
+fn is_unknown_model(model: Option<&str>) -> bool {
+    model.is_none_or(|model| model.is_empty() || model == "unknown")
+}
+
+#[derive(Default)]
+struct SummaryParts {
+    output_tokens: u64,
+    duration_seconds: f64,
+    chunk_count: u64,
+    sample_count: u32,
+    active_sample_count: u32,
+    qualified_sample_count: u32,
+}
+
+fn display_summarize(
+    samples: &VecDeque<SpeedSample>,
+    active: &HashMap<(String, String), ActiveSample>,
+    now: f64,
+    window_seconds: f64,
+) -> Vec<ModelSpeedSummary> {
+    if !now.is_finite() || !window_seconds.is_finite() || window_seconds <= 0.0 {
+        return Vec::new();
+    }
+    let mut by_model = HashMap::<String, SummaryParts>::new();
+    for sample in samples.iter().filter(|sample| {
+        sample
+            .model
+            .as_ref()
+            .is_some_and(|model| !model.is_empty() && model != "unknown")
+            && !sample.network_warning
+            && sample.output_tokens > 0
+            && sample.duration_seconds.is_finite()
+            && sample.duration_seconds > 0.0
+            && sample.ended_at.is_finite()
+            && sample.ended_at <= now + 1.0
+            && now - sample.ended_at <= window_seconds
+            // Older saved records did not persist the item-start marker. Their
+            // low-confidence records that meet all medium thresholds can only
+            // be midstream samples, so keep those out of the display summary.
+            && !(sample.confidence == "low"
+                && sample.output_tokens >= 100
+                && sample.duration_seconds >= 2.0
+                && sample.chunk_count >= 4)
+    }) {
+        let model = sample.model.as_ref().expect("filtered model").clone();
+        let summary = by_model.entry(model).or_default();
+        summary.output_tokens = summary
+            .output_tokens
+            .saturating_add(u64::from(sample.output_tokens));
+        summary.duration_seconds += sample.duration_seconds;
+        summary.chunk_count = summary
+            .chunk_count
+            .saturating_add(u64::from(sample.chunk_count));
+        summary.sample_count = summary.sample_count.saturating_add(1);
+        if matches!(sample.confidence.as_str(), "medium" | "high") {
+            summary.qualified_sample_count = summary.qualified_sample_count.saturating_add(1);
+        }
+    }
+
+    let active_window = window_seconds.min(2.0);
+    for sample in active.values().filter(|sample| {
+        sample
+            .model
+            .as_ref()
+            .is_some_and(|model| !model.is_empty() && model != "unknown")
+            && sample.last_timestamp.is_finite()
+            && sample.last_timestamp <= now + 1.0
+            && now - sample.last_timestamp <= active_window
+            && sample.ended_at > sample.started_at
+            && sample.chunk_count >= 2
+            && sample.saw_item_start
+            && !sample.saw_finish_marker
+            && !sample.network_warning
+            && sample.max_gap <= 2.0
+    }) {
+        let model = sample.model.as_ref().expect("filtered model").clone();
+        let first_tokens = estimate_observed_tokens(&sample.first_text, sample.category);
+        let output_tokens = u64::from(sample.estimated_tokens.saturating_sub(first_tokens));
+        let duration_seconds = sample.ended_at - sample.started_at;
+        if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+            continue;
+        }
+        let summary = by_model.entry(model).or_default();
+        summary.output_tokens = summary.output_tokens.saturating_add(output_tokens);
+        summary.duration_seconds += duration_seconds;
+        summary.chunk_count = summary
+            .chunk_count
+            .saturating_add(u64::from(sample.chunk_count));
+        summary.sample_count = summary.sample_count.saturating_add(1);
+        summary.active_sample_count = summary.active_sample_count.saturating_add(1);
+    }
+
+    let mut summaries = by_model
+        .into_iter()
+        .filter_map(|(model, parts)| {
+            if parts.duration_seconds <= 0.0 || !parts.duration_seconds.is_finite() {
+                return None;
+            }
+            let confidence = aggregate_confidence(
+                parts.output_tokens,
+                parts.duration_seconds,
+                parts.chunk_count,
+            );
+            Some(ModelSpeedSummary {
+                model,
+                tokens_per_second: parts.output_tokens as f64 / parts.duration_seconds,
+                sample_count: parts.sample_count,
+                output_tokens: parts.output_tokens,
+                duration_seconds: parts.duration_seconds,
+                active_sample_count: parts.active_sample_count,
+                qualified_sample_count: parts.qualified_sample_count,
+                confidence: confidence.into(),
+            })
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .sample_count
+            .cmp(&left.sample_count)
+            .then_with(|| right.output_tokens.cmp(&left.output_tokens))
+            .then_with(|| left.model.cmp(&right.model))
+    });
+    summaries
+}
+
+fn aggregate_confidence(
+    output_tokens: u64,
+    duration_seconds: f64,
+    chunk_count: u64,
+) -> &'static str {
+    if output_tokens >= 500 && duration_seconds >= 5.0 && chunk_count >= 10 {
+        "high"
+    } else if output_tokens >= 100 && duration_seconds >= 2.0 && chunk_count >= 4 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+#[cfg(test)]
 fn summarize(
     samples: &VecDeque<SpeedSample>,
     now: f64,
     window_seconds: f64,
 ) -> Vec<ModelSpeedSummary> {
-    let mut by_model = HashMap::<String, (u64, f64, u32)>::new();
+    let mut by_model = HashMap::<String, (u64, f64, u32, u64)>::new();
     for sample in samples.iter().filter(|sample| {
         sample
             .model
@@ -805,18 +1086,25 @@ fn summarize(
         entry.0 = entry.0.saturating_add(sample.output_tokens as u64);
         entry.1 += sample.duration_seconds;
         entry.2 = entry.2.saturating_add(1);
+        entry.3 = entry.3.saturating_add(u64::from(sample.chunk_count));
     }
     let mut summaries = by_model
         .into_iter()
-        .filter_map(|(model, (output_tokens, duration_seconds, sample_count))| {
-            (duration_seconds > 0.0).then_some(ModelSpeedSummary {
-                model,
-                tokens_per_second: output_tokens as f64 / duration_seconds,
-                sample_count,
-                output_tokens,
-                duration_seconds,
-            })
-        })
+        .filter_map(
+            |(model, (output_tokens, duration_seconds, sample_count, chunk_count))| {
+                (duration_seconds > 0.0).then_some(ModelSpeedSummary {
+                    model,
+                    tokens_per_second: output_tokens as f64 / duration_seconds,
+                    sample_count,
+                    output_tokens,
+                    duration_seconds,
+                    active_sample_count: 0,
+                    qualified_sample_count: sample_count,
+                    confidence: aggregate_confidence(output_tokens, duration_seconds, chunk_count)
+                        .into(),
+                })
+            },
+        )
         .collect::<Vec<_>>();
     summaries.sort_by(|left, right| {
         right
@@ -856,7 +1144,6 @@ fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope) {
                         store.samples.push_back(sample);
                     }
                 }
-                store.sample_revision = 1;
             }
             Ok(_) => {
                 store.storage_error = Some("observed_speed_storage_version_unsupported".into());
@@ -926,8 +1213,25 @@ fn storage_path(scope: &LiveRateSourceScope) -> Option<PathBuf> {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    crate::core::app_paths::performance_trace_log_path()
-        .map(|path| path.with_file_name(format!("observed-speed-{hash:016x}.json")))
+    #[cfg(not(test))]
+    let base = crate::core::app_paths::performance_trace_log_path();
+    #[cfg(test)]
+    let base = {
+        // Never read a previous test run's samples (or write the installed app's history).
+        static TEST_ROOT: OnceLock<PathBuf> = OnceLock::new();
+        let root = TEST_ROOT.get_or_init(|| {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            std::env::temp_dir().join(format!(
+                "tokenbar-observed-tests-{}-{nonce}",
+                std::process::id()
+            ))
+        });
+        Some(root.join("performance-trace.log"))
+    };
+    base.map(|path| path.with_file_name(format!("observed-speed-{hash:016x}.json")))
 }
 
 fn sample_id(thread_id: &str, turn_id: &str, item_id: &str, start: f64, end: f64) -> String {
@@ -1230,6 +1534,88 @@ mod tests {
     }
 
     #[test]
+    fn display_summary_pools_short_complete_samples_by_duration() {
+        let make_sample = |id: &str,
+                           output_tokens: u32,
+                           duration_seconds: f64,
+                           chunk_count: u32,
+                           confidence: &str,
+                           network_warning: bool| {
+            SpeedSample {
+                id: id.into(),
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                item_id: id.into(),
+                model: Some("model-a".into()),
+                started_at: 10.0,
+                ended_at: 10.0 + duration_seconds,
+                output_tokens,
+                output_characters: 1,
+                output_bytes: 1,
+                chunk_count,
+                duration_seconds,
+                tokens_per_second: output_tokens as f64 / duration_seconds,
+                confidence: confidence.into(),
+                network_warning,
+                source: "logs_2.sqlite.response_stream".into(),
+            }
+        };
+        let samples = VecDeque::from([
+            make_sample("short", 10, 1.0, 2, "low", false),
+            make_sample("qualified", 30, 3.0, 4, "medium", false),
+            make_sample("warned", 100, 2.0, 4, "medium", true),
+            // Older records did not persist the item-start marker. A low
+            // confidence record meeting all medium thresholds is midstream.
+            make_sample("midstream", 120, 2.0, 4, "low", false),
+        ]);
+
+        let summary = display_summarize(&samples, &HashMap::new(), 100.0, SUMMARY_WINDOW_SECONDS);
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].sample_count, 2);
+        assert_eq!(summary[0].qualified_sample_count, 1);
+        assert_eq!(summary[0].active_sample_count, 0);
+        assert_eq!(summary[0].output_tokens, 40);
+        assert_eq!(summary[0].duration_seconds, 4.0);
+        assert_eq!(summary[0].tokens_per_second, 10.0);
+    }
+
+    #[test]
+    fn model_backfill_candidates_are_limited_to_thirty_minutes() {
+        let now = 10_000.0;
+        let make_sample = |model: Option<&str>, age: f64| SpeedSample {
+            id: "sample".into(),
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+            item_id: "item".into(),
+            model: model.map(str::to_owned),
+            started_at: now - age - 1.0,
+            ended_at: now - age,
+            output_tokens: 10,
+            output_characters: 10,
+            output_bytes: 10,
+            chunk_count: 2,
+            duration_seconds: 1.0,
+            tokens_per_second: 10.0,
+            confidence: "low".into(),
+            network_warning: false,
+            source: "codex_desktop.forwarded_text_stream".into(),
+        };
+
+        assert!(should_resolve_sample_model(
+            &make_sample(None, SUMMARY_30M_SECONDS),
+            now
+        ));
+        assert!(!should_resolve_sample_model(
+            &make_sample(None, SUMMARY_30M_SECONDS + 0.1),
+            now
+        ));
+        assert!(!should_resolve_sample_model(
+            &make_sample(Some("known-model"), 1.0),
+            now
+        ));
+    }
+
+    #[test]
     fn model_summary_windows_use_the_full_sample_history() {
         let mut samples = VecDeque::new();
         for (id, model, ended_at, output_tokens, duration_seconds) in [
@@ -1333,9 +1719,53 @@ mod desktop_tests {
         assert_eq!(sample.chunk_count, 12);
         assert_eq!(snapshot.model_speeds_30m.len(), 1);
     }
+
+    #[test]
+    fn desktop_summary_replaces_active_segment_without_double_counting() {
+        let scope = LiveRateSourceScope::new(
+            "desktop-active-to-final-test",
+            "desktop-active-to-final-physical",
+        );
+        process_desktop(
+            &scope,
+            &[
+                event(K::Start, "", 100.0),
+                event(K::Delta, "hello ", 101.0),
+                event(K::Delta, "world", 102.0),
+            ],
+            102.0,
+        );
+        let active_snapshot = process_rows(&scope, &[], 102.0);
+        assert_eq!(active_snapshot.model_speeds_30m.len(), 1);
+        assert_eq!(active_snapshot.model_speeds_30m[0].sample_count, 1);
+        assert_eq!(active_snapshot.model_speeds_30m[0].active_sample_count, 1);
+
+        process_desktop(&scope, &[event(K::Finish, "", 103.0)], 103.0);
+        let finished_snapshot = process_rows(&scope, &[], 103.0);
+        assert_eq!(finished_snapshot.speed_samples.len(), 1);
+        assert_eq!(finished_snapshot.model_speeds_30m.len(), 1);
+        assert_eq!(finished_snapshot.model_speeds_30m[0].sample_count, 1);
+        assert_eq!(finished_snapshot.model_speeds_30m[0].active_sample_count, 0);
+
+        SPEED_STORES
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&scope);
+    }
     #[test]
     fn desktop_reset_separates_resumed_segments_and_excludes_them_from_average() {
-        let scope = LiveRateSourceScope::new("desktop-test-reset", "desktop-physical-reset");
+        // Use a fresh physical source: numeric speed stores survive process restarts.
+        // Reusing a fixed test source can load samples produced by older collector versions.
+        let unique = format!(
+            "desktop-test-reset-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let scope = LiveRateSourceScope::new(&unique, &unique);
         process_desktop(
             &scope,
             &[
@@ -1358,7 +1788,15 @@ mod desktop_tests {
         let snapshot = process_rows(&scope, &[], 106.0);
         assert_eq!(snapshot.speed_samples.len(), 2);
         assert!(snapshot.speed_samples[1].network_warning);
+        assert!(snapshot
+            .speed_samples
+            .iter()
+            .all(|sample| sample.network_warning));
         assert!(snapshot.model_speeds_30m.is_empty());
+        SPEED_STORES.get().unwrap().lock().unwrap().remove(&scope);
+        if let Some(path) = storage_path(&scope) {
+            let _ = fs::remove_file(path);
+        }
     }
     #[test]
     fn desktop_null_model_uses_only_matching_turn_context() {

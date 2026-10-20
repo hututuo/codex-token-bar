@@ -18,18 +18,21 @@ struct ObservedSpeedView: View {
             }.font(.caption)
             Text(monitor.measurementStatus).font(.caption).foregroundStyle(.secondary)
             if monitor.modelSpeeds.isEmpty {
-                Text("模型均速暂无有效样本").font(.subheadline).foregroundStyle(.secondary)
+                Text(monitor.speedSummaryEmptyLabel).font(.subheadline).foregroundStyle(.secondary)
             } else {
                 ForEach(monitor.modelSpeeds) { item in
                     HStack {
                         Text(item.model).font(.system(.subheadline, design: .monospaced))
                         Spacer()
                         Text("\(item.tokensPerSecond, specifier: "%.1f") tok/s").bold().monospacedDigit()
-                        Text("\(item.sampleCount) 段").font(.caption).foregroundStyle(.secondary)
+                        Text(item.activeSampleCount > 0 ? "接收中" : "参考均速").font(.caption).foregroundStyle(.secondary)
                     }
+                    Text("\(item.sampleCount) 段 · \(item.outputTokens) token（估） / \(item.durationSeconds, specifier: "%.2f") 秒 · 单段达标 \(item.qualifiedSampleCount) 段 · 汇总质量\(item.confidence == "high" ? "较高" : item.confidence == "medium" ? "中等" : "较低")")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Text("Desktop 接口测正文更新，原始流日志可用时也测模型生成的工具输入；工具执行结果、隐藏思考和结算均速不混入。按采样 token 总量 ÷ 总时长加权；短样本或有停顿的样本仅列明细。置信度是样本质量评级，不是统计概率。")
+            Text(monitor.speedSummaryExplanation).font(.caption).foregroundStyle(.secondary)
+            Text("Desktop 接口测正文更新，原始流日志可用时也测模型生成的工具输入；工具执行结果、隐藏思考和结算均速不混入。同模型短片段合并参考均速 = 采样 token 总量 ÷ 采样时长总和，每秒更新。接收中使用增量估算，结束后校准；有停顿或缺少开始标记的片段仅列明细。置信度是样本质量评级，不是统计概率。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             DisclosureGroup("采样明细（\(monitor.speedSamples.count) 段，按轮次追溯）") {
                 LazyVStack(alignment: .leading, spacing: 12) {

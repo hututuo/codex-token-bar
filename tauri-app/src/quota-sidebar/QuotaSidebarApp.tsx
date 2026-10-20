@@ -1,3 +1,4 @@
+import { observedSpeedWindowInfo } from "../components/liveRate/observedSpeedPresentation";
 import { useObservedSpeedWindow } from "../components/liveRate/observedSpeedWindow";
 import { ObservedSpeedDetails } from "../components/liveRate/ObservedSpeedDetails";
 import { CacheUsageNotice } from "../components/liveRate/CacheUsageNotice";
@@ -249,6 +250,7 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
 }) {
   const [speedMinutes, setSpeedMinutes] = useObservedSpeedWindow();
   const modelSpeeds = (speedMinutes === 15 ? data.snapshot.modelSpeeds15m : data.snapshot.modelSpeeds30m) ?? [];
+  const speedWindowInfo = observedSpeedWindowInfo(data.snapshot.speedSamples ?? [], speedMinutes);
   const ratePercent = sidebarRatePercent(data.snapshot, liveRateEnabled, rateFullScale);
   const { warning: cacheWarning, dismiss: dismissCacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice, liveRateEnabled && data.snapshot.liveRateAvailable === true);
   const rateLabel = !liveRateEnabled ? "实时速率已关闭" : ratePercent === null ? "实时速率不可用" : `实时速率 ${formatLiveRateValue(data.snapshot.tokensPerSecond)} t/s · 量程 ${sanitizeRateFullScale(rateFullScale)} t/s`;
@@ -300,9 +302,9 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
       <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
       <div className="qs-model-speeds">
         <button type="button" onClick={() => onOpen("quota", "speeds")} title="查看近期模型均速与采样明细">
-          <span>均速 · {speedMinutes}分钟</span>
-          {modelSpeeds.slice(0, 3).map(model => <span key={model.model}><small>{model.model.replace(/^gpt-/, "")}</small><strong>{model.tokensPerSecond.toFixed(1)} t/s</strong></span>)}
-          {!modelSpeeds.length && <small>暂无样本</small>}
+          <span>参考均速 · {speedMinutes}分钟</span>
+          {modelSpeeds.slice(0, 3).map(model => <span key={model.model}><small>{model.model.replace(/^gpt-/, "")}</small><strong>{model.tokensPerSecond.toFixed(1)} t/s{model.activeSampleCount ? " ·" : ""}</strong></span>)}
+          {!modelSpeeds.length && <small>{speedWindowInfo.emptyLabel}</small>}
         </button>
         <div className="qs-speed-window">{([15, 30] as const).map(minutes => <button type="button" key={minutes} aria-pressed={speedMinutes === minutes} onClick={() => setSpeedMinutes(minutes)}>{minutes}m</button>)}</div>
       </div>

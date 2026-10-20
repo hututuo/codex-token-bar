@@ -152,4 +152,50 @@ final class ObservedStreamContextTests: XCTestCase {
         XCTAssertEqual(c.samples.count, 2)
         XCTAssertNotEqual(c.samples[0].id, c.samples[1].id)
     }
+    func testDisplayPoolsShortSegmentsWhileKeepingStrictSummaryEmpty() {
+        var c = ObservedSpeedCollector()
+        for (item, duration, count) in [("a", 1.0, 80), ("b", 2.0, 20)] {
+            c.start(thread: "thread", item: item)
+            c.append(thread: "thread", turn: "turn", item: item, model: "model", text: "x", at: 100)
+            c.append(thread: "thread", turn: "turn", item: item, model: "model", text: String(repeating: "x", count: count), at: 100 + duration)
+            c.finish(item: item, estimator: { $0.count })
+        }
+        XCTAssertTrue(c.summaries(now: 104).isEmpty)
+        let pooled = c.displaySummaries(now: 104, windowSeconds: 900).first!
+        XCTAssertEqual(pooled.tokensPerSecond, 100.0 / 3, accuracy: 0.0001)
+        XCTAssertEqual(pooled.outputTokens, 100)
+        XCTAssertEqual(pooled.sampleCount, 2)
+        XCTAssertEqual(pooled.qualifiedSampleCount, 0)
+        XCTAssertEqual(pooled.confidence, "medium")
+    }
+    func testDisplayUpdatesBeforeFinishAndReplacesLiveEstimateWithoutDoubleCounting() {
+        var c = ObservedSpeedCollector()
+        c.start(thread: "t", item: "i")
+        c.append(thread: "t", turn: "turn", item: "i", model: "m", text: "first", at: 100, estimatedTokens: 500)
+        c.append(thread: "t", turn: "turn", item: "i", model: "m", text: "second", at: 102, estimatedTokens: 3)
+        XCTAssertTrue(c.samples.isEmpty)
+        let live = c.displaySummaries(now: 102, windowSeconds: 900).first!
+        XCTAssertEqual(live.outputTokens, 3) // first chunk has no measured generation interval
+        XCTAssertEqual(live.activeSampleCount, 1)
+        XCTAssertTrue(c.displaySummaries(now: 105, windowSeconds: 900).isEmpty)
+        c.finish(estimator: { $0.count })
+        let done = c.displaySummaries(now: 105, windowSeconds: 900).first!
+        XCTAssertEqual(done.outputTokens, 6)
+        XCTAssertEqual(done.sampleCount, 1)
+        XCTAssertEqual(done.activeSampleCount, 0)
+    }
+    func testModelBackfillOnlyChangesUnknownAtExactThreadAndTurn() {
+        var c = ObservedSpeedCollector()
+        for (thread, turn, model) in [("a", "one", "unknown"), ("a", "two", "known"), ("b", "one", "unknown")] {
+            c.start(thread: thread, item: turn)
+            c.append(thread: thread, turn: turn, item: turn, model: model, text: "x", at: 100)
+            c.append(thread: thread, turn: turn, item: turn, model: model, text: "more", at: 101)
+            c.finish(thread: thread, item: turn, estimator: { $0.count })
+        }
+        let quantities = c.samples.map(\.outputTokens)
+        c.resolveModels(["a": ["one": "resolved", "two": "wrong"]])
+        XCTAssertEqual(c.samples.map(\.model), ["resolved", "known", "unknown"])
+        XCTAssertEqual(c.samples.map(\.outputTokens), quantities)
+    }
+
 }

@@ -1,6 +1,6 @@
 # Codex Desktop 正文流接入 / Desktop text stream observer
 
-2026-10-20，本地验证版 macOS 0.9.5 / build 911。
+2026-10-20，本地验证版 macOS 0.9.5 / build 912。
 
 ## 接入与计量
 
@@ -8,7 +8,7 @@
 
 版本 11 的会话状态广播提供历史快照及连续修订。历史快照只保留运行轮次、模型、输出项标识和 UTF-16 长度；只有 `acceptedTextChanges` 中可验证的正文追加才进入采样。正文以 Desktop 转发后的接收时间计时，可能经过短时合并。它可以测中间说明和最终回答，不是服务器原始网络包，也不能测未暴露的隐藏思考或工具执行结果。原有日志流采样路径继续支持可用的模型工具输入流。
 
-首个更新的 token 不进入分子；分母为首次到末次正文更新的时长。token 为本地估算，延用既有精确分词开关。样本保存会话/轮次/模型、长度、更新次数、时长、速度、质量评级及停顿提示，不保存正文。15/30 分钟均速仅使用完整且质量达标的样本，并按 token 总量除以总时长加权。
+首个更新的 token 不进入分子；分母为首次到末次正文更新的时长。token 为本地估算，延用既有精确分词开关。样本保存会话/轮次/模型、长度、更新次数、时长、速度、质量评级及停顿提示，不保存正文。15/30 分钟显示同模型的参考均速：完整且无采样警告的短片段也参与 Σtoken / Σ采样时长，保留单段达标数和汇总质量；缺少开始标记、中断或明显停顿的片段仅列明细。接收中的有界增量估算每秒更新，结束后以整段分词校准。
 
 重复修订丢弃；修订缺口、所有者切换、非追加替换和断线结束当前采样并重新建立基线。恢复后新片段单独采样。工具输出不会作为模型正文速度。用量账本继续以原有结算流程为准；IPC 不写入原始 Codex 数据或用量索引。
 
@@ -46,3 +46,13 @@ Timing measures Desktop-forwarded text receipt, including intermediate assistant
 macOS build 910 passed signing checks and real installed-app sampling across multiple chats. Windows passed native tests/build and actual IPC initialization, while a real Windows text sample remains NOT_RUN because its default local session directory is empty. No public release was performed.
 
 Build 911 fixes pending-turn activation, large-history baseline loss, and stale reception status. The installed Mac app resumed writing real current-turn segments while retaining previous records. These are short, locally estimated receipt-speed samples; they do not prove exact server generation throughput or future-turn lifecycle acceptance.
+
+## build 912：模型归属与参考汇总
+
+旧版侧栏把“无达标均速”写成“暂无样本”，同时短正文逐段被门槛过滤、启动时错过 turn_context 导致模型 unknown。现在按精确会话/轮次在后台查日志元数据，兼容同 UUID 的物理续接文件，不借邻近轮次模型。只补 unknown 模型字段，已保存的数量和时长不变；首次查找每文件最多 32 MiB、每次总计 64 MiB，此后从缓存游标读取新增内容，不每秒重扫日志。
+
+参考汇总每秒更新，按全部无警告同模型片段的采样 token 总量除以采样时长总和。保留单段达标数，短片段可以合并；严格的单段质量评级与停顿/中断明细仍保留。侧栏和主页面使用同一汇总对象，空态说明“待识别”或“待核验”。32 项 Swift 聚焦回归通过；TypeScript/Vite 构建通过。Windows 验证以本次构建收据为准。
+
+15:52 的本机快照补齐模型后，GPT-6.1 Sol 的 11 段无警告记录为 633 个估算 token / 21.0674 秒 = 30.0464 tok/s，单段达标 1 段。10,000 条记录做一次参考汇总平均约 0.109 ms（100 次 release 优化计算）；首次两会话模型回填约 1.06 秒，在后台执行。该数字是接收吞吐估算，不能当作服务端精确生成速度。
+
+本次 Windows 实机回归：14 项 Desktop + 95 项 live_rate（含模型解析与短片段/接收中汇总）通过，MSVC release 构建通过。回归存储已隔离到按进程生成的临时目录，避免读取历史测试样本或写入已安装程序的测速历史。Windows 真实正文实采仍待实际本地会话验证。

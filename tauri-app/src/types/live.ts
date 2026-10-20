@@ -121,4 +121,7 @@ export interface ModelSpeedSummary {
   sampleCount: number;
   outputTokens: number;
   durationSeconds: number;
+  activeSampleCount?: number;
+  qualifiedSampleCount?: number;
+  confidence?: string;
 }

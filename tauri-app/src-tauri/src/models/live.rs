@@ -89,6 +89,16 @@ pub struct ModelSpeedSummary {
     pub sample_count: u32,
     pub output_tokens: u64,
     pub duration_seconds: f64,
+    #[serde(default)]
+    pub active_sample_count: u32,
+    #[serde(default)]
+    pub qualified_sample_count: u32,
+    #[serde(default = "default_model_speed_confidence")]
+    pub confidence: String,
+}
+
+fn default_model_speed_confidence() -> String {
+    "low".into()
 }
 
 #[derive(Debug, Serialize)]

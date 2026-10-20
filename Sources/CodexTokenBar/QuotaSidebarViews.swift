@@ -135,14 +135,14 @@ struct QuotaSidebarRail: View {
                     rateRing
                     Button { controller.select(.speeds) } label: {
                         VStack(spacing: 4) {
-                            Text("均速 · \(monitor.speedWindowMinutes)分钟").font(.system(size: 9)).foregroundStyle(.gray)
+                            Text("参考均速 · \(monitor.speedWindowMinutes)分钟").font(.system(size: 9)).foregroundStyle(.gray)
                             if monitor.modelSpeeds.isEmpty {
-                                Text("暂无样本").font(.system(size: 9)).foregroundStyle(.gray)
+                                Text(monitor.speedSummaryEmptyLabel).font(.system(size: 9)).foregroundStyle(.gray)
                             }
                             ForEach(monitor.modelSpeeds.prefix(3)) { model in
                                 VStack(spacing: 1) {
                                     Text(model.model.replacingOccurrences(of: "gpt-", with: "")).lineLimit(1).minimumScaleFactor(0.65)
-                                    Text("\(model.tokensPerSecond, specifier: "%.1f") t/s").monospacedDigit()
+                                    Text("\(model.tokensPerSecond, specifier: "%.1f") t/s\(model.activeSampleCount > 0 ? " ·" : "")").monospacedDigit()
                                 }.font(.system(size: 9)).foregroundStyle(SidebarPalette.blue)
                             }
                         }.frame(maxWidth: .infinity).padding(.vertical, 4).contentShape(Rectangle())

@@ -56,6 +56,7 @@ mod logs;
 mod monitor;
 mod observed;
 mod rollout;
+mod speed_models;
 mod state;
 mod stream;
 
