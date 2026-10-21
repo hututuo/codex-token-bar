@@ -38,7 +38,9 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 
 ## 亮点
 
-- 全会话实时 token 速率，支持主界面、悬浮窗和状态栏/托盘读数。
+- 全会话实时活动速率，支持主界面、悬浮窗和状态栏/托盘读数；中断即停、结束最多收尾5秒。
+- 正文 TPS：按本地消息时间和正文分词量计算，展示会话、模型、时间和可信度；主页显示最近6条，详情查看历史，侧栏显示各模型最新及15/30分钟速度。
+- 历史账本保留：会话归档、移动或删除后继续保留已记录用量；fork后自有新增轮次正常统计。低命中提醒与续问建议已移至保留分支，缓存统计、排行、命中率图和费用账本继续提供。
 - 安全自动续跑：先选项目和精确会话，再按间隔、每日时间、额度恢复或服务器容量中断发送一次“继续”；默认关闭，不代替用户批准权限或回答人工输入。
 - 会话增强：支持侧栏删除、Markdown 导出、移动到项目、会话 ID、粘贴修复、阅读宽度和滚动位置恢复，并保留 Codex++ 的 AGPL-3.0 归属。
 - Codex 实例：在 Swift 与跨平台设置中创建或登记隔离实例，独立使用 Codex Home 和桌面数据目录，支持精确启停、严格前缀会话同步、分歧保留、自动同步和校验回滚。
@@ -47,7 +49,6 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 - 年度 token 热力图、最近 24 小时 5 分钟粒度曲线、缓存命中率曲线和缓存排行。
 - Codex 额度按官方实际窗口自适应：只提供 7d 时只显示 7d，同时提供 5h / 7d 时才显示两条，并保留本地轻量历史、雷达站额度预估和节奏提示。
 - 官方额度：读取当前 Codex 登录对应的额度；接口返回 Reserve 储备窗口时单独展示其额度和重置时间。
-- 低缓存命中提醒使用完整二级侧栏，显示会话标题与排查提示，支持明显的关闭按钮和点击外部收起。
 - 重置卡详情：显示可用重置机会、每张卡的来源、关联用户、到期时间、剩余时间和卡片编号。
 - 本地优先：读取 `~/.codex` 本地数据，不上传 prompt、输出、日志或账号额度。
 
@@ -55,9 +56,9 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 
 | 平台 | 实现 | 发布资产 | 说明 |
 |---|---|---|---|
-| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.9.3-macos-arm64.dmg` | 当前 macOS 稳定线，带 Sparkle 更新检查。 |
-| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.9.3-windows-x64-setup.exe` | 面向 Intel / AMD Windows 10/11，带 Tauri 自动更新。 |
-| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.9.3-windows-arm64-setup.exe` | 面向 Windows on ARM，带 Tauri 自动更新；安装器进程可能经模拟运行，但 App 二进制是 ARM64。 |
+| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.9.5-macos-arm64.dmg` | 当前 macOS 稳定线，带 Sparkle 更新检查。 |
+| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.9.5-windows-x64-setup.exe` | 面向 Intel / AMD Windows 10/11，带 Tauri 自动更新。 |
+| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.9.5-windows-arm64-setup.exe` | 面向 Windows on ARM，带 Tauri 自动更新；安装器进程可能经模拟运行，但 App 二进制是 ARM64。 |
 
 ## 为什么
 
@@ -81,12 +82,12 @@ Codex Token Bar 使用当前 Codex 登录凭据，直接读取官方账号接口
 
 ### macOS
 
-1. 下载 `CodexTokenBar-v0.9.3-macos-arm64.dmg` 和 `SHA256SUMS-v0.9.3.txt`。
+1. 下载 `CodexTokenBar-v0.9.5-macos-arm64.dmg` 和 `SHA256SUMS-v0.9.5.txt`。
 2. 可选校验：
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.9.3-macos-arm64.dmg
-cat SHA256SUMS-v0.9.3.txt
+shasum -a 256 CodexTokenBar-v0.9.5-macos-arm64.dmg
+cat SHA256SUMS-v0.9.5.txt
 ```
 
 3. 打开 DMG，把 `Codex Token Bar.app` 拖到 Applications。
@@ -101,13 +102,13 @@ curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/instal
 
 ### Windows
 
-1. Windows x64 下载 `CodexTokenBar-v0.9.3-windows-x64-setup.exe`。
-2. Windows ARM64 下载 `CodexTokenBar-v0.9.3-windows-arm64-setup.exe`。
+1. Windows x64 下载 `CodexTokenBar-v0.9.5-windows-x64-setup.exe`。
+2. Windows ARM64 下载 `CodexTokenBar-v0.9.5-windows-arm64-setup.exe`。
 3. 可选校验：
 
 ```powershell
-Get-FileHash .\CodexTokenBar-v0.9.3-windows-x64-setup.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS-v0.9.3.txt
+Get-FileHash .\CodexTokenBar-v0.9.5-windows-x64-setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS-v0.9.5.txt
 ```
 
 Windows 构建暂未使用商业代码签名证书。首次下载运行时，Microsoft Defender SmartScreen 可能提示未知发布者；请只从本仓库官方 Release 下载，并在运行前核对 SHA256。
@@ -118,7 +119,7 @@ Windows 10/11 通常已经内置或自动安装 WebView2 Runtime；如果系统�
 
 macOS Swift 版内置 Sparkle 更新检查，默认每 4 小时读取一次 GitHub 上的 `appcast.xml`，也可以在 App 菜单中关闭自动检查或随时手动检查。发现更高版本后只会弹窗提示，由你确认后再安装，不会静默替换应用。
 
-Windows Tauri 版会由应用级监控每 4 小时读取一次 GitHub Release 里的 `latest-windows.json`，即使隐藏自启动且尚未打开主界面也能保留提醒；系统通知不可用时会显示持久托盘标记和安装入口。主界面仍可手动检查，安装前会验证 Tauri updater 签名并等待用户确认。Windows metadata 与 macOS Sparkle appcast 分开维护，不会混用。
+Windows Tauri 版会由应用级监控每 4 小时读取一次 GitHub Release 里的 `latest-windows.json`，即使隐藏自启动且尚未打开主界面也能保留提醒；系统通知不可用时会显示持久托盘标记和安装入口。主界面仍可手动检查，安装前会验证 Tauri updater 签名并等待用户确认。Windows metadata 与 macOS Sparkle appcast 分开维护，不会混用。自动更新失败时，请从官方 Release 下载对应架构安装器，安装到原目录并保留本地历史数据。
 
 ## 可选：Codex Desktop 侧边栏补丁
 
@@ -180,7 +181,7 @@ macOS Swift 发布包：
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.9.3
+  scripts/build_release.sh v0.9.5
 ```
 
 Windows Tauri 发布包：
@@ -189,17 +190,17 @@ Windows Tauri 发布包：
 .\scripts\build_tauri_windows_release.ps1 -Version 0.9.3 -Arch both
 ```
 
-Windows 脚本只生成 x64 / ARM64 NSIS 安装器和 `dist/release/v0.9.3/windows-build/build-manifest.json`，不需要 updater 私钥；如果 `windows-build` 已存在会直接失败。把完整 `windows-build` 目录传回 Mac 后，签名到一个尚不存在的发布目录：
+Windows 脚本只生成 x64 / ARM64 NSIS 安装器和 `dist/release/v0.9.5/windows-build/build-manifest.json`，不需要 updater 私钥；如果 `windows-build` 已存在会直接失败。把完整 `windows-build` 目录传回 Mac 后，签名到一个尚不存在的发布目录：
 
 ```bash
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
 scripts/sign_tauri_windows_release.sh --version 0.9.3 --repo hututuo/codex-token-bar \
-  --build-dir dist/release/v0.9.3/windows-build \
-  --release-dir dist/release/v0.9.3/windows \
+  --build-dir dist/release/v0.9.5/windows-build \
+  --release-dir dist/release/v0.9.5/windows \
   --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
 ```
 
-当前本地 updater key 使用显式空密码；签名器会区分“变量未设置”和“变量已设置为空”。如果以后改用非空密码，只通过 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量传入，不要把密码写到命令参数或日志里。Mac 脚本生成对应 `.sig`、`latest-windows.json` 和 `SHA256SUMS-v0.9.3-windows.txt`。Windows 安装器当前未使用商业代码签名证书；`.sig` 只用于 Tauri 自动更新校验。
+当前本地 updater key 使用显式空密码；签名器会区分“变量未设置”和“变量已设置为空”。如果以后改用非空密码，只通过 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量传入，不要把密码写到命令参数或日志里。Mac 脚本生成对应 `.sig`、`latest-windows.json` 和 `SHA256SUMS-v0.9.5-windows.txt`。Windows 安装器当前未使用商业代码签名证书；`.sig` 只用于 Tauri 自动更新校验。
 
 ## License
 
@@ -235,16 +236,19 @@ There are now two official implementation lines:
 
 ## Highlights
 
-- Live all-session token speed across the dashboard, floating panel, and status/tray surfaces.
+- Live all-session activity speed across the dashboard, floating panel, and status/tray surfaces; interruptions stop promptly and normal completion finishes within five seconds.
+- Body-text TPS from local message timing and tokenized text, with conversation, model, time and confidence; six latest dashboard samples, history details, and latest/15-minute/30-minute model speeds in the sidebar.
+- Durable usage history after sessions are archived, moved or deleted, with fork-owned new rounds counted. Low-cache-hit reminders and follow-up recommendations are kept on a retained branch; cache statistics, rankings, hit-rate charts and the cost ledger remain available.
 - Safe automatic resume: choose a project and exact conversation, then continue on an interval, local daily time, quota recovery, or a confirmed server-capacity interruption. It is off by default and never approves permissions or answers interactive prompts for you.
 - Session enhancements: sidebar deletion, Markdown export, project moves, session IDs, paste repair, reading width, and scroll restoration, with Codex++ AGPL-3.0 attribution preserved.
 - Codex instances: create or register isolated instances in both native and cross-platform settings, with separate Codex Home and desktop data, identity-checked lifecycle control, strict-prefix session sync, conflict preservation, automatic sync, and verified rollback.
 - Dual Radar: official Radar shows suggested action, 24h / 48h probabilities, and model IQ; Crowd Radar shows the public top three, coverage, and full ranking with wrapper, alias, and lossy-row compatibility.
 - Floating pace panel: combines Radar action, model IQ, the currently available quota windows, and local live speed in a configurable compact window.
 - Yearly token heatmap, 5-minute recent activity chart, cache hit-rate curve, and cache hit ranking.
+- Cache follow-up chart with density shading, a recommendation line and a low-hit-risk line. The first 80 minutes use ten-minute linear ticks, with model and date filters and shared dashboard/reminder access.
+- Preserves recorded usage and diagnostic samples after sessions are archived, moved or deleted, including newly authored rounds after a fork. Recommendations describe local history and do not guarantee server-side cache lifetime.
 - Adaptive Codex quota display: a 7-day-only account shows only 7d, while 5h and 7d appear together only when both are available, with lightweight local history, Radar estimates, and compact pace hints.
 - Official quota: reads the quota for the current Codex login and shows separate Reserve windows and reset times when returned by the endpoint.
-- Full-panel low-cache-hit alerts with conversation titles, troubleshooting guidance, a visible close button, and outside-click dismissal.
 - Reset credit details: see available reset credits, grant reason, linked user, expiry time, remaining time, and card ID.
 - Local-first: reads local `~/.codex` data and does not upload prompts, outputs, logs, or quota data.
 
@@ -252,9 +256,9 @@ There are now two official implementation lines:
 
 | Platform | Implementation | Release asset | Notes |
 |---|---|---|---|
-| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.9.3-macos-arm64.dmg` | Current stable macOS line with Sparkle update checking. |
-| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.9.3-windows-x64-setup.exe` | For Intel / AMD Windows 10/11, with Tauri auto-update. |
-| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.9.3-windows-arm64-setup.exe` | For Windows on ARM, with Tauri auto-update. The installer process may run under emulation, while the app binary is ARM64. |
+| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.9.5-macos-arm64.dmg` | Current stable macOS line with Sparkle update checking. |
+| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.9.5-windows-x64-setup.exe` | For Intel / AMD Windows 10/11, with Tauri auto-update. |
+| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.9.5-windows-arm64-setup.exe` | For Windows on ARM, with Tauri auto-update. The installer process may run under emulation, while the app binary is ARM64. |
 
 ## Why
 
@@ -278,12 +282,12 @@ Download the correct installer from [GitHub Releases](https://github.com/hututuo
 
 ### macOS
 
-1. Download `CodexTokenBar-v0.9.3-macos-arm64.dmg` and `SHA256SUMS-v0.9.3.txt`.
+1. Download `CodexTokenBar-v0.9.5-macos-arm64.dmg` and `SHA256SUMS-v0.9.5.txt`.
 2. Optionally verify:
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.9.3-macos-arm64.dmg
-cat SHA256SUMS-v0.9.3.txt
+shasum -a 256 CodexTokenBar-v0.9.5-macos-arm64.dmg
+cat SHA256SUMS-v0.9.5.txt
 ```
 
 3. Open the DMG and drag `Codex Token Bar.app` to Applications.
@@ -298,13 +302,13 @@ curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/instal
 
 ### Windows
 
-1. Download `CodexTokenBar-v0.9.3-windows-x64-setup.exe` for Windows x64.
-2. Download `CodexTokenBar-v0.9.3-windows-arm64-setup.exe` for Windows ARM64.
+1. Download `CodexTokenBar-v0.9.5-windows-x64-setup.exe` for Windows x64.
+2. Download `CodexTokenBar-v0.9.5-windows-arm64-setup.exe` for Windows ARM64.
 3. Optionally verify:
 
 ```powershell
-Get-FileHash .\CodexTokenBar-v0.9.3-windows-x64-setup.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS-v0.9.3.txt
+Get-FileHash .\CodexTokenBar-v0.9.5-windows-x64-setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS-v0.9.5.txt
 ```
 
 The Windows build is currently unsigned with a commercial code-signing certificate. Microsoft Defender SmartScreen may warn about an unknown publisher on first launch. Download only from the official release page and verify the SHA256 checksum before running.
@@ -315,7 +319,7 @@ Windows 10/11 usually includes or automatically installs WebView2 Runtime. If it
 
 The macOS Swift build uses Sparkle to read GitHub `appcast.xml` every four hours by default. You can disable automatic checks in the app menu or run a manual check at any time. A newer version is only presented for confirmation and is never installed silently.
 
-The Windows Tauri build has an app-level monitor that reads `latest-windows.json` from GitHub Releases every four hours, including during hidden autostart before the dashboard is opened. If system notifications are unavailable, it keeps a persistent tray badge and install entry. Manual checks remain available in the dashboard; installation verifies the Tauri updater signature and waits for user confirmation. Windows metadata remains separate from the macOS Sparkle appcast.
+The Windows Tauri build has an app-level monitor that reads `latest-windows.json` from GitHub Releases every four hours, including during hidden autostart before the dashboard is opened. If system notifications are unavailable, it keeps a persistent tray badge and install entry. Manual checks remain available in the dashboard; installation verifies the Tauri updater signature and waits for user confirmation. Windows metadata remains separate from the macOS Sparkle appcast. If automatic updating fails, download the official installer for your architecture, install in the original directory and retain local history data.
 
 ## Optional Codex Desktop Sidebar Patch
 
@@ -375,7 +379,7 @@ macOS Swift release assets:
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.9.3
+  scripts/build_release.sh v0.9.5
 ```
 
 Windows Tauri release assets:
@@ -384,17 +388,17 @@ Windows Tauri release assets:
 .\scripts\build_tauri_windows_release.ps1 -Version 0.9.3 -Arch both
 ```
 
-The Windows script produces only x64 / ARM64 NSIS installers and `dist/release/v0.9.3/windows-build/build-manifest.json`; it does not need the updater private key and fails if `windows-build` already exists. After transferring the complete `windows-build` directory back to the Mac, sign it into a release directory that does not yet exist:
+The Windows script produces only x64 / ARM64 NSIS installers and `dist/release/v0.9.5/windows-build/build-manifest.json`; it does not need the updater private key and fails if `windows-build` already exists. After transferring the complete `windows-build` directory back to the Mac, sign it into a release directory that does not yet exist:
 
 ```bash
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
 scripts/sign_tauri_windows_release.sh --version 0.9.3 --repo hututuo/codex-token-bar \
-  --build-dir dist/release/v0.9.3/windows-build \
-  --release-dir dist/release/v0.9.3/windows \
+  --build-dir dist/release/v0.9.5/windows-build \
+  --release-dir dist/release/v0.9.5/windows \
   --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
 ```
 
-The current local updater key uses an explicitly empty password, and the signer distinguishes an unset variable from a variable set to an empty value. If a future key uses a non-empty password, provide it only through `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; never place it in command arguments or logs. The Mac script produces matching `.sig` files, `latest-windows.json`, and `SHA256SUMS-v0.9.3-windows.txt`. Windows installers are currently not signed with a commercial code-signing certificate; `.sig` is for Tauri updater verification.
+The current local updater key uses an explicitly empty password, and the signer distinguishes an unset variable from a variable set to an empty value. If a future key uses a non-empty password, provide it only through `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; never place it in command arguments or logs. The Mac script produces matching `.sig` files, `latest-windows.json`, and `SHA256SUMS-v0.9.5-windows.txt`. Windows installers are currently not signed with a commercial code-signing certificate; `.sig` is for Tauri updater verification.
 
 ## License
 
