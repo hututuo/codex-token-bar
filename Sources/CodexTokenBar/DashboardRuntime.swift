@@ -212,7 +212,6 @@ struct DashboardRuntimeComposition {
 
 @MainActor
 final class DashboardRuntime: ObservableObject {
-    let cacheRetentionStore = CacheRetentionStore()
     let usageStore: CodexUsageStore
     let quotaStore: AccountQuotaStore
     let quotaHistoryStore: QuotaHistoryStore
@@ -520,17 +519,8 @@ final class DashboardRuntime: ObservableObject {
         }
 
         guard startupAction == nil else { return }
-        cacheRetentionStore.bind(usageStore.currentDataSource)
-        if usageStore.dataUpdatedAt != nil { cacheRetentionStore.refresh() }
         usageStore.$dataSourceBindingKey.dropFirst().sink { [weak self] _ in
             self?.synchronizeSourceTransition()
-            guard let self else { return }
-            self.cacheRetentionStore.bind(self.usageStore.currentDataSource)
-        }.store(in: &cancellables)
-        usageStore.$dataUpdatedAt.dropFirst().compactMap { $0 }.removeDuplicates().sink { [weak self] _ in
-            guard let self else { return }
-            self.cacheRetentionStore.bind(self.usageStore.currentDataSource)
-            self.cacheRetentionStore.refresh()
         }.store(in: &cancellables)
         radarStore.$snapshot.dropFirst().sink { [weak self] _ in
             self?.sideEffects.handleSurfaceEvent()
@@ -567,7 +557,6 @@ final class DashboardRuntime: ObservableObject {
 
     private func stopSideEffects() {
         cancellables.removeAll()
-        cacheRetentionStore.cancelBackgroundWork()
         applyBackgroundOwnerActivity(false)
         sideEffectStopAction?()
     }
@@ -641,7 +630,7 @@ final class DashboardRuntime: ObservableObject {
         }
         if configuration.quotaSidebarEnabled {
             quotaSidebar.show(store: usageStore, monitor: liveMonitor, quota: quotaStore,
-                              tasks: taskCompletionMonitor, radar: radarStore, history: quotaHistoryStore, retention: cacheRetentionStore, edge: configuration.quotaSidebarEdge, onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() })
+                              tasks: taskCompletionMonitor, radar: radarStore, history: quotaHistoryStore, edge: configuration.quotaSidebarEdge, onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() })
         } else {
             quotaSidebar.close()
         }

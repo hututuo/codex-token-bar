@@ -1,5 +1,4 @@
 import { ObservedSpeedDetails } from "./liveRate/ObservedSpeedDetails";
-import { CacheUsageNotice } from "./liveRate/CacheUsageNotice";
 import { canUseQuotaSidebar } from "../settings/displaySettings";
 import type { CodexHomeSourceToken, LiveRateSnapshot, LiveThreadOption, PlatformCapabilities } from "../types/dashboard";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
@@ -119,7 +118,6 @@ export function LiveRateCard({
         </div>
       ) : null}
 
-      {liveRateEnabled && <CacheUsageNotice advice={snapshot.cacheAdvice} />}
       <div className="live-grid">
         <div className={liveRateEnabled ? "live-left" : "live-left is-live-disabled"}>
           <LiveRateMeter

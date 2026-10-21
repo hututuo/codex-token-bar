@@ -52,7 +52,6 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var localMonitor: Any?
     private var globalMonitor: Any?
     private var screenObserver: NSObjectProtocol?
-    private var activationObserver: NSObjectProtocol?
     private var collapseTask: Task<Void, Never>?
     private var frameAnimationTask: QuotaSidebarFrameClock?
     private var frameAnimationGeneration = 0
@@ -60,8 +59,6 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var makeRail: (() -> AnyView)?
     private var makeDetail: (() -> AnyView)?
     private var detailContentMounted = false
-    private var cacheAdviceID: String?
-    private var lastPresentedCacheAdviceID: String?
 
     init(settings: UserDefaults = .standard) {
         self.settings = settings
@@ -70,7 +67,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     func show(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore,
-              tasks: TaskCompletionMonitor, radar: CodexRadarStore, history: QuotaHistoryStore, retention: CacheRetentionStore, edge: QuotaSidebarEdge, onOpenDashboard: @escaping () -> Void = {}) {
+              tasks: TaskCompletionMonitor, radar: CodexRadarStore, history: QuotaHistoryStore, edge: QuotaSidebarEdge, onOpenDashboard: @escaping () -> Void = {}) {
         guard !isTrackingPress, !isDragging else { return }
         dashboardOpenAction = onOpenDashboard
         let resolvedEdge = QuotaSidebarPlacement.resolvedEdge(requested: edge, defaults: settings)
@@ -86,7 +83,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             }
             makeDetail = { [weak self] in
                 guard let self else { return AnyView(EmptyView()) }
-                return AnyView(QuotaSidebarDetailView(controller: self, store: store, monitor: monitor, quota: quota, tasks: tasks, radar: radar, history: history, retention: retention))
+                return AnyView(QuotaSidebarDetailView(controller: self, store: store, monitor: monitor, quota: quota, tasks: tasks, radar: radar, history: history))
             }
             railPanel = makePanel(identifier: "CodexTokenBarQuotaSidebar")
             railPanel?.trackPrimaryPress = { [weak self] event in self?.trackPress(event) ?? false }
@@ -122,21 +119,12 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
-        if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
-        localMonitor = nil; globalMonitor = nil; screenObserver = nil; activationObserver = nil
+        localMonitor = nil; globalMonitor = nil; screenObserver = nil
         railPanel?.orderOut(nil); detailPanel?.orderOut(nil)
         railPanel = nil; detailPanel = nil
         detailContentMounted = false
         makeRail = nil; makeDetail = nil; frames = nil; screen = nil
-        cacheAdviceID = nil; lastPresentedCacheAdviceID = nil
         interaction.dismiss()
-    }
-
-    func updateCacheAdvice(_ id: String?) {
-        cacheAdviceID = id
-        if id == nil { interaction.presentCacheAdvice(nil) }
-        updateFrames()
-        if id == nil { pointerMoved() }
     }
 
     // Quota presence changes layout only. A refreshed account snapshot must
@@ -152,7 +140,6 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         guard !isTrackingPress, !isDragging else { return }
         collapseTask?.cancel(); collapseTask = nil
         if interaction.expanded {
-            if interaction.cacheNoticeID != nil && !interaction.cacheNoticePointerEntered { interaction.enter() }
             return
         }
         interaction.enter()
@@ -174,10 +161,6 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     func dismiss() {
         collapseTask?.cancel(); collapseTask = nil
-        if let id = interaction.cacheNoticeID {
-            settings.set(id, forKey: "cacheHitAdviceDismissed")
-            cacheAdviceID = nil
-        }
         interaction.dismiss()
         updateFrames()
     }
@@ -312,15 +295,6 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                 else { self?.pointerMoved() }
             }
         }
-        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.interaction.cacheNoticeID != nil, !self.interaction.pinned,
-                      !self.isDragging, !self.isTrackingPress else { return }
-                self.dismiss()
-            }
-        }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -368,13 +342,6 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private func updateFrames(animateDocking: Bool = false) {
         guard !isTrackingPress, !isDragging else { return }
         guard let railPanel else { return }
-        // Defer while dragging; a new request opens only level two and never
-        // activates the app or changes a selected/pinned detail.
-        if let id = cacheAdviceID, id != lastPresentedCacheAdviceID {
-            lastPresentedCacheAdviceID = id
-            collapseTask?.cancel(); collapseTask = nil
-            interaction.presentCacheAdvice(id)
-        }
         (railPanel.contentView as? QuotaSidebarCanvasView)?.edge = edge
         // Preserve the chosen physical display until it disappears. A change
         // of scale or usable bounds recomputes Cocoa point/pixel placement.

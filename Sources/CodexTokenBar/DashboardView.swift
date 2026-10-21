@@ -58,7 +58,6 @@ struct DashboardView: View {
     @ObservedObject private var providerSyncStore: ProviderSyncStore
     @ObservedObject private var taskCompletionMonitor: TaskCompletionMonitor
     @ObservedObject private var liveMonitor: LiveRateMonitor
-    @ObservedObject private var cacheRetentionStore: CacheRetentionStore
     private var sourceTransitionCoordinator: DashboardSourceTransitionCoordinator {
         runtime.sourceTransitionCoordinator
     }
@@ -153,7 +152,6 @@ struct DashboardView: View {
         _providerSyncStore = ObservedObject(wrappedValue: composition.providerSyncStore)
         _taskCompletionMonitor = ObservedObject(wrappedValue: composition.taskCompletionMonitor)
         _liveMonitor = ObservedObject(wrappedValue: composition.liveMonitor)
-        _cacheRetentionStore = ObservedObject(wrappedValue: runtime.cacheRetentionStore)
         DisplayModeMigration.repairStartup()
     }
 
@@ -417,7 +415,6 @@ struct DashboardView: View {
         .onChange(of: runtimeConfigurationSignature) {
             reportRuntimeConfiguration()
         }
-        .modifier(CacheRetentionDashboardIntegration(retention: cacheRetentionStore, isPresented: $cacheRetentionStore.isChartPresented))
         .onChange(of: filterQuotaHistoryAnomalies) {
             quotaHistoryStore.reload()
         }
@@ -1165,8 +1162,6 @@ struct DashboardView: View {
                 }
             )
 
-            CacheRetentionSummaryView(store: cacheRetentionStore,onOpen: { cacheRetentionStore.isChartPresented = true })
-
             LiveRateView(
                 monitor: liveMonitor,
                 floatingPanelEnabled: $floatingPanelEnabled,
@@ -1175,9 +1170,7 @@ struct DashboardView: View {
                 liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
                 floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
                 tokenRateFullScale: $tokenRateFullScale,
-                onOpenSettings: { showingAppSettings = true },
-                retention: cacheRetentionStore,
-                onOpenCacheSuggestions: { cacheRetentionStore.isChartPresented = true }
+                onOpenSettings: { showingAppSettings = true }
             )
 
             ActivitySection(

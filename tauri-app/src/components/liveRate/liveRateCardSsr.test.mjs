@@ -113,13 +113,25 @@ test("LiveRateCard does not show stream failure warning when live rate is disabl
     assert.match(html, /aria-pressed="false"/);
     assert.match(html, />实时速率 关</);
     assert.match(html, /实时速率已关闭/);
-    assert.match(html, /官方为减少磁盘写入关闭了部分流式日志/);
+    assert.match(html, /正文测速/);
     assert.match(html, /class="live-reset-button" disabled=""/);
     assert.match(html, /aria-label="重置整体速率"/);
     assert.doesNotMatch(html, /实时速率降级/);
     assert.doesNotMatch(html, />重试</);
     assert.doesNotMatch(html, /class="session-picker"/);
     assert.doesNotMatch(html, /<select/);
+  });
+});
+
+test("legacy low-cache payload cannot revive retired reminders or hide body TPS", async () => {
+  await withSsrModules(async load => {
+    const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
+    const html = renderComponent(LiveRateCard, cardProps({
+      snapshot: liveRateSnapshot({ cacheAdvice: { threadId: "legacy", low: true, hitRate: 0.05, timestamp: Date.now() / 1000 } }),
+    }));
+    assert.match(html, /正文测速/);
+    assert.match(html, /查看详情/);
+    assert.doesNotMatch(html, /低命中提醒|缓存命中偏低|续问建议|建议尽量在/);
   });
 });
 

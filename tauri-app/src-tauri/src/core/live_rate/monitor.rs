@@ -148,7 +148,7 @@ impl LiveRateMonitorService {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(mut snapshot) = state.cached_snapshot(selected_thread_id) {
             snapshot.unread_summary = unread_summary;
-            return fresh_cache_snapshot(snapshot);
+            return snapshot;
         }
         if let Some(mut snapshot) = state.all_snapshot.clone() {
             snapshot.selected_thread_id = selected_thread_id.map(ToOwned::to_owned);
@@ -159,7 +159,7 @@ impl LiveRateMonitorService {
             };
             snapshot.selected_tokens_per_second = 0.0;
             snapshot.unread_summary = unread_summary;
-            return fresh_cache_snapshot(snapshot);
+            return snapshot;
         }
         drop(state);
         pending_snapshot_with_unread(selected_thread_id, unread_summary)
@@ -186,12 +186,12 @@ impl LiveRateMonitorService {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(mut snapshot) = state.cached_snapshot_before_signature(selected_thread_id) {
                 snapshot.unread_summary = unread_summary.clone();
-                return fresh_cache_snapshot(snapshot);
+                return snapshot;
             }
             if state.refresh_in_flight.is_some() {
                 if let Some(mut snapshot) = state.cached_snapshot(selected_thread_id) {
                     snapshot.unread_summary = unread_summary.clone();
-                    return fresh_cache_snapshot(snapshot);
+                    return snapshot;
                 }
                 let (state, wait_result) = self
                     .refresh_ready
@@ -251,7 +251,7 @@ impl LiveRateMonitorService {
                 state.refresh_in_flight = None;
                 self.refresh_ready.notify_all();
                 claim_guard.disarm();
-                return fresh_cache_snapshot(snapshot);
+                return snapshot;
             }
         }
 
@@ -297,7 +297,7 @@ impl LiveRateMonitorService {
         }
         self.refresh_ready.notify_all();
         claim_guard.disarm();
-        fresh_cache_snapshot(snapshot)
+        snapshot
     }
 
     #[cfg(test)]
@@ -516,19 +516,4 @@ mod immediate_snapshot_tests {
     fn native_refresh_wait_budget_is_below_initial_frontend_ipc_budget() {
         assert!(REFRESH_WAIT_TIMEOUT < Duration::from_millis(1_500));
     }
-}
-
-// Expire observational advice even when the underlying files and rate are idle.
-// This runs on the existing caller cadence and never schedules a read.
-fn fresh_cache_snapshot(mut snapshot: LiveRateSnapshot) -> LiveRateSnapshot {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-    if snapshot.cache_advice.as_ref().is_some_and(|advice| {
-        !advice.timestamp.is_finite() || advice.timestamp > now || now - advice.timestamp > 120.0
-    }) {
-        snapshot.cache_advice = None;
-    }
-    snapshot
 }

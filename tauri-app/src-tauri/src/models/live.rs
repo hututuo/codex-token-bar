@@ -2,19 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use super::LocalDataWarning;
 
-#[derive(Clone, Debug, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct CacheAdvice {
-    pub thread_id: String,
-    pub thread_title: Option<String>,
-    pub hit_rate: f64,
-    pub low: bool,
-    pub timestamp: f64,
-    pub affected_threads: usize,
-    pub idle_gap_seconds: Option<f64>,
-    pub model: Option<String>,
-}
-
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveRateSnapshot {
@@ -43,7 +30,6 @@ pub struct LiveRateSnapshot {
     pub latest_model_speeds_30m: Vec<ModelSpeedSummary>,
     #[serde(default)]
     pub measurement_status: String,
-    pub cache_advice: Option<CacheAdvice>,
     pub unread_summary: UnreadSummary,
     pub warnings: Vec<LocalDataWarning>,
 }
@@ -179,7 +165,6 @@ pub struct LiveThreadOption {
 pub struct FloatingPanelSnapshot {
     pub tokens_per_second: f64,
     pub max_tokens_per_second: f64,
-    pub cache_advice: Option<CacheAdvice>,
     pub trend_label: String,
     pub total_tokens_label: String,
     pub today_tokens_label: String,

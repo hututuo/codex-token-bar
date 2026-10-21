@@ -51,6 +51,36 @@ final class CompletedBodySpeedTests: XCTestCase {
         a.configure(metadata: ["id": "child", "forked_from_id": "parent", "timestamp": Date(timeIntervalSince1970: 1015).ISO8601Format()])
         XCTAssertNil(ingest(try body(), &a))
     }
+    func testSubagentMetadataMarkersAreRecognized() {
+        let markers: [[String: Any]] = [
+            ["thread_source": "subagent"],
+            ["source": ["subagent": false]],
+            ["agent_role": "worker"],
+            ["agent_path": "root/worker"]
+        ]
+        for metadata in markers {
+            var assembler = CompletedBodyAssembler()
+            assembler.configure(metadata: metadata)
+            XCTAssertTrue(assembler.hasFork, "Expected subagent marker: \(metadata)")
+        }
+
+        var ordinary = CompletedBodyAssembler()
+        ordinary.configure(metadata: ["thread_source": "main", "source": [:], "agent_role": "", "agent_path": ""])
+        XCTAssertFalse(ordinary.hasFork)
+    }
+    func testSubagentMetadataKeepsOnlyOwnPaginatedTurn() throws {
+        let child = "0000000f-4240-7000-8000-000000000001"
+        let parent = "0000000f-4100-7000-8000-000000000003"
+        let own = "0000000f-4300-7000-8000-000000000002"
+        var a = CompletedBodyAssembler()
+        a.configure(metadata: ["id": child, "thread_source": "subagent", "history_mode": "paginated"])
+        _ = ingest(try context(parent), &a)
+        _ = ingest(try timing(turn: parent, start: 1_001_000), &a)
+        XCTAssertNil(ingest(try body(turn: parent), &a))
+        _ = ingest(try context(own), &a)
+        _ = ingest(try timing(turn: own, start: 1_001_000), &a)
+        XCTAssertEqual(ingest(try body(turn: own), &a)?.turnID, own)
+    }
     func testPaginatedForkRejectsRewrittenParentButKeepsNewChildTurn() throws {
         let child = "0000000f-4240-7000-8000-000000000001"
         let own = "0000000f-4300-7000-8000-000000000002"
@@ -130,6 +160,20 @@ final class CompletedBodySpeedTests: XCTestCase {
         try FileManager.default.removeItem(at: file)
         let missing = await reader.read(options: options, now: now)
         XCTAssertEqual(missing.samples[file.path]?.count, 2)
+    }
+    func testReaderDeduplicatesOptionsThatShareOneRolloutPath() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let lines = [try context(), try timing(), try body()]
+        try lines.reduce(into: Data()) { data, line in data.append(line); data.append(10) }.write(to: file)
+        let options = [
+            LiveThreadOption(id: "newer", title: "", updatedAtMS: 2, rolloutPath: file.path),
+            LiveThreadOption(id: "older", title: "", updatedAtMS: 1, rolloutPath: file.path)
+        ]
+        let result = await CompletedBodySpeedReader().read(options: options, now: now)
+        let samples = try XCTUnwrap(result.samples[file.path])
+        XCTAssertEqual(samples.count, 1)
+        XCTAssertEqual(samples.first?.threadID, "newer")
     }
     func testLocalProductionReaderAudit() async throws {
         guard let input = ProcessInfo.processInfo.environment["TOKENBAR_BODY_AUDIT_OPTIONS"],

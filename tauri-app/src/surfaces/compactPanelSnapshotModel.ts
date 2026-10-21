@@ -62,7 +62,6 @@ export function floatingSnapshotForLiveRate(
     latestModelSpeeds30m: liveRate.latestModelSpeeds30m,
     measurementStatus: liveRate.measurementStatus,
     tokensPerSecond: liveRate.tokensPerSecond,
-    cacheAdvice: liveRate.cacheAdvice ?? null,
     maxTokensPerSecond: liveRate.maxTokensPerSecond,
     liveRateAvailable: liveRateStatus?.kind !== "failure",
     liveRateStatusKind: liveRateStatus?.kind,

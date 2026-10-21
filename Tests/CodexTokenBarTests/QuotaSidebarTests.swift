@@ -2,51 +2,6 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaSidebarTests: XCTestCase {
-    func testCacheReminderRevealsSummaryUntilClearedAndPreservesPinnedDetails() {
-        var state = QuotaSidebarInteraction()
-        state.presentCacheAdvice("a:100")
-        XCTAssertTrue(state.expanded)
-        XCTAssertNil(state.detail)
-        XCTAssertFalse(state.pinned)
-        state.leaveAfterGrace()
-        XCTAssertTrue(state.expanded)
-        state.presentCacheAdvice(nil)
-        state.leaveAfterGrace()
-        XCTAssertFalse(state.expanded)
-        state.select(.tasks)
-        state.togglePin()
-        state.presentCacheAdvice("a:101")
-        XCTAssertEqual(state.detail, .tasks)
-        XCTAssertTrue(state.pinned)
-        state.presentCacheAdvice(nil)
-        state.leaveAfterGrace()
-        XCTAssertEqual(state.detail, .tasks)
-        state.presentCacheAdvice("a:102")
-        state.beginDrag()
-        XCTAssertNil(state.cacheNoticeID)
-        state.presentCacheAdvice("a:103")
-        state.dismiss()
-        XCTAssertEqual(state, QuotaSidebarInteraction())
-    }
-
-    func testCacheReminderAllowsPointerExitAfterEntryAndKeepsIntentionalPin() {
-        var state = QuotaSidebarInteraction()
-        state.presentCacheAdvice("a:200")
-        XCTAssertFalse(state.allowsAutomaticCollapse)
-        state.enter()
-        XCTAssertTrue(state.allowsAutomaticCollapse)
-        state.leaveAfterGrace()
-        XCTAssertEqual(state, QuotaSidebarInteraction())
-        state.presentCacheAdvice("a:201")
-        state.enter()
-        state.togglePin()
-        state.leaveAfterGrace()
-        XCTAssertTrue(state.expanded)
-        XCTAssertTrue(state.pinned)
-        state.dismiss()
-        XCTAssertEqual(state, QuotaSidebarInteraction())
-    }
-
     @MainActor
     func testDetailSectionSelectionCanRepeatAndTabSelectionReturnsToTop() {
         let controller = QuotaSidebarController()

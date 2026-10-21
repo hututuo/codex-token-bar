@@ -1,4 +1,3 @@
-import { CacheRetentionProvider, CacheRetentionHomeCard } from "../components/cacheRetention/CacheRetentionSection";
 import { DiagnosticNotice } from "../components/DiagnosticNotice";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
@@ -258,7 +257,7 @@ export function DashboardPage({
   }, [openSettings]);
 
   return (
-    <CacheRetentionProvider sourceToken={sourceToken}><main className="app-shell">
+    <main className="app-shell">
       <section className="dashboard">
         <DashboardHeader
           account={dashboard.account}
@@ -381,7 +380,6 @@ export function DashboardPage({
                 : dashboardStatisticsSourceKey(sourceToken) ?? providerSourceKey}
               usageCacheInitializing={usageCacheInitializing}
             />
-            <CacheRetentionHomeCard />
             {analyticsReady ? (
               <DashboardAnalyticsSection
                 dashboard={dashboard}
@@ -488,7 +486,7 @@ export function DashboardPage({
           />
         </Suspense>
       ) : null}
-    </main></CacheRetentionProvider>
+    </main>
   );
 }
 

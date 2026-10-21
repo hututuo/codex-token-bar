@@ -48,7 +48,7 @@ struct CompletedBodyAssembler: Sendable {
     var hasFork = false
 
     mutating func configure(metadata: [String: Any]) {
-        hasFork = !(metadata["forked_from_id"] as? String ?? "").isEmpty || CacheRetentionParser.isSubagent(metadata)
+        hasFork = !(metadata["forked_from_id"] as? String ?? "").isEmpty || Self.isSubagentMetadata(metadata)
         if hasFork {
             childCreatedMS = PaginatedHistoryBoundary.uuidMilliseconds(metadata["id"] as? String)
             createdAt = childCreatedMS.map { Double($0) / 1000 }
@@ -58,6 +58,12 @@ struct CompletedBodyAssembler: Sendable {
             inheritedBoundary = PaginatedHistoryBoundary.unsigned(metadata["subagent_history_start_ordinal"])
             if hasFork && inheritedBoundary == nil { inheritedBoundary = UInt64.max }
         }
+    }
+    static func isSubagentMetadata(_ metadata: [String: Any]) -> Bool {
+        metadata["thread_source"] as? String == "subagent"
+            || (metadata["source"] as? [String: Any])?["subagent"] != nil
+            || !(metadata["agent_role"] as? String ?? "").isEmpty
+            || !(metadata["agent_path"] as? String ?? "").isEmpty
     }
     static func time(_ text: String) -> Double? {
         ((try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(text))

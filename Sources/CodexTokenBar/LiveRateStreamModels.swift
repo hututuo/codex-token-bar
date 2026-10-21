@@ -147,8 +147,6 @@ extension LiveRateMonitor {
         let newOffset: UInt64
         let events: [RolloutMetricEvent]
         let telemetry: [ThroughputSignal]
-        let cacheSamples: [CacheUsageSample]
-        let cacheReset: Bool
         let currentTurnID: String?
         let fileIdentity: RolloutFileIdentity?
         let boundarySignature: RolloutBoundarySignature?
@@ -159,8 +157,6 @@ extension LiveRateMonitor {
             path: String,
             newOffset: UInt64,
             events: [RolloutMetricEvent],
-            cacheSamples: [CacheUsageSample] = [],
-            cacheReset: Bool = false,
             telemetry: [ThroughputSignal] = [],
             currentTurnID: String? = nil,
             fileIdentity: RolloutFileIdentity? = nil,
@@ -172,8 +168,6 @@ extension LiveRateMonitor {
             self.newOffset = newOffset
             self.events = events
             self.telemetry = telemetry
-            self.cacheSamples = cacheSamples
-            self.cacheReset = cacheReset
             self.currentTurnID = currentTurnID
             self.fileIdentity = fileIdentity
             self.boundarySignature = boundarySignature

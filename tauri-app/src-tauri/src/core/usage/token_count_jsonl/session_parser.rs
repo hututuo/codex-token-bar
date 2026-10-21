@@ -15,7 +15,6 @@ use std::path::Path;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
-pub(crate) mod cache_retention_parser;
 
 const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
 const RETAINED_JSONL_LINE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
