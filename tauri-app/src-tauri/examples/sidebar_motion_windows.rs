@@ -3,6 +3,11 @@
 #[derive(Clone, Copy, Debug)]
 pub struct SidebarFrame { pub x: f64, pub y: f64, pub width: f64, pub height: f64 }
 #[cfg(windows)]
+#[path = "../src/platform/quota_sidebar/canvas_metrics.rs"]
+mod canvas_metrics;
+#[cfg(windows)]
+use canvas_metrics::SIDEBAR_CANVAS_HEIGHT;
+#[cfg(windows)]
 #[path = "../src/platform/quota_sidebar/canvas_geometry.rs"]
 mod canvas_geometry;
 #[cfg(windows)]
@@ -37,7 +42,7 @@ fn main() {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(2));
             // Three expand/collapse cycles, followed by a partial expansion
-            // reversed in flight. 88x560 and summary center 280 must not change.
+            // reversed in flight. The production canvas and its center stay fixed.
             for pass in 0..8 {
                 let expanding = pass % 2 == 0;
                 let steps = if pass >= 6 { 14 } else { 28 };
@@ -46,7 +51,7 @@ fn main() {
                         else if pass == 7 { (14 - step) as f64 / 28.0 }
                         else { 1.0 - step as f64 / 28.0 };
                     let frame = SidebarFrame { width: (16.0 + 72.0 * p) * scale,
-                        height: (192.0 + 278.0 * p) * scale, ..rest };
+                        height: (192.0 + (SIDEBAR_CANVAS_HEIGHT - 192.0) * p) * scale, ..rest };
                     let frame = SidebarFrame { x: if left { edge } else { edge - frame.width },
                         y: center - frame.height / 2.0, ..frame };
                     let w = rail.clone();
@@ -62,7 +67,7 @@ fn main() {
                                 document.documentElement.style.setProperty('--qs-native-height','{}px');
                                 requestAnimationFrame(()=>{{const r=document.querySelector('.qs-summary').getBoundingClientRect();
                                     document.title='REPORT:'+JSON.stringify({{pass:{pass},step:{step},viewport:[innerWidth,innerHeight],summary:[r.x,r.y,r.width,r.height],
-                                        layoutOK:Math.abs(innerWidth-88)<=1&&Math.abs(innerHeight-560)<=1&&Math.abs(r.y+r.height/2-280)<=1}});
+                                        layoutOK:Math.abs(innerWidth-88)<=1&&Math.abs(innerHeight-{SIDEBAR_CANVAS_HEIGHT})<=1&&Math.abs(r.y+r.height/2-{SIDEBAR_CANVAS_HEIGHT}/2)<=1}});
                                 }});
                             }})()"#, frame.width/scale, frame.height/scale)).map_err(|e| e.to_string())
                         });
