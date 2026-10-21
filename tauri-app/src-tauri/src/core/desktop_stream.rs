@@ -23,6 +23,16 @@ const MAX_PROJECTED_FRAME_BYTES: usize = 256 * 1024 * 1024;
 const MAX_DELTA_BYTES: usize = 1024 * 1024;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const READ_CHUNK_BYTES: usize = 64 * 1024;
+const FOLLOW_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_secs(10),
+    Duration::from_secs(20),
+    Duration::from_secs(40),
+    Duration::from_secs(60),
+];
+const CONNECTED_VERIFYING_STATUS: &str = "Desktop 接口已连接，正在核验会话流订阅";
+const EMPTY_INTERESTS_STATUS: &str = "Desktop 接口已连接，等待活跃会话";
+const MISSING_BASELINE_STATUS: &str =
+    "Desktop 接口已连接，但未收到会话状态；正在重试订阅，暂不能测速";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DesktopStreamEventKind {
@@ -167,6 +177,23 @@ impl DesktopStreamDecoder {
         let mut thread_ids = self.threads.keys().cloned().collect::<Vec<_>>();
         thread_ids.sort();
         self.threads.clear();
+        thread_ids
+            .into_iter()
+            .map(|thread_id| DesktopStreamEvent::reset(thread_id, at))
+            .collect()
+    }
+
+    /// Drop only baselines whose owner has disconnected.
+    pub fn reset_owner(&mut self, owner: &str, at: f64) -> Vec<DesktopStreamEvent> {
+        let mut thread_ids = self
+            .threads
+            .iter()
+            .filter_map(|(thread_id, thread)| (thread.owner == owner).then_some(thread_id.clone()))
+            .collect::<Vec<_>>();
+        thread_ids.sort();
+        for thread_id in &thread_ids {
+            self.threads.remove(thread_id);
+        }
         thread_ids
             .into_iter()
             .map(|thread_id| DesktopStreamEvent::reset(thread_id, at))
@@ -1198,6 +1225,211 @@ fn wall_time() -> f64 {
         .unwrap_or(0.0)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FollowLifecycleAction {
+    FollowingStatusRequested {
+        thread_id: String,
+        requester_id: String,
+    },
+    ClientStatusChanged {
+        client_id: String,
+        connected: bool,
+        is_self: bool,
+    },
+    IpcConnectionReset,
+}
+
+fn protocol_id(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= MAX_PROJECTED_STRING_BYTES)
+}
+
+/// Parse only the versioned local follower-coordination broadcasts this observer understands.
+fn parse_follow_lifecycle_action(
+    message: &Value,
+    interested: &HashSet<String>,
+) -> Option<FollowLifecycleAction> {
+    if message.get("type").and_then(Value::as_str) != Some("broadcast") {
+        return None;
+    }
+    let params = message.get("params")?.as_object()?;
+    match message.get("method").and_then(Value::as_str)? {
+        "thread-stream-following-status-requested" => {
+            if message.get("version").and_then(Value::as_i64) != Some(1) {
+                return None;
+            }
+            let thread_id = protocol_id(params.get("conversationId"))?;
+            if params.get("hostId").and_then(Value::as_str) != Some("local")
+                || !interested.contains(thread_id)
+            {
+                return None;
+            }
+            Some(FollowLifecycleAction::FollowingStatusRequested {
+                thread_id: thread_id.to_owned(),
+                requester_id: protocol_id(message.get("sourceClientId"))?.to_owned(),
+            })
+        }
+        "client-status-changed" => {
+            // This method predates the explicit version table and remains version 0.
+            if message.get("version").and_then(Value::as_i64) != Some(0) {
+                return None;
+            }
+            let source_client_id = protocol_id(message.get("sourceClientId"))?;
+            let client_id = protocol_id(params.get("clientId"))?;
+            if source_client_id != client_id {
+                return None;
+            }
+            let connected = match params.get("status").and_then(Value::as_str)? {
+                "connected" => true,
+                "disconnected" => false,
+                _ => return None,
+            };
+            Some(FollowLifecycleAction::ClientStatusChanged {
+                client_id: client_id.to_owned(),
+                connected,
+                is_self: params.get("isSelf").and_then(Value::as_bool) == Some(true),
+            })
+        }
+        "ipc-connection-reset" => {
+            protocol_id(message.get("sourceClientId"))?;
+            (message.get("version").and_then(Value::as_i64) == Some(1))
+                .then_some(FollowLifecycleAction::IpcConnectionReset)
+        }
+        _ => None,
+    }
+}
+
+fn follow_message(
+    client_id: &str,
+    thread_id: &str,
+    following: bool,
+    target_client_id: Option<&str>,
+) -> Value {
+    let mut message = serde_json::json!({
+        "type": "broadcast",
+        "method": "thread-stream-following-changed",
+        "sourceClientId": client_id,
+        "version": 1,
+        "params": {
+            "conversationId": thread_id,
+            "hostId": "local",
+            "following": following
+        }
+    });
+    if let Some(target) = target_client_id {
+        message["targetClientIds"] = serde_json::json!([target]);
+    }
+    message
+}
+
+fn verification_status(
+    subscribed: &HashSet<String>,
+    decoder: &DesktopStreamDecoder,
+    retries: &MissingBaselineFollowRetries,
+) -> String {
+    if subscribed.is_empty() {
+        return EMPTY_INTERESTS_STATUS.to_owned();
+    }
+    let verified = subscribed
+        .iter()
+        .filter(|thread_id| decoder.threads.contains_key(*thread_id))
+        .count();
+    if verified == 0 {
+        if retries.has_attempted_retry() {
+            MISSING_BASELINE_STATUS.to_owned()
+        } else {
+            CONNECTED_VERIFYING_STATUS.to_owned()
+        }
+    } else {
+        format!(
+            "已连接 Codex Desktop · 已核验 {verified}/{} 个会话订阅",
+            subscribed.len()
+        )
+    }
+}
+
+fn ipc_connection_reset_events(
+    decoder: &mut DesktopStreamDecoder,
+    at: f64,
+) -> Vec<DesktopStreamEvent> {
+    let mut events = decoder.reset_all(at);
+    events.push(DesktopStreamEvent::reset("", at));
+    events
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FollowRetryEntry {
+    attempts: usize,
+    next_at: Option<std::time::Instant>,
+}
+
+/// Capped backoff for selected threads that have no accepted snapshot baseline.
+#[derive(Default)]
+struct MissingBaselineFollowRetries {
+    by_thread: HashMap<String, FollowRetryEntry>,
+}
+
+impl MissingBaselineFollowRetries {
+    fn restart(&mut self, thread_id: &str, now: std::time::Instant) {
+        self.by_thread.insert(
+            thread_id.to_owned(),
+            FollowRetryEntry {
+                attempts: 0,
+                next_at: Some(now + FOLLOW_RETRY_DELAYS[0]),
+            },
+        );
+    }
+
+    fn has_attempted_retry(&self) -> bool {
+        self.by_thread.values().any(|entry| entry.attempts > 0)
+    }
+
+    /// Return retries due now, retaining only selected threads that still lack a baseline.
+    fn due_missing(
+        &mut self,
+        subscribed: &HashSet<String>,
+        decoder: &DesktopStreamDecoder,
+        now: std::time::Instant,
+    ) -> Vec<String> {
+        let mut missing = subscribed
+            .iter()
+            .filter(|thread_id| !decoder.threads.contains_key(*thread_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        missing.sort();
+        let missing_set = missing.iter().cloned().collect::<HashSet<_>>();
+        self.by_thread
+            .retain(|thread_id, _| missing_set.contains(thread_id));
+        for thread_id in &missing {
+            self.by_thread
+                .entry(thread_id.clone())
+                .or_insert(FollowRetryEntry {
+                    attempts: 0,
+                    next_at: Some(now + FOLLOW_RETRY_DELAYS[0]),
+                });
+        }
+
+        let due = missing
+            .into_iter()
+            .filter(|thread_id| {
+                self.by_thread
+                    .get(thread_id)
+                    .and_then(|entry| entry.next_at)
+                    .is_some_and(|next_at| next_at <= now)
+            })
+            .collect::<Vec<_>>();
+        for thread_id in &due {
+            if let Some(entry) = self.by_thread.get_mut(thread_id) {
+                entry.attempts = entry.attempts.saturating_add(1);
+                let delay_index = entry.attempts.min(FOLLOW_RETRY_DELAYS.len() - 1);
+                entry.next_at = Some(now + FOLLOW_RETRY_DELAYS[delay_index]);
+            }
+        }
+        due
+    }
+}
+
 /// A bounded observer that exposes decoded Desktop events through `try_recv`.
 ///
 /// The Windows build connects to the existing `\\.\pipe\codex-ipc` named pipe. Other
@@ -1408,7 +1640,7 @@ mod windows_transport {
                 Ok(mut pipe) => {
                     set_status(
                         &mut last_status,
-                        "Connected to the existing Codex Desktop IPC pipe; initializing read-only following.",
+                        CONNECTED_VERIFYING_STATUS,
                         &sender,
                         &overflow_notice,
                     );
@@ -1467,6 +1699,7 @@ mod windows_transport {
         let mut initialized = false;
         let mut subscribed = HashSet::new();
         let mut decoder = DesktopStreamDecoder::new();
+        let mut retries = MissingBaselineFollowRetries::default();
         let mut frames = FrameReader::default();
         let mut read_buffer = vec![0u8; READ_CHUNK_BYTES];
         let mut connected_at = std::time::Instant::now();
@@ -1480,7 +1713,7 @@ mod windows_transport {
                     .collect::<HashSet<_>>();
                 if wanted != subscribed {
                     for thread_id in subscribed.difference(&wanted).cloned().collect::<Vec<_>>() {
-                        write_follow(pipe, &client_id, &thread_id, false)?;
+                        write_follow(pipe, &client_id, &thread_id, false, None)?;
                         decoder.threads.remove(&thread_id);
                         emit(
                             sender,
@@ -1489,10 +1722,34 @@ mod windows_transport {
                         );
                     }
                     for thread_id in wanted.difference(&subscribed).cloned().collect::<Vec<_>>() {
-                        write_follow(pipe, &client_id, &thread_id, true)?;
+                        write_follow(pipe, &client_id, &thread_id, true, None)?;
                     }
                     subscribed = wanted;
+                    set_subscription_status(
+                        last_status,
+                        &subscribed,
+                        &decoder,
+                        &retries,
+                        sender,
+                        overflow_notice,
+                    );
                 }
+
+                let due_retries =
+                    retries.due_missing(&subscribed, &decoder, std::time::Instant::now());
+                for thread_id in due_retries {
+                    // A repeated following=true is the protocol request for a fresh snapshot.
+                    // Do not toggle false: that would tear down a healthy owner relationship.
+                    write_follow(pipe, &client_id, &thread_id, true, None)?;
+                }
+                set_subscription_status(
+                    last_status,
+                    &subscribed,
+                    &decoder,
+                    &retries,
+                    sender,
+                    overflow_notice,
+                );
             }
 
             let available = peek_available(pipe)?;
@@ -1537,11 +1794,11 @@ mod windows_transport {
                     connected_at = std::time::Instant::now();
                     wall_anchor = wall_time();
                     set_status(
-                                last_status,
-                                "Following selected Codex Desktop threads read-only; waiting for accepted text changes.",
-                                sender,
-                                overflow_notice,
-                            );
+                        last_status,
+                        CONNECTED_VERIFYING_STATUS,
+                        sender,
+                        overflow_notice,
+                    );
                 } else if message.get("type").and_then(Value::as_str)
                     == Some("client-discovery-request")
                 {
@@ -1558,24 +1815,98 @@ mod windows_transport {
                     )?;
                 } else if initialized {
                     let interests = subscribed.clone();
-                    let events = decoder.consume(
-                        &message,
-                        wall_anchor + connected_at.elapsed().as_secs_f64(),
-                        &interests,
-                    );
-                    emit_many(sender, overflow_notice, events);
-                    if let Some(thread_id) = decoder.resubscribe.take() {
-                        write_follow(pipe, &client_id, &thread_id, false)?;
-                        write_follow(pipe, &client_id, &thread_id, true)?;
+                    let at = wall_anchor + connected_at.elapsed().as_secs_f64();
+                    if let Some(action) = parse_follow_lifecycle_action(&message, &interests) {
+                        match action {
+                            FollowLifecycleAction::FollowingStatusRequested {
+                                thread_id,
+                                requester_id,
+                            } => {
+                                write_follow(
+                                    pipe,
+                                    &client_id,
+                                    &thread_id,
+                                    true,
+                                    Some(&requester_id),
+                                )?;
+                            }
+                            FollowLifecycleAction::ClientStatusChanged {
+                                client_id: changed_client_id,
+                                connected: true,
+                                is_self,
+                            } => {
+                                let target = (!is_self).then_some(changed_client_id.as_str());
+                                for thread_id in &subscribed {
+                                    write_follow(pipe, &client_id, thread_id, true, target)?;
+                                }
+                            }
+                            FollowLifecycleAction::ClientStatusChanged {
+                                client_id: disconnected_client_id,
+                                connected: false,
+                                ..
+                            } => {
+                                let resets = decoder.reset_owner(&disconnected_client_id, at);
+                                let retry_at = std::time::Instant::now();
+                                for reset in &resets {
+                                    retries.restart(&reset.thread_id, retry_at);
+                                }
+                                emit_many(sender, overflow_notice, resets);
+                            }
+                            FollowLifecycleAction::IpcConnectionReset => {
+                                let resets = ipc_connection_reset_events(&mut decoder, at);
+                                emit_many(sender, overflow_notice, resets);
+                                let retry_at = std::time::Instant::now();
+                                for thread_id in &subscribed {
+                                    retries.restart(thread_id, retry_at);
+                                    write_follow(pipe, &client_id, thread_id, true, None)?;
+                                }
+                            }
+                        }
+                        set_subscription_status(
+                            last_status,
+                            &subscribed,
+                            &decoder,
+                            &retries,
+                            sender,
+                            overflow_notice,
+                        );
+                    } else {
+                        let events = decoder.consume(&message, at, &interests);
+                        emit_many(sender, overflow_notice, events);
+                        if let Some(thread_id) = decoder.resubscribe.take() {
+                            // Decoder invalidation asks the current owner to resend its snapshot.
+                            write_follow(pipe, &client_id, &thread_id, true, None)?;
+                            retries.restart(&thread_id, std::time::Instant::now());
+                        }
+                        set_subscription_status(
+                            last_status,
+                            &subscribed,
+                            &decoder,
+                            &retries,
+                            sender,
+                            overflow_notice,
+                        );
                     }
                 }
             }
         }
 
         for thread_id in subscribed {
-            let _ = write_follow(pipe, &client_id, &thread_id, false);
+            let _ = write_follow(pipe, &client_id, &thread_id, false, None);
         }
         Ok(())
+    }
+
+    fn set_subscription_status(
+        previous: &mut String,
+        subscribed: &HashSet<String>,
+        decoder: &DesktopStreamDecoder,
+        retries: &MissingBaselineFollowRetries,
+        sender: &SyncSender<DesktopStreamEvent>,
+        overflow_notice: &AtomicBool,
+    ) {
+        let status = verification_status(subscribed, decoder, retries);
+        set_status(previous, &status, sender, overflow_notice);
     }
 
     fn set_status(
@@ -1599,20 +1930,11 @@ mod windows_transport {
         client_id: &str,
         thread_id: &str,
         following: bool,
+        target_client_id: Option<&str>,
     ) -> Result<(), ()> {
         write_message(
             pipe,
-            &serde_json::json!({
-                "type": "broadcast",
-                "method": "thread-stream-following-changed",
-                "sourceClientId": client_id,
-                "version": 1,
-                "params": {
-                    "conversationId": thread_id,
-                    "hostId": "local",
-                    "following": following
-                }
-            }),
+            &follow_message(client_id, thread_id, following, target_client_id),
         )
     }
 
@@ -1663,6 +1985,16 @@ mod tests {
 
     fn interested() -> HashSet<String> {
         HashSet::from(["thread-1".to_owned()])
+    }
+
+    fn status_request(source: &str, version: i64, host: &str, thread_id: &str) -> Value {
+        json!({
+            "type": "broadcast",
+            "method": "thread-stream-following-status-requested",
+            "sourceClientId": source,
+            "version": version,
+            "params": { "hostId": host, "conversationId": thread_id }
+        })
     }
 
     fn snapshot(owner: &str, revision: i64, text: &str) -> Value {
@@ -2153,5 +2485,236 @@ mod tests {
             vec!["a", "b", "c", "d"]
         );
         observer.stop();
+    }
+
+    #[test]
+    fn following_status_requests_are_validated_and_target_the_requester() {
+        let interested = interested();
+        let request = status_request("owner-2", 1, "local", "thread-1");
+        assert_eq!(
+            parse_follow_lifecycle_action(&request, &interested),
+            Some(FollowLifecycleAction::FollowingStatusRequested {
+                thread_id: "thread-1".to_owned(),
+                requester_id: "owner-2".to_owned(),
+            })
+        );
+
+        let response = follow_message("observer-1", "thread-1", true, Some("owner-2"));
+        assert_eq!(response["version"], 1);
+        assert_eq!(response["params"]["following"], true);
+        assert_eq!(response["targetClientIds"], json!(["owner-2"]));
+
+        assert!(parse_follow_lifecycle_action(
+            &status_request("owner-2", 2, "local", "thread-1"),
+            &interested
+        )
+        .is_none());
+        assert!(parse_follow_lifecycle_action(
+            &status_request("owner-2", 1, "remote", "thread-1"),
+            &interested
+        )
+        .is_none());
+        assert!(parse_follow_lifecycle_action(
+            &status_request("owner-2", 1, "local", "thread-2"),
+            &interested
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn client_status_version_zero_and_connection_reset_version_one_are_validated() {
+        let connected = json!({
+            "type": "broadcast",
+            "method": "client-status-changed",
+            "sourceClientId": "new-client",
+            "version": 0,
+            "params": { "clientId": "new-client", "clientType": "app", "status": "connected" }
+        });
+        assert_eq!(
+            parse_follow_lifecycle_action(&connected, &interested()),
+            Some(FollowLifecycleAction::ClientStatusChanged {
+                client_id: "new-client".to_owned(),
+                connected: true,
+                is_self: false,
+            })
+        );
+        let targeted = follow_message("observer-1", "thread-1", true, Some("new-client"));
+        assert_eq!(targeted["targetClientIds"], json!(["new-client"]));
+
+        let disconnected = json!({
+            "type": "broadcast",
+            "method": "client-status-changed",
+            "sourceClientId": "owner-1",
+            "version": 0,
+            "params": { "clientId": "owner-1", "status": "disconnected" }
+        });
+        assert_eq!(
+            parse_follow_lifecycle_action(&disconnected, &interested()),
+            Some(FollowLifecycleAction::ClientStatusChanged {
+                client_id: "owner-1".to_owned(),
+                connected: false,
+                is_self: false,
+            })
+        );
+
+        let reset = json!({
+            "type": "broadcast",
+            "method": "ipc-connection-reset",
+            "sourceClientId": "desktop",
+            "version": 1,
+            "params": {}
+        });
+        assert_eq!(
+            parse_follow_lifecycle_action(&reset, &interested()),
+            Some(FollowLifecycleAction::IpcConnectionReset)
+        );
+
+        let mut wrong_version = connected.clone();
+        wrong_version["version"] = json!(1);
+        assert!(parse_follow_lifecycle_action(&wrong_version, &interested()).is_none());
+        let mut missing_source = connected.clone();
+        missing_source
+            .as_object_mut()
+            .unwrap()
+            .remove("sourceClientId");
+        assert!(parse_follow_lifecycle_action(&missing_source, &interested()).is_none());
+        let mut router_rewritten_source = connected;
+        router_rewritten_source["sourceClientId"] = json!("router-client");
+        assert!(parse_follow_lifecycle_action(&router_rewritten_source, &interested()).is_none());
+
+        let mut missing_reset_source = reset;
+        missing_reset_source
+            .as_object_mut()
+            .unwrap()
+            .remove("sourceClientId");
+        assert!(parse_follow_lifecycle_action(&missing_reset_source, &interested()).is_none());
+    }
+
+    #[test]
+    fn owner_disconnect_and_ipc_reset_clear_only_the_expected_baselines() {
+        let both = HashSet::from(["thread-1".to_owned(), "thread-2".to_owned()]);
+        let mut decoder = DesktopStreamDecoder::new();
+        decoder.consume(&snapshot("owner-1", 5, "one"), 10.0, &both);
+        let mut second = snapshot("owner-2", 7, "two");
+        second["params"]["conversationId"] = json!("thread-2");
+        second["params"]["change"]["conversationState"]["id"] = json!("thread-2");
+        decoder.consume(&second, 10.0, &both);
+
+        let owner_resets = decoder.reset_owner("owner-1", 11.0);
+        assert_eq!(owner_resets.len(), 1);
+        assert_eq!(owner_resets[0].thread_id, "thread-1");
+        assert!(decoder.threads.contains_key("thread-2"));
+        let retries = MissingBaselineFollowRetries::default();
+        assert_eq!(
+            verification_status(&both, &decoder, &retries),
+            "已连接 Codex Desktop · 已核验 1/2 个会话订阅"
+        );
+
+        let reset_events = ipc_connection_reset_events(&mut decoder, 12.0);
+        assert_eq!(reset_events.len(), 2);
+        assert!(reset_events.iter().any(|event| {
+            event.kind == DesktopStreamEventKind::Reset && event.thread_id.is_empty()
+        }));
+        assert!(decoder.threads.is_empty());
+        let mut retries = MissingBaselineFollowRetries::default();
+        let retry_start = std::time::Instant::now();
+        assert!(retries.due_missing(&both, &decoder, retry_start).is_empty());
+        assert_eq!(
+            verification_status(&both, &decoder, &retries),
+            CONNECTED_VERIFYING_STATUS
+        );
+        assert_eq!(
+            retries.due_missing(&both, &decoder, retry_start + Duration::from_secs(10)),
+            vec!["thread-1", "thread-2"]
+        );
+        assert_eq!(
+            verification_status(&both, &decoder, &retries),
+            MISSING_BASELINE_STATUS
+        );
+    }
+
+    #[test]
+    fn follow_retries_only_missing_baselines_with_capped_sixty_second_backoff() {
+        let start = std::time::Instant::now();
+        let subscribed = HashSet::from(["thread-1".to_owned(), "thread-2".to_owned()]);
+        let mut decoder = DesktopStreamDecoder::new();
+        decoder.consume(&snapshot("owner-1", 5, "healthy"), 10.0, &subscribed);
+        let mut retries = MissingBaselineFollowRetries::default();
+
+        assert!(retries.due_missing(&subscribed, &decoder, start).is_empty());
+        assert_eq!(retries.by_thread.len(), 1);
+        assert_eq!(
+            verification_status(&subscribed, &decoder, &retries),
+            "已连接 Codex Desktop · 已核验 1/2 个会话订阅"
+        );
+        assert!(retries
+            .due_missing(&subscribed, &decoder, start + Duration::from_secs(9))
+            .is_empty());
+        assert_eq!(
+            retries.due_missing(&subscribed, &decoder, start + Duration::from_secs(10)),
+            vec!["thread-2"]
+        );
+        assert_eq!(
+            verification_status(&subscribed, &decoder, &retries),
+            "已连接 Codex Desktop · 已核验 1/2 个会话订阅"
+        );
+        assert!(retries
+            .due_missing(&subscribed, &decoder, start + Duration::from_secs(29))
+            .is_empty());
+        assert_eq!(
+            retries.due_missing(&subscribed, &decoder, start + Duration::from_secs(30)),
+            vec!["thread-2"]
+        );
+        assert_eq!(
+            retries.due_missing(&subscribed, &decoder, start + Duration::from_secs(70)),
+            vec!["thread-2"]
+        );
+        assert_eq!(
+            retries.due_missing(&subscribed, &decoder, start + Duration::from_secs(130)),
+            vec!["thread-2"]
+        );
+        assert!(retries
+            .due_missing(&subscribed, &decoder, start + Duration::from_secs(189))
+            .is_empty());
+        assert_eq!(
+            retries.due_missing(&subscribed, &decoder, start + Duration::from_secs(190)),
+            vec!["thread-2"]
+        );
+        assert_eq!(
+            retries.due_missing(&subscribed, &decoder, start + Duration::from_secs(250)),
+            vec!["thread-2"]
+        );
+        assert_eq!(
+            retries.due_missing(&subscribed, &decoder, start + Duration::from_secs(310)),
+            vec!["thread-2"]
+        );
+        assert_eq!(
+            retries.due_missing(&subscribed, &decoder, start + Duration::from_secs(10_000)),
+            vec!["thread-2"]
+        );
+        assert!(retries
+            .due_missing(
+                &subscribed,
+                &decoder,
+                start + Duration::from_secs(10_000 + 59)
+            )
+            .is_empty());
+        assert_eq!(
+            retries.due_missing(
+                &subscribed,
+                &decoder,
+                start + Duration::from_secs(10_000 + 60)
+            ),
+            vec!["thread-2"]
+        );
+
+        let mut new_baseline = snapshot("owner-2", 9, "new baseline");
+        new_baseline["params"]["conversationId"] = json!("thread-2");
+        new_baseline["params"]["change"]["conversationState"]["id"] = json!("thread-2");
+        decoder.consume(&new_baseline, 11.0, &subscribed);
+        assert!(retries
+            .due_missing(&subscribed, &decoder, start + Duration::from_secs(20_000))
+            .is_empty());
+        assert!(retries.by_thread.is_empty());
     }
 }

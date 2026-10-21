@@ -2,6 +2,51 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexDesktopStreamTests: XCTestCase {
+    func testFollowingStatusRequestReannouncesOnlyInterestedLocalVersionedThread() {
+        var request: [String: Any] = ["type": "broadcast", "method": "thread-stream-following-status-requested",
+            "sourceClientId": "new-owner", "version": 1, "params": ["hostId": "local", "conversationId": "thread"]]
+        XCTAssertEqual(DesktopStreamCoordination.parse(request, interests: interests), .following(thread: "thread", target: "new-owner"))
+        XCTAssertNil(DesktopStreamCoordination.parse(request, interests: []))
+        request["params"] = ["hostId": "remote", "conversationId": "thread"]
+        XCTAssertNil(DesktopStreamCoordination.parse(request, interests: interests))
+        request["params"] = ["hostId": "local", "conversationId": "thread"]
+        request["version"] = 2
+        XCTAssertNil(DesktopStreamCoordination.parse(request, interests: interests))
+    }
+    func testPeerReconnectAndResetProtocolValidation() {
+        var message: [String: Any] = ["type": "broadcast", "method": "client-status-changed", "version": 0,
+            "sourceClientId": "peer", "params": ["clientId": "peer", "status": "connected"]]
+        XCTAssertEqual(DesktopStreamCoordination.parse(message, interests: interests), .connected("peer"))
+        message["params"] = ["clientId": "peer", "status": "disconnected"]
+        XCTAssertEqual(DesktopStreamCoordination.parse(message, interests: interests), .disconnected("peer"))
+        message["version"] = 1
+        XCTAssertNil(DesktopStreamCoordination.parse(message, interests: interests))
+        message["method"] = "ipc-connection-reset"
+        XCTAssertEqual(DesktopStreamCoordination.parse(message, interests: interests), .reset)
+        message["version"] = 2
+        XCTAssertNil(DesktopStreamCoordination.parse(message, interests: interests))
+    }
+    func testMissingBaselineRetryBacksOffAndNeverResnapshotsHealthyOrRemovedThreads() {
+        var retry = DesktopStreamFollowRetry()
+        retry.sent("missing", at: 100)
+        retry.sent("healthy", at: 100)
+        retry.sent("removed", at: 100)
+        retry.reconcile(interests: ["missing", "healthy"], baselines: ["healthy"])
+        XCTAssertTrue(retry.due(at: 109.9).isEmpty)
+        XCTAssertEqual(retry.due(at: 110), ["missing"])
+        XCTAssertTrue(retry.due(at: 129.9).isEmpty)
+        XCTAssertEqual(retry.due(at: 130), ["missing"])
+        XCTAssertEqual(retry.due(at: 170), ["missing"])
+        XCTAssertTrue(retry.due(at: 229.9).isEmpty)
+        XCTAssertEqual(retry.due(at: 230), ["missing"])
+        XCTAssertEqual(retry.due(at: 290), ["missing"])
+        retry.reconcile(interests: ["missing"], baselines: ["missing"])
+        XCTAssertTrue(retry.due(at: 10_000).isEmpty)
+    }
+    @MainActor func testTransportWithoutBaselineNeverClaimsMeasurementReady() {
+        let pending = "Desktop 接口已连接，但未收到会话状态；正在重试订阅，暂不能测速"
+        XCTAssertEqual(LiveRateMonitor.desktopMeasurementStatus(connection: pending, lastDelta: 99, now: 100), pending)
+    }
     let interests: Set<String> = ["thread"]
     func envelope(_ change: [String: Any], owner: String = "owner", thread: String = "thread", version: Int = 11) -> [String: Any] {
         ["type": "broadcast", "method": "thread-stream-state-changed", "sourceClientId": owner, "version": version,

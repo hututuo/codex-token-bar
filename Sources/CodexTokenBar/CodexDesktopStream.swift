@@ -201,6 +201,49 @@ struct DesktopStreamDecoder {
     }
 }
 
+/// Retry only subscriptions which have no validated baseline. A quiet, healthy stream may be
+/// thinking or running a tool; repeatedly requesting its full history would disrupt measurement.
+struct DesktopStreamFollowRetry {
+    private var pending: [String: (deadline: Double, delay: Double)] = [:]
+    mutating func sent(_ thread: String, at: Double) { pending[thread] = (at + 10, 10) }
+    mutating func reconcile(interests: Set<String>, baselines: Set<String>) {
+        pending = pending.filter { interests.contains($0.key) && !baselines.contains($0.key) }
+    }
+    mutating func due(at: Double) -> [String] {
+        let due = pending.keys.filter { pending[$0]!.deadline <= at }.sorted()
+        for thread in due {
+            let delay = min(60, pending[thread]!.delay * 2)
+            pending[thread] = (at + delay, delay)
+        }
+        return due
+    }
+}
+
+enum DesktopStreamCoordination: Equatable {
+    case following(thread: String, target: String)
+    case connected(String), disconnected(String), reset
+
+    static func parse(_ message: [String: Any], interests: Set<String>) -> Self? {
+        guard message["type"] as? String == "broadcast", let source = message["sourceClientId"] as? String,
+              !source.isEmpty, let params = message["params"] as? [String: Any] else { return nil }
+        switch message["method"] as? String {
+        case "thread-stream-following-status-requested":
+            guard message["version"] as? Int == 1, params["hostId"] as? String == "local",
+                  let thread = params["conversationId"] as? String, interests.contains(thread) else { return nil }
+            return .following(thread: thread, target: source)
+        case "client-status-changed":
+            guard message["version"] as? Int == 0, let client = params["clientId"] as? String,
+                  !client.isEmpty, source == client else { return nil }
+            if params["status"] as? String == "connected" { return .connected(client) }
+            if params["status"] as? String == "disconnected" { return .disconnected(client) }
+            return nil
+        case "ipc-connection-reset":
+            return message["version"] as? Int == 1 ? .reset : nil
+        default: return nil
+        }
+    }
+}
+
 /// One bounded background reader. It connects to an existing, owner-only socket; never creates a router.
 final class CodexDesktopStreamClient: @unchecked Sendable {
     private let lock = NSLock()
@@ -259,6 +302,16 @@ final class CodexDesktopStreamClient: @unchecked Sendable {
         var timeout = timeval(tv_sec: 1, tv_usec: 0)
         _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         var client = "initializing-client", subscribed = Set<String>(), decoder = DesktopStreamDecoder()
+        var retry = DesktopStreamFollowRetry(), lastStatus = ""
+        func status(_ value: String) {
+            if value != lastStatus { lastStatus = value; onStatus(value) }
+        }
+        func subscriptionStatus() {
+            let ready = Set(decoder.threads.keys).intersection(subscribed).count
+            if subscribed.isEmpty { status("Desktop 接口已连接，等待活跃会话") }
+            else if ready == 0 { status("Desktop 接口已连接，正在核验会话流订阅") }
+            else { status("已连接 Codex Desktop · 已核验 \(ready)/\(subscribed.count) 个会话订阅") }
+        }
         guard write(["type": "request", "requestId": UUID().uuidString, "sourceClientId": client, "version": 0,
                      "method": "initialize", "params": ["clientType": "tokenbar-readonly-observer"]], fd: fd) else { return }
         var buffer = Data(), initialized = false
@@ -273,8 +326,20 @@ final class CodexDesktopStreamClient: @unchecked Sendable {
                     decoder.threads.removeValue(forKey: thread)
                     onEvent(.init(kind: .reset, thread: thread, at: Date().timeIntervalSince1970))
                 }
-                for thread in config.threads.subtracting(subscribed) { guard follow(thread, following: true, client: client, fd: fd) else { return } }
+                for thread in config.threads.subtracting(subscribed) {
+                    guard follow(thread, following: true, client: client, fd: fd) else { return }
+                    retry.sent(thread, at: ProcessInfo.processInfo.systemUptime)
+                }
                 subscribed = config.threads
+                subscriptionStatus()
+            }
+            if initialized {
+                retry.reconcile(interests: subscribed, baselines: Set(decoder.threads.keys))
+                let due = retry.due(at: ProcessInfo.processInfo.systemUptime)
+                for thread in due { guard follow(thread, following: true, client: client, fd: fd) else { return } }
+                if !due.isEmpty, decoder.threads.isEmpty {
+                    status("Desktop 接口已连接，但未收到会话状态；正在重试订阅，暂不能测速")
+                }
             }
             var pollFD = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let ready = Darwin.poll(&pollFD, 1, 250)
@@ -297,15 +362,45 @@ final class CodexDesktopStreamClient: @unchecked Sendable {
                     }
                 if message["type"] as? String == "response", message["method"] as? String == "initialize",
                    message["resultType"] as? String == "success", let result = message["result"] as? [String: Any], let id = result["clientId"] as? String {
-                    client = id; initialized = true; onStatus("已连接 Codex Desktop 流式事件，等待正文输出")
+                    client = id; initialized = true; subscriptionStatus()
                 } else if message["type"] as? String == "client-discovery-request", let requestID = message["requestId"] as? String {
                     guard write(["type": "client-discovery-response", "requestId": requestID, "response": ["canHandle": false]], fd: fd) else { return false }
+                } else if let coordination = DesktopStreamCoordination.parse(message, interests: subscribed) {
+                    switch coordination {
+                    case let .following(thread, target):
+                        guard follow(thread, following: true, client: client, target: target, fd: fd) else { return false }
+                    case let .connected(target):
+                        if target != client {
+                            for thread in subscribed {
+                                guard follow(thread, following: true, client: client, target: target, fd: fd) else { return false }
+                            }
+                        }
+                    case let .disconnected(owner):
+                        for thread in Array(decoder.threads.keys) where decoder.threads[thread]?.owner == owner {
+                            decoder.threads.removeValue(forKey: thread)
+                            onEvent(.init(kind: .reset, thread: thread, at: wallAnchor + ProcessInfo.processInfo.systemUptime))
+                            retry.sent(thread, at: ProcessInfo.processInfo.systemUptime)
+                        }
+                        subscriptionStatus()
+                    case .reset:
+                        decoder = DesktopStreamDecoder()
+                        onEvent(.init(kind: .reset, thread: "", at: wallAnchor + ProcessInfo.processInfo.systemUptime))
+                        for thread in subscribed {
+                            guard follow(thread, following: true, client: client, fd: fd) else { return false }
+                            retry.sent(thread, at: ProcessInfo.processInfo.systemUptime)
+                        }
+                        subscriptionStatus()
+                    }
                 } else {
                     let at = wallAnchor + ProcessInfo.processInfo.systemUptime
+                    let before = Set(decoder.threads.keys)
                     for event in decoder.consume(message, at: at, interests: subscribed) { onEvent(event) }
                     if let thread = decoder.resubscribe {
                         guard follow(thread, following: false, client: client, fd: fd), follow(thread, following: true, client: client, fd: fd) else { return false }
+                        retry.sent(thread, at: ProcessInfo.processInfo.systemUptime)
                     }
+                    retry.reconcile(interests: subscribed, baselines: Set(decoder.threads.keys))
+                    if before != Set(decoder.threads.keys) { subscriptionStatus() }
                 }
                     return true
                 }
@@ -314,9 +409,11 @@ final class CodexDesktopStreamClient: @unchecked Sendable {
         }
         for thread in subscribed { _ = follow(thread, following: false, client: client, fd: fd) }
     }
-    private func follow(_ thread: String, following: Bool, client: String, fd: Int32) -> Bool {
-        write(["type": "broadcast", "method": "thread-stream-following-changed", "sourceClientId": client, "version": 1,
-               "params": ["conversationId": thread, "hostId": "local", "following": following]], fd: fd)
+    private func follow(_ thread: String, following: Bool, client: String, target: String? = nil, fd: Int32) -> Bool {
+        var message: [String: Any] = ["type": "broadcast", "method": "thread-stream-following-changed", "sourceClientId": client, "version": 1,
+               "params": ["conversationId": thread, "hostId": "local", "following": following]]
+        if let target { message["targetClientIds"] = [target] }
+        return write(message, fd: fd)
     }
     private func write(_ message: [String: Any], fd: Int32) -> Bool {
         guard let data = try? JSONSerialization.data(withJSONObject: message) else { return false }
