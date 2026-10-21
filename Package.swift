@@ -27,7 +27,8 @@ let package = Package(
                 "CZstd",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
-            path: "Sources/CodexTokenBar"
+            path: "Sources/CodexTokenBar",
+            resources: [.copy("Resources/o200k_base.tiktoken")]
         ),
         .testTarget(
             name: "CodexTokenBarTests",

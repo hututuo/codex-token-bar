@@ -218,6 +218,7 @@ impl LiveRateMonitorService {
 
         after_claim();
         let signature = log_store_signature(&self.codex_home, &self.source_scope);
+        let signature_changed;
         {
             let mut state = self
                 .inner
@@ -237,6 +238,7 @@ impl LiveRateMonitorService {
                 );
             }
             state.signature_count += 1;
+            signature_changed = state.last_signature.as_ref() != Some(&signature);
             let selected_matches = state
                 .selected_snapshot
                 .as_ref()
@@ -285,7 +287,8 @@ impl LiveRateMonitorService {
             state.last_refresh = Some(Instant::now());
             if snapshot.tokens_per_second > 0.05
                 || snapshot.selected_tokens_per_second > 0.05
-                || snapshot.measurement_status == "observing_deltas"
+                || super::observed::has_active_sample(&self.source_scope)
+                || signature_changed
             {
                 state.last_active_at = Some(Instant::now());
             }

@@ -25,6 +25,8 @@
       "../../LICENSE": "OpenSourceLicenses/AGPL-3.0.txt",
       "../../LICENSES/CodexTokenBar-MIT.txt": "OpenSourceLicenses/CodexTokenBar-MIT.txt",
       "../../LICENSES/Zstandard-BSD-3-Clause.txt": "OpenSourceLicenses/Zstandard-BSD-3-Clause.txt",
+      "../../LICENSES/Tiktoken-MIT.txt": "OpenSourceLicenses/Tiktoken-MIT.txt",
+      "../../LICENSES/Tiktoken-rs-MIT.txt": "OpenSourceLicenses/Tiktoken-rs-MIT.txt",
       "../../LICENSES/Zstd-rs-MIT.txt": "OpenSourceLicenses/Zstd-rs-MIT.txt",
       "../../OPEN_SOURCE_NOTICES.md": "OPEN_SOURCE_NOTICES.md",
       "../../LICENSES/Tauri-updater-MIT.txt": "OpenSourceLicenses/Tauri-updater-MIT.txt"

@@ -65,8 +65,28 @@ pub struct SpeedSample {
     pub duration_seconds: f64,
     pub tokens_per_second: f64,
     pub confidence: String,
-    pub network_warning: bool,
+    #[serde(default, deserialize_with = "deserialize_network_warning")]
+    pub network_warning: Option<String>,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokenizer: Option<String>,
+}
+
+fn deserialize_network_warning<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false)) => Ok(None),
+        Some(serde_json::Value::Bool(true)) => Ok(Some("历史记录标记为采样不完整".to_owned())),
+        Some(serde_json::Value::String(value)) => Ok((!value.is_empty()).then_some(value)),
+        Some(_) => Err(serde::de::Error::custom(
+            "networkWarning must be a string, boolean, or null",
+        )),
+    }
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]

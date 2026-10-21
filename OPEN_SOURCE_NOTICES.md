@@ -116,3 +116,16 @@ Download and signature verification remain upstream implementations.
 - License selected: MIT
 - Full text: OpenSourceLicenses/Tauri-updater-MIT.txt
 - Source and patch provenance: tauri-app/src-tauri/vendor/tauri-plugin-updater/TOKENBAR_PATCH.md
+
+## Local body-speed tokenizer
+
+Completed-body speed uses the bundled OpenAI `o200k_base.tiktoken` vocabulary
+and the o200k regex via TiktokenSwift. No runtime vocabulary download is required.
+
+- Vocabulary: https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken
+- SHA256: `446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d`
+- Upstream: https://github.com/openai/tiktoken
+- License: MIT, preserved in `LICENSES/Tiktoken-MIT.txt` and bundled in the macOS app.
+- Rust/Windows uses `tiktoken-rs` 0.12.1 with an embedded vocabulary, without runtime downloads.
+- Rust wrapper: https://github.com/zurawiki/tiktoken-rs, MIT; preserved in `LICENSES/Tiktoken-rs-MIT.txt` and bundled by Tauri.
+- Local token counts describe visible body text, not server billing usage.

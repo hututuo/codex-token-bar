@@ -25,6 +25,7 @@ serde = { version = "1.0", features = ["derive"] }
 semver = "1.0"
 serde_json = { version = "1.0", features = ["raw_value"] }
 sha2 = "0.10"
+tiktoken-rs = "0.12.1"
 tauri = { version = "2.11.3", features = ["macos-private-api", "tray-icon"] }
 time = { version = "0.3.49", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio = { version = "1.52.3", features = ["rt", "sync", "time"] }

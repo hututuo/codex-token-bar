@@ -114,6 +114,8 @@ export interface SpeedSample {
   confidence: string;
   networkWarning?: string | boolean | null;
   source: string;
+  measurementKind?: string | null;
+  tokenizer?: string | null;
 }
 export interface ModelSpeedSummary {
   model: string;

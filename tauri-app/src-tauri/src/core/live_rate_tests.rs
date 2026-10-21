@@ -138,7 +138,7 @@ fn read_snapshot_counts_recent_stream_deltas() {
 
     let snapshot = read_snapshot(&root, None);
     assert_eq!(snapshot.tokens_per_second, 0.0);
-    assert_eq!(snapshot.measurement_status, "observing_deltas");
+    assert_eq!(snapshot.measurement_status, "completed_body_waiting");
     assert_eq!(snapshot.thread_title, "实时测速测试");
     assert_eq!(snapshot.total_tokens_today, 0);
     assert_eq!(snapshot.requests_today, 0);
@@ -173,7 +173,7 @@ fn read_snapshot_deduplicates_sse_and_websocket_sequence_events() {
 
     let snapshot = read_snapshot(&root, None);
     assert_eq!(snapshot.tokens_per_second, 0.0);
-    assert_eq!(snapshot.measurement_status, "observing_deltas");
+    assert_eq!(snapshot.measurement_status, "completed_body_waiting");
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -199,7 +199,7 @@ fn sqlite_tool_argument_deltas_are_distributed_to_avoid_fake_spikes() {
 
     let snapshot = read_snapshot(&root, None);
     assert_eq!(snapshot.tokens_per_second, 0.0);
-    assert_eq!(snapshot.measurement_status, "observing_deltas");
+    assert_eq!(snapshot.measurement_status, "completed_body_waiting");
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -222,7 +222,7 @@ fn read_snapshot_counts_received_message_log_stream_delta() {
 
     let snapshot = read_snapshot(&root, None);
     assert_eq!(snapshot.tokens_per_second, 0.0);
-    assert_eq!(snapshot.measurement_status, "observing_deltas");
+    assert_eq!(snapshot.measurement_status, "completed_body_waiting");
     assert_eq!(snapshot.thread_title, "log target 会话");
 
     fs::remove_dir_all(root).unwrap();
@@ -257,7 +257,7 @@ fn read_snapshot_includes_selected_thread_rate() {
     let selected_snapshot = read_snapshot(&root, Some("thread-a"));
     assert_eq!(all_snapshot.tokens_per_second, 0.0);
     assert_eq!(selected_snapshot.selected_tokens_per_second, 0.0);
-    assert_eq!(selected_snapshot.measurement_status, "observing_deltas");
+    assert_eq!(selected_snapshot.measurement_status, "completed_body_waiting");
     assert_eq!(
         selected_snapshot.selected_thread_id.as_deref(),
         Some("thread-a")
@@ -568,7 +568,7 @@ fn monitor_keeps_fast_refresh_window_after_recent_activity() {
     let monitor = LiveRateMonitorService::new(root.clone());
     let first = monitor.snapshot(None);
     assert_eq!(first.tokens_per_second, 0.0);
-    assert_eq!(first.measurement_status, "observing_deltas");
+    assert_eq!(first.measurement_status, "completed_body_waiting");
     let refreshes_after_first = monitor.test_refresh_count();
 
     std::thread::sleep(Duration::from_millis(300));
@@ -1120,7 +1120,7 @@ fn live_rate_stream_tick_keeps_rollout_warm_for_selected_and_empty_handoff() {
     let stream_tick = read_snapshot_result_at(&root, &scope, Some("thread-a"), t0 + 0.5).unwrap();
     assert_eq!(stream_tick.tokens_per_second, 0.0);
     assert_eq!(stream_tick.selected_tokens_per_second, 0.0);
-    assert_eq!(stream_tick.measurement_status, "observing_deltas");
+    assert_eq!(stream_tick.measurement_status, "completed_body_waiting");
 
     connection.execute("DELETE FROM logs", []).unwrap();
     let handoff = read_snapshot_result_at(&root, &scope, Some("thread-a"), t0 + 0.75).unwrap();

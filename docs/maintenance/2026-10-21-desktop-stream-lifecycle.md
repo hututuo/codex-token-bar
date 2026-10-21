@@ -48,3 +48,7 @@ CC Switch v4.0.14 的代理测速与会话导入测速是两种路径。前者�
 - Windows MSVC 目标对生产 `desktop_stream.rs` 及其依赖交叉 `cargo check` 通过，包含 named-pipe 条件编译代码；这不是 Windows 可执行包或实机验收。
 - Windows 已知局域网 SSH 地址连接超时；悠悠 2222 映射连接被拒绝，实机部署待连接恢复。
 - 本机证据位于忽略目录 `runs/20261021-speed-observation-audit/`。未推送、打标签或公开发布。
+
+## 后续接入
+
+正文起止计时已作为新的主测速来源实现，旧 IPC 作为补充保留。设计、边界与验证见 [2026-10-21-completed-body-speed.md](2026-10-21-completed-body-speed.md)。本机能读到正文计时不等于 IPC 已恢复发布。

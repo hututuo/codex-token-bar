@@ -51,6 +51,7 @@ struct StoreFileSignature {
 }
 
 mod c_curve;
+mod completed_body;
 mod desktop;
 mod logs;
 mod monitor;
@@ -166,7 +167,7 @@ fn idle_snapshot_with_warnings(
         model_speeds: Vec::new(),
         model_speeds_15m: Vec::new(),
         model_speeds_30m: Vec::new(),
-        measurement_status: "no_observed_deltas".into(),
+        measurement_status: "completed_body_waiting".into(),
         cache_advice: None,
         unread_summary,
         warnings,
@@ -198,7 +199,7 @@ pub(super) fn pending_snapshot_with_unread(
         model_speeds: Vec::new(),
         model_speeds_15m: Vec::new(),
         model_speeds_30m: Vec::new(),
-        measurement_status: "no_observed_deltas".into(),
+        measurement_status: "completed_body_waiting".into(),
         cache_advice: None,
         unread_summary,
         warnings: Vec::new(),
@@ -273,6 +274,8 @@ fn read_snapshot_result_at(
     }
     let desktop_events = desktop::poll(source_scope, interests, now);
     observed::process_desktop(source_scope, &desktop_events, now);
+    let completed_body_samples = completed_body::poll(codex_home, source_scope, now);
+    observed::process_completed_body(source_scope, &completed_body_samples, now);
     let _initial_speed_snapshot = observed::process_rows(source_scope, &rows, now);
     for signal in &post_delta_signals {
         match signal {
@@ -324,14 +327,10 @@ fn read_snapshot_result_at(
     }
     let measurement_status = if speed_snapshot.storage_warning.is_some() {
         "observed_storage_error"
-    } else if speed_snapshot.has_active_sample || stream_rollup.tokens_per_second > 0.0 {
-        "observing_deltas"
     } else if speed_snapshot.has_observed_samples {
-        "observed_history"
-    } else if c_curve_tokens_per_second > 0.0 || !c_curve_points.is_empty() {
-        "provisional_curve"
+        "completed_body_ready"
     } else {
-        "no_observed_deltas"
+        "completed_body_waiting"
     };
     let rollout_rollup = rollup_metric_events(&rollout_metrics, now, None);
     let rollup = if stream_rollup.tokens_per_second > 0.0 {

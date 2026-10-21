@@ -5,7 +5,7 @@ extension LiveRateMonitor {
     func warmTokenEncoder() async {
         do {
             tokenEncoder = try await Task.detached(priority: .utility) {
-                try await CoreBpe.o200kBase()
+                try BodySpeedTokenizer.load()
             }.value
         } catch {
             tokenEncoder = nil

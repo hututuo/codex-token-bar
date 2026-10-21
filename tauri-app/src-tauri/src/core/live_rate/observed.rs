@@ -354,7 +354,7 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
         .as_ref()
         .expect("summary cache was populated");
     Snapshot {
-        has_observed_samples: !store.samples.is_empty(),
+        has_observed_samples: store.samples.iter().any(is_completed_body_sample),
         has_active_sample: !store.active.is_empty(),
         speed_samples,
         model_speeds: summaries.model_speeds_7d.clone(),
@@ -362,6 +362,68 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
         model_speeds_30m: summaries.model_speeds_30m.clone(),
         storage_warning: store.storage_error.clone(),
     }
+}
+
+/// Merge numeric completed-body samples into the same versioned detail store.
+/// Their canonical IDs make replayed worker results safe and idempotent.
+pub(super) fn process_completed_body(
+    scope: &LiveRateSourceScope,
+    samples: &[SpeedSample],
+    now: f64,
+) {
+    let stores = SPEED_STORES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut all = stores
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let store = all.entry(scope.clone()).or_default();
+    ensure_loaded(store, scope);
+    let mut changed = false;
+    let mut existing_ids = store
+        .samples
+        .iter()
+        .map(|sample| sample.id.clone())
+        .collect::<HashSet<_>>();
+    for sample in samples {
+        if !is_completed_body_sample(sample)
+            || !sample.ended_at.is_finite()
+            || sample.ended_at > now + 2.0
+            || now - sample.ended_at > SUMMARY_WINDOW_SECONDS
+            || !valid_sample(sample)
+        {
+            continue;
+        }
+        if existing_ids.insert(sample.id.clone()) {
+            store.samples.push_back(sample.clone());
+            while store.samples.len() > MAX_PERSISTED_SAMPLES {
+                store.samples.pop_front();
+            }
+            changed = true;
+        }
+    }
+    if changed {
+        store.summary_cache = None;
+        if let Err(error) = persist(store, scope) {
+            store.storage_error = Some(error);
+        } else {
+            store.storage_error = None;
+        }
+    }
+}
+
+fn is_completed_body_sample(sample: &SpeedSample) -> bool {
+    sample.measurement_kind.as_deref() == Some("completed_body")
+        && sample.tokenizer.as_deref() == Some("o200k_base")
+}
+
+pub(super) fn has_active_sample(scope: &LiveRateSourceScope) -> bool {
+    let Some(stores) = SPEED_STORES.get() else {
+        return false;
+    };
+    stores
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(scope)
+        .is_some_and(|store| !store.active.is_empty())
 }
 
 /// Desktop carries explicit turn/item identity, unlike legacy log deltas. Never infer its turn
@@ -769,8 +831,12 @@ fn finalize_active(active: &mut ActiveSample, _now: f64, incomplete: bool) -> Op
         duration_seconds: duration,
         tokens_per_second: output_tokens as f64 / duration,
         confidence: confidence.into(),
-        network_warning: active.network_warning,
+        network_warning: active
+            .network_warning
+            .then(|| "流式增量采样可能不完整".to_owned()),
         source: active.source.clone(),
+        measurement_kind: None,
+        tokenizer: None,
     })
 }
 
@@ -939,7 +1005,7 @@ struct SummaryParts {
 
 fn display_summarize(
     samples: &VecDeque<SpeedSample>,
-    active: &HashMap<(String, String), ActiveSample>,
+    _active: &HashMap<(String, String), ActiveSample>,
     now: f64,
     window_seconds: f64,
 ) -> Vec<ModelSpeedSummary> {
@@ -948,24 +1014,18 @@ fn display_summarize(
     }
     let mut by_model = HashMap::<String, SummaryParts>::new();
     for sample in samples.iter().filter(|sample| {
-        sample
-            .model
-            .as_ref()
-            .is_some_and(|model| !model.is_empty() && model != "unknown")
-            && !sample.network_warning
+        is_completed_body_sample(sample)
+            && sample
+                .model
+                .as_ref()
+                .is_some_and(|model| !model.is_empty() && model != "unknown")
             && sample.output_tokens > 0
             && sample.duration_seconds.is_finite()
             && sample.duration_seconds > 0.0
+            && sample.tokens_per_second.is_finite()
             && sample.ended_at.is_finite()
             && sample.ended_at <= now + 1.0
             && now - sample.ended_at <= window_seconds
-            // Older saved records did not persist the item-start marker. Their
-            // low-confidence records that meet all medium thresholds can only
-            // be midstream samples, so keep those out of the display summary.
-            && !(sample.confidence == "low"
-                && sample.output_tokens >= 100
-                && sample.duration_seconds >= 2.0
-                && sample.chunk_count >= 4)
     }) {
         let model = sample.model.as_ref().expect("filtered model").clone();
         let summary = by_model.entry(model).or_default();
@@ -973,46 +1033,10 @@ fn display_summarize(
             .output_tokens
             .saturating_add(u64::from(sample.output_tokens));
         summary.duration_seconds += sample.duration_seconds;
-        summary.chunk_count = summary
-            .chunk_count
-            .saturating_add(u64::from(sample.chunk_count));
         summary.sample_count = summary.sample_count.saturating_add(1);
         if matches!(sample.confidence.as_str(), "medium" | "high") {
             summary.qualified_sample_count = summary.qualified_sample_count.saturating_add(1);
         }
-    }
-
-    let active_window = window_seconds.min(2.0);
-    for sample in active.values().filter(|sample| {
-        sample
-            .model
-            .as_ref()
-            .is_some_and(|model| !model.is_empty() && model != "unknown")
-            && sample.last_timestamp.is_finite()
-            && sample.last_timestamp <= now + 1.0
-            && now - sample.last_timestamp <= active_window
-            && sample.ended_at > sample.started_at
-            && sample.chunk_count >= 2
-            && sample.saw_item_start
-            && !sample.saw_finish_marker
-            && !sample.network_warning
-            && sample.max_gap <= 2.0
-    }) {
-        let model = sample.model.as_ref().expect("filtered model").clone();
-        let first_tokens = estimate_observed_tokens(&sample.first_text, sample.category);
-        let output_tokens = u64::from(sample.estimated_tokens.saturating_sub(first_tokens));
-        let duration_seconds = sample.ended_at - sample.started_at;
-        if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
-            continue;
-        }
-        let summary = by_model.entry(model).or_default();
-        summary.output_tokens = summary.output_tokens.saturating_add(output_tokens);
-        summary.duration_seconds += duration_seconds;
-        summary.chunk_count = summary
-            .chunk_count
-            .saturating_add(u64::from(sample.chunk_count));
-        summary.sample_count = summary.sample_count.saturating_add(1);
-        summary.active_sample_count = summary.active_sample_count.saturating_add(1);
     }
 
     let mut summaries = by_model
@@ -1021,18 +1045,20 @@ fn display_summarize(
             if parts.duration_seconds <= 0.0 || !parts.duration_seconds.is_finite() {
                 return None;
             }
-            let confidence = aggregate_confidence(
-                parts.output_tokens,
-                parts.duration_seconds,
-                parts.chunk_count,
-            );
+            let confidence = if parts.output_tokens >= 500 && parts.duration_seconds >= 5.0 {
+                "high"
+            } else if parts.output_tokens >= 100 && parts.duration_seconds >= 2.0 {
+                "medium"
+            } else {
+                "low"
+            };
             Some(ModelSpeedSummary {
                 model,
                 tokens_per_second: parts.output_tokens as f64 / parts.duration_seconds,
                 sample_count: parts.sample_count,
                 output_tokens: parts.output_tokens,
                 duration_seconds: parts.duration_seconds,
-                active_sample_count: parts.active_sample_count,
+                active_sample_count: 0,
                 qualified_sample_count: parts.qualified_sample_count,
                 confidence: confidence.into(),
             })
@@ -1075,7 +1101,7 @@ fn summarize(
             .as_ref()
             .is_some_and(|model| !model.is_empty() && model != "unknown")
             && matches!(sample.confidence.as_str(), "medium" | "high")
-            && !sample.network_warning
+            && sample.network_warning.is_none()
             && sample.output_tokens > 0
             && sample.duration_seconds > 0.0
             && sample.ended_at <= now + 1.0
@@ -1195,6 +1221,14 @@ fn valid_sample(sample: &SpeedSample) -> bool {
         && sample.item_id.len() <= 512
         && !sample.item_id.is_empty()
         && sample.model.as_ref().is_none_or(|model| model.len() <= 256)
+        && sample
+            .network_warning
+            .as_ref()
+            .is_none_or(|warning| warning.len() <= 512)
+        && sample.measurement_kind.as_deref().is_none_or(|kind| {
+            kind == "completed_body" && sample.tokenizer.as_deref() == Some("o200k_base")
+        })
+        && sample.tokenizer.as_ref().is_none_or(|tokenizer| tokenizer.len() <= 64)
         && sample.source.len() <= 128
         && matches!(sample.confidence.as_str(), "low" | "medium" | "high")
         && sample.started_at.is_finite()
@@ -1522,8 +1556,10 @@ mod tests {
                 duration_seconds: duration,
                 tokens_per_second: tokens as f64 / duration,
                 confidence: confidence.into(),
-                network_warning: warning,
+                network_warning: warning.then(|| "legacy warning".to_owned()),
                 source: "logs_2.sqlite.response_stream".into(),
+                measurement_kind: None,
+                tokenizer: None,
             });
         }
         let summary = summarize(&samples, 100.0, SUMMARY_WINDOW_SECONDS);
@@ -1534,7 +1570,7 @@ mod tests {
     }
 
     #[test]
-    fn display_summary_pools_short_complete_samples_by_duration() {
+    fn production_summary_uses_only_completed_body_and_keeps_warning_as_diagnostic() {
         let make_sample = |id: &str,
                            output_tokens: u32,
                            duration_seconds: f64,
@@ -1556,8 +1592,10 @@ mod tests {
                 duration_seconds,
                 tokens_per_second: output_tokens as f64 / duration_seconds,
                 confidence: confidence.into(),
-                network_warning,
+                network_warning: network_warning.then(|| "body timing diagnostic".to_owned()),
                 source: "logs_2.sqlite.response_stream".into(),
+                measurement_kind: Some("completed_body".into()),
+                tokenizer: Some("o200k_base".into()),
             }
         };
         let samples = VecDeque::from([
@@ -1568,15 +1606,20 @@ mod tests {
             // confidence record meeting all medium thresholds is midstream.
             make_sample("midstream", 120, 2.0, 4, "low", false),
         ]);
+        let mut samples = samples;
+        let mut legacy_ipc = make_sample("ipc", 1_000, 10.0, 20, "high", false);
+        legacy_ipc.measurement_kind = None;
+        legacy_ipc.tokenizer = None;
+        samples.push_back(legacy_ipc);
 
         let summary = display_summarize(&samples, &HashMap::new(), 100.0, SUMMARY_WINDOW_SECONDS);
         assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0].sample_count, 2);
-        assert_eq!(summary[0].qualified_sample_count, 1);
+        assert_eq!(summary[0].sample_count, 4);
+        assert_eq!(summary[0].qualified_sample_count, 2);
         assert_eq!(summary[0].active_sample_count, 0);
-        assert_eq!(summary[0].output_tokens, 40);
-        assert_eq!(summary[0].duration_seconds, 4.0);
-        assert_eq!(summary[0].tokens_per_second, 10.0);
+        assert_eq!(summary[0].output_tokens, 260);
+        assert_eq!(summary[0].duration_seconds, 8.0);
+        assert_eq!(summary[0].tokens_per_second, 32.5);
     }
 
     #[test]
@@ -1597,8 +1640,10 @@ mod tests {
             duration_seconds: 1.0,
             tokens_per_second: 10.0,
             confidence: "low".into(),
-            network_warning: false,
+            network_warning: None,
             source: "codex_desktop.forwarded_text_stream".into(),
+            measurement_kind: None,
+            tokenizer: None,
         };
 
         assert!(should_resolve_sample_model(
@@ -1637,8 +1682,10 @@ mod tests {
                 duration_seconds,
                 tokens_per_second: output_tokens as f64 / duration_seconds,
                 confidence: "high".into(),
-                network_warning: false,
+                network_warning: None,
                 source: "logs_2.sqlite.response_stream".into(),
+                measurement_kind: None,
+                tokenizer: None,
             });
         }
 
@@ -1668,8 +1715,10 @@ mod tests {
             duration_seconds: 2.0,
             tokens_per_second: 50.0,
             confidence: "medium".into(),
-            network_warning: false,
+            network_warning: None,
             source: "logs_2.sqlite.response_stream".into(),
+            measurement_kind: None,
+            tokenizer: None,
         };
         let encoded = serde_json::to_string(&StoredSamples {
             version: 1,
@@ -1678,6 +1727,64 @@ mod tests {
         .unwrap();
         assert!(!encoded.contains("hello"));
         assert!(encoded.contains("outputBytes"));
+    }
+
+    #[test]
+    fn completed_body_persistence_keeps_legacy_ipc_details_and_reads_legacy_warning_booleans() {
+        let unique = format!(
+            "body-persist-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let scope = LiveRateSourceScope::new(&unique, &unique);
+        let path = storage_path(&scope).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let legacy = serde_json::json!({
+            "version": 1,
+            "samples": [{
+                "id":"legacy-ipc", "threadId":"thread", "turnId":"turn", "itemId":"item",
+                "model":"model-a", "startedAt":10.0, "endedAt":12.0, "outputTokens":20,
+                "outputCharacters":20, "outputBytes":20, "chunkCount":4,
+                "durationSeconds":2.0, "tokensPerSecond":10.0, "confidence":"low",
+                "networkWarning":false, "source":"codex_desktop.forwarded_text_stream"
+            }]
+        });
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let body = SpeedSample {
+            id: "completed-body/new".into(),
+            thread_id: "thread".into(),
+            turn_id: "turn-new".into(),
+            item_id: "item-new".into(),
+            model: Some("model-b".into()),
+            started_at: 20.0,
+            ended_at: 24.0,
+            output_tokens: 50,
+            output_characters: 100,
+            output_bytes: 120,
+            chunk_count: 0,
+            duration_seconds: 4.0,
+            tokens_per_second: 12.5,
+            confidence: "low".into(),
+            network_warning: None,
+            source: "Codex rollout completed-body / local o200k_base".into(),
+            measurement_kind: Some("completed_body".into()),
+            tokenizer: Some("o200k_base".into()),
+        };
+        process_completed_body(&scope, &[body], 24.0);
+        let persisted: StoredSamples = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.version, 1);
+        assert_eq!(persisted.samples.len(), 2);
+        let old = persisted.samples.iter().find(|sample| sample.id == "legacy-ipc").unwrap();
+        assert!(old.measurement_kind.is_none());
+        assert!(old.tokenizer.is_none());
+        assert!(old.network_warning.is_none());
+        assert!(persisted.samples.iter().any(|sample| sample.measurement_kind.as_deref() == Some("completed_body")));
+
+        SPEED_STORES.get().unwrap().lock().unwrap().remove(&scope);
+        let _ = fs::remove_file(path);
     }
 }
 
@@ -1715,9 +1822,9 @@ mod desktop_tests {
         assert_eq!(sample.turn_id, "explicit-turn");
         assert_eq!(sample.model.as_deref(), Some("desktop-model"));
         assert_eq!(sample.source, "codex_desktop.forwarded_text_stream");
-        assert!(!sample.network_warning);
+        assert!(sample.network_warning.is_none());
         assert_eq!(sample.chunk_count, 12);
-        assert_eq!(snapshot.model_speeds_30m.len(), 1);
+        assert!(snapshot.model_speeds_30m.is_empty());
     }
 
     #[test]
@@ -1736,16 +1843,12 @@ mod desktop_tests {
             102.0,
         );
         let active_snapshot = process_rows(&scope, &[], 102.0);
-        assert_eq!(active_snapshot.model_speeds_30m.len(), 1);
-        assert_eq!(active_snapshot.model_speeds_30m[0].sample_count, 1);
-        assert_eq!(active_snapshot.model_speeds_30m[0].active_sample_count, 1);
+        assert!(active_snapshot.model_speeds_30m.is_empty());
 
         process_desktop(&scope, &[event(K::Finish, "", 103.0)], 103.0);
         let finished_snapshot = process_rows(&scope, &[], 103.0);
         assert_eq!(finished_snapshot.speed_samples.len(), 1);
-        assert_eq!(finished_snapshot.model_speeds_30m.len(), 1);
-        assert_eq!(finished_snapshot.model_speeds_30m[0].sample_count, 1);
-        assert_eq!(finished_snapshot.model_speeds_30m[0].active_sample_count, 0);
+        assert!(finished_snapshot.model_speeds_30m.is_empty());
 
         SPEED_STORES
             .get()
@@ -1787,11 +1890,11 @@ mod desktop_tests {
         );
         let snapshot = process_rows(&scope, &[], 106.0);
         assert_eq!(snapshot.speed_samples.len(), 2);
-        assert!(snapshot.speed_samples[1].network_warning);
+        assert!(snapshot.speed_samples[1].network_warning.is_some());
         assert!(snapshot
             .speed_samples
             .iter()
-            .all(|sample| sample.network_warning));
+            .all(|sample| sample.network_warning.is_some()));
         assert!(snapshot.model_speeds_30m.is_empty());
         SPEED_STORES.get().unwrap().lock().unwrap().remove(&scope);
         if let Some(path) = storage_path(&scope) {

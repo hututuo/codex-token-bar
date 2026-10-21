@@ -140,6 +140,8 @@ extension LiveRateMonitor {
     }
 
     struct RolloutRead {
+        var completedBodySamples: [ObservedSpeedSample] = []
+        var completedBodyError: String?
         let threadID: String
         let path: String
         let newOffset: UInt64

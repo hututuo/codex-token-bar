@@ -162,6 +162,8 @@ struct ObservedSpeedSample: Codable, Equatable, Identifiable, Sendable {
     var confidence: String
     var networkWarning: String?
     var source: String
+    var measurementKind: String? = nil
+    var tokenizer: String? = nil
 }
 struct ModelSpeedSummary: Equatable, Identifiable {
     var model: String
@@ -241,6 +243,31 @@ struct ObservedSpeedCollector {
             samples.removeAll { $0.id == sample.id }; samples.append(sample); revision += 1
         }
         samples = Array(samples.suffix(10_000))
+    }
+    mutating func addCompletedBodies(_ values: [ObservedSpeedSample]) {
+        guard !values.isEmpty else { return }
+        var ids = Set(samples.map(\.id))
+        for sample in values where sample.measurementKind == "completed_body" && sample.tokensPerSecond.isFinite && sample.durationSeconds > 0 {
+            if ids.insert(sample.id).inserted { samples.append(sample); revision += 1 }
+        }
+        samples = Array(samples.suffix(10_000))
+    }
+    /// Canonical body samples only: IPC is supplemental and must not double-count the same output.
+    func completedBodySummaries(now: Double, windowSeconds: Double) -> [ModelSpeedSummary] {
+        let rows = samples.filter {
+            $0.measurementKind == "completed_body" && $0.tokenizer == "o200k_base"
+                && $0.endedAt >= now - windowSeconds && $0.endedAt <= now
+                && !$0.model.isEmpty && $0.model != "unknown"
+                && $0.durationSeconds > 0 && $0.durationSeconds.isFinite && $0.tokensPerSecond.isFinite
+        }
+        return Dictionary(grouping: rows, by: \.model).map { model, parts in
+            let tokens = parts.reduce(0) { $0 + $1.outputTokens }, duration = parts.reduce(0.0) { $0 + $1.durationSeconds }
+            var result = ModelSpeedSummary(model: model, tokensPerSecond: Double(tokens) / duration,
+                sampleCount: parts.count, outputTokens: tokens, durationSeconds: duration)
+            result.qualifiedSampleCount = parts.filter { $0.confidence != "low" }.count
+            result.confidence = tokens >= 500 && duration >= 5 ? "high" : (tokens >= 100 && duration >= 2 ? "medium" : "low")
+            return result
+        }.sorted { $0.sampleCount == $1.sampleCount ? $0.model < $1.model : $0.sampleCount > $1.sampleCount }
     }
     func summaries(now: Double, windowSeconds: Double = 7 * 86400) -> [ModelSpeedSummary] {
         displaySummaries(now: now, windowSeconds: windowSeconds, includeShortAndActive: false)

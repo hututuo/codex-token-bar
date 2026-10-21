@@ -134,6 +134,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
 
 cp "$BUILD_DIR/$PRODUCT_NAME" "$MACOS_DIR/$PRODUCT_NAME"
+cp -R "$BUILD_DIR/CodexTokenBar_CodexTokenBar.bundle" "$RESOURCES_DIR/"
 chmod +x "$MACOS_DIR/$PRODUCT_NAME"
 
 if [[ -f "$ROOT_DIR/Resources/AppIcon.icns" ]]; then
@@ -152,6 +153,7 @@ cp "$ROOT_DIR/Resources/CodexThreadDeleteInjection.js" "$RESOURCES_DIR/CodexThre
 cp "$ROOT_DIR/Resources/CodexSessionEnhancementsInjection.js" "$RESOURCES_DIR/CodexSessionEnhancementsInjection.js"
 mkdir -p "$RESOURCES_DIR/OpenSourceLicenses"
 cp "$ROOT_DIR/LICENSE" "$RESOURCES_DIR/OpenSourceLicenses/AGPL-3.0.txt"
+cp "$ROOT_DIR/LICENSES/Tiktoken-MIT.txt" "$RESOURCES_DIR/OpenSourceLicenses/Tiktoken-MIT.txt"
 cp "$ROOT_DIR/LICENSES/CodexTokenBar-MIT.txt" "$RESOURCES_DIR/OpenSourceLicenses/CodexTokenBar-MIT.txt"
 cp "$ROOT_DIR/LICENSES/Zstandard-BSD-3-Clause.txt" "$RESOURCES_DIR/OpenSourceLicenses/Zstandard-BSD-3-Clause.txt"
 cp "$ROOT_DIR/OPEN_SOURCE_NOTICES.md" "$RESOURCES_DIR/OPEN_SOURCE_NOTICES.md"

@@ -37,11 +37,13 @@ final class LiveRateMonitor: ObservableObject {
     @Published private(set) var modelSpeeds: [ModelSpeedSummary] = []
     @Published private(set) var speedSummaryExplanation = "等待正文采样"
     @Published private(set) var speedSummaryEmptyLabel = "等待正文"
-    @Published private(set) var measurementStatus = "等待可用的流式增量；结算记录不作为真实测速"
+    @Published private(set) var measurementStatus = "等待带起止时间的正文；实时流式增量作为补充"
     @Published private(set) var speedWindowMinutes = UserDefaults.standard.integer(forKey: "observedSpeedWindowMinutes") == 15 ? 15 : 30
     var throughputCurve = ThroughputCurve()
     var speedContexts = ObservedStreamContexts()
     var speedCollector = ObservedSpeedCollector()
+    private var completedBodyReader = CompletedBodySpeedReader()
+    private var completedBodyError: String?
     private var savedSpeedRevision = -1
     private var lastModelSpeedSummaryAt = 0.0
     private let speedModelResolver = ObservedSpeedModelResolver()
@@ -230,7 +232,7 @@ final class LiveRateMonitor: ObservableObject {
         guard [15, 30].contains(minutes), speedWindowMinutes != minutes else { return }
         speedWindowMinutes = minutes
         UserDefaults.standard.set(minutes, forKey: "observedSpeedWindowMinutes")
-        modelSpeeds = speedCollector.displaySummaries(now: Date().timeIntervalSince1970, windowSeconds: Double(minutes * 60))
+        modelSpeeds = speedCollector.completedBodySummaries(now: Date().timeIntervalSince1970, windowSeconds: Double(minutes * 60))
         lastModelSpeedSummaryAt = 0
     }
 
@@ -932,10 +934,19 @@ final class LiveRateMonitor: ObservableObject {
 
     private func loadRolloutUpdates(now: TimeInterval) async throws -> [RolloutRead] {
         guard threadOptions.contains(where: \.hasRolloutPath) else { return [] }
+        ensureSpeedSource()
         let options = threadOptions
         let states = rolloutReadStates
+        let bodyReader = completedBodyReader
         return try await Task.detached(priority: .utility) {
-            try Self.rolloutReads(options: options, states: states)
+            async let bodyRead = bodyReader.read(options: options, now: now)
+            var reads = try Self.rolloutReads(options: options, states: states)
+            let bodies = await bodyRead
+            for i in reads.indices {
+                reads[i].completedBodySamples = bodies.samples[reads[i].path] ?? []
+                reads[i].completedBodyError = bodies.error
+            }
+            return reads
         }.value
     }
 
@@ -1065,6 +1076,7 @@ final class LiveRateMonitor: ObservableObject {
         let identity = dataSource?.stableIdentityKey
         if speedSourceIdentity != identity {
             speedSourceIdentity = identity
+            completedBodyReader = CompletedBodySpeedReader(); completedBodyError = nil
             resolvedSpeedModels.removeAll(); speedModelLookupAttempts.removeAll()
             // Store metadata only in TokenBar support, partitioned by a non-reversible source hash.
             let digest = identity.map { ObservedSpeedCollector.sourceKey($0) } ?? "default"
@@ -1089,6 +1101,8 @@ final class LiveRateMonitor: ObservableObject {
     private func processRolloutReads(_ reads: [RolloutRead], now: TimeInterval) -> Bool {
         ensureSpeedSource()
         var processedEvents = false
+        speedCollector.addCompletedBodies(reads.flatMap(\.completedBodySamples))
+        completedBodyError = reads.first?.completedBodyError
 
         for read in reads {
             rolloutReadStates[read.path] = read.state
@@ -1492,20 +1506,19 @@ final class LiveRateMonitor: ObservableObject {
             speedSamples = speedCollector.samples.sorted { $0.endedAt > $1.endedAt }
         }
         if samplesChanged || now - lastModelSpeedSummaryAt >= 1 {
-            let models = speedCollector.displaySummaries(now: now, windowSeconds: Double(speedWindowMinutes * 60))
+            let models = speedCollector.completedBodySummaries(now: now, windowSeconds: Double(speedWindowMinutes * 60))
             if models != modelSpeeds { modelSpeeds = models }
-            let recent = speedCollector.samples.filter { $0.endedAt >= now - Double(speedWindowMinutes * 60) && $0.endedAt <= now }
+            let recent = speedCollector.samples.filter { $0.measurementKind == "completed_body" && $0.endedAt >= now - Double(speedWindowMinutes * 60) && $0.endedAt <= now }
             let unknown = recent.filter { $0.model == "unknown" || $0.model.isEmpty }.count
-            let warned = recent.filter { $0.networkWarning != nil }.count
-            let explanation = "近 \(speedWindowMinutes) 分钟 \(recent.count) 段 · \(unknown) 段模型待识别 · \(warned) 段有停顿或采样不完整"
+            let explanation = "近 \(speedWindowMinutes) 分钟 \(recent.count) 段正文 · \(unknown) 段模型待识别 · o200k 分词 / 正文起止时长"
             if explanation != speedSummaryExplanation { speedSummaryExplanation = explanation }
-            let empty = unknown > 0 ? "\(unknown)段待识别" : (warned > 0 ? "\(warned)段待核验" : "等待正文")
+            let empty = unknown > 0 ? "\(unknown)段待识别" : "等待带起止时间的正文"
             if empty != speedSummaryEmptyLabel { speedSummaryEmptyLabel = empty }
             lastModelSpeedSummaryAt = now
         }
-        let streamStatus = Self.desktopMeasurementStatus(connection: desktopStreamStatus,
-            lastDelta: desktopStreamLiveThreads.values.max(), now: now)
-        let status = speedCollector.persistenceError ?? (streamStatus + (speedSamples.isEmpty ? "；尚无完整采样段" : " · 所选时窗有效样本加权"))
+        let hasRecentDelta = desktopStreamLiveThreads.values.max().map { now - $0 <= 20 } == true
+        let supplement = hasRecentDelta ? "实时增量：接收中" : "实时增量：暂无"
+        let status = speedCollector.persistenceError ?? completedBodyError ?? ((modelSpeeds.isEmpty ? "等待正文完成计时" : "正文计时测速可用 · 每秒检查更新") + "；" + supplement)
         if status != measurementStatus { measurementStatus = status }
 
         selectedRate.prune(now: now, windowSeconds: windowSeconds)
