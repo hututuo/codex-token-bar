@@ -12892,7 +12892,7 @@ details.session-management-banner {
 .body-speed-table-compact td>small{margin-top:1px;line-height:1.2}
 .body-speed-table-compact .body-speed-id{padding:1px 0}
 .body-speed-id{border:0;background:none;padding:3px 0;color:inherit;font:10px ui-monospace,monospace;cursor:pointer;text-decoration:underline dotted;text-underline-offset:4px}
-.body-speed-tps{font-weight:var(--weight-semibold)}.body-speed-table [data-confidence]{font-size:10px;color:#71a88b}.body-speed-table [data-confidence=low]{color:#b68c56}
+.body-speed-tps{font-weight:var(--weight-semibold);}.body-speed-table [data-confidence]{font-size:10px;color:#71a88b}.body-speed-table [data-confidence=low]{color:#b68c56}
 .body-speed-expanded{background:color-mix(in srgb,currentColor 3%,transparent)}.body-speed-expanded dl{display:grid;grid-template-columns:55px 1fr;gap:5px;margin:4px 0 9px}.body-speed-expanded dd{margin:0;font:10px ui-monospace,monospace;overflow-wrap:anywhere;user-select:text}.body-speed-expanded dt,.body-speed-expanded span{opacity:.65;font-size:10px}
 .body-speed-models{padding:10px 12px;border-radius:10px;background:color-mix(in srgb,currentColor 3.5%,transparent);display:flex;flex-direction:column;gap:14px}
 .body-speed-models .observed-speed-window{margin:0;gap:3px}.body-speed-models .observed-speed-window button{padding:4px 5px;font-size:10px;white-space:nowrap}
