@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+mod canvas_metrics;
+use canvas_metrics::SIDEBAR_CANVAS_HEIGHT;
 mod placement;
 mod motion;
 #[cfg(target_os = "macos")]
@@ -14,7 +16,6 @@ mod canvas_geometry;
 mod canvas_windows;
 use placement::apply_frames;
 
-pub(super) const SIDEBAR_CANVAS_HEIGHT: f64 = 680.0;
 pub(super) const SIDEBAR_WEEKLY_HEIGHT: f64 = 590.0;
 
 const LABEL: &str = "quota-sidebar";
