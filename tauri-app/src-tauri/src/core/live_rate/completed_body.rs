@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::Condvar;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -37,6 +39,8 @@ const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HISTORY_PAGE_LIMIT: usize = 100;
 
 static JOBS: OnceLock<Mutex<HashMap<LiveRateSourceScope, Job>>> = OnceLock::new();
+#[cfg(test)]
+static JOBS_IDLE: OnceLock<Condvar> = OnceLock::new();
 static READERS: OnceLock<Mutex<HashMap<LiveRateSourceScope, Reader>>> = OnceLock::new();
 
 #[derive(Default)]
@@ -897,6 +901,19 @@ fn synthetic_rollout_turn(value: &str) -> bool {
     })
 }
 
+#[cfg(test)]
+pub(super) fn wait_until_idle_for_test(scope: &LiveRateSourceScope, timeout: Duration) -> bool {
+    let jobs = JOBS.get_or_init(|| Mutex::new(HashMap::new()));
+    let jobs = jobs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let idle = JOBS_IDLE.get_or_init(Condvar::new);
+    let (jobs, _) = idle
+        .wait_timeout_while(jobs, timeout, |jobs| {
+            jobs.get(scope).is_some_and(|job| job.in_flight)
+        })
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    !jobs.get(scope).is_some_and(|job| job.in_flight)
+}
+
 fn stable_id(thread: &str, turn: &str, item: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"codex-token-bar/completed-body/v1\0");
@@ -998,6 +1015,8 @@ pub(super) fn poll(home: &Path, scope: &LiveRateSourceScope, now: f64) -> Vec<Sp
                         }
                     }
                 }
+                #[cfg(test)]
+                JOBS_IDLE.get_or_init(Condvar::new).notify_all();
             });
         if spawned.is_err() {
             if let Some(jobs) = JOBS.get() {
@@ -1008,6 +1027,8 @@ pub(super) fn poll(home: &Path, scope: &LiveRateSourceScope, now: f64) -> Vec<Sp
                 {
                     job.in_flight = false;
                 }
+                #[cfg(test)]
+                JOBS_IDLE.get_or_init(Condvar::new).notify_all();
             }
         }
     }

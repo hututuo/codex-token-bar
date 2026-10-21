@@ -247,6 +247,7 @@ fn read_snapshot_keeps_idle_state_with_warning_when_logs_database_is_missing() {
     let root = temp_root("live-rate-missing-logs");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "缺少实时日志", 300);
+    let scope = LiveRateSourceScope::legacy(&root);
 
     let snapshot = read_snapshot(&root, None);
 
@@ -261,6 +262,10 @@ fn read_snapshot_keeps_idle_state_with_warning_when_logs_database_is_missing() {
         .iter()
         .any(|warning| warning.source == "live_rate_summary"));
 
+    assert!(
+        completed_body::wait_until_idle_for_test(&scope, Duration::from_secs(30)),
+        "completed-body reader did not finish before fixture cleanup"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
