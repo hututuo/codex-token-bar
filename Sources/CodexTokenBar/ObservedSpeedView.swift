@@ -15,7 +15,7 @@ struct ObservedSpeedView: View {
                 Text("正文测速").font(.headline)
                 Text("TPS · token/秒").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Picker("统计范围", selection: Binding(get: { monitor.speedWindowMinutes }, set: monitor.setSpeedWindowMinutes)) {
+                Picker("统计范围", selection: Binding(get: { monitor.speedWindowMinutes }, set: { monitor.setSpeedWindowMinutes($0) })) {
                     Text("15 分钟").tag(15)
                     Text("30 分钟").tag(30)
                 }.pickerStyle(.segmented).labelsHidden().frame(width: 160)
@@ -246,7 +246,7 @@ private struct BodySpeedHistoryView: View {
                 Text("\(rows.count) 条").foregroundStyle(.secondary)
                 Spacer()
                 if monitor.bodyHistoryLoading { ProgressView().controlSize(.small) }
-                Picker("保留", selection: Binding(get: { monitor.speedRetentionDays }, set: monitor.setSpeedRetentionDays)) {
+                Picker("保留", selection: Binding(get: { monitor.speedRetentionDays }, set: { monitor.setSpeedRetentionDays($0) })) {
                     Text("15 天").tag(15); Text("30 天").tag(30)
                 }.frame(width: 130).help("只清理测速记录，不影响用量历史")
                 Button("刷新") { asOf = Date().timeIntervalSince1970; page = 0; refreshRows() }
