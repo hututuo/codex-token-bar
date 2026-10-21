@@ -23,6 +23,7 @@ pub fn run() {
 
     let app_result = tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
+        .manage(commands::surface::BodySpeedDetailsRequestState::default())
         .manage(commands::thread_activity::ThreadActivityRegistry::default())
         .manage(commands::update::UpdateMonitorRegistry::default())
         .manage(commands::auto_resume::AutoResumeRegistry::default())
@@ -166,6 +167,7 @@ pub fn run() {
             commands::codex_instances::list_codex_instance_sync_transactions,
             commands::codex_instances::rollback_codex_instance_sync,
             commands::live::read_live_rate_snapshot,
+            commands::live::read_body_speed_history,
             commands::live::read_live_thread_options,
             commands::live::reset_live_rate_monitor,
             commands::live::publish_status_indicator_readout,
@@ -202,6 +204,8 @@ pub fn run() {
             commands::floating_guide::floating_guide_overlay_event,
             commands::floating_guide::update_floating_guide_overlay,
             commands::surface::show_dashboard_window,
+            commands::surface::open_body_speed_details,
+            commands::surface::take_body_speed_details_request,
             commands::surface::show_status_panel_window,
             commands::surface::hide_status_panel_window,
             commands::surface::dismiss_status_panel_on_blur,

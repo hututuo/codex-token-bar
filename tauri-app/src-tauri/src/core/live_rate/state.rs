@@ -1,6 +1,7 @@
 use crate::core::sqlite;
 use crate::models::LiveThreadOption;
 use rusqlite::{params, Connection, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -152,6 +153,48 @@ pub(super) fn read_thread_title(codex_home: &Path, thread_id: &str) -> Result<Op
         return Ok(Some(compact_title(&title)));
     }
     Ok(None)
+}
+
+pub(super) fn read_thread_titles(
+    codex_home: &Path,
+    thread_ids: &[String],
+) -> Result<HashMap<String, String>> {
+    let mut titles = HashMap::new();
+    if thread_ids.is_empty() {
+        return Ok(titles);
+    }
+    let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
+    let name_expression = if column_exists(&connection, "threads", "name") {
+        "name"
+    } else {
+        "''"
+    };
+    for chunk in thread_ids.chunks(400) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, {name_expression}, title, first_user_message FROM threads WHERE id IN ({placeholders});"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows =
+            statement.query(rusqlite::params_from_iter(chunk.iter().map(String::as_str)))?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let name = compact_title(&row.get::<_, Option<String>>(1)?.unwrap_or_default());
+            if !name.is_empty() {
+                titles.insert(id, name);
+                continue;
+            }
+            let title = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+            let first_message = row.get::<_, Option<String>>(3)?.unwrap_or_default();
+            if !title.trim().is_empty() && title.trim() != first_message.trim() {
+                titles.insert(id, compact_title(&title));
+            }
+        }
+    }
+    Ok(titles)
 }
 
 fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {

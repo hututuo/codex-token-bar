@@ -1,7 +1,78 @@
 use super::window_auth::require_window_label;
 use crate::platform;
+use std::sync::Mutex;
+use tauri::{Emitter, Manager, State};
 #[cfg(windows)]
 use crate::core::startup_trace;
+
+const BODY_SPEED_HISTORY_OPEN_EVENT: &str = "body-speed-history-open";
+
+#[derive(Default)]
+pub(crate) struct BodySpeedDetailsRequestState {
+    pending: Mutex<bool>,
+}
+
+impl BodySpeedDetailsRequestState {
+    fn set_pending(&self) {
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+    }
+
+    fn clear(&self) {
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
+    }
+
+    fn take(&self) -> bool {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *pending)
+    }
+}
+
+#[tauri::command]
+pub async fn open_body_speed_details(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    request: State<'_, BodySpeedDetailsRequestState>,
+) -> Result<(), String> {
+    require_window_label(&window, "open_body_speed_details")?;
+    request.set_pending();
+    let result = async {
+        platform::show_dashboard_window_from_command(&app)
+            .await
+            .map_err(|error| {
+                format!("Cannot open main window for body speed details: {error}")
+            })?;
+        let main = app.get_webview_window("main").ok_or_else(|| {
+            "Cannot open body speed details: main window was not created".to_owned()
+        })?;
+        main.center()
+            .map_err(|error| format!("Cannot center main window for body speed details: {error}"))?;
+        main.emit(BODY_SPEED_HISTORY_OPEN_EVENT, ())
+            .map_err(|error| format!("Cannot notify main window to open body speed details: {error}"))
+    }
+    .await;
+    if result.is_err() {
+        request.clear();
+    }
+    result
+}
+
+#[tauri::command]
+pub fn take_body_speed_details_request(
+    window: tauri::WebviewWindow,
+    request: State<'_, BodySpeedDetailsRequestState>,
+) -> Result<bool, String> {
+    require_window_label(&window, "take_body_speed_details_request")?;
+    Ok(request.take())
+}
 
 #[tauri::command]
 pub async fn show_floating_window(
@@ -191,6 +262,30 @@ pub async fn set_floating_dock_frame(window: tauri::WebviewWindow, frame: Floati
         }));
     }).map_err(|error| error.to_string())?;
     receiver.await.map_err(|_| "Floating frame update was cancelled".to_string())?
+}
+
+#[cfg(test)]
+mod body_speed_details_tests {
+    use super::BodySpeedDetailsRequestState;
+
+    #[test]
+    fn pending_body_speed_details_request_is_consumed_once() {
+        let state = BodySpeedDetailsRequestState::default();
+        assert!(!state.take());
+
+        state.set_pending();
+        assert!(state.take());
+        assert!(!state.take());
+    }
+
+    #[test]
+    fn failed_open_clears_the_pending_body_speed_details_request() {
+        let state = BodySpeedDetailsRequestState::default();
+        state.set_pending();
+        state.clear();
+
+        assert!(!state.take());
+    }
 }
 
 // Physical offsets of an unchanged full viewport inside the clipped window.

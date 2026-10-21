@@ -135,26 +135,21 @@ struct QuotaSidebarRail: View {
                     rateRing
                     Button { controller.select(.speeds) } label: {
                         VStack(spacing: 4) {
-                            Text("参考均速 · \(monitor.speedWindowMinutes)分钟").font(.system(size: 9)).foregroundStyle(.gray)
-                            if monitor.modelSpeeds.isEmpty {
-                                Text(monitor.speedSummaryEmptyLabel).font(.system(size: 9)).foregroundStyle(.gray)
+                            Text("正文 TPS").font(.system(size: 9)).foregroundStyle(.gray)
+                            if monitor.latestModelSpeeds30m.isEmpty {
+                                Text("—").font(.system(size: 10)).foregroundStyle(.gray)
                             }
-                            ForEach(monitor.modelSpeeds.prefix(3)) { model in
-                                VStack(spacing: 1) {
-                                    Text(model.model.replacingOccurrences(of: "gpt-", with: "")).lineLimit(1).minimumScaleFactor(0.65)
-                                    Text("\(model.tokensPerSecond, specifier: "%.1f") t/s\(model.activeSampleCount > 0 ? " ·" : "")").monospacedDigit()
+                            ForEach(monitor.latestModelSpeeds30m) { model in
+                                HStack(spacing: 3) {
+                                    Text(model.model.replacingOccurrences(of: "gpt-", with: ""))
+                                        .lineLimit(1).minimumScaleFactor(0.65)
+                                    Spacer(minLength: 0)
+                                    Text("\(model.tokensPerSecond, specifier: "%.1f")").monospacedDigit()
                                 }.font(.system(size: 9)).foregroundStyle(SidebarPalette.blue)
+                                    .help("\(model.model) · \(model.lastMeasuredAt.map { Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .standard) } ?? "采样时间未知") · 最近一条正文")
                             }
-                        }.frame(maxWidth: .infinity).padding(.vertical, 4).contentShape(Rectangle())
-                    }.buttonStyle(SidebarPulseButtonStyle()).help("查看真实测速明细与样本质量")
-                    HStack(spacing: 4) {
-                        ForEach([15, 30], id: \.self) { minutes in
-                            Button("\(minutes)m") { monitor.setSpeedWindowMinutes(minutes) }
-                                .foregroundStyle(monitor.speedWindowMinutes == minutes ? SidebarPalette.blue : .gray)
-                                .padding(.horizontal, 4).padding(.vertical, 3)
-                                .background(.white.opacity(monitor.speedWindowMinutes == minutes ? 0.09 : 0), in: RoundedRectangle(cornerRadius: 5))
-                        }
-                    }.font(.system(size: 8)).buttonStyle(.plain)
+                        }.frame(maxWidth: .infinity).padding(.horizontal, 5).padding(.vertical, 4).contentShape(Rectangle())
+                    }.buttonStyle(SidebarPulseButtonStyle()).help("30分钟内各模型最新正文 TPS · 点击查看记录")
 
                     if let fiveHour = quota.snapshot.fiveHour {
                         ring(label: "5h", window: fiveHour, color: SidebarPalette.green)
@@ -476,7 +471,12 @@ struct QuotaSidebarDetailView: View {
             Divider().overlay(.white.opacity(0.12))
             ScrollViewReader { proxy in
             ScrollView {
-                if controller.interaction.detail == .speeds { ObservedSpeedView(monitor: monitor).id("top") }
+                if controller.interaction.detail == .speeds {
+                    ObservedSpeedSidebarView(monitor: monitor, onOpenDetails: {
+                        BodySpeedHistoryWindowController.shared.present(monitor: monitor,
+                            screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)
+                    }).id("top")
+                }
                 else if controller.interaction.detail == .tasks { taskContent(snapshot.runningThreads) }
                 else if controller.interaction.detail == .credits { resetCreditList(snapshot.quota).id("top") }
                 else if controller.interaction.detail == .radar {

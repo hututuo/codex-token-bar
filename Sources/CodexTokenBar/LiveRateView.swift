@@ -171,11 +171,11 @@ struct LiveRateInstrument: View {
 
                         VStack(alignment: .leading, spacing: 7) {
                             HStack(spacing: 8) {
-                                Text("含输出与工具输入流 · 部分流式可能延迟")
+                                Text("全会话活动估算")
                                     .font(.system(size: 8, weight: .semibold))
                                     .foregroundStyle(.secondary.opacity(0.72))
                                     .lineLimit(1)
-                                    .help("部分 Codex 流式事件可能不会实时落入本地日志，速度显示可能会有延迟。")
+                                    .help("按本地活动事件和结算用量估算。")
                                 Spacer(minLength: 0)
                                 Text("量程 \(Int(TokenRateScaleSettings.clamped(fullScale).rounded())) tok/s")
                                     .monospacedDigit()
@@ -198,7 +198,7 @@ struct LiveRateInstrument: View {
                         }
                     }
 
-                    Text("活动曲线包含预估与结算校准；真实测速单独统计。中断立即停止，正常结束最多收尾 5 秒。")
+                    Text("活动曲线 · 中断即停，结束最多收尾 5 秒。")
                         .font(.system(size: 8.4, weight: .medium))
                         .foregroundStyle(.secondary.opacity(0.78))
                         .lineLimit(2)

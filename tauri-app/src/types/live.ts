@@ -18,6 +18,7 @@ export interface LiveRateSnapshot {
   modelSpeeds?: ModelSpeedSummary[];
   modelSpeeds15m?: ModelSpeedSummary[];
   modelSpeeds30m?: ModelSpeedSummary[];
+  latestModelSpeeds30m?: ModelSpeedSummary[];
   measurementStatus?: string;
   cacheAdvice?: CacheUsageAdvice | null;
   scopeLabel: string;
@@ -53,6 +54,7 @@ export interface FloatingPanelSnapshot {
   modelSpeeds?: ModelSpeedSummary[];
   modelSpeeds15m?: ModelSpeedSummary[];
   modelSpeeds30m?: ModelSpeedSummary[];
+  latestModelSpeeds30m?: ModelSpeedSummary[];
   measurementStatus?: string;
   cacheAdvice?: CacheUsageAdvice | null;
   tokensPerSecond: number;
@@ -114,6 +116,8 @@ export interface SpeedSample {
   confidence: string;
   networkWarning?: string | boolean | null;
   source: string;
+  bodyPhase?: string | null;
+  qualityReason?: string | null;
   measurementKind?: string | null;
   tokenizer?: string | null;
 }
@@ -126,4 +130,5 @@ export interface ModelSpeedSummary {
   activeSampleCount?: number;
   qualifiedSampleCount?: number;
   confidence?: string;
+  lastMeasuredAt?: number | null;
 }

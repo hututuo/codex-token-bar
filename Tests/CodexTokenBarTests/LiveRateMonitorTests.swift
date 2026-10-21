@@ -734,7 +734,7 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(events.first?.category).contributesToLiveRate)
     }
 
-    func testLiveRateInstrumentExplainsThatRateIncludesToolInputStreams() throws {
+    func testLiveRateInstrumentLabelsActivityEstimate() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -742,9 +742,8 @@ final class LiveRateMonitorTests: XCTestCase {
         let sourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("含输出与工具输入流"))
-        XCTAssertTrue(source.contains("部分流式可能延迟"))
-        XCTAssertTrue(source.contains("部分 Codex 流式事件可能不会实时落入本地日志"))
+        XCTAssertTrue(source.contains("全会话活动估算"))
+        XCTAssertTrue(source.contains("按本地活动事件和结算用量估算"))
     }
 
     func testLiveRateInstrumentExplainsEstimatedRateAndExposesDisableToggle() throws {
@@ -769,9 +768,7 @@ final class LiveRateMonitorTests: XCTestCase {
         let instrumentSource = String(viewSource[instrumentRange.lowerBound..<scaleSliderRange.lowerBound])
         let controlsSource = String(viewSource[controlsRange.lowerBound..<viewSource.endIndex])
 
-        XCTAssertTrue(viewSource.contains("活动曲线包含预估与结算校准"))
-        XCTAssertTrue(viewSource.contains("真实测速单独统计"))
-        XCTAssertTrue(viewSource.contains("正常结束最多收尾 5 秒"))
+        XCTAssertTrue(viewSource.contains("活动曲线 · 中断即停，结束最多收尾 5 秒。"))
         XCTAssertTrue(instrumentSource.contains("isMonitoringEnabled"))
         XCTAssertTrue(instrumentSource.contains("LiveRatePowerToggle"))
         XCTAssertTrue(instrumentSource.contains("实时速率已关闭"))

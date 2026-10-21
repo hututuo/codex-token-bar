@@ -67,6 +67,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "read_app_update_state",
     "check_app_update",
     "install_app_update",
+    "take_body_speed_details_request",
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
@@ -84,6 +85,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "read_cache_retention_snapshot",
     "schedule_precise_dashboard_aggregate",
     "read_live_rate_snapshot",
+    "read_body_speed_history",
     "claim_live_rate_owner_session",
     "start_live_rate_stream",
     "stop_live_rate_stream",
@@ -120,6 +122,10 @@ pub(crate) fn require_window_label(
 }
 
 pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
+    if command == "open_body_speed_details" {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
+    }
+
     if MAIN_WINDOW_ONLY_COMMANDS.contains(&command) {
         return label == MAIN_WINDOW_LABEL;
     }
@@ -160,10 +166,12 @@ mod tests {
     #[test]
     fn detail_can_open_dashboard_without_receiving_data_or_geometry_authority() {
         assert!(allows_window_label("show_dashboard_window", "quota-sidebar-detail"));
+        assert!(allows_window_label("open_body_speed_details", "quota-sidebar-detail"));
         assert!(allows_window_label("record_startup_event", "quota-sidebar-detail"));
         for command in ["set_quota_sidebar_mode", "read_account_quota", "save_display_surfaces", "start_live_rate_stream"] {
             assert!(!allows_window_label(command, "quota-sidebar-detail"), "{command}");
         }
+        assert!(!allows_window_label("take_body_speed_details_request", "quota-sidebar-detail"));
     }
 
     #[test]
@@ -193,6 +201,20 @@ mod tests {
             assert!(allows_window_label(command, "main"));
             assert!(!allows_window_label(command, "floating"), "{command}");
             assert!(!allows_window_label(command, "status"), "{command}");
+        }
+    }
+
+    #[test]
+    fn body_speed_details_bridge_has_narrow_window_authority() {
+        assert!(allows_window_label("open_body_speed_details", "main"));
+        assert!(allows_window_label("open_body_speed_details", "quota-sidebar-detail"));
+        for label in ["floating", "status", "quota-sidebar", "unknown"] {
+            assert!(!allows_window_label("open_body_speed_details", label));
+        }
+
+        assert!(allows_window_label("take_body_speed_details_request", "main"));
+        for label in ["floating", "status", "quota-sidebar", "quota-sidebar-detail", "unknown"] {
+            assert!(!allows_window_label("take_body_speed_details_request", label));
         }
     }
 

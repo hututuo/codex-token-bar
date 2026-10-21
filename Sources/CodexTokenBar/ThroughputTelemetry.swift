@@ -164,6 +164,48 @@ struct ObservedSpeedSample: Codable, Equatable, Identifiable, Sendable {
     var source: String
     var measurementKind: String? = nil
     var tokenizer: String? = nil
+    var bodyPhase: String? = nil
+    var qualityReason: String? = nil
+
+    var isBody: Bool { measurementKind == "completed_body" && tokenizer == "o200k_base" }
+    var hasKnownModel: Bool { !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "unknown" }
+    var bodyQuality: BodySpeedQuality { BodySpeedQuality.assess(self) }
+    var bodyTypeLabel: String {
+        switch bodyPhase { case "commentary": "中间消息"; case "final_answer": "最终文本"; default: "正文" }
+    }
+}
+
+struct BodySpeedQuality: Equatable, Sendable {
+    var confidence: String
+    var reason: String?
+    var included: Bool { confidence != "low" }
+    var statusLabel: String {
+        if included { return "计入均速" }
+        switch reason {
+        case "采样时长不超过 0.55 秒": return "时长≤0.55秒"
+        case "速率异常偏高", "速率异常偏低": return "速率待核查"
+        case "采样存在异常标记": return "采样告警"
+        default: return "计时待核查"
+        }
+    }
+    static func assess(_ sample: ObservedSpeedSample) -> Self {
+        guard sample.outputTokens > 0, sample.durationSeconds.isFinite, sample.durationSeconds > 0,
+              sample.tokensPerSecond.isFinite, sample.startedAt.isFinite, sample.endedAt.isFinite,
+              sample.endedAt > sample.startedAt else { return .init(confidence: "low", reason: "计时无效") }
+        let rate = Double(sample.outputTokens) / sample.durationSeconds
+        if abs(sample.endedAt - sample.startedAt - sample.durationSeconds) > 0.01
+            || abs(rate - sample.tokensPerSecond) > max(0.01, rate * 0.001) {
+            return .init(confidence: "low", reason: "数量与计时不一致")
+        }
+        // Rollout timestamps have millisecond precision. Compare their original
+        // resolution so a rounded Unix Double cannot admit an exact 550ms body.
+        let elapsedMS = (sample.endedAt * 1000).rounded() - (sample.startedAt * 1000).rounded()
+        if elapsedMS <= 550 { return .init(confidence: "low", reason: "采样时长不超过 0.55 秒") }
+        if rate > 500 { return .init(confidence: "low", reason: "速率异常偏高") }
+        if rate < 2 { return .init(confidence: "low", reason: "速率异常偏低") }
+        if sample.networkWarning != nil { return .init(confidence: "low", reason: "采样存在异常标记") }
+        return .init(confidence: sample.durationSeconds >= 5 ? "high" : "medium", reason: nil)
+    }
 }
 struct ModelSpeedSummary: Equatable, Identifiable {
     var model: String
@@ -174,7 +216,31 @@ struct ModelSpeedSummary: Equatable, Identifiable {
     var activeSampleCount = 0
     var qualifiedSampleCount = 0
     var confidence = "low"
+    var lastMeasuredAt: Double? = nil
     var id: String { model }
+}
+
+struct BodySpeedModelReading: Identifiable {
+    let summary: ModelSpeedSummary
+    let historical: Bool
+    var id: String { summary.model }
+
+    static func combined(recent: [ModelSpeedSummary], retained: [ModelSpeedSummary]) -> [Self] {
+        var readings: [String: Self] = [:]
+        for (summaries, historical) in [(retained, true), (recent, false)] {
+            for summary in summaries where !summary.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && summary.model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "unknown"
+                && summary.sampleCount > 0 && summary.tokensPerSecond.isFinite && summary.tokensPerSecond > 0 {
+                readings[summary.model] = Self(summary: summary, historical: historical)
+            }
+        }
+        return readings.values.sorted {
+            if $0.historical != $1.historical { return !$0.historical }
+            if $0.summary.lastMeasuredAt != $1.summary.lastMeasuredAt {
+                return ($0.summary.lastMeasuredAt ?? 0) > ($1.summary.lastMeasuredAt ?? 0)
+            }
+            return $0.id < $1.id
+        }
+    }
 }
 
 /// Receipt timing is measured; local tokenizer output is an estimate, not billable usage.
@@ -193,13 +259,16 @@ struct ObservedSpeedCollector {
     var persistenceError: String?
     var storeURL: URL?
     private var canPersist = true
+    var persistenceAllowed: Bool { canPersist }
 
     init(storeURL: URL? = nil) {
         self.storeURL = storeURL
         if let storeURL, FileManager.default.fileExists(atPath: storeURL.path) {
             do {
+                let size = (try FileManager.default.attributesOfItem(atPath: storeURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
+                guard size <= 64 * 1_048_576 else { throw CocoaError(.fileReadTooLarge) }
                 let data = try Data(contentsOf: storeURL)
-                samples = Array(try JSONDecoder().decode([ObservedSpeedSample].self, from: data).suffix(10_000))
+                samples = try JSONDecoder().decode([ObservedSpeedSample].self, from: data)
             } catch {
                 persistenceError = "既有测速记录无法读取，已保留原文件；暂停写入：\(error.localizedDescription)"
                 canPersist = false
@@ -246,28 +315,55 @@ struct ObservedSpeedCollector {
     }
     mutating func addCompletedBodies(_ values: [ObservedSpeedSample]) {
         guard !values.isEmpty else { return }
-        var ids = Set(samples.map(\.id))
+        var indices = Dictionary(samples.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { _, last in last })
         for sample in values where sample.measurementKind == "completed_body" && sample.tokensPerSecond.isFinite && sample.durationSeconds > 0 {
-            if ids.insert(sample.id).inserted { samples.append(sample); revision += 1 }
+            if let index = indices[sample.id] {
+                if samples[index].bodyPhase == nil, let phase = sample.bodyPhase {
+                    samples[index].bodyPhase = phase; revision += 1
+                }
+            } else { indices[sample.id] = samples.count; samples.append(sample); revision += 1 }
         }
-        samples = Array(samples.suffix(10_000))
     }
-    /// Canonical body samples only: IPC is supplemental and must not double-count the same output.
+    mutating func pruneCompletedBodies(now: Double, retentionDays: Int) {
+        guard now.isFinite, [15, 30].contains(retentionDays) else { return }
+        let count = samples.count
+        samples.removeAll { $0.isBody && $0.endedAt < now - Double(retentionDays * 86400) }
+        if samples.count != count { revision += 1 }
+    }
+    /// Only eligible completed bodies; saved historical stream records remain untouched.
     func completedBodySummaries(now: Double, windowSeconds: Double) -> [ModelSpeedSummary] {
         let rows = samples.filter {
-            $0.measurementKind == "completed_body" && $0.tokenizer == "o200k_base"
+            $0.isBody && $0.bodyQuality.included
                 && $0.endedAt >= now - windowSeconds && $0.endedAt <= now
-                && !$0.model.isEmpty && $0.model != "unknown"
+                && $0.hasKnownModel
                 && $0.durationSeconds > 0 && $0.durationSeconds.isFinite && $0.tokensPerSecond.isFinite
         }
         return Dictionary(grouping: rows, by: \.model).map { model, parts in
             let tokens = parts.reduce(0) { $0 + $1.outputTokens }, duration = parts.reduce(0.0) { $0 + $1.durationSeconds }
             var result = ModelSpeedSummary(model: model, tokensPerSecond: Double(tokens) / duration,
                 sampleCount: parts.count, outputTokens: tokens, durationSeconds: duration)
-            result.qualifiedSampleCount = parts.filter { $0.confidence != "low" }.count
-            result.confidence = tokens >= 500 && duration >= 5 ? "high" : (tokens >= 100 && duration >= 2 ? "medium" : "low")
+            result.qualifiedSampleCount = parts.count
+            result.confidence = duration >= 5 ? "high" : "medium"
+            result.lastMeasuredAt = parts.map(\.endedAt).max()
             return result
         }.sorted { $0.sampleCount == $1.sampleCount ? $0.model < $1.model : $0.sampleCount > $1.sampleCount }
+    }
+    /// Latest qualified body per model, independent of the main page averaging window.
+    func latestCompletedBodySpeeds(now: Double, windowSeconds: Double = 1800) -> [ModelSpeedSummary] {
+        var latest: [String: ObservedSpeedSample] = [:]
+        for row in samples where row.isBody && row.hasKnownModel && row.bodyQuality.included
+            && row.endedAt >= now - windowSeconds && row.endedAt <= now {
+            if let previous = latest[row.model], previous.endedAt > row.endedAt
+                || (previous.endedAt == row.endedAt && previous.id < row.id) { continue }
+            latest[row.model] = row
+        }
+        return latest.values.sorted {
+            $0.endedAt == $1.endedAt ? $0.model < $1.model : $0.endedAt > $1.endedAt
+        }.map { row in
+            ModelSpeedSummary(model: row.model, tokensPerSecond: row.tokensPerSecond,
+                sampleCount: 1, outputTokens: row.outputTokens, durationSeconds: row.durationSeconds,
+                qualifiedSampleCount: 1, confidence: row.bodyQuality.confidence, lastMeasuredAt: row.endedAt)
+        }
     }
     func summaries(now: Double, windowSeconds: Double = 7 * 86400) -> [ModelSpeedSummary] {
         displaySummaries(now: now, windowSeconds: windowSeconds, includeShortAndActive: false)
@@ -321,6 +417,23 @@ struct ObservedSpeedCollector {
             try JSONEncoder().encode(samples).write(to: storeURL, options: .atomic)
             persistenceError = nil
         } catch { persistenceError = "测速记录保存失败：\(error.localizedDescription)" }
+    }
+}
+
+/// Encode and atomically write away from the main actor. Tickets prevent an older
+/// queued snapshot overwriting a newer snapshot after a source switch.
+actor BodySpeedSampleWriter {
+    private var tickets: [URL: Int] = [:]
+    func persist(_ samples: [ObservedSpeedSample], to url: URL, ticket: Int) -> String? {
+        guard ticket > (tickets[url] ?? -1) else { return nil }
+        tickets[url] = ticket
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let bytes = try JSONEncoder().encode(samples)
+            guard bytes.count <= 64 * 1_048_576 else { return "测速记录超过保存上限，原文件已保留" }
+            try bytes.write(to: url, options: .atomic)
+            return nil
+        } catch { return "测速记录保存失败：\(error.localizedDescription)" }
     }
 }
 

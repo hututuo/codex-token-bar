@@ -27,8 +27,8 @@ pub use dashboard::{
     TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
 };
 pub use live::{
-    CacheAdvice, CurvePoint, FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption,
-    ModelSpeedSummary, SpeedSample, UnreadSummary,
+    BodySpeedHistoryPage, CacheAdvice, CurvePoint, FloatingPanelSnapshot, LiveRateSnapshot,
+    LiveThreadOption, ModelSpeedSummary, SpeedSample, UnreadSummary,
 };
 pub use platform::{
     AutostartStatus, CodexHomeStatus, PlatformCapabilities, PlatformFeatureCapability,

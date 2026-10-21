@@ -133,6 +133,7 @@ export function DashboardSummarySection({
       />
       <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />
       <LiveRateCard
+        sourceToken={sourceToken}
         liveThreadOptions={liveThreadOptions}
         floatingEnabled={displaySurfaces.floatingWindowEnabled}
         quotaSidebarEnabled={displaySurfaces.quotaSidebarEnabled}

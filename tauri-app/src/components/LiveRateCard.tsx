@@ -1,12 +1,13 @@
 import { ObservedSpeedDetails } from "./liveRate/ObservedSpeedDetails";
 import { CacheUsageNotice } from "./liveRate/CacheUsageNotice";
 import { canUseQuotaSidebar } from "../settings/displaySettings";
-import type { LiveRateSnapshot, LiveThreadOption, PlatformCapabilities } from "../types/dashboard";
+import type { CodexHomeSourceToken, LiveRateSnapshot, LiveThreadOption, PlatformCapabilities } from "../types/dashboard";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { LiveRateMeter } from "./liveRate/LiveRateMeter";
 import { liveRateNotice } from "./liveRate/liveRateNotice";
 
 interface LiveRateCardProps {
+  sourceToken?: CodexHomeSourceToken | null;
   liveThreadOptions?: LiveThreadOption[];
   floatingSettings: FloatingWindowSettings;
   floatingEnabled: boolean;
@@ -29,6 +30,7 @@ interface LiveRateCardProps {
 }
 
 export function LiveRateCard({
+  sourceToken = null,
   liveThreadOptions = [],
   floatingSettings,
   floatingEnabled,
@@ -64,7 +66,7 @@ export function LiveRateCard({
   const subtitle = pendingNotice
     ? `${pendingNotice.title} · ${pendingNotice.message}`
     : liveRateEnabled
-      ? "含输出与工具输入流 · 部分流式可能延迟"
+      ? "全会话活动估算"
       : "实时速率已关闭";
 
   return (
@@ -127,7 +129,7 @@ export function LiveRateCard({
             onFullScaleChange={onTokenRateFullScaleChange}
           />
           <p className="live-rate-note">
-            活动曲线包含思考预估与结算校准；真实测速单独统计。中断立即停止，正常结束最多收尾 5 秒。
+            活动曲线 · 中断即停，结束最多收尾 5 秒。
           </p>
         </div>
 
@@ -191,7 +193,7 @@ export function LiveRateCard({
           </div>
         </div>
       </div>
-      <ObservedSpeedDetails data={snapshot} threads={liveThreadOptions} />
+      <ObservedSpeedDetails data={snapshot} threads={liveThreadOptions} sourceToken={sourceToken} />
     </section>
   );
 }

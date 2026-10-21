@@ -9,7 +9,9 @@ use crate::core::{
     live_rate::{self, LiveRateMonitorService, LiveRateSourceScope},
     startup_trace, unread,
 };
-use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary};
+use crate::models::{
+    BodySpeedHistoryPage, FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary,
+};
 use crate::models::DisplaySurfaceSettingsSnapshot;
 use crate::platform;
 use serde::Serialize;
@@ -1527,6 +1529,44 @@ pub async fn read_live_rate_snapshot(
     ));
     startup_trace::mark_once("command read_live_rate_snapshot end");
     result
+}
+
+#[tauri::command]
+pub async fn read_body_speed_history(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    source_token: Option<CodexHomeSourceToken>,
+    offset: usize,
+    limit: usize,
+    as_of: Option<f64>,
+    retention_days: Option<u16>,
+) -> Result<BodySpeedHistoryPage, String> {
+    require_window_label(&window, "read_body_speed_history")?;
+    let started = Instant::now();
+    emit_detected_source_transition(&app)?;
+    let captured = capture_codex_home_source(source_token.as_ref())?;
+    let completed_source_token = captured.source_token.clone();
+    let page = run_blocking_command(move || {
+        Ok(live_rate::read_body_speed_history(
+            &captured.codex_home,
+            &live_rate_source_scope(&captured.source_token),
+            offset,
+            limit,
+            as_of,
+            retention_days,
+        ))
+    })
+    .await?;
+    emit_detected_source_transition(&app)?;
+    validate_codex_home_source(&completed_source_token)?;
+    startup_trace::mark_performance(format!(
+        "read_body_speed_history {}ms rows={} total={} retention_days={}",
+        started.elapsed().as_millis(),
+        page.samples.len(),
+        page.total_count,
+        page.retention_days
+    ));
+    Ok(page)
 }
 
 #[tauri::command]

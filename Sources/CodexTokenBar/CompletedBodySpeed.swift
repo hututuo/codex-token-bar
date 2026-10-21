@@ -28,6 +28,7 @@ enum BodySpeedTokenizer {
 
 /// Joins two explicit facts, not inferred request boundaries. Text lives only in this bounded buffer.
 struct CompletedBodyAssembler: Sendable {
+    private static let markers = ["\"session_meta\"", "\"turn_context\"", "\"task_started\"", "\"AgentMessage\"", "\"output_text\""].map { Data($0.utf8) }
     struct Part: Sendable {
         var turn: String
         var item: String
@@ -35,6 +36,7 @@ struct CompletedBodyAssembler: Sendable {
         var start: Double?
         var end: Double?
         var at: Double
+        var phase: String? = nil
     }
     var currentTurn = ""
     var models: [String: String] = [:]
@@ -67,6 +69,7 @@ struct CompletedBodyAssembler: Sendable {
     }
     mutating func consume(_ line: Data, thread: String, now: Double, tokenizer: (String) throws -> Int) rethrows -> ObservedSpeedSample? {
         guard line.count <= 1_100_000,
+              Self.markers.contains(where: { line.range(of: $0) != nil }),
               let root = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let p = root["payload"] as? [String: Any], let type = root["type"] as? String else { return nil }
         if type == "session_meta" { configure(metadata: p); return nil }
@@ -91,13 +94,13 @@ struct CompletedBodyAssembler: Sendable {
            let start = Self.milliseconds(p["started_at_ms"]),
            let end = Self.milliseconds(p["completed_at_ms"]),
            start.isFinite, end.isFinite, start > 0, end > start {
-            part = Part(turn: turn, item: id, start: start / 1000, end: end / 1000, at: at)
+            part = Part(turn: turn, item: id, start: start / 1000, end: end / 1000, at: at, phase: item["phase"] as? String)
         } else if type == "response_item", p["type"] as? String == "message", p["role"] as? String == "assistant",
                   let id = p["id"] as? String, !id.isEmpty,
                   let content = p["content"] as? [[String: Any]] {
             let text = content.filter { $0["type"] as? String == "output_text" }.compactMap { $0["text"] as? String }.joined()
             guard !text.isEmpty, text.utf8.count <= 1_048_576 else { return nil }
-            part = Part(turn: turn, item: id, text: text, at: at)
+            part = Part(turn: turn, item: id, text: text, at: at, phase: p["phase"] as? String)
         } else { return nil }
         if let boundary = inheritedBoundary {
             let own = ownership.paginatedOwnStartOrdinal ?? boundary
@@ -111,6 +114,7 @@ struct CompletedBodyAssembler: Sendable {
             part.text = part.text ?? old.text
             part.start = part.start ?? old.start
             part.end = part.end ?? old.end
+            part.phase = part.phase ?? old.phase
         }
         // Bound by timestamps as well as entry/byte counts; no reply content is persisted.
         pending = pending.filter { $0.value.at >= max(now - 3600, at - 600) }
@@ -119,12 +123,16 @@ struct CompletedBodyAssembler: Sendable {
             guard end >= now - 1800, end <= now + 2, end > start, !hasFork || createdAt.map({ start >= $0 }) != false else { return nil }
             let tokens = try tokenizer(text), duration = end - start
             guard tokens > 0 else { return nil }
-            return ObservedSpeedSample(id: "body/\(thread)/\(key)", threadID: thread, turnID: turn, itemID: part.item,
+            var sample = ObservedSpeedSample(id: "body/\(thread)/\(key)", threadID: thread, turnID: turn, itemID: part.item,
                 model: models[turn] ?? "unknown", startedAt: start, endedAt: end, outputTokens: tokens,
                 outputCharacters: text.count, outputBytes: text.utf8.count, chunkCount: 0, durationSeconds: duration,
-                tokensPerSecond: Double(tokens) / duration, confidence: tokens >= 500 && duration >= 5 ? "high" : (tokens >= 100 && duration >= 2 ? "medium" : "low"),
+                tokensPerSecond: Double(tokens) / duration, confidence: "low",
                 networkWarning: nil, source: "本地正文起止计时 / 离线 o200k_base 分词（非网络包测速）",
-                measurementKind: "completed_body", tokenizer: "o200k_base")
+                measurementKind: "completed_body", tokenizer: "o200k_base", bodyPhase: part.phase)
+            let quality = sample.bodyQuality
+            sample.confidence = quality.confidence
+            sample.qualityReason = quality.reason
+            return sample
         }
         pending[key] = part
         while pending.count > 32 || pending.values.reduce(0, { $0 + ($1.text?.utf8.count ?? 0) }) > 4 * 1_048_576 {

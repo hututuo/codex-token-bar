@@ -157,3 +157,10 @@ test("a finished speed sample publishes even while the activity curve is zero", 
   const after = liveRateDisplayBucket(snapshot({ measurementStatus: "observed_history", speedSamples: [{ id: "stream-1" }] }));
   assert.notEqual(before, after);
 });
+
+test("new or expired sidebar body TPS publishes even if aggregate rate and other summaries are unchanged", () => {
+  const reading = { model: "sol", tokensPerSecond: 50, sampleCount: 1, lastMeasuredAt: 5000 };
+  const before = liveRateDisplayBucket(snapshot({ latestModelSpeeds30m: [reading] }));
+  assert.notEqual(before, liveRateDisplayBucket(snapshot({ latestModelSpeeds30m: [{ ...reading, tokensPerSecond: 60, lastMeasuredAt: 5010 }] })));
+  assert.notEqual(before, liveRateDisplayBucket(snapshot({ latestModelSpeeds30m: [] })));
+});

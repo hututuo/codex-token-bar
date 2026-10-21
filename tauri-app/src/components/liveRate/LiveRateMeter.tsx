@@ -20,7 +20,7 @@ export function LiveRateMeter({ fullScale, liveRateEnabled, onFullScaleChange, s
         <div className="rate-readout">
           <strong>{rateLabel}</strong>
           <span>tok/s</span>
-          <em>{liveRateEnabled ? "含输出与工具输入流" : "实时速率已关闭"}</em>
+          <em>{liveRateEnabled ? "全会话活动估算" : "实时速率已关闭"}</em>
         </div>
         <div className="rate-bar-block">
           <div className="rate-bar-label">

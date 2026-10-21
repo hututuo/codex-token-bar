@@ -11,13 +11,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const MAX_PERSISTED_SAMPLES: usize = 10_000;
-const MAX_RETURNED_SAMPLES: usize = 200;
+const MAX_RETURNED_SAMPLES: usize = 10;
 const MAX_ACTIVE_TEXT_BYTES: usize = 1024 * 1024;
 const IDLE_FINALIZE_SECONDS: f64 = 10.0;
 const SUMMARY_15M_SECONDS: f64 = 15.0 * 60.0;
 const SUMMARY_30M_SECONDS: f64 = 30.0 * 60.0;
 const SUMMARY_WINDOW_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
+const DEFAULT_BODY_RETENTION_DAYS: u16 = 30;
+const BODY_RETENTION_CLEANUP_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(15 * 60);
 const MAX_STORAGE_BYTES: u64 = 16 * 1024 * 1024;
 const SEEN_ROW_LIMIT: usize = 10_000;
 const MAX_ACTIVE_ITEMS: usize = 32;
@@ -35,6 +37,8 @@ struct SpeedStore {
     seen_row_order: VecDeque<i64>,
     storage_error: Option<String>,
     persistence_blocked: bool,
+    body_retention_days: Option<u16>,
+    last_body_retention_cleanup: Option<std::time::Instant>,
 }
 
 #[derive(Clone)]
@@ -43,6 +47,7 @@ struct CachedSummaries {
     model_speeds_15m: Vec<ModelSpeedSummary>,
     model_speeds_30m: Vec<ModelSpeedSummary>,
     model_speeds_7d: Vec<ModelSpeedSummary>,
+    latest_model_speeds_30m: Vec<ModelSpeedSummary>,
 }
 
 struct ActiveSample {
@@ -69,9 +74,12 @@ struct ActiveSample {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 struct StoredSamples {
     version: u32,
     samples: Vec<SpeedSample>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body_retention_days: Option<u16>,
 }
 
 pub(super) struct Snapshot {
@@ -79,6 +87,7 @@ pub(super) struct Snapshot {
     pub model_speeds: Vec<ModelSpeedSummary>,
     pub model_speeds_15m: Vec<ModelSpeedSummary>,
     pub model_speeds_30m: Vec<ModelSpeedSummary>,
+    pub latest_model_speeds_30m: Vec<ModelSpeedSummary>,
     pub storage_warning: Option<String>,
     pub has_observed_samples: bool,
     pub has_active_sample: bool,
@@ -90,11 +99,11 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let store = all.entry(scope.clone()).or_default();
-    ensure_loaded(store, scope);
+    ensure_loaded(store, scope, now);
     store
         .item_starts
         .retain(|_, at| now.is_finite() && *at <= now + 1.0 && now - *at <= 20.0);
-    let mut changed = false;
+    let mut changed = cleanup_body_retention_if_due(store, now);
 
     for row in rows {
         if !is_retry_row(row) {
@@ -313,16 +322,7 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
             store.storage_error = None;
         }
     }
-    store
-        .samples
-        .retain(|sample| now - sample.ended_at <= SUMMARY_WINDOW_SECONDS);
-    let speed_samples = store
-        .samples
-        .iter()
-        .rev()
-        .take(MAX_RETURNED_SAMPLES)
-        .cloned()
-        .collect::<Vec<_>>();
+    let speed_samples = display_speed_samples(&store.samples);
     let refresh_summaries = store.summary_cache.as_ref().is_none_or(|cache| {
         !now.is_finite() || now < cache.refreshed_at || now - cache.refreshed_at >= 1.0
     });
@@ -347,6 +347,7 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
                 now,
                 SUMMARY_WINDOW_SECONDS,
             ),
+            latest_model_speeds_30m: display_latest_model_speeds_30m(&store.samples, now),
         });
     }
     let summaries = store
@@ -360,6 +361,7 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
         model_speeds: summaries.model_speeds_7d.clone(),
         model_speeds_15m: summaries.model_speeds_15m.clone(),
         model_speeds_30m: summaries.model_speeds_30m.clone(),
+        latest_model_speeds_30m: summaries.latest_model_speeds_30m.clone(),
         storage_warning: store.storage_error.clone(),
     }
 }
@@ -376,13 +378,15 @@ pub(super) fn process_completed_body(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let store = all.entry(scope.clone()).or_default();
-    ensure_loaded(store, scope);
-    let mut changed = false;
+    ensure_loaded(store, scope, now);
+    let mut changed = cleanup_body_retention_if_due(store, now);
     let mut existing_ids = store
         .samples
         .iter()
-        .map(|sample| sample.id.clone())
-        .collect::<HashSet<_>>();
+        .enumerate()
+        .filter(|(_, sample)| is_completed_body_sample(sample))
+        .map(|(index, sample)| (sample.id.clone(), index))
+        .collect::<HashMap<_, _>>();
     for sample in samples {
         if !is_completed_body_sample(sample)
             || !sample.ended_at.is_finite()
@@ -392,11 +396,43 @@ pub(super) fn process_completed_body(
         {
             continue;
         }
-        if existing_ids.insert(sample.id.clone()) {
-            store.samples.push_back(sample.clone());
-            while store.samples.len() > MAX_PERSISTED_SAMPLES {
-                store.samples.pop_front();
+        if let Some(index) = existing_ids.get(&sample.id).copied() {
+            if let Some(existing) = store.samples.get_mut(index) {
+                let mut enriched = false;
+                if existing
+                    .body_phase
+                    .as_ref()
+                    .is_none_or(|phase| phase.trim().is_empty())
+                    && sample
+                        .body_phase
+                        .as_ref()
+                        .is_some_and(|phase| !phase.trim().is_empty() && phase.len() <= 64)
+                {
+                    existing.body_phase = sample.body_phase.clone();
+                    enriched = true;
+                }
+                if existing
+                    .model
+                    .as_deref()
+                    .is_none_or(|model| model.trim().is_empty() || model == "unknown")
+                    && sample
+                        .model
+                        .as_deref()
+                        .is_some_and(|model| !model.trim().is_empty() && model != "unknown")
+                {
+                    existing.model = sample.model.clone();
+                    enriched = true;
+                }
+                if enriched {
+                    super::completed_body::apply_body_quality(existing);
+                    changed = true;
+                }
             }
+        } else {
+            let mut sample = sample.clone();
+            super::completed_body::apply_body_quality(&mut sample);
+            existing_ids.insert(sample.id.clone(), store.samples.len());
+            store.samples.push_back(sample);
             changed = true;
         }
     }
@@ -408,6 +444,44 @@ pub(super) fn process_completed_body(
             store.storage_error = None;
         }
     }
+}
+
+pub(super) fn retained_body_samples(
+    scope: &LiveRateSourceScope,
+    requested_retention_days: Option<u16>,
+) -> (Vec<SpeedSample>, u16) {
+    let stores = SPEED_STORES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut all = stores
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let store = all.entry(scope.clone()).or_default();
+    let now = current_time_seconds();
+    ensure_loaded(store, scope, now);
+    let mut changed = cleanup_body_retention_if_due(store, now);
+    if let Some(days) = requested_retention_days.filter(|days| matches!(days, 15 | 30)) {
+        if store.body_retention_days != Some(days) {
+            store.body_retention_days = Some(days);
+            changed |= prune_expired_body_samples(store, now);
+            store.last_body_retention_cleanup = Some(std::time::Instant::now());
+            store.summary_cache = None;
+            changed = true;
+        }
+    }
+    if changed {
+        if let Err(error) = persist(store, scope) {
+            store.storage_error = Some(error);
+        } else {
+            store.storage_error = None;
+        }
+    }
+    let retention_days = effective_body_retention_days(store);
+    let samples = store
+        .samples
+        .iter()
+        .filter(|sample| is_completed_body_sample(sample))
+        .cloned()
+        .collect();
+    (samples, retention_days)
 }
 
 fn is_completed_body_sample(sample: &SpeedSample) -> bool {
@@ -437,7 +511,7 @@ pub(super) fn process_desktop(
     let stores = SPEED_STORES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut all = stores.lock().unwrap_or_else(|e| e.into_inner());
     let store = all.entry(scope.clone()).or_default();
-    ensure_loaded(store, scope);
+    ensure_loaded(store, scope, now);
     let mut changed = false;
     for event in events {
         if !event.at.is_finite() || event.at > now + 1.0 {
@@ -606,7 +680,7 @@ pub(super) fn finish_item(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let store = all.entry(scope.clone()).or_default();
-    ensure_loaded(store, scope);
+    ensure_loaded(store, scope, now);
     let key = (thread_id.to_owned(), item_id.to_owned());
     let Some(active) = store.active.get(&key) else {
         return;
@@ -647,7 +721,7 @@ pub(super) fn finish_turn(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let store = all.entry(scope.clone()).or_default();
-    ensure_loaded(store, scope);
+    ensure_loaded(store, scope, now);
     let keys = store
         .active
         .iter()
@@ -837,6 +911,8 @@ fn finalize_active(active: &mut ActiveSample, _now: f64, incomplete: bool) -> Op
         source: active.source.clone(),
         measurement_kind: None,
         tokenizer: None,
+        body_phase: None,
+        quality_reason: None,
     })
 }
 
@@ -849,9 +925,6 @@ fn add_sample(store: &mut SpeedStore, sample: SpeedSample) -> bool {
         return false;
     }
     store.samples.push_back(sample);
-    while store.samples.len() > MAX_PERSISTED_SAMPLES {
-        store.samples.pop_front();
-    }
     true
 }
 
@@ -993,6 +1066,29 @@ fn is_unknown_model(model: Option<&str>) -> bool {
     model.is_none_or(|model| model.is_empty() || model == "unknown")
 }
 
+fn is_recognized_speed_model(model: Option<&str>) -> bool {
+    model.is_some_and(|model| {
+        let model = model.trim();
+        !model.is_empty() && !model.eq_ignore_ascii_case("unknown")
+    })
+}
+
+fn display_speed_samples(samples: &VecDeque<SpeedSample>) -> Vec<SpeedSample> {
+    samples
+        .iter()
+        .rev()
+        .filter(|sample| {
+            is_completed_body_sample(sample) && is_recognized_speed_model(sample.model.as_deref())
+        })
+        .take(MAX_RETURNED_SAMPLES)
+        .cloned()
+        .map(|mut sample| {
+            super::completed_body::apply_body_quality(&mut sample);
+            sample
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct SummaryParts {
     output_tokens: u64,
@@ -1001,6 +1097,66 @@ struct SummaryParts {
     sample_count: u32,
     active_sample_count: u32,
     qualified_sample_count: u32,
+    last_measured_at: Option<f64>,
+}
+
+fn display_latest_model_speeds_30m(
+    samples: &VecDeque<SpeedSample>,
+    now: f64,
+) -> Vec<ModelSpeedSummary> {
+    if !now.is_finite() {
+        return Vec::new();
+    }
+    let mut latest_by_model = HashMap::<String, &SpeedSample>::new();
+    for sample in samples.iter().filter(|sample| {
+        is_completed_body_sample(sample)
+            && is_recognized_speed_model(sample.model.as_deref())
+            && sample.output_tokens > 0
+            && sample.duration_seconds.is_finite()
+            && sample.duration_seconds > 0.0
+            && sample.tokens_per_second.is_finite()
+            && sample.ended_at.is_finite()
+            && sample.ended_at <= now
+            && now - sample.ended_at <= SUMMARY_30M_SECONDS
+            && body_sample_is_qualified(sample)
+    }) {
+        let model = sample.model.as_ref().expect("filtered model").clone();
+        let is_newer = latest_by_model.get(&model).is_none_or(|current| {
+            sample.ended_at > current.ended_at
+                || (sample.ended_at == current.ended_at && sample.id < current.id)
+        });
+        if is_newer {
+            latest_by_model.insert(model, sample);
+        }
+    }
+
+    let mut summaries = latest_by_model
+        .into_iter()
+        .map(|(model, sample)| ModelSpeedSummary {
+            model,
+            tokens_per_second: sample.tokens_per_second,
+            sample_count: 1,
+            output_tokens: u64::from(sample.output_tokens),
+            duration_seconds: sample.duration_seconds,
+            active_sample_count: 0,
+            qualified_sample_count: 1,
+            confidence: if sample.duration_seconds >= 5.0 {
+                "high"
+            } else {
+                "medium"
+            }
+            .into(),
+            last_measured_at: Some(sample.ended_at),
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .last_measured_at
+            .unwrap_or(f64::NEG_INFINITY)
+            .total_cmp(&left.last_measured_at.unwrap_or(f64::NEG_INFINITY))
+            .then_with(|| left.model.cmp(&right.model))
+    });
+    summaries
 }
 
 fn display_summarize(
@@ -1026,6 +1182,7 @@ fn display_summarize(
             && sample.ended_at.is_finite()
             && sample.ended_at <= now + 1.0
             && now - sample.ended_at <= window_seconds
+            && body_sample_is_qualified(sample)
     }) {
         let model = sample.model.as_ref().expect("filtered model").clone();
         let summary = by_model.entry(model).or_default();
@@ -1034,9 +1191,12 @@ fn display_summarize(
             .saturating_add(u64::from(sample.output_tokens));
         summary.duration_seconds += sample.duration_seconds;
         summary.sample_count = summary.sample_count.saturating_add(1);
-        if matches!(sample.confidence.as_str(), "medium" | "high") {
-            summary.qualified_sample_count = summary.qualified_sample_count.saturating_add(1);
-        }
+        summary.qualified_sample_count = summary.qualified_sample_count.saturating_add(1);
+        summary.last_measured_at = Some(
+            summary
+                .last_measured_at
+                .map_or(sample.ended_at, |last| last.max(sample.ended_at)),
+        );
     }
 
     let mut summaries = by_model
@@ -1045,12 +1205,10 @@ fn display_summarize(
             if parts.duration_seconds <= 0.0 || !parts.duration_seconds.is_finite() {
                 return None;
             }
-            let confidence = if parts.output_tokens >= 500 && parts.duration_seconds >= 5.0 {
+            let confidence = if parts.duration_seconds >= 5.0 {
                 "high"
-            } else if parts.output_tokens >= 100 && parts.duration_seconds >= 2.0 {
-                "medium"
             } else {
-                "low"
+                "medium"
             };
             Some(ModelSpeedSummary {
                 model,
@@ -1061,6 +1219,7 @@ fn display_summarize(
                 active_sample_count: 0,
                 qualified_sample_count: parts.qualified_sample_count,
                 confidence: confidence.into(),
+                last_measured_at: parts.last_measured_at,
             })
         })
         .collect::<Vec<_>>();
@@ -1072,6 +1231,12 @@ fn display_summarize(
             .then_with(|| left.model.cmp(&right.model))
     });
     summaries
+}
+
+fn body_sample_is_qualified(sample: &SpeedSample) -> bool {
+    let mut effective = sample.clone();
+    super::completed_body::apply_body_quality(&mut effective);
+    matches!(effective.confidence.as_str(), "medium" | "high")
 }
 
 fn aggregate_confidence(
@@ -1128,6 +1293,7 @@ fn summarize(
                     qualified_sample_count: sample_count,
                     confidence: aggregate_confidence(output_tokens, duration_seconds, chunk_count)
                         .into(),
+                    last_measured_at: None,
                 })
             },
         )
@@ -1141,7 +1307,7 @@ fn summarize(
     summaries
 }
 
-fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope) {
+fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope, now: f64) {
     if store.loaded {
         return;
     }
@@ -1159,13 +1325,10 @@ fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope) {
     match fs::read(path) {
         Ok(bytes) => match serde_json::from_slice::<StoredSamples>(&bytes) {
             Ok(loaded) if loaded.version == 1 => {
-                for sample in loaded
-                    .samples
-                    .into_iter()
-                    .rev()
-                    .take(MAX_PERSISTED_SAMPLES)
-                    .rev()
-                {
+                store.body_retention_days = loaded
+                    .body_retention_days
+                    .filter(|days| matches!(days, 15 | 30));
+                for sample in loaded.samples.into_iter() {
                     if valid_sample(&sample) {
                         store.samples.push_back(sample);
                     }
@@ -1186,6 +1349,56 @@ fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope) {
             store.persistence_blocked = true;
         }
     }
+
+    store.last_body_retention_cleanup = Some(std::time::Instant::now());
+    if prune_expired_body_samples(store, now) {
+        store.summary_cache = None;
+        match persist(store, scope) {
+            Ok(()) => store.storage_error = None,
+            Err(error) => store.storage_error = Some(error),
+        }
+    }
+}
+
+fn effective_body_retention_days(store: &SpeedStore) -> u16 {
+    store
+        .body_retention_days
+        .filter(|days| matches!(days, 15 | 30))
+        .unwrap_or(DEFAULT_BODY_RETENTION_DAYS)
+}
+
+fn prune_expired_body_samples(store: &mut SpeedStore, now: f64) -> bool {
+    if !now.is_finite() {
+        return false;
+    }
+    let cutoff = now - f64::from(effective_body_retention_days(store)) * 86_400.0;
+    let previous_len = store.samples.len();
+    store.samples.retain(|sample| {
+        !is_completed_body_sample(sample) || !sample.ended_at.is_finite() || sample.ended_at >= cutoff
+    });
+    previous_len != store.samples.len()
+}
+
+fn cleanup_body_retention_if_due(store: &mut SpeedStore, now: f64) -> bool {
+    let due = store
+        .last_body_retention_cleanup
+        .is_none_or(|last| last.elapsed() >= BODY_RETENTION_CLEANUP_INTERVAL);
+    if !due {
+        return false;
+    }
+    store.last_body_retention_cleanup = Some(std::time::Instant::now());
+    let changed = prune_expired_body_samples(store, now);
+    if changed {
+        store.summary_cache = None;
+    }
+    changed
+}
+
+fn current_time_seconds() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or_default()
 }
 
 fn persist(store: &SpeedStore, scope: &LiveRateSourceScope) -> Result<(), String> {
@@ -1204,6 +1417,7 @@ fn persist(store: &SpeedStore, scope: &LiveRateSourceScope) -> Result<(), String
     let payload = StoredSamples {
         version: 1,
         samples: store.samples.iter().cloned().collect(),
+        body_retention_days: Some(effective_body_retention_days(store)),
     };
     let bytes = serde_json::to_vec(&payload)
         .map_err(|_| "observed_speed_storage_serialize_failed".to_owned())?;
@@ -1228,7 +1442,10 @@ fn valid_sample(sample: &SpeedSample) -> bool {
         && sample.measurement_kind.as_deref().is_none_or(|kind| {
             kind == "completed_body" && sample.tokenizer.as_deref() == Some("o200k_base")
         })
-        && sample.tokenizer.as_ref().is_none_or(|tokenizer| tokenizer.len() <= 64)
+        && sample
+            .tokenizer
+            .as_ref()
+            .is_none_or(|tokenizer| tokenizer.len() <= 64)
         && sample.source.len() <= 128
         && matches!(sample.confidence.as_str(), "low" | "medium" | "high")
         && sample.started_at.is_finite()
@@ -1560,6 +1777,8 @@ mod tests {
                 source: "logs_2.sqlite.response_stream".into(),
                 measurement_kind: None,
                 tokenizer: None,
+                body_phase: None,
+                quality_reason: None,
             });
         }
         let summary = summarize(&samples, 100.0, SUMMARY_WINDOW_SECONDS);
@@ -1570,7 +1789,7 @@ mod tests {
     }
 
     #[test]
-    fn production_summary_uses_only_completed_body_and_keeps_warning_as_diagnostic() {
+    fn production_summary_reclassifies_body_samples_and_excludes_low_quality_records() {
         let make_sample = |id: &str,
                            output_tokens: u32,
                            duration_seconds: f64,
@@ -1596,15 +1815,18 @@ mod tests {
                 source: "logs_2.sqlite.response_stream".into(),
                 measurement_kind: Some("completed_body".into()),
                 tokenizer: Some("o200k_base".into()),
+                body_phase: None,
+                quality_reason: None,
             }
         };
         let samples = VecDeque::from([
-            make_sample("short", 10, 1.0, 2, "low", false),
-            make_sample("qualified", 30, 3.0, 4, "medium", false),
-            make_sample("warned", 100, 2.0, 4, "medium", true),
-            // Older records did not persist the item-start marker. A low
-            // confidence record meeting all medium thresholds is midstream.
-            make_sample("midstream", 120, 2.0, 4, "low", false),
+            make_sample("short-boundary", 2, 0.55, 2, "high", false),
+            make_sample("short-accepted", 2, 0.551, 2, "low", false),
+            make_sample("qualified", 8, 3.0, 4, "low", false),
+            make_sample("warned", 500, 10.0, 4, "high", true),
+            make_sample("midstream", 9, 4.0, 4, "low", false),
+            make_sample("high", 16, 8.0, 20, "low", false),
+            make_sample("anomalous", 501, 0.5, 20, "high", false),
         ]);
         let mut samples = samples;
         let mut legacy_ipc = make_sample("ipc", 1_000, 10.0, 20, "high", false);
@@ -1615,11 +1837,244 @@ mod tests {
         let summary = display_summarize(&samples, &HashMap::new(), 100.0, SUMMARY_WINDOW_SECONDS);
         assert_eq!(summary.len(), 1);
         assert_eq!(summary[0].sample_count, 4);
-        assert_eq!(summary[0].qualified_sample_count, 2);
+        assert_eq!(summary[0].qualified_sample_count, 4);
         assert_eq!(summary[0].active_sample_count, 0);
-        assert_eq!(summary[0].output_tokens, 260);
-        assert_eq!(summary[0].duration_seconds, 8.0);
-        assert_eq!(summary[0].tokens_per_second, 32.5);
+        assert_eq!(summary[0].output_tokens, 35);
+        assert!((summary[0].duration_seconds - 15.551).abs() < 1e-12);
+        assert!((summary[0].tokens_per_second - 35.0 / 15.551).abs() < 1e-12);
+        assert_eq!(summary[0].confidence, "high");
+    }
+
+    #[test]
+    fn summary_last_measurement_uses_only_qualified_body_samples_across_windows() {
+        let make_sample = |id: &str,
+                           ended_at: f64,
+                           duration_seconds: f64,
+                           output_tokens: u32,
+                           warning: bool,
+                           body: bool| {
+            SpeedSample {
+                id: id.into(),
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                item_id: id.into(),
+                model: Some("model-a".into()),
+                started_at: ended_at - duration_seconds,
+                ended_at,
+                output_tokens,
+                output_characters: u64::from(output_tokens),
+                output_bytes: u64::from(output_tokens),
+                chunk_count: 0,
+                duration_seconds,
+                tokens_per_second: f64::from(output_tokens) / duration_seconds,
+                confidence: "low".into(),
+                network_warning: warning.then(|| "incomplete".to_owned()),
+                source: "test".into(),
+                measurement_kind: body.then(|| "completed_body".into()),
+                tokenizer: body.then(|| "o200k_base".into()),
+                body_phase: None,
+                quality_reason: None,
+            }
+        };
+        let samples = VecDeque::from([
+            make_sample("qualified-old", 99_000.0, 5.0, 100, false, true),
+            make_sample("newer-warning", 99_900.0, 5.0, 100, true, true),
+            make_sample("newer-short", 99_950.0, 0.55, 2, false, true),
+            make_sample("newer-legacy-stream", 99_980.0, 5.0, 100, false, false),
+        ]);
+
+        let recent = display_summarize(&samples, &HashMap::new(), 100_000.0, SUMMARY_15M_SECONDS);
+        assert!(recent.is_empty());
+
+        let seven_day =
+            display_summarize(&samples, &HashMap::new(), 100_000.0, SUMMARY_WINDOW_SECONDS);
+        assert_eq!(seven_day.len(), 1);
+        assert_eq!(seven_day[0].last_measured_at, Some(99_000.0));
+    }
+
+    #[test]
+    fn latest_model_speeds_use_full_store_and_ignore_newer_unqualified_samples() {
+        let now = 100_000.0;
+        let make_sample = |id: &str,
+                           model: &str,
+                           ended_at: f64,
+                           duration_seconds: f64,
+                           output_tokens: u32,
+                           warning: bool,
+                           completed_body: bool| {
+            SpeedSample {
+                id: id.into(),
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                item_id: id.into(),
+                model: Some(model.into()),
+                started_at: ended_at - duration_seconds,
+                ended_at,
+                output_tokens,
+                output_characters: u64::from(output_tokens),
+                output_bytes: u64::from(output_tokens),
+                chunk_count: 0,
+                duration_seconds,
+                tokens_per_second: f64::from(output_tokens) / duration_seconds,
+                confidence: "low".into(),
+                network_warning: warning.then(|| "incomplete".to_owned()),
+                source: "test".into(),
+                measurement_kind: completed_body.then(|| "completed_body".into()),
+                tokenizer: completed_body.then(|| "o200k_base".into()),
+                body_phase: None,
+                quality_reason: None,
+            }
+        };
+
+        let mut samples = VecDeque::new();
+        for index in 0..12 {
+            samples.push_back(make_sample(
+                &format!("good-{index}"),
+                &format!("model-{index:02}"),
+                now - 100.0 + f64::from(index),
+                1.0,
+                10,
+                false,
+                true,
+            ));
+        }
+        samples.push_back(make_sample(
+            "newer-short",
+            "model-09",
+            now - 1.0,
+            0.55,
+            2,
+            false,
+            true,
+        ));
+        samples.push_back(make_sample(
+            "newer-warning",
+            "model-10",
+            now - 2.0,
+            1.0,
+            10,
+            true,
+            true,
+        ));
+        samples.push_back(make_sample(
+            "newer-anomaly",
+            "model-11",
+            now - 3.0,
+            1.0,
+            1_000,
+            false,
+            true,
+        ));
+        samples.push_back(make_sample(
+            "expired",
+            "stale-model",
+            now - SUMMARY_30M_SECONDS - 1.0,
+            1.0,
+            10,
+            false,
+            true,
+        ));
+        samples.push_back(make_sample(
+            "unrecognized-model",
+            "unknown",
+            now - 4.0,
+            1.0,
+            10,
+            false,
+            true,
+        ));
+        samples.push_back(make_sample(
+            "legacy-stream",
+            "legacy-model",
+            now - 5.0,
+            1.0,
+            10,
+            false,
+            false,
+        ));
+
+        let latest = display_latest_model_speeds_30m(&samples, now);
+        assert_eq!(
+            latest.len(),
+            12,
+            "models are not limited to the hot 10 rows"
+        );
+        assert!(!latest.iter().any(|summary| {
+            summary.model == "stale-model"
+                || summary.model == "unknown"
+                || summary.model == "legacy-model"
+        }));
+
+        for (model, expected_ended_at) in [
+            ("model-09", now - 91.0),
+            ("model-10", now - 90.0),
+            ("model-11", now - 89.0),
+        ] {
+            let summary = latest
+                .iter()
+                .find(|summary| summary.model == model)
+                .unwrap();
+            assert_eq!(summary.last_measured_at, Some(expected_ended_at));
+            assert_eq!(summary.sample_count, 1);
+            assert_eq!(summary.output_tokens, 10);
+            assert_eq!(summary.duration_seconds, 1.0);
+            assert_eq!(summary.tokens_per_second, 10.0);
+            assert_eq!(summary.qualified_sample_count, 1);
+        }
+    }
+
+    #[test]
+    fn hot_speed_samples_filter_unknown_models_before_taking_ten() {
+        let make_sample = |id: &str, model: &str, ended_at: f64| SpeedSample {
+            id: id.into(),
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+            item_id: id.into(),
+            model: Some(model.into()),
+            started_at: ended_at - 1.0,
+            ended_at,
+            output_tokens: 10,
+            output_characters: 10,
+            output_bytes: 10,
+            chunk_count: 0,
+            duration_seconds: 1.0,
+            tokens_per_second: 10.0,
+            confidence: "low".into(),
+            network_warning: None,
+            source: "test".into(),
+            measurement_kind: Some("completed_body".into()),
+            tokenizer: Some("o200k_base".into()),
+            body_phase: None,
+            quality_reason: None,
+        };
+        let mut samples = VecDeque::new();
+        for index in 0..12 {
+            samples.push_back(make_sample(
+                &format!("known-{index}"),
+                &format!("model-{index}"),
+                100.0 + f64::from(index),
+            ));
+        }
+        for index in 0..12 {
+            samples.push_back(make_sample(
+                &format!("unknown-{index}"),
+                "  UnKnOwN  ",
+                200.0 + f64::from(index),
+            ));
+        }
+
+        let hot = display_speed_samples(&samples);
+        assert_eq!(hot.len(), MAX_RETURNED_SAMPLES);
+        assert!(hot.iter().all(|sample| {
+            sample
+                .model
+                .as_deref()
+                .is_some_and(|model| model.starts_with("model-"))
+        }));
+        assert_eq!(
+            hot.first().map(|sample| sample.id.as_str()),
+            Some("known-11")
+        );
     }
 
     #[test]
@@ -1644,6 +2099,8 @@ mod tests {
             source: "codex_desktop.forwarded_text_stream".into(),
             measurement_kind: None,
             tokenizer: None,
+            body_phase: None,
+            quality_reason: None,
         };
 
         assert!(should_resolve_sample_model(
@@ -1686,6 +2143,8 @@ mod tests {
                 source: "logs_2.sqlite.response_stream".into(),
                 measurement_kind: None,
                 tokenizer: None,
+                body_phase: None,
+                quality_reason: None,
             });
         }
 
@@ -1719,10 +2178,13 @@ mod tests {
             source: "logs_2.sqlite.response_stream".into(),
             measurement_kind: None,
             tokenizer: None,
+            body_phase: None,
+            quality_reason: None,
         };
         let encoded = serde_json::to_string(&StoredSamples {
             version: 1,
             samples: vec![sample],
+            body_retention_days: None,
         })
         .unwrap();
         assert!(!encoded.contains("hello"));
@@ -1772,17 +2234,80 @@ mod tests {
             source: "Codex rollout completed-body / local o200k_base".into(),
             measurement_kind: Some("completed_body".into()),
             tokenizer: Some("o200k_base".into()),
+            body_phase: None,
+            quality_reason: None,
         };
         process_completed_body(&scope, &[body], 24.0);
         let persisted: StoredSamples = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted.version, 1);
         assert_eq!(persisted.samples.len(), 2);
-        let old = persisted.samples.iter().find(|sample| sample.id == "legacy-ipc").unwrap();
+        let old = persisted
+            .samples
+            .iter()
+            .find(|sample| sample.id == "legacy-ipc")
+            .unwrap();
         assert!(old.measurement_kind.is_none());
         assert!(old.tokenizer.is_none());
         assert!(old.network_warning.is_none());
-        assert!(persisted.samples.iter().any(|sample| sample.measurement_kind.as_deref() == Some("completed_body")));
+        assert!(persisted
+            .samples
+            .iter()
+            .any(|sample| sample.measurement_kind.as_deref() == Some("completed_body")));
 
+        SPEED_STORES.get().unwrap().lock().unwrap().remove(&scope);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn completed_body_replay_fills_missing_phase_and_unknown_model() {
+        let unique = format!(
+            "body-enrichment-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let scope = LiveRateSourceScope::new(&unique, &unique);
+        let path = storage_path(&scope).unwrap();
+        let mut sample = SpeedSample {
+            id: "completed-body/enrichment".into(),
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+            item_id: "item".into(),
+            model: Some("unknown".into()),
+            started_at: 20.0,
+            ended_at: 24.0,
+            output_tokens: 500,
+            output_characters: 1000,
+            output_bytes: 1100,
+            chunk_count: 0,
+            duration_seconds: 4.0,
+            tokens_per_second: 125.0,
+            confidence: "low".into(),
+            network_warning: None,
+            source: "Codex rollout completed-body / local o200k_base".into(),
+            measurement_kind: Some("completed_body".into()),
+            tokenizer: Some("o200k_base".into()),
+            body_phase: None,
+            quality_reason: None,
+        };
+        process_completed_body(&scope, &[sample.clone()], 24.0);
+        sample.model = Some("gpt-5.5".into());
+        sample.body_phase = Some("final_answer".into());
+        process_completed_body(&scope, &[sample], 24.0);
+
+        let stores = SPEED_STORES.get().unwrap().lock().unwrap();
+        let stored = stores
+            .get(&scope)
+            .unwrap()
+            .samples
+            .iter()
+            .find(|sample| sample.id == "completed-body/enrichment")
+            .unwrap();
+        assert_eq!(stored.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(stored.body_phase.as_deref(), Some("final_answer"));
+        assert_eq!(stores.get(&scope).unwrap().samples.len(), 1);
+        drop(stores);
         SPEED_STORES.get().unwrap().lock().unwrap().remove(&scope);
         let _ = fs::remove_file(path);
     }
@@ -1792,6 +2317,19 @@ mod tests {
 mod desktop_tests {
     use super::*;
     use crate::core::desktop_stream::{DesktopStreamEvent as E, DesktopStreamEventKind as K};
+    fn saved_samples(scope: &LiveRateSourceScope) -> Vec<SpeedSample> {
+        SPEED_STORES
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(scope)
+            .unwrap()
+            .samples
+            .iter()
+            .cloned()
+            .collect()
+    }
     fn event(kind: K, text: &str, at: f64) -> E {
         E {
             kind,
@@ -1817,8 +2355,11 @@ mod desktop_tests {
         events.push(event(K::Finish, "", 108.0));
         process_desktop(&scope, &events, 108.0);
         let snapshot = process_rows(&scope, &[], 108.0);
-        assert_eq!(snapshot.speed_samples.len(), 1);
-        let sample = &snapshot.speed_samples[0];
+        // Legacy stream records remain saved, but never enter the body-only UI.
+        assert!(snapshot.speed_samples.is_empty());
+        let saved = saved_samples(&scope);
+        assert_eq!(saved.len(), 1);
+        let sample = &saved[0];
         assert_eq!(sample.turn_id, "explicit-turn");
         assert_eq!(sample.model.as_deref(), Some("desktop-model"));
         assert_eq!(sample.source, "codex_desktop.forwarded_text_stream");
@@ -1847,7 +2388,8 @@ mod desktop_tests {
 
         process_desktop(&scope, &[event(K::Finish, "", 103.0)], 103.0);
         let finished_snapshot = process_rows(&scope, &[], 103.0);
-        assert_eq!(finished_snapshot.speed_samples.len(), 1);
+        assert!(finished_snapshot.speed_samples.is_empty());
+        assert_eq!(saved_samples(&scope).len(), 1);
         assert!(finished_snapshot.model_speeds_30m.is_empty());
 
         SPEED_STORES
@@ -1889,10 +2431,11 @@ mod desktop_tests {
             106.0,
         );
         let snapshot = process_rows(&scope, &[], 106.0);
-        assert_eq!(snapshot.speed_samples.len(), 2);
-        assert!(snapshot.speed_samples[1].network_warning.is_some());
-        assert!(snapshot
-            .speed_samples
+        assert!(snapshot.speed_samples.is_empty());
+        let saved = saved_samples(&scope);
+        assert_eq!(saved.len(), 2);
+        assert!(saved[1].network_warning.is_some());
+        assert!(saved
             .iter()
             .all(|sample| sample.network_warning.is_some()));
         assert!(snapshot.model_speeds_30m.is_empty());
@@ -1934,9 +2477,11 @@ mod desktop_tests {
             }
             process_desktop(&scope, &events, 103.0);
             let snapshot = process_rows(&scope, &[], 103.0);
-            assert_eq!(snapshot.speed_samples.len(), 1);
+            assert!(snapshot.speed_samples.is_empty());
+            let saved = saved_samples(&scope);
+            assert_eq!(saved.len(), 1);
             assert_eq!(
-                snapshot.speed_samples[0].model.as_deref(),
+                saved[0].model.as_deref(),
                 if matches { Some("rollout-model") } else { None }
             );
         }

@@ -5,7 +5,7 @@
 
 use super::state::{read_recent_rollout_threads, RolloutThread};
 use super::LiveRateSourceScope;
-use crate::models::SpeedSample;
+use crate::models::{BodySpeedHistoryPage, SpeedSample};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -34,6 +34,7 @@ const MAX_JOB_SCOPES: usize = 8;
 const MAX_READER_SCOPES: usize = 16;
 const MAX_READER_FILES: usize = 128;
 const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
+const HISTORY_PAGE_LIMIT: usize = 100;
 
 static JOBS: OnceLock<Mutex<HashMap<LiveRateSourceScope, Job>>> = OnceLock::new();
 static READERS: OnceLock<Mutex<HashMap<LiveRateSourceScope, Reader>>> = OnceLock::new();
@@ -149,6 +150,7 @@ struct PendingPart {
     started_at: Option<f64>,
     ended_at: Option<f64>,
     touched_at: f64,
+    body_phase: Option<String>,
 }
 
 impl Assembler {
@@ -295,6 +297,7 @@ impl Assembler {
                 (turn, item_id.to_owned()),
                 Some((started / 1_000.0, ended / 1_000.0)),
                 None,
+                body_phase(item.get("phase").or_else(|| payload.get("phase"))),
             )
         } else if record_type == "response_item"
             && payload_type == "message"
@@ -332,15 +335,23 @@ impl Assembler {
             if body.is_empty() || body_bytes > MAX_BODY_BYTES {
                 return Vec::new();
             }
-            ((turn, item_id.to_owned()), None, Some(body))
+            (
+                (turn, item_id.to_owned()),
+                None,
+                Some(body),
+                body_phase(payload.get("phase")),
+            )
         } else {
             return Vec::new();
         };
 
-        let ((turn, item), timing, text) = part_key;
+        let ((turn, item), timing, text, phase) = part_key;
         let key = (turn, item);
         let pending = self.pending.entry(key).or_default();
         pending.touched_at = timestamp;
+        if phase.is_some() {
+            pending.body_phase = phase;
+        }
         if let Some((started_at, ended_at)) = timing {
             pending.started_at = Some(started_at);
             pending.ended_at = Some(ended_at);
@@ -506,11 +517,12 @@ impl Assembler {
                     text.clone(),
                     started,
                     ended,
+                    part.body_phase.clone(),
                 ))
             })
             .collect::<Vec<_>>();
         let mut output = Vec::new();
-        for (turn, item, model, text, started_at, ended_at) in ready {
+        for (turn, item, model, text, started_at, ended_at, body_phase) in ready {
             let key = (turn.clone(), item.clone());
             self.pending.remove(&key);
             let duration = ended_at - started_at;
@@ -550,14 +562,7 @@ impl Assembler {
             if !tokens_per_second.is_finite() {
                 continue;
             }
-            let confidence = if output_tokens >= 500 && duration >= 5.0 {
-                "high"
-            } else if output_tokens >= 100 && duration >= 2.0 {
-                "medium"
-            } else {
-                "low"
-            };
-            output.push(SpeedSample {
+            let mut sample = SpeedSample {
                 id,
                 thread_id: thread.to_owned(),
                 turn_id: turn,
@@ -571,12 +576,16 @@ impl Assembler {
                 chunk_count: 0,
                 duration_seconds: duration,
                 tokens_per_second,
-                confidence: confidence.to_owned(),
+                confidence: "low".to_owned(),
                 network_warning: None,
                 source: "Codex rollout completed-body / local o200k_base".to_owned(),
                 measurement_kind: Some("completed_body".to_owned()),
                 tokenizer: Some("o200k_base".to_owned()),
-            });
+                body_phase,
+                quality_reason: None,
+            };
+            apply_body_quality(&mut sample);
+            output.push(sample);
         }
         output
     }
@@ -798,10 +807,81 @@ fn valid_model(model: &str) -> bool {
     !model.is_empty() && model.len() <= 256 && model != "unknown"
 }
 
+fn body_phase(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|phase| !phase.is_empty() && phase.len() <= 64)
+        .map(ToOwned::to_owned)
+}
+
+/// Recompute trust from the recorded numeric fields every time a body sample
+/// is collected or exposed. The stored confidence string is legacy metadata.
+pub(super) fn apply_body_quality(sample: &mut SpeedSample) {
+    let reason = if sample.output_tokens == 0
+        || !sample.started_at.is_finite()
+        || !sample.ended_at.is_finite()
+        || !sample.duration_seconds.is_finite()
+        || !sample.tokens_per_second.is_finite()
+        || sample.duration_seconds <= 0.0
+        || sample.tokens_per_second <= 0.0
+    {
+        Some("文本或计时过短")
+    } else {
+        let endpoint_duration = sample.ended_at - sample.started_at;
+        let start_millis = (sample.started_at * 1_000.0).round();
+        let end_millis = (sample.ended_at * 1_000.0).round();
+        if !endpoint_duration.is_finite()
+            || (endpoint_duration - sample.duration_seconds).abs() > 0.01
+            || !start_millis.is_finite()
+            || !end_millis.is_finite()
+        {
+            Some("计时数据不一致")
+        } else if end_millis - start_millis <= 550.0 {
+            Some("采样时长不超过 0.55 秒")
+        } else {
+            let computed_rate = f64::from(sample.output_tokens) / sample.duration_seconds;
+            let tolerance = 0.01_f64.max(sample.tokens_per_second.abs() * 0.001);
+            if !computed_rate.is_finite()
+                || (sample.tokens_per_second - computed_rate).abs() > tolerance
+            {
+                Some("速率计算不一致")
+            } else if sample.tokens_per_second > 500.0 {
+                Some("速率异常偏高")
+            } else if sample.tokens_per_second < 2.0 {
+                Some("速率异常偏低")
+            } else if sample
+                .network_warning
+                .as_ref()
+                .is_some_and(|warning| !warning.trim().is_empty())
+            {
+                Some("采样存在异常标记")
+            } else if sample.duration_seconds >= 5.0 {
+                sample.confidence = "high".to_owned();
+                sample.quality_reason = None;
+                return;
+            } else {
+                sample.confidence = "medium".to_owned();
+                sample.quality_reason = None;
+                return;
+            }
+        }
+    };
+    sample.confidence = "low".to_owned();
+    sample.quality_reason = reason.map(ToOwned::to_owned);
+}
+
 fn parse_rfc3339(value: &str) -> Option<f64> {
     OffsetDateTime::parse(value, &Rfc3339)
         .ok()
         .map(|time| time.unix_timestamp_nanos() as f64 / 1_000_000_000.0)
+}
+
+fn current_time_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or_default()
 }
 
 fn uuid_v7_milliseconds(value: &str) -> Option<u64> {
@@ -935,6 +1015,61 @@ pub(super) fn poll(home: &Path, scope: &LiveRateSourceScope, now: f64) -> Vec<Sp
     samples
 }
 
+/// Return a stable bounded page from the numeric body samples retained in the
+/// observed-speed store. This path never reads rollout files.
+pub(super) fn read_history_page(
+    retained_samples: Vec<SpeedSample>,
+    offset: usize,
+    limit: usize,
+    as_of: Option<f64>,
+    retention_days: u16,
+) -> BodySpeedHistoryPage {
+    let as_of = as_of.filter(|value| value.is_finite()).unwrap_or_else(current_time_seconds);
+    let retention_days = match retention_days {
+        15 | 30 => retention_days,
+        _ => 30,
+    };
+    let cutoff = as_of - f64::from(retention_days) * 86_400.0;
+    let limit = limit.clamp(1, HISTORY_PAGE_LIMIT);
+    let mut all_samples = retained_samples
+        .into_iter()
+        .filter(|sample| {
+            sample.measurement_kind.as_deref() == Some("completed_body")
+                && sample.tokenizer.as_deref() == Some("o200k_base")
+                && sample.ended_at.is_finite()
+                && sample.ended_at >= cutoff
+                && sample.ended_at <= as_of
+        })
+        .collect::<Vec<_>>();
+    all_samples.sort_by(|left, right| {
+        right
+            .ended_at
+            .total_cmp(&left.ended_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let total_count = all_samples.len();
+    let start = offset.min(total_count);
+    let end = start.saturating_add(limit).min(total_count);
+    let samples = all_samples[start..end]
+        .iter()
+        .cloned()
+        .map(|mut sample| {
+            apply_body_quality(&mut sample);
+            sample
+        })
+        .collect();
+    BodySpeedHistoryPage {
+        samples,
+        total_count,
+        offset: start,
+        limit,
+        next_offset: (end < total_count).then_some(end),
+        as_of,
+        thread_titles: None,
+        retention_days,
+    }
+}
+
 fn prune_job_samples(samples: &mut VecDeque<SpeedSample>, now: f64) {
     if !now.is_finite() {
         return;
@@ -993,7 +1128,140 @@ mod tests {
             source: "test".into(),
             measurement_kind: Some("completed_body".into()),
             tokenizer: Some("o200k_base".into()),
+            body_phase: None,
+            quality_reason: None,
         }
+    }
+
+    #[test]
+    fn body_quality_recomputes_legacy_confidence_and_excludes_anomalies() {
+        let mut sample = retained_sample("quality", 10.0);
+        sample.started_at = 2.0;
+        sample.ended_at = 7.0;
+        sample.output_tokens = 10;
+        sample.duration_seconds = 5.0;
+        sample.tokens_per_second = 2.0;
+        sample.confidence = "low".into();
+        apply_body_quality(&mut sample);
+        assert_eq!(sample.confidence, "high");
+        assert_eq!(sample.quality_reason, None);
+
+        sample.output_tokens = 3_000;
+        sample.tokens_per_second = 600.0;
+        apply_body_quality(&mut sample);
+        assert_eq!(sample.confidence, "low");
+        assert_eq!(sample.quality_reason.as_deref(), Some("速率异常偏高"));
+
+        sample.output_tokens = 10;
+        sample.tokens_per_second = 2.0;
+        sample.network_warning = Some("incomplete".into());
+        apply_body_quality(&mut sample);
+        assert_eq!(sample.quality_reason.as_deref(), Some("采样存在异常标记"));
+
+        sample.network_warning = None;
+        sample.output_tokens = 5;
+        sample.duration_seconds = 5.0;
+        sample.tokens_per_second = 1.0;
+        apply_body_quality(&mut sample);
+        assert_eq!(sample.quality_reason.as_deref(), Some("速率异常偏低"));
+
+        sample.output_tokens = 10;
+        sample.tokens_per_second = 2.1;
+        apply_body_quality(&mut sample);
+        assert_eq!(sample.quality_reason.as_deref(), Some("速率计算不一致"));
+
+        sample.output_tokens = 0;
+        apply_body_quality(&mut sample);
+        assert_eq!(sample.quality_reason.as_deref(), Some("文本或计时过短"));
+
+        sample.output_tokens = 10;
+        sample.started_at = f64::NAN;
+        apply_body_quality(&mut sample);
+        assert_eq!(sample.quality_reason.as_deref(), Some("文本或计时过短"));
+    }
+
+    #[test]
+    fn body_quality_uses_rounded_endpoint_milliseconds_and_accepts_short_text() {
+        let started_at = 1_760_000_000_000_i64;
+        let mut sample = retained_sample("boundary", 1_760_000_000.0);
+        sample.started_at = started_at as f64 / 1_000.0;
+        sample.ended_at = (started_at + 550) as f64 / 1_000.0;
+        sample.duration_seconds = 0.55;
+        sample.output_tokens = 2;
+        sample.tokens_per_second = f64::from(sample.output_tokens) / sample.duration_seconds;
+        sample.network_warning = Some("also anomalous".into());
+        apply_body_quality(&mut sample);
+        assert_eq!(sample.confidence, "low");
+        assert_eq!(
+            sample.quality_reason.as_deref(),
+            Some("采样时长不超过 0.55 秒")
+        );
+
+        sample.id = "short-accepted".into();
+        sample.ended_at = (started_at + 551) as f64 / 1_000.0;
+        sample.duration_seconds = 0.551;
+        sample.network_warning = None;
+        sample.confidence = "low".into();
+        sample.quality_reason = Some("legacy low confidence".into());
+        sample.tokens_per_second = f64::from(sample.output_tokens) / sample.duration_seconds;
+        apply_body_quality(&mut sample);
+        assert_eq!(sample.confidence, "medium");
+        assert_eq!(sample.quality_reason, None);
+    }
+
+    #[test]
+    fn history_pages_use_only_retained_numeric_body_samples_with_fixed_as_of() {
+        let mut newest = retained_sample("newest", 1_200_000.0);
+        newest.output_tokens = 120;
+        newest.duration_seconds = 3.0;
+        newest.started_at = newest.ended_at - 3.0;
+        newest.tokens_per_second = 40.0;
+        let mut older = retained_sample("older", 900_000.0);
+        older.output_tokens = 100;
+        older.duration_seconds = 2.0;
+        older.started_at = older.ended_at - 2.0;
+        older.tokens_per_second = 50.0;
+        let expired_for_15_days = retained_sample("older-than-15d", 100_000.0);
+        let mut legacy = retained_sample("legacy-stream", 1_300_000.0);
+        legacy.measurement_kind = None;
+        legacy.tokenizer = None;
+
+        let first = read_history_page(
+            vec![
+                newest.clone(),
+                older.clone(),
+                expired_for_15_days.clone(),
+                legacy,
+            ],
+            0,
+            1,
+            Some(1_500_000.0),
+            15,
+        );
+        assert_eq!(first.total_count, 2);
+        assert_eq!(first.retention_days, 15);
+        assert_eq!(first.samples[0].id, "newest");
+        assert_eq!(first.next_offset, Some(1));
+
+        let second = read_history_page(
+            vec![newest, older, expired_for_15_days],
+            first.next_offset.unwrap(),
+            1,
+            Some(first.as_of),
+            15,
+        );
+        assert_eq!(second.as_of, first.as_of);
+        assert_eq!(second.samples[0].id, "older");
+
+        let thirty_day_page = read_history_page(
+            vec![retained_sample("older-than-15d", 100_000.0)],
+            0,
+            50,
+            Some(1_500_000.0),
+            30,
+        );
+        assert_eq!(thirty_day_page.total_count, 1);
+        assert_eq!(thirty_day_page.retention_days, 30);
     }
 
     fn context(turn: &str, model: &str, now: f64) -> Vec<u8> {
@@ -1021,7 +1289,8 @@ mod tests {
             "response_item",
             serde_json::json!({
                 "type": "message", "role": "assistant", "id": item,
-                "turn_id": turn, "content": [{"type":"output_text", "text":text}],
+                "turn_id": turn, "phase": "final_answer",
+                "content": [{"type":"output_text", "text":text}],
             }),
             &timestamp(now),
         )
@@ -1063,6 +1332,7 @@ mod tests {
         assert_eq!(sample.tokenizer.as_deref(), Some("o200k_base"));
         assert_eq!(sample.chunk_count, 0);
         assert_eq!(sample.duration_seconds, 4.0);
+        assert_eq!(sample.body_phase.as_deref(), Some("final_answer"));
         assert_eq!(
             sample.output_tokens as usize,
             tiktoken_rs::o200k_base_singleton()

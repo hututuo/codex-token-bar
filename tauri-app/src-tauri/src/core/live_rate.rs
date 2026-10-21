@@ -2,9 +2,11 @@ use crate::core::usage::token_count_jsonl;
 #[cfg(test)]
 use crate::core::{app_paths, unread};
 use crate::models::{
-    FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, LocalDataWarning, UnreadSummary,
+    BodySpeedHistoryPage, FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption,
+    LocalDataWarning, SpeedSample, UnreadSummary,
 };
 use logs::read_recent_log_rows;
+use std::collections::HashSet;
 pub use monitor::LiveRateMonitorService;
 use rusqlite::Result;
 use state::{read_thread_options_result, read_thread_title, UsageSummary};
@@ -52,7 +54,6 @@ struct StoreFileSignature {
 
 mod c_curve;
 mod completed_body;
-mod desktop;
 mod logs;
 mod monitor;
 mod observed;
@@ -167,6 +168,7 @@ fn idle_snapshot_with_warnings(
         model_speeds: Vec::new(),
         model_speeds_15m: Vec::new(),
         model_speeds_30m: Vec::new(),
+        latest_model_speeds_30m: Vec::new(),
         measurement_status: "completed_body_waiting".into(),
         cache_advice: None,
         unread_summary,
@@ -199,6 +201,7 @@ pub(super) fn pending_snapshot_with_unread(
         model_speeds: Vec::new(),
         model_speeds_15m: Vec::new(),
         model_speeds_30m: Vec::new(),
+        latest_model_speeds_30m: Vec::new(),
         measurement_status: "completed_body_waiting".into(),
         cache_advice: None,
         unread_summary,
@@ -261,22 +264,8 @@ fn read_snapshot_result_at(
             )
         });
     c_curve::apply_signals(source_scope, &pre_delta_signals, now);
-    let mut interests = read_thread_options_result(codex_home, 4)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|thread| thread.id)
-        .collect::<Vec<_>>();
-    if let Some(selected) = selected_thread_id {
-        if !interests.iter().any(|id| id == selected) {
-            interests.truncate(3);
-            interests.push(selected.to_owned());
-        }
-    }
-    let desktop_events = desktop::poll(source_scope, interests, now);
-    observed::process_desktop(source_scope, &desktop_events, now);
     let completed_body_samples = completed_body::poll(codex_home, source_scope, now);
     observed::process_completed_body(source_scope, &completed_body_samples, now);
-    let _initial_speed_snapshot = observed::process_rows(source_scope, &rows, now);
     for signal in &post_delta_signals {
         match signal {
             c_curve::RolloutSignal::ItemCompleted {
@@ -371,11 +360,42 @@ fn read_snapshot_result_at(
         model_speeds: speed_snapshot.model_speeds,
         model_speeds_15m: speed_snapshot.model_speeds_15m,
         model_speeds_30m: speed_snapshot.model_speeds_30m,
+        latest_model_speeds_30m: speed_snapshot.latest_model_speeds_30m,
         measurement_status: measurement_status.into(),
         cache_advice,
         unread_summary: empty_unread_summary(),
         warnings,
     })
+}
+
+pub(crate) fn read_body_speed_history(
+    codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
+    offset: usize,
+    limit: usize,
+    as_of: Option<f64>,
+    retention_days: Option<u16>,
+) -> BodySpeedHistoryPage {
+    let (retained_samples, retention_days) =
+        observed::retained_body_samples(source_scope, retention_days);
+    let mut page = completed_body::read_history_page(
+        retained_samples,
+        offset,
+        limit,
+        as_of,
+        retention_days,
+    );
+    let thread_ids = page
+        .samples
+        .iter()
+        .map(|sample| sample.thread_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    page.thread_titles = state::read_thread_titles(codex_home, &thread_ids)
+        .ok()
+        .filter(|titles| !titles.is_empty());
+    page
 }
 
 fn empty_unread_summary() -> UnreadSummary {

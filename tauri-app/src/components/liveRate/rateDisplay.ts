@@ -80,6 +80,7 @@ export function liveRateDisplayBucket(snapshot: LiveRateSnapshot): string {
     JSON.stringify(snapshot.modelSpeeds ?? []),
     JSON.stringify(snapshot.modelSpeeds15m ?? []),
     JSON.stringify(snapshot.modelSpeeds30m ?? []),
+    JSON.stringify(snapshot.latestModelSpeeds30m ?? []),
     snapshot.measurementStatus ?? "",
     snapshot.threadTitle,
     snapshot.selectedThreadId ?? "",

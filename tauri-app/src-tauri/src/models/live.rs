@@ -40,6 +40,8 @@ pub struct LiveRateSnapshot {
     #[serde(default)]
     pub model_speeds_30m: Vec<ModelSpeedSummary>,
     #[serde(default)]
+    pub latest_model_speeds_30m: Vec<ModelSpeedSummary>,
+    #[serde(default)]
     pub measurement_status: String,
     pub cache_advice: Option<CacheAdvice>,
     pub unread_summary: UnreadSummary,
@@ -72,6 +74,24 @@ pub struct SpeedSample {
     pub measurement_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokenizer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BodySpeedHistoryPage {
+    pub samples: Vec<SpeedSample>,
+    pub total_count: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub next_offset: Option<usize>,
+    pub as_of: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_titles: Option<std::collections::HashMap<String, String>>,
+    pub retention_days: u16,
 }
 
 fn deserialize_network_warning<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -115,10 +135,33 @@ pub struct ModelSpeedSummary {
     pub qualified_sample_count: u32,
     #[serde(default = "default_model_speed_confidence")]
     pub confidence: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_measured_at: Option<f64>,
 }
 
 fn default_model_speed_confidence() -> String {
     "low".into()
+}
+
+#[cfg(test)]
+mod model_speed_summary_tests {
+    use super::ModelSpeedSummary;
+
+    #[test]
+    fn legacy_model_speed_summary_defaults_missing_last_measurement_time() {
+        let summary: ModelSpeedSummary = serde_json::from_value(serde_json::json!({
+            "model": "model-a",
+            "tokensPerSecond": 25.0,
+            "sampleCount": 2,
+            "outputTokens": 200,
+            "durationSeconds": 8.0
+        }))
+        .unwrap();
+        assert_eq!(summary.last_measured_at, None);
+
+        let serialized = serde_json::to_value(summary).unwrap();
+        assert!(serialized.get("lastMeasuredAt").is_none());
+    }
 }
 
 #[derive(Debug, Serialize)]

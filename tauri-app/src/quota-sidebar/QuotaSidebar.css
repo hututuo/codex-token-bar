@@ -200,10 +200,12 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 /* Center short summaries inside the native visible clip; overflow keeps a reachable top. */
 .quota-sidebar-document .qs-summary[data-scrollable=true][data-reminder=false] > :first-child { margin-top: auto; }
 .quota-sidebar-document .qs-summary[data-scrollable=true][data-reminder=false] > :last-child { margin-bottom: auto; }
-.qs-speed-window { display:flex; justify-content:center; gap:3px; }
-.qs-speed-window button { color:#929a9c; border:0; border-radius:4px; padding:3px 4px; background:transparent; font-size:8px; }
-.qs-speed-window button[aria-pressed=true] { color:#78b7ff; background:#ffffff13; }
-
 .qs-model-speeds > button { display:flex; flex-direction:column; align-items:center; gap:4px; border:0; background:transparent; color:inherit; padding:0; cursor:pointer; width:100%; }
 .qs-model-speeds > button > span { display:flex; flex-direction:column; align-items:center; gap:1px; max-width:72px; }
 .qs-model-speeds > button > span:first-child { font-size:9px; color:#929a9c; }
+
+.qs-model-speeds { gap: 0; padding: 3px 5px; }
+.qs-model-speeds > button { gap: 4px; }
+.qs-model-speeds > button > .qs-model-speed-row { flex-direction: row; justify-content: space-between; gap: 3px; width: 100%; max-width: 78px; }
+.qs-model-speed-row small { flex: 1; min-width: 0; text-align: left; font-size: 9px; }
+.qs-model-speed-row strong { flex-shrink: 0; font-size: 10px; }

@@ -1,5 +1,4 @@
-import { observedSpeedWindowInfo } from "../components/liveRate/observedSpeedPresentation";
-import { useObservedSpeedWindow } from "../components/liveRate/observedSpeedWindow";
+import { latestSidebarModelSpeeds, speedTimestamp } from "../components/liveRate/bodySpeedPresentation";
 import { ObservedSpeedDetails } from "../components/liveRate/ObservedSpeedDetails";
 import { CacheUsageNotice } from "../components/liveRate/CacheUsageNotice";
 import { cacheAdviceTitle } from "../components/liveRate/cacheAdvicePresentation";
@@ -17,7 +16,7 @@ import { sanitizeDisplaySurfaces, INACTIVE_DISPLAY_SURFACES } from "../settings/
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 import { useCompactPanelData, type CompactPanelData } from "../surfaces/useCompactPanelData";
 import { useCompactPanelSource } from "../surfaces/useCompactPanelSource";
-import type { DisplaySurfaceSettings, RunningThreadMember } from "../types/dashboard";
+import type { CodexHomeSourceToken, DisplaySurfaceSettings, RunningThreadMember } from "../types/dashboard";
 import { initialSidebarState, sidebarRailClassName, hasFiveHourQuota, isSidebarAction, quotaPercent, quotaText, sidebarReducer, type SidebarAction, type SidebarState } from "./model";
 import { useFloatingRadar, useFloatingCrowdRadar } from "../floating/useFloatingRadar";
 import { sidebarRadarSnapshot, sidebarRadarAtTime, sidebarRadarCompact, sidebarRadarIsActive, type SidebarRadar } from "./radarModel";
@@ -46,6 +45,7 @@ import { SidebarTrend, type TrendPoint } from "./SidebarTrend";
 
 type SidebarData = Pick<CompactPanelData, "snapshot" | "runningThreads"> & {
   trend?: TrendPoint[];
+  sourceToken?: CodexHomeSourceToken | null;
   quota: Pick<CompactPanelData["quota"], "updatedAt" | "account" | "quota">;
 };
 function sidebarData(data: CompactPanelData): SidebarData {
@@ -106,7 +106,7 @@ function RailSurface() {
   }, [display.quotaSidebarEnabled]);
   const radarBase = useMemo(() => sidebarRadarSnapshot(officialRadar, crowdRadar), [officialRadar, crowdRadar]);
   const radar = useMemo(() => sidebarRadarAtTime(radarBase, officialRadar, Math.max(radarNow, Date.now())), [radarBase, officialRadar, radarNow]);
-  const compactData = useMemo(() => ({ ...sidebarData(data), trend }), [data.snapshot, data.runningThreads, data.quota.updatedAt, data.quota.account, data.quota.quota, trend]);
+  const compactData = useMemo(() => ({ ...sidebarData(data), trend, sourceToken }), [data.snapshot, data.runningThreads, data.quota.updatedAt, data.quota.account, data.quota.quota, trend, sourceToken]);
   const showsFiveHour = hasFiveHourQuota(data.snapshot.fiveHourAvailability, data.snapshot.fiveHourRemainingPercent);
   const coordinator = useRef<ReturnType<typeof createSidebarNativeCoordinator> | null>(null);
   if (coordinator.current === null) coordinator.current = createSidebarNativeCoordinator(
@@ -248,9 +248,15 @@ function RailSurface() {
 export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh, onDismissReminder }: {
   data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
 }) {
-  const [speedMinutes, setSpeedMinutes] = useObservedSpeedWindow();
-  const modelSpeeds = (speedMinutes === 15 ? data.snapshot.modelSpeeds15m : data.snapshot.modelSpeeds30m) ?? [];
-  const speedWindowInfo = observedSpeedWindowInfo(data.snapshot.speedSamples ?? [], speedMinutes);
+  const [, expireSpeedReadings] = useReducer((tick: number) => tick + 1, 0);
+  const modelSpeeds = latestSidebarModelSpeeds(data.snapshot.latestModelSpeeds30m ?? []);
+  useEffect(() => {
+    if (!modelSpeeds.length) return;
+    // One deadline timer, not a polling loop; stale snapshots must still expire.
+    const expiresAt = Math.min(...modelSpeeds.map(s => s.lastMeasuredAt! * 1000 + 1800_000));
+    const timer = setTimeout(expireSpeedReadings, Math.max(1, expiresAt - Date.now() + 1));
+    return () => clearTimeout(timer);
+  }, [modelSpeeds]);
   const ratePercent = sidebarRatePercent(data.snapshot, liveRateEnabled, rateFullScale);
   const { warning: cacheWarning, dismiss: dismissCacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice, liveRateEnabled && data.snapshot.liveRateAvailable === true);
   const rateLabel = !liveRateEnabled ? "实时速率已关闭" : ratePercent === null ? "实时速率不可用" : `实时速率 ${formatLiveRateValue(data.snapshot.tokensPerSecond)} t/s · 量程 ${sanitizeRateFullScale(rateFullScale)} t/s`;
@@ -300,14 +306,7 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
       <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
-      <div className="qs-model-speeds">
-        <button type="button" onClick={() => onOpen("quota", "speeds")} title="查看近期模型均速与采样明细">
-          <span>参考均速 · {speedMinutes}分钟</span>
-          {modelSpeeds.slice(0, 3).map(model => <span key={model.model}><small>{model.model.replace(/^gpt-/, "")}</small><strong>{model.tokensPerSecond.toFixed(1)} t/s{model.activeSampleCount ? " ·" : ""}</strong></span>)}
-          {!modelSpeeds.length && <small>{speedWindowInfo.emptyLabel}</small>}
-        </button>
-        <div className="qs-speed-window">{([15, 30] as const).map(minutes => <button type="button" key={minutes} aria-pressed={speedMinutes === minutes} onClick={() => setSpeedMinutes(minutes)}>{minutes}m</button>)}</div>
-      </div>
+      <SidebarBodySpeeds models={modelSpeeds} onOpen={() => onOpen("quota", "speeds")} />
       {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
       <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>
       {reserveWindows.map(window => {
@@ -328,6 +327,16 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
       </>;
     }}</SidebarSummaryLayer>
   </>;
+}
+
+export function SidebarBodySpeeds({ models, onOpen }: { models: NonNullable<SidebarData["snapshot"]["latestModelSpeeds30m"]>; onOpen: () => void }) {
+  return <div className="qs-model-speeds">
+    <button type="button" onClick={onOpen} title="30分钟内各模型最新正文 TPS · 点击查看记录">
+      <span>正文 TPS</span>
+      {models.map(model => <span className="qs-model-speed-row" key={model.model} title={`${model.model} · ${speedTimestamp(model.lastMeasuredAt)} · 最新一条正文`}><small>{model.model.replace(/^gpt-/, "")}</small><strong>{model.tokensPerSecond.toFixed(1)}</strong></span>)}
+      {!models.length && <small>—</small>}
+    </button>
+  </div>;
 }
 
 function Value({ value }: { value: string }) {
@@ -376,8 +385,8 @@ function DetailSurface() {
   return <main key={value?.state.mode === "detail" ? "open" : "closed"} className={`qs-detail qs-${value?.side ?? "right"}`} onPointerEnter={() => void emitTo(railLabel, "quota-sidebar-union-hover", true)} onPointerLeave={() => void emitTo(railLabel, "quota-sidebar-union-hover", false)}>
     {value === null ? <p className="qs-muted">正在读取侧栏快照…</p> : <>
       <header><div><strong>Codex</strong><span className="qs-plan">{value.data.quota.account.planLabel || "套餐未知"}</span><small className="qs-account">{value.data.quota.account.displayName || "账户待读取"}</small><small className="qs-update" title={value.data.quota.updatedAt}>更新 {sidebarLocalTime(value.data.quota.updatedAt, null, true)}</small></div><div className="qs-actions"><button aria-label="打开主界面" title="打开主界面" onClick={() => void desktopPlatform.showDashboardWindow()}>主界面 ↗</button><button className="qs-pin" aria-label={value.state.pinned ? "取消固定详情" : "固定详情"} title={value.state.pinned ? "取消固定详情" : "固定详情"} aria-pressed={value.state.pinned} onClick={() => action({ type: "pin" })}><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill={value.state.pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 3h6l-1 7 4 4v2H6v-2l4-4-1-7Z"/><path d="M12 16v6"/></svg></button><button aria-label="关闭详情" onClick={() => action({ type: "close" })}>×</button></div></header>
-      <nav><button aria-selected={value.state.tab === "quota"} onClick={() => action({ type: "open", tab: "quota" })}>额度概览</button><button aria-selected={value.state.tab === "running"} onClick={() => action({ type: "open", tab: "running" })}>运行会话 <b>{value.data.runningThreads.total ?? "—"}</b></button><button aria-selected={value.state.tab === "radar"} onClick={() => action({ type: "open", tab: "radar" })}>雷达</button><button aria-selected={value.state.tab === "credits"} onClick={() => action({ type: "open", tab: "credits" })}>重置卡</button></nav>
-      <div className="qs-detail-content">{value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} /> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
+      <nav><button aria-selected={value.state.tab === "quota" && value.state.section !== "speeds"} onClick={() => action({ type: "open", tab: "quota" })}>额度概览</button><button aria-selected={value.state.tab === "quota" && value.state.section === "speeds"} onClick={() => action({ type: "open", tab: "quota", section: "speeds" })}>测速</button><button aria-selected={value.state.tab === "running"} onClick={() => action({ type: "open", tab: "running" })}>运行会话 <b>{value.data.runningThreads.total ?? "—"}</b></button><button aria-selected={value.state.tab === "radar"} onClick={() => action({ type: "open", tab: "radar" })}>雷达</button><button aria-selected={value.state.tab === "credits"} onClick={() => action({ type: "open", tab: "credits" })}>重置卡</button></nav>
+      <div className="qs-detail-content">{value.state.tab === "quota" && value.state.section === "speeds" ? <ObservedSpeedDetails data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} /> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
       <footer><span>额度 · 用量 · 会话</span><span>{value.state.pinned ? "已固定 · 点击 × 收起" : "移出后收起 · 点击固定"}</span></footer>
       {value.error && <details className="qs-diagnostic"><summary>窗口状态说明</summary><p>{value.error}</p></details>}
     </>}
@@ -451,7 +460,6 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
         <Metric label={modelCostLabel} value={modelCostText} />
       </div>
     </section>
-    <ObservedSpeedDetails data={snapshot} />
     <section className="qs-model-usage" id="qs-section-models"><div className="qs-section-heading"><h3>今日模型用量</h3><span>今日占比 · 全部模型为分母</span></div>
       {models.length === 0 ? <p className="qs-empty">暂无可信的今日模型用量</p> : models.map(model => <div className="qs-model-row" key={model.key}>
         <div><strong title={model.key}>{model.label}</strong><span>{formatTokens(model.tokens)} <small>{(model.share * 100).toFixed(1)}%</small></span></div>
