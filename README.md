@@ -1,6 +1,6 @@
 # Codex Token Bar
 
-> **历史设计参考：缓存间隔诊断（2026-10-14 / v7）**  
+> **历史设计参考：缓存间隔诊断（2026-10-14 / v7）**
 > [动态 P95＋明显下降点规范](docs/design/cache-retention-dynamic-p95-drop.md)与[合成示意](docs/design/assets/cache-retention-dynamic-synthetic.svg)继续保留。低命中提醒和续问建议已隔离到 `codex/cache-advice-retained-20261022`，不在 v0.9.5 的运行链路中；缓存统计和费用账本仍保留。
 > Historical design only: reminders and follow-up recommendations are retained on the branch above and are not active in v0.9.5; cache accounting and the cost ledger remain available.
 
@@ -184,7 +184,7 @@ npm run tauri -- dev
 macOS Swift 发布包：
 
 ```bash
-SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
+APP_BUILD=926 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
   scripts/build_release.sh v0.9.5
 ```
 
@@ -380,7 +380,7 @@ npm run tauri -- dev
 macOS Swift release assets:
 
 ```bash
-SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
+APP_BUILD=926 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
   scripts/build_release.sh v0.9.5
 ```
 
