@@ -245,8 +245,6 @@ There are now two official implementation lines:
 - Dual Radar: official Radar shows suggested action, 24h / 48h probabilities, and model IQ; Crowd Radar shows the public top three, coverage, and full ranking with wrapper, alias, and lossy-row compatibility.
 - Floating pace panel: combines Radar action, model IQ, the currently available quota windows, and local live speed in a configurable compact window.
 - Yearly token heatmap, 5-minute recent activity chart, cache hit-rate curve, and cache hit ranking.
-- Cache follow-up chart with density shading, a recommendation line and a low-hit-risk line. The first 80 minutes use ten-minute linear ticks, with model and date filters and shared dashboard/reminder access.
-- Preserves recorded usage and diagnostic samples after sessions are archived, moved or deleted, including newly authored rounds after a fork. Recommendations describe local history and do not guarantee server-side cache lifetime.
 - Adaptive Codex quota display: a 7-day-only account shows only 7d, while 5h and 7d appear together only when both are available, with lightweight local history, Radar estimates, and compact pace hints.
 - Official quota: reads the quota for the current Codex login and shows separate Reserve windows and reset times when returned by the endpoint.
 - Reset credit details: see available reset credits, grant reason, linked user, expiry time, remaining time, and card ID.
