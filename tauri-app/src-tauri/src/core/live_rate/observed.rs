@@ -944,6 +944,20 @@ fn backfill_unknown_models(store: &mut SpeedStore, scope: &LiveRateSourceScope, 
     let mut positions = HashMap::<String, usize>::new();
     let mut turns_by_thread = HashMap::<String, HashSet<String>>::new();
 
+    // Prioritize active live curves so startup usage records without a nearby
+    // turn_context can still resolve their own exact model metadata.
+    for (thread, turns) in c_curve::unresolved_model_requests(scope, now) {
+        for turn in turns {
+            append_model_request(
+                &mut thread_turns,
+                &mut positions,
+                &mut turns_by_thread,
+                thread.clone(),
+                turn,
+            );
+        }
+    }
+
     let mut active = store
         .active
         .values()
@@ -1010,6 +1024,7 @@ fn backfill_unknown_models(store: &mut SpeedStore, scope: &LiveRateSourceScope, 
         Path::new(&scope.canonical_home_key),
         &thread_turns,
     );
+    c_curve::resolve_models(scope, &resolved, now);
     let mut changed = false;
     for sample in &mut store.samples {
         if !is_unknown_model(sample.model.as_deref()) {

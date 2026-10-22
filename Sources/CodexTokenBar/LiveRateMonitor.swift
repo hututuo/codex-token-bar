@@ -1078,6 +1078,7 @@ final class LiveRateMonitor: ObservableObject {
             bodyHistoryTitles = [:]; bodyHistoryStatus = ""; lastSpeedPruneAt = 0
             speedSourceIdentity = identity
             completedBodyReader = CompletedBodySpeedReader(); completedBodyError = nil
+            throughputCurve = ThroughputCurve(); speedContexts = ObservedStreamContexts()
             resolvedSpeedModels.removeAll(); speedModelLookupAttempts.removeAll()
             // Store metadata only in TokenBar support, partitioned by a non-reversible source hash.
             let digest = identity.map { ObservedSpeedCollector.sourceKey($0) } ?? "default"
@@ -1268,7 +1269,8 @@ final class LiveRateMonitor: ObservableObject {
             if event.isDelta, let resolvedThreadID, event.category?.contributesToLiveRate == true {
                 if let context = speedContexts.resolve(thread: resolvedThreadID, at: event.timestamp,
                     explicitTurn: event.turnID ?? itemTurnIDs[event.itemID]) {
-                    throughputCurve.consume(.init(kind: "observed", timestamp: event.timestamp, turnID: context.turn,
+                    let model = resolvedSpeedModels[resolvedThreadID]?[context.turn] ?? context.model
+                    throughputCurve.consume(.init(kind: "observed", timestamp: event.timestamp, turnID: context.turn, model: model,
                         itemID: "delta:\(row.id):\(event.itemID)", output: Double(estimateTokenCount(event.text, category: event.category ?? .visibleText))), thread: resolvedThreadID, now: now)
 
                 }
@@ -1447,7 +1449,18 @@ final class LiveRateMonitor: ObservableObject {
 
     private func resolveSpeedModelsIfNeeded(now: Double) {
         guard !speedModelLookupRunning, let home = dataSource?.codexHome else { return }
-        var wanted: [String: Set<String>] = [:]
+        throughputCurve.resolveModels(resolvedSpeedModels)
+        var knownContexts: [String: [String: String]] = [:]
+        for (thread, turns) in throughputCurve.unresolvedModelTurns(now: now) {
+            for turn in turns {
+                if let context = speedContexts.resolve(thread: thread, at: now, explicitTurn: turn) {
+                    knownContexts[thread, default: [:]][turn] = context.model
+                }
+            }
+        }
+        throughputCurve.resolveModels(knownContexts)
+        let activeCurves = throughputCurve.unresolvedModelTurns(now: now)
+        var wanted = activeCurves
         for part in speedCollector.pending.values where part.model.isEmpty || part.model == "unknown" {
             wanted[part.thread, default: []].insert(part.turn)
         }
@@ -1459,7 +1472,15 @@ final class LiveRateMonitor: ObservableObject {
             if wanted[thread]!.isEmpty { wanted.removeValue(forKey: thread) }
         }
         guard !wanted.isEmpty else { return }
-        wanted = Dictionary(uniqueKeysWithValues: wanted.sorted { $0.key < $1.key }.prefix(8).map { ($0.key, $0.value) })
+        let prioritized = wanted.sorted { left, right in
+            let leftActive = activeCurves[left.key] != nil, rightActive = activeCurves[right.key] != nil
+            return leftActive != rightActive ? leftActive : left.key < right.key
+        }
+        wanted = Dictionary(uniqueKeysWithValues: prioritized.prefix(8).map { thread, turns in
+            let active = (activeCurves[thread] ?? []).intersection(turns)
+            let remaining = turns.subtracting(active).sorted().prefix(max(0, 64 - active.count))
+            return (thread, active.union(remaining))
+        })
         for (thread, turns) in wanted { for turn in turns { speedModelLookupAttempts["\(thread)/\(turn)"] = now } }
         if speedModelLookupAttempts.count > 512 {
             speedModelLookupAttempts = Dictionary(uniqueKeysWithValues: speedModelLookupAttempts.sorted { $0.value > $1.value }.prefix(512).map { ($0.key, $0.value) })
@@ -1478,6 +1499,7 @@ final class LiveRateMonitor: ObservableObject {
             guard self.isCurrentSource(generation: generation, bindingGeneration: binding), self.speedSourceIdentity == identity else { return }
             for (thread, turns) in lookup { self.resolvedSpeedModels[thread, default: [:]].merge(turns, uniquingKeysWith: { _, latest in latest }) }
             self.speedCollector.resolveModels(lookup)
+            if self.throughputCurve.resolveModels(lookup) { self.lastSnapshotPublishAt = 0 }
             self.lastModelSpeedSummaryAt = 0
             self.updateSnapshots(now: Date().timeIntervalSince1970)
         }

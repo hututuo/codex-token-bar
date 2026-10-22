@@ -43,10 +43,9 @@ struct ThroughputCurve {
         if !signal.turnID.isEmpty, signal.turnID != s.turn {
             guard signal.kind == "start" || signal.timestamp >= s.lastQuantity else { return }
             let history = s.history
-            let model = s.model
-            s = Session(); s.turn = signal.turnID; s.history = history; s.model = model
+            s = Session(); s.turn = signal.turnID; s.history = history
         }
-        if !signal.model.isEmpty { s.model = signal.model }
+        if !Self.isUnknownModel(signal.model) { s.model = signal.model }
         Self.advance(&s, to: signal.timestamp)
         let identity = "\(signal.kind):\(signal.itemID):\(signal.timestamp)"
         guard s.seen.insert(identity).inserted else { return }
@@ -140,6 +139,35 @@ struct ThroughputCurve {
             for key in expired { sessions.removeValue(forKey: key) }
         }
     }
+    private static func isUnknownModel(_ model: String) -> Bool {
+        let key = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return key.isEmpty || key.lowercased() == "unknown"
+    }
+
+    /// Metadata lookup is keyed by the exact active turn; never replay old quantities.
+    func unresolvedModelTurns(now: Double) -> [String: Set<String>] {
+        var wanted: [String: Set<String>] = [:]
+        for (thread, session) in sessions where !session.turn.isEmpty && Self.isUnknownModel(session.model)
+            && !session.stopped && !session.paused && now.isFinite && session.lastQuantity.isFinite
+            && session.lastQuantity <= now + 2 && now - session.lastQuantity < 20
+            && (session.finish.map { now < $0 + 5 } ?? true)
+            && (session.display > 0 || session.budget > 0 || session.queue.contains { $0 > 0 }) {
+            wanted[thread, default: []].insert(session.turn)
+        }
+        return wanted
+    }
+
+    @discardableResult
+    mutating func resolveModels(_ models: [String: [String: String]]) -> Bool {
+        var changed = false
+        for thread in Array(sessions.keys) {
+            guard var session = sessions[thread], Self.isUnknownModel(session.model), !session.turn.isEmpty,
+                  let model = models[thread]?[session.turn], !Self.isUnknownModel(model) else { continue }
+            session.model = model; sessions[thread] = session; changed = true
+        }
+        return changed
+    }
+
     var modelRates: [ModelRateContribution] {
         var grouped: [String: Double] = [:]
         for session in sessions.values where session.display.isFinite && session.display > 0 {

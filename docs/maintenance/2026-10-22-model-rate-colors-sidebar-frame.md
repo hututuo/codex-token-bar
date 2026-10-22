@@ -19,3 +19,11 @@ English: Sidebar chrome is fixed at the top and bottom with 12pt insets; modules
 - Browser production-component fixture verifies 40/60 → 60/40 with total 100 unchanged, same model colors, equal instruction styling and 12px fixed chrome insets.
 - macOS local build942 candidate/install/runtime evidence is recorded outside source in `runs/20261022-sidebar-frame-guide/`. Windows source is synchronized; full Windows build/install and physical multi-display checks remain unverified. No public release in this change.
 - No paid detection request or dependency change. A rebuildable Rust incremental cache was removed after a failed test compile exhausted available disk space; user data, source and rollback app backups were retained.
+
+## build943：长轮次中途启动的模型归属修复 / Mid-turn model recovery
+
+中文：build942 实机出现正速率灰色。真实本机 continuation 的模型记录早于应用启动，实时曲线收到新用量但仍为 unknown；正文测速的模型补查没有给活动曲线回填。build943 将活动曲线的 `(会话, 轮次)` 加入同一个有容量上限的元数据查找，并将结果同时回填给测速样本与曲线；已知流式上下文的模型也直接传入。仅回填模型，不回放旧数量，不改预算、速率、队列或结束时间。新轮次缺模型时不继承上一轮的模型；源切换清理源内曲线与上下文。
+
+English: Build942 could show positive rates in gray after starting midway through a long turn. The model context predated app startup, and the existing body-speed metadata resolver did not populate the active curve. Build943 includes active curve `(thread, turn)` pairs in the same bounded lookup, fills both consumers, and passes known stream-context models directly. Recovery changes model metadata only; it does not replay quantities or change budgets, rates, queues or end timestamps. A new turn never borrows the previous turn's model. Switching sources clears source-local curve/context state.
+
+验证 / Validation: exact-turn recovery, mismatched turns, new-model turns, normal completion tail and stopped curves are covered. Native model-recovery/monitor regressions: 99 selected, 97 passed, 2 opt-in skipped, no failures. Opt-in real local metadata replay passed separately: unknown → `gpt-6.1-sol`, unchanged replay rate 218.13333333333333 before/after (synthetic quantity, real model metadata). The read-only replay is evidence for attribution, not a measured TPS claim. Native monitor integration also verifies recovery when there are no body-speed samples.
