@@ -28,11 +28,11 @@ test("actual rest markup uses speed rather than agent count; scale updates chang
       state: { mode: "rest" }, rateFullScale: fullScale, liveRateEnabled: enabled, onOpen() {},
     })).match(/class="qs-bar qs-rate-bar"[\s\S]*?<\/span>/)[0];
     assert.equal(render(100, 0), render(100, 15));
-    assert.ok(render(100, 0).includes('transform:scaleY(0.5)'));
-    assert.ok(render(100, 15, 400).includes('transform:scaleY(0.25)'));
-    assert.ok(render(0, 15).includes('transform:scaleY(0)'));
-    assert.ok(render(NaN, 15).includes('transform:scaleY(0)'));
-    assert.ok(render(100, 15, 200, false).includes('transform:scaleY(0)'));
+    assert.ok(render(100, 0).includes('height:50%'));
+    assert.ok(render(100, 15, 400).includes('height:25%'));
+    assert.ok(render(0, 15).includes('height:0%'));
+    assert.ok(render(NaN, 15).includes('height:0%'));
+    assert.ok(render(100, 15, 200, false).includes('height:0%'));
     assert.ok(render(100, 15, 200, false).includes('实时速率已关闭'));
   });
 });

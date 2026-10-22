@@ -47,13 +47,6 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
 enum FloatingTodayModelUsagePresentation {
     static let visibleItemLimit = 4
     static let minimumVisibleModelCount = 4
-    static let dashboardPrimaryModelKeys = [
-        "gpt-6-astra",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-    ]
-
     /// Keep the compact model strip useful even when the current day only
     /// contains one model. Astra/Sol/Terra/Luna are the stable placeholder
     /// priority list, but only enough zero rows are added to reach four total
@@ -301,35 +294,24 @@ enum FloatingTodayModelUsagePresentation {
         return knownCosts.reduce(0, +)
     }
 
-    static func dashboardPrimaryItems(
-        from items: [FloatingTodayModelUsageItem]
-    ) -> [FloatingTodayModelUsageItem] {
-        let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
-        return dashboardPrimaryModelKeys.map { key in
-            byID[key] ?? dashboardPlaceholder(for: key)
+    struct DashboardFamilyGroup: Identifiable {
+        let id: String
+        let title: String
+        let items: [FloatingTodayModelUsageItem]
+    }
+
+    static func dashboardFamilyID(for model: String) -> String {
+        let key = ModelUsagePresentation.key(for: model).lowercased().replacingOccurrences(of: "_", with: "-").replacingOccurrences(of: " ", with: "-")
+        if key.range(of: #"^gpt-?6(?:\.[0-9]+)*(?:-|$)"#, options: .regularExpression) != nil { return "6" }
+        if key.range(of: #"^gpt-?5\.6(?:-|$)"#, options: .regularExpression) != nil { return "5.6" }
+        return "other"
+    }
+
+    static func dashboardFamilyGroups(from items: [FloatingTodayModelUsageItem]) -> [DashboardFamilyGroup] {
+        [("6", "6 系列"), ("5.6", "5.6 系列"), ("other", "其他")].compactMap { id, title in
+            let rows = items.filter { $0.tokens > 0 && dashboardFamilyID(for: $0.id) == id }
+            return rows.isEmpty ? nil : DashboardFamilyGroup(id: id, title: title, items: rows)
         }
-    }
-
-    static func dashboardSecondaryItems(
-        from items: [FloatingTodayModelUsageItem]
-    ) -> [FloatingTodayModelUsageItem] {
-        let primaryIDs = Set(dashboardPrimaryModelKeys)
-        return items.filter { !primaryIDs.contains($0.id) && $0.tokens > 0 }
-    }
-
-    private static func dashboardPlaceholder(
-        for key: String
-    ) -> FloatingTodayModelUsageItem {
-        FloatingTodayModelUsageItem(
-            id: key,
-            label: ModelUsagePresentation.label(for: key),
-            tokens: 0,
-            share: 0,
-            costUSD: 0,
-            usesIndependentQuota: false,
-            referenceCostUSD: nil,
-            color: ModelUsagePresentation.color(for: key)
-        )
     }
 
     static func overflowDetailText(

@@ -13,8 +13,7 @@ import {
 } from "./statsStrip/savings";
 import { readStoredQuotaPriceModel } from "../settings/quotaPriceModel";
 import {
-  dashboardPrimaryModelUsageItems,
-  dashboardSecondaryModelUsageItems,
+  dashboardModelFamilyGroups,
   floatingModelUsageMoneyText,
   floatingModelUsageKnownCostUSD,
   floatingModelUsageValue,
@@ -134,15 +133,7 @@ function StatsStripView({
     .filter((item) => item.referenceCostUSD !== null)
     .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
     .join(" · ");
-  const boundaryTokens = cycleHistory.usage?.boundaryModelBreakdowns.reduce((sum,row)=>sum+row.breakdown.totalTokens,0) ?? 0;
-  const boundaryTokenSummary = modelCostScope === "sevenDay" && boundaryTokens > 0
-    ? `未确定所属周期 · ${formatTokens(boundaryTokens)} Token` : "";
-  const boundaryItems = useMemo(() => floatingTodayModelUsageItems(
-    cycleHistory.usage?.boundaryModelBreakdowns ?? [], priceModel, { mergeAutoReview: false },
-  ).filter(item => item.tokens > 0).map(item => item.key === "unknown"
-    ? { ...item, costUSD: null } : item), [cycleHistory.usage, priceModel]);
-  const primaryModelCostItems = dashboardPrimaryModelUsageItems(modelCostItems);
-  const secondaryModelCostItems = dashboardSecondaryModelUsageItems(modelCostItems);
+  const modelFamilies = dashboardModelFamilyGroups(modelCostItems);
 
   useEffect(() => {
     setPriceModel(readStoredQuotaPriceModel());
@@ -230,13 +221,6 @@ function StatsStripView({
           </div>
           {modelCostScope === "sevenDay" && calendarExpanded ? <QuotaCycleCalendar cycles={cycleHistory.cycles}
             selected={cycleHistory.selected} onSelect={selectCycle} /> : null}
-          {modelCostScope === "sevenDay" && boundaryItems.length > 0 ? (
-            <details className="stats-quota-boundary-detail">
-              <summary>{boundaryTokenSummary}</summary>
-              <p>这些用量发生在周期切换附近，暂时无法确定属于哪一期，因此未计入周期合计。记录仍然保留。</p>
-              {boundaryItems.map(item => <span key={item.key}>{item.label} · {formatTokens(item.tokens)} Token · {item.key === "unknown" ? "模型身份待补全" : `API 等值约 ${floatingModelUsageValue(item, "cost")}`}</span>)}
-            </details>
-          ) : null}
           {modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (
             <span className="stats-model-cost-empty">{cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : `${periodLabel}模型明细待读取`}</span>
           ) : modelCostScope === "today" && selectedModelDisplayState === "pending" ? (
@@ -253,38 +237,14 @@ function StatsStripView({
             </span>
           ) : (
             <div className="stats-model-cost-groups">
-              <div className="stats-model-cost-group">
-                <span className="stats-model-cost-group-label">主力</span>
-                <div className="stats-model-cost-primary-grid">
-                  {primaryModelCostItems.map((item) => (
-                    <span
-                      className="stats-model-cost-primary-card"
-                      key={item.key}
-                      style={{ "--model-color": item.color } as CSSProperties}
-                    >
-                      <i />
-                      <em>{item.label}</em>
-                      <b>{floatingModelUsageValue(item, "cost")}</b>
-                      <small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item, "share")}</small>
-                    </span>
-                  ))}
+              {modelFamilies.map(group => <div className="stats-model-cost-group" key={group.id}>
+                <span className="stats-model-cost-group-label">{group.label}</span>
+                <div className={group.id === "6" ? "stats-model-cost-primary-grid" : "stats-model-cost-secondary-grid"}>
+                  {group.items.map(item => <span className={group.id === "6" ? "stats-model-cost-primary-card" : "stats-model-cost-secondary-chip"} key={item.key} style={{"--model-color":item.color} as CSSProperties}>
+                    <i style={{backgroundColor:item.color}}/><em>{item.label}</em><b>{floatingModelUsageValue(item,"cost")}</b><small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item,"share")}</small>
+                  </span>)}
                 </div>
-              </div>
-              {secondaryModelCostItems.length > 0 ? (
-                <div className="stats-model-cost-group">
-                  <span className="stats-model-cost-group-label">其他</span>
-                  <div className="stats-model-cost-secondary-grid">
-                    {secondaryModelCostItems.map((item) => (
-                      <span className="stats-model-cost-secondary-chip" key={item.key}>
-                        <i style={{ backgroundColor: item.color }} />
-                        <em>{item.label}</em>
-                        <b>{floatingModelUsageValue(item, "cost")}</b>
-                        <small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item, "share")}</small>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
+              </div>)}
             </div>
           )}
         </div>

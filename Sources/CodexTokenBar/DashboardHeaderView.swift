@@ -1291,13 +1291,10 @@ struct DashboardModelCostRow: View {
         let visibleReferenceCostSummary = visibleReferenceEntries.isEmpty
             ? nil
             : visibleReferenceEntries.joined(separator: " · ")
-        let visiblePrimaryItems = FloatingTodayModelUsagePresentation.dashboardPrimaryItems(from: visibleItems)
-        let visibleSecondaryItems = FloatingTodayModelUsagePresentation.dashboardSecondaryItems(from: visibleItems)
+        let modelFamilies = FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: visibleItems)
         let pendingItems = scope == .sevenDay ? FloatingTodayModelUsagePresentation.items(
             from: sevenDayPendingRows, fallbackModel: fallbackModel
         ) : []
-        let pendingCost = FloatingTodayModelUsagePresentation.knownCostUSD(in: pendingItems)
-        let pendingHasUnknownPrices = pendingItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
         let selectedAvailable = selectedDataAvailable
         let modelDetailAvailable = hasModelDetail
 
@@ -1370,21 +1367,7 @@ struct DashboardModelCostRow: View {
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if sevenDayBoundaryTokens > 0 {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("待归属 \(pendingHasUnknownPrices ? "已知价格小计 " : "")API \(pendingCost.map { $0.quotaEstimatorMoneyText } ?? "—") · \(sevenDayBoundaryTokens.abbreviatedTokens) Token")
-                            .font(.system(size: 10, weight: .semibold)).monospacedDigit()
-                        Text(pendingItems.map { "\($0.label) \($0.valueText(for: .cost))" }.joined(separator: " · "))
-                            .font(.system(size: 9)).monospacedDigit()
-                        Text("周期边界附近的用量暂未计入已确认金额；相邻周期引用同一笔待归属用量，请勿相加。")
-                            .font(.system(size: 9))
-                        if pendingHasUnknownPrices {
-                            Text("部分模型价格未知，未计入待归属金额").font(.system(size: 9))
-                        }
-                    }
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+
             }
 
             if scope == .sevenDay, calendarExpanded {
@@ -1422,43 +1405,17 @@ struct DashboardModelCostRow: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                HStack(alignment: .top, spacing: 10) {
-                    Text("主力")
-                        .font(.system(size: 9.5, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .frame(width: 28, alignment: .leading)
-
-                    HStack(spacing: 7) {
-                        ForEach(visiblePrimaryItems) { item in
-                            DashboardPrimaryModelCostCard(item: item)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                if !visibleSecondaryItems.isEmpty {
+                ForEach(modelFamilies) { group in
                     HStack(alignment: .top, spacing: 10) {
-                        Text("其他")
-                            .font(.system(size: 9.5, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
-                            .frame(width: 28, alignment: .leading)
-
-                        LazyVGrid(
-                            columns: Array(
-                                repeating: GridItem(.flexible(minimum: 108), spacing: 6),
-                                count: 4
-                            ),
-                            alignment: .leading,
-                            spacing: 6
-                        ) {
-                            ForEach(visibleSecondaryItems) { item in
-                                DashboardSecondaryModelCostChip(item: item)
+                        Text(group.title)
+                            .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+                            .frame(width: 58, alignment: .leading)
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 108), spacing: 7), count: 4), alignment: .leading, spacing: 7) {
+                            ForEach(group.items) { item in
+                                if group.id == "6" { DashboardPrimaryModelCostCard(item: item) }
+                                else { DashboardSecondaryModelCostChip(item: item) }
                             }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .layoutPriority(1)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }

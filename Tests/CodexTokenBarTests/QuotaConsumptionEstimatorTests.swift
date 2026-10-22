@@ -2156,20 +2156,6 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
     }
 
-    func testRecentUsageChartIncludesTwoStepQuotaGuidePointingToCalculationCard() throws {
-        let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
-        let componentSource = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift", encoding: .utf8)
-
-        XCTAssertTrue(source.contains("recentChartQuotaGuideCompletedV01"))
-        XCTAssertTrue(source.contains("return .secondPoint"))
-        XCTAssertTrue(source.contains("return .calculationCard"))
-        XCTAssertTrue(source.contains("RecentChartQuotaGuide("))
-        XCTAssertTrue(componentSource.contains("① 点击折线中的第一个点，设定起点"))
-        XCTAssertTrue(componentSource.contains("② 点击第二个点，固定终点"))
-        XCTAssertTrue(componentSource.contains("额度计算卡已出现在左下方"))
-        XCTAssertTrue(componentSource.contains("return \"↙\""))
-    }
-
     func testEstimateSummaryLivesBelowPlotInsteadOfInsideTheHitLayer() throws {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
         let chartStart = try XCTUnwrap(source.range(of: "private func chartPlot(")).lowerBound

@@ -24,8 +24,8 @@ private struct ReserveSidebarScroll: ViewModifier {
     }
 }
 
-// Value interpolation belongs to SwiftUI, not a timer per meter. Scaling a
-// fixed track leaves surrounding layout unchanged throughout the transition.
+// Animate the fill dimensions inside a fixed track. Rebuilding the capsule
+// at its actual size keeps both end caps round, even for small readings.
 private struct SidebarValueBar: View {
     let fraction: Double?
     let color: Color
@@ -35,20 +35,24 @@ private struct SidebarValueBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var amount: Double { min(1, max(0, fraction ?? 0)) }
     var body: some View {
-        ZStack {
-            Capsule().fill(.white.opacity(0.12))
-            Capsule().fill(color.opacity(emphasis))
-                .scaleEffect(x: vertical ? 1 : amount, y: vertical ? amount : 1,
-                             anchor: vertical ? .bottom : .leading)
-                .opacity(fraction == nil ? 0 : 1)
-            if let expected {
-                GeometryReader { geometry in
+        GeometryReader { geometry in
+            ZStack(alignment: vertical ? .bottom : .leading) {
+                Capsule().fill(.white.opacity(0.12))
+                Capsule().fill(color.opacity(emphasis))
+                    .frame(width: geometry.size.width * (vertical ? 1 : amount),
+                           height: geometry.size.height * (vertical ? amount : 1))
+                    .opacity(fraction == nil || amount == 0 ? 0 : 1)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .overlay {
+                if let expected {
                     Rectangle().fill(.white)
                         .frame(width: vertical ? geometry.size.width : 1.5,
                                height: vertical ? 1.5 : geometry.size.height)
                         .position(x: vertical ? geometry.size.width / 2 : geometry.size.width * min(1, max(0, expected)),
                                   y: vertical ? geometry.size.height * (1 - min(1, max(0, expected))) : geometry.size.height / 2)
-                }.allowsHitTesting(false)
+                        .allowsHitTesting(false)
+                }
             }
         }
         .animation(reduceMotion ? nil : .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.34), value: fraction)

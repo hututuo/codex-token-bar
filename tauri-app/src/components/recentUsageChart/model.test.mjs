@@ -1317,24 +1317,6 @@ test("RecentUsageChart exposes click-to-estimate quota UI", async () => {
   }
 });
 
-test("RecentUsageChart includes the two-step quota guide and calculation-card callout", async () => {
-  const source = await readFile(new URL("../RecentUsageChart.tsx", import.meta.url), "utf8");
-  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
-
-  for (const expected of [
-    "recentChartQuotaGuideCompletedV01",
-    "① 点击折线中的第一个点，设定起点",
-    "② 点击第二个点，固定终点",
-    "额度计算卡已出现在左下方",
-    "recent-chart-quota-guide",
-  ]) {
-    assert.equal(source.includes(expected), true, expected);
-  }
-  assert.match(css, /\.recent-chart-quota-guide\s*\{/);
-  assert.match(css, /\.recent-chart-quota-guide__arrow\s*\{/);
-});
-
-
 test("7d preserves the same five-minute low and token totals as 24h", () => {
   const fine = Array.from({length:12}, (_, i) => point(i*300, {tokens:100,calls:1,sevenDayRemainingPercent:i===5 ? .07 : .17}));
   const series = {recentUsage24h:fine,recentUsage7d:[point(0,{tokens:1200,calls:12,sevenDayRemainingPercent:.17})],recentUsage30d:[]};

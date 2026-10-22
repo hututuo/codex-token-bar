@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  dashboardPrimaryModelUsageItems,
-  dashboardSecondaryModelUsageItems,
+  dashboardModelFamilyGroups,
+  dashboardModelFamilyID,
   floatingModelUsageAccessibilityText,
   floatingModelUsageKnownCostUSD,
   floatingModelUsageOverflowText,
@@ -165,21 +165,16 @@ test("cost model pages stay balanced while never exceeding four items", () => {
   );
 });
 
-test("dashboard groups keep Astra Sol Terra Luna expanded and wrap used secondary models", () => {
-  const items = floatingTodayModelUsageItems([
-    row("gpt-5.6-sol", 1_000, 0, 0, 1_000, 1),
-    row("gpt-5.4", 500, 0, 0, 500, 1),
-    row("gpt-5.3-codex", 250, 0, 0, 250, 1),
-  ], "gpt56Sol");
-
-  assert.deepEqual(
-    dashboardPrimaryModelUsageItems(items).map((item) => item.label),
-    ["Astra", "Sol", "Terra", "Luna"],
-  );
-  assert.deepEqual(
-    dashboardSecondaryModelUsageItems(items).map((item) => item.label),
-    ["5.4", "5.3"],
-  );
+test("dashboard families group all six generations without changing Tokens, costs or unknown prices", () => {
+  const keys=["gpt-6-astra","gpt-6.1-sol","gpt-6.0-sol","GPT-6.2-NewLane","gpt-5.6-sol","GPT-5.6-NewLane","gpt-60-test","codex-auto-review"];
+  const items=floatingTodayModelUsageItems(keys.map(key=>row(key,1000,0,0,1000,1)),"gpt56Sol",{mergeAutoReview:false});
+  const groups=dashboardModelFamilyGroups(items);
+  assert.deepEqual(groups.map(g=>g.id),["6","5.6","other"]);
+  assert.deepEqual(groups.map(g=>g.items.length),[4,2,2]);
+  assert.equal(groups.flatMap(g=>g.items).reduce((sum,item)=>sum+item.tokens,0),8000);
+  assert.equal(floatingModelUsageKnownCostUSD(groups.flatMap(g=>g.items)),floatingModelUsageKnownCostUSD(items));
+  assert.equal(groups[0].items.find(i=>i.key==="gpt-6.0-sol").costUSD,null);
+  assert.equal(dashboardModelFamilyID("gpt6.0"),"6"); assert.equal(dashboardModelFamilyID("gpt5.6"),"5.6");
 });
 
 function row(model, inputTokens, cachedInputTokens, outputTokens, totalTokens, calls, eventStartUnix) {

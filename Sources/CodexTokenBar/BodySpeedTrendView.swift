@@ -25,7 +25,7 @@ struct BodySpeedTrendView: View {
         return max(0, low - padding)...max(10, high + padding)
     }
     private var caption: String {
-        monitor.speedTrendDays == 1 ? "每5分钟平均 TPS" : monitor.speedTrendDays == 7 ? "30分钟汇总 · 底层5分钟" : "2小时汇总 · 底层5分钟"
+        monitor.speedTrendDays == 1 ? "每点为5分钟均速 · TPS" : monitor.speedTrendDays == 7 ? "30分钟汇总 · 底层5分钟" : "2小时汇总 · 底层5分钟"
     }
     private func color(_ model: String, models: [String]) -> Color {
         let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan]
@@ -50,18 +50,18 @@ struct BodySpeedTrendView: View {
     }
     private var rangePicker: some View {
         HStack(spacing: 3) {
-            ForEach([3600, 86400, 604800, 2592000], id: \.self) { seconds in
+            ForEach([86400, 604800, 2592000], id: \.self) { seconds in
                 Button { monitor.setSpeedTrendWindow(seconds); selectedTime = nil } label: {
-                    Text(seconds == 3600 ? "1小时" : seconds == 86400 ? "24小时" : seconds == 604800 ? "7天" : "30天")
+                    Text(seconds == 86400 ? "24小时" : seconds == 604800 ? "7天" : "30天")
                         .font(.system(size: 10, weight: .medium)).lineLimit(1)
                         .frame(maxWidth: .infinity).padding(.vertical, 5)
                         .foregroundStyle(monitor.speedTrendWindowSeconds == seconds ? Color.white : ink.opacity(0.8))
                         .background(RoundedRectangle(cornerRadius: 5).fill(monitor.speedTrendWindowSeconds == seconds ? Color.blue : ink.opacity(0.07)))
                 }.buttonStyle(.plain)
-                    .accessibilityLabel("速度趋势范围 " + (seconds == 3600 ? "1小时" : seconds == 86400 ? "24小时" : seconds == 604800 ? "7天" : "30天"))
+                    .accessibilityLabel("速度趋势范围 " + (seconds == 86400 ? "24小时" : seconds == 604800 ? "7天" : "30天"))
                     .accessibilityValue(monitor.speedTrendWindowSeconds == seconds ? "已选择" : "未选择")
             }
-        }.frame(width: compact ? 210 : 240)
+        }.frame(width: compact ? 170 : 205)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

@@ -1,3 +1,4 @@
+import { RecentChartInteractionGuide } from "./recentUsageChart/InteractionGuide";
 import {
   useEffect,
   useLayoutEffect,
@@ -75,7 +76,6 @@ const CHART_HOVER_BUBBLE_FALLBACK_WIDTH = 260;
 const RANGE_OPTIONS: RecentChartRange[] = ["24h", "7d", "30d"];
 const VISIBILITY_STORAGE_KEY = "recentChartVisibility";
 const RANGE_STORAGE_KEY = "recentChartRange";
-const QUOTA_GUIDE_STORAGE_KEY = "recentChartQuotaGuideCompletedV01";
 
 function useChartBubbleWidth(fallbackWidth: number) {
   const bubbleRef = useRef<HTMLDivElement | null>(null);
@@ -117,7 +117,6 @@ export function RecentUsageChart({
   const [previewDismissed, setPreviewDismissed] = useState(false);
   const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
   const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
-  const [quotaGuideCompleted, setQuotaGuideCompleted] = useState(() => window.localStorage.getItem(QUOTA_GUIDE_STORAGE_KEY) === "1");
   const interactionRootRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -261,19 +260,6 @@ export function RecentUsageChart({
     ? quotaSelectionAttribution(consumptionSelection, sharedAccountAttribution)
     : null, [fixedSelectionEndIndex, consumptionSelection, sharedAccountAttribution]);
   const quotaEstimateVisibility = quotaEstimateWindowVisibility(data);
-  const quotaGuideStep = !quotaGuideCompleted && data.points.length > 1
-    ? fixedSelectionEndIndex !== null
-      ? "calculationCard"
-      : quotaSelectionState.startIndex !== null
-        ? "secondPoint"
-        : "firstPoint"
-    : null;
-
-  function dismissQuotaGuide() {
-    setQuotaGuideCompleted(true);
-    window.localStorage.setItem(QUOTA_GUIDE_STORAGE_KEY, "1");
-  }
-
   useLayoutEffect(() => {
     const scrollElement = scrollRef.current;
     if (!scrollElement) {
@@ -601,6 +587,7 @@ export function RecentUsageChart({
           </div>
         </div>
 
+      <RecentChartInteractionGuide />
       <div className="recent-chart-plot">
         <div
           key={data.range}
@@ -796,30 +783,6 @@ export function RecentUsageChart({
         </div>
       </div>
       </section>
-      {quotaGuideStep ? (
-        <div className={`recent-chart-quota-guide recent-chart-quota-guide--${quotaGuideStep}`} role="note">
-          <span className="recent-chart-quota-guide__arrow" aria-hidden="true">
-            {quotaGuideStep === "calculationCard" ? "↙" : "↓"}
-          </span>
-          <div>
-            <strong>
-              {quotaGuideStep === "firstPoint"
-                ? "① 点击折线中的第一个点，设定起点"
-                : quotaGuideStep === "secondPoint"
-                  ? "② 点击第二个点，固定终点"
-                  : "额度计算卡已出现在左下方"}
-            </strong>
-            <span>
-              {quotaGuideStep === "firstPoint"
-                ? "移动鼠标可预览；选区会从起点延伸到当前点。"
-                : quotaGuideStep === "secondPoint"
-                  ? "第二次点击后，左下方计算卡会把本段 API 等值消耗与额度下降比例对照，反推 5h/7d 本级额度。"
-                  : "查看本段消耗、5h/7d 反推额度；再次点击可重新选择。"}
-            </span>
-          </div>
-          <button aria-label="关闭额度计算引导" onClick={dismissQuotaGuide} type="button">知道了</button>
-        </div>
-      ) : null}
       {consumptionSelection ? (
         <RecentChartQuotaEstimateOverlay
           currentFiveHourQuotaPresent={fiveHourQuotaPresent}

@@ -306,7 +306,7 @@ export function SidebarRailContent({ visibility = DEFAULT_MODULE_VISIBILITY, dat
     <span className="qs-radar-edge" data-active={sidebarRadarIsActive(radar)} aria-hidden="true" />
     <div className="qs-bars" data-visible={state.mode === "rest"} aria-hidden={state.mode !== "rest"} aria-label="悬停查看额度">
       {cacheWarning && <span className="qs-cache-indicator" style={{ top: `calc(50% - ${showsFiveHour ? 114 : 87}px)` }} role="status" aria-label={`缓存命中偏低：${cacheAdviceTitle(cacheWarning)}`} title={`缓存命中偏低 · ${cacheAdviceTitle(cacheWarning)}`} />}
-      <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ transform: `scaleY(${(ratePercent ?? 0) / 100})`, background: "#78b7ff" }} /></span>
+      <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ height: `${ratePercent ?? 0}%`, background: "#78b7ff" }} /></span>
       {showsFiveHour && <Bar percent={five} color="#b6ef75" expected={expectedFive} />}<Bar percent={seven} color="#b4acff" expected={expectedSeven} />{modelStrip(true)}
     </div><SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning} onMeasure={onContentMeasurement}>{() => {
       if (cacheWarning) return <section className="qs-cache-notice" aria-label="缓存命中提醒">
@@ -396,7 +396,7 @@ function Value({ value }: { value: string }) {
   </strong>;
 }
 function Bar({ percent, color, expected }: { percent: number | null; color: string; expected?: number | null }) {
-  return <span className={`qs-bar ${percent === null ? "qs-unknown" : ""}`}><i style={{ transform: `scaleY(${(percent ?? 100) / 100})`, background: color }} />{expected != null && <b className="qs-pace-mark" style={{ bottom: `${expected * 100}%` }} title={`均匀用量参考：预期剩余 ${Math.round(expected * 100)}%`} />}</span>;
+  return <span className={`qs-bar ${percent === null ? "qs-unknown" : ""}`}><i style={{ height: `${percent ?? 100}%`, background: color }} />{expected != null && <b className="qs-pace-mark" style={{ bottom: `${expected * 100}%` }} title={`均匀用量参考：预期剩余 ${Math.round(expected * 100)}%`} />}</span>;
 }
 function Ring({ label, percent, color, expected, reset }: { label: string; percent: number | null; color: string; expected?: number | null; reset?: ReturnType<typeof sidebarRingResetTime> }) {
   const title = [reset === null ? "重置时间未知" : reset?.title, expected != null ? `白线为均匀使用参考：预期剩余 ${Math.round(expected * 100)}%` : null].filter(Boolean).join("；");

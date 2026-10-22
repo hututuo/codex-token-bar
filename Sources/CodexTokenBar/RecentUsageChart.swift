@@ -1319,7 +1319,6 @@ struct RecentUsageChart: View {
     private static let hoverRingLineWidth: CGFloat = 1.55
     static let costPointRadius: CGFloat = 1.68
     @AppStorage("recentChartRange") private var selectedRangeRaw = RecentChartRange.twentyFourHours.rawValue
-    @AppStorage("recentChartQuotaGuideCompletedV01") private var quotaGuideCompleted = false
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @StateObject private var seriesVisibility = RecentChartSeriesVisibilityStore()
     @StateObject private var preparationStore = RecentChartPreparationStore()
@@ -1418,17 +1417,6 @@ struct RecentUsageChart: View {
         )
     }
 
-    private var quotaGuideStep: RecentChartQuotaGuideStep? {
-        guard !quotaGuideCompleted, preparedData.bins.count > 1 else { return nil }
-        if consumptionSelectionState.fixedEndIndex != nil {
-            return .calculationCard
-        }
-        if consumptionSelectionState.startIndex != nil {
-            return .secondPoint
-        }
-        return .firstPoint
-    }
-
     private var selectedRangeBinding: Binding<RecentChartRange> {
         Binding(
             get: { selectedRange },
@@ -1487,9 +1475,6 @@ struct RecentUsageChart: View {
                 Text(selectedRange == .sevenDays && preparedData.bucketInterval == 300 ? RecentChartRange.twentyFourHours.subtitle : selectedRange.subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                Text(RecentChartQuotaEstimateAffordancePresentation.inlineInstruction)
-                    .font(.system(size: 10))
-                    .foregroundStyle(AppTheme.accentBlue.opacity(0.82))
             }
 
             Spacer()
@@ -2201,6 +2186,7 @@ struct RecentUsageChart: View {
         )
         VStack(alignment: .leading, spacing: 18) {
             chartHeader
+            RecentChartInteractionGuide()
             if hasPreparedData && preparedData.range == selectedRange {
                 chartPlot(
                     consumptionSelection: consumptionSelection,
@@ -2211,12 +2197,6 @@ struct RecentUsageChart: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: selectedRange.chartGeometry.canvasHeight
                         + RecentChartPersistentScrollerMetrics.reservedHeight)
-            }
-            if let quotaGuideStep {
-                RecentChartQuotaGuide(
-                    step: quotaGuideStep,
-                    onDismiss: { quotaGuideCompleted = true }
-                )
             }
             consumptionSelectionSummary(
                 selection: consumptionSelection,

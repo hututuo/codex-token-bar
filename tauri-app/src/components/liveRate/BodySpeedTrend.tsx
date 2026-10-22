@@ -24,7 +24,7 @@ export function trendPlot(points: SpeedTrendPoint[], asOf: number, windowSeconds
         change: model != null && first && last && first.bucketStart !== last.bucketStart ? (last.tokensPerSecond/first.tokensPerSecond-1)*100 : null };
 }
 export function BodySpeedTrend({ sourceToken, revision, compact, preferredModel }: { sourceToken: CodexHomeSourceToken | null; revision: string; compact?: "detail"; preferredModel?: string }) {
-    const [windowSeconds, setWindowSeconds] = useState(3600);
+    const [windowSeconds, setWindowSeconds] = useState(86400);
     const days = windowSeconds <= 86400 ? 1 : windowSeconds === 604800 ? 7 : 30;
     const [selectedModel, setSelectedModel] = useState<string | null>(null);
     const [points, setPoints] = useState<SpeedTrendPoint[]>([]);
@@ -61,7 +61,7 @@ export function BodySpeedTrend({ sourceToken, revision, compact, preferredModel 
     const y = (point: SpeedTrendPoint) => bottom - (point.tokensPerSecond - minimum) / (maximum - minimum) * (bottom - top);
     const color = (model: string) => colors[models.indexOf(model) % colors.length];
     return <section className={`body-speed-trend ${compact ? `bst-${compact}` : ""}`} aria-label="模型速度变化">
-        <header><strong>速度变化</strong><span>{days === 1 ? "每5分钟平均 TPS" : days === 7 ? "30分钟汇总 · 底层5分钟" : "2小时汇总 · 底层5分钟"}</span><div>{[3600,86400,604800,2592000].map(value => <button key={value} aria-pressed={windowSeconds === value} onClick={() => setWindowSeconds(value)}>{value === 3600 ? "1小时" : value === 86400 ? "24小时" : value === 604800 ? "7天" : "30天"}</button>)}</div></header>
+        <header><strong>速度变化</strong><span>{days === 1 ? "每点为5分钟均速 · TPS" : days === 7 ? "30分钟汇总 · 底层5分钟" : "2小时汇总 · 底层5分钟"}</span><div>{[86400,604800,2592000].map(value => <button key={value} aria-pressed={windowSeconds === value} onClick={() => setWindowSeconds(value)}>{value === 86400 ? "24小时" : value === 604800 ? "7天" : "30天"}</button>)}</div></header>
         <div className="bst-models"><button aria-pressed={focus == null} onClick={() => setSelectedModel("*")}>全部</button>{models.map(model => <button key={model} aria-pressed={focus === model} onClick={() => setSelectedModel(model)}><i style={{background:color(model)}}/>{model.replace(/^gpt-/, "")}</button>)}</div>
         <svg viewBox="0 0 800 170" role="img" aria-label="按模型区分的平均 TPS 趋势"><defs><clipPath id={id}><rect x={left} y={top} width={right - left} height={bottom - top}/></clipPath></defs>
             {[0, 1, 2, 3].map(tick => { const rate = minimum + (maximum - minimum) * tick / 3, at = bottom - (bottom - top) * tick / 3; return <g key={tick}><line x1={left} x2={right} y1={at} y2={at} className="bst-grid"/><text x={left - 7} y={at + 3} textAnchor="end">{rate.toFixed(0)}</text></g>; })}

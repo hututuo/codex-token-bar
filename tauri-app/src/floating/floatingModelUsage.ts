@@ -29,13 +29,6 @@ export interface FloatingModelUsageItem {
 
 export const FLOATING_MODEL_USAGE_VISIBLE_LIMIT = 4;
 export const FLOATING_MODEL_USAGE_MINIMUM_COUNT = 4;
-export const DASHBOARD_PRIMARY_MODEL_KEYS = [
-  "gpt-6-astra",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-] as const;
-
 interface CombinedModelUsage {
   costUSD: number;
   priceUnknown: boolean;
@@ -282,20 +275,16 @@ export function floatingModelUsageAccessibilityText(
   return `今日模型${title}：${items.map((item) => `${item.label} ${floatingModelUsageValue(item, page)}`).join("，")}`;
 }
 
-export function dashboardPrimaryModelUsageItems(
-  items: FloatingModelUsageItem[],
-): FloatingModelUsageItem[] {
-  const byKey = new Map(items.map((item) => [item.key, item]));
-  return DASHBOARD_PRIMARY_MODEL_KEYS.map((key) => (
-    byKey.get(key) ?? dashboardModelUsagePlaceholder(key)
-  ));
+export function dashboardModelFamilyID(model: string): "6" | "5.6" | "other" {
+  const key = modelUsageKey(model).toLowerCase().replace(/[ _]/g,"-");
+  if (/^gpt-?6(?:\.[0-9]+)*(?:-|$)/.test(key)) return "6";
+  if (/^gpt-?5\.6(?:-|$)/.test(key)) return "5.6";
+  return "other";
 }
-
-export function dashboardSecondaryModelUsageItems(
-  items: FloatingModelUsageItem[],
-): FloatingModelUsageItem[] {
-  const primaryKeys = new Set<string>(DASHBOARD_PRIMARY_MODEL_KEYS);
-  return items.filter((item) => !primaryKeys.has(item.key) && item.tokens > 0);
+export function dashboardModelFamilyGroups(items: FloatingModelUsageItem[]) {
+  return ([{id:"6",label:"6 系列"},{id:"5.6",label:"5.6 系列"},{id:"other",label:"其他"}] as const)
+    .map(group => ({...group, items:items.filter(item=>item.tokens>0 && dashboardModelFamilyID(item.key)===group.id)}))
+    .filter(group=>group.items.length>0);
 }
 
 export function floatingModelUsageOverflowText(
@@ -326,17 +315,4 @@ function detailedShareText(share: number): string {
 
 function finiteNonnegative(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
-}
-
-function dashboardModelUsagePlaceholder(key: string): FloatingModelUsageItem {
-  return {
-    key,
-    label: modelUsageLabel(key),
-    tokens: 0,
-    share: 0,
-    costUSD: 0,
-    usesIndependentQuota: false,
-    referenceCostUSD: null,
-    color: modelUsageColor(key),
-  };
 }

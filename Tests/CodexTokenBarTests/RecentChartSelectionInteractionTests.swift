@@ -596,7 +596,7 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         let before = try cyanPlotPixels()
         XCTAssertGreaterThan(before, 20, "Fixture must render actual cache observations")
         // Four production toggles, with cache immediately before the rightmost cost toggle.
-        try clickRecentChartWindow(window, at: NSPoint(x: 895, y: 640 - 65))
+        try clickRecentChartWindow(window, at: NSPoint(x: 895, y: host.bounds.height - 65))
         runRecentChartMainLoop()
         host.layoutSubtreeIfNeeded()
         let persistDeadline = Date().addingTimeInterval(0.3)
@@ -604,7 +604,7 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         XCTAssertEqual(defaults.object(forKey: key) as? Bool, false, "The real toggle must switch off")
         let after = try cyanPlotPixels()
         XCTAssertLessThan(after, before / 4, "Cache points must disappear immediately, without a scanner refresh")
-        try clickRecentChartWindow(window, at: NSPoint(x: 895, y: 640 - 65))
+        try clickRecentChartWindow(window, at: NSPoint(x: 895, y: host.bounds.height - 65))
         runRecentChartMainLoop()
         host.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(try cyanPlotPixels(), before * 3 / 4, "Re-enabling must restore observations")
