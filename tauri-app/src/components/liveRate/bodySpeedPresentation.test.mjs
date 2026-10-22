@@ -61,6 +61,8 @@ test('actual sidebar is compact, contains all recent models, and has no window s
    win.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data:{snapshot:{latestModelSpeeds30m:[summary('gpt-6.1-sol',now-10,47.9),summary('gpt-6-luna',now-20,123.4),summary('old',now-1801)],sevenDayAvailability:'unavailable'},runningThreads:{total:2,status:'ready'}},state:{mode:'hover'},onOpen(){}}));
    const panel=win.document.querySelector('.qs-model-speeds');
    assert.equal(panel.querySelectorAll('.qs-model-speed-row').length,2);
+   assert.equal(panel.querySelectorAll('svg,.body-speed-trend').length,0);
+   assert.equal(panel.querySelectorAll('.qs-model-speed-windows').length,2);
    assert.match(panel.textContent,/正文 TPS/);
    assert.match(panel.textContent,/6.1-sol47.9/);
    assert.match(panel.textContent,/6-luna123.4/);

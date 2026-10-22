@@ -1,4 +1,3 @@
-import { BodySpeedTrend } from "../components/liveRate/BodySpeedTrend";
 import { latestSidebarModelSpeeds, speedTimestamp } from "../components/liveRate/bodySpeedPresentation";
 import { ObservedSpeedDetails } from "../components/liveRate/ObservedSpeedDetails";
 import { CacheUsageNotice } from "../components/cacheReminder/CacheUsageNotice";
@@ -307,7 +306,7 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
       <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
-      <SidebarBodySpeeds models={modelSpeeds} data={data.snapshot} sourceToken={data.sourceToken} onOpen={() => onOpen("quota", "speeds")} />
+      <SidebarBodySpeeds models={modelSpeeds} data={data.snapshot} onOpen={() => onOpen("quota", "speeds")} />
       {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
       <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>
       {reserveWindows.map(window => {
@@ -330,7 +329,7 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
   </>;
 }
 
-export function SidebarBodySpeeds({ models, data, sourceToken = null, onOpen }: { models: NonNullable<SidebarData["snapshot"]["latestModelSpeeds30m"]>; data?: SidebarData["snapshot"]; sourceToken?: CodexHomeSourceToken | null; onOpen: () => void }) {
+export function SidebarBodySpeeds({ models, data, onOpen }: { models: NonNullable<SidebarData["snapshot"]["latestModelSpeeds30m"]>; data?: SidebarData["snapshot"]; onOpen: () => void }) {
   const windows = [{ label: "5分", values: data?.modelSpeeds5m }, { label: "15分", values: data?.modelSpeeds15m }, { label: "30分", values: data?.modelSpeeds30m }];
   return <div className="qs-model-speeds">
     <button type="button" onClick={onOpen} title="各模型最新正文 TPS 与5/15/30分钟均速 · 点击查看图表与记录">
@@ -341,7 +340,6 @@ export function SidebarBodySpeeds({ models, data, sourceToken = null, onOpen }: 
       </span>)}
       {!models.length && <small>—</small>}
     </button>
-    {models.length > 0 && <button type="button" className="qs-speed-chart" aria-label="打开精确速度趋势" onClick={onOpen}><BodySpeedTrend sourceToken={sourceToken} compact="rail" revision={models.map(m => `${m.model}/${m.lastMeasuredAt}`).join("|")}/></button>}
   </div>;
 }
 

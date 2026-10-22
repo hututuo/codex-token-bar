@@ -71,7 +71,7 @@ struct QuotaSidebarFrames: Equatable {
                           height: max(0, floor(source.maxY * safeScale) / safeScale - bottom))
         let railWidth = min(expanded ? 88.0 : 16.0, area.width)
         let contentHeight = expanded ? (hasFiveHour ? QuotaSidebarLayout.expandedCanvasHeight : QuotaSidebarLayout.weeklyExpandedHeight) : (hasFiveHour ? 250.0 : 192.0)
-        let speedHeight = expanded && speedModelCount > 0 ? 44.0 + Double(speedModelCount) * 32.0 : 0
+        let speedHeight = expanded && speedModelCount > 0 ? Double(speedModelCount) * 32.0 : 0
         let railHeight = min(contentHeight + speedHeight, area.height)
         let gap = min(12.0, max(0, area.width - railWidth))
         let detailWidth = min(420.0, max(0, area.width - railWidth - gap))

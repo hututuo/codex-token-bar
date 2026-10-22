@@ -134,8 +134,9 @@ installation, or public release has been performed.
 The dashboard and third-level speed menu now share the latest-body / 5-minute /
 15-minute / 30-minute model table. No selected-window card or seven-day fallback
 is mixed into those three current-window averages. Missing eligible bodies show
-an em dash. The narrow second-level rail has per-model compact window readings
-and a recent 30-minute sparkline; clicking opens the precise chart and records.
+an em dash. The narrow second-level rail has per-model compact window readings only;
+clicking opens the precise chart and records. Its content is inset to 66 points
+with aligned 5/15/30-minute columns; no rail chart is mounted.
 The detailed menu now includes the same retained speed chart as the dashboard.
 Wide charts retain 24h / 7d / 30d range controls; native point selection and web
 point hover expose stored time, TPS, body count, token sum and measured duration.
@@ -155,3 +156,16 @@ Ordinary subagents are evaluated separately, guardian reviews excluded; the
 code does not pool child inputs into a parent's cache-hit rate. Temporal
 proximity to sending a child message does not establish cache invalidation
 causality. No cache-reminder calculation was modified in this change.
+
+
+### Compact-chart visual correction
+
+Native compact charts use a two-row heading, fixed-width SwiftUI range buttons,
+explicit high-contrast axis labels/gridlines and model legend on the dark detail
+background. The range label cannot wrap vertically. The narrow rail chart was
+removed on both platforms at user request; latest TPS is constrained to one line,
+with all three average columns centered inside the same 66-point content width.
+Opt-in AppKit rendering tests use the actual production components and local
+numeric audit to export the chart and rail; a normal geometry test prevents a
+vertically inflated compact header. These renders are fixture previews, not a
+claim of complete native side-panel interaction acceptance.

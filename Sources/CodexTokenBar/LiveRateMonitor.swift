@@ -1690,6 +1690,16 @@ final class LiveRateMonitor: ObservableObject {
 
 #if DEBUG
 extension LiveRateMonitor {
+    func testSeedBodySpeedDisplay(samples: [ObservedSpeedSample], points: [BodySpeedTrendPoint], now: Double) {
+        speedCollector.samples = samples
+        speedSamples = samples.sorted { $0.endedAt > $1.endedAt }
+        latestModelSpeeds30m = speedCollector.latestCompletedBodySpeeds(now: now)
+        modelSpeeds5m = speedCollector.completedBodySummaries(now: now, windowSeconds: 300)
+        modelSpeeds15m = speedCollector.completedBodySummaries(now: now, windowSeconds: 900)
+        modelSpeeds30m = speedCollector.completedBodySummaries(now: now, windowSeconds: 1800)
+        speedTrendPoints = points
+    }
+
     func testPrepareForLiveRateProcessing(
         selectedThreadID id: String,
         threadOptions options: [LiveThreadOption] = []
