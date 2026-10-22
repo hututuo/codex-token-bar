@@ -33,7 +33,7 @@ struct SmoothRateFillBar: NSViewRepresentable {
             startPoint: startPoint,
             endPoint: endPoint,
             animationDuration: animationDuration,
-            animated: true,
+            animated: !context.transaction.disablesAnimations,
             modelRates: modelRates
         )
     }

@@ -2,7 +2,7 @@
 
 ## 范围与交付
 
-在 `codex/full-performance-power-20261023` 上继续 build945 的侧栏/滚动修复。初次原生验收 build946；按需布局补充后的最终候选为 0.9.7 build948；Windows 共用前端同步模型色与进度通知去重。安装、真实运行和 Windows 执行结果记录在项目外层 `runs/20261023-full-performance-audit/`，不把源码测试等同于已安装。
+在 `codex/full-performance-power-20261023` 上继续 build945 的侧栏/滚动修复。初次原生验收 build946；按需布局补充后的最终候选为 0.9.7 build949；Windows 共用前端同步模型色与进度通知去重。安装、真实运行和 Windows 执行结果记录在项目外层 `runs/20261023-full-performance-audit/`，不把源码测试等同于已安装。
 
 模型色统一为 Astra `#36ad77` 绿、GPT-6.1 Sol `#ed932b` 橙、GPT-6 Luna `#4299f5` 蓝。沿用双端共享的模型注册表，覆盖模型用量、速率叠条、正文 TPS、趋势及模型标签。
 
@@ -29,7 +29,7 @@
 - 原生 864 点测试：趋势页可见时刷新 p50 0.85ms、p95 2.47ms；主线程运行循环间隔 p95 6.58ms；侧栏窗口 resize 间隔 p95 16.13ms。负载含当前真实 Codex 会话和测试任务，不是独占机器的帧率保证。
 - 前端完整测试、生产构建、Windows 实机执行以及原生安装签名/运行证据，见运行目录最终记录。
 
-补充原生回归包含真实 SwiftUI ScrollView 中屏外内容的可见性测试，确认屏外暂停并非只在 AppKit 手工夹具成立。最终按需布局相关 85 项回归：83 通过、2 项 opt-in 跳过、0 失败。补充了生产缩放容器 100% 下仍只装载可见 section 的测试。扩大回归还发现两个旧测试问题：费用行已采用固定四列网格，测试仍要求已经不用的 layoutPriority；异步覆盖测试把 Task.yield 次数当成超时，改为真实 5 秒截止。均已修正并复测。最终 build948 的安装与 UI 验证以运行目录为准。
+补充原生回归包含真实 SwiftUI ScrollView 中屏外内容的可见性测试，确认屏外暂停并非只在 AppKit 手工夹具成立。最终按需布局相关 85 项回归：83 通过、2 项 opt-in 跳过、0 失败。补充了生产缩放容器 100% 下仍只装载可见 section 的测试。扩大回归还发现两个旧测试问题：费用行已采用固定四列网格，测试仍要求已经不用的 layoutPriority；异步覆盖测试把 Task.yield 次数当成超时，改为真实 5 秒截止。均已修正并复测。最终 build949 的安装与 UI 验证以运行目录为准。
 
 ## 测量边界
 
@@ -46,3 +46,7 @@ build945 的运行采样显示当前活跃成本主要还包括 RunningThreadSca
 This pass standardizes Astra green, GPT-6.1 Sol orange and GPT-6 Luna blue across both model registries. It stops invisible decorative animation, avoids rebuilding unchanged rate gradients and speed summaries, delivers completed-body samples incrementally with acceptance acknowledgements, and suppresses identical Windows scan-progress updates. Existing history, accounting, source validation and sampling cadence remain intact. Tests, synthetic UI timings, local log timings and installed-runtime acceptance are recorded separately; no idle-power or universal frame-rate claim is made.
 
 装机追查：946 主界面顶部、侧栏开启且 Codex 活跃时，10 秒区间单核口径 CPU 约 45.1%；临时关闭侧栏时约 5.4%（后段有编译任务，不能视为严格独占基准）。已恢复侧栏，继续处理该路径，而非把前述初次安装当最终验收。947 仅作按需布局中间验收，948 合入系统图层边框；最终实际数据见运行目录。
+
+948 系统图层边框装机后仍有约 43.4% 单核口径 CPU，不能把侧栏整体开关的下降归因给边框修复。进一步定位侧栏一级/二级内容：收起只设 opacity，隐藏圆环/数字仍播放动画；expected 均速标记每次 Date() 都变，反复启动肉眼不可见的动画。949 保留隐藏内容的高度测量与数据订阅，使用禁用动画事务；柱填充改为已回归的系统渐变图层，纵柱旋转同一组件；期望位置标记不为连续微小时间差启动动画。边框改动保留为避免逐帧 SwiftUI 布局的独立改进。最终实机 CPU 仍需确认，不能用结构优化代替结果。
+
+949 补充受控原生侧栏测试：相同 4 秒、16 次真实速率数值变化、同一生产控制器与视图，baseline 为 948 的两处旧生产文件，随后恢复 949 源码再测；独立测试进程 getrusage 自身 CPU（不含构建子进程）约 33.90% → 5.46%。对应证据 `changing-rate-baseline.json` / `changing-rate-949.json`，均为收起状态。该测试不再仅发 objectWillChange 却保持 rate 不变，覆盖了之前漏掉的动画触发路径。949 侧栏/圆角/配色/可见性等 60 项回归：59 pass / 1 opt-in skip，另启用变化速率测试 1 pass。不把 4 秒夹具比例当成整机瓦数结果。

@@ -19,19 +19,18 @@ private struct SidebarValueBar: View {
     var expected: Double?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var amount: Double { min(1, max(0, fraction ?? 0)) }
-    private var fillStyle: AnyShapeStyle {
-        guard let modelRates else { return AnyShapeStyle(color.opacity(emphasis)) }
-        return AnyShapeStyle(LinearGradient(stops: ModelRatePresentation.stops(modelRates),
-            startPoint: vertical ? .bottom : .leading, endPoint: vertical ? .top : .trailing))
-    }
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: vertical ? .bottom : .leading) {
                 Capsule().fill(.white.opacity(0.12))
-                Capsule().fill(fillStyle)
-                    .frame(width: geometry.size.width * (vertical ? 1 : amount),
-                           height: geometry.size.height * (vertical ? amount : 1))
+                SmoothRateFillBar(fraction: amount, minimumFraction: 0,
+                    colors: [color.opacity(emphasis)], modelRates: modelRates)
+                    .frame(width: vertical ? geometry.size.height : geometry.size.width,
+                           height: vertical ? geometry.size.width : geometry.size.height)
+                    .rotationEffect(.degrees(vertical ? -90 : 0))
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                     .opacity(fraction == nil || amount == 0 ? 0 : 1)
+                    .allowsHitTesting(false)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .overlay {
@@ -45,9 +44,7 @@ private struct SidebarValueBar: View {
                 }
             }
         }
-        .animation(reduceMotion ? nil : .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.34), value: fraction)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: emphasis)
-        .animation(reduceMotion ? nil : .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.34), value: expected)
     }
 }
 
@@ -77,7 +74,6 @@ private struct SidebarValueRing: View {
         }
         .animation(reduceMotion ? nil : .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.34), value: fraction)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: emphasis)
-        .animation(reduceMotion ? nil : .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.34), value: expected)
     }
 }
 
@@ -151,6 +147,15 @@ struct QuotaSidebarRail: View {
                     .frame(width: 88, height: controller.expandedContentHeight)
                     .frame(maxHeight: .infinity, alignment: .center)
                     .transition(.opacity)
+                }
+            }
+            // Opacity alone leaves every numeric/ring animation running in
+            // the clipped 88pt canvas. Keep measurement/data alive while making
+            // the invisible menu's updates immediate and animation-free.
+            .transaction { transaction in
+                if !controller.interaction.expanded {
+                    transaction.animation = nil
+                    transaction.disablesAnimations = true
                 }
             }
             .opacity(controller.interaction.expanded ? 1 : 0)

@@ -1,10 +1,62 @@
 import AppKit
+import Darwin
 import QuartzCore
 import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
 final class SidebarTransitionPerformanceTests: XCTestCase {
+    @MainActor
+    func testChangingRateInCollapsedRail() throws {
+        guard let output = ProcessInfo.processInfo.environment["CODEX_SIDEBAR_RATE_PERF_OUTPUT"] else {
+            throw XCTSkip("Opt-in changing-rate sidebar CPU fixture")
+        }
+        let suite = "SidebarChangingRate-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let monitor = LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: true)
+        monitor.setPollingActive(false)
+        monitor.dataSource = CodexDataSource(codexHome: URL(fileURLWithPath: "/fixture-not-read"), origin: .defaultHome)
+        let controller = QuotaSidebarController(settings: defaults)
+        controller.show(store: CodexUsageStore(autoStart: false, continuityDefaults: defaults), monitor: monitor,
+            quota: AccountQuotaStore(userDefaults: defaults, observesUserDefaults: false),
+            tasks: TaskCompletionMonitor(defaults: defaults), radar: CodexRadarStore(detailRefreshDefaults: defaults),
+            history: QuotaHistoryStore(), edge: .left)
+        defer { controller.close(); monitor.setMonitoringEnabled(false) }
+        func cpu() -> Double {
+            var usage = rusage(); getrusage(RUSAGE_SELF, &usage)
+            return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec)
+                + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
+        }
+        func settle(_ seconds: Double) {
+            let start = CACurrentMediaTime()
+            while CACurrentMediaTime() - start < seconds { RunLoop.current.run(until: Date().addingTimeInterval(0.002)) }
+        }
+        settle(0.5)
+        let start = CACurrentMediaTime(), beganCPU = cpu()
+        var nextUpdate = start, updates = 0, maxGap = 0.0, previous = start
+        while CACurrentMediaTime() - start < 4 {
+            let now = CACurrentMediaTime()
+            maxGap = max(maxGap, now - previous); previous = now
+            if now >= nextUpdate {
+                let rate = 100 + 90 * sin((now - start) * 2)
+                var next = monitor.totalSnapshot
+                next.rollingTokensPerSecond = rate
+                next.modelRates = [.init(model: "gpt-6-astra", tokensPerSecond: rate * 0.4),
+                                   .init(model: "gpt-6.1-sol", tokensPerSecond: rate * 0.6)]
+                monitor.totalSnapshot = next
+                updates += 1; nextUpdate = now + 0.25
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.002))
+        }
+        let wall = CACurrentMediaTime() - start, spent = cpu() - beganCPU
+        let report: [String: Any] = ["collapsed": !controller.interaction.expanded, "updates": updates,
+            "wallSeconds": wall, "cpuSeconds": spent, "oneCoreCPUPercent": spent / wall * 100, "maxMainLoopGapMs": maxGap * 1000]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: output))
+        XCTAssertFalse(controller.interaction.expanded)
+        XCTAssertGreaterThanOrEqual(updates, 12)
+    }
+
     /// Opt-in production-view benchmark. Timings are evidence, not flaky CI gates.
     @MainActor
     func testHoverWithAndWithoutUpdatingSpeedPage() throws {
