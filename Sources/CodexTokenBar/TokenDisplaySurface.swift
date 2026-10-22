@@ -495,7 +495,8 @@ struct TokenDisplayCard: View {
                     pageButton(
                         systemImage: "chevron.left",
                         row: row,
-                        pageCount: pages.count,
+                        pages: pages,
+                        selectedPage: selectedPage,
                         delta: -1,
                         showsGlyph: visibility.showPageNavigationArrows
                     )
@@ -503,7 +504,8 @@ struct TokenDisplayCard: View {
                     pageButton(
                         systemImage: "chevron.right",
                         row: row,
-                        pageCount: pages.count,
+                        pages: pages,
+                        selectedPage: selectedPage,
                         delta: 1,
                         showsGlyph: visibility.showPageNavigationArrows
                     )
@@ -621,13 +623,12 @@ struct TokenDisplayCard: View {
     private func pageButton(
         systemImage: String,
         row: FloatingPanelPresentationRow,
-        pageCount: Int,
+        pages: [PagedContentDescriptor],
+        selectedPage: PagedContentDescriptor,
         delta: Int,
         showsGlyph: Bool
     ) -> some View {
         let edgeAlignment: Alignment = delta < 0 ? .leading : .trailing
-        let pages = pagedContentDescriptors(for: row)
-        let selectedPage = selectedPage(in: pages, for: row)
         let restingColor = palette(for: selectedPage.group).secondaryColor.opacity(0.62)
         let cueColor = pageNavigationCueEmphasized
             ? Color(red: 0.078, green: 0.361, blue: 0.694)
@@ -638,7 +639,7 @@ struct TokenDisplayCard: View {
                 row.id,
                 default: FloatingPanelContentVisibility.initialPageIndex(for: pages.map(\.group))
             ]
-            selectedPageIndexByRowID[row.id] = (current + delta + pageCount) % pageCount
+            selectedPageIndexByRowID[row.id] = (current + delta + pages.count) % pages.count
             onPageNavigation?()
         } label: {
             // Make the full edge gutter the label's concrete layout instead of

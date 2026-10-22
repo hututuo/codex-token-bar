@@ -310,7 +310,7 @@ enum ModelUsagePresentation {
             return colorHex(for: displayTargetKey(for: String(key.dropFirst(autoReviewDisplayPrefix.count))))
         }
         let fixed = [
-            "gpt-6-astra": "#d4512c", "gpt-6.1-sol": "#268ceb", "gpt-6-sol": "#2e6bfa", "gpt-6-luna": "#00a3ad",
+            "gpt-6-astra": "#e58a24", "gpt-6.1-sol": "#4299f5", "gpt-6-sol": "#2e6bfa", "gpt-6-luna": "#d277e8",
             "gpt-5.6-sol": "#6774e8", "gpt-5.6-terra": "#9252e6", "gpt-5.6-luna": "#399b75", "gpt-5.5": "#a87629",
             "gpt-5.6-generic": "#7a879e", "gpt-5.4": "#f28f14", "gpt-5.4-mini": "#2eb35c",
             "gpt-5.3-codex": "#db4575", "gpt-5.3-codex-spark": "#f5b022", "gpt-5.2-codex": "#3d7fe0", "unknown": "#7a879e",

@@ -91,6 +91,7 @@ struct QuotaSidebarRail: View {
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
     @AppStorage("cacheHitAdviceEnabled") private var cacheRemindersEnabled = true
     @AppStorage("cacheHitAdviceDismissed") private var dismissedCacheAdviceID = ""
+    @State private var shares: [FloatingTodayModelUsageItem] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var cacheWarning: CacheUsageAdvice? {
@@ -101,10 +102,6 @@ struct QuotaSidebarRail: View {
     }
 
     var body: some View {
-        let shares = FloatingTodayModelUsagePresentation.items(
-            from: TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota,
-                                            runningThreads: tasks.runningThreadSummary).todayModelBreakdowns,
-            fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         ZStack(alignment: controller.edge == .right ? .trailing : .leading) {
             Group {
                 if let advice = cacheWarning {
@@ -193,6 +190,10 @@ struct QuotaSidebarRail: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: controller.edge == .right ? .trailing : .leading)
         .background(SidebarPalette.background)
+        .onChange(of: store.todayModelBreakdowns, initial: true) { _, rows in
+            shares = FloatingTodayModelUsagePresentation.items(from: rows,
+                fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
+        }
         .onPreferenceChange(QuotaSidebarContentMeasurementKey.self) { controller.updateContentMeasurement($0) }
         .clipShape(QuotaSidebarEdgeShape(edge: controller.edge))
         .foregroundStyle(.white)

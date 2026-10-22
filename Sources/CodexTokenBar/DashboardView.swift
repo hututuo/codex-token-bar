@@ -57,7 +57,9 @@ struct DashboardView: View {
     @ObservedObject private var radarStore: CodexRadarStore
     @ObservedObject private var providerSyncStore: ProviderSyncStore
     @ObservedObject private var taskCompletionMonitor: TaskCompletionMonitor
-    @ObservedObject private var liveMonitor: LiveRateMonitor
+    // Fast rate/body-sample ticks belong to LiveRateView and the open settings
+    // preview, not the entire scrollable historical dashboard.
+    private let liveMonitor: LiveRateMonitor
     private var sourceTransitionCoordinator: DashboardSourceTransitionCoordinator {
         runtime.sourceTransitionCoordinator
     }
@@ -151,7 +153,7 @@ struct DashboardView: View {
         _radarStore = ObservedObject(wrappedValue: composition.radarStore)
         _providerSyncStore = ObservedObject(wrappedValue: composition.providerSyncStore)
         _taskCompletionMonitor = ObservedObject(wrappedValue: composition.taskCompletionMonitor)
-        _liveMonitor = ObservedObject(wrappedValue: composition.liveMonitor)
+        liveMonitor = composition.liveMonitor
         DisplayModeMigration.repairStartup()
     }
 
@@ -514,77 +516,79 @@ struct DashboardView: View {
             }
         }
         .sheet(isPresented: $showingAppSettings) {
-            AppSettingsView(
-                loginItemStore: loginItemStore,
-                updateSettingsStore: updateSettingsStore,
-                autoResumeController: autoResumeController,
-                threadDeleteBridge: threadDeleteBridge,
-                selectedCategory: $appSettingsInitialCategory,
-                floatingPanelEnabled: $floatingPanelEnabled,
-                statusBarPanelEnabled: $statusBarPanelEnabled,
-                statusBarMetricShowsIcon: $statusBarMetricShowsIcon,
-                statusBarMetricOrderRaw: $statusBarMetricOrderRaw,
-                statusBarMetricSelectionRaw: $statusBarMetricSelectionRaw,
-                statusBarMetricLabelStyleRaw: $statusBarMetricLabelStyleRaw,
-                statusSummaryOrderRaw: $statusSummaryOrderRaw,
-                statusSummarySelectionRaw: $statusSummarySelectionRaw,
-                statusBarPreviewValues: statusBarMetricValues,
-                liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
-                preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
-                tokenRateFullScale: $tokenRateFullScale,
-                floatingPanelLocked: $floatingPanelLocked,
-                interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
-                interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
-                floatingPanelOpacity: $floatingPanelOpacity,
-                floatingPanelScale: $floatingPanelScale,
-                floatingPanelTextTone: $floatingPanelTextTone,
-                gradientStartHex: $floatingPanelGradientStartHex,
-                gradientEndHex: $floatingPanelGradientEndHex,
-                gradientDirection: $floatingPanelGradientDirection,
-                gradientStyle: $floatingPanelGradientStyle,
-                quotaColorMode: $floatingQuotaColorMode,
-                quotaFixedHex: $floatingQuotaFixedHex,
-                unreadEffect: $floatingPanelUnreadEffect,
-                showRateAndBar: $floatingPanelShowRateAndBar,
-                showUsageStatus: $floatingPanelShowUsageStatus,
-                showMetrics: $floatingPanelShowMetrics,
-                showRunningThreads: $floatingPanelShowRunningThreads,
-                showTodayModelShare: $floatingPanelShowTodayModelShare,
-                showTodayModelCost: $floatingPanelShowTodayModelCost,
-                showQuota: $floatingPanelShowQuota,
-                showRadar: $floatingPanelShowRadar,
-                showCrowdRadar: $floatingPanelShowCrowdRadar,
-                crowdRadarPageCount: $floatingPanelCrowdRadarPageCount,
-                contentOrderRaw: $floatingPanelContentOrderRaw,
-                pagePairsRaw: $floatingPanelPagePairsRaw,
-                showPageNavigationArrows: $floatingPanelShowPageNavigationArrows,
-                floatingPreviewSnapshot: floatingPanelPreviewSnapshot,
-                floatingPreviewRadarPresentation: floatingPanelPreviewRadarPresentation,
-                defaultCodexHome: store.currentDataSource?.codexHome,
-                dataSourceLabel: store.dataSourceLabel,
-                dataSourceOrigin: store.dataSourceOrigin,
-                onChooseDirectory: {
-                    store.chooseDataSourceDirectory()
-                    synchronizeSourceTransition()
-                },
-                onOpenProviderSync: {
-                    providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
-                    showingAppSettings = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        showingProviderSync = true
-                    }
-                },
-                onOpenSessionManager: {
-                    showingAppSettings = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        showingSessionManager = true
-                    }
-                },
-                onThreadDeleteConnectionAction: {
-                    threadDeleteBridge.performConnectionAction()
-                },
-                onClose: { showingAppSettings = false }
-            )
+            DashboardLivePreviewScope(monitor: liveMonitor) { _ in
+                AppSettingsView(
+                    loginItemStore: loginItemStore,
+                    updateSettingsStore: updateSettingsStore,
+                    autoResumeController: autoResumeController,
+                    threadDeleteBridge: threadDeleteBridge,
+                    selectedCategory: $appSettingsInitialCategory,
+                    floatingPanelEnabled: $floatingPanelEnabled,
+                    statusBarPanelEnabled: $statusBarPanelEnabled,
+                    statusBarMetricShowsIcon: $statusBarMetricShowsIcon,
+                    statusBarMetricOrderRaw: $statusBarMetricOrderRaw,
+                    statusBarMetricSelectionRaw: $statusBarMetricSelectionRaw,
+                    statusBarMetricLabelStyleRaw: $statusBarMetricLabelStyleRaw,
+                    statusSummaryOrderRaw: $statusSummaryOrderRaw,
+                    statusSummarySelectionRaw: $statusSummarySelectionRaw,
+                    statusBarPreviewValues: statusBarMetricValues,
+                    liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
+                    preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
+                    tokenRateFullScale: $tokenRateFullScale,
+                    floatingPanelLocked: $floatingPanelLocked,
+                    interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
+                    interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
+                    floatingPanelOpacity: $floatingPanelOpacity,
+                    floatingPanelScale: $floatingPanelScale,
+                    floatingPanelTextTone: $floatingPanelTextTone,
+                    gradientStartHex: $floatingPanelGradientStartHex,
+                    gradientEndHex: $floatingPanelGradientEndHex,
+                    gradientDirection: $floatingPanelGradientDirection,
+                    gradientStyle: $floatingPanelGradientStyle,
+                    quotaColorMode: $floatingQuotaColorMode,
+                    quotaFixedHex: $floatingQuotaFixedHex,
+                    unreadEffect: $floatingPanelUnreadEffect,
+                    showRateAndBar: $floatingPanelShowRateAndBar,
+                    showUsageStatus: $floatingPanelShowUsageStatus,
+                    showMetrics: $floatingPanelShowMetrics,
+                    showRunningThreads: $floatingPanelShowRunningThreads,
+                    showTodayModelShare: $floatingPanelShowTodayModelShare,
+                    showTodayModelCost: $floatingPanelShowTodayModelCost,
+                    showQuota: $floatingPanelShowQuota,
+                    showRadar: $floatingPanelShowRadar,
+                    showCrowdRadar: $floatingPanelShowCrowdRadar,
+                    crowdRadarPageCount: $floatingPanelCrowdRadarPageCount,
+                    contentOrderRaw: $floatingPanelContentOrderRaw,
+                    pagePairsRaw: $floatingPanelPagePairsRaw,
+                    showPageNavigationArrows: $floatingPanelShowPageNavigationArrows,
+                    floatingPreviewSnapshot: floatingPanelPreviewSnapshot,
+                    floatingPreviewRadarPresentation: floatingPanelPreviewRadarPresentation,
+                    defaultCodexHome: store.currentDataSource?.codexHome,
+                    dataSourceLabel: store.dataSourceLabel,
+                    dataSourceOrigin: store.dataSourceOrigin,
+                    onChooseDirectory: {
+                        store.chooseDataSourceDirectory()
+                        synchronizeSourceTransition()
+                    },
+                    onOpenProviderSync: {
+                        providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
+                        showingAppSettings = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            showingProviderSync = true
+                        }
+                    },
+                    onOpenSessionManager: {
+                        showingAppSettings = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            showingSessionManager = true
+                        }
+                    },
+                    onThreadDeleteConnectionAction: {
+                        threadDeleteBridge.performConnectionAction()
+                    },
+                    onClose: { showingAppSettings = false }
+                )
+            }
         }
         .alert(item: $exportAlert) { presentation in
             Alert(
@@ -1463,4 +1467,12 @@ struct DashboardView: View {
                 && window.contentViewController != nil
         }
     }
+}
+
+/// Observe fast publications only while the settings sheet actually exists.
+/// The runtime separately refreshes the real floating/sidebar/status surfaces.
+struct DashboardLivePreviewScope<Content: View>: View {
+    @ObservedObject var monitor: LiveRateMonitor
+    @ViewBuilder let content: (LiveRateMonitor) -> Content
+    var body: some View { content(monitor) }
 }

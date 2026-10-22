@@ -23,7 +23,7 @@ final class ModelRatePresentationTests: XCTestCase {
         XCTAssertEqual(slices.map(\.model), ["gpt-6-astra", "gpt-6.1-sol"])
         XCTAssertEqual(slices.map(\.share), [0.4, 0.6])
         XCTAssertEqual(ModelRatePresentation.stops(rates).map(\.location), [0, 0.4, 0.4, 1])
-        XCTAssertEqual(ModelUsagePresentation.colorHex(for: "gpt6astra"), "#d4512c")
+        XCTAssertEqual(ModelUsagePresentation.colorHex(for: "gpt6astra"), "#e58a24")
         XCTAssertEqual(ModelUsagePresentation.colorHex(for: "未来-model-Ω"), "#9b9b81")
         XCTAssertEqual(ModelUsagePresentation.colorHex(for: "codex-auto-review@luna"), ModelUsagePresentation.colorHex(for: "gpt-5.6-luna"))
     }
@@ -50,10 +50,10 @@ final class ModelRatePresentationTests: XCTestCase {
     @MainActor
     func testNativeModelRateAndGuidePreview() throws {
         guard let folder = ProcessInfo.processInfo.environment["CODEX_MODEL_RATE_PREVIEW"] else { throw XCTSkip("Opt-in component screenshots") }
-        let rates: [ModelRateContribution] = [.init(model: "gpt-6-astra", tokensPerSecond: 40), .init(model: "gpt-6.1-sol", tokensPerSecond: 60)]
+        let rates: [ModelRateContribution] = [.init(model: "gpt-6-astra", tokensPerSecond: 30), .init(model: "gpt-6.1-sol", tokensPerSecond: 40), .init(model: "gpt-6-luna", tokensPerSecond: 30)]
         for (name, scheme) in [("light", ColorScheme.light), ("dark", ColorScheme.dark)] {
             let host = NSHostingView(rootView: VStack(alignment: .leading, spacing: 18) {
-                Text("正式原生组件 · 示例数据：总速度 100 tok/s，Astra 40 / Sol 60").font(.system(size: 13, weight: .semibold))
+                Text("正式原生组件 · 示例数据：总速度 100 tok/s，Astra 30 / Sol 40 / Luna 30").font(.system(size: 13, weight: .semibold))
                 TokenDisplayRateBar(rate: 100, usageStatus: nil, modelRates: rates).frame(height: 30)
                 HStack(spacing: 18) {
                     ForEach(ModelRatePresentation.slices(rates)) { slice in

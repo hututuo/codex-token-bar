@@ -20,7 +20,7 @@ Outer run directory: runs/20261023-sidebar-transition-performance.
 - Without the chart visible, resize interval p95: 25.24ms before, 23.19ms after. The major demonstrated gain is removal of chart-induced blocking, not a claim that every frame always meets a 120Hz budget.
 - 54 selected regression tests: 53 pass, 1 opt-in preview skipped. Coverage includes projection/model selection, aggregation gaps, input changes, fixed host size during61 reveal frames, genuine canvas growth, existing sidebar geometry/drag/hit routing and dynamic TPS row height.
 
-No scanner, SQLite schema, retained usage/sample data, tokenizer or speed measurement algorithm changes. No Tauri/Windows changes in this patch. A separate read-only Tauri audit found a possible first-measurement retarget, which is not proof of the native macOS issue and is outside this native patch.
+No scanner, SQLite schema, retained usage/sample data, tokenizer or speed measurement algorithm changes. No Tauri/Windows performance implementation changes in this patch; the shared model palette is updated in both clients. A separate read-only Tauri audit found a possible first-measurement retarget, which is not proof of the native macOS issue and is outside this native patch.
 
 ## 本机版 / local build
 
@@ -29,3 +29,16 @@ No scanner, SQLite schema, retained usage/sample data, tokenizer or speed measur
 Candidate build944: remove repeated speed-trend computation and unnecessary synchronous drawing/layout during sidebar reveal. Local replacement only; no public release.
 
 Deployment and actual runtime acceptance are recorded separately in the run README/receipt after completion. Retain build943 as rollback; do not restore older databases when rolling back the app.
+
+
+## Additional common-interface fixes (build945)
+
+- DashboardView no longer observes all LiveRateMonitor publications. LiveRateView continues to observe them directly. An observing scope exists only around the settings sheet, preserving live floating/status previews; its publication-driven rerender has a production-scope regression test. Runtime subscriptions continue to refresh actual floating, sidebar and status surfaces independently.
+- Heatmap pricing/model cell styles are prepared on usage/mode changes. A revision-keyed Equatable cell grid stays outside hover and range-overlay updates; its geometry still changes with interface size.
+- Sidebar today-model shares update only when the model breakdown rows change, not every current-rate publication.
+- Floating-panel page descriptors are calculated once per row and passed to both navigation buttons, rather than redoing pricing/page projections for each button.
+- Common sixth-generation palette is Astra #e58a24 (orange), GPT-6.1 Sol #4299f5 (blue), GPT-6 Luna #d277e8 (purple). Both Swift and TypeScript registries match. Usage, activity-rate segments, body TPS, trends and model labels continue using the shared registry.
+- Common-UI regression: 218/218 pass; runtime/refresh/interface-scale/palette suite46/46 pass; Web palette/gradient/parity12/12 pass. Initial broad run had one old source-string assertion for a removed pageCount argument; it now checks shared descriptors passed to both buttons, and final218/218 passes.
+- Deep and light production-component palette screenshots are under palette-preview/. These are explicitly labeled synthetic numeric fixtures, not actual model speed claims.
+
+Build944 was packaged as an earlier performance-only candidate and never installed. Final local candidate is build945; rollback remains installed943. Actual installed acceptance and further profiling are recorded in the outer run README/receipt.

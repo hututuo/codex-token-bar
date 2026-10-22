@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import SwiftUI
 @testable import CodexTokenBar
 
 final class BodySpeedTrendProjectionTests: XCTestCase {
@@ -55,6 +56,31 @@ final class BodySpeedTrendProjectionTests: XCTestCase {
         changed = empty; changed.error = "read failed"; XCTAssertNotEqual(empty, changed)
         changed = empty; changed.minute += 1; XCTAssertNotEqual(empty, changed)
         changed = empty; changed.windowSeconds = 604800; XCTAssertNotEqual(empty, changed)
+    }
+    @MainActor
+    func testOpenSettingsPreviewStillReceivesLivePublications() {
+        let monitor = LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false)
+        var renders = 0
+        let host = NSHostingView(rootView: DashboardLivePreviewScope(monitor: monitor) { observed in
+            let _ = { renders += 1 }()
+            Text(observed.totalSnapshot.status)
+        })
+        let window = NSWindow(contentRect: .init(x: 100, y: 100, width: 240, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        func settle() {
+            let until = Date().addingTimeInterval(0.12)
+            while Date() < until { RunLoop.current.run(until: Date().addingTimeInterval(0.005)) }
+            host.layoutSubtreeIfNeeded()
+        }
+        settle()
+        let initial = renders
+        XCTAssertGreaterThan(initial, 0)
+        monitor.objectWillChange.send()
+        settle()
+        XCTAssertGreaterThan(renders, initial, "Moving observation out of DashboardView must preserve live settings previews")
     }
     @MainActor
     func testRevealMovesCanvasWithoutResizingItsHostingTree() {
