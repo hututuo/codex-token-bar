@@ -34,6 +34,14 @@ for path in sorted((ROOT/'Assets/showcase').glob('*')):
     media.append({'file':path.relative_to(ROOT).as_posix(),'bytes':path.stat().st_size,'duration':probe['format'].get('duration'),'frames':video.get('nb_frames') if video else None,'decode':'PASS' if not decode.returncode else 'FAIL'})
 manifest_path=ROOT/'docs/showcase/asset-manifest.json'
 manifest=json.loads(manifest_path.read_text())
+for name,digest in manifest.get('renderingSources',{}).items():
+    if hashlib.sha256((ROOT/name).read_bytes()).hexdigest()!=digest:errors.append(f'production rendering source changed: {name}')
+host_css=(ROOT/'tauri-app/showcase/demo.css').read_text()
+if re.search(r'\.qs-|\.floating-|--qs-|--floating-',host_css):
+    errors.append('showcase host CSS must not override product selectors or appearance variables')
+surface_source=(ROOT/'tauri-app/showcase/ProductSurface.tsx').read_text()
+if './demo.css' in surface_source or 'previewMode' in surface_source:
+    errors.append('product documents must use original styles and the complete non-preview floating surface')
 for item in manifest['assets']:
     path=ROOT/item['file']
     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=item['sha256']:errors.append(f'manifest mismatch: {item["file"]}')

@@ -27,7 +27,7 @@ def loop(name, states, hold=3):
         run(*inputs,'-filter_complex',';'.join(filters),'-map',f'[{previous}]','-c:v','libx264','-crf','20','-pix_fmt','yuv420p',mp4)
         run('-i',mp4,'-filter_complex','fps=12,scale=1000:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle','-loop','0',ASSETS/f'{name}.gif')
 
-loop('displays',['displays-rest.png','displays-hover.png','displays-detail.png','displays-right.png','displays-dock.png'])
+loop('displays',['displays-rest.png','displays-hover.png','displays-detail.png','displays-right.png'])
 loop('usage',['usage-24h.png','usage-7d.png','usage-30d.png'])
 run('-i',ASSETS/'cache-reminder.mp4','-filter_complex','fps=10,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle','-loop','0',ASSETS/'cache-reminder.gif')
 print('Created displays.gif, usage.gif, cache-reminder.gif')

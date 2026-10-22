@@ -1,58 +1,62 @@
-import React,{useEffect,useRef,useState} from 'react';
+import React,{useEffect,useReducer,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {SidebarRailContent,QuotaDetails,RunningDetails,ResetCreditDetails} from '../src/quota-sidebar/QuotaSidebarApp';
-import {FloatingPanelSurface} from '../src/floating/FloatingPanelPreview';
-import {DEFAULT_FLOATING_SETTINGS} from '../src/floating/floatingSettings';
-import {resolveDockAnchor} from '../src/floating/floatingEdgeDock';
+import {initialSidebarState,sidebarReducer,isSidebarAction,type SidebarState} from '../src/quota-sidebar/model';
+import {floatingContentHeight} from '../src/floating/floatingContent';
+import {DEFAULT_FLOATING_SETTINGS,FLOATING_BASE_WIDTH} from '../src/floating/floatingSettings';
+import geometry from 'virtual:showcase-geometry';
+import {sidebarRadarSnapshot} from '../src/quota-sidebar/radarModel';
+const demoRadar=sidebarRadarSnapshot(null,null);
 import {RecentUsageChart} from '../src/components/RecentUsageChart';
 import {TokenActivitySection} from '../src/components/TokenActivitySection';
 import {ObservedSpeedDetails} from '../src/components/liveRate/ObservedSpeedDetails';
-import {data,days,recent,snapshot,threads,now} from './fixture';
+import {data,days,recent,snapshot,threads} from './fixture';
 import '../src/styles/global.css';
-import '../src/quota-sidebar/QuotaSidebar.css';
 import './demo.css';
-
 function SurfaceDemo(){
-  const [mode,setMode]=useState<'rest'|'hover'|'detail'>('hover');
-  const [tab,setTab]=useState('quota');
-  const [side,setSide]=useState('left');
+  const [state,dispatch]=useReducer(sidebarReducer,initialSidebarState);
+  const [side,setSide]=useState<'left'|'right'>('left');
   const [floating,setFloating]=useState(true);
   const [auto,setAuto]=useState(!matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const [step,setStep]=useState(0);
-  const [pinned,setPinned]=useState(false);
   const [notice,setNotice]=useState('');
-  const [dragging,setDragging]=useState(false);
-  const desktop=useRef<HTMLDivElement>(null);
-  const [pos,setPos]=useState({x:560,y:270});
-  useEffect(()=>{if(!auto)return;const timer=setInterval(()=>setStep(v=>(v+1)%5),3000);return()=>clearInterval(timer);},[auto]);
-  useEffect(()=>{if(auto){setMode((['rest','hover','detail','hover','hover'] as const)[step]);setSide(step===3?'right':'left');if(step===4)dock();if(step===0)setPos({x:560,y:270});}},[auto,step]);
-  const dock=()=>{const width=desktop.current?.clientWidth??1000;const anchor=resolveDockAnchor({frame:{x:width-320,y:270,width:308,height:90},workArea:{x:0,y:0,width,height:510},scaleFactor:1});if(anchor)setPos({x:anchor.frame.x,y:anchor.frame.y});};
-  const manual=(next:typeof mode)=>{setAuto(false);setMode(next);};
-  const open=(next:string,section?:string)=>{setTab(section==='speeds'?'speed':next);manual('detail');};
-  const startDrag=(event:React.PointerEvent<HTMLDivElement>)=>{
-    if((event.target as HTMLElement).closest('button'))return;
-    setAuto(false);setDragging(true);
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const start={x:event.clientX,y:event.clientY,px:event.currentTarget.offsetLeft,py:event.currentTarget.offsetTop};
-    const width=desktop.current?.clientWidth??1000,height=desktop.current?.clientHeight??510;
-    let point={x:start.px,y:start.py};
-    const move=(e:PointerEvent)=>{point={x:Math.min(width-308,Math.max(0,start.px+e.clientX-start.x)),y:Math.min(height-90,Math.max(0,start.py+e.clientY-start.y))};setPos(point);};
-    const up=()=>{setDragging(false);const anchor=resolveDockAnchor({frame:{...point,width:308,height:90},workArea:{x:0,y:0,width,height},scaleFactor:1});if(anchor)setPos({x:anchor.frame.x,y:anchor.frame.y});window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);};
-    window.addEventListener('pointermove',move);window.addEventListener('pointerup',up);
-  };
+  const [scale,setScale]=useState(1);
+  const viewport=useRef<HTMLDivElement>(null);
+  const rail=useRef<HTMLIFrameElement>(null),detail=useRef<HTMLIFrameElement>(null),float=useRef<HTMLIFrameElement>(null);
+  const current=useRef({data,radar:demoRadar,state,side,error:null});current.current={data,radar:demoRadar,state,side,error:null};
+  const send=()=>[rail,detail].forEach(frame=>frame.current?.contentWindow?.postMessage({type:'showcase-product-event',event:'quota-sidebar-presentation',payload:current.current},location.origin));
+  useEffect(send,[state,side]);
+  useEffect(()=>{const resize=new ResizeObserver(entries=>setScale(Math.min(1,entries[0].contentRect.width/1000)));if(viewport.current)resize.observe(viewport.current);return()=>resize.disconnect();},[]);
+  useEffect(()=>{
+    const receive=(event:MessageEvent)=>{
+      if(event.origin!==location.origin||![rail,detail,float].some(frame=>frame.current?.contentWindow===event.source)||event.data?.type!=='showcase-product-event')return;
+      const {event:name,payload}=event.data;
+      if(name==='quota-sidebar-action'&&isSidebarAction(payload)){setAuto(false);dispatch(payload);}
+      if(name==='quota-sidebar-detail-ready'||name==='showcase-ready')send();
+      if(name==='showcase-floating-close'){setFloating(false);setAuto(false);}
+      if(name==='showcase-dashboard')window.parent.postMessage({type:'tokenbar-demo-navigate',anchor:'usage'},location.origin);
+      if(name==='showcase-refresh')setNotice('演示快照 · 不连接真实账号');
+    };
+    window.addEventListener('message',receive);return()=>window.removeEventListener('message',receive);
+  },[]);
+  useEffect(()=>{if(!auto)return;let step=0;const apply=()=>{setSide(step===3?'right':'left');dispatch(step===0?{type:'dismiss'}:step===2?{type:'open',tab:'quota'}:{type:'close'});if(step!==0&&step!==2)dispatch({type:'enter'});step=(step+1)%4;};apply();const timer=setInterval(apply,3000);return()=>clearInterval(timer);},[auto]);
+  const manual=(mode:SidebarState['mode'])=>{setAuto(false);dispatch(mode==='rest'?{type:'dismiss'}:mode==='detail'?{type:'open',tab:'quota'}:{type:'close'});if(mode==='hover')dispatch({type:'enter'});};
+  const expanded=state.mode!=='rest';
+  const width=expanded?geometry.width:geometry.restWidth,height=expanded?geometry.height:geometry.restHeight;
+  const floatingHeight=floatingContentHeight(DEFAULT_FLOATING_SETTINGS.contentVisibility)*DEFAULT_FLOATING_SETTINGS.scale+12;
   return <div className="surface-demo">
-    <div className="demo-toolbar"><div className="demo-tabs">{(['rest','hover','detail'] as const).map((v,i)=><button key={v} aria-pressed={mode===v} onClick={()=>manual(v)}>{['贴边色条','悬停速览','点击详情'][i]}</button>)}</div><div><button onClick={()=>{setAuto(false);setSide(s=>s==='left'?'right':'left');}}>左右停靠 ⇄</button><button onClick={()=>{setAuto(false);manual('hover');setFloating(true);dock();}}>演示吸附</button><button aria-pressed={floating} onClick={()=>setFloating(v=>!v)}>悬浮窗</button><button aria-pressed={auto} onClick={()=>setAuto(v=>!v)}>{auto?'暂停演示':'自动演示'}</button></div></div>
-    <div ref={desktop} className="demo-desktop" data-side={side}>
-      <div className="demo-work"><div className="demo-work-bar"><i/><i/><i/><span>你的工作区</span></div><div className="demo-editor"><div className="demo-editor-nav"><b>项目</b><span>优化设置面板</span><span>整理项目文档</span><span>检查窗口布局</span></div><div className="demo-editor-main"><small>专注手上的事</small><h2>额度和任务，<br/>放在余光看得到的地方。</h2><p>色条常驻 · 悬停速览 · 点击详情</p><div className="demo-code"><span>01</span> const focus = <em>"your work"</em>;<br/><span>02</span> const context = <em>"always in sight"</em>;</div></div></div></div>
-      <div className={`demo-rail quota-sidebar-document qs-${side} demo-mode-${mode}`} onMouseEnter={()=>{if(mode==='rest')manual('hover');}} onClickCapture={event=>{const button=(event.target as HTMLElement).closest('button');if(button?.getAttribute('aria-label')==='打开主页面'){event.stopPropagation();window.parent.postMessage({type:'tokenbar-demo-navigate',anchor:'usage'},location.origin);setNotice('完整图表见下方「用量与额度」');}}}>
-        <main className={`qs-rail qs-${side} qs-mode-${mode==='rest'?'rest':'hover'}`}><SidebarRailContent data={data} state={{mode:mode==='rest'?'rest':'hover',tab:'quota',section:'top',pinned,focusRevision:0} as any} onOpen={open} onPin={()=>setPinned(v=>!v)} onRefresh={()=>setNotice('演示快照已刷新；不连接真实账号')}/></main>
+    <div className="demo-toolbar"><div className="demo-tabs">{(['rest','hover','detail'] as const).map((mode,i)=><button key={mode} aria-pressed={state.mode===mode} onClick={()=>manual(mode)}>{['贴边色条','悬停速览','点击详情'][i]}</button>)}</div><div><button onClick={()=>{setAuto(false);setSide(value=>value==='left'?'right':'left');}}>左右停靠 ⇄</button><button aria-pressed={floating} onClick={()=>setFloating(value=>!value)}>悬浮窗</button><button aria-pressed={auto} onClick={()=>setAuto(value=>!value)}>{auto?'暂停演示':'自动演示'}</button></div></div>
+    <div ref={viewport} className="demo-viewport" style={{height:740*scale}}>
+      <div className="demo-desktop" data-side={side} style={{transform:`scale(${scale})`}}>
+        <div className="demo-work"><div className="demo-work-bar"><i/><i/><i/><span>工作区示意</span></div><div className="demo-editor-main"><small>界面直接来自程序源码</small><h2>额度和任务，<br/>放在余光看得到的地方。</h2><p>原组件 · 原样式 · 原尺寸</p></div></div>
+        <div className="product-rail-clip" style={{[side]:0,top:(740-height)/2,width,height,borderRadius:side==='left'?`0 ${expanded?22:8}px ${expanded?22:8}px 0`:`${expanded?22:8}px 0 0 ${expanded?22:8}px`}}>
+          <iframe ref={rail} src="surface.html?surface=quota-sidebar" title="原程序额度侧栏" onLoad={send} style={{width:geometry.width,height:geometry.height,top:(height-geometry.height)/2,[side]:0}}/>
+        </div>
+        <iframe ref={detail} className="product-detail-frame" src="surface.html?surface=quota-sidebar-detail" title="原程序完整侧栏详情" onLoad={send} style={{visibility:state.mode==='detail'?'visible':'hidden',width:geometry.detailWidth,height:geometry.detailHeight,top:(740-geometry.detailHeight)/2,[side]:geometry.width+geometry.gap}}/>
+        {floating&&<iframe ref={float} className="product-floating-frame" src="surface.html?surface=floating" title="原程序默认悬浮窗" style={{width:FLOATING_BASE_WIDTH,height:floatingHeight,left:side==='right'&&state.mode==='detail'?34:650,top:510}}/>}
+        <span className="demo-disclosure">跨平台原程序界面 · 模拟数据 · 窗口位置由离线画布承载</span>
+        {notice&&<button className="demo-toast" onClick={()=>setNotice('')}>{notice} ×</button>}
       </div>
-      {mode==='detail'&&<aside className={`demo-detail quota-sidebar-document qs-detail qs-${side}`}><header><strong>Codex <small>Pro</small></strong><button aria-label="收起详情" onClick={()=>manual('hover')}>×</button></header><nav><button aria-selected={tab==='quota'} onClick={()=>setTab('quota')}>额度概览</button><button aria-selected={tab==='speed'} onClick={()=>setTab('speed')}>测速</button><button aria-selected={tab==='running'} onClick={()=>setTab('running')}>运行会话</button><button aria-selected={tab==='credits'} onClick={()=>setTab('credits')}>重置卡</button></nav><div className="qs-detail-content">{tab==='speed'?<ObservedSpeedDetails data={snapshot} threads={threads} surface="sidebar"/>:tab==='running'?<RunningDetails data={data}/>:tab==='credits'?<ResetCreditDetails data={data}/>:tab==='radar'?<p className="qs-muted">这是离线展示，不连接第三方雷达。正式应用可查看官方 Radar 和社区 RadarBench 的参考信息。</p>:<QuotaDetails data={data} onOpenRunning={()=>setTab('running')}/>}</div><footer>演示数据 · 原程序组件</footer></aside>}
-      {floating&&<div className="demo-floating" data-dragging={dragging} style={{left:side==='right'&&mode==='detail'?Math.min(pos.x,240):pos.x,top:pos.y}} onPointerDown={startDrag}><FloatingPanelSurface settings={{...DEFAULT_FLOATING_SETTINGS,contentVisibility:{...DEFAULT_FLOATING_SETTINGS.contentVisibility,showRadar:false,showCrowdRadar:false,showTodayModelShare:false,showTodayModelCost:false}}} snapshot={snapshot} runningThreads={data.runningThreads} previewMode onClose={()=>setFloating(false)}/><span className="demo-float-hint">悬浮窗 · 可拖动，近边缘吸附</span></div>}
-      <div className="demo-tray">◒ 76.4 t/s <span>5h 76%　7d 58%</span></div>
-      <span className="demo-disclosure">原程序 React 组件 · 模拟账号与用量 · 拖动范围仅限演示画布</span>
-      {notice&&<button className="demo-toast" onClick={()=>setNotice('')}>{notice} ×</button>}
     </div>
+    <p className="demo-note">侧栏 {geometry.restWidth} × {geometry.restHeight} / {geometry.width} × {geometry.height} · 详情 {geometry.detailWidth} × {geometry.detailHeight} · 窄屏仅等比缩放整幅画布</p>
   </div>;
 }
 function App(){

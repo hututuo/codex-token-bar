@@ -25,22 +25,26 @@ npx vite build --config showcase/vite.config.mjs
 
 ## 原程序组件与边界
 
+显示方式演示使用跨平台端的原 React 渲染树和原 CSS。产品在独立 iframe 文档中渲染，只加载 `src/styles/global.css` 和 `src/quota-sidebar/QuotaSidebar.css`；外面的宣传页样式不能进入产品文档。
+
 | 展示 | 复用来源 |
 |---|---|
-| 色条／悬停概要 | `SidebarRailContent`、`SidebarSummaryLayer`，原 `QuotaSidebar.css` |
-| 额度、任务、重置卡详情 | `QuotaDetails`、`RunningDetails`、`ResetCreditDetails` |
-| 悬浮窗 | `FloatingPanelSurface`，选用程序支持的简洁内容配置 |
-| 画布中的位置吸附 | 原 `resolveDockAnchor` 纯几何函数；不是原生多屏窗口管理器 |
-| 趋势图／年度热力图 | `RecentUsageChart`、`TokenActivitySection`，保留真实组件交互 |
+| 色条／概要 | 原 `SidebarRailContent`、`sidebarRailClassName`、`SidebarSummaryLayer` |
+| 完整详情 | 原 `DetailSurface`，包括标题、导航、正文、页脚和按钮；Vite 仅追加导出，不改 JSX |
+| 悬浮窗 | 原 `FloatingPanelSurface`、`DEFAULT_FLOATING_SETTINGS`、`floatingPanelAppearance`；保留默认全部内容，不启用 previewMode |
+| 窗口尺寸 | 构建时从原 Rust 侧栏几何代码提取：16×250 / 88×680、详情 420×600；悬浮窗由原内容高度函数计算 |
+| 趋势图／年度热力图 | `RecentUsageChart`、`TokenActivitySection` |
 | 正文 TPS | `ObservedSpeedDetails`、原模型展示与样本质量判断 |
 
-账号、会话标题、ID、用量、额度、TPS、日期分布和重置卡均为 `fixture.ts` 中的模拟数据，不能当作模型测试结果。桌面背景与工作区是说明场景，不是 Codex 的实际截图。演示画布只复用组件与边缘位置判定，不能证明原生多屏兼容性。详情中的原生历史读取入口保持禁用，打开主窗口动作改为介绍页内导航。
+Windows 固定画布的 88×680 文档按原生窗口的可见尺寸和居中位置裁切，保留贴边一侧的直角与内侧圆角。窄屏只等比缩放整个桌面画布，不单独缩小字体、重排控件或压低侧栏。
 
-自动演示可暂停；减少动态效果偏好会停用自动播放。窄屏详情中隐藏演示悬浮窗，防止遮挡额度；不改变软件行为。
+账号、会话、用量、额度和 TPS 均为 `fixture.ts` 中的模拟数据。原生事件传输由离线消息通道代替，原侧栏 reducer 处理状态；不读取真实账号、不调用原生窗口管理或证明多屏兼容性。桌面背景是工作区示意，不是 Codex 截图。详情的原生历史读取入口保持禁用。
+
+演示可以暂停，减少动态效果偏好默认停用自动演示。源码 hash 保存于 `asset-manifest.json` 的 `renderingSources`。
 
 ## README 动图
 
-- `displays.gif`：程序组件渲染的贴边、速览、详情、右侧停靠、悬浮窗吸附状态，在状态间作展示用淡化剪辑；不是原生窗口动画逐帧录像。
+- `displays.gif`：原样程序组件渲染的贴边、速览、完整详情、右侧停靠和默认悬浮窗状态，在状态间作展示用淡化剪辑；不是原生窗口动画逐帧录像。
 - `usage.gif`：原图表组件的 24h / 7d / 30d 状态回放。
 - `cache-reminder.gif` / `.mp4`：已完成的 12 秒操作宣传片。Codex 部分为独立模拟；Bar 提醒由原 SwiftUI 视图原生渲染。模型／强度／Fast 切换只是演示情境，不证明它们必然造成低命中。
 - `body-tps.png` / `heatmap.png`：原组件截图，数据为模拟。

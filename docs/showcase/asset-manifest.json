@@ -1,10 +1,19 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-22T11:15:07.060857+00:00",
+  "generatedAt": "2026-10-22T11:42:31.296098+00:00",
   "featureBaseline": "v0.9.7",
   "featureBaselineCommit": "e0440813d2c5131ad58be272af57951055005c2d",
   "data": "Synthetic public demonstration data; no user logs, credentials, or account readings.",
-  "surfaces": "Production React components in an isolated web canvas. README state loops use editorial crossfades, not native window-motion recordings.",
+  "surfaces": "Production cross-platform React rendering subtrees and unchanged production CSS in isolated iframe documents. Complete existing DetailSurface; full default FloatingPanelSurface, not preview mode. Native geometry constants are extracted at build time. README loops are editorial state crossfades, not native window-motion recordings.",
+  "renderingSources": {
+    "tauri-app/src/quota-sidebar/QuotaSidebarApp.tsx": "26ed293549732c201f677c51068a562036f48cd336f0650cf726b0d2b170e314",
+    "tauri-app/src/quota-sidebar/QuotaSidebar.css": "a88c721e8951f79b68e77caaa75159d9a3ecfb258a36fdf0fe7c92e87d3b9d6c",
+    "tauri-app/src/styles/global.css": "a1e7deea52e18320dd87ff7c253dce93420a333cf77a012d10d78d38d08c66d6",
+    "tauri-app/src/floating/FloatingPanelPreview.tsx": "0fcba4a6c13de630d13db01ce550f29355e49838b508a7394cc1012931d21e16",
+    "tauri-app/src/floating/floatingSettings.ts": "af962dcf63d6b218d1643841bb942f98239f087aae836b95c9c4632695cb15aa",
+    "tauri-app/src-tauri/src/platform/quota_sidebar.rs": "feca0d2487f0eabe6ebf88ab9bbfe9e5348db1b4286347bf2ce85ca18bc1ef30",
+    "tauri-app/src-tauri/src/platform/quota_sidebar/canvas_metrics.rs": "3de80690b11aebf97028a3e5345e58cd756244976bfbd181efe1a85c77e7a837"
+  },
   "cacheFilm": "Independent simulated Codex UI, original SwiftUI warning rendering, original procedural UI sound effects.",
   "license": "AGPL-3.0; repository MIT and Codex++ notices retained.",
   "assets": [
@@ -30,33 +39,28 @@
     },
     {
       "file": "Assets/showcase/displays-detail.png",
-      "bytes": 54908,
-      "sha256": "a2470b0b78c84f509ad50a4f57114698b9826d64c5e3ef4a6c92c3a6ca14aeae"
-    },
-    {
-      "file": "Assets/showcase/displays-dock.png",
-      "bytes": 48022,
-      "sha256": "d2673624b6019635a9ad8c84c9a8d7b7617e68afe09086859e87e58e5ef8d682"
+      "bytes": 67528,
+      "sha256": "16c11bfe63bb26a3bd33ab4cbb5607d127a040d6e3f816bb24b2eac36d3a2e0b"
     },
     {
       "file": "Assets/showcase/displays-hover.png",
-      "bytes": 47240,
-      "sha256": "dd037b5b5fc2b0a6d88bc8405cfac2b55fa1704796edea3ae059c7e19e1b6fc4"
+      "bytes": 49313,
+      "sha256": "aa12b8983821d70a282bc37b2406a50a9ff6da448b76ca7ff2185d18d9bfc6d6"
     },
     {
       "file": "Assets/showcase/displays-rest.png",
-      "bytes": 40897,
-      "sha256": "c1288c06ff7d064a0b59205cefb5161cdbc65e9cee2f1e9a2ba13ec53c5bc8fe"
+      "bytes": 39640,
+      "sha256": "f9ebead225193cf2ad3459c6398818b4867e409ddab55710cf2cd525cee36cef"
     },
     {
       "file": "Assets/showcase/displays-right.png",
-      "bytes": 62011,
-      "sha256": "13037041a08e310f3ff1c2610bbdd1ba35bb070d23da6fae2b96ad9e823c8aff"
+      "bytes": 76084,
+      "sha256": "2029976ad4b95bf4e7574ef367cb4c099621198afca5e3d3ab2ea380f75deda1"
     },
     {
       "file": "Assets/showcase/displays.gif",
-      "bytes": 1266986,
-      "sha256": "ebeb573a8c6149b5ffc438059a714ad7997248ed09c9ffaae8b49ce93039f3f1"
+      "bytes": 1558531,
+      "sha256": "0186586785c0fbcef009a9a653c745ec62b0df7b9d5fe5cad42110a3955c01ed"
     },
     {
       "file": "Assets/showcase/heatmap.png",
@@ -89,19 +93,44 @@
       "sha256": "8357452c00a16de787280b0fbb72a11c0bd2096a2664649e10ff59fb1b5bc858"
     },
     {
-      "file": "docs/showcase/demo/assets/index-BGiMRozG.css",
-      "bytes": 292411,
-      "sha256": "7b150817fd21f8a403b5c55b69b84d705fe16194748687c82f62abc1268e13fd"
+      "file": "docs/showcase/demo/assets/global-DtM-xCD-.css",
+      "bytes": 253254,
+      "sha256": "4c10aa76bb5403b952e5d706520dbb6377a6389335a56bd346a0bde03e6669d5"
     },
     {
-      "file": "docs/showcase/demo/assets/index-DXBQmexT.js",
-      "bytes": 390660,
-      "sha256": "4a644607f4858fe69fbdac4d8d6b2d63e277c28f2ac82c817b5ee5e0c6b252a6"
+      "file": "docs/showcase/demo/assets/global-nzFTCOWN.js",
+      "bytes": 253980,
+      "sha256": "589355eb7992d7b663080ab44010b1363b68ae5d6eb23a36c9d7c9f32e526aa8"
+    },
+    {
+      "file": "docs/showcase/demo/assets/index-C1cnVoD6.css",
+      "bytes": 2988,
+      "sha256": "734cdfed705a2a247eb944126f5d660eeec8c1d5d22fcc1faabb32bdb00f25f3"
+    },
+    {
+      "file": "docs/showcase/demo/assets/index-DMGCY5Nz.js",
+      "bytes": 61970,
+      "sha256": "13758676221e51296c7f57a7b26c10fe8a197f818c0447a961e6c4dad65406c9"
+    },
+    {
+      "file": "docs/showcase/demo/assets/surface-DOaeLAKz.js",
+      "bytes": 88620,
+      "sha256": "2b88326503a2c66e9cf7c2330fe55c50d3325cfd3b73d2e93d9cb9c21d588885"
+    },
+    {
+      "file": "docs/showcase/demo/assets/surface-Dj-eT3JN.css",
+      "bytes": 33216,
+      "sha256": "7424ce0ff1ee5bff8c1a8f8e36c304184bc6db2714493b9aeb32d854caee5657"
     },
     {
       "file": "docs/showcase/demo/index.html",
-      "bytes": 376,
-      "sha256": "5a6563f9190b778c7d043c915f7f2bbd094f7700cbe8cbb0b52f49b2d8c70d63"
+      "bytes": 526,
+      "sha256": "b2f112cc5cc539ed99e41a576900978ce12bb9d5d482bdee73d659335f990254"
+    },
+    {
+      "file": "docs/showcase/demo/surface.html",
+      "bytes": 527,
+      "sha256": "b3c21b231b028fb33fcb34e71f95ff94597ed9a7ad3645b3467662c2dc5d1972"
     }
   ]
 }
