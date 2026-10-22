@@ -4,6 +4,11 @@
 #[path = "../src/platform/quota_sidebar/canvas_macos.rs"]
 mod canvas_macos;
 #[cfg(target_os = "macos")]
+#[path = "../src/platform/quota_sidebar/canvas_metrics.rs"]
+mod canvas_metrics;
+#[cfg(target_os = "macos")]
+use canvas_metrics::SIDEBAR_CANVAS_HEIGHT;
+#[cfg(target_os = "macos")]
 fn main() {
     use tauri::{Manager, WebviewWindowBuilder, WebviewUrl};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
