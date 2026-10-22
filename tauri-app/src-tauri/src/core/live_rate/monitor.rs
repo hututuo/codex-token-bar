@@ -1,3 +1,4 @@
+use super::cache_reminder;
 use super::{
     pending_snapshot_with_unread, read_floating_snapshot_from_live,
     read_snapshot_with_unread_scoped, rollout::rollout_file_signatures, LiveRateSourceScope,
@@ -148,7 +149,7 @@ impl LiveRateMonitorService {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(mut snapshot) = state.cached_snapshot(selected_thread_id) {
             snapshot.unread_summary = unread_summary;
-            return snapshot;
+            return fresh_cache_snapshot(snapshot);
         }
         if let Some(mut snapshot) = state.all_snapshot.clone() {
             snapshot.selected_thread_id = selected_thread_id.map(ToOwned::to_owned);
@@ -159,7 +160,7 @@ impl LiveRateMonitorService {
             };
             snapshot.selected_tokens_per_second = 0.0;
             snapshot.unread_summary = unread_summary;
-            return snapshot;
+            return fresh_cache_snapshot(snapshot);
         }
         drop(state);
         pending_snapshot_with_unread(selected_thread_id, unread_summary)
@@ -186,12 +187,12 @@ impl LiveRateMonitorService {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(mut snapshot) = state.cached_snapshot_before_signature(selected_thread_id) {
                 snapshot.unread_summary = unread_summary.clone();
-                return snapshot;
+                return fresh_cache_snapshot(snapshot);
             }
             if state.refresh_in_flight.is_some() {
                 if let Some(mut snapshot) = state.cached_snapshot(selected_thread_id) {
                     snapshot.unread_summary = unread_summary.clone();
-                    return snapshot;
+                    return fresh_cache_snapshot(snapshot);
                 }
                 let (state, wait_result) = self
                     .refresh_ready
@@ -230,12 +231,12 @@ impl LiveRateMonitorService {
                 self.refresh_ready.notify_all();
                 drop(state);
                 claim_guard.disarm();
-                return read_snapshot_with_unread_scoped(
+                return fresh_cache_snapshot(read_snapshot_with_unread_scoped(
                     &self.codex_home,
                     &self.source_scope,
                     selected_thread_id,
                     unread_summary,
-                );
+                ));
             }
             state.signature_count += 1;
             signature_changed = state.last_signature.as_ref() != Some(&signature);
@@ -251,7 +252,7 @@ impl LiveRateMonitorService {
                 state.refresh_in_flight = None;
                 self.refresh_ready.notify_all();
                 claim_guard.disarm();
-                return snapshot;
+                return fresh_cache_snapshot(snapshot);
             }
         }
 
@@ -297,7 +298,7 @@ impl LiveRateMonitorService {
         }
         self.refresh_ready.notify_all();
         claim_guard.disarm();
-        snapshot
+        fresh_cache_snapshot(snapshot)
     }
 
     #[cfg(test)]
@@ -357,6 +358,16 @@ impl LiveRateMonitorService {
             after_claim,
         )
     }
+}
+
+// Apply the same freshness and one-way-disable rule to cached monitor snapshots.
+fn fresh_cache_snapshot(mut snapshot: LiveRateSnapshot) -> LiveRateSnapshot {
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    cache_reminder::clear_snapshot_advice(&mut snapshot, now);
+    snapshot
 }
 
 impl LiveRateMonitorState {

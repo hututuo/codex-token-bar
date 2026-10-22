@@ -2,6 +2,17 @@ import type { LocalDataWarning } from "./diagnostics";
 import type { CodexHomeSourceToken } from "./platform";
 import type { ModelTokenBreakdown } from "./usage";
 
+export interface CacheUsageAdvice {
+  threadId: string;
+  threadTitle?: string | null;
+  hitRate: number;
+  affectedThreads?: number;
+  low: boolean;
+  timestamp: number;
+  idleGapSeconds?: number | null;
+  model?: string | null;
+}
+
 export interface LiveRateSnapshot {
   speedSamples?: SpeedSample[];
   modelSpeeds?: ModelSpeedSummary[];
@@ -9,6 +20,7 @@ export interface LiveRateSnapshot {
   modelSpeeds30m?: ModelSpeedSummary[];
   latestModelSpeeds30m?: ModelSpeedSummary[];
   measurementStatus?: string;
+  cacheAdvice?: CacheUsageAdvice | null;
   scopeLabel: string;
   threadTitle: string;
   selectedThreadId: string | null;
@@ -44,6 +56,7 @@ export interface FloatingPanelSnapshot {
   modelSpeeds30m?: ModelSpeedSummary[];
   latestModelSpeeds30m?: ModelSpeedSummary[];
   measurementStatus?: string;
+  cacheAdvice?: CacheUsageAdvice | null;
   tokensPerSecond: number;
   maxTokensPerSecond: number;
   liveRateAvailable?: boolean;

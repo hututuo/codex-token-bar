@@ -1,4 +1,5 @@
 use super::c_curve::RolloutSignal;
+use super::cache_reminder::{self, CacheObservation, CacheReminderTracker};
 use super::state::read_recent_rollout_threads;
 use super::stream::{
     latest_scheduled_timestamp, LiveMetricEvent, LiveTokenCategory, WINDOW_SECONDS,
@@ -29,6 +30,7 @@ struct RolloutState {
     scope_generations: HashMap<LiveRateSourceScope, u64>,
     offsets: HashMap<(LiveRateSourceScope, PathBuf), RolloutOffset>,
     retained_metrics: HashMap<LiveRateSourceScope, Vec<LiveMetricEvent>>,
+    cache_reminders: HashMap<LiveRateSourceScope, CacheReminderTracker>,
     recent_threads: HashMap<LiveRateSourceScope, CachedRolloutThreads>,
     #[cfg(test)]
     load_counts: HashMap<LiveRateSourceScope, usize>,
@@ -77,13 +79,22 @@ pub(super) fn read_rollout_metrics_with_signals(
     let (threads, generation) = recent_rollout_threads(codex_home, source_scope)?;
     let mut metrics = Vec::new();
     let mut signals = Vec::new();
+    let mut cache_observations = Vec::new();
     for thread in threads {
+        let include_cache_reminder = cache_reminder::CACHE_MISS_REMINDER_ENABLED
+            && thread.thread_source != "guardian_review";
+        if cache_reminder::CACHE_MISS_REMINDER_ENABLED && !include_cache_reminder {
+            cache_observations.push((thread.id.clone(), CacheObservation::Reset));
+        }
         let path = thread.rollout_path;
         let signature = file_signature(&path);
         if !signature.exists || !signature.regular {
             let mut state = rollout_state();
             if state.scope_generations.get(source_scope) == Some(&generation) {
                 state.offsets.remove(&(source_scope.clone(), path));
+                if let Some(reminders) = state.cache_reminders.get_mut(source_scope) {
+                    reminders.reset_thread(&thread.id);
+                }
             }
             continue;
         }
@@ -138,12 +149,23 @@ pub(super) fn read_rollout_metrics_with_signals(
             }
         };
         if reset_for_rewrite {
+            let mut state = rollout_state();
+            if state.scope_generations.get(source_scope) == Some(&generation) {
+                if let Some(reminders) = state.cache_reminders.get_mut(source_scope) {
+                    reminders.reset_thread(&thread.id);
+                }
+            }
             continue;
         }
 
         let (new_offset, lines) = match read_new_lines(&path, offset) {
             Ok(result) => result,
-            Err(_) => continue,
+            Err(_) => {
+                if include_cache_reminder {
+                    cache_observations.push((thread.id.clone(), CacheObservation::Reset));
+                }
+                continue;
+            }
         };
         {
             let mut state = rollout_state();
@@ -174,6 +196,11 @@ pub(super) fn read_rollout_metrics_with_signals(
             if let Some(signal) = rollout_signal(&thread_id, &line.text, now) {
                 signals.push(signal);
             }
+            let mut observe = |observation| {
+                if include_cache_reminder {
+                    cache_observations.push((thread_id.clone(), observation));
+                }
+            };
             metrics.extend(rollout_line_metrics(
                 &thread.id,
                 &path,
@@ -181,6 +208,7 @@ pub(super) fn read_rollout_metrics_with_signals(
                 &line.text,
                 now,
                 &mut call_starts,
+                &mut observe,
             ));
         }
     }
@@ -188,6 +216,18 @@ pub(super) fn read_rollout_metrics_with_signals(
     let mut state = rollout_state();
     if state.scope_generations.get(source_scope) != Some(&generation) {
         return Ok((Vec::new(), Vec::new()));
+    }
+    if cache_reminder::CACHE_MISS_REMINDER_ENABLED {
+        let reminders = state
+            .cache_reminders
+            .entry(source_scope.clone())
+            .or_default();
+        reminders.begin_poll(now, Instant::now());
+        for (thread_id, observation) in cache_observations {
+            reminders.observe(&thread_id, observation, now, Instant::now());
+        }
+    } else {
+        state.cache_reminders.remove(source_scope);
     }
     let retained = state
         .retained_metrics
@@ -321,6 +361,18 @@ fn rollout_signal(thread_id: &str, line: &str, now: f64) -> Option<RolloutSignal
     }
 }
 
+pub(super) fn latest_cache_advice(
+    source_scope: &LiveRateSourceScope,
+    now: f64,
+) -> Option<crate::models::CacheAdvice> {
+    let state = rollout_state();
+    cache_reminder::latest(state.cache_reminders.get(source_scope), now)
+}
+
+pub(super) fn clear_cache_advice(source_scope: &LiveRateSourceScope) {
+    rollout_state().cache_reminders.remove(source_scope);
+}
+
 pub(super) fn rollout_file_signatures(
     codex_home: &Path,
     source_scope: &LiveRateSourceScope,
@@ -394,6 +446,10 @@ fn recent_rollout_threads_with_reader(
             .iter()
             .map(|thread| thread.rollout_path.clone())
             .collect::<std::collections::HashSet<_>>();
+        let valid_thread_ids = threads
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<HashSet<_>>();
         let mut state = rollout_state();
         if state.scope_generations.get(source_scope) == Some(&refresh_nonce) {
             #[cfg(test)]
@@ -411,6 +467,9 @@ fn recent_rollout_threads_with_reader(
             state
                 .offsets
                 .retain(|(scope, path), _| scope != source_scope || valid_paths.contains(path));
+            if let Some(reminders) = state.cache_reminders.get_mut(source_scope) {
+                reminders.retain_threads(&valid_thread_ids);
+            }
         }
         return Ok((threads, refresh_nonce));
     }
@@ -433,6 +492,7 @@ fn evict_oldest_scope_if_needed(state: &mut RolloutState) {
     state.scope_generations.remove(&scope);
     state.recent_threads.remove(&scope);
     state.retained_metrics.remove(&scope);
+    state.cache_reminders.remove(&scope);
     state
         .offsets
         .retain(|(candidate, _), _| candidate != &scope);
@@ -687,6 +747,7 @@ fn rollout_line_metrics(
     line: &str,
     now: f64,
     call_starts: &mut HashMap<String, f64>,
+    observe_cache: &mut impl FnMut(CacheObservation),
 ) -> Vec<LiveMetricEvent> {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return Vec::new();
@@ -704,6 +765,17 @@ fn rollout_line_metrics(
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if cache_reminder::CACHE_MISS_REMINDER_ENABLED {
+        if let Some(observation) = cache_reminder::parse_observation(
+            &value,
+            payload,
+            record_type,
+            payload_type,
+            parsed_timestamp,
+        ) {
+            observe_cache(observation);
+        }
+    }
     let key_prefix = payload
         .get("call_id")
         .or_else(|| payload.get("id"))

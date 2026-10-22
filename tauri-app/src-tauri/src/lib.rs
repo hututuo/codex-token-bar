@@ -191,6 +191,7 @@ pub fn run() {
             commands::live::acknowledge_current_unread,
             platform::quota_sidebar::set_quota_sidebar_mode,
             platform::quota_sidebar::quota_sidebar_pointer_inside,
+            platform::quota_sidebar::quota_sidebar_pointer_state,
             platform::quota_sidebar::drag_quota_sidebar,
             commands::surface::show_floating_window,
             commands::surface::hide_floating_window,

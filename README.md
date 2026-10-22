@@ -1,8 +1,8 @@
 # Codex Token Bar
 
 > **历史设计参考：缓存间隔诊断（2026-10-14 / v7）**
-> [动态 P95＋明显下降点规范](docs/design/cache-retention-dynamic-p95-drop.md)与[合成示意](docs/design/assets/cache-retention-dynamic-synthetic.svg)继续保留。低命中提醒和续问建议已隔离到 `codex/cache-advice-retained-20261022`，不在 v0.9.6 的运行链路中；缓存统计和费用账本仍保留。
-> Historical design only: reminders and follow-up recommendations are retained on the branch above and are not active in v0.9.6; cache accounting and the cost ledger remain available.
+> [动态 P95＋明显下降点规范](docs/design/cache-retention-dynamic-p95-drop.md)与[合成示意](docs/design/assets/cache-retention-dynamic-synthetic.svg)作为历史设计保留。过渡期恢复可关闭的低缓存命中提醒；续问时限建议、间隔图及其额外扫描链路仍停用。缓存统计和费用账本保留。
+> Historical design only: optional low-cache reminders are restored for the transition period. Follow-up timing recommendations, interval charts and their extra scanner remain inactive. Cache accounting and the cost ledger remain available.
 
 简体中文 | [English](#english)
 

@@ -23,3 +23,33 @@ export function monitorSidebarPresence(
   cancel = schedule(() => { void sample(); });
   return () => { disposed = true; cancel(); };
 }
+
+export interface SidebarPointerState { inside: boolean; clickRevision: number }
+/** An auto-revealed notice waits for entry/exit or a NEW outside click. */
+export function monitorSidebarReminder(
+  sample: () => Promise<SidebarPointerState>, dismiss: () => void,
+  schedule: (callback: () => void) => () => void = callback => {
+    const timer = setTimeout(callback, 150); return () => clearTimeout(timer);
+  },
+  pointerEntered: () => boolean = () => false,
+) {
+  let disposed = false, entered = false, outsideSamples = 0;
+  let previousClick: number | undefined;
+  let cancel = () => {};
+  const poll = async () => {
+    try {
+      const state = await sample();
+      if (disposed) return;
+      const clicked = previousClick !== undefined && state.clickRevision !== previousClick;
+      previousClick = state.clickRevision;
+      entered ||= state.inside || pointerEntered();
+      outsideSamples = state.inside ? 0 : outsideSamples + 1;
+      if (!state.inside && (clicked || (entered && outsideSamples >= 2))) {
+        disposed = true; dismiss(); return;
+      }
+    } catch { outsideSamples = 0; }
+    if (!disposed) cancel = schedule(() => { void poll(); });
+  };
+  void poll();
+  return () => { disposed = true; cancel(); };
+}

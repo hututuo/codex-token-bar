@@ -1,3 +1,4 @@
+import { CacheUsageNotice } from "./cacheReminder/CacheUsageNotice";
 import { ObservedSpeedDetails } from "./liveRate/ObservedSpeedDetails";
 import { canUseQuotaSidebar } from "../settings/displaySettings";
 import type { CodexHomeSourceToken, LiveRateSnapshot, LiveThreadOption, PlatformCapabilities } from "../types/dashboard";
@@ -118,6 +119,7 @@ export function LiveRateCard({
         </div>
       ) : null}
 
+      {liveRateEnabled && <CacheUsageNotice advice={snapshot.cacheAdvice} />}
       <div className="live-grid">
         <div className={liveRateEnabled ? "live-left" : "live-left is-live-disabled"}>
           <LiveRateMeter

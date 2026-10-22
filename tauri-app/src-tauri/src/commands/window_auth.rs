@@ -99,7 +99,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "dismiss_status_panel_on_blur",
 ];
 
-pub(crate) const QUOTA_SIDEBAR_ONLY_COMMANDS: &[&str] = &["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "drag_quota_sidebar"];
+pub(crate) const QUOTA_SIDEBAR_ONLY_COMMANDS: &[&str] = &["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "quota_sidebar_pointer_state", "drag_quota_sidebar"];
 
 pub(crate) const STATUS_WINDOW_ONLY_COMMANDS: &[&str] = &["publish_status_indicator_readout"];
 
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn quota_sidebar_has_its_own_geometry_authority_and_read_lifecycle() {
-        for command in ["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "drag_quota_sidebar"] {
+        for command in ["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "quota_sidebar_pointer_state", "drag_quota_sidebar"] {
             assert!(allows_window_label(command, "quota-sidebar"));
             for label in ["main", "floating", "status", "quota-sidebar-detail", "unknown"] { assert!(!allows_window_label(command, label)); }
         }
@@ -331,12 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn cache_advice_retention_and_sidebar_reminder_commands_are_absent_but_pointer_helper_remains() {
+    fn retention_commands_stay_absent_and_sidebar_pointer_observers_are_scoped() {
         let registered = registered_commands();
         for command in [
             "read_cache_retention_snapshot",
             "refresh_cache_retention_snapshot",
-            "quota_sidebar_pointer_state",
         ] {
             assert!(!registered.iter().any(|name| name == command), "{command} remains registered");
             assert!(!MAIN_WINDOW_ONLY_COMMANDS.contains(&command), "{command} remains main-only authorized");
@@ -344,6 +343,7 @@ mod tests {
             assert!(!QUOTA_SIDEBAR_ONLY_COMMANDS.contains(&command), "{command} remains sidebar authorized");
         }
         assert!(registered.iter().any(|name| name == "quota_sidebar_pointer_inside"));
+        assert!(registered.iter().any(|name| name == "quota_sidebar_pointer_state"));
     }
 
     fn window_checked_commands() -> Vec<String> {

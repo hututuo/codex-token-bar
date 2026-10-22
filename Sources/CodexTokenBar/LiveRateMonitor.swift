@@ -110,6 +110,8 @@ final class LiveRateMonitor: ObservableObject {
     var totalSessionRates: [String: RateAccumulator] = [:]
     private var selectedSmoothedTokensPerSecond: Double = 0
     private var totalSmoothedTokensPerSecond: Double = 0
+    private var cacheAdviceNotBefore = Date().timeIntervalSince1970
+    private var cacheAdviceTracker = CacheUsageAdviceTracker()
     private var rolloutReadStates: [String: RolloutReadState] = [:]
     var turnThreadIDs: [String: String] = [:]
     var itemTurnIDs: [String: String] = [:]
@@ -295,6 +297,10 @@ final class LiveRateMonitor: ObservableObject {
     func setMonitoringEnabled(_ enabled: Bool) {
         guard enabled != monitoringEnabled else { return }
         monitoringEnabled = enabled
+        cacheAdviceNotBefore = Date().timeIntervalSince1970
+        cacheAdviceTracker = CacheUsageAdviceTracker()
+        snapshot.cacheAdvice = nil
+        totalSnapshot.cacheAdvice = nil
         if enabled {
             selectedRate.clear()
             totalRate.clear()
@@ -323,6 +329,10 @@ final class LiveRateMonitor: ObservableObject {
     func setPollingActive(_ active: Bool) {
         guard pollingActive != active else { return }
         pollingActive = active
+        cacheAdviceNotBefore = Date().timeIntervalSince1970
+        cacheAdviceTracker = CacheUsageAdviceTracker()
+        snapshot.cacheAdvice = nil
+        totalSnapshot.cacheAdvice = nil
         if active {
             guard monitoringEnabled else { return }
             configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
@@ -359,6 +369,7 @@ final class LiveRateMonitor: ObservableObject {
         lastSnapshotPublishAt = 0
         lastFallbackPollAt = 0
         lastRolloutReadAt = 0
+        cacheAdviceTracker = CacheUsageAdviceTracker()
         rolloutReadStates.removeAll()
         selectedRate.clear()
         totalRate.clear()
@@ -721,6 +732,9 @@ final class LiveRateMonitor: ObservableObject {
                         sourceGeneration: generation,
                         sourceBindingGeneration: bindingGeneration
                     ) else { return }
+                    cacheAdviceTracker = CacheUsageAdviceTracker()
+                    snapshot.cacheAdvice = nil
+                    totalSnapshot.cacheAdvice = nil
                     snapshot.status = "读取会话流失败：\(error.localizedDescription)"
                     return
                 }
@@ -1050,6 +1064,14 @@ final class LiveRateMonitor: ObservableObject {
 
         for read in reads {
             rolloutReadStates[read.path] = read.state
+            if read.cacheReset { cacheAdviceTracker.reset(threadID: read.threadID) }
+            let isReviewThread = threadOptions.contains { $0.id == read.threadID && $0.threadSource == "guardian_review" }
+            if isReviewThread { cacheAdviceTracker.reset(threadID: read.threadID) }
+            for sample in read.cacheSamples {
+                if isReviewThread { continue }
+                guard sample.context || sample.reset || sample.boundary != nil || sample.timestamp >= cacheAdviceNotBefore || !sample.timestamp.isFinite else { continue }
+                cacheAdviceTracker.consume(sample, threadID: read.threadID, now: now)
+            }
             for signal in read.telemetry {
                     throughputCurve.consume(signal, thread: read.threadID, now: now)
                     processedEvents = true
@@ -1518,13 +1540,18 @@ final class LiveRateMonitor: ObservableObject {
         updated.outputCharacters = outputCharacters
         updated.breakdown = breakdown
         updated.status = status
+        updated.cacheAdvice = cacheAdviceTracker.latest(now: now, threadID: snapshot.scopeLabel == "全会话" ? nil : snapshot.threadID)
+        if let advice = updated.cacheAdvice {
+            updated.cacheAdvice?.threadTitle = threadOptions.first { $0.id == advice.threadID }?.title
+        }
 
         guard Self.displayBucket(snapshot.rollingTokensPerSecond) != Self.displayBucket(updated.rollingTokensPerSecond)
             || Self.displayBucket(snapshot.averageTokensPerSecond) != Self.displayBucket(updated.averageTokensPerSecond)
             || snapshot.outputTokens != updated.outputTokens
             || snapshot.outputCharacters != updated.outputCharacters
             || snapshot.breakdown != updated.breakdown
-            || snapshot.status != updated.status else {
+            || snapshot.status != updated.status
+            || snapshot.cacheAdvice != updated.cacheAdvice else {
             return nil
         }
 
@@ -1612,6 +1639,7 @@ extension LiveRateMonitor {
         selectedThreadID id: String,
         threadOptions options: [LiveThreadOption] = []
     ) {
+        cacheAdviceNotBefore = 0
         threadID = id
         selectedThreadID = id
         threadOptions = options

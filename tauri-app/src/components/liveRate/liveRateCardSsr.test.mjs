@@ -123,7 +123,7 @@ test("LiveRateCard does not show stream failure warning when live rate is disabl
   });
 });
 
-test("legacy low-cache payload cannot revive retired reminders or hide body TPS", async () => {
+test("temporary low-cache notice is restored without follow-up suggestions or hiding body TPS", async () => {
   await withSsrModules(async load => {
     const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
     const html = renderComponent(LiveRateCard, cardProps({
@@ -131,7 +131,8 @@ test("legacy low-cache payload cannot revive retired reminders or hide body TPS"
     }));
     assert.match(html, /正文测速/);
     assert.match(html, /查看详情/);
-    assert.doesNotMatch(html, /低命中提醒|缓存命中偏低|续问建议|建议尽量在/);
+    assert.match(html, /低命中提醒/);
+    assert.doesNotMatch(html, /续问建议|建议尽量在|间隔图表/);
   });
 });
 

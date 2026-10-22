@@ -53,6 +53,7 @@ struct StoreFileSignature {
 }
 
 mod c_curve;
+mod cache_reminder;
 mod completed_body;
 mod logs;
 mod monitor;
@@ -170,6 +171,7 @@ fn idle_snapshot_with_warnings(
         model_speeds_30m: Vec::new(),
         latest_model_speeds_30m: Vec::new(),
         measurement_status: "completed_body_waiting".into(),
+        cache_advice: None,
         unread_summary,
         warnings,
     }
@@ -202,6 +204,7 @@ pub(super) fn pending_snapshot_with_unread(
         model_speeds_30m: Vec::new(),
         latest_model_speeds_30m: Vec::new(),
         measurement_status: "completed_body_waiting".into(),
+        cache_advice: None,
         unread_summary,
         warnings: Vec::new(),
     }
@@ -243,6 +246,7 @@ fn read_snapshot_result_at(
         match rollout::read_rollout_metrics_with_signals(codex_home, source_scope, now) {
             Ok(result) => result,
             Err(error) => {
+                rollout::clear_cache_advice(source_scope);
                 warnings.push(live_rate_warning(format!(
                     "读取新版 rollout 会话索引失败：{}（{}）",
                     codex_home.join("state_5.sqlite").display(),
@@ -334,6 +338,11 @@ fn read_snapshot_result_at(
     let selected_thread_title = selected_thread_id
         .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "选择会话查看单会话速率".into());
+    let cache_advice = rollout::latest_cache_advice(source_scope, now).map(|mut advice| {
+        advice.thread_title =
+            read_thread_title_or_warn(codex_home, &advice.thread_id, &mut warnings);
+        advice
+    });
     Ok(LiveRateSnapshot {
         scope_label: "全会话".into(),
         thread_title,
@@ -353,6 +362,7 @@ fn read_snapshot_result_at(
         model_speeds_30m: speed_snapshot.model_speeds_30m,
         latest_model_speeds_30m: speed_snapshot.latest_model_speeds_30m,
         measurement_status: measurement_status.into(),
+        cache_advice,
         unread_summary: empty_unread_summary(),
         warnings,
     })
@@ -406,6 +416,7 @@ pub fn read_floating_snapshot_from_live(
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
         max_tokens_per_second: live.max_tokens_per_second,
+        cache_advice: live.cache_advice.clone(),
         trend_label: String::new(),
         total_tokens_label: summary
             .as_ref()
