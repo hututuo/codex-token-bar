@@ -159,22 +159,51 @@ actor CompletedBodySpeedReader {
         var discardPartial = false
         var boundary: Data?
     }
-    struct Result: Sendable { var samples: [String: [ObservedSpeedSample]] = [:]; var error: String? }
+    struct Result: Sendable {
+        /// Complete retained snapshot for existing reader callers.
+        var samples: [String: [ObservedSpeedSample]] = [:]
+        /// New or not-yet-accepted samples, keyed by rollout path.
+        var pendingSamplesByPath: [String: [ObservedSpeedSample]] = [:]
+        /// Highest revision represented by each pending sample batch.
+        var revisionsByPath: [String: UInt64] = [:]
+        var error: String?
+    }
+    private struct PendingSample: Sendable {
+        let revision: UInt64
+        let sample: ObservedSpeedSample
+    }
     private var states: [String: State] = [:]
     private var encoder: CoreBpe?
     private var recent: [String: [ObservedSpeedSample]] = [:]
+    private var sampleRevisionsByPath: [String: UInt64] = [:]
+    private var pendingSamplesByPath: [String: [PendingSample]] = [:]
+    private var lastPrunedAt: Double?
     private func boundary(_ handle: FileHandle, at offset: UInt64) throws -> Data {
         let count = min(offset, 128)
         try handle.seek(toOffset: offset - count)
         return try handle.read(upToCount: Int(count)) ?? Data()
     }
-    func read(options: [LiveThreadOption], now: Double) -> Result {
+    func read(
+        options: [LiveThreadOption],
+        now: Double,
+        acceptedRevisions: [String: UInt64] = [:]
+    ) -> Result {
         var result = Result()
+        // Acknowledge only revisions the main actor committed after source validation.
+        // If rollout parsing or poll application failed, the caller keeps its older
+        // revision and these samples are returned again on the next read.
+        for (path, acceptedRevision) in acceptedRevisions {
+            guard let pending = pendingSamplesByPath[path] else { continue }
+            let remaining = pending.filter { $0.revision > acceptedRevision }
+            if remaining.isEmpty { pendingSamplesByPath.removeValue(forKey: path) }
+            else { pendingSamplesByPath[path] = remaining }
+        }
         do {
             if encoder == nil { encoder = try BodySpeedTokenizer.load() }
             guard let encoder else { return result }
             var budget = 64 * 1_048_576
             var seen: Set<String> = []
+            var recentIDsByPath: [String: Set<String>] = [:]
             for option in options.sorted(by: { $0.updatedAtMS > $1.updatedAtMS }).prefix(64) where budget > 0 {
                 guard let path = option.normalizedRolloutPath, seen.insert(path).inserted,
                       let attrs = try? FileManager.default.attributesOfItem(atPath: path),
@@ -212,7 +241,17 @@ actor CompletedBodySpeedReader {
                 if start <= last {
                     for line in data[start...last].split(separator: 10) {
                         if let sample = state.assembler.consume(Data(line), thread: option.id, now: now, tokenizer: { encoder.encodeOrdinary(text: $0).count }) {
-                            if recent[path]?.contains(where: { $0.id == sample.id }) != true { recent[path, default: []].append(sample) }
+                            if recentIDsByPath[path] == nil {
+                                recentIDsByPath[path] = Set(recent[path, default: []].map(\.id))
+                            }
+                            if recentIDsByPath[path, default: []].insert(sample.id).inserted {
+                                recent[path, default: []].append(sample)
+                                let revision = sampleRevisionsByPath[path, default: 0] &+ 1
+                                sampleRevisionsByPath[path] = revision
+                                pendingSamplesByPath[path, default: []].append(
+                                    PendingSample(revision: revision, sample: sample)
+                                )
+                            }
                         }
                     }
                 }
@@ -220,11 +259,26 @@ actor CompletedBodySpeedReader {
                 state.boundary = try boundary(handle, at: state.offset)
                 states[path] = state
             }
-            for path in Array(recent.keys) {
-                recent[path] = Array((recent[path] ?? []).filter { $0.endedAt >= now - 30 * 86400 }.suffix(2_000))
-                if recent[path]?.isEmpty == true { recent.removeValue(forKey: path) }
+            // Expiring and capping every retained sample list on every poll made an
+            // idle reader repeatedly scan the full 30-day cache. Prune at most once
+            // per minute; a backwards wall-clock adjustment must never trigger an
+            // early expiration pass.
+            if now.isFinite, lastPrunedAt.map({ now >= $0 && now - $0 >= 60 }) ?? true {
+                let cutoff = now - 30 * 86400
+                for path in Array(recent.keys) {
+                    let retained = Array((recent[path] ?? []).filter { $0.endedAt >= cutoff }.suffix(2_000))
+                    if retained.isEmpty { recent.removeValue(forKey: path) }
+                    else { recent[path] = retained }
+                    let retainedIDs = Set(retained.map(\.id))
+                    let pending = (pendingSamplesByPath[path] ?? []).filter { retainedIDs.contains($0.sample.id) }
+                    if pending.isEmpty { pendingSamplesByPath.removeValue(forKey: path) }
+                    else { pendingSamplesByPath[path] = pending }
+                }
+                lastPrunedAt = now
             }
             result.samples = recent
+            result.pendingSamplesByPath = pendingSamplesByPath.mapValues { $0.map(\.sample) }
+            result.revisionsByPath = pendingSamplesByPath.compactMapValues { $0.last?.revision }
             if states.count > 128 { states = states.filter { seen.contains($0.key) } }
         } catch { result.error = "正文测速暂不可用：\(error.localizedDescription)" }
         return result

@@ -9,7 +9,7 @@ test('current model contributions merge aliases, keep unknown amounts, and use u
  const slices=modelRateSlices(rates);
  assert.deepEqual(slices.map(s=>s.share),[.4,.6]);
  assert.deepEqual(slices.map(s=>s.color),[modelUsageColor('gpt-6-astra'),modelUsageColor('gpt-6.1-sol')]);
- assert.equal(modelRateGradient(rates),'linear-gradient(90deg, #e58a24 0%, #e58a24 40%, #4299f5 40%, #4299f5 100%)');
+ assert.equal(modelRateGradient(rates),'linear-gradient(90deg, #36ad77 0%, #36ad77 40%, #ed932b 40%, #ed932b 100%)');
  assert.equal(modelRateSlices([{model:'',tokensPerSecond:10}])[0].model,'unknown');
  assert.equal(modelRateGradient([]),modelUsageColor('unknown'));
  assert.equal(rateFillStyle(100,200,rates)['--rate-fill-scale'],'0.5');

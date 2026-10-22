@@ -23,7 +23,7 @@ final class ModelRatePresentationTests: XCTestCase {
         XCTAssertEqual(slices.map(\.model), ["gpt-6-astra", "gpt-6.1-sol"])
         XCTAssertEqual(slices.map(\.share), [0.4, 0.6])
         XCTAssertEqual(ModelRatePresentation.stops(rates).map(\.location), [0, 0.4, 0.4, 1])
-        XCTAssertEqual(ModelUsagePresentation.colorHex(for: "gpt6astra"), "#e58a24")
+        XCTAssertEqual(ModelUsagePresentation.colorHex(for: "gpt6astra"), "#36ad77")
         XCTAssertEqual(ModelUsagePresentation.colorHex(for: "未来-model-Ω"), "#9b9b81")
         XCTAssertEqual(ModelUsagePresentation.colorHex(for: "codex-auto-review@luna"), ModelUsagePresentation.colorHex(for: "gpt-5.6-luna"))
     }
@@ -46,6 +46,24 @@ final class ModelRatePresentationTests: XCTestCase {
         // A ratio change at unchanged total must repaint even without a width change.
         view.update(fraction: 1, minimumFraction: 0, colors: [], startPoint: .leading, endPoint: .trailing, animationDuration: 0, animated: false, modelRates: [.init(model: "gpt-6-astra", tokensPerSecond: 60), .init(model: "gpt-6.1-sol", tokensPerSecond: 40)])
         XCTAssertEqual(layer.locations?.map(\.doubleValue), [0, 0.6, 0.6, 1])
+    }
+    @MainActor
+    func testWidthOnlyRefreshDoesNotReapplyGradientAndRatioChangesStillDo() throws {
+        let view = SmoothRateFillLayerView(frame: .init(x: 0, y: 0, width: 300, height: 10))
+        func update(_ width: Double, _ astra: Double = 40) {
+            view.update(fraction: width, minimumFraction: 0, colors: [], startPoint: .leading, endPoint: .trailing,
+                animationDuration: 0.2, animated: true,
+                modelRates: [.init(model: "gpt-6-astra", tokensPerSecond: astra), .init(model: "gpt-6.1-sol", tokensPerSecond: 100 - astra)])
+        }
+        update(0.5)
+        let first = view.styleApplicationCount
+        for n in 1...50 { update(Double(n) / 100) }
+        XCTAssertEqual(view.styleApplicationCount, first)
+        update(0.5, 60)
+        XCTAssertEqual(view.styleApplicationCount, first + 1)
+        let gradient = try XCTUnwrap(view.layer?.sublayers?.first as? CAGradientLayer)
+        XCTAssertEqual(gradient.locations?.map(\.doubleValue), [0, 0.6, 0.6, 1])
+        XCTAssertNil(gradient.animation(forKey: "smoothRateFillWidth"), "Detached views should not create animations")
     }
     @MainActor
     func testNativeModelRateAndGuidePreview() throws {

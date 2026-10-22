@@ -48,6 +48,7 @@ import {
   visibleDashboardState,
   type DashboardAppState,
 } from "./dashboardState";
+import { samePreciseDashboardProgress } from "./preciseDashboardProgress";
 import {
   applyDashboardRefreshPlan,
   makeDashboardRefreshPlan,
@@ -178,6 +179,12 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
   const [refreshTaskCount, setRefreshTaskCount] = useState(0);
   const [preciseProgress, setPreciseProgress] = useState<PreciseDashboardProgress | null>(null);
+  const preciseProgressRef = useRef(preciseProgress);
+  const publishPreciseProgress = useCallback((next: PreciseDashboardProgress | null) => {
+    if (samePreciseDashboardProgress(preciseProgressRef.current, next)) return;
+    preciseProgressRef.current = next;
+    setPreciseProgress(next);
+  }, []);
   const [preciseIndexUpgradeRequired, setPreciseIndexUpgradeRequired] = useState<PreciseIndexUpgradeState | null>(null);
   const preciseIndexUpgradeBlockedRef = useRef(false);
   const [preciseRequestInFlight, setPreciseRequestInFlight] = useState(false);
@@ -505,12 +512,12 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     pendingPreciseRequestRef.current = null;
     setStartupDashboardUnavailable(false);
     setUsageCacheInitializing(false);
-    setPreciseProgress(null);
+    publishPreciseProgress(null);
     setPreciseIndexUpgradeRequired({ ...upgrade, deferred: false });
     setState((current) => isSourceTokenCurrent(sourceToken)
       ? { ...markPreciseRecentUsageStale(current), loading: false }
       : current);
-  }, [isSourceTokenCurrent, sourceToken]);
+  }, [isSourceTokenCurrent, publishPreciseProgress, sourceToken]);
 
   const deferPreciseIndexUpgrade = useCallback(() => {
     setPreciseIndexUpgradeRequired((current) => current === null
@@ -1287,14 +1294,14 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   useEffect(() => {
     const readProgress = source.readPreciseDashboardProgress;
     if (!readProgress || sourceToken === null) {
-      setPreciseProgress(null);
+      publishPreciseProgress(null);
       return undefined;
     }
     let cancelled = false;
     const poll = async () => {
       const next = await readProgress(sourceToken);
       if (!cancelled && next !== null) {
-        setPreciseProgress(next);
+        publishPreciseProgress(next);
       }
     };
     void poll();
@@ -1316,7 +1323,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [preciseProgressPending, preciseRequestInFlight, refreshTaskCount, source, sourceToken, state.loading]);
+  }, [preciseProgressPending, preciseRequestInFlight, publishPreciseProgress, refreshTaskCount, source, sourceToken, state.loading]);
 
   return {
     state,

@@ -22,10 +22,10 @@ export interface ModelUsageSlice {
 }
 
 const FIXED_COLORS: Record<string, string> = {
-  "gpt-6-astra": "#e58a24",
-  "gpt-6.1-sol": "#4299f5",
+  "gpt-6-astra": "#36ad77",
+  "gpt-6.1-sol": "#ed932b",
   "gpt-6-sol": "#2e6bfa",
-  "gpt-6-luna": "#d277e8",
+  "gpt-6-luna": "#4299f5",
   "gpt-5.6-sol": "#6774e8",
   "gpt-5.6-terra": "#9252e6",
   "gpt-5.6-luna": "#399b75",

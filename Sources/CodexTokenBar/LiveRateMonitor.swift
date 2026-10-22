@@ -64,10 +64,12 @@ final class LiveRateMonitor: ObservableObject {
     var speedCollector = ObservedSpeedCollector()
     private var completedBodyReader = CompletedBodySpeedReader()
     private var completedBodyError: String?
+    private var acceptedCompletedBodySampleRevisions: [String: UInt64] = [:]
     private var savedSpeedRevision = -1
     private let bodySpeedWriter = BodySpeedSampleWriter()
     private var bodySpeedWriteTicket = 0
     private var lastModelSpeedSummaryAt = 0.0
+    private var nextModelSpeedSummaryChangeAt = 0.0
     private let speedModelResolver = ObservedSpeedModelResolver()
     private var speedModelLookupRunning = false
     private var speedModelLookupAttempts: [String: Double] = [:]
@@ -411,6 +413,7 @@ final class LiveRateMonitor: ObservableObject {
         lastSnapshotPublishAt = 0
         lastFallbackPollAt = 0
         lastRolloutReadAt = 0
+        acceptedCompletedBodySampleRevisions.removeAll()
         cacheAdviceTracker = CacheUsageAdviceTracker()
         rolloutReadStates.removeAll()
         selectedRate.clear()
@@ -1011,12 +1014,20 @@ final class LiveRateMonitor: ObservableObject {
         let options = threadOptions
         let states = rolloutReadStates
         let bodyReader = completedBodyReader
+        let acceptedBodyRevisions = acceptedCompletedBodySampleRevisions
         return try await Task.detached(priority: .utility) {
-            async let bodyRead = bodyReader.read(options: options, now: now)
+            async let bodyRead = bodyReader.read(
+                options: options,
+                now: now,
+                acceptedRevisions: acceptedBodyRevisions
+            )
             var reads = try Self.rolloutReads(options: options, states: states)
             let bodies = await bodyRead
             for i in reads.indices {
-                reads[i].completedBodySamples = bodies.samples[reads[i].path] ?? []
+                let pendingSamples = bodies.pendingSamplesByPath[reads[i].path] ?? []
+                reads[i].completedBodySamples = pendingSamples
+                reads[i].completedBodyRevision = pendingSamples.isEmpty
+                    ? nil : bodies.revisionsByPath[reads[i].path]
                 reads[i].completedBodyError = bodies.error
             }
             return reads
@@ -1077,6 +1088,7 @@ final class LiveRateMonitor: ObservableObject {
             bodyHistoryLoading = false; bodyHistoryLoaded = false
             bodyHistoryTitles = [:]; bodyHistoryStatus = ""; lastSpeedPruneAt = 0
             speedSourceIdentity = identity
+            acceptedCompletedBodySampleRevisions.removeAll()
             completedBodyReader = CompletedBodySpeedReader(); completedBodyError = nil
             throughputCurve = ThroughputCurve(); speedContexts = ObservedStreamContexts()
             resolvedSpeedModels.removeAll(); speedModelLookupAttempts.removeAll()
@@ -1119,7 +1131,23 @@ final class LiveRateMonitor: ObservableObject {
     private func processRolloutReads(_ reads: [RolloutRead], now: TimeInterval) -> Bool {
         ensureSpeedSource()
         var processedEvents = false
-        speedCollector.addCompletedBodies(reads.flatMap(\.completedBodySamples))
+        var completedBodySamples: [ObservedSpeedSample] = []
+        for read in reads {
+            if let revision = read.completedBodyRevision {
+                let acceptedRevision = acceptedCompletedBodySampleRevisions[read.path, default: 0]
+                guard revision > acceptedRevision, !read.completedBodySamples.isEmpty else { continue }
+                completedBodySamples.append(contentsOf: read.completedBodySamples)
+                // This runs only after applyPollCompletion validates the source and
+                // polling generation, so a rejected completion leaves the reader's
+                // pending batch available for replay.
+                acceptedCompletedBodySampleRevisions[read.path] = revision
+            } else {
+                // Compatibility for manually constructed RolloutRead values and
+                // older tests that do not carry reader revisions.
+                completedBodySamples.append(contentsOf: read.completedBodySamples)
+            }
+        }
+        speedCollector.addCompletedBodies(completedBodySamples)
         completedBodyError = reads.first?.completedBodyError
 
         for read in reads {
@@ -1532,7 +1560,8 @@ final class LiveRateMonitor: ObservableObject {
             }
             speedSamples = speedCollector.samples.filter(\.isBody).sorted { $0.endedAt == $1.endedAt ? $0.id < $1.id : $0.endedAt > $1.endedAt }
         }
-        if samplesChanged || now - lastModelSpeedSummaryAt >= 1 {
+        if BodySpeedSummarySchedule.isDue(now: now, lastUpdatedAt: lastModelSpeedSummaryAt,
+            nextChangeAt: nextModelSpeedSummaryChangeAt, samplesChanged: samplesChanged) {
             let models5 = speedCollector.completedBodySummaries(now: now, windowSeconds: 300)
             let models15 = speedCollector.completedBodySummaries(now: now, windowSeconds: 900)
             let models30 = speedCollector.completedBodySummaries(now: now, windowSeconds: 1800)
@@ -1552,6 +1581,7 @@ final class LiveRateMonitor: ObservableObject {
             let empty = unknown > 0 ? "\(unknown)段待识别" : "等待带起止时间的正文"
             if empty != speedSummaryEmptyLabel { speedSummaryEmptyLabel = empty }
             lastModelSpeedSummaryAt = now
+            nextModelSpeedSummaryChangeAt = BodySpeedSummarySchedule.nextChange(samples: speedCollector.samples, now: now)
         }
         let status = speedCollector.persistenceError ?? completedBodyError ?? (modelSpeeds.isEmpty ? "等待正文" : "每秒更新")
         if status != measurementStatus { measurementStatus = status }
@@ -1754,6 +1784,7 @@ extension LiveRateMonitor {
         selectedSmoothedTokensPerSecond = 0
         totalSmoothedTokensPerSecond = 0
         rolloutReadStates.removeAll()
+        acceptedCompletedBodySampleRevisions.removeAll()
         clearStreamState()
     }
 
@@ -1808,6 +1839,18 @@ extension LiveRateMonitor {
 
     var testLastGlobalLogID: Int {
         lastGlobalLogID
+    }
+
+    var testCompletedBodySampleCount: Int {
+        speedCollector.samples.filter(\.isBody).count
+    }
+
+    var testCompletedBodyCollectorRevision: Int {
+        speedCollector.revision
+    }
+
+    func testAcceptedCompletedBodyRevision(path: String) -> UInt64? {
+        acceptedCompletedBodySampleRevisions[path]
     }
 
     func testActivatePollingWithoutScheduling() {

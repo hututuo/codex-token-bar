@@ -3,6 +3,8 @@ import SwiftUI
 /// A small, isolated animation: no data reads, sampling, or dashboard timer.
 struct RecentChartInteractionGuide: View {
     @State private var expanded = true
+    @State private var visible = false
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -18,7 +20,7 @@ struct RecentChartInteractionGuide: View {
             if expanded {
                 HStack(spacing: 20) {
                     Group {
-                        if reduceMotion { RecentChartGuideDemo(phase: 5, animatesPress: false) }
+                        if !AnimationActivity.runs(visible: visible, reducedMotion: reduceMotion, lowPower: lowPower) { RecentChartGuideDemo(phase: 5, animatesPress: false) }
                         else {
                             PhaseAnimator([0, 1, 2, 3, 4, 5, 6]) { phase in
                                 RecentChartGuideDemo(phase: phase)
@@ -33,7 +35,12 @@ struct RecentChartInteractionGuide: View {
                     }.foregroundStyle(AppTheme.textPrimary).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-        }.padding(12)
+        }
+        .background(AnimationVisibilityProbe { if visible != $0 { visible = $0 } })
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
+        .padding(12)
             .background(AppTheme.accentBlue.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(AppTheme.accentBlue.opacity(0.2), lineWidth: 1))
     }

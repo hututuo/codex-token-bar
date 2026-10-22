@@ -48,6 +48,16 @@ final class SmoothRateFillLayerView: NSView {
     private var gradientStartPoint = UnitPoint.leading
     private var gradientEndPoint = UnitPoint.trailing
     private var animationDuration: TimeInterval = 0.2
+    private var appliedStyle: FillStyle?
+    private struct FillStyle: Equatable {
+        let scale: CGFloat
+        let colors: [Color]
+        let rates: [ModelRateContribution]?
+        let start: UnitPoint
+        let end: UnitPoint
+        let appearance: NSAppearance.Name
+    }
+    private(set) var styleApplicationCount = 0
     private var lastAppliedWidth: CGFloat?
     private var lastAppliedHeight: CGFloat?
 
@@ -67,6 +77,12 @@ final class SmoothRateFillLayerView: NSView {
 
     override func layout() {
         super.layout()
+        applyFill(animated: false)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        appliedStyle = nil
         applyFill(animated: false)
     }
 
@@ -122,7 +138,9 @@ final class SmoothRateFillLayerView: NSView {
         gradientLayer.cornerRadius = newCornerRadius
         CATransaction.commit()
 
-        guard animated,
+        guard animated, window?.isVisible == true, !isHiddenOrHasHiddenAncestor,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
               let previousWidth,
               previousWidth > 0,
               clampedWidth > 0,
@@ -139,6 +157,14 @@ final class SmoothRateFillLayerView: NSView {
     }
 
     private func updateGradientConfiguration(scale: CGFloat) {
+        let style = FillStyle(scale: scale, colors: fillColors, rates: modelRates,
+            start: gradientStartPoint, end: gradientEndPoint, appearance: effectiveAppearance.name)
+        guard appliedStyle != style else { return }
+        appliedStyle = style
+        styleApplicationCount += 1
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         gradientLayer.contentsScale = scale
         if let modelRates {
             let stops = ModelRatePresentation.stops(modelRates)

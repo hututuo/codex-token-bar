@@ -41,6 +41,20 @@ final class FloatingUnreadSpriteRippleView: NSView {
 
     private static let animationKey = "floatingUnreadRippleFrames"
 
+    private var motionActive = false
+    private lazy var activityProbe: AnimationVisibilityView = {
+        let probe = AnimationVisibilityView(frame: bounds)
+        probe.autoresizingMask = [.width, .height]
+        probe.includesMotionPolicy = true
+        probe.changed = { [weak self] active in
+            guard let self, self.motionActive != active else { return }
+            self.motionActive = active
+            self.layer?.borderWidth = active ? 0 : 1.5
+            if active { self.updateLayoutIfNeeded(force: self.cachedFrames.isEmpty); self.startAnimations() }
+            else { self.cancelPendingRender(); self.stopAnimations() }
+        }
+        return probe
+    }()
     private let imageLayer = CALayer()
     private let renderCoordinator = FloatingUnreadRenderRequestCoordinator()
     private var cachedFrames: [CGImage] = []
@@ -68,6 +82,7 @@ final class FloatingUnreadSpriteRippleView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        activityProbe.scheduleCheck()
         if window == nil {
             cancelPendingRender()
             stopAnimations()
@@ -93,6 +108,8 @@ final class FloatingUnreadSpriteRippleView: NSView {
         currentCornerRadius = cornerRadius
         currentScale = nextScale
         layer?.cornerRadius = cornerRadius
+        layer?.borderColor = color.cgColor
+        layer?.borderWidth = motionActive ? 0 : 1.5
         layer?.cornerCurve = .continuous
         updateLayoutIfNeeded(force: needsLayout)
     }
@@ -104,10 +121,11 @@ final class FloatingUnreadSpriteRippleView: NSView {
         layer?.cornerCurve = .continuous
         imageLayer.contentsGravity = .resize
         layer?.addSublayer(imageLayer)
+        addSubview(activityProbe)
     }
 
     private func updateLayoutIfNeeded(force: Bool) {
-        guard bounds.width > 0, bounds.height > 0 else { return }
+        guard motionActive, bounds.width > 0, bounds.height > 0 else { return }
         let rawBackingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let frameCount = FloatingUnreadFrameBudget.frameCount(
             cycleDuration: cycleDuration,
@@ -375,7 +393,7 @@ final class FloatingUnreadSpriteRippleView: NSView {
     }
 
     private func startAnimations(phaseOffset: CFTimeInterval = 0) {
-        guard window != nil, cachedFrames.count > 1 else { return }
+        guard motionActive, window != nil, cachedFrames.count > 1 else { return }
         guard imageLayer.animation(forKey: Self.animationKey) == nil else { return }
         let loopFrames = cachedFrames + [cachedFrames[0]]
         let lastIndex = max(loopFrames.count - 1, 1)

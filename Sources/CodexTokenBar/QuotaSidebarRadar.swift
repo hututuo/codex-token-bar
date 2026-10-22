@@ -265,6 +265,8 @@ struct QuotaSidebarRadarOutline: View {
     let snapshot: CodexRadarSnapshot?
     let stale: Bool
     let updatedAt: Date?
+    @State private var animationVisible = false
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var outline: UnevenRoundedRectangle {
@@ -279,7 +281,7 @@ struct QuotaSidebarRadarOutline: View {
         TimelineView(QuotaSidebarRadarPresentation.schedule(snapshot, updatedAt: updatedAt)) { tick in
             if QuotaSidebarRadarPresentation.windowState(snapshot, stale: stale,
                                                          updatedAt: updatedAt, now: tick.date).active {
-                if reduceMotion {
+                if !AnimationActivity.runs(visible: animationVisible, reducedMotion: reduceMotion, lowPower: lowPower) {
                     glow(opacity: 0.9)
                 } else {
                     TimelineView(.animation(minimumInterval: 0.06)) { context in
@@ -288,6 +290,10 @@ struct QuotaSidebarRadarOutline: View {
                     }
                 }
             }
+        }
+        .background(AnimationVisibilityProbe { if animationVisible != $0 { animationVisible = $0 } })
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
     }
 

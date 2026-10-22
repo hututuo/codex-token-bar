@@ -143,6 +143,9 @@ extension LiveRateMonitor {
 
     struct RolloutRead {
         var completedBodySamples: [ObservedSpeedSample] = []
+        /// Reader revision for this path's pending samples. Nil keeps compatibility
+        /// with tests and callers that construct rollout reads directly.
+        var completedBodyRevision: UInt64? = nil
         var completedBodyError: String?
         let threadID: String
         let path: String

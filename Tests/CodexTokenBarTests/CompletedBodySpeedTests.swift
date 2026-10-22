@@ -120,6 +120,7 @@ final class CompletedBodySpeedTests: XCTestCase {
         XCTAssertEqual(restored.samples.count, 2); XCTAssertEqual(restored.samples.first, old)
         XCTAssertEqual(restored.completedBodySummaries(now: now, windowSeconds: 900).first?.sampleCount, 1)
         XCTAssertEqual(restored.completedBodySummaries(now: now, windowSeconds: 900).first?.tokensPerSecond, 40)
+        XCTAssertTrue(restored.completedBodySummaries(now: now + 901, windowSeconds: 900).isEmpty)
         XCTAssertFalse(try String(contentsOf: url, encoding: .utf8).contains("hello world"))
     }
     func testReaderBackfillPartialAppendAndReplayAreIdempotent() async throws {
@@ -137,10 +138,16 @@ final class CompletedBodySpeedTests: XCTestCase {
         let h = try FileHandle(forWritingTo: file); try h.seekToEnd(); try h.write(contentsOf: b.suffix(b.count - b.count / 2) + Data([10])); try h.close()
         let result = await reader.read(options: [option], now: now)
         XCTAssertEqual(result.samples[file.path]?.first?.outputTokens, 2)
+        XCTAssertEqual(result.pendingSamplesByPath[file.path]?.count, 1)
+        let revision = try XCTUnwrap(result.revisionsByPath[file.path])
         let again = await reader.read(options: [option], now: now)
         var collector = ObservedSpeedCollector()
-        collector.addCompletedBodies(result.samples[file.path] ?? []); collector.addCompletedBodies(again.samples[file.path] ?? [])
+        collector.addCompletedBodies(result.pendingSamplesByPath[file.path] ?? [])
+        collector.addCompletedBodies(again.pendingSamplesByPath[file.path] ?? [])
         XCTAssertEqual(collector.samples.count, 1)
+        let accepted = await reader.read(options: [option], now: now, acceptedRevisions: [file.path: revision])
+        XCTAssertTrue(accepted.pendingSamplesByPath[file.path, default: []].isEmpty)
+        XCTAssertEqual(accepted.samples[file.path]?.count, 1, "accepting a delta must not remove the retained reader snapshot")
     }
     func testSameFileRewriteThatGrowsResetsBodyCursorWithoutDroppingHistory() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -152,14 +159,23 @@ final class CompletedBodySpeedTests: XCTestCase {
         let options = [LiveThreadOption(id: "s", title: "", updatedAtMS: 0, rolloutPath: file.path)]
         let first = await reader.read(options: options, now: now)
         XCTAssertEqual(first.samples[file.path]?.count, 1)
+        let firstRevision = try XCTUnwrap(first.revisionsByPath[file.path])
         let newTurn = String(repeating: "new-turn", count: 100)
         try bytes([context(newTurn), timing("j", turn: newTurn), body("j", turn: newTurn)]).write(to: file)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: file.path)[.systemFileNumber] as? NSNumber, before)
-        let second = await reader.read(options: options, now: now)
+        let second = await reader.read(options: options, now: now, acceptedRevisions: [file.path: firstRevision])
         XCTAssertEqual(second.samples[file.path]?.count, 2)
+        XCTAssertEqual(second.pendingSamplesByPath[file.path]?.map(\.itemID), ["j"])
+        let secondRevision = try XCTUnwrap(second.revisionsByPath[file.path])
+        let retry = await reader.read(options: options, now: now, acceptedRevisions: [file.path: firstRevision])
+        XCTAssertEqual(retry.pendingSamplesByPath[file.path]?.map(\.itemID), ["j"], "a rejected poll must see the same unaccepted rewrite sample again")
         try FileManager.default.removeItem(at: file)
-        let missing = await reader.read(options: options, now: now)
+        let missing = await reader.read(options: options, now: now, acceptedRevisions: [file.path: firstRevision])
         XCTAssertEqual(missing.samples[file.path]?.count, 2)
+        XCTAssertEqual(missing.pendingSamplesByPath[file.path]?.map(\.itemID), ["j"], "a deleted file must not discard retained or pending samples")
+        let acceptedAfterDeletion = await reader.read(options: options, now: now, acceptedRevisions: [file.path: secondRevision])
+        XCTAssertTrue(acceptedAfterDeletion.pendingSamplesByPath[file.path, default: []].isEmpty)
+        XCTAssertEqual(acceptedAfterDeletion.samples[file.path]?.count, 2)
     }
     func testReaderDeduplicatesOptionsThatShareOneRolloutPath() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -187,10 +203,18 @@ final class CompletedBodySpeedTests: XCTestCase {
         var collector = ObservedSpeedCollector(); collector.addCompletedBodies(result.samples.values.flatMap { $0 })
         XCTAssertFalse(collector.samples.isEmpty)
         // Drain bounded bootstrap batches before measuring a genuinely idle incremental poll.
-        for _ in 0..<8 { _ = await reader.read(options: options, now: time) }
-        let secondStart = Date(); _ = await reader.read(options: options, now: time)
+        var accepted = result.revisionsByPath
+        for _ in 0..<8 {
+            let batch = await reader.read(options: options, now: time, acceptedRevisions: accepted)
+            accepted.merge(batch.revisionsByPath, uniquingKeysWith: max)
+        }
+        let secondStart = Date()
+        let idle = await reader.read(options: options, now: time, acceptedRevisions: accepted)
+        let idleSeconds = Date().timeIntervalSince(secondStart)
         var metadata: [String: Any] = ["samples": try JSONSerialization.jsonObject(with: JSONEncoder().encode(collector.samples)),
-            "bootstrapAndSecondReadSeconds": Date().timeIntervalSince(start), "idleReadSeconds": Date().timeIntervalSince(secondStart),
+            "bootstrapAndSecondReadSeconds": Date().timeIntervalSince(start), "idleReadSeconds": idleSeconds,
+            "incrementalPendingSamples": idle.pendingSamplesByPath.values.reduce(0) { $0 + $1.count },
+            "retainedReaderSamples": idle.samples.values.reduce(0) { $0 + $1.count },
             "models": collector.completedBodySummaries(now: time, windowSeconds: 1800).map { ["model": $0.model, "tokens": $0.outputTokens, "seconds": $0.durationSeconds, "rate": $0.tokensPerSecond, "count": $0.sampleCount] as [String: Any] }]
         if let database = ProcessInfo.processInfo.environment["TOKENBAR_BODY_AUDIT_DATABASE"] {
             let store = try BodySpeedTrendStore(url: URL(fileURLWithPath: database))

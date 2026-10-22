@@ -658,6 +658,75 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.testLastGlobalLogID, 9_000)
     }
 
+    @MainActor
+    func testCompletedBodyRevisionIsAcceptedOnlyOnceAfterSourceValidation() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let generation = monitor.testSourceGeneration
+        let bindingGeneration = monitor.testSourceBindingGeneration
+        let path = "/tmp/rollout-revision-test.jsonl"
+
+        func sample(_ id: String, endedAt: Double) -> ObservedSpeedSample {
+            ObservedSpeedSample(
+                id: id,
+                threadID: "thread-1",
+                turnID: "turn-1",
+                itemID: id,
+                model: "model",
+                startedAt: endedAt - 1,
+                endedAt: endedAt,
+                outputTokens: 40,
+                outputCharacters: 80,
+                outputBytes: 80,
+                chunkCount: 0,
+                durationSeconds: 1,
+                tokensPerSecond: 40,
+                confidence: "high",
+                networkWarning: nil,
+                source: "test",
+                measurementKind: "completed_body",
+                tokenizer: "o200k_base"
+            )
+        }
+
+        var first = LiveRateMonitor.RolloutRead(
+            threadID: "thread-1", path: path, newOffset: 0, events: []
+        )
+        first.completedBodySamples = [sample("body/first", endedAt: 1_000)]
+        first.completedBodyRevision = 1
+        XCTAssertTrue(monitor.testApplyPollCompletion(
+            streamRows: [], rolloutReads: [first], sourceGeneration: generation,
+            sourceBindingGeneration: bindingGeneration, now: 1_000
+        ))
+        let firstCollectorRevision = monitor.testCompletedBodyCollectorRevision
+        XCTAssertEqual(monitor.testCompletedBodySampleCount, 1)
+        XCTAssertEqual(monitor.testAcceptedCompletedBodyRevision(path: path), 1)
+
+        XCTAssertTrue(monitor.testApplyPollCompletion(
+            streamRows: [], rolloutReads: [first], sourceGeneration: generation,
+            sourceBindingGeneration: bindingGeneration, now: 1_001
+        ))
+        XCTAssertEqual(monitor.testCompletedBodyCollectorRevision, firstCollectorRevision)
+        XCTAssertEqual(monitor.testCompletedBodySampleCount, 1)
+
+        var retry = first
+        retry.completedBodySamples = [sample("body/retry", endedAt: 1_002)]
+        retry.completedBodyRevision = 2
+        XCTAssertFalse(monitor.testApplyPollCompletion(
+            streamRows: [], rolloutReads: [retry], sourceGeneration: generation + 1,
+            sourceBindingGeneration: bindingGeneration, now: 1_002
+        ))
+        XCTAssertEqual(monitor.testAcceptedCompletedBodyRevision(path: path), 1)
+        XCTAssertEqual(monitor.testCompletedBodySampleCount, 1)
+
+        XCTAssertTrue(monitor.testApplyPollCompletion(
+            streamRows: [], rolloutReads: [retry], sourceGeneration: generation,
+            sourceBindingGeneration: bindingGeneration, now: 1_003
+        ))
+        XCTAssertEqual(monitor.testAcceptedCompletedBodyRevision(path: path), 2)
+        XCTAssertEqual(monitor.testCompletedBodySampleCount, 2)
+    }
+
     func testStreamParserKeepsToolArgumentDeltasOutOfVisibleTextButInLiveRate() throws {
         let row = LiveRateMonitor.LogRow(
             id: 1,
