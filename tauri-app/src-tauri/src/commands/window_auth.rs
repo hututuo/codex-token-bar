@@ -126,6 +126,9 @@ pub(crate) fn require_window_label(
 }
 
 pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
+    // The speed detail reads source-validated numeric buckets only. Other
+    // history, account and mutation commands keep their existing boundaries.
+    if command == "read_body_speed_trend" && label == "quota-sidebar-detail" { return true; }
     if matches!(command, "open_body_speed_details" | "open_modeltrace") {
         return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
     }
@@ -166,6 +169,15 @@ fn is_app_surface_label(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speed_detail_can_read_numeric_trend_without_account_or_history_authority() {
+        assert!(allows_window_label("read_body_speed_trend", "quota-sidebar-detail"));
+        assert!(!allows_window_label("read_body_speed_trend", "unknown"));
+        for command in ["read_body_speed_history", "read_account_quota", "save_modeltrace_auto_settings", "start_modeltrace"] {
+            assert!(!allows_window_label(command, "quota-sidebar-detail"), "{command}");
+        }
+    }
 
     #[test]
     fn detail_can_open_dashboard_without_receiving_data_or_geometry_authority() {

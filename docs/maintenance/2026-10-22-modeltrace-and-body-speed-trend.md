@@ -182,3 +182,9 @@ percentage change is shown only for one model with at least two distinct bucket
 times. Missing buckets remain disconnected; no synthetic samples or smoothing
 are introduced. Recent-hour and 24-hour views read the same cached five-minute
 SQLite points. The extra view choices do not add a scanner or storage schema.
+
+
+Tauri's third-level detail has a narrow authorization for the source-validated
+`read_body_speed_trend` command. It cannot read raw speed history or account data,
+change settings, or start ModelTrace. Window-authorization regressions cover the
+exception and preserve all other boundaries.
