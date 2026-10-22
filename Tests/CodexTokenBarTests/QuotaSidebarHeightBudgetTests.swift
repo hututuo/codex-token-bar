@@ -113,7 +113,7 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         let third = try XCTUnwrap(controller.railPanel).frame.height
         try snapshot("native-3-models.png")
         XCTAssertGreaterThan(third, second + 10, "A second additional model must resize the native frame")
-        XCTAssertLessThan(first, 650, "Measured rail should remain compact with model detection and menu access")
+        XCTAssertLessThan(first, 650, "Measured rail should remain compact with model detection entry")
         controller.select(.speeds)
         controller.setModuleVisible(.speeds, visible: false); settle()
         let hiddenSpeeds = try XCTUnwrap(controller.railPanel).frame.height
@@ -125,9 +125,14 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         settle()
         let minimal = try XCTUnwrap(controller.railPanel).frame.height
         XCTAssertEqual(minimal, 192, accuracy: 1)
-        try snapshot("native-all-hidden.png")
+        try snapshot("native-last-module.png")
         let restored = QuotaSidebarController(settings: defaults)
-        XCTAssertTrue(QuotaSidebarDetail.allCases.allSatisfy { !restored.isModuleVisible($0) })
+        XCTAssertEqual(restored.visibleModuleCount, 1)
+        XCTAssertTrue(restored.isModuleVisible(.modeltrace))
+        XCTAssertFalse(restored.canHideModule(.modeltrace))
+        controller.select(.modeltrace)
+        settle()
+        try snapshot("native-modeltrace-page.png", detail: true)
         controller.setModuleVisible(.speeds, visible: true); settle()
         XCTAssertGreaterThan(try XCTUnwrap(controller.railPanel).frame.height, minimal + 80)
         XCTAssertTrue(QuotaSidebarController(settings: defaults).isModuleVisible(.speeds))

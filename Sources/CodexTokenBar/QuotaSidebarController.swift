@@ -48,9 +48,12 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private static let hiddenModulesKey = "quotaSidebarHiddenModules"
 
     func isModuleVisible(_ module: QuotaSidebarDetail) -> Bool { !hiddenModules.contains(module) }
+    var visibleModuleCount: Int { QuotaSidebarDetail.allCases.filter(isModuleVisible).count }
+    func canHideModule(_ module: QuotaSidebarDetail) -> Bool { !isModuleVisible(module) || visibleModuleCount > 1 }
 
     func setModuleVisible(_ module: QuotaSidebarDetail, visible: Bool) {
         guard visible != isModuleVisible(module) else { return }
+        guard visible || canHideModule(module) else { return }
         rebaseOnMeasurement = true
         if visible { hiddenModules.remove(module) } else { hiddenModules.insert(module) }
         settings.set(hiddenModules.map(\.rawValue).sorted(), forKey: Self.hiddenModulesKey)
@@ -78,7 +81,9 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     init(settings: UserDefaults = .standard) {
         self.settings = settings
-        self.hiddenModules = Set((settings.stringArray(forKey: Self.hiddenModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)))
+        var hidden = Set((settings.stringArray(forKey: Self.hiddenModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)))
+        if hidden.count == QuotaSidebarDetail.allCases.count { hidden.remove(.modeltrace) }
+        self.hiddenModules = hidden
         self.placement = QuotaSidebarPlacement.load(defaults: settings)
         super.init()
     }

@@ -13,6 +13,8 @@ pub struct SidebarModuleVisibilitySnapshot {
     pub radar: bool,
     #[serde(default = "default_enabled")]
     pub credits: bool,
+    #[serde(default = "default_enabled")]
+    pub modeltrace: bool,
 }
 
 impl Default for SidebarModuleVisibilitySnapshot {
@@ -23,6 +25,7 @@ impl Default for SidebarModuleVisibilitySnapshot {
             tasks: true,
             radar: true,
             credits: true,
+            modeltrace: true,
         }
     }
 }

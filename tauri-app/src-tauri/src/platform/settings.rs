@@ -116,8 +116,14 @@ fn save_sidebar_module_visibility_at(
     visible: bool,
 ) -> Result<SidebarModuleVisibilitySnapshot, String> {
     let module = SidebarModule::parse(module)?;
-    mutate_app_settings_at(path, |settings| {
-        settings.sidebar_module_visibility.set(module, visible)
+    mutate_app_settings_at_checked(path, |settings| {
+        let mut updated = settings.sidebar_module_visibility.clone();
+        updated.set(module, visible);
+        if !updated.has_visible_module() {
+            return Err("至少保留一个侧栏模块可见。".into());
+        }
+        settings.sidebar_module_visibility = updated;
+        Ok(())
     })
     .map(|settings| settings.sidebar_module_visibility)
 }
@@ -129,6 +135,7 @@ enum SidebarModule {
     Tasks,
     Radar,
     Credits,
+    Modeltrace,
 }
 
 impl SidebarModule {
@@ -139,6 +146,7 @@ impl SidebarModule {
             "tasks" => Ok(Self::Tasks),
             "radar" => Ok(Self::Radar),
             "credits" => Ok(Self::Credits),
+            "modeltrace" => Ok(Self::Modeltrace),
             _ => Err(format!("不支持的额度侧栏模块：{value}")),
         }
     }
@@ -152,7 +160,20 @@ impl SidebarModuleVisibilitySnapshot {
             SidebarModule::Tasks => self.tasks = visible,
             SidebarModule::Radar => self.radar = visible,
             SidebarModule::Credits => self.credits = visible,
+            SidebarModule::Modeltrace => self.modeltrace = visible,
         }
+    }
+
+    fn has_visible_module(&self) -> bool {
+        self.overview || self.speeds || self.tasks || self.radar || self.credits || self.modeltrace
+    }
+
+    fn normalize(&mut self) -> bool {
+        if self.has_visible_module() {
+            return false;
+        }
+        self.modeltrace = true;
+        true
     }
 }
 
@@ -297,6 +318,24 @@ fn mutate_app_settings_at(
         eprintln!("{diagnostic}");
     }
     Ok(outcome.settings)
+}
+
+fn mutate_app_settings_at_checked(
+    path: &Path,
+    mutation: impl FnOnce(&mut AppSettingsSnapshot) -> Result<(), String>,
+) -> Result<AppSettingsSnapshot, String> {
+    let _guard = settings_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut settings = read_app_settings_at(path)?;
+    mutation(&mut settings)?;
+    let saved = sanitize_app_settings(settings);
+    if let Some(diagnostic) =
+        write_app_settings_at_with_hooks(path, &saved, |_, _| {}, sync_parent_directory)?
+    {
+        eprintln!("{diagnostic}");
+    }
+    Ok(saved)
 }
 
 fn mutate_app_settings_at_with_hooks<AfterRead, BeforeReplace, SyncParent, Mutation>(
@@ -1343,10 +1382,17 @@ pub(super) fn read_app_settings_or_default() -> AppSettingsSnapshot {
 
 fn read_app_settings_at(path: &Path) -> Result<AppSettingsSnapshot, String> {
     let mut outcome = read_app_settings_at_with_diagnostics(path)?;
+    let mut migrated = false;
     if !outcome.settings.token_rate_scale_initialized_v092 {
         outcome.settings.floating_window.token_rate_full_scale =
             crate::models::DEFAULT_TOKEN_RATE_FULL_SCALE;
         outcome.settings.token_rate_scale_initialized_v092 = true;
+        migrated = true;
+    }
+    if outcome.settings.sidebar_module_visibility.normalize() {
+        migrated = true;
+    }
+    if migrated {
         if let Some(diagnostic) = write_app_settings_at_with_hooks(
             path,
             &outcome.settings,
@@ -1569,7 +1615,14 @@ where
 
 fn parse_settings(path: &Path, bytes: &[u8]) -> Result<AppSettingsSnapshot, String> {
     serde_json::from_slice::<AppSettingsSnapshot>(bytes)
-        .map(sanitize_app_settings)
+        .map(|settings| {
+            // Keep the persisted visibility intact until read_app_settings_at can detect and
+            // atomically repair the legacy all-hidden state. Other settings are sanitized here.
+            let visibility = settings.sidebar_module_visibility.clone();
+            let mut sanitized = sanitize_app_settings(settings);
+            sanitized.sidebar_module_visibility = visibility;
+            sanitized
+        })
         .map_err(|error| format!("设置文件不是有效 JSON：{}（{}）", path.display(), error))
 }
 
@@ -2445,6 +2498,7 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
     settings.floating_window = sanitize_floating_settings(settings.floating_window);
     settings.floating_position = sanitize_floating_position(settings.floating_position);
     settings.display_surfaces = sanitize_display_surfaces(settings.display_surfaces);
+    settings.sidebar_module_visibility.normalize();
     settings.session_enhancements =
         sanitize_session_enhancement_settings(settings.session_enhancements);
     settings.auto_resume = sanitize_auto_resume_settings(settings.auto_resume);
@@ -5029,6 +5083,12 @@ mod tests {
             legacy.sidebar_module_visibility,
             SidebarModuleVisibilitySnapshot::default()
         );
+        let legacy_modules: AppSettingsSnapshot = serde_json::from_str(
+            r#"{"sidebarModuleVisibility":{"overview":false,"speeds":true,"tasks":true,"radar":true,"credits":true}}"#,
+        )
+        .unwrap();
+        assert!(!legacy_modules.sidebar_module_visibility.overview);
+        assert!(legacy_modules.sidebar_module_visibility.modeltrace);
 
         let defaults = read_app_settings_at(&path).unwrap();
         assert_eq!(
@@ -5058,6 +5118,7 @@ mod tests {
                 "tasks": true,
                 "radar": true,
                 "credits": true,
+                "modeltrace": true,
             })
         );
 
@@ -5076,6 +5137,50 @@ mod tests {
         let error = save_sidebar_module_visibility_at(&path, "Overview", false).unwrap_err();
         assert!(error.contains("不支持的额度侧栏模块"));
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn hiding_the_last_sidebar_module_is_rejected_without_writing_settings() {
+        let root = TestSettingsRoot::new("sidebar-module-visibility-last");
+        let path = root.settings_path();
+        let mut settings = AppSettingsSnapshot::default();
+        settings.sidebar_module_visibility = SidebarModuleVisibilitySnapshot {
+            overview: true,
+            speeds: false,
+            tasks: false,
+            radar: false,
+            credits: false,
+            modeltrace: false,
+        };
+        write_fixture(&path, &settings);
+        let before = std::fs::read(&path).unwrap();
+
+        let error = save_sidebar_module_visibility_at(&path, "overview", false).unwrap_err();
+        assert_eq!(error, "至少保留一个侧栏模块可见。");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn all_false_legacy_visibility_is_persistently_repaired_to_modeltrace() {
+        let root = TestSettingsRoot::new("sidebar-module-visibility-all-false");
+        let path = root.settings_path();
+        let mut settings = AppSettingsSnapshot::default();
+        settings.sidebar_module_visibility = SidebarModuleVisibilitySnapshot {
+            overview: false,
+            speeds: false,
+            tasks: false,
+            radar: false,
+            credits: false,
+            modeltrace: false,
+        };
+        write_fixture(&path, &settings);
+
+        let normalized = read_app_settings_at(&path).unwrap();
+        assert!(normalized.sidebar_module_visibility.modeltrace);
+        assert!(!normalized.sidebar_module_visibility.overview);
+        let persisted: AppSettingsSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(persisted.sidebar_module_visibility.modeltrace);
     }
 
     struct TestSettingsRoot {

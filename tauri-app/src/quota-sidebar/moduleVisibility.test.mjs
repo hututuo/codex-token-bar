@@ -4,15 +4,15 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Window } from 'happy-dom';
 import { withSsrModules } from '../test/ssrHarness.mjs';
-import { DEFAULT_MODULE_VISIBILITY, SIDEBAR_MODULES, sidebarModuleForPage, sanitizeModuleVisibility } from './moduleVisibility.ts';
+import { DEFAULT_MODULE_VISIBILITY, SIDEBAR_MODULES, sidebarModuleForPage, sanitizeModuleVisibility, canHideSidebarModule } from './moduleVisibility.ts';
 
-test('all five pages map to independent preferences; legacy settings default visible', () => {
+test('all six pages map to independent preferences; legacy settings default visible', () => {
  assert.deepEqual(sanitizeModuleVisibility(null), DEFAULT_MODULE_VISIBILITY);
  assert.equal(sanitizeModuleVisibility({ speeds:false }).speeds, false);
  assert.equal(sanitizeModuleVisibility({ tasks:'false' }).tasks, true);
- assert.deepEqual([sidebarModuleForPage('quota'),sidebarModuleForPage('quota','speeds'),sidebarModuleForPage('running'),sidebarModuleForPage('radar'),sidebarModuleForPage('credits')],SIDEBAR_MODULES);
+ assert.deepEqual([sidebarModuleForPage('quota'),sidebarModuleForPage('quota','speeds'),sidebarModuleForPage('running'),sidebarModuleForPage('radar'),sidebarModuleForPage('credits'),sidebarModuleForPage('modeltrace')],SIDEBAR_MODULES);
 });
-test('hidden modules disappear while menu recovery and manual detection remain accessible', async () => {
+test('hidden modules disappear and the remaining model detection entry opens its own page', async () => {
  await withSsrModules(async load => {
   const { SidebarRailContent } = await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
   const { initialSidebarState } = await load('/src/quota-sidebar/model.ts');
@@ -29,10 +29,11 @@ test('hidden modules disappear while menu recovery and manual detection remain a
    assert.equal(dom.document.querySelector('.qs-model-speeds'),null);
    assert.equal(dom.document.querySelector('.qs-rate-trigger'),null);
    assert.ok(dom.document.querySelector('.qs-running-trigger'));
-   render(Object.fromEntries(SIDEBAR_MODULES.map(k=>[k,false])));
+   render(sanitizeModuleVisibility(Object.fromEntries(SIDEBAR_MODULES.map(k=>[k,false]))));
    for(const selector of ['.qs-model-speeds','.qs-running-trigger','.qs-window-status','.qs-model-trigger','.qs-reset-count','.qs-quota-trigger']) assert.equal(dom.document.querySelector(selector),null,selector);
    assert.equal(dom.document.querySelector('.qs-modeltrace-trigger').textContent,'模型检测');
-   assert.equal(dom.document.querySelector('.qs-menu-trigger').textContent,'菜单 ›');
+   assert.equal(dom.document.querySelector('.qs-menu-trigger'),null);
+   assert.equal(canHideSidebarModule(sanitizeModuleVisibility(Object.fromEntries(SIDEBAR_MODULES.map(k=>[k,false]))),'modeltrace'),false);
    assert.equal(dom.document.querySelectorAll('.qs-rail-actions button').length,3);
   } finally {dom.close();}
  });

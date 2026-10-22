@@ -140,12 +140,15 @@ struct QuotaSidebarRail: View {
                         rateRing
                         QuotaSidebarBodySpeedReadings(monitor: monitor, onOpen: { controller.select(.speeds) })
                     }
-                    Button { ModelTraceWindowController.shared.present(source: monitor.dataSource) } label: {
+                    if controller.isModuleVisible(.modeltrace) {
+                    Button { controller.select(.modeltrace) } label: {
                         Label("模型检测", systemImage: "checkmark.shield")
                             .font(.system(size: 10, weight: .medium)).foregroundStyle(SidebarPalette.green)
                             .frame(width: 74, height: 28).contentShape(Rectangle())
                     }.buttonStyle(SidebarPulseButtonStyle()).help("打开 ModelTrace，手动检测模型")
                         .accessibilityIdentifier("quota-sidebar-modeltrace")
+                        .padding(.vertical, 4)
+                    }
 
                     if controller.isModuleVisible(.overview) {
                     if let fiveHour = quota.snapshot.fiveHour {
@@ -190,16 +193,16 @@ struct QuotaSidebarRail: View {
                         controller.select(.radar, section: "ranking")
                     }.id(recommendations.map(\.id))
                     Rectangle().fill(.white.opacity(0.13)).frame(width: 52, height: 1)
-                    TimelineView(CodexRadarCountdownTimelineSchedule(deadline: CodexRadarPresentationText.countdownDeadline(snapshot: radar.snapshot))) { tick in
-                        let active = QuotaSidebarRadarPresentation.isActiveWindow(radar.snapshot, stale: radar.staleDataDisplayed, updatedAt: radar.lastSuccessfulRefreshAt, now: tick.date)
+                    TimelineView(QuotaSidebarRadarPresentation.schedule(radar.snapshot, updatedAt: radar.lastSuccessfulRefreshAt)) { tick in
+                        let state = QuotaSidebarRadarPresentation.windowState(radar.snapshot, stale: radar.staleDataDisplayed, updatedAt: radar.lastSuccessfulRefreshAt, now: tick.date)
                         Button { controller.select(.radar) } label: {
                             VStack(spacing: 4) {
-                                Text(active ? "速登窗口" : "等待")
-                                if active, let end = CodexRadarPresentationText.countdownDeadline(snapshot: radar.snapshot), end > tick.date {
+                                Text(state.text)
+                                if state.active, let end = CodexRadarPresentationText.countdownDeadline(snapshot: radar.snapshot), end > tick.date {
                                     Text(CodexRadarPresentationText.actionDisplay(snapshot: radar.snapshot, now: tick.date).replacingOccurrences(of: "速登 ", with: ""))
                                         .monospacedDigit()
                                 }
-                            }.font(.system(size: 10)).foregroundStyle(active ? .red : .gray)
+                            }.font(.system(size: 10)).foregroundStyle(state.active ? .red : .gray)
                                 .frame(maxWidth: .infinity).contentShape(Rectangle().inset(by: -10))
                         }.buttonStyle(SidebarPulseButtonStyle())
                     }
@@ -215,10 +218,6 @@ struct QuotaSidebarRail: View {
                             }.font(.system(size: 9)).frame(maxWidth: .infinity).contentShape(Rectangle())
                         }.buttonStyle(SidebarPulseButtonStyle())
                     }
-                    Button { controller.select(.overview) } label: {
-                        Text("菜单 ›").font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
-                            .frame(width: 66, height: 20).contentShape(Rectangle())
-                    }.buttonStyle(SidebarPulseButtonStyle()).help("打开所有菜单，设置侧栏显示内容")
                 }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
                     .background(GeometryReader { proxy in
                         Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
@@ -510,14 +509,14 @@ struct QuotaSidebarDetailView: View {
             if monitor.monitoringEnabled {
                 CacheUsageAdviceView(monitor: monitor)
             }
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 tab("额度概览", detail: .overview)
                 tab("测速", detail: .speeds)
                 tab("任务", detail: .tasks)
                 tab("雷达", detail: .radar)
                 tab("重置卡", detail: .credits)
-                Spacer()
-                Text("本地实时视图").font(.system(size: 9)).foregroundStyle(.gray)
+                tab("模型检测", detail: .modeltrace)
+                Spacer(minLength: 0)
             }
             Divider().overlay(.white.opacity(0.12))
             HStack {
@@ -528,6 +527,8 @@ struct QuotaSidebarDetailView: View {
                     set: { controller.setModuleVisible(module, visible: $0) }))
                     .toggleStyle(.checkbox).font(.system(size: 11))
                     .tint(SidebarPalette.green)
+                    .disabled(!controller.canHideModule(module))
+                    .help(controller.canHideModule(module) ? "设置二级菜单中显示的模块" : "至少保留一个入口")
                     .accessibilityIdentifier("quota-sidebar-module-visibility")
             }.padding(.vertical, 2)
             ScrollViewReader { proxy in
@@ -537,6 +538,9 @@ struct QuotaSidebarDetailView: View {
                         BodySpeedHistoryWindowController.shared.present(monitor: monitor,
                             screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)
                     }).id("top")
+                }
+                else if controller.interaction.detail == .modeltrace {
+                    ModelTraceView(controller: ModelTraceController.shared, compact: true).id("top")
                 }
                 else if controller.interaction.detail == .tasks { taskContent(snapshot.runningThreads) }
                 else if controller.interaction.detail == .credits { resetCreditList(snapshot.quota).id("top") }

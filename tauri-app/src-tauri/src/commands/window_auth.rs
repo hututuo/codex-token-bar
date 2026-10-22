@@ -112,6 +112,13 @@ const SIDEBAR_MODULE_VISIBILITY_COMMANDS: &[&str] = &[
     "save_sidebar_module_visibility",
 ];
 
+const MODELTRACE_DETAIL_COMMANDS: &[&str] = &[
+    "read_modeltrace_snapshot",
+    "start_modeltrace",
+    "cancel_modeltrace",
+    "save_modeltrace_auto_settings",
+];
+
 pub(crate) const STATUS_WINDOW_ONLY_COMMANDS: &[&str] = &["publish_status_indicator_readout"];
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -137,11 +144,14 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
     if SIDEBAR_MODULE_VISIBILITY_COMMANDS.contains(&command) {
         return matches!(label, "quota-sidebar" | "quota-sidebar-detail");
     }
+    if MODELTRACE_DETAIL_COMMANDS.contains(&command) {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
+    }
     if command == "open_body_speed_details" {
         return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
     }
     if command == "open_modeltrace" {
-        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail" | "quota-sidebar");
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
     }
 
     if MAIN_WINDOW_ONLY_COMMANDS.contains(&command) {
@@ -185,7 +195,7 @@ mod tests {
     fn speed_detail_can_read_numeric_trend_without_account_or_history_authority() {
         assert!(allows_window_label("read_body_speed_trend", "quota-sidebar-detail"));
         assert!(!allows_window_label("read_body_speed_trend", "unknown"));
-        for command in ["read_body_speed_history", "read_account_quota", "save_modeltrace_auto_settings", "start_modeltrace"] {
+        for command in ["read_body_speed_history", "read_account_quota"] {
             assert!(!allows_window_label(command, "quota-sidebar-detail"), "{command}");
         }
     }
@@ -225,8 +235,8 @@ mod tests {
     }
 
     #[test]
-    fn quota_sidebar_can_request_modeltrace_open_without_modeltrace_data_authority() {
-        assert!(allows_window_label("open_modeltrace", "quota-sidebar"));
+    fn quota_sidebar_cannot_open_modeltrace_from_the_rail() {
+        assert!(!allows_window_label("open_modeltrace", "quota-sidebar"));
         assert!(allows_window_label("open_modeltrace", "quota-sidebar-detail"));
         assert!(allows_window_label("open_modeltrace", "main"));
         for label in ["floating", "status", "unknown"] {
@@ -241,6 +251,17 @@ mod tests {
             "take_modeltrace_open_request",
         ] {
             assert!(!allows_window_label(command, "quota-sidebar"), "{command}");
+        }
+    }
+
+    #[test]
+    fn modeltrace_data_and_control_commands_are_limited_to_detail_and_main() {
+        for command in MODELTRACE_DETAIL_COMMANDS {
+            assert!(allows_window_label(command, "main"), "{command}");
+            assert!(allows_window_label(command, "quota-sidebar-detail"), "{command}");
+            for label in ["quota-sidebar", "floating", "status", "unknown"] {
+                assert!(!allows_window_label(command, label), "{command} from {label}");
+            }
         }
     }
 

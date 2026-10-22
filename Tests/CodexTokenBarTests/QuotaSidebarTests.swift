@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import CodexTokenBar
 
 final class QuotaSidebarTests: XCTestCase {
@@ -432,6 +433,27 @@ final class QuotaSidebarTests: XCTestCase {
         XCTAssertEqual(state.detail, .radar)
         XCTAssertTrue(state.pinned)
         XCTAssertEqual(QuotaSidebarRadarPresentation.windowText(nil), "雷达待读取")
+    }
+
+    func testRadarPresentationAndBoundaryClockAgreeWithAndWithoutDeadline() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        var open = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self,
+            from: Data(#"{"recommended_action":"use_remaining_tokens","window_open":true,"window":{"open":true,"opened_at":"2026-10-22T14:55:22+08:00","closed_at":null}}"#.utf8))
+        XCTAssertNil(CodexRadarPresentationText.countdownDeadline(snapshot: open))
+        XCTAssertEqual(QuotaSidebarRadarPresentation.windowState(open, stale: false, updatedAt: now, now: now).text, "速登窗口")
+        open.window.countdownDeadline = "1970-01-01T02:46:41Z"
+        for offset in [0.0, 1.0, 899.0, 901.0] {
+            let tick = now.addingTimeInterval(offset)
+            let state = QuotaSidebarRadarPresentation.windowState(open, stale: false, updatedAt: now, now: tick)
+            XCTAssertEqual(state.active, QuotaSidebarRadarPresentation.isActiveWindow(open, stale: false, updatedAt: now, now: tick))
+            XCTAssertEqual(state.text, offset == 0 ? "速登窗口" : offset > 900 ? "雷达待读取" : "等待")
+        }
+        for mode in [TimelineScheduleMode.normal, .lowFrequency] {
+            let entries = QuotaSidebarRadarPresentation.schedule(open, updatedAt: now).entries(from: now, mode: mode)
+            XCTAssertTrue(entries.contains(now.addingTimeInterval(1.25)), "Window expiry must wake static and animated outlines")
+            XCTAssertTrue(entries.contains(now.addingTimeInterval(900.25)), "Freshness expiry must still wake after the window ends")
+            XCTAssertLessThan(entries.count, 100)
+        }
     }
 
     func testNativeDragThresholdAndReanchoringAfterHoverResize() {

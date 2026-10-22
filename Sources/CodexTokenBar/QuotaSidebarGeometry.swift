@@ -18,7 +18,7 @@ struct QuotaSidebarSettings: Equatable {
     }
 }
 
-enum QuotaSidebarDetail: String, CaseIterable { case overview, tasks, radar, credits, speeds }
+enum QuotaSidebarDetail: String, CaseIterable { case overview, tasks, radar, credits, speeds, modeltrace }
 
 struct QuotaSidebarInteraction: Equatable {
     private(set) var expanded = false

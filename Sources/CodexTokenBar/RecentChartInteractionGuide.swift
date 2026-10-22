@@ -14,11 +14,11 @@ struct RecentChartInteractionGuide: View {
                     Text(expanded ? "收起演示" : "展开演示").font(.system(size: 11))
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10, weight: .bold))
                 }.font(.system(size: 14)).foregroundStyle(AppTheme.accentBlue).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityValue(expanded ? "已展开" : "已收起")
+            }.buttonStyle(ChartGuidePressStyle()).accessibilityValue(expanded ? "已展开" : "已收起")
             if expanded {
                 HStack(spacing: 20) {
                     Group {
-                        if reduceMotion { RecentChartGuideDemo(phase: 5) }
+                        if reduceMotion { RecentChartGuideDemo(phase: 5, animatesPress: false) }
                         else {
                             PhaseAnimator([0, 1, 2, 3, 4, 5, 6]) { phase in
                                 RecentChartGuideDemo(phase: phase)
@@ -26,12 +26,10 @@ struct RecentChartInteractionGuide: View {
                         }
                     }.frame(width: 220, height: 108).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("移动鼠标，跟着看时间和用量").font(.system(size: 13, weight: .semibold))
-                        Text("① 点一下定起点　② 移动看区间　③ 再点一下固定终点")
-                            .font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
-                        Text("固定后弹出区间数据；第三次点击重新选。下图可直接操作。")
+                        Text("移上去预览：鼠标移到图上，查看当前点的时间和用量。")
+                            .font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                        Text("点选计算：点一下定起点，移动选择区间，再点一下定终点，弹出用量与反推额度；再点可重选。")
                             .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        Text("左侧为演示数据").font(.system(size: 10)).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -43,6 +41,7 @@ struct RecentChartInteractionGuide: View {
 
 private struct RecentChartGuideDemo: View {
     let phase: Int
+    var animatesPress = true
     private let positions: [CGFloat] = [35, 65, 65, 125, 187, 187, 45]
     private let values = ["单点 3.2万 Token", "单点 4.1万 Token", "起点 12:05", "区间 8.4万 Token", "区间 12.6万 Token", "区间 12.6万 Token", "重新选择"]
     var body: some View {
@@ -70,15 +69,28 @@ private struct RecentChartGuideDemo: View {
                         .frame(width: 20, height: 20).position(x: x, y: 69).transition(.identity)
                 }
                 Image(systemName: "cursorarrow").font(.system(size: 19)).foregroundStyle(.primary)
+                    .scaleEffect(animatesPress && (phase == 2 || phase == 5) ? 0.78 : 1, anchor: .topLeading)
+                    .offset(y: animatesPress && (phase == 2 || phase == 5) ? 3 : 0)
+                    .animation(.easeOut(duration: 0.12), value: phase == 2 || phase == 5)
                     .position(x: x + 5, y: 75)
                 Text(values[phase]).transaction { $0.animation = nil }.font(.system(size: 10, weight: .semibold)).monospacedDigit()
                     .padding(.horizontal, 7).padding(.vertical, 4)
                     .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 5))
                     .position(x: min(proxy.size.width - 68, max(68, x)), y: 19)
-                Text(phase == 2 ? "点击起点" : phase == 5 ? "点击终点 · 弹出数据" : "左右移动查看")
+                Text("演示 · " + (phase == 2 ? "点击起点" : phase == 5 ? "点击终点 · 弹出数据" : "左右移动查看"))
                     .transaction { $0.animation = nil }
                     .font(.system(size: 9)).foregroundStyle(.secondary).position(x: 110, y: 100)
             }
         }
+    }
+}
+
+private struct ChartGuidePressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.7 : 1)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .offset(y: configuration.isPressed ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
