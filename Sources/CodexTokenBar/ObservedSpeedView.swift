@@ -6,9 +6,6 @@ struct ObservedSpeedView: View {
     private var recentSamples: [ObservedSpeedSample] {
         Array(monitor.speedSamples.lazy.filter { $0.isBody && $0.hasKnownModel }.prefix(6))
     }
-    private var readings: [BodySpeedModelReading] {
-        BodySpeedModelReading.combined(recent: monitor.modelSpeeds, retained: monitor.retainedModelSpeeds)
-    }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -16,32 +13,8 @@ struct ObservedSpeedView: View {
                 Button("模型指纹") { ModelTraceWindowController.shared.present(source: monitor.dataSource) }.buttonStyle(.borderless).font(.caption)
                 Text("TPS · token/秒").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Picker("统计范围", selection: Binding(get: { monitor.speedWindowMinutes }, set: { monitor.setSpeedWindowMinutes($0) })) {
-                    Text("15 分钟").tag(15)
-                    Text("30 分钟").tag(30)
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 160)
             }
-            if readings.isEmpty {
-                Text("暂无合格模型读数").font(.caption).foregroundStyle(.secondary)
-            } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 155), alignment: .leading)], alignment: .leading, spacing: 8) {
-                    ForEach(readings) { reading in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(reading.summary.model).font(.system(size: 11, weight: .medium, design: .monospaced)).lineLimit(1)
-                            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                                Text(reading.summary.tokensPerSecond, format: .number.precision(.fractionLength(1)))
-                                    .font(.system(size: 22, weight: .semibold, design: .rounded)).monospacedDigit()
-                                Text("TPS").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Text("\(reading.historical ? "近7天均速" : "近\(monitor.speedWindowMinutes)分钟均速") · \(reading.summary.sampleCount)条")
-                                .font(.system(size: 10)).foregroundStyle(.secondary)
-                            Text(reading.summary.lastMeasuredAt.map { "末次 " + speedTimestamp($0) } ?? "采样时间未知")
-                                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                        }.padding(9).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
-                    }
-                }
-            }
+            BodySpeedModelTable(monitor: monitor)
             BodySpeedTrendView(monitor: monitor)
             HStack {
                 Text("最近6条 · 已识别模型").font(.caption).foregroundStyle(.secondary)
@@ -81,6 +54,38 @@ struct ObservedSpeedView: View {
     }
 }
 
+/// The same window averages appear on the dashboard and the edge detail.
+struct BodySpeedModelTable: View {
+    @ObservedObject var monitor: LiveRateMonitor
+    var dark = false
+    private var ink: Color { dark ? .white : .primary }
+    private func average(_ model: String, _ values: [ModelSpeedSummary]) -> some View {
+        let value = values.first { $0.model == model }
+        return Text(value.map { String(format: "%.1f", $0.tokensPerSecond) } ?? "—")
+            .monospacedDigit().frame(width: 48, alignment: .trailing)
+            .help(value.map { "\($0.sampleCount) 段 · \($0.outputTokens) token / \(String(format: "%.2f", $0.durationSeconds)) 秒" } ?? "该时段没有合格样本")
+    }
+    var body: some View {
+        VStack(spacing: 7) {
+            HStack(spacing: 6) {
+                Text("模型").frame(maxWidth: .infinity, alignment: .leading)
+                ForEach(["最新", "5分钟", "15分钟", "30分钟"], id: \.self) { Text($0).frame(width: 48, alignment: .trailing) }
+            }.font(.system(size: 10)).foregroundStyle(ink.opacity(0.75))
+            ForEach(monitor.latestModelSpeeds30m) { model in
+                HStack(spacing: 6) {
+                    Text(model.model.replacingOccurrences(of: "gpt-", with: "")).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).help(model.model)
+                    Text(model.tokensPerSecond, format: .number.precision(.fractionLength(1))).bold().monospacedDigit().frame(width: 48, alignment: .trailing)
+                        .help("最新一条 · " + (model.lastMeasuredAt.map(speedTimestamp) ?? "时间未知"))
+                    average(model.model, monitor.modelSpeeds5m)
+                    average(model.model, monitor.modelSpeeds15m)
+                    average(model.model, monitor.modelSpeeds30m)
+                }.font(.system(size: 11, weight: .medium)).foregroundStyle(ink)
+            }
+            if monitor.latestModelSpeeds30m.isEmpty { Text("近30分钟暂无合格读数").font(.caption).foregroundStyle(ink.opacity(0.7)) }
+        }.accessibilityIdentifier("body-speed-model-windows")
+    }
+}
+
 /// The edge detail has its own compact ten-row layout, never a dashboard sheet.
 struct ObservedSpeedSidebarView: View {
     @ObservedObject var monitor: LiveRateMonitor
@@ -91,25 +96,8 @@ struct ObservedSpeedSidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("各模型最新速度 · 正文 TPS").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-            HStack(spacing: 6) {
-                Text("模型").frame(maxWidth: .infinity, alignment: .leading)
-                Text("最新").frame(width: 52, alignment: .trailing)
-                Text("15min均速").frame(width: 64, alignment: .trailing)
-                Text("30min均速").frame(width: 64, alignment: .trailing)
-            }.font(.system(size: 9)).foregroundStyle(.white.opacity(0.8))
-            VStack(spacing: 6) {
-                ForEach(monitor.latestModelSpeeds30m) { model in
-                    HStack(spacing: 6) {
-                        Text(model.model.replacingOccurrences(of: "gpt-", with: "")).lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading).help(model.model)
-                        Text(model.tokensPerSecond, format: .number.precision(.fractionLength(1))).bold().monospacedDigit()
-                            .frame(width: 52, alignment: .trailing)
-                        averageText(model.model, readings: monitor.modelSpeeds15m).frame(width: 64, alignment: .trailing)
-                        averageText(model.model, readings: monitor.modelSpeeds30m).frame(width: 64, alignment: .trailing)
-                    }.font(.system(size: 11, weight: .medium)).foregroundStyle(.white)
-                }
-            }
-            if monitor.latestModelSpeeds30m.isEmpty { Text("近30分钟暂无合格读数").font(.caption).foregroundStyle(.white.opacity(0.8)) }
+            BodySpeedModelTable(monitor: monitor, dark: true)
+            BodySpeedTrendView(monitor: monitor, compact: true)
             Text("最近10条").font(.system(size: 10)).foregroundStyle(.secondary)
             if samples.isEmpty { Text("等待带模型的正文测速").font(.caption).foregroundStyle(.secondary) }
             VStack(spacing: 0) {
@@ -138,12 +126,7 @@ struct ObservedSpeedSidebarView: View {
             }
         }.padding(.top, 5).accessibilityIdentifier("sidebar-body-speeds")
     }
-    private func averageText(_ model: String, readings: [ModelSpeedSummary]) -> Text {
-        if let reading = readings.first(where: { $0.model == model }) {
-            return Text(reading.tokensPerSecond, format: .number.precision(.fractionLength(1))).monospacedDigit()
-        }
-        return Text("—")
-    }
+
 }
 
 @MainActor

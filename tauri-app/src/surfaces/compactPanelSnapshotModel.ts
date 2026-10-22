@@ -57,6 +57,7 @@ export function floatingSnapshotForLiveRate(
     ...baseFloatingPanelSnapshot,
     speedSamples: liveRate.speedSamples,
     modelSpeeds: liveRate.modelSpeeds,
+    modelSpeeds5m: liveRate.modelSpeeds5m,
     modelSpeeds15m: liveRate.modelSpeeds15m,
     modelSpeeds30m: liveRate.modelSpeeds30m,
     latestModelSpeeds30m: liveRate.latestModelSpeeds30m,

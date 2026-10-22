@@ -93,6 +93,13 @@ struct QuotaSidebarRail: View {
     @AppStorage("cacheHitAdviceDismissed") private var dismissedCacheAdviceID = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private func railAverage(_ model: String, values: [ModelSpeedSummary], label: String) -> some View {
+        VStack(spacing: 1) {
+            Text(label).foregroundStyle(.white.opacity(0.7))
+            Text(values.first { $0.model == model }.map { String(format: "%.0f", $0.tokensPerSecond) } ?? "—").foregroundStyle(.white).monospacedDigit()
+        }.font(.system(size: 8)).frame(maxWidth: .infinity)
+    }
+
     private var cacheWarning: CacheUsageAdvice? {
         guard CacheMissReminderFeature.isEnabled, monitor.monitoringEnabled, monitor.dataSource != nil,
               let advice = monitor.totalSnapshot.cacheAdvice,
@@ -135,18 +142,26 @@ struct QuotaSidebarRail: View {
                     rateRing
                     Button { controller.select(.speeds) } label: {
                         VStack(spacing: 4) {
-                            Text("正文 TPS").font(.system(size: 9)).foregroundStyle(.gray)
+                            Text("正文 TPS").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
                             if monitor.latestModelSpeeds30m.isEmpty {
                                 Text("—").font(.system(size: 10)).foregroundStyle(.gray)
                             }
                             ForEach(monitor.latestModelSpeeds30m) { model in
-                                HStack(spacing: 3) {
-                                    Text(model.model.replacingOccurrences(of: "gpt-", with: ""))
-                                        .lineLimit(1).minimumScaleFactor(0.65)
-                                    Spacer(minLength: 0)
-                                    Text("\(model.tokensPerSecond, specifier: "%.1f")").monospacedDigit()
-                                }.font(.system(size: 9)).foregroundStyle(SidebarPalette.blue)
-                                    .help("\(model.model) · \(model.lastMeasuredAt.map { Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .standard) } ?? "采样时间未知") · 最近一条正文")
+                                VStack(spacing: 3) {
+                                    HStack(spacing: 2) {
+                                        Text(model.model.replacingOccurrences(of: "gpt-", with: "")).lineLimit(1).minimumScaleFactor(0.65)
+                                        Spacer(minLength: 0)
+                                        Text("\(model.tokensPerSecond, specifier: "%.1f")").bold().monospacedDigit()
+                                    }.font(.system(size: 9)).foregroundStyle(SidebarPalette.blue)
+                                    HStack(spacing: 1) {
+                                        railAverage(model.model, values: monitor.modelSpeeds5m, label: "5分")
+                                        railAverage(model.model, values: monitor.modelSpeeds15m, label: "15分")
+                                        railAverage(model.model, values: monitor.modelSpeeds30m, label: "30分")
+                                    }
+                                }.padding(.vertical, 2).help(model.model + " · 最新正文与各时段均速")
+                            }
+                            if !monitor.latestModelSpeeds30m.isEmpty {
+                                BodySpeedTrendView(monitor: monitor, rail: true).allowsHitTesting(false)
                             }
                         }.frame(maxWidth: .infinity).padding(.horizontal, 5).padding(.vertical, 4).contentShape(Rectangle())
                     }.buttonStyle(SidebarPulseButtonStyle()).help("30分钟内各模型最新正文 TPS · 点击查看记录")

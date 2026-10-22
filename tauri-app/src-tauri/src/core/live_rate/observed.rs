@@ -14,6 +14,7 @@ use std::sync::{Mutex, OnceLock};
 const MAX_RETURNED_SAMPLES: usize = 10;
 const MAX_ACTIVE_TEXT_BYTES: usize = 1024 * 1024;
 const IDLE_FINALIZE_SECONDS: f64 = 10.0;
+const SUMMARY_5M_SECONDS: f64 = 5.0 * 60.0;
 const SUMMARY_15M_SECONDS: f64 = 15.0 * 60.0;
 const SUMMARY_30M_SECONDS: f64 = 30.0 * 60.0;
 const SUMMARY_WINDOW_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
@@ -46,6 +47,7 @@ struct SpeedStore {
 #[derive(Clone)]
 struct CachedSummaries {
     refreshed_at: f64,
+    model_speeds_5m: Vec<ModelSpeedSummary>,
     model_speeds_15m: Vec<ModelSpeedSummary>,
     model_speeds_30m: Vec<ModelSpeedSummary>,
     model_speeds_7d: Vec<ModelSpeedSummary>,
@@ -78,6 +80,7 @@ struct ActiveSample {
 pub(super) struct Snapshot {
     pub speed_samples: Vec<SpeedSample>,
     pub model_speeds: Vec<ModelSpeedSummary>,
+    pub model_speeds_5m: Vec<ModelSpeedSummary>,
     pub model_speeds_15m: Vec<ModelSpeedSummary>,
     pub model_speeds_30m: Vec<ModelSpeedSummary>,
     pub latest_model_speeds_30m: Vec<ModelSpeedSummary>,
@@ -323,6 +326,12 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
     if refresh_summaries {
         store.summary_cache = Some(CachedSummaries {
             refreshed_at: now,
+            model_speeds_5m: display_summarize(
+                &store.samples,
+                &store.active,
+                now,
+                SUMMARY_5M_SECONDS,
+            ),
             model_speeds_15m: display_summarize(
                 &store.samples,
                 &store.active,
@@ -353,6 +362,7 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
         has_active_sample: !store.active.is_empty(),
         speed_samples,
         model_speeds: summaries.model_speeds_7d.clone(),
+        model_speeds_5m: summaries.model_speeds_5m.clone(),
         model_speeds_15m: summaries.model_speeds_15m.clone(),
         model_speeds_30m: summaries.model_speeds_30m.clone(),
         latest_model_speeds_30m: summaries.latest_model_speeds_30m.clone(),
@@ -1934,6 +1944,68 @@ mod tests {
         assert!((summary[0].duration_seconds - 15.401).abs() < 1e-12);
         assert!((summary[0].tokens_per_second - 35.0 / 15.401).abs() < 1e-12);
         assert_eq!(summary[0].confidence, "high");
+    }
+
+    #[test]
+    fn five_and_fifteen_minute_summaries_filter_expired_samples_and_weight_by_duration() {
+        let now = 10_000.0;
+        let make_sample =
+            |id: &str, model: &str, ended_at: f64, duration_seconds: f64, output_tokens: u32| {
+                SpeedSample {
+                    id: id.into(),
+                    thread_id: "thread".into(),
+                    turn_id: "turn".into(),
+                    item_id: id.into(),
+                    model: Some(model.into()),
+                    started_at: ended_at - duration_seconds,
+                    ended_at,
+                    output_tokens,
+                    output_characters: u64::from(output_tokens),
+                    output_bytes: u64::from(output_tokens),
+                    chunk_count: 5,
+                    duration_seconds,
+                    tokens_per_second: f64::from(output_tokens) / duration_seconds,
+                    confidence: "low".into(),
+                    network_warning: None,
+                    source: "test".into(),
+                    measurement_kind: Some("completed_body".into()),
+                    tokenizer: Some("o200k_base".into()),
+                    body_phase: None,
+                    quality_reason: None,
+                }
+            };
+        let samples = VecDeque::from([
+            make_sample("recent-fast", "model-a", now - 200.0, 5.0, 200),
+            make_sample("recent-slow", "model-a", now - 100.0, 10.0, 100),
+            make_sample("short-boundary", "model-a", now - 300.0, 0.4, 2),
+            make_sample("short-accepted", "model-a", now - 250.0, 0.401, 2),
+            make_sample("outside-five", "model-a", now - 400.0, 5.0, 150),
+            make_sample("outside-five-other-model", "model-b", now - 400.0, 4.0, 120),
+        ]);
+
+        let five_minutes = display_summarize(&samples, &HashMap::new(), now, SUMMARY_5M_SECONDS);
+        let fifteen_minutes =
+            display_summarize(&samples, &HashMap::new(), now, SUMMARY_15M_SECONDS);
+
+        assert_eq!(five_minutes.len(), 1);
+        assert_eq!(five_minutes[0].model, "model-a");
+        assert_eq!(five_minutes[0].sample_count, 3);
+        assert_eq!(five_minutes[0].output_tokens, 302);
+        assert!((five_minutes[0].duration_seconds - 15.401).abs() < 1e-12);
+        assert!((five_minutes[0].tokens_per_second - 302.0 / 15.401).abs() < 1e-12);
+
+        assert_eq!(fifteen_minutes.len(), 2);
+        let model_a = fifteen_minutes
+            .iter()
+            .find(|summary| summary.model == "model-a")
+            .unwrap();
+        assert_eq!(model_a.sample_count, 4);
+        assert_eq!(model_a.output_tokens, 452);
+        assert!((model_a.duration_seconds - 20.401).abs() < 1e-12);
+        assert!((model_a.tokens_per_second - 452.0 / 20.401).abs() < 1e-12);
+        assert!(fifteen_minutes
+            .iter()
+            .any(|summary| summary.model == "model-b"));
     }
 
     #[test]

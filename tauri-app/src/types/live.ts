@@ -15,6 +15,7 @@ export interface CacheUsageAdvice {
 export interface LiveRateSnapshot {
   speedSamples?: SpeedSample[];
   modelSpeeds?: ModelSpeedSummary[];
+  modelSpeeds5m?: ModelSpeedSummary[];
   modelSpeeds15m?: ModelSpeedSummary[];
   modelSpeeds30m?: ModelSpeedSummary[];
   latestModelSpeeds30m?: ModelSpeedSummary[];
@@ -51,6 +52,7 @@ export interface LiveRateStreamLease {
 export interface FloatingPanelSnapshot {
   speedSamples?: SpeedSample[];
   modelSpeeds?: ModelSpeedSummary[];
+  modelSpeeds5m?: ModelSpeedSummary[];
   modelSpeeds15m?: ModelSpeedSummary[];
   modelSpeeds30m?: ModelSpeedSummary[];
   latestModelSpeeds30m?: ModelSpeedSummary[];

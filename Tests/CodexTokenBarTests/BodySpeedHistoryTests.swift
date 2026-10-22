@@ -34,6 +34,19 @@ final class BodySpeedHistoryTests: XCTestCase {
         XCTAssertEqual(sample(tokens: 12, seconds: 5).bodyQuality.confidence, "high")
         XCTAssertEqual(sample(tokens: 700, seconds: 1).bodyQuality.reason, "速率异常偏高")
     }
+    func testFiveMinuteAverageUsesMeasuredDurationAndExpiresIndependently() {
+        let now = 5_000.0
+        var short = sample(tokens: 100, seconds: 2); short.id = "short"; short.endedAt = now - 10; short.startedAt = short.endedAt - 2
+        var long = sample(tokens: 600, seconds: 10); long.id = "long"; long.endedAt = now - 299; long.startedAt = long.endedAt - 10
+        var older = sample(tokens: 900, seconds: 10); older.id = "older"; older.endedAt = now - 301; older.startedAt = older.endedAt - 10
+        var collector = ObservedSpeedCollector(); collector.samples = [short, long, older]
+        let five = collector.completedBodySummaries(now: now, windowSeconds: 300).first!
+        let fifteen = collector.completedBodySummaries(now: now, windowSeconds: 900).first!
+        XCTAssertEqual(five.sampleCount, 2)
+        XCTAssertEqual(five.tokensPerSecond, 700.0 / 12, accuracy: 0.0001)
+        XCTAssertEqual(fifteen.sampleCount, 3)
+        XCTAssertEqual(fifteen.tokensPerSecond, 1600.0 / 22, accuracy: 0.0001)
+    }
     func testBodyAverageIncludesShortTextDespiteLegacyLowConfidence() {
         var collector = ObservedSpeedCollector()
         var first = sample(tokens: 12, seconds: 0.6); first.confidence = "low"

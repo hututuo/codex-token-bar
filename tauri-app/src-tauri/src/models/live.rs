@@ -35,6 +35,8 @@ pub struct LiveRateSnapshot {
     #[serde(default)]
     pub model_speeds: Vec<ModelSpeedSummary>,
     #[serde(default)]
+    pub model_speeds_5m: Vec<ModelSpeedSummary>,
+    #[serde(default)]
     pub model_speeds_15m: Vec<ModelSpeedSummary>,
     #[serde(default)]
     pub model_speeds_30m: Vec<ModelSpeedSummary>,

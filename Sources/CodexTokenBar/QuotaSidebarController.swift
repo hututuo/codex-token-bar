@@ -42,6 +42,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     @Published private(set) var expandedContentHeight: CGFloat = QuotaSidebarLayout.weeklyExpandedHeight
     private(set) var hasFiveHour = false
     private var quotaObservation: AnyCancellable?
+    private var speedObservation: AnyCancellable?
+    private var speedModelCount = 0
     private let settings: UserDefaults
     private(set) var placement: QuotaSidebarPlacement?
     private(set) var isDragging = false
@@ -103,6 +105,12 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             quotaObservation = quota.$snapshot.sink { [weak self] snapshot in
                 self?.updateQuotaSnapshot(snapshot)
             }
+            speedObservation = monitor.$latestModelSpeeds30m.map(\.count).removeDuplicates()
+                .receive(on: DispatchQueue.main).sink { [weak self] count in
+                    guard let self, self.speedModelCount != count else { return }
+                    self.speedModelCount = count
+                    self.updateFrames()
+                }
             installObservers()
         }
         if changedEdge { interaction.dismiss() }
@@ -117,6 +125,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         railPanel?.trackPrimaryPress = nil
         quotaObservation?.cancel()
         quotaObservation = nil
+        speedObservation?.cancel(); speedObservation = nil
         collapseTask?.cancel()
         collapseTask = nil
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
@@ -388,7 +397,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         }
         let next = QuotaSidebarFrames.make(usableFrame: screen.visibleFrame, edge: edge,
                                           expanded: interaction.expanded, scale: screen.backingScaleFactor,
-                                          hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5)
+                                          hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5, speedModelCount: speedModelCount)
         let previous = frames
         // The host keeps a stable canvas for reveal animation, but a weekly-only
         // or short-screen rail clips that canvas. Fit full-panel notices to

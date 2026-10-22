@@ -12949,3 +12949,10 @@ details.session-management-banner {
 @media(max-width:760px){.body-speed-surface-home .body-speed-recent-list>li{grid-template-columns:104px minmax(0,1fr) 72px;gap:6px}.body-speed-surface-home .body-speed-recent-status{display:none}.body-speed-surface-home .body-speed-recent-source{grid-row:1;grid-column:2}.body-speed-surface-home .body-speed-recent-time{grid-row:1;grid-column:1}.body-speed-surface-home .body-speed-recent-list>li>b{grid-row:1;grid-column:3}.body-speed-surface-home .body-speed-recent-source strong{flex-basis:72px}.body-speed-surface-home .body-speed-recent-type{display:none}.body-speed-surface-home .body-speed-recent-quantity{display:none}}
 
 .body-speed-surface-sidebar .body-speed-recent-list>li[data-included=false]>b{color:#c89a5b}
+
+/* Shared model window columns on home and the edge detail. */
+.body-speed-window-models{display:grid;gap:8px;margin:8px 0 12px}
+.body-speed-window-model-head,.body-speed-window-model-row{display:grid;grid-template-columns:minmax(90px,1fr) repeat(4,minmax(42px,70px));gap:6px;align-items:baseline;font-variant-numeric:tabular-nums}
+.body-speed-window-model-head{font-size:10px;opacity:.75}.body-speed-window-model-row{font-size:12px}.body-speed-window-model-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.body-speed-window-model-head>:not(:first-child),.body-speed-window-model-row>:not(:first-child){text-align:right}
+.body-speed-surface-sidebar .body-speed-window-models{color:#f4f7fb}.body-speed-surface-sidebar .body-speed-window-model-row{font-size:11px}

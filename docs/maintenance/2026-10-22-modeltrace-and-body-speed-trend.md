@@ -127,3 +127,31 @@ Windows source archive is recorded under runs/20261022-modeltrace-integration;
 subsequent native-only notification/startup wiring and CSS meter color changes
 are outside that Windows archive. No Windows ARM64 hardware run, feature-build
 installation, or public release has been performed.
+
+
+## Unified menu model windows (later 2026-10-22)
+
+The dashboard and third-level speed menu now share the latest-body / 5-minute /
+15-minute / 30-minute model table. No selected-window card or seven-day fallback
+is mixed into those three current-window averages. Missing eligible bodies show
+an em dash. The narrow second-level rail has per-model compact window readings
+and a recent 30-minute sparkline; clicking opens the precise chart and records.
+The detailed menu now includes the same retained speed chart as the dashboard.
+Wide charts retain 24h / 7d / 30d range controls; native point selection and web
+point hover expose stored time, TPS, body count, token sum and measured duration.
+
+The new five-minute summary uses retained in-memory numeric samples and the same
+>400-ms quality rules, summed tokens / summed measured seconds. It does not add
+another scanner or database schema. Native chart visibility tracks independent
+consumers so closing one surface cannot disable another. Native rail geometry
+grows with model count and remains clamped to the usable display; existing rail
+scrolling handles constrained displays. Tauri retains its existing bounded rail
+canvas/scrolling and renders the expanded summary only while visible.
+
+Local cache-alert investigation at 17:34:16 found 192,546 input / 0 cached in the
+current main thread's own server token_count. The new child at 17:33:23 had
+41,230 input / 0 cached on its first settlement and 97.5% on its second.
+Ordinary subagents are evaluated separately, guardian reviews excluded; the
+code does not pool child inputs into a parent's cache-hit rate. Temporal
+proximity to sending a child message does not establish cache invalidation
+causality. No cache-reminder calculation was modified in this change.

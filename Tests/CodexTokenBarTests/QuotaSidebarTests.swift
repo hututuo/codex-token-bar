@@ -2,6 +2,16 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaSidebarTests: XCTestCase {
+    func testSpeedRowsGrowSummaryWithinTheUsableDisplay() {
+        let area = CGRect(x: -1920, y: 0, width: 1920, height: 900)
+        let base = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false)
+        let populated = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false, speedModelCount: 3)
+        let many = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false, speedModelCount: 30)
+        XCTAssertGreaterThan(populated.rail.height, base.rail.height)
+        XCTAssertEqual(many.rail.height, area.height)
+        XCTAssertTrue(area.contains(populated.rail))
+        XCTAssertTrue(area.contains(many.rail))
+    }
     func testCacheReminderRevealsSummaryUntilClearedAndPreservesPinnedDetails() {
         var state = QuotaSidebarInteraction()
         state.presentCacheAdvice("a:100")

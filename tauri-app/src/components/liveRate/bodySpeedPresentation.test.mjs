@@ -39,14 +39,16 @@ test('actual home markup has model overview, explicit timestamps and six dense r
   const {ObservedSpeedDetails}=await load('/src/components/liveRate/ObservedSpeedDetails.tsx');
   const win=new Window();
   try{
-   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(ObservedSpeedDetails,{data:{speedSamples:[...Array.from({length:8},(_,i)=>row(String(i),'sol',100-i)),row('x','unknown',110)],modelSpeeds15m:[summary('sol',40)],modelSpeeds:[summary('luna',20,120)]},sourceToken:{canonicalHomeKey:'test',physicalHomeKey:'test',transitionGeneration:1}}));
+   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(ObservedSpeedDetails,{data:{speedSamples:[...Array.from({length:8},(_,i)=>row(String(i),'sol',100-i)),row('x','unknown',110)],latestModelSpeeds30m:[summary('sol',100,50),summary('luna',90,120)],modelSpeeds5m:[summary('sol',100,48)],modelSpeeds15m:[summary('sol',100,40)],modelSpeeds30m:[summary('sol',100,45),summary('luna',90,110)]},sourceToken:{canonicalHomeKey:'test',physicalHomeKey:'test',transitionGeneration:1}}));
    assert.equal(win.document.querySelectorAll('.body-speed-recent-list > li').length,6);
    assert.equal(win.document.querySelectorAll('.body-speed-recent-list time').length,6);
-   assert.equal(win.document.querySelectorAll('.body-speed-model').length,2);
+   assert.equal(win.document.querySelectorAll('.body-speed-window-model-row').length,2);
    assert.equal(win.document.querySelectorAll('table').length,0);
    assert.match(win.document.body.textContent,/查看详情/);
    assert.doesNotMatch(win.document.body.textContent,/展开历史/);
-   assert.match(win.document.body.textContent,/近7天均速/);
+   assert.match(win.document.body.textContent,/5分钟.*15分钟.*30分钟/);
+   assert.doesNotMatch(win.document.body.textContent,/近7天均速/);
+   assert.equal(win.document.querySelectorAll('.body-speed-trend').length,1);
   }finally{win.close();}
  });
 });
@@ -106,13 +108,13 @@ test('sidebar detail shows ten records directly without dashboard cards, selecto
   const {ObservedSpeedDetails}=await load('/src/components/liveRate/ObservedSpeedDetails.tsx');
   const win=new Window();
   try{
-   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(ObservedSpeedDetails,{surface:'sidebar',data:{speedSamples:Array.from({length:12},(_,i)=>row(String(i),'sol',100-i)),latestModelSpeeds30m:[summary('sol',100,50),summary('luna',90,120)],modelSpeeds15m:[summary('sol',100,40)],modelSpeeds30m:[summary('sol',100,45),summary('luna',90,110)]},sourceToken:{canonicalHomeKey:'test',physicalHomeKey:'test',transitionGeneration:1}}));
+   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(ObservedSpeedDetails,{surface:'sidebar',data:{speedSamples:Array.from({length:12},(_,i)=>row(String(i),'sol',100-i)),latestModelSpeeds30m:[summary('sol',100,50),summary('luna',90,120)],modelSpeeds5m:[summary('sol',100,48)],modelSpeeds15m:[summary('sol',100,40)],modelSpeeds30m:[summary('sol',100,45),summary('luna',90,110)]},sourceToken:{canonicalHomeKey:'test',physicalHomeKey:'test',transitionGeneration:1}}));
    assert.equal(win.document.querySelectorAll('.body-speed-recent-list > li').length,10);
    assert.equal(win.document.querySelectorAll('.body-speed-model,.observed-speed-window,dialog').length,0);
    assert.match(win.document.body.textContent,/最近10条/);
    assert.match(win.document.body.textContent,/打开详细信息/);
    assert.match(win.document.body.textContent,/各模型最新速度/);
-   assert.deepEqual([...win.document.querySelectorAll('.body-speed-sidebar-model-row')].map(r=>[...r.children].map(c=>c.textContent)),[['sol','50.0','40.0','45.0'],['luna','120.0','—','110.0']]);
+   assert.deepEqual([...win.document.querySelectorAll('.body-speed-window-model-row')].map(r=>[...r.children].map(c=>c.textContent)),[['sol','50.0','48.0','40.0','45.0'],['luna','120.0','—','—','110.0']]);
    assert.doesNotMatch(win.document.body.textContent,/展开历史|查看详情/);
   }finally{win.close();}
  });

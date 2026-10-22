@@ -158,6 +158,13 @@ test("a finished speed sample publishes even while the activity curve is zero", 
   assert.notEqual(before, after);
 });
 
+test("five-minute expiry publishes without a new sample or activity-rate change", () => {
+  const reading = { model: "sol", tokensPerSecond: 50, sampleCount: 1, lastMeasuredAt: 5000 };
+  const before = liveRateDisplayBucket(snapshot({ modelSpeeds5m: [reading], latestModelSpeeds30m: [reading] }));
+  const after = liveRateDisplayBucket(snapshot({ modelSpeeds5m: [], latestModelSpeeds30m: [reading] }));
+  assert.notEqual(before, after);
+});
+
 test("new or expired sidebar body TPS publishes even if aggregate rate and other summaries are unchanged", () => {
   const reading = { model: "sol", tokensPerSecond: 50, sampleCount: 1, lastMeasuredAt: 5000 };
   const before = liveRateDisplayBucket(snapshot({ latestModelSpeeds30m: [reading] }));

@@ -39,9 +39,10 @@ final class LiveRateMonitor: ObservableObject {
     @Published private(set) var speedTrendError: String?
     private var speedDatabaseURL: URL?
     private var speedDatabaseReady = false
-    private var speedTrendVisible = false
+    private var speedTrendConsumers = Set<UUID>()
     private var speedTrendRequest = 0
     @Published private(set) var modelSpeeds: [ModelSpeedSummary] = []
+    @Published private(set) var modelSpeeds5m: [ModelSpeedSummary] = []
     @Published private(set) var modelSpeeds15m: [ModelSpeedSummary] = []
     @Published private(set) var modelSpeeds30m: [ModelSpeedSummary] = []
     @Published private(set) var latestModelSpeeds30m: [ModelSpeedSummary] = []
@@ -250,16 +251,19 @@ final class LiveRateMonitor: ObservableObject {
         lastModelSpeedSummaryAt = 0
     }
 
-    func showSpeedTrend(_ visible: Bool) {
-        speedTrendVisible = visible
-        if visible { refreshSpeedTrend() }
+    func showSpeedTrend(_ visible: Bool, consumer: UUID) {
+        if visible {
+            let wasEmpty = speedTrendConsumers.isEmpty
+            speedTrendConsumers.insert(consumer)
+            if wasEmpty { refreshSpeedTrend() }
+        } else { speedTrendConsumers.remove(consumer) }
     }
     func setSpeedTrendDays(_ days: Int) {
         guard [1, 7, 30].contains(days) else { return }
         speedTrendDays = days; refreshSpeedTrend()
     }
     private func refreshSpeedTrend() {
-        guard speedTrendVisible, speedDatabaseReady, let url = speedDatabaseURL else { return }
+        guard !speedTrendConsumers.isEmpty, speedDatabaseReady, let url = speedDatabaseURL else { return }
         speedTrendRequest += 1
         let request = speedTrendRequest, days = speedTrendDays, identity = speedSourceIdentity, writer = bodySpeedWriter
         Task { [weak self] in
@@ -1499,8 +1503,10 @@ final class LiveRateMonitor: ObservableObject {
             speedSamples = speedCollector.samples.filter(\.isBody).sorted { $0.endedAt == $1.endedAt ? $0.id < $1.id : $0.endedAt > $1.endedAt }
         }
         if samplesChanged || now - lastModelSpeedSummaryAt >= 1 {
+            let models5 = speedCollector.completedBodySummaries(now: now, windowSeconds: 300)
             let models15 = speedCollector.completedBodySummaries(now: now, windowSeconds: 900)
             let models30 = speedCollector.completedBodySummaries(now: now, windowSeconds: 1800)
+            if models5 != modelSpeeds5m { modelSpeeds5m = models5 }
             if models15 != modelSpeeds15m { modelSpeeds15m = models15 }
             if models30 != modelSpeeds30m { modelSpeeds30m = models30 }
             let models = speedWindowMinutes == 15 ? models15 : models30
