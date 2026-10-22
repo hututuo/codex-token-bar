@@ -42,6 +42,11 @@ function SurfaceDemo(){
   const expanded=state.mode!=='rest';
   const width=expanded?geometry.width:geometry.restWidth,height=expanded?geometry.height:geometry.restHeight;
   const floatingHeight=floatingContentHeight(DEFAULT_FLOATING_SETTINGS.contentVisibility)*DEFAULT_FLOATING_SETTINGS.scale+12;
+  // Reserve space for the widest sidebar state, even while its detail is
+  // closed. The floating window stays in the opposite clear area throughout.
+  const occupiedEdge=geometry.width+geometry.gap+geometry.detailWidth;
+  const floatingX=side==='left'?occupiedEdge+48:1000-occupiedEdge-48-FLOATING_BASE_WIDTH;
+  const floatingY=(740-floatingHeight)/2;
   return <div className="surface-demo">
     <div className="demo-toolbar"><div className="demo-tabs">{(['rest','hover','detail'] as const).map((mode,i)=><button key={mode} aria-pressed={state.mode===mode} onClick={()=>manual(mode)}>{['贴边色条','悬停速览','点击详情'][i]}</button>)}</div><div><button onClick={()=>{setAuto(false);setSide(value=>value==='left'?'right':'left');}}>左右停靠 ⇄</button><button aria-pressed={floating} onClick={()=>setFloating(value=>!value)}>悬浮窗</button><button aria-pressed={auto} onClick={()=>setAuto(value=>!value)}>{auto?'暂停演示':'自动演示'}</button></div></div>
     <div ref={viewport} className="demo-viewport" style={{height:740*scale}}>
@@ -51,7 +56,7 @@ function SurfaceDemo(){
           <iframe ref={rail} src="surface.html?surface=quota-sidebar" title="原程序额度侧栏" onLoad={send} style={{width:geometry.width,height:geometry.height,top:(height-geometry.height)/2,[side]:0}}/>
         </div>
         <iframe ref={detail} className="product-detail-frame" src="surface.html?surface=quota-sidebar-detail" title="原程序完整侧栏详情" onLoad={send} style={{visibility:state.mode==='detail'?'visible':'hidden',width:geometry.detailWidth,height:geometry.detailHeight,top:(740-geometry.detailHeight)/2,[side]:geometry.width+geometry.gap}}/>
-        {floating&&<iframe ref={float} className="product-floating-frame" src="surface.html?surface=floating" title="原程序默认悬浮窗" style={{width:FLOATING_BASE_WIDTH,height:floatingHeight,left:side==='right'&&state.mode==='detail'?34:650,top:510}}/>}
+        {floating&&<><span className="product-floating-caption" style={{left:floatingX,top:floatingY-24}}>悬浮窗</span><iframe ref={float} className="product-floating-frame" src="surface.html?surface=floating" title="原程序默认悬浮窗" style={{width:FLOATING_BASE_WIDTH,height:floatingHeight,left:floatingX,top:floatingY}}/></>}
         <span className="demo-disclosure">跨平台原程序界面 · 模拟数据 · 窗口位置由离线画布承载</span>
         {notice&&<button className="demo-toast" onClick={()=>setNotice('')}>{notice} ×</button>}
       </div>
