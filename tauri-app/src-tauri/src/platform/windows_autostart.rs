@@ -34,14 +34,22 @@ pub(crate) fn read(app: &tauri::AppHandle) -> Result<AutostartStatus, String> {
 
 pub(crate) fn set(app: &tauri::AppHandle, enabled: bool) -> Result<AutostartStatus, String> {
     let value_name = app.package_info().name.to_string();
-    if let Some(command) = read_run_command(&value_name)? {
+    let existing_command = read_run_command(&value_name)?;
+    if let Some(command) = existing_command.as_deref() {
         let executable = current_executable()?;
-        if !command_targets_executable(&command, &executable) {
+        if !command_targets_executable(command, &executable) {
             return Ok(external_registration_status());
         }
     }
     if enabled {
-        let command = current_autostart_command()?;
+        let command = match existing_command {
+            Some(existing) => {
+                let executable = current_executable()?;
+                preserve_autostart_command(&existing, &executable)
+                    .ok_or_else(|| "无法识别当前 Windows 自启动程序路径。".to_string())?
+            }
+            None => current_autostart_command()?,
+        };
         let (run, _) = RegKey::predef(HKEY_CURRENT_USER)
             .create_subkey(RUN_KEY)
             .map_err(|error| format!("打开 Windows 自启动注册表失败：{error}"))?;
@@ -98,8 +106,7 @@ pub(crate) fn repair_current_registration(app: &tauri::AppHandle) -> Result<(), 
         return Ok(());
     };
     let executable = current_executable()?;
-    if command_targets_executable(&existing, &executable) {
-        let desired = format!("{} --autostart", quote_windows_argument(&executable));
+    if let Some(desired) = preserve_autostart_command(&existing, &executable) {
         if existing != desired {
             run.set_value(&value_name, &desired)
                 .map_err(|error| format!("修复 Windows 自启动路径引号失败：{error}"))?;
@@ -170,20 +177,47 @@ fn quote_windows_argument(path: &Path) -> String {
 }
 
 fn command_targets_executable(command: &str, executable: &Path) -> bool {
+    command_arguments_for_executable(command, executable).is_some()
+}
+
+fn preserve_autostart_command(command: &str, executable: &Path) -> Option<String> {
+    let arguments = command_arguments_for_executable(command, executable)?;
+    let executable = quote_windows_argument(executable);
+    if arguments.trim().is_empty() {
+        Some(format!("{executable} --autostart"))
+    } else {
+        Some(format!("{executable}{arguments}"))
+    }
+}
+
+fn command_arguments_for_executable<'a>(command: &'a str, executable: &Path) -> Option<&'a str> {
     let command = command.trim_start();
     let expected = executable.to_string_lossy();
     if let Some(rest) = command.strip_prefix('"') {
         let Some(end) = rest.find('"') else {
-            return false;
+            return None;
         };
-        return paths_equal(&rest[..end], &expected);
+        if !paths_equal(&rest[..end], &expected) {
+            return None;
+        }
+        let arguments = &rest[end + 1..];
+        return if arguments.is_empty() || arguments.chars().next().is_some_and(char::is_whitespace)
+        {
+            Some(arguments)
+        } else {
+            None
+        };
     }
-    command
-        .get(..expected.len())
-        .is_some_and(|prefix| paths_equal(prefix, &expected))
-        && command.get(expected.len()..).is_none_or(|rest| {
-            rest.is_empty() || rest.chars().next().is_some_and(char::is_whitespace)
-        })
+    let prefix = command.get(..expected.len())?;
+    if !paths_equal(prefix, &expected) {
+        return None;
+    }
+    let arguments = command.get(expected.len()..)?;
+    if arguments.is_empty() || arguments.chars().next().is_some_and(char::is_whitespace) {
+        Some(arguments)
+    } else {
+        None
+    }
 }
 
 fn paths_equal(left: &str, right: &str) -> bool {
@@ -193,7 +227,7 @@ fn paths_equal(left: &str, right: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_targets_executable, quote_windows_argument};
+    use super::{command_targets_executable, preserve_autostart_command, quote_windows_argument};
     use std::path::Path;
 
     #[test]
@@ -219,5 +253,71 @@ mod tests {
             r#"C:\Other\Codex.exe --autostart"#,
             executable
         ));
+    }
+
+    #[test]
+    fn autostart_repair_quotes_unquoted_path_and_adds_flag_when_args_are_empty() {
+        let executable = Path::new(r"C:\Program Files\Codex Token Bar\Codex.exe");
+        assert_eq!(
+            preserve_autostart_command(r"C:\Program Files\Codex Token Bar\Codex.exe", executable),
+            Some(r#""C:\Program Files\Codex Token Bar\Codex.exe" --autostart"#.into())
+        );
+    }
+
+    #[test]
+    fn autostart_repair_preserves_existing_autostart_argument_without_duplicating_it() {
+        let executable = Path::new(r"C:\Program Files\Codex Token Bar\Codex.exe");
+        assert_eq!(
+            preserve_autostart_command(
+                r"C:\Program Files\Codex Token Bar\Codex.exe --autostart",
+                executable
+            ),
+            Some(r#""C:\Program Files\Codex Token Bar\Codex.exe" --autostart"#.into())
+        );
+    }
+
+    #[test]
+    fn autostart_repair_preserves_custom_argument_suffix_byte_for_byte() {
+        let executable = Path::new(r"C:\Program Files\Codex Token Bar\Codex.exe");
+        let suffix = "  --profile \"custom profile\" --mode=test  ";
+        let command = format!(r"C:\Program Files\Codex Token Bar\Codex.exe{suffix}");
+        assert_eq!(
+            preserve_autostart_command(&command, executable),
+            Some(format!(
+                r#""C:\Program Files\Codex Token Bar\Codex.exe"{suffix}"#
+            ))
+        );
+    }
+
+    #[test]
+    fn autostart_repair_adds_flag_when_existing_suffix_contains_only_whitespace() {
+        let executable = Path::new(r"C:\Program Files\Codex Token Bar\Codex.exe");
+        assert_eq!(
+            preserve_autostart_command(
+                r#""C:\Program Files\Codex Token Bar\Codex.exe"   "#,
+                executable
+            ),
+            Some(r#""C:\Program Files\Codex Token Bar\Codex.exe" --autostart"#.into())
+        );
+    }
+
+    #[test]
+    fn autostart_repair_does_not_claim_wrapper_or_malformed_targets() {
+        let executable = Path::new(r"C:\Program Files\Codex Token Bar\Codex.exe");
+        assert!(!command_targets_executable(
+            r#"cmd.exe /c "C:\wrappers\codex.cmd" --profile custom"#,
+            executable
+        ));
+        assert!(!command_targets_executable(
+            r#""C:\Program Files\Codex Token Bar\Codex.exe"junk --profile custom"#,
+            executable
+        ));
+        assert_eq!(
+            preserve_autostart_command(
+                r#"cmd.exe /c "C:\wrappers\codex.cmd" --profile custom"#,
+                executable
+            ),
+            None
+        );
     }
 }

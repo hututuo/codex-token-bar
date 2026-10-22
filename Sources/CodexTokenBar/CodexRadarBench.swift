@@ -236,9 +236,15 @@ struct CodexRadarBenchSummary: Decodable, Sendable {
         history = try? c.decodeIfPresent(CodexRadarBenchHistory.self, forKey: .history)
     }
 
+    // v6 adds source_scores/detail_metrics; the validated score contract is unchanged.
+    static let supportedSchemas: Set<String> = [
+        "radar-bench-public-summary-v5-150-daily-graded-count",
+        "radar-bench-public-summary-v6-150-details"
+    ]
+
     func result(binding: CodexRadarBenchBinding, selection: CodexRadarBenchSelection) throws -> CodexRadarBenchResult {
         try binding.validate()
-        guard schema == "radar-bench-public-summary-v5-150-daily-graded-count",
+        guard Self.supportedSchemas.contains(schema),
               binding.modelEfforts.contains(selection),
               scoreVersion == binding.scoreVersion, scoreMax == binding.scoreMax,
               benchmark == binding.benchmark, catalogVersion == binding.catalogVersion,

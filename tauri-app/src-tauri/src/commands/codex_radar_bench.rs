@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 const BINDING_ENDPOINT: &str = "https://codexradar.com/data/radar-bench-binding.json";
 const SCORE_ENDPOINT: &str = "https://codexradar.com/api/radar-bench-score";
 const SCHEMA: &str = "radar-bench-public-summary-v5-150-daily-graded-count";
+const SCHEMA_V6: &str = "radar-bench-public-summary-v6-150-details";
+fn supported_schema(value: &str) -> bool { value == SCHEMA || value == SCHEMA_V6 }
 const SCORE_VERSION: &str = "radar-bench-v2-150";
 const POLICY: &str = "radar-bench-v2-last3-per-task-equal-weight-150";
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
@@ -88,7 +90,12 @@ fn validate_binding(raw: Value) -> Result<Binding, String> {
         return Err("invalid binding task_set_sha256".into());
     }
     // These fields are absent in the historical binding; if supplied, they must agree.
-    for (key, expected) in [("schema", SCHEMA), ("scoring_policy_version", POLICY)] {
+    if let Some(schema) = raw.get("schema") {
+        if !schema.as_str().is_some_and(supported_schema) {
+            return Err("unsupported binding schema".into());
+        }
+    }
+    for (key, expected) in [("scoring_policy_version", POLICY)] {
         if raw.get(key).is_some() && raw.get(key).and_then(Value::as_str) != Some(expected) {
             return Err(format!("unsupported binding {key}"));
         }
@@ -115,7 +122,7 @@ fn validate_binding(raw: Value) -> Result<Binding, String> {
 }
 
 fn validate_summary(raw: &Value, binding: &Binding, selected: &Selection) -> Result<(), String> {
-    if string(raw, "schema")? != SCHEMA || string(raw, "score_version")? != SCORE_VERSION
+    if !supported_schema(string(raw, "schema")?) || string(raw, "score_version")? != SCORE_VERSION
         || string(raw, "scoring_policy_version")? != POLICY
         || raw.get("score_max").and_then(Value::as_f64) != Some(150.0)
     {
@@ -347,6 +354,19 @@ mod tests {
         value["coverage"] = json!(0); value["score"] = Value::Null;
         value["graded_runs_count"] = json!(0); value["score_status"] = json!("missing_current_result");
         validate_summary(&value, &binding, selected).unwrap();
+    }
+
+    #[test]
+    fn captured_v6_details_preserve_score_contract_and_reject_future_policy() {
+        let mut raw = binding();
+        raw["schema"] = json!(SCHEMA_V6);
+        let binding = validate_binding(raw).unwrap();
+        let mut value: Value = serde_json::from_str(include_str!("../../../../Tests/Fixtures/RadarBench/summary-v6.json")).unwrap();
+        let selected = selection(&value).unwrap();
+        validate_summary(&value, &binding, &selected).unwrap();
+        assert_eq!(value["graded_runs_count"], json!(116));
+        value["scoring_policy_version"] = json!("future-policy");
+        assert!(validate_summary(&value, &binding, &selected).is_err());
     }
 
     #[test]

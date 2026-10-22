@@ -1,6 +1,7 @@
 // Public RadarBench contracts. Score is already on a 150-point scale; coverage
 // counts tasks, while graded runs count judgments. Neither is a pass rate.
 export const RADAR_BENCH_SUMMARY_SCHEMA = "radar-bench-public-summary-v5-150-daily-graded-count";
+export const RADAR_BENCH_SUPPORTED_SCHEMAS = new Set([RADAR_BENCH_SUMMARY_SCHEMA, "radar-bench-public-summary-v6-150-details"]);
 export const RADAR_BENCH_SCORE_VERSION = "radar-bench-v2-150";
 export const RADAR_BENCH_POLICY = "radar-bench-v2-last3-per-task-equal-weight-150";
 export type RadarBenchScoreStatus = "missing" | "provisional" | "complete";
@@ -201,7 +202,8 @@ function parseHistory(value: unknown, model: string, effort: string, binding: Ra
 
 export function parseRadarBenchSummary(value: unknown, binding: RadarBenchBinding): RadarBenchSummary {
   const raw = record(value, "summary");
-  for (const [key, expected] of [["schema", RADAR_BENCH_SUMMARY_SCHEMA], ["score_version", RADAR_BENCH_SCORE_VERSION],
+  if (typeof raw.schema !== "string" || !RADAR_BENCH_SUPPORTED_SCHEMAS.has(raw.schema)) throw new Error("RadarBench schema mismatch");
+  for (const [key, expected] of [["score_version", RADAR_BENCH_SCORE_VERSION],
     ["score_max", 150], ["scoring_policy_version", RADAR_BENCH_POLICY], ["benchmark", binding.benchmark],
     ["catalog_version", binding.catalogVersion], ["task_set_sha256", binding.taskSetHash]] as const) requireEqual(raw[key], expected, key);
   requireEqual(sourceKey(sources(raw.source_counts)), sourceKey(binding.sourceCounts), "source_counts");

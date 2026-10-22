@@ -164,3 +164,15 @@ test("daily history must match identity, score version and a valid UTC grading d
     assert.ok(snapshot.endpointErrors.length > 0);
   }
 });
+
+
+test("captured v6 additive details keep the v5 score contract and strict policy validation", () => {
+  const value = JSON.parse(readFileSync(new URL("../../../../Tests/Fixtures/RadarBench/summary-v6.json", import.meta.url), "utf8"));
+  const parsed = parseRadarBenchSummary(value, parseRadarBenchBinding(binding));
+  assert.equal(parsed.score, 106.81881009615384);
+  assert.equal(parsed.coverage, 64);
+  assert.equal(parsed.gradedRuns, 116);
+  assert.ok(parsed.history.length > 0);
+  assert.equal(parsed.statistics.elapsedMs.knownSamples, 116);
+  assert.throws(() => parseRadarBenchSummary({ ...value, scoring_policy_version: "future" }, parseRadarBenchBinding(binding)), /scoring_policy_version/);
+});

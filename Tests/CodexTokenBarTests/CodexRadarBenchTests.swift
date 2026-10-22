@@ -32,6 +32,21 @@ final class CodexRadarBenchTests: XCTestCase {
         XCTAssertNotEqual(solLabels[0], solLabels[1])
     }
 
+    func testCapturedV6DetailsPreserveScoreUnitsAndRejectChangedScoringPolicy() throws {
+        let binding = try decodeBinding(bindingData())
+        let selection = CodexRadarBenchSelection(model: "gpt-6-astra", effort: "max")
+        let bytes = try fixture("summary-v6.json")
+        let result = try decodeResult(bytes, binding: binding, selection: selection)
+        XCTAssertEqual(try XCTUnwrap(result.score), 106.81881009615384, accuracy: 0.000001)
+        XCTAssertEqual(result.coverage, 64)
+        XCTAssertEqual(result.gradedRunsCount, 116)
+        XCTAssertEqual(try XCTUnwrap(result.statistics?.averageMinutes), 19.202378765477054, accuracy: 0.000001)
+        XCTAssertNotNil(result.history)
+        var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        raw["scoring_policy_version"] = "future-policy"
+        XCTAssertThrowsError(try decodeResult(data(raw), binding: binding, selection: selection))
+    }
+
     func testZeroAndMissingScoresStayDistinctAndLowCoverageIsRankable() throws {
         let binding = try decodeBinding(bindingData())
         let selection = CodexRadarBenchSelection(model: "gpt-6-astra", effort: "max")

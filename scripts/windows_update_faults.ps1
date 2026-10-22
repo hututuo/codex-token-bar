@@ -34,7 +34,15 @@ Function .onInit
     SetAutoClose true
   ${EndIf}
   StrCpy $UpdateMode 1
+  ${GetOptions} $CMDLINE "/MANUAL" $0
+  ${IfNot} ${Errors}
+    StrCpy $UpdateMode 0
+  ${EndIf}
   StrCpy $NoShortcutMode 0
+  ${GetOptions} $CMDLINE "/NS" $0
+  ${IfNot} ${Errors}
+    StrCpy $NoShortcutMode 1
+  ${EndIf}
 FunctionEnd
 Section
   SetOutPath "$INSTDIR"
@@ -44,6 +52,11 @@ Section
   FileOpen $0 "$INSTDIR\registered.txt" w
   FileWrite $0 "new version"
   FileClose $0
+  ; Simulate upstream overwrites during a passive manual reinstall.
+  ${If} $UpdateMode = 0
+    CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  ${EndIf}
   !insertmacro NSIS_HOOK_POSTINSTALL
   ${If} ${Errors}
     StrCpy $1 "hook error flag set"
@@ -128,7 +141,7 @@ Write-Host "PASS ShellExecute failed launch returns $code"
 function Run-Fixture([string]$dir, [bool]$silent, [bool]$cancel, [bool]$injectFailure = $false) {
     $start = [Diagnostics.ProcessStartInfo]::new($exe)
     $start.UseShellExecute = $false
-    $start.Arguments = $(if($silent){'/S '}else{'/P '}) + '/D=' + $dir
+    $start.Arguments = $(if($silent){'/S '}else{'/P '}) + $(if($script:FixtureNoShortcuts){'/NS '}else{''}) + $(if($script:FixtureManual){'/MANUAL '}else{''}) + '/D=' + $dir
     [UpdateFaultWindows]::FaultObserved = $false
     $p = $null
     $primary = $null
@@ -194,7 +207,8 @@ try {
     $null = New-Item -ItemType Directory $dir
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($link)
-    $oldTarget = Join-Path $root 'old-copy.exe'
+    $oldProduct = Join-Path $root 'old-product'; New-Item -ItemType Directory $oldProduct | Out-Null
+    $oldTarget = Join-Path $oldProduct 'fixture.exe'
     Copy-Item -LiteralPath $payload -Destination $oldTarget
     $shortcut.TargetPath = $oldTarget
     $shortcut.Save()
@@ -221,6 +235,31 @@ try {
         throw ('Canonical shortcut not repaired: expected=' + $expectedTarget + '; actual=' + $actualTarget)
     }
     Write-Host 'PASS last unquoted /D with Chinese/spaces and canonical shortcut repair'
+    foreach ($scenario in @('proxy-wrapper','custom-args','custom-workdir','unrelated-exe','no-shortcuts','manual-wrapper')) {
+        $shell = New-Object -ComObject WScript.Shell
+        foreach ($fixtureLink in @($link,$desktopLink)) {
+            $item = $shell.CreateShortcut($fixtureLink)
+            $item.TargetPath = if($scenario -in @('proxy-wrapper','manual-wrapper')) { "$env:SystemRoot\System32\cmd.exe" } elseif($scenario -eq 'unrelated-exe') { $payload } else { $oldTarget }
+            $item.Arguments = if($scenario -in @('proxy-wrapper','manual-wrapper')) { '/c "proxy launcher.cmd"' } elseif($scenario -eq 'custom-args') { '--profile "custom profile"' } else { '' }
+            $item.WorkingDirectory = if($scenario -eq 'custom-workdir') { $root } else { '' }
+            $item.Description = 'User launch settings remain intact'
+            $item.Save()
+            $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($item)
+        }
+        $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+        $beforeStart = (Get-FileHash -LiteralPath $link).Hash
+        $beforeDesktop = (Get-FileHash -LiteralPath $desktopLink).Hash
+        $script:FixtureManual = ($scenario -eq 'manual-wrapper')
+        $script:FixtureNoShortcuts = ($scenario -eq 'no-shortcuts')
+        if((Run-Fixture $dir $true $false) -ne 0) { throw "Shortcut fixture failed: $scenario" }
+        $script:FixtureNoShortcuts = $false
+        $script:FixtureManual = $false
+        if ((Get-FileHash -LiteralPath $link).Hash -ne $beforeStart -or
+            (Get-FileHash -LiteralPath $desktopLink).Hash -ne $beforeDesktop) {
+            throw "User shortcut was modified: $scenario"
+        }
+        Write-Host "PASS exact Start Menu/Desktop shortcut bytes preserved: $scenario"
+    }
 } catch {
     $primaryFailure = $_
     throw
