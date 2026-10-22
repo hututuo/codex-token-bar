@@ -1,4 +1,5 @@
-//! Keep both the HWND and WebView2 canvas fixed while the window region expands.
+//! Keep the HWND and WebView2 canvas stable while the window region animates.
+//! The canvas grows once before a larger target, never once per frame.
 //! Called on Tauri's UI thread, including during drag and reduced-motion jumps.
 use super::{canvas_geometry::{layout, CanvasFrame}, SidebarFrame};
 use tauri::{Emitter, WebviewWindow};
@@ -94,8 +95,8 @@ pub(super) fn set_frame(window: &WebviewWindow, frame: SidebarFrame, left: bool,
             let _repaint = Repaint(outer);
             // During a normal expansion neither HWND moves/resizes. Only the
             // region changes, so DWM cannot expose an intermediate parent/child
-            // offset. SetWindowPos is needed only for setup, dragging, DPI or a
-            // workarea-clamped center change. No cross-parent DeferWindowPos.
+            // offset. SetWindowPos is needed for setup, canvas growth, dragging,
+            // DPI or a workarea-clamped center change. No cross-parent DeferWindowPos.
             let flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW | SWP_NOCOPYBITS;
             let mut actual = RECT::default();
             if unsafe { GetWindowRect(outer, &mut actual) } == 0 { return Err(last_error()); }

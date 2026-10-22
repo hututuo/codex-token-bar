@@ -106,7 +106,7 @@ struct QuotaSidebarRail: View {
                                             runningThreads: tasks.runningThreadSummary).todayModelBreakdowns,
             fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         ZStack(alignment: controller.edge == .right ? .trailing : .leading) {
-            if controller.interaction.expanded {
+            Group {
                 if let advice = cacheWarning {
                     cacheNotice(advice)
                         .frame(height: controller.expandedContentHeight)
@@ -198,12 +198,20 @@ struct QuotaSidebarRail: View {
                         }.buttonStyle(SidebarPulseButtonStyle())
                     }
                 }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
+                    .background(GeometryReader { proxy in
+                        Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
+                            value: QuotaSidebarContentMeasurement(contentHeight: proxy.size.height))
+                    })
                     .modifier(ReserveSidebarScroll(enabled: true))
                     .frame(height: controller.expandedContentHeight)
                     .frame(maxHeight: .infinity, alignment: .center)
                     .transition(.opacity)
                 }
             }
+            .opacity(controller.interaction.expanded ? 1 : 0)
+            .allowsHitTesting(controller.interaction.expanded)
+            .accessibilityHidden(!controller.interaction.expanded)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: monitor.latestModelSpeeds30m.count)
             Group {
                 VStack(spacing: 12) {
                     SidebarValueBar(fraction: Double(rateFraction), color: SidebarPalette.blue, vertical: true)
@@ -235,6 +243,7 @@ struct QuotaSidebarRail: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: controller.edge == .right ? .trailing : .leading)
         .background(SidebarPalette.background)
+        .onPreferenceChange(QuotaSidebarContentMeasurementKey.self) { controller.updateContentMeasurement($0) }
         .clipShape(QuotaSidebarEdgeShape(edge: controller.edge))
         .foregroundStyle(.white)
         .onHover { if $0 { controller.enter() } }
@@ -425,7 +434,11 @@ struct QuotaSidebarBodySpeedReadings: View {
                                         railAverage(model.model, values: monitor.modelSpeeds15m, label: "15分")
                                         railAverage(model.model, values: monitor.modelSpeeds30m, label: "30分")
                                     }
-                                }.frame(width: 66).padding(.vertical, 2).help(model.model + " · 最新正文与各时段均速")
+                                }.frame(width: 66).padding(.vertical, 2)
+                                    .background(GeometryReader { proxy in
+                                        Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
+                                            value: QuotaSidebarContentMeasurement(speedRowHeight: proxy.size.height + 4))
+                                    }).help(model.model + " · 最新正文与各时段均速")
                             }
                         }.frame(maxWidth: .infinity).padding(.horizontal, 5).padding(.vertical, 4).contentShape(Rectangle())
         }.buttonStyle(SidebarPulseButtonStyle()).help("各模型最新正文 TPS 与5/15/30分钟均速 · 点击查看记录")

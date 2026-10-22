@@ -1,3 +1,4 @@
+import { createSidebarHeightBudget, type SidebarContentMeasurement } from "./contentSizing";
 import { latestSidebarModelSpeeds, speedTimestamp } from "../components/liveRate/bodySpeedPresentation";
 import { ObservedSpeedDetails } from "../components/liveRate/ObservedSpeedDetails";
 import { CacheUsageNotice } from "../components/cacheReminder/CacheUsageNotice";
@@ -108,9 +109,20 @@ function RailSurface() {
   const radar = useMemo(() => sidebarRadarAtTime(radarBase, officialRadar, Math.max(radarNow, Date.now())), [radarBase, officialRadar, radarNow]);
   const compactData = useMemo(() => ({ ...sidebarData(data), trend, sourceToken }), [data.snapshot, data.runningThreads, data.quota.updatedAt, data.quota.account, data.quota.quota, trend, sourceToken]);
   const showsFiveHour = hasFiveHourQuota(data.snapshot.fiveHourAvailability, data.snapshot.fiveHourRemainingPercent);
+  const heightBudget = useRef(createSidebarHeightBudget());
+  const [expandedHeight, setExpandedHeight] = useState<number>();
+  const currentMode = useRef(state.mode); currentMode.current = state.mode;
+  const measureContent = useCallback((measurement: SidebarContentMeasurement) => {
+    const next = heightBudget.current.update(measurement, currentMode.current !== "rest");
+    setExpandedHeight(value => value === next ? value : next);
+  }, []);
+  useLayoutEffect(() => {
+    const next = heightBudget.current.update(undefined, state.mode !== "rest");
+    setExpandedHeight(value => value === next ? value : next);
+  }, [state.mode]);
   const coordinator = useRef<ReturnType<typeof createSidebarNativeCoordinator> | null>(null);
   if (coordinator.current === null) coordinator.current = createSidebarNativeCoordinator(
-    (mode, showsFiveHour, refreshGeometry, requestId) => invoke("set_quota_sidebar_mode", { mode, showsFiveHour, refreshGeometry, requestId, reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches }),
+    (mode, showsFiveHour, refreshGeometry, requestId, expandedHeight) => invoke("set_quota_sidebar_mode", { mode, showsFiveHour, refreshGeometry, requestId, expandedHeight, reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches }),
     reason => setError(reason === null ? null : `窗口更新失败：${String(reason)}`),
   );
   const dragSession = useRef<ReturnType<typeof createSidebarDragSession> | null>(null);
@@ -203,6 +215,16 @@ function RailSurface() {
     add(listen("quota-sidebar-environment-changed", () => coordinator.current?.refresh()));
     add(listen<{ requestId: number; error: string | null }>("quota-sidebar-motion-result", e =>
       coordinator.current?.complete(e.payload.requestId, e.payload.error)));
+    add(listen<number>("quota-sidebar-expanded-height-changed", e => {
+      if (Number.isFinite(e.payload) && e.payload > 0 && e.payload <= 4096) {
+        document.documentElement.style.setProperty("--qs-summary-height", `${e.payload}px`);
+      }
+    }).then(unlisten => { if (!disposed) coordinator.current?.refresh(); return unlisten; }));
+    add(listen<number>("quota-sidebar-canvas-changed", e => {
+      if (Number.isFinite(e.payload) && e.payload >= 680 && e.payload <= 4096) {
+        document.documentElement.style.setProperty("--qs-canvas-height", `${e.payload}px`);
+      }
+    }).then(unlisten => { if (!disposed) coordinator.current?.refresh(); return unlisten; }));
     const clip = (size: { width: number; height: number }) => {
       const scale = window.devicePixelRatio || 1;
       document.documentElement.style.setProperty("--qs-native-width", `${size.width / scale}px`);
@@ -224,8 +246,8 @@ function RailSurface() {
     if (!display.quotaSidebarEnabled) { cancelLeave(); dispatch({ type: "disable" }); }
   }, [display.quotaSidebarEnabled, cancelLeave]);
   useEffect(() => {
-    coordinator.current?.update(state.mode, showsFiveHour);
-  }, [state.mode, showsFiveHour]);
+    coordinator.current?.update(state.mode, showsFiveHour, expandedHeight);
+  }, [state.mode, showsFiveHour, expandedHeight]);
   useEffect(() => {
     coordinator.current?.setEnabled(display.quotaSidebarEnabled);
     return () => coordinator.current?.setEnabled(false);
@@ -242,11 +264,11 @@ function RailSurface() {
   useEffect(() => { publisher.current?.update(presentation, display.quotaSidebarEnabled && state.mode === "detail"); }, [presentation, display.quotaSidebarEnabled, state.mode]);
   if (!display.quotaSidebarEnabled) return null;
   return <main className={sidebarRailClassName(display.quotaSidebarSide, state.mode)} onPointerDown={startDrag} onPointerEnter={enter} onPointerLeave={leave} data-dragging={dragging} aria-label="额度侧栏">
-    <SidebarRailContent data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error} onDismissReminder={dismissReminder} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })} />
+    <SidebarRailContent data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error} onDismissReminder={dismissReminder} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })}  onContentMeasurement={measureContent} />
   </main>;
 }
-export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh, onDismissReminder }: {
-  data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
+export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh, onContentMeasurement, onDismissReminder }: {
+  data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onContentMeasurement?: (measurement: SidebarContentMeasurement) => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
 }) {
   const [, expireSpeedReadings] = useReducer((tick: number) => tick + 1, 0);
   const modelSpeeds = latestSidebarModelSpeeds(data.snapshot.latestModelSpeeds30m ?? []);
@@ -276,7 +298,7 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
       {cacheWarning && <span className="qs-cache-indicator" style={{ top: `calc(50% - ${showsFiveHour ? 114 : 87}px)` }} role="status" aria-label={`缓存命中偏低：${cacheAdviceTitle(cacheWarning)}`} title={`缓存命中偏低 · ${cacheAdviceTitle(cacheWarning)}`} />}
       <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ transform: `scaleY(${(ratePercent ?? 0) / 100})`, background: "#78b7ff" }} /></span>
       {showsFiveHour && <Bar percent={five} color="#b6ef75" expected={expectedFive} />}<Bar percent={seven} color="#b4acff" expected={expectedSeven} />{modelStrip(true)}
-    </div><SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning}>{() => {
+    </div><SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning} onMeasure={onContentMeasurement}>{() => {
       if (cacheWarning) return <section className="qs-cache-notice" aria-label="缓存命中提醒">
         <div className="qs-cache-heading">
           <span className="qs-cache-symbol" aria-hidden="true">!</span>

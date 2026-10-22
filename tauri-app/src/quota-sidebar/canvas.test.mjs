@@ -31,7 +31,7 @@ test('Windows black rail and summary retain layout through narrow, intermediate 
         assert.equal(style.height, '680px');
         assert.equal(style.backgroundColor, '#080a09');
         const summary = window.getComputedStyle(window.document.querySelector('.qs-summary'));
-        assert.equal(summary.top, '340px');
+        assert.equal(summary.top, 'calc(680px/2)');
         assert.equal(summary.width, '88px');
         assert.equal(summary.transform, 'translateY(-50%)');
       }

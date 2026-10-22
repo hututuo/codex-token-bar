@@ -42,8 +42,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     @Published private(set) var expandedContentHeight: CGFloat = QuotaSidebarLayout.weeklyExpandedHeight
     private(set) var hasFiveHour = false
     private var quotaObservation: AnyCancellable?
-    private var speedObservation: AnyCancellable?
-    private var speedModelCount = 0
+    private var heightBudget = QuotaSidebarHeightBudget()
     private let settings: UserDefaults
     private(set) var placement: QuotaSidebarPlacement?
     private(set) var isDragging = false
@@ -105,12 +104,6 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             quotaObservation = quota.$snapshot.sink { [weak self] snapshot in
                 self?.updateQuotaSnapshot(snapshot)
             }
-            speedObservation = monitor.$latestModelSpeeds30m.map(\.count).removeDuplicates()
-                .receive(on: DispatchQueue.main).sink { [weak self] count in
-                    guard let self, self.speedModelCount != count else { return }
-                    self.speedModelCount = count
-                    self.updateFrames()
-                }
             installObservers()
         }
         if changedEdge { interaction.dismiss() }
@@ -125,7 +118,6 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         railPanel?.trackPrimaryPress = nil
         quotaObservation?.cancel()
         quotaObservation = nil
-        speedObservation?.cancel(); speedObservation = nil
         collapseTask?.cancel()
         collapseTask = nil
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
@@ -148,8 +140,14 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         if id == nil { pointerMoved() }
     }
 
-    // Quota presence changes layout only. A refreshed account snapshot must
-    // not reset a selected detail tab or the user's pinned state.
+    func updateContentMeasurement(_ measurement: QuotaSidebarContentMeasurement) {
+        let previous = heightBudget.targetHeight
+        heightBudget.update(contentHeight: measurement.contentHeight, rowHeight: measurement.speedRowHeight,
+                            expanded: interaction.expanded)
+        if previous != heightBudget.targetHeight { updateFrames() }
+    }
+
+    // Quota presence changes layout only, preserving the selected detail tab and pin.
     func updateQuotaSnapshot(_ snapshot: AccountQuotaSnapshot) {
         let present = snapshot.fiveHour != nil
         guard hasFiveHour != present else { return }
@@ -395,15 +393,22 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             railPanel.orderOut(nil); hideDetail()
             return
         }
+        heightBudget.update(expanded: interaction.expanded)
+        let expandedTarget = QuotaSidebarFrames.make(usableFrame: screen.visibleFrame, edge: edge,
+            expanded: true, scale: screen.backingScaleFactor, hasFiveHour: hasFiveHour,
+            normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight)
         let next = QuotaSidebarFrames.make(usableFrame: screen.visibleFrame, edge: edge,
                                           expanded: interaction.expanded, scale: screen.backingScaleFactor,
-                                          hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5, speedModelCount: speedModelCount)
+                                          hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight)
         let previous = frames
         // The host keeps a stable canvas for reveal animation, but a weekly-only
         // or short-screen rail clips that canvas. Fit full-panel notices to
         // the settled visible height, not the stable animation canvas.
-        if interaction.expanded && expandedContentHeight != next.rail.height {
-            expandedContentHeight = next.rail.height
+        if expandedContentHeight != expandedTarget.rail.height {
+            expandedContentHeight = expandedTarget.rail.height
+        }
+        if let canvas = railPanel.contentView as? QuotaSidebarCanvasView {
+            canvas.canvasHeight = max(QuotaSidebarLayout.expandedCanvasHeight, expandedTarget.rail.height)
         }
         frames = next
         let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -486,6 +491,7 @@ private final class QuotaSidebarFrameClock: NSObject {
 final class QuotaSidebarCanvasView: NSView {
     let host: NSView
     let signal: NSView?
+    var canvasHeight: CGFloat = QuotaSidebarLayout.expandedCanvasHeight { didSet { if oldValue != canvasHeight { layoutCanvas() } } }
     var edge: QuotaSidebarEdge { didSet { if oldValue != edge { layoutCanvas() } } }
     init(host: NSView, edge: QuotaSidebarEdge, signal: NSView? = nil) {
         self.host = host; self.edge = edge; self.signal = signal
@@ -501,7 +507,7 @@ final class QuotaSidebarCanvasView: NSView {
     private func layoutCanvas() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let hostFrame = CGRect(x: edge == .right ? bounds.width - 88 : 0,
-                               y: (bounds.height - QuotaSidebarLayout.expandedCanvasHeight) / 2, width: 88, height: QuotaSidebarLayout.expandedCanvasHeight)
+                               y: (bounds.height - canvasHeight) / 2, width: 88, height: canvasHeight)
         if host.frame != hostFrame { host.frame = hostFrame }
         if let signal, signal.frame != bounds { signal.frame = bounds }
         layer?.cornerRadius = min(22, max(8, 8 + (bounds.width - 16) * 14 / 72))

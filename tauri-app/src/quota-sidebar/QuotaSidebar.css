@@ -105,13 +105,13 @@ html.quota-sidebar-document,html.quota-sidebar-document body,html.quota-sidebar-
 
 /* Match the native macOS canvas exactly. WebKit's visible viewport may be
    smaller than its NSView during clipping; vh/vw must not drive content. */
-html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-sidebar-fixed-canvas #root{width:88px!important;height:680px!important;min-width:88px!important;min-height:680px!important}
-.quota-sidebar-fixed-canvas .qs-rail{width:88px;height:680px;border-radius:0;background:transparent}
+html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-sidebar-fixed-canvas #root{width:88px!important;height:var(--qs-canvas-height,680px)!important;min-width:88px!important;min-height:var(--qs-canvas-height,680px)!important}
+.quota-sidebar-fixed-canvas .qs-rail{width:88px;height:var(--qs-canvas-height,680px);border-radius:0;background:transparent}
 /* Windows clips the painted canvas with the native rounded window region. */
 .quota-sidebar-windows-canvas .qs-rail{background:#080a09}
-.quota-sidebar-fixed-canvas .qs-summary{top:340px}
-.quota-sidebar-fixed-canvas .qs-bars{height:680px}
-.quota-sidebar-fixed-canvas .qs-radar-edge{top:calc((680px - var(--qs-native-height,680px))/2);width:var(--qs-native-width,88px);height:var(--qs-native-height,680px);border-radius:8px}
+.quota-sidebar-fixed-canvas .qs-summary{top:calc(var(--qs-canvas-height,680px)/2)}
+.quota-sidebar-fixed-canvas .qs-bars{height:var(--qs-canvas-height,680px)}
+.quota-sidebar-fixed-canvas .qs-radar-edge{top:calc((var(--qs-canvas-height,680px) - var(--qs-native-height,680px))/2);width:var(--qs-native-width,88px);height:var(--qs-native-height,680px);border-radius:8px}
 
 /* Both layers keep their layout across mode changes; only opacity is animated.
    Inert removes hidden summary buttons from pointer and keyboard hit testing. */
@@ -216,3 +216,6 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .qs-model-speeds>button>.qs-model-speed-block{width:100%;max-width:none;display:flex;gap:3px;padding:2px 0}.qs-model-speed-block>.qs-model-speed-row{display:flex;flex-direction:row;width:100%;justify-content:space-between;gap:2px;color:#78b7ff}.qs-model-speed-windows{display:grid;grid-template-columns:repeat(3,1fr);width:100%;gap:1px}.qs-model-speed-windows>span{display:flex;flex-direction:column;align-items:center;gap:1px}.qs-model-speed-windows small{font-size:8px;color:#bdc9d8}.qs-model-speed-windows b{font-size:9px;font-variant-numeric:tabular-nums;color:#f4f7fb}
 
 .qs-model-speeds>button>.qs-model-speed-block{width:66px;max-width:66px;align-self:center}.qs-model-speed-block>.qs-model-speed-row{display:grid;grid-template-columns:33px 30px;gap:3px;justify-content:normal}.qs-model-speed-row strong{text-align:right}.qs-model-speed-windows{width:66px;gap:0;grid-template-columns:repeat(3,22px)}.qs-model-speed-windows>span{width:22px}.qs-model-speed-block>.qs-model-speed-row small{max-width:33px}
+
+/* The content viewport uses the settled target, never per-frame reveal size. */
+.quota-sidebar-document .qs-summary[data-scrollable=true][data-reminder=false]{height:var(--qs-summary-height,var(--qs-native-height,100vh));max-height:var(--qs-summary-height,var(--qs-native-height,100vh));padding:12px 0}

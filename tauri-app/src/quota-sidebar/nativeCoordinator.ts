@@ -2,12 +2,12 @@ import type { SidebarMode } from "./model";
 
 /** One queue per rail, deduplicated across data renders and explicit environment checks. */
 export function createSidebarNativeCoordinator(
-  apply: (mode: SidebarMode, showsFiveHour: boolean, refreshGeometry: boolean, requestId: number) => Promise<unknown>,
+  apply: (mode: SidebarMode, showsFiveHour: boolean, refreshGeometry: boolean, requestId: number, expandedHeight?: number) => Promise<unknown>,
   report: (error: unknown | null) => void,
 ) {
   let enabled = false;
   let epoch = 0;
-  let latest = { mode: "rest" as SidebarMode, showsFiveHour: false };
+  let latest = { mode: "rest" as SidebarMode, showsFiveHour: false, expandedHeight: undefined as number | undefined };
   let accepted = "";
   let pending = false;
   let refresh = false;
@@ -16,7 +16,7 @@ export function createSidebarNativeCoordinator(
   let activeRequest = 0;
   let failedRequest = 0;
   let completedRequest = 0;
-  const key = () => `${latest.mode}:${latest.showsFiveHour}`;
+  const key = () => `${latest.mode}:${latest.showsFiveHour}:${latest.expandedHeight ?? ""}`;
   async function drain() {
     if (running) return;
     running = true;
@@ -27,9 +27,9 @@ export function createSidebarNativeCoordinator(
       const requestKey = key();
       const requestId = ++serial;
       activeRequest = requestId;
-      const { mode, showsFiveHour } = latest;
+      const { mode, showsFiveHour, expandedHeight } = latest;
       const refreshGeometry = refresh; refresh = false;
-      try { await apply(mode, showsFiveHour, refreshGeometry, requestId); if (enabled && epoch === requestEpoch && failedRequest !== requestId) { accepted = requestKey; report(null); } }
+      try { await (expandedHeight === undefined ? apply(mode, showsFiveHour, refreshGeometry, requestId) : apply(mode, showsFiveHour, refreshGeometry, requestId, expandedHeight)); if (enabled && epoch === requestEpoch && failedRequest !== requestId) { accepted = requestKey; report(null); } }
       catch (error) { if (enabled && epoch === requestEpoch) { accepted = ""; report(error); } }
     }
     running = false;
@@ -41,7 +41,7 @@ export function createSidebarNativeCoordinator(
       else completedRequest = requestId;
     },
     isSettled() { return enabled && activeRequest !== 0 && completedRequest === activeRequest && failedRequest !== activeRequest; },
-    update(mode: SidebarMode, showsFiveHour = false) { latest = { mode, showsFiveHour }; if (enabled) { pending = true; void drain(); } },
+    update(mode: SidebarMode, showsFiveHour = false, expandedHeight?: number) { latest = { mode, showsFiveHour, expandedHeight: expandedHeight !== undefined && Number.isFinite(expandedHeight) ? Math.max(192, Math.min(4096, Math.ceil(expandedHeight))) : undefined }; if (enabled) { pending = true; void drain(); } },
     refresh() { refresh = true; if (enabled) { pending = true; void drain(); } },
     setEnabled(value: boolean) {
       if (enabled === value) return;

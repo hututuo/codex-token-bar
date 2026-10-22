@@ -48,7 +48,7 @@ test("primary rows retain large targets while the centered summary scrolls withi
         window.happyDOM.setWindowSize({ width: 16, height });
         const rootStyle = window.getComputedStyle(window.document.documentElement);
         assert.equal(rootStyle.width, "88px"); assert.equal(rootStyle.height, "680px");
-        assert.equal(window.getComputedStyle(window.document.querySelector(".qs-summary")).top, "340px");
+        assert.equal(window.getComputedStyle(window.document.querySelector(".qs-summary")).top, "calc(680px/2)");
       }
     } finally { window.close(); }
   });

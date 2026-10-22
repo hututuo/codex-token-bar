@@ -2,12 +2,13 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaSidebarTests: XCTestCase {
-    func testSpeedRowsGrowSummaryWithinTheUsableDisplay() {
+    func testMeasuredSummaryHeightReplacesLegacyPaddingWithinTheUsableDisplay() {
         let area = CGRect(x: -1920, y: 0, width: 1920, height: 900)
         let base = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false)
-        let populated = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false, speedModelCount: 3)
-        let many = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false, speedModelCount: 30)
-        XCTAssertGreaterThan(populated.rail.height, base.rail.height)
+        let populated = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false, expandedHeight: 520)
+        let many = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false, expandedHeight: 5200)
+        XCTAssertLessThan(populated.rail.height, base.rail.height)
+        XCTAssertEqual(populated.rail.height, 520)
         XCTAssertEqual(many.rail.height, area.height)
         XCTAssertTrue(area.contains(populated.rail))
         XCTAssertTrue(area.contains(many.rail))
