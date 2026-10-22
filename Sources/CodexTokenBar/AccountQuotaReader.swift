@@ -3,7 +3,7 @@ import Darwin
 
 struct LiveAccountQuotaReader: QuotaReading {
     func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
-        await DirectQuotaHTTPReader.read(dataSource: dataSource)
+        PersistentQuotaService.shared.read(dataSource: dataSource)
     }
 }
 
@@ -1033,6 +1033,7 @@ enum AccountQuotaReader {
             }
             trace?.mark("attempt.begin", metadata: ["attempt": String(attempt)])
             let result: Result<AccountQuotaSnapshot, Error>
+            let accountBefore = try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id
             do {
                 let codexPath = try dependencies.locateCodexBinary()
                 let client = AccountQuotaAppServerClient(
@@ -1046,6 +1047,10 @@ enum AccountQuotaReader {
             }
             switch result {
             case .success(var snapshot):
+                let accountAfter = try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id
+                guard accountBefore == accountAfter else {
+                    return .failure(DirectQuotaError.identityChanged)
+                }
                 trace?.mark("attempt.success", metadata: [
                     "attempt": String(attempt),
                     "available": snapshot.isAvailable ? "1" : "0"
@@ -1363,80 +1368,35 @@ enum AccountQuotaReader {
     }
 
     static func readResetCredits(
-        dataSource: CodexDataSource?
+        dataSource: CodexDataSource?,
+        dependencies: AccountQuotaReaderDependencies? = nil
     ) async -> Result<AccountQuotaResetCreditSnapshot, AccountQuotaDiagnostic> {
-        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readResetCredits")
-        trace?.mark("readAccessToken.begin")
-        let selectionKey = (try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable"
-        guard let credential = try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome) else {
-            let underlying = AccountQuotaDiagnostic(
-                source: .resetCredit,
-                category: .authMissing,
-                severity: .warning,
-                message: "未找到登录 token",
-                rawCause: "auth.json missing or access_token empty",
-                retryable: false,
-                occurredAt: Date()
-            )
-            trace?.end("missing-access-token")
-            return .failure(.resetCreditFailure(underlying: underlying))
+        // The same official RPC carries quota and earned reset credits. Never
+        // fall back to an independent HTTP request from the Bar process.
+        let result: Result<AccountQuotaSnapshot, Error>
+        if let dependencies {
+            result = await read(dataSource: dataSource, dependencies: dependencies)
+        } else {
+            result = PersistentQuotaService.shared.read(dataSource: dataSource)
         }
-        trace?.mark("readAccessToken.end")
-
-        do {
-            trace?.mark("http.begin")
-            let data = try await DirectQuotaHTTPReader.fetch(credential: credential, resetCredits: true)
-            let currentKey = (try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable"
-            guard selectionKey == currentKey else {
-                throw DirectQuotaError.identityChanged
+        switch result {
+        case .success(let snapshot):
+            guard let count = snapshot.resetCreditsAvailableCount else {
+                return .failure(.resetCreditFailure(underlying: AccountQuotaDiagnostic(
+                    source: .resetCredit, category: .parseFailure, severity: .warning,
+                    message: "Codex 未提供重置卡数据", rawCause: "account/rateLimits/read: rateLimitResetCredits unavailable",
+                    retryable: false, occurredAt: Date()
+                )))
             }
-            trace?.mark("http.end", metadata: ["bytes": String(data.count)])
-            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                trace?.end("parse-failed")
-                let underlying = AccountQuotaDiagnostic(
-                    source: .resetCredit,
-                    category: .parseFailure,
-                    severity: .error,
-                    message: "重置卡响应格式异常",
-                    rawCause: "Invalid reset-credit JSON",
-                    retryable: false,
-                    occurredAt: Date()
-                )
-                return .failure(.resetCreditFailure(underlying: underlying))
-            }
-
-            trace?.mark("parseResetCredits.begin")
-            let credits = parseResetCredits(object["credits"])
-            let availableCount = (object["available_count"] as? NSNumber)?.intValue
-                ?? (object["available_count"] as? Int)
-                ?? credits.filter(\.isAvailable).count
-            let snapshot = AccountQuotaResetCreditSnapshot(
-                availableCount: max(0, availableCount),
-                credits: credits,
-                status: "重置卡已更新",
-                updatedAt: Date()
-            )
-            trace?.end("ok", metadata: [
-                "available": String(snapshot.availableCount),
-                "credits": String(snapshot.credits.count)
-            ])
-            return .success(snapshot)
-        } catch DirectQuotaError.http(let status) {
-            let category = AccountQuotaDiagnostic.category(forHTTPStatus: status)
-            trace?.end("http-error", metadata: ["status": String(status)])
-            return .failure(.resetCreditFailure(underlying: AccountQuotaDiagnostic(
-                source: .resetCredit, category: category, severity: .error,
-                message: "重置卡请求失败", rawCause: "HTTP \(status)", httpStatus: status,
-                retryable: category != .httpAuth, occurredAt: Date()
+            return .success(AccountQuotaResetCreditSnapshot(
+                availableCount: count, credits: snapshot.resetCredits,
+                status: snapshot.resetCreditStatus,
+                updatedAt: snapshot.resetCreditUpdatedAt ?? snapshot.updatedAt ?? Date()
+            ))
+        case .failure(let error):
+            return .failure(.resetCreditFailure(underlying: .classify(
+                source: .resetCredit, error: error, occurredAt: Date()
             )))
-        } catch {
-            trace?.end("failed", metadata: ["error": error.localizedDescription])
-            let underlying = AccountQuotaDiagnostic.classify(
-                source: .resetCredit,
-                error: error,
-                occurredAt: Date()
-            )
-            return .failure(.resetCreditFailure(underlying: underlying))
         }
     }
 
@@ -1504,7 +1464,7 @@ enum AccountQuotaReader {
         return plainFormatter.date(from: value)
     }
 
-    fileprivate static func readLocalAccountName(dataSource: CodexDataSource?) -> String? {
+    static func readLocalAccountName(dataSource: CodexDataSource?) -> String? {
         guard let payload = readLocalIDTokenPayload(dataSource: dataSource) else { return nil }
         for key in ["name", "nickname", "preferred_username", "email"] {
             if let value = payload[key] as? String {
@@ -1528,7 +1488,8 @@ enum AccountQuotaReader {
             .resolvingSymlinksInPath()
         return QuotaHistoryIdentity(
             homeIdentity: codexHome.path,
-            stableAccountKey: readLocalStableAccountKey(dataSource: dataSource),
+            stableAccountKey: (try? CurrentCodexCredentialReader.currentCredential(home: codexHome).id)
+                .map { "quota-account:" + $0 } ?? readLocalStableAccountKey(dataSource: dataSource),
             planType: planType,
             limitID: limitID
         )
@@ -1668,10 +1629,19 @@ private final class AccountQuotaLineReader: @unchecked Sendable {
             condition.unlock()
         }
 
+        guard !reachedEOF else { return }
+        guard buffer.count + data.count <= 4 * 1_048_576 else {
+            buffer.removeAll(); lines.removeAll(); reachedEOF = true; return
+        }
         buffer.append(data)
         while let newline = buffer.firstIndex(of: 0x0A) {
             let line = buffer[..<newline]
-            lines.append(Data(line))
+            if let message = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any], message["id"] != nil {
+                guard lines.count < 64 else {
+                    buffer.removeAll(); lines.removeAll(); reachedEOF = true; return
+                }
+                lines.append(Data(line))
+            }
             buffer.removeSubrange(...newline)
         }
     }

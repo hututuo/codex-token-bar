@@ -130,11 +130,11 @@ pub(super) fn parse_rate_limits_with_plan(result: &Value) -> Result<ParsedRateLi
             five_hour,
             seven_day,
             reserve_windows,
-            reset_credit: ResetCreditSummary {
+            reset_credit: super::reset_credit::parse_embedded_reset_credits(result).unwrap_or_else(|_| ResetCreditSummary {
                 available_count: 0,
                 status: "重置卡待读取".into(),
                 credits: Vec::new(),
-            },
+            }),
         },
     })
 }

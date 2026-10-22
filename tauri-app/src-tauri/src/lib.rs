@@ -227,6 +227,9 @@ pub fn run() {
         .build(tauri::generate_context!());
     let run_result = app_result.map(|app| {
         app.run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                core::quota::shutdown_quota_service();
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen {
                 has_visible_windows,

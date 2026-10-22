@@ -93,7 +93,9 @@ enum CodexBinaryLocator {
             return found
         }
         for app in registeredApplications where app.bundleIdentifier == CodexApplicationLocator.bundleIdentifier {
-            if let found = usable(codexBinaryURL(in: app.url)) { return found }
+            for binary in codexBinaryURLs(in: app.url) {
+                if let found = usable(binary) { return found }
+            }
         }
         for root in applicationRoots {
             for candidate in scannedApplicationBinaryURLs(in: root, fileManager: fileManager) {
@@ -102,7 +104,9 @@ enum CodexBinaryLocator {
         }
         for app in knownApplicationURLs {
             guard applicationBundleIdentifier(at: app, fileManager: fileManager) == CodexApplicationLocator.bundleIdentifier else { continue }
-            if let found = usable(codexBinaryURL(in: app)) { return found }
+            for binary in codexBinaryURLs(in: app) {
+                if let found = usable(binary) { return found }
+            }
         }
         if let path = environment["PATH"] {
             for directory in path.split(separator: ":", omittingEmptySubsequences: true) {
@@ -115,8 +119,9 @@ enum CodexBinaryLocator {
         throw AccountQuotaReaderError.codexBinaryNotFound
     }
 
-    private static func codexBinaryURL(in applicationURL: URL) -> URL {
-        applicationURL.appendingPathComponent("Contents/Resources/codex")
+    private static func codexBinaryURLs(in applicationURL: URL) -> [URL] {
+        ["Contents/Resources/codex-cli/bin/codex", "Contents/Resources/codex"]
+            .map { applicationURL.appendingPathComponent($0) }
     }
 
     private static func scannedApplicationBinaryURLs(
@@ -143,7 +148,7 @@ enum CodexBinaryLocator {
                         == CodexApplicationLocator.bundleIdentifier
             }
             .sorted { $0.path < $1.path }
-            .map(codexBinaryURL(in:))
+            .flatMap(codexBinaryURLs(in:))
     }
 
     private static func applicationBundleIdentifier(

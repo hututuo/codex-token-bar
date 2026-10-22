@@ -17,7 +17,8 @@ pub(super) fn parse_reset_credit_summary(value: &Value) -> ResetCreditSummary {
         })
         .unwrap_or_default();
     let available = value
-        .get("available_count")
+        .get("availableCount")
+        .or_else(|| value.get("available_count"))
         .and_then(|value| value.as_u64())
         .or_else(|| {
             Some(

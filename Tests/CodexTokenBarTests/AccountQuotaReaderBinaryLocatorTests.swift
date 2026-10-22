@@ -3,6 +3,15 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AccountQuotaReaderBinaryLocatorTests: XCTestCase {
+    func testModernBundledCLIIsPreferredAndDiscoveredWithoutLegacyBinary() throws {
+        let fixture = try makeFixture()
+        let app = try fixture.writeApp("Applications/ChatGPT.app")
+        let modern = try fixture.writeExecutable("Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+        XCTAssertEqual(try locate(fixture: fixture), modern.path)
+        try FileManager.default.removeItem(at: fixture.codexBinary(in: app))
+        XCTAssertEqual(try locate(fixture: fixture), modern.path)
+    }
+
     func testExplicitOverrideWinsOverRegisteredAppScanAndPATH() throws {
         let fixture = try makeFixture()
         let override = try fixture.writeExecutable("override/codex")

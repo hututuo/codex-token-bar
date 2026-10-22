@@ -45,10 +45,10 @@ const QUOTA_CHILD_ENV_REMOVE: &[&str] = &[
 
 mod auth;
 pub(crate) mod accounts;
-mod direct_http;
 pub(crate) mod codex_binary;
 mod rate_limits;
 mod reset_credit;
+mod persistent;
 
 static QUOTA_READ_CACHE: OnceLock<Mutex<HashMap<PathBuf, QuotaCacheEntry>>> = OnceLock::new();
 static QUOTA_HISTORY_CACHE: OnceLock<QuotaHistoryCacheCoordinator> = OnceLock::new();
@@ -690,7 +690,7 @@ fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
 /// Re-read only the login currently active in this Codex Home.
 pub(crate) fn read_current_account_quota(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
     let credential = accounts::current_credential(codex_home)?;
-    let parsed = direct_http::read(&credential)?;
+    let parsed = read_rate_limits(codex_home)?;
     if accounts::current_credential(codex_home)?.id() != credential.id() {
         return Err("本地登录已切换，请重新检查额度".into());
     }
@@ -1191,20 +1191,32 @@ enum QuotaStdoutEvent {
 }
 
 fn read_rate_limits(codex_home: &Path) -> Result<ParsedRateLimits, String> {
-    direct_http::read(&accounts::current_credential(codex_home)?)
+    read_rate_limits_once(codex_home, RATE_LIMIT_READ_TIMEOUT)
 }
 
 fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedRateLimits, String> {
-    let codex = find_codex_binary_with_report()?.path;
-    let mut command = Command::new(codex);
-    configure_quota_app_server_command(&mut command, Some(codex_home));
-    read_rate_limits_from_command(command, timeout)
+    parse_rate_limits_with_plan(&read_account_limits_once(codex_home, timeout)?)
 }
 
+fn read_account_limits_once(codex_home: &Path, timeout: Duration) -> Result<Value, String> {
+    persistent::read(codex_home, timeout)
+}
+
+pub(crate) fn shutdown_quota_service() { persistent::shutdown(); }
+
+#[cfg(test)]
 fn read_rate_limits_from_command(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
 ) -> Result<ParsedRateLimits, String> {
+    parse_rate_limits_with_plan(&read_account_limits_from_command(command, timeout)?)
+}
+
+#[cfg(test)]
+fn read_account_limits_from_command(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<Value, String> {
     let child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1415,7 +1427,7 @@ fn read_rate_limits_from_command(
             let result = message
                 .get("result")
                 .ok_or_else(|| "额度响应为空".to_string())?;
-            return parse_rate_limits_with_plan(result);
+            return Ok(result.clone());
         }
     }
 
@@ -2425,6 +2437,16 @@ mod tests {
     fn quota_reads_are_single_bounded_attempts_with_frontend_owned_retry() {
         assert_eq!(RATE_LIMIT_READ_TIMEOUT, Duration::from_secs(12));
         assert_eq!(RESET_CREDIT_TIMEOUT, Duration::from_secs(14));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn official_rpc_preserves_quota_and_reset_cards_in_one_response() {
+        let response = r#"{"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":21}},"rateLimitResetCredits":{"availableCount":3,"credits":[{"id":"fixture-card","status":"available","resetType":"codexRateLimits","grantedAt":1780000000,"expiresAt":1790000000}]}}}"#;
+        let parsed = read_rate_limits_from_command(quota_stderr_fixture_command(response, 0), Duration::from_secs(3)).unwrap();
+        assert_eq!(parsed.quota.five_hour.used_percent, Some(0.21));
+        assert_eq!(parsed.quota.reset_credit.available_count, 3);
+        assert_eq!(parsed.quota.reset_credit.credits[0].card_id, "fixture-card");
     }
 
     #[cfg(unix)]

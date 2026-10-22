@@ -300,8 +300,10 @@ where
     if !is_codex_app_bundle(bundle) {
         return None;
     }
-    let command = codex_resource_in_app_bundle(bundle);
-    file_exists(&command).then_some(command)
+    [
+        bundle.join("Contents/Resources/codex-cli/bin/codex"),
+        codex_resource_in_app_bundle(bundle),
+    ].into_iter().find(|command| file_exists(command))
 }
 
 #[cfg(target_os = "macos")]

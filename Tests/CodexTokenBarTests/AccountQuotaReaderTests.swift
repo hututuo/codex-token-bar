@@ -4,6 +4,44 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AccountQuotaReaderTests: XCTestCase {
+    func testOfficialRPCProvidesQuotaAndResetCardsInOneRead() async throws {
+        let transport = ScriptedQuotaProcessTransport(scenarios: [successfulScenario(result: [
+            "rateLimits": ["limitId": "codex", "primary": ["usedPercent": 21]],
+            "rateLimitResetCredits": ["availableCount": 3, "credits": [[
+                "id": "fixture-card", "status": "available", "resetType": "codexRateLimits",
+                "title": "Reset", "grantedAt": 1_780_000_000, "expiresAt": 1_790_000_000
+            ]]]
+        ])])
+        let result = await AccountQuotaReader.read(dataSource: nil, dependencies: .testing(transport: transport, timeout: 0.2))
+        let snapshot = try result.get()
+        XCTAssertEqual(snapshot.fiveHour?.usedPercent, 21)
+        XCTAssertEqual(snapshot.resetCreditsAvailableCount, 3)
+        XCTAssertEqual(snapshot.resetCredits.first?.id, "fixture-card")
+        XCTAssertEqual(transport.rateLimitReadCount, 1)
+        XCTAssertEqual(transport.startCount, 1)
+    }
+
+    func testSeparateCardRefreshUsesOfficialRPCAndPreservesCountWithoutDetails() async throws {
+        let transport = ScriptedQuotaProcessTransport(scenarios: [successfulScenario(result: [
+            "rateLimitResetCredits": ["availableCount": 4, "credits": NSNull()]
+        ])])
+        let result = await AccountQuotaReader.readResetCredits(dataSource: nil, dependencies: .testing(transport: transport, timeout: 0.2))
+        let cards = try result.get()
+        XCTAssertEqual(cards.availableCount, 4)
+        XCTAssertTrue(cards.credits.isEmpty)
+        XCTAssertEqual(transport.rateLimitReadCount, 1)
+    }
+
+    func testMissingEmbeddedCardsAreUnavailableInsteadOfZero() async throws {
+        let transport = ScriptedQuotaProcessTransport(scenarios: [successfulScenario(result: [
+            "rateLimits": ["limitId": "codex", "primary": ["usedPercent": 21]],
+            "rateLimitResetCredits": NSNull()
+        ])])
+        let result = await AccountQuotaReader.readResetCredits(dataSource: nil, dependencies: .testing(transport: transport, timeout: 0.2))
+        guard case .failure = result else { return XCTFail("Missing cards must not become zero") }
+        XCTAssertEqual(transport.startCount, 1)
+    }
+
     func testServerReturnedReserveUsesOneOrdinaryRequestWithoutOptIn() async throws {
         let transport = ScriptedQuotaProcessTransport(scenarios: [
             successfulScenario(result: [

@@ -33,6 +33,20 @@ final class DashboardReopenCoordinator {
 
 @MainActor
 final class CodexTokenBarApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var isTerminating = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminating else { return .terminateLater }
+        isTerminating = true
+        Task { @MainActor in
+            await Task.detached(priority: .utility) {
+                PersistentQuotaService.shared.shutdown()
+            }.value
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(
         _ sender: NSApplication
     ) -> Bool {

@@ -3,6 +3,20 @@ import XCTest
 @testable import CodexTokenBar
 
 final class DirectQuotaHTTPReaderTests: XCTestCase {
+    func testRestoredCodexTransportKeepsCurrentHistoryAccountIdentity() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("QuotaTransportIdentity-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let data = try auth()
+        try data.write(to: home.appendingPathComponent("auth.json"))
+        let expected = "quota-account:" + (try QuotaAccountCredential.parse(data).id)
+        let identity = AccountQuotaReader.readHistoryIdentity(
+            dataSource: CodexDataSource(codexHome: home, origin: .userSelected),
+            planType: "pro", limitID: "codex"
+        )
+        XCTAssertEqual(identity?.stableAccountKey, expected)
+    }
+
     private func auth(account: String = "account-1", user: String = "user-1", signature: String = "one", explicit: String? = nil) throws -> Data {
         let claims: [String: Any] = ["https://api.openai.com/auth": ["chatgpt_account_id": account, "chatgpt_user_id": user], "https://api.openai.com/profile": ["email": "same@example.invalid"]]
         let payload = try JSONSerialization.data(withJSONObject: claims).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
