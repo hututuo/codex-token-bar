@@ -36,6 +36,7 @@ final class LiveRateMonitor: ObservableObject {
     @Published private(set) var speedSamples: [ObservedSpeedSample] = []
     @Published private(set) var speedTrendPoints: [BodySpeedTrendPoint] = []
     @Published private(set) var speedTrendDays = 1
+    @Published private(set) var speedTrendWindowSeconds = 3600
     @Published private(set) var speedTrendError: String?
     private var speedDatabaseURL: URL?
     private var speedDatabaseReady = false
@@ -257,6 +258,12 @@ final class LiveRateMonitor: ObservableObject {
             speedTrendConsumers.insert(consumer)
             if wasEmpty { refreshSpeedTrend() }
         } else { speedTrendConsumers.remove(consumer) }
+    }
+    func setSpeedTrendWindow(_ seconds: Int) {
+        guard [3600, 86400, 604800, 2592000].contains(seconds) else { return }
+        speedTrendWindowSeconds = seconds
+        let days = seconds <= 86400 ? 1 : seconds == 604800 ? 7 : 30
+        if days != speedTrendDays { setSpeedTrendDays(days) }
     }
     func setSpeedTrendDays(_ days: Int) {
         guard [1, 7, 30].contains(days) else { return }

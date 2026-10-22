@@ -29,7 +29,7 @@ final class BodySpeedMenuLayoutTests: XCTestCase {
             BodySpeedTrendView(monitor: monitor, compact: true)
         }.padding(18).frame(width: 420).background(Color(red: 0.03, green: 0.04, blue: 0.035))
         let host = NSHostingView(rootView: root)
-        host.frame = CGRect(x: 0, y: 0, width: 420, height: 390)
+        host.frame = CGRect(x: 0, y: 0, width: 420, height: 440)
         host.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: bitmap)

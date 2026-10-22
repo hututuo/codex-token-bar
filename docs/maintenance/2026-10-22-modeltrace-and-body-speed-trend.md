@@ -138,7 +138,7 @@ an em dash. The narrow second-level rail has per-model compact window readings o
 clicking opens the precise chart and records. Its content is inset to 66 points
 with aligned 5/15/30-minute columns; no rail chart is mounted.
 The detailed menu now includes the same retained speed chart as the dashboard.
-Wide charts retain 24h / 7d / 30d range controls; native point selection and web
+Charts default to the recent hour and retain 24h / 7d / 30d range controls; native point selection and web
 point hover expose stored time, TPS, body count, token sum and measured duration.
 
 The new five-minute summary uses retained in-memory numeric samples and the same
@@ -169,3 +169,16 @@ Opt-in AppKit rendering tests use the actual production components and local
 numeric audit to export the chart and rail; a normal geometry test prevents a
 vertically inflated compact header. These renders are fixture previews, not a
 claim of complete native side-panel interaction acceptance.
+
+
+### Recent-trend focus
+
+The initial view now shows the latest hour rather than compressing a day into
+the compact chart. It initially focuses the model with the most qualified recent
+bodies; model chips switch focus or restore all-model comparison. The vertical
+range follows the selected measured points with explicit padded numeric labels,
+so a higher-throughput model cannot hide another model's changes. First/last
+percentage change is shown only for one model with at least two distinct bucket
+times. Missing buckets remain disconnected; no synthetic samples or smoothing
+are introduced. Recent-hour and 24-hour views read the same cached five-minute
+SQLite points. The extra view choices do not add a scanner or storage schema.
