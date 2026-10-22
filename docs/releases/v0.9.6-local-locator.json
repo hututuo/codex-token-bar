@@ -3,7 +3,7 @@
   "macBuild": 928,
   "minimumNextMacBuild": 929,
   "tag": "v0.9.6",
-  "status": "VERIFIED_FOR_PUBLICATION",
+  "status": "PUBLISHED",
   "releaseURL": "https://github.com/hututuo/codex-token-bar/releases/tag/v0.9.6",
   "runtimeCodeCommit": "a51ec31f8abb7432b1f41c312e50af9ce5b429fd",
   "compiledProductionSourceCommit": "64d453aaafbb289e627fe11e401cc7cd29239589",
@@ -78,5 +78,10 @@
       "bytes": 832,
       "sha256": "b608bb65661fec1bcda4723d04cb5a8b40c6e882682562d31a1105930dab3125"
     }
-  ]
+  ],
+  "releaseCommit": "fef00012cc1d3b1080c6d0b14de10e1a612b25f2",
+  "publishedAt": "2026-10-22T03:56:45.619286+00:00",
+  "publicAssetsSHA256Readback": "PASS",
+  "publicUpdatePathVerification": "PASS",
+  "activatedFeedBytesReadback": "PASS"
 }
