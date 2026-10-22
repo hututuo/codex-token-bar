@@ -20,7 +20,7 @@ export function CacheUsageNotice({ advice }: { advice?: CacheUsageAdvice | null 
       <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
         <strong>缓存命中偏低 · {(warning.hitRate * 100).toFixed(1)}%</strong><br />
         {cacheAdviceTitle(warning)}<br />
-        本次请求复用较少，等待、切换模型或上下文变化都可能影响缓存。
+        本次请求复用较少，切换模型、思考强度或上下文变化都可能影响缓存。
       </span>
       <button type="button" aria-label="关闭本次缓存提醒" onClick={dismiss}
         style={{ marginLeft: "auto", whiteSpace: "nowrap", minHeight: 28, padding: "4px 9px",

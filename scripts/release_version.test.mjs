@@ -32,7 +32,11 @@ test("Swift bundle metadata uses the same version without building or opening th
     const plist = readFileSync(path, "utf8");
     const version = JSON.parse(read("tauri-app/package.json")).version;
     assert.equal(plist.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/)?.[1], version);
-    const [major, minor, patch] = version.split(".").map(Number);
-    assert.equal(plist.match(/<key>CFBundleVersion<\/key>\s*<string>([^<]+)<\/string>/)?.[1], String(major * 10000 + minor * 100 + patch));
+    const build = read("scripts/package_app.sh").match(/APP_BUILD="\$\{APP_BUILD:-(\d+)\}"/)?.[1];
+    assert.ok(build, "explicit monotonic macOS build is required");
+    assert.equal(plist.match(/<key>CFBundleVersion<\/key>\s*<string>([^<]+)<\/string>/)?.[1], build);
+    const publishedBuilds = [...read("appcast.xml").matchAll(/sparkle:version="(\d+)"/g)].map(match => Number(match[1]));
+    assert.ok(Number(build) >= Math.max(0, ...publishedBuilds), "default build must not downgrade published Sparkle builds");
+    assert.ok(read("scripts/build_release.sh").includes(`BUILD="\${APP_BUILD:-${build}}"`));
   } finally { rmSync(folder, { recursive: true, force: true }); }
 });

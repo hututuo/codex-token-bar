@@ -26,7 +26,7 @@ struct CacheUsageAdviceView: View {
                             Text("缓存命中偏低 · \(advice.hitRate * 100, specifier: "%.1f")%")
                                 .fontWeight(.semibold)
                             Text(advice.displayTitle).lineLimit(2).help(advice.displayTitle)
-                            Text("本次请求复用较少，等待、切换模型或上下文变化都可能影响缓存。")
+                            Text("本次请求复用较少，切换模型、思考强度或上下文变化都可能影响缓存。")
                                 .foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                         Button { dismissedID = advice.presentationID } label: {

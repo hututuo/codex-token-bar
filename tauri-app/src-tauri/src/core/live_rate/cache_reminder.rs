@@ -9,8 +9,6 @@ use crate::models::{CacheAdvice, LiveRateSnapshot};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
-use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
 
 pub(super) const CACHE_MISS_REMINDER_ENABLED: bool = true;
 
@@ -29,22 +27,11 @@ pub(super) struct CacheUsageSample {
     request_id: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) enum CacheUsageBoundary {
-    Started,
-    Completed,
-}
-
 #[derive(Clone, Debug)]
 pub(super) enum CacheObservation {
     Sample(CacheUsageSample),
     Context {
         model: Option<String>,
-    },
-    Boundary {
-        timestamp: Option<f64>,
-        kind: CacheUsageBoundary,
-        turn_id: Option<String>,
     },
     Reset,
 }
@@ -77,9 +64,6 @@ struct CacheAdviceThreadState {
     advice: Option<CacheAdvice>,
     touched_at: Instant,
     has_observed_request: bool,
-    last_completed: Option<f64>,
-    current_turn_id: Option<String>,
-    gap: Option<f64>,
 }
 
 impl Default for CacheAdviceThreadState {
@@ -91,9 +75,6 @@ impl Default for CacheAdviceThreadState {
             advice: None,
             touched_at: Instant::now(),
             has_observed_request: false,
-            last_completed: None,
-            current_turn_id: None,
-            gap: None,
         }
     }
 }
@@ -139,25 +120,14 @@ impl CacheReminderTracker {
             CacheObservation::Context { model } => {
                 if state.model != model {
                     let has_observed_request = state.has_observed_request;
-                    let last_completed = state.last_completed;
-                    let current_turn_id = state.current_turn_id.clone();
-                    let gap = state.gap;
                     *state = CacheAdviceThreadState {
                         model,
                         touched_at: monotonic_now,
                         has_observed_request,
-                        last_completed,
-                        current_turn_id,
-                        gap,
                         ..CacheAdviceThreadState::default()
                     };
                 }
             }
-            CacheObservation::Boundary {
-                timestamp,
-                kind,
-                turn_id,
-            } => state.consume_boundary(timestamp, kind, turn_id, now),
             CacheObservation::Sample(sample) => {
                 state.consume_sample(sample, thread_id, now);
             }
@@ -212,43 +182,6 @@ impl CacheReminderTracker {
 impl CacheAdviceThreadState {
     fn clear_observation(&mut self) {
         self.advice = None;
-    }
-
-    fn consume_boundary(
-        &mut self,
-        timestamp: Option<f64>,
-        kind: CacheUsageBoundary,
-        turn_id: Option<String>,
-        now: f64,
-    ) {
-        let Some(timestamp) = timestamp.filter(|timestamp| {
-            timestamp.is_finite() && *timestamp >= 0.0 && *timestamp <= now + 1.0
-        }) else {
-            return;
-        };
-        let Some(turn_id) = turn_id.filter(|turn_id| !turn_id.is_empty()) else {
-            return;
-        };
-
-        match kind {
-            CacheUsageBoundary::Started => {
-                if self.current_turn_id.as_deref() != Some(turn_id.as_str()) {
-                    self.current_turn_id = Some(turn_id);
-                    self.gap = self
-                        .last_completed
-                        .filter(|completed| timestamp >= *completed)
-                        .map(|completed| timestamp - completed);
-                    self.last_completed = None;
-                }
-            }
-            CacheUsageBoundary::Completed => {
-                if self.current_turn_id.is_none()
-                    || self.current_turn_id.as_deref() == Some(turn_id.as_str())
-                {
-                    self.last_completed = Some(timestamp);
-                }
-            }
-        }
     }
 
     fn consume_sample(&mut self, sample: CacheUsageSample, thread_id: &str, now: f64) {
@@ -324,7 +257,6 @@ impl CacheAdviceThreadState {
             low,
             timestamp,
             affected_threads: 0,
-            idle_gap_seconds: self.gap,
             model: self.model.clone(),
         });
     }
@@ -342,21 +274,6 @@ pub(super) fn parse_observation(
         return Some(CacheObservation::Context {
             model: payload
                 .get("model")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-        });
-    }
-    if record_type == "event_msg" && matches!(payload_type, "task_started" | "task_complete") {
-        let (kind, time_key) = if payload_type == "task_started" {
-            (CacheUsageBoundary::Started, "started_at")
-        } else {
-            (CacheUsageBoundary::Completed, "completed_at")
-        };
-        return Some(CacheObservation::Boundary {
-            timestamp: parse_event_timestamp(payload.get(time_key)).or(timestamp),
-            kind,
-            turn_id: payload
-                .get("turn_id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
         });
@@ -401,28 +318,6 @@ pub(super) fn parse_observation(
             .and_then(Value::as_u64),
         request_id,
     }))
-}
-
-fn parse_event_timestamp(value: Option<&Value>) -> Option<f64> {
-    let timestamp = match value? {
-        Value::String(text) => parse_timestamp(Some(text))?,
-        Value::Number(number) => number.as_f64()?,
-        _ => return None,
-    };
-    let microseconds = timestamp * 1_000_000.0;
-    if !microseconds.is_finite()
-        || microseconds <= i64::MIN as f64
-        || microseconds >= i64::MAX as f64
-    {
-        return None;
-    }
-    Some(microseconds.round() / 1_000_000.0)
-}
-
-fn parse_timestamp(text: Option<&str>) -> Option<f64> {
-    let text = text?;
-    let parsed = OffsetDateTime::parse(text, &Rfc3339).ok()?;
-    Some(parsed.unix_timestamp() as f64 + f64::from(parsed.nanosecond()) / 1_000_000_000.0)
 }
 
 fn is_fresh(advice: &CacheAdvice, now: f64) -> bool {
@@ -650,6 +545,70 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_effort_change_keeps_same_model_baseline_and_uses_observed_tokens() {
+        let mut tracker = CacheReminderTracker::default();
+        let monotonic = Instant::now();
+
+        let initial_context = serde_json::json!({
+            "type": "turn_context",
+            "payload": { "model": "model-a", "effort": "high" }
+        });
+        let payload = initial_context["payload"].as_object().unwrap();
+        let observation =
+            parse_observation(&initial_context, payload, "turn_context", "", Some(99.0))
+                .unwrap();
+        tracker.observe("a", observation, 99.0, monotonic);
+        tracker.observe(
+            "a",
+            sample(100.0, Some(20_000), Some(20_000), Some(19_000)),
+            100.0,
+            monotonic,
+        );
+        assert!(!tracker.latest(100.0).unwrap().low);
+
+        let changed_effort_context = serde_json::json!({
+            "type": "turn_context",
+            "payload": {
+                "model": "model-a",
+                "effort": "minimal",
+                "reasoning_effort": "low"
+            }
+        });
+        let payload = changed_effort_context["payload"].as_object().unwrap();
+        let observation =
+            parse_observation(&changed_effort_context, payload, "turn_context", "", Some(101.0))
+                .unwrap();
+        assert!(matches!(
+            &observation,
+            CacheObservation::Context { model: Some(model) } if model == "model-a"
+        ));
+        tracker.observe("a", observation, 101.0, monotonic);
+
+        let token_count = serde_json::json!({
+            "timestamp": "1970-01-01T00:01:42Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "response_id": "r2",
+                "info": {
+                    "last_token_usage": { "input_tokens": 20_000, "cached_input_tokens": 0 },
+                    "total_token_usage": { "total_tokens": 40_000 }
+                }
+            }
+        });
+        let payload = token_count["payload"].as_object().unwrap();
+        let observation =
+            parse_observation(&token_count, payload, "event_msg", "token_count", Some(102.0))
+                .unwrap();
+        tracker.observe("a", observation, 102.0, monotonic);
+
+        let advice = tracker.latest(102.0).unwrap();
+        assert!(advice.low);
+        assert_eq!(advice.hit_rate, 0.0);
+        assert_eq!(advice.model.as_deref(), Some("model-a"));
+    }
+
+    #[test]
     fn freshest_low_advice_wins_and_affected_threads_counts_only_low_samples() {
         let mut tracker = CacheReminderTracker::default();
         let monotonic = Instant::now();
@@ -717,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_reads_token_usage_and_boundary_timestamp_fallback() {
+    fn parser_reads_token_usage_and_ignores_task_lifecycle_records() {
         let line: Value = serde_json::from_str(r#"{"timestamp":"1970-01-01T00:01:40Z","type":"event_msg","payload":{"type":"token_count","response_id":"r1","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":0},"total_token_usage":{"total_tokens":20000}}}}"#).unwrap();
         let payload = line["payload"].as_object().unwrap();
         let observation =
@@ -726,18 +685,24 @@ mod tests {
             matches!(observation, CacheObservation::Sample(sample) if sample.input_tokens == Some(20_000) && sample.cached_input_tokens == Some(0) && sample.request_id.as_deref() == Some("r1"))
         );
 
-        let boundary: Value = serde_json::from_str(r#"{"timestamp":"1970-01-01T00:01:40Z","type":"event_msg","payload":{"type":"task_started","started_at":false,"turn_id":"t"}}"#).unwrap();
-        let payload = boundary["payload"].as_object().unwrap();
-        let observation =
-            parse_observation(&boundary, payload, "event_msg", "task_started", Some(100.0))
-                .unwrap();
-        assert!(matches!(
-            observation,
-            CacheObservation::Boundary {
-                timestamp: Some(100.0),
-                ..
-            }
-        ));
+        for payload_type in ["task_started", "task_complete"] {
+            let lifecycle = serde_json::json!({
+                "timestamp": "1970-01-01T00:01:40Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": payload_type,
+                    "started_at": "1970-01-01T00:01:30Z",
+                    "completed_at": "1970-01-01T00:01:35Z",
+                    "turn_id": "t"
+                }
+            });
+            let payload = lifecycle["payload"].as_object().unwrap();
+            assert!(
+                parse_observation(&lifecycle, payload, "event_msg", payload_type, Some(100.0))
+                    .is_none(),
+                "{payload_type} must not feed reminder timing"
+            );
+        }
     }
 
     #[test]
@@ -782,7 +747,6 @@ mod tests {
             low: true,
             timestamp: 100.0,
             affected_threads: 1,
-            idle_gap_seconds: None,
             model: None,
         };
         assert!(visible_advice(Some(advice.clone()), 220.0, true).is_some());

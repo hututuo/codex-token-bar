@@ -8,7 +8,6 @@ enum CacheMissReminderFeature { static let isEnabled = true }
 
 /// Observational only: never enters the precise ledger or rate accumulator.
 struct CacheUsageSample: Sendable {
-    enum Boundary: Sendable { case started, completed }
     var timestamp: TimeInterval
     var model: String?
     var context = false
@@ -17,17 +16,11 @@ struct CacheUsageSample: Sendable {
     var cached: UInt64?
     var total: UInt64?
     var requestID: String?
-    var boundary: Boundary?
-    var turnID: String?
 
     static func parse(object: [String: Any], payload: [String: Any], timestamp: TimeInterval) -> Self? {
         guard CacheMissReminderFeature.isEnabled else { return nil }
         let type = object["type"] as? String
         let kind = payload["type"] as? String
-        if type == "event_msg", kind == "task_started" || kind == "task_complete" {
-            let eventTime = Self.eventTime(payload[kind == "task_started" ? "started_at" : "completed_at"]) ?? timestamp
-            return Self(timestamp: eventTime, boundary: kind == "task_started" ? .started : .completed, turnID: payload["turn_id"] as? String)
-        }
         if type == "turn_context" {
             return Self(timestamp: timestamp, model: payload["model"] as? String, context: true)
         }
@@ -45,17 +38,6 @@ struct CacheUsageSample: Sendable {
                     requestID: requestID)
     }
 
-    private static func eventTime(_ value: Any?) -> TimeInterval? {
-        if let text = value as? String {
-            let date = (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(text))
-                ?? (try? Date.ISO8601FormatStyle().parse(text))
-            return date?.timeIntervalSince1970
-        }
-        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-              number.doubleValue.isFinite, number.doubleValue >= 0 else { return nil }
-        return number.doubleValue
-    }
-
     private static func integer(_ value: Any?) -> UInt64? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
               !["f", "d"].contains(String(cString: number.objCType)),
@@ -71,7 +53,6 @@ struct CacheUsageAdvice: Equatable, Sendable {
     var timestamp: TimeInterval
     var affectedThreads: Int = 0
     var threadTitle: String? = nil
-    var idleGapSeconds: TimeInterval? = nil
     var model: String? = nil
 
     var displayTitle: String {
@@ -96,9 +77,6 @@ struct CacheUsageAdviceTracker {
         var advice: CacheUsageAdvice?
         var touched: TimeInterval = 0
         var hasObservedRequest = false
-        var lastCompleted: TimeInterval?
-        var currentTurnID: String?
-        var gap: TimeInterval?
     }
     private var states: [String: State] = [:]
 
@@ -116,25 +94,9 @@ struct CacheUsageAdviceTracker {
                 states.removeValue(forKey: oldest)
             }
         }
-        if let boundary = sample.boundary {
-            guard sample.timestamp.isFinite, sample.timestamp >= 0, sample.timestamp <= now + 1, let id = sample.turnID, !id.isEmpty else { return }
-            switch boundary {
-            case .started:
-                if state.currentTurnID != id {
-                    state.currentTurnID = id
-                    state.gap = state.lastCompleted.flatMap { sample.timestamp >= $0 ? sample.timestamp - $0 : nil }
-                    state.lastCompleted = nil
-                }
-            case .completed:
-                if state.currentTurnID == nil || state.currentTurnID == id { state.lastCompleted = sample.timestamp }
-            }
-            return
-        }
         if sample.context {
             if state.model != sample.model {
-                let previous = state
                 state = State(model: sample.model, hasObservedRequest: state.hasObservedRequest)
-                state.lastCompleted = previous.lastCompleted; state.currentTurnID = previous.currentTurnID; state.gap = previous.gap
             }
             return
         }
@@ -163,7 +125,7 @@ struct CacheUsageAdviceTracker {
         let low = state.hasObservedRequest && input >= 20_000 && ratio < 0.3
         state.hasObservedRequest = true
         state.advice = CacheUsageAdvice(threadID: threadID, hitRate: ratio, low: low, timestamp: sample.timestamp,
-            idleGapSeconds: state.gap, model: state.model)
+            model: state.model)
     }
 
     func latest(now: TimeInterval, threadID: String? = nil) -> CacheUsageAdvice? {
