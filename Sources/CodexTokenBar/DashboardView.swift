@@ -1041,7 +1041,10 @@ struct DashboardView: View {
 
     @ViewBuilder
     private func dashboardContent(logicalWidth: CGFloat) -> some View {
-        VStack(spacing: 18) {
+        // Keep offscreen historical charts out of live-rate layout passes. The
+        // sections retain their own state; ScrollViewReader still targets the
+        // chart's stable ID when jumping from the radar card.
+        LazyVStack(spacing: 18) {
             HeaderView(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,

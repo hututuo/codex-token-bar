@@ -285,9 +285,12 @@ final class QuotaCycleUsageCoverageTests: XCTestCase {
     }
 
     private func waitUntil(_ predicate: @escaping @MainActor () -> Bool) async {
-        for _ in 0..<10_000 {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline {
             if predicate() { return }
-            await Task.yield()
+            // A yield-count is not a timeout: unrelated GUI tests can exhaust
+            // the loop before the detached loader gets scheduled.
+            try? await Task.sleep(for: .milliseconds(5))
         }
         XCTFail("Timed out waiting for quota-cycle coverage refresh")
     }

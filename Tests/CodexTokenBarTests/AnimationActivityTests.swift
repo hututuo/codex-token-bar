@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import SwiftUI
 @testable import CodexTokenBar
 
 final class AnimationActivityTests: XCTestCase {
@@ -29,6 +30,53 @@ final class AnimationActivityTests: XCTestCase {
         XCTAssertFalse(check(occluded: true))
         XCTAssertFalse(check(hidden: true))
     }
+    @MainActor
+    func testUnscaledDashboardContainerKeepsOffscreenSectionsLazy() async throws {
+        var appeared: Set<Int> = []
+        let content = ScrollView {
+            InterfaceScaledContainer(scale: 1, visualWidth: 300) {
+                LazyVStack(spacing: 18) {
+                    ForEach(0..<100) { index in
+                        Text("Section \(index)").frame(height: 160)
+                            .onAppear { appeared.insert(index) }
+                    }
+                }
+            }
+        }
+        let window = VisibilityTestWindow(contentRect: .init(x: 150, y: 150, width: 300, height: 200),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: content)
+        defer { window.close() }
+        window.orderFrontRegardless()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(appeared.contains(0))
+        XCTAssertLessThan(appeared.count, 10, "100% scaling must not eagerly lay out all historical sections")
+    }
+
+    @MainActor
+    func testProbeInsideProductionSwiftUIScrollViewClipsOffscreenContent() async throws {
+        var topStates: [Bool] = [], bottomStates: [Bool] = []
+        let content = ScrollView(.vertical) {
+            VStack(spacing: 0) {
+                Color.clear.frame(height: 100)
+                    .background(AnimationVisibilityProbe { topStates.append($0) })
+                Color.clear.frame(height: 800)
+                Color.clear.frame(height: 100)
+                    .background(AnimationVisibilityProbe { bottomStates.append($0) })
+            }.frame(width: 300)
+        }
+        let window = VisibilityTestWindow(contentRect: .init(x: 150, y: 150, width: 300, height: 200),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: content)
+        defer { window.close() }
+        window.orderFrontRegardless()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(topStates.last, true)
+        XCTAssertEqual(bottomStates.last, false, "Production SwiftUI clipping must pause offscreen guides")
+    }
+
     @MainActor
     func testNativeProbeTracksScrollClippingAndStopsAfterTeardown() async throws {
         let scroll = NSScrollView(frame: .init(x: 0, y: 0, width: 200, height: 100))
