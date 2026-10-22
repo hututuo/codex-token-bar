@@ -537,6 +537,80 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
     }
 
     @MainActor
+    func testProductionCacheToggleRepaintsPlotWithoutNewUsageData() throws {
+        let defaults = UserDefaults.standard
+        let key = RecentChartSeriesVisibility.cacheHitRateDefaultsKey
+        let previous = defaults.object(forKey: key)
+        defaults.set(true, forKey: key)
+        defer {
+            if let previous { defaults.set(previous, forKey: key) }
+            else { defaults.removeObject(forKey: key) }
+        }
+        let suiteName = "RecentChartToggle-\(UUID().uuidString)"
+        let isolated = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        isolated.set(RecentChartRange.twentyFourHours.rawValue, forKey: "recentChartRange")
+        defer { isolated.removePersistentDomain(forName: suiteName) }
+        let input = makeRecentChartInteractionPreparationInput()
+        let host = NSHostingView(rootView: RecentUsageChart(
+            bins: input.bins, hourlyBins: input.hourlyBins,
+            cacheRecentBins: input.cacheRecentBins, cacheHourlyBins: input.cacheHourlyBins,
+            quotaRecentBins: [], quotaHourlyBins: [],
+            currentFiveHourQuotaPresent: false, currentSevenDayQuotaPresent: false
+        ).defaultAppStorage(isolated).frame(maxHeight: .infinity, alignment: .topLeading).background(AppTheme.pageBackground))
+        host.appearance = NSAppearance(named: .darkAqua)
+        host.frame = NSRect(x: 0, y: 0, width: 980, height: 640)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        let deadline = Date().addingTimeInterval(3)
+        while firstRecentChartTrackingView(in: host) == nil, Date() < deadline {
+            runRecentChartMainLoop()
+            host.layoutSubtreeIfNeeded()
+        }
+        runRecentChartMainLoop()
+        host.layoutSubtreeIfNeeded()
+        func cyanPlotPixels() throws -> Int {
+            let tracker = try XCTUnwrap(firstRecentChartTrackingView(in: host))
+            let rect = tracker.convert(tracker.bounds, to: host)
+            let image = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: image)
+            let scale = CGFloat(image.pixelsHigh) / host.bounds.height
+            let top = host.isFlipped ? rect.minY : host.bounds.height - rect.maxY
+            let rows = max(Int(top * scale), 0)..<min(Int((top + rect.height) * scale), image.pixelsHigh)
+            var count = 0
+            for y in rows {
+                for x in 0..<image.pixelsWide {
+                    guard let c = image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                    if c.alphaComponent > 0.9, c.greenComponent > 0.7, c.blueComponent > 0.85,
+                       c.redComponent < 0.55, c.greenComponent - c.redComponent > 0.25, c.blueComponent - c.greenComponent < 0.20 { count += 1 }
+                }
+            }
+            return count
+        }
+        if let folder = ProcessInfo.processInfo.environment["CODEX_CHART_TOGGLE_PREVIEW"] {
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: folder).appendingPathComponent("toggle-fixture-before.png"))
+        }
+        let before = try cyanPlotPixels()
+        XCTAssertGreaterThan(before, 20, "Fixture must render actual cache observations")
+        // Four production toggles, with cache immediately before the rightmost cost toggle.
+        try clickRecentChartWindow(window, at: NSPoint(x: 895, y: 640 - 65))
+        runRecentChartMainLoop()
+        host.layoutSubtreeIfNeeded()
+        let persistDeadline = Date().addingTimeInterval(0.3)
+        while defaults.object(forKey: key) as? Bool != false, Date() < persistDeadline { runRecentChartMainLoop() }
+        XCTAssertEqual(defaults.object(forKey: key) as? Bool, false, "The real toggle must switch off")
+        let after = try cyanPlotPixels()
+        XCTAssertLessThan(after, before / 4, "Cache points must disappear immediately, without a scanner refresh")
+        try clickRecentChartWindow(window, at: NSPoint(x: 895, y: 640 - 65))
+        runRecentChartMainLoop()
+        host.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(try cyanPlotPixels(), before * 3 / 4, "Re-enabling must restore observations")
+    }
+
+    @MainActor
     func testProductionSummaryCardReceivesRealDetailAndCloseClicks() throws {
         let breakdown = TokenCacheBreakdown(
             inputTokens: 240_000,

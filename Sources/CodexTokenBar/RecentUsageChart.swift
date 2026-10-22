@@ -1300,7 +1300,10 @@ final class RecentChartSeriesVisibilityStore: ObservableObject {
     }
 }
 
-struct RecentUsageChart: View, Equatable {
+// This view owns interaction state captured by GeometryReader/ScrollViewReader.
+// Comparing only its source arrays makes SwiftUI reuse those closures after a
+// visibility or viewport change, leaving buttons and plotted data out of sync.
+struct RecentUsageChart: View {
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
@@ -1373,20 +1376,6 @@ struct RecentUsageChart: View, Equatable {
         _renderFrameCache = State(initialValue: RecentChartRenderFrameCache())
         _preparedData = State(initialValue: .empty)
         _cachedFixedConsumptionSelection = State(initialValue: nil)
-    }
-
-    nonisolated static func == (lhs: RecentUsageChart, rhs: RecentUsageChart) -> Bool {
-        lhs.bins == rhs.bins
-            && lhs.hourlyBins == rhs.hourlyBins
-            && lhs.cacheRecentBins == rhs.cacheRecentBins
-            && lhs.cacheHourlyBins == rhs.cacheHourlyBins
-            && lhs.attributionEvents == rhs.attributionEvents
-            && lhs.attributionEventsComplete == rhs.attributionEventsComplete
-            && lhs.quotaRecentBins == rhs.quotaRecentBins
-            && lhs.quotaHourlyBins == rhs.quotaHourlyBins
-            && lhs.currentFiveHourQuotaPresent == rhs.currentFiveHourQuotaPresent
-            && lhs.currentSevenDayQuotaPresent == rhs.currentSevenDayQuotaPresent
-            && lhs.sharedAccountAttributionContext == rhs.sharedAccountAttributionContext
     }
 
     private var quotaSeriesVisibility: RecentChartQuotaSeriesVisibility {
