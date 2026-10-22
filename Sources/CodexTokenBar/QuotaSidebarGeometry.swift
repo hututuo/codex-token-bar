@@ -18,7 +18,31 @@ struct QuotaSidebarSettings: Equatable {
     }
 }
 
-enum QuotaSidebarDetail: String, CaseIterable { case overview, tasks, radar, credits, speeds, modeltrace }
+enum QuotaSidebarDetail: String, CaseIterable {
+    case overview, tasks, radar, credits, speeds, modeltrace, settings
+
+    static let defaultModuleOrder: [Self] = [.modeltrace, .speeds, .overview, .tasks, .radar, .credits]
+    static func normalizedModuleOrder(_ values: [String]) -> [Self] {
+        var result: [Self] = []
+        for value in values {
+            if let module = Self(rawValue: value), defaultModuleOrder.contains(module), !result.contains(module) {
+                result.append(module)
+            }
+        }
+        return result + defaultModuleOrder.filter { !result.contains($0) }
+    }
+    var moduleTitle: String {
+        switch self {
+        case .modeltrace: "模型检测"
+        case .speeds: "速率与正文 TPS"
+        case .overview: "额度与模型占比"
+        case .tasks: "运行任务"
+        case .radar: "雷达"
+        case .credits: "重置卡"
+        case .settings: "侧栏设置"
+        }
+    }
+}
 
 struct QuotaSidebarInteraction: Equatable {
     private(set) var expanded = false

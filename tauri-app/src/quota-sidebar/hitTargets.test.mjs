@@ -25,7 +25,10 @@ test("primary rows retain large targets while the centered summary scrolls withi
       assert.equal(edgeStyle.pointerEvents, "none"); assert.equal(edgeStyle.display, "none");
       assert.ok(css.includes("@media(prefers-reduced-motion:reduce){.qs-radar-edge[data-active=true]{animation:none;opacity:1}}"));
       const buttons = [...window.document.querySelectorAll(".qs-summary>button")];
-      assert.equal(buttons.length, 7);
+      assert.equal(buttons.length, 8);
+      const first = window.document.querySelector(".qs-summary").firstElementChild;
+      assert.ok(first.matches(".qs-modeltrace-trigger"));
+      assert.equal(window.getComputedStyle(first).marginTop, "0px");
       assert.equal(window.document.querySelector(".qs-menu-trigger"), null);
       for (const button of buttons.filter(button => button.matches(".qs-quota-trigger,.qs-running-trigger"))) {
         const style = window.getComputedStyle(button);

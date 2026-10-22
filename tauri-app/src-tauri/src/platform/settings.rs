@@ -3,8 +3,8 @@ use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SidebarModuleVisibilitySnapshot,
-    UsageRefreshSettingsSnapshot,
-    AUTO_RESUME_TASK_COLLECTION_VERSION,
+    UsageRefreshSettingsSnapshot, AUTO_RESUME_TASK_COLLECTION_VERSION,
+    DEFAULT_SIDEBAR_MODULE_ORDER,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -103,6 +103,37 @@ pub fn read_sidebar_module_visibility() -> Result<SidebarModuleVisibilitySnapsho
     read_app_settings().map(|settings| settings.sidebar_module_visibility)
 }
 
+pub fn read_sidebar_module_order() -> Result<Vec<String>, String> {
+    read_app_settings().map(|settings| settings.sidebar_module_order)
+}
+
+pub fn save_sidebar_module_order(order: Vec<String>) -> Result<Vec<String>, String> {
+    save_sidebar_module_order_at(&settings_path()?, order)
+}
+
+fn save_sidebar_module_order_at(path: &Path, order: Vec<String>) -> Result<Vec<String>, String> {
+    validate_sidebar_module_order(&order)?;
+    mutate_app_settings_at_checked(path, |settings| {
+        settings.sidebar_module_order = order;
+        Ok(())
+    })
+    .map(|settings| settings.sidebar_module_order)
+}
+
+fn validate_sidebar_module_order(order: &[String]) -> Result<(), String> {
+    if order.len() != DEFAULT_SIDEBAR_MODULE_ORDER.len() {
+        return Err("侧栏模块顺序必须恰好包含六个模块。".into());
+    }
+    let mut seen = std::collections::HashSet::with_capacity(order.len());
+    for module in order {
+        SidebarModule::parse(module)?;
+        if !seen.insert(module.as_str()) {
+            return Err(format!("侧栏模块顺序包含重复模块：{module}"));
+        }
+    }
+    Ok(())
+}
+
 pub fn save_sidebar_module_visibility(
     module: &str,
     visible: bool,
@@ -119,9 +150,6 @@ fn save_sidebar_module_visibility_at(
     mutate_app_settings_at_checked(path, |settings| {
         let mut updated = settings.sidebar_module_visibility.clone();
         updated.set(module, visible);
-        if !updated.has_visible_module() {
-            return Err("至少保留一个侧栏模块可见。".into());
-        }
         settings.sidebar_module_visibility = updated;
         Ok(())
     })
@@ -163,16 +191,25 @@ impl SidebarModuleVisibilitySnapshot {
             SidebarModule::Modeltrace => self.modeltrace = visible,
         }
     }
+}
 
-    fn has_visible_module(&self) -> bool {
-        self.overview || self.speeds || self.tasks || self.radar || self.credits || self.modeltrace
-    }
-
-    fn normalize(&mut self) -> bool {
-        if self.has_visible_module() {
-            return false;
+fn normalize_sidebar_module_order(settings: &mut AppSettingsSnapshot) -> bool {
+    let mut seen = std::collections::HashSet::with_capacity(DEFAULT_SIDEBAR_MODULE_ORDER.len());
+    let mut normalized = Vec::with_capacity(DEFAULT_SIDEBAR_MODULE_ORDER.len());
+    for module in &settings.sidebar_module_order {
+        if SidebarModule::parse(module).is_ok() && seen.insert(module.clone()) {
+            normalized.push(module.clone());
         }
-        self.modeltrace = true;
+    }
+    for module in DEFAULT_SIDEBAR_MODULE_ORDER {
+        if seen.insert(module.to_owned()) {
+            normalized.push(module.to_owned());
+        }
+    }
+    if settings.sidebar_module_order == normalized {
+        false
+    } else {
+        settings.sidebar_module_order = normalized;
         true
     }
 }
@@ -1389,7 +1426,7 @@ fn read_app_settings_at(path: &Path) -> Result<AppSettingsSnapshot, String> {
         outcome.settings.token_rate_scale_initialized_v092 = true;
         migrated = true;
     }
-    if outcome.settings.sidebar_module_visibility.normalize() {
+    if normalize_sidebar_module_order(&mut outcome.settings) {
         migrated = true;
     }
     if migrated {
@@ -1615,14 +1652,7 @@ where
 
 fn parse_settings(path: &Path, bytes: &[u8]) -> Result<AppSettingsSnapshot, String> {
     serde_json::from_slice::<AppSettingsSnapshot>(bytes)
-        .map(|settings| {
-            // Keep the persisted visibility intact until read_app_settings_at can detect and
-            // atomically repair the legacy all-hidden state. Other settings are sanitized here.
-            let visibility = settings.sidebar_module_visibility.clone();
-            let mut sanitized = sanitize_app_settings(settings);
-            sanitized.sidebar_module_visibility = visibility;
-            sanitized
-        })
+        .map(sanitize_app_settings)
         .map_err(|error| format!("设置文件不是有效 JSON：{}（{}）", path.display(), error))
 }
 
@@ -2498,7 +2528,6 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
     settings.floating_window = sanitize_floating_settings(settings.floating_window);
     settings.floating_position = sanitize_floating_position(settings.floating_position);
     settings.display_surfaces = sanitize_display_surfaces(settings.display_surfaces);
-    settings.sidebar_module_visibility.normalize();
     settings.session_enhancements =
         sanitize_session_enhancement_settings(settings.session_enhancements);
     settings.auto_resume = sanitize_auto_resume_settings(settings.auto_resume);
@@ -5080,6 +5109,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
+            legacy.sidebar_module_order,
+            sidebar_module_order(&[
+                "modeltrace",
+                "speeds",
+                "overview",
+                "tasks",
+                "radar",
+                "credits",
+            ])
+        );
+        assert_eq!(
             legacy.sidebar_module_visibility,
             SidebarModuleVisibilitySnapshot::default()
         );
@@ -5094,6 +5134,17 @@ mod tests {
         assert_eq!(
             defaults.sidebar_module_visibility,
             SidebarModuleVisibilitySnapshot::default()
+        );
+        assert_eq!(
+            defaults.sidebar_module_order,
+            sidebar_module_order(&[
+                "modeltrace",
+                "speeds",
+                "overview",
+                "tasks",
+                "radar",
+                "credits",
+            ])
         );
 
         mutate_app_settings_at(&path, |settings| {
@@ -5128,6 +5179,86 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_module_order_saves_exact_permutations_and_rejects_invalid_orders_without_writing() {
+        let root = TestSettingsRoot::new("sidebar-module-order");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+
+        let order = sidebar_module_order(&[
+            "credits",
+            "radar",
+            "tasks",
+            "overview",
+            "speeds",
+            "modeltrace",
+        ]);
+        let saved = save_sidebar_module_order_at(&path, order.clone()).unwrap();
+        assert_eq!(saved, order);
+        assert_eq!(read_app_settings_at(&path).unwrap().sidebar_module_order, order);
+        let persisted: AppSettingsSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.sidebar_module_order, saved);
+
+        for invalid in [
+            sidebar_module_order(&[
+                "modeltrace",
+                "speeds",
+                "overview",
+                "tasks",
+                "radar",
+                "unknown",
+            ]),
+            sidebar_module_order(&[
+                "modeltrace",
+                "speeds",
+                "overview",
+                "tasks",
+                "radar",
+                "radar",
+            ]),
+            sidebar_module_order(&["modeltrace", "speeds", "overview", "tasks", "radar"]),
+        ] {
+            let before = std::fs::read(&path).unwrap();
+            assert!(save_sidebar_module_order_at(&path, invalid).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn legacy_sidebar_module_orders_drop_unknowns_and_duplicates_then_append_missing_defaults() {
+        let root = TestSettingsRoot::new("sidebar-module-order-migration");
+        let path = root.settings_path();
+        let mut settings = AppSettingsSnapshot::default();
+        settings.sidebar_module_order =
+            sidebar_module_order(&["speeds", "unknown", "speeds", "credits"]);
+        settings.sidebar_module_visibility = SidebarModuleVisibilitySnapshot {
+            overview: false,
+            speeds: false,
+            tasks: false,
+            radar: false,
+            credits: false,
+            modeltrace: false,
+        };
+        write_fixture(&path, &settings);
+
+        let normalized = read_app_settings_at(&path).unwrap();
+        let expected = sidebar_module_order(&[
+            "speeds",
+            "credits",
+            "modeltrace",
+            "overview",
+            "tasks",
+            "radar",
+        ]);
+        assert_eq!(normalized.sidebar_module_order, expected);
+        assert_eq!(normalized.sidebar_module_visibility, settings.sidebar_module_visibility);
+        let persisted: AppSettingsSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.sidebar_module_order, expected);
+        assert_eq!(persisted.sidebar_module_visibility, settings.sidebar_module_visibility);
+    }
+
+    #[test]
     fn unsupported_sidebar_module_is_rejected_without_writing_settings() {
         let root = TestSettingsRoot::new("sidebar-module-visibility-invalid");
         let path = root.settings_path();
@@ -5140,28 +5271,41 @@ mod tests {
     }
 
     #[test]
-    fn hiding_the_last_sidebar_module_is_rejected_without_writing_settings() {
+    fn sidebar_module_visibility_can_hide_every_module_without_changing_order() {
         let root = TestSettingsRoot::new("sidebar-module-visibility-last");
         let path = root.settings_path();
-        let mut settings = AppSettingsSnapshot::default();
-        settings.sidebar_module_visibility = SidebarModuleVisibilitySnapshot {
-            overview: true,
-            speeds: false,
-            tasks: false,
-            radar: false,
-            credits: false,
-            modeltrace: false,
-        };
-        write_fixture(&path, &settings);
-        let before = std::fs::read(&path).unwrap();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let order = sidebar_module_order(&[
+            "credits",
+            "radar",
+            "tasks",
+            "overview",
+            "speeds",
+            "modeltrace",
+        ]);
+        save_sidebar_module_order_at(&path, order.clone()).unwrap();
 
-        let error = save_sidebar_module_visibility_at(&path, "overview", false).unwrap_err();
-        assert_eq!(error, "至少保留一个侧栏模块可见。");
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        for module in ["overview", "speeds", "tasks", "radar", "credits", "modeltrace"] {
+            save_sidebar_module_visibility_at(&path, module, false).unwrap();
+        }
+
+        let settings = read_app_settings_at(&path).unwrap();
+        assert_eq!(
+            settings.sidebar_module_visibility,
+            SidebarModuleVisibilitySnapshot {
+                overview: false,
+                speeds: false,
+                tasks: false,
+                radar: false,
+                credits: false,
+                modeltrace: false,
+            }
+        );
+        assert_eq!(settings.sidebar_module_order, order);
     }
 
     #[test]
-    fn all_false_legacy_visibility_is_persistently_repaired_to_modeltrace() {
+    fn all_false_legacy_visibility_is_preserved_without_repair() {
         let root = TestSettingsRoot::new("sidebar-module-visibility-all-false");
         let path = root.settings_path();
         let mut settings = AppSettingsSnapshot::default();
@@ -5174,13 +5318,18 @@ mod tests {
             modeltrace: false,
         };
         write_fixture(&path, &settings);
+        let before = std::fs::read(&path).unwrap();
 
-        let normalized = read_app_settings_at(&path).unwrap();
-        assert!(normalized.sidebar_module_visibility.modeltrace);
-        assert!(!normalized.sidebar_module_visibility.overview);
-        let persisted: AppSettingsSnapshot =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert!(persisted.sidebar_module_visibility.modeltrace);
+        let loaded = read_app_settings_at(&path).unwrap();
+        assert_eq!(
+            loaded.sidebar_module_visibility,
+            settings.sidebar_module_visibility
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    fn sidebar_module_order(order: &[&str]) -> Vec<String> {
+        order.iter().map(|module| (*module).to_owned()).collect()
     }
 
     struct TestSettingsRoot {

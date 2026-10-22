@@ -52,11 +52,12 @@ pub(crate) use provider_app::{
 };
 pub use settings::{
     complete_floating_paging_guide, read_app_settings, read_sidebar_module_visibility,
+    read_sidebar_module_order,
     save_display_surfaces, save_floating_position, save_floating_settings,
     save_auto_resume_settings, save_custom_account_display_name, save_quota_refresh_interval_ms,
     save_quota_history_filter,
     save_session_enhancement_settings, save_setup_guide_completed,
-    save_sidebar_module_visibility, save_usage_refresh_settings,
+    save_sidebar_module_visibility, save_sidebar_module_order, save_usage_refresh_settings,
 };
 pub(crate) use surfaces::StatusTrayColumn;
 pub use surfaces::{

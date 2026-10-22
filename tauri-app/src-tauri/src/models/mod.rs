@@ -56,7 +56,8 @@ pub use settings::{
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
     SidebarModuleVisibilitySnapshot,
     UsageRefreshSettingsSnapshot,
-    AUTO_RESUME_TASK_COLLECTION_VERSION, STATUS_METRIC_IDS, STATUS_SUMMARY_SECTION_IDS,
+    AUTO_RESUME_TASK_COLLECTION_VERSION, DEFAULT_SIDEBAR_MODULE_ORDER, STATUS_METRIC_IDS,
+    STATUS_SUMMARY_SECTION_IDS,
 };
 pub use thread_activity::{
     RunningThreadGroup, RunningThreadMember, RunningThreadModelBreakdown,

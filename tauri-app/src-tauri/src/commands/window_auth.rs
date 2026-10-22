@@ -107,9 +107,11 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
 
 pub(crate) const QUOTA_SIDEBAR_ONLY_COMMANDS: &[&str] = &["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "quota_sidebar_pointer_state", "drag_quota_sidebar"];
 
-const SIDEBAR_MODULE_VISIBILITY_COMMANDS: &[&str] = &[
+const SIDEBAR_MODULE_SETTINGS_COMMANDS: &[&str] = &[
     "read_sidebar_module_visibility",
     "save_sidebar_module_visibility",
+    "read_sidebar_module_order",
+    "save_sidebar_module_order",
 ];
 
 const MODELTRACE_DETAIL_COMMANDS: &[&str] = &[
@@ -141,7 +143,7 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
     // The speed detail reads source-validated numeric buckets only. Other
     // history, account and mutation commands keep their existing boundaries.
     if command == "read_body_speed_trend" && label == "quota-sidebar-detail" { return true; }
-    if SIDEBAR_MODULE_VISIBILITY_COMMANDS.contains(&command) {
+    if SIDEBAR_MODULE_SETTINGS_COMMANDS.contains(&command) {
         return matches!(label, "quota-sidebar" | "quota-sidebar-detail");
     }
     if MODELTRACE_DETAIL_COMMANDS.contains(&command) {
@@ -224,8 +226,8 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_module_visibility_commands_are_limited_to_sidebar_surfaces() {
-        for command in SIDEBAR_MODULE_VISIBILITY_COMMANDS {
+    fn sidebar_module_settings_commands_are_limited_to_sidebar_surfaces() {
+        for command in SIDEBAR_MODULE_SETTINGS_COMMANDS {
             assert!(allows_window_label(command, "quota-sidebar"), "{command}");
             assert!(allows_window_label(command, "quota-sidebar-detail"), "{command}");
             for label in ["main", "floating", "status", "unknown"] {
@@ -480,6 +482,7 @@ mod tests {
             .iter()
             .chain(SURFACE_SAFE_COMMANDS.iter())
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
+            .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(
@@ -502,6 +505,7 @@ mod tests {
             .iter()
             .chain(SURFACE_SAFE_COMMANDS.iter())
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
+            .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(

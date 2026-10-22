@@ -44,19 +44,34 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var quotaObservation: AnyCancellable?
     private var heightBudget = QuotaSidebarHeightBudget()
     @Published private(set) var hiddenModules: Set<QuotaSidebarDetail> = []
+    @Published private(set) var moduleOrder = QuotaSidebarDetail.defaultModuleOrder
     private var rebaseOnMeasurement = false
     private static let hiddenModulesKey = "quotaSidebarHiddenModules"
+    private static let moduleOrderKey = "quotaSidebarModuleOrder"
 
     func isModuleVisible(_ module: QuotaSidebarDetail) -> Bool { !hiddenModules.contains(module) }
-    var visibleModuleCount: Int { QuotaSidebarDetail.allCases.filter(isModuleVisible).count }
-    func canHideModule(_ module: QuotaSidebarDetail) -> Bool { !isModuleVisible(module) || visibleModuleCount > 1 }
-
     func setModuleVisible(_ module: QuotaSidebarDetail, visible: Bool) {
+        guard module != .settings else { return }
         guard visible != isModuleVisible(module) else { return }
-        guard visible || canHideModule(module) else { return }
         rebaseOnMeasurement = true
         if visible { hiddenModules.remove(module) } else { hiddenModules.insert(module) }
         settings.set(hiddenModules.map(\.rawValue).sorted(), forKey: Self.hiddenModulesKey)
+    }
+
+    func moveModule(_ module: QuotaSidebarDetail, by offset: Int) {
+        guard let index = moduleOrder.firstIndex(of: module), moduleOrder.indices.contains(index + offset) else { return }
+        var next = moduleOrder
+        next.swapAt(index, index + offset)
+        setModuleOrder(next)
+    }
+
+    func resetModuleOrder() { setModuleOrder(QuotaSidebarDetail.defaultModuleOrder) }
+
+    private func setModuleOrder(_ order: [QuotaSidebarDetail]) {
+        guard order != moduleOrder else { return }
+        moduleOrder = order
+        rebaseOnMeasurement = true
+        settings.set(order.map(\.rawValue), forKey: Self.moduleOrderKey)
     }
     private let settings: UserDefaults
     private(set) var placement: QuotaSidebarPlacement?
@@ -81,9 +96,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     init(settings: UserDefaults = .standard) {
         self.settings = settings
-        var hidden = Set((settings.stringArray(forKey: Self.hiddenModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)))
-        if hidden.count == QuotaSidebarDetail.allCases.count { hidden.remove(.modeltrace) }
-        self.hiddenModules = hidden
+        self.hiddenModules = Set((settings.stringArray(forKey: Self.hiddenModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)).filter { $0 != .settings })
+        self.moduleOrder = QuotaSidebarDetail.normalizedModuleOrder(settings.stringArray(forKey: Self.moduleOrderKey) ?? [])
         self.placement = QuotaSidebarPlacement.load(defaults: settings)
         super.init()
     }

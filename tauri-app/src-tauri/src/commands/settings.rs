@@ -53,6 +53,30 @@ pub async fn save_sidebar_module_visibility(
 }
 
 #[tauri::command]
+pub async fn read_sidebar_module_order(
+    window: tauri::WebviewWindow,
+) -> Result<Vec<String>, String> {
+    require_window_label(&window, "read_sidebar_module_order")?;
+    run_blocking_command(platform::read_sidebar_module_order).await
+}
+
+#[tauri::command]
+pub async fn save_sidebar_module_order(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    order: Vec<String>,
+) -> Result<Vec<String>, String> {
+    require_window_label(&window, "save_sidebar_module_order")?;
+    let saved = run_blocking_command(move || platform::save_sidebar_module_order(order)).await?;
+    if let Err(error) = app.emit("sidebar-module-order-changed", &saved) {
+        eprintln!(
+            "Codex Token Bar: saved sidebar module order but event delivery failed: {error}"
+        );
+    }
+    Ok(saved)
+}
+
+#[tauri::command]
 pub async fn read_autostart_status(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -154,6 +178,8 @@ mod tests {
             "read_app_settings",
             "read_sidebar_module_visibility",
             "save_sidebar_module_visibility",
+            "read_sidebar_module_order",
+            "save_sidebar_module_order",
             "read_autostart_status",
             "set_autostart_enabled",
             "complete_floating_paging_guide",

@@ -15,7 +15,7 @@ private struct ReserveSidebarScroll: ViewModifier {
         if enabled {
             GeometryReader { proxy in
                 ScrollView(.vertical) {
-                    content.padding(.vertical, 12).frame(minHeight: proxy.size.height, alignment: .center)
+                    content.padding(.vertical, 12).frame(minHeight: proxy.size.height, alignment: .top)
                 }.scrollIndicators(.hidden)
             }
         } else {
@@ -117,6 +117,9 @@ struct QuotaSidebarRail: View {
                         .transition(.opacity)
                 } else {
                 VStack(spacing: 7) {
+                    ForEach(controller.moduleOrder.filter(controller.isModuleVisible), id: \.self) { module in
+                        moduleContent(module, shares: shares)
+                    }
                     HStack(spacing: 4) {
                         Button { controller.togglePin() } label: {
                             Image(systemName: controller.interaction.pinned ? "pin.fill" : "pin")
@@ -136,88 +139,13 @@ struct QuotaSidebarRail: View {
                         }.help("打开主页面").accessibilityLabel("打开主页面")
                             .accessibilityIdentifier("quota-sidebar-dashboard")
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
-                    if controller.isModuleVisible(.speeds) {
-                        rateRing
-                        QuotaSidebarBodySpeedReadings(monitor: monitor, onOpen: { controller.select(.speeds) })
-                    }
-                    if controller.isModuleVisible(.modeltrace) {
-                    Button { controller.select(.modeltrace) } label: {
-                        Label("模型检测", systemImage: "checkmark.shield")
-                            .font(.system(size: 10, weight: .medium)).foregroundStyle(SidebarPalette.green)
+                    Button { controller.select(.settings) } label: {
+                        Label("侧栏设置", systemImage: "slider.horizontal.3")
+                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
                             .frame(width: 74, height: 28).contentShape(Rectangle())
-                    }.buttonStyle(SidebarPulseButtonStyle()).help("打开 ModelTrace，手动检测模型")
-                        .accessibilityIdentifier("quota-sidebar-modeltrace")
-                        .padding(.vertical, 4)
-                    }
-
-                    if controller.isModuleVisible(.overview) {
-                    if let fiveHour = quota.snapshot.fiveHour {
-                        ring(label: "5h", window: fiveHour, color: SidebarPalette.green)
-                    }
-                    ring(label: "7d", window: quota.snapshot.sevenDay, color: SidebarPalette.purple)
-                    ForEach(quota.snapshot.reserveWindows, id: \.label) { window in
-                        ring(label: window.compactDisplayLabel, window: window, color: SidebarPalette.blue)
-                    }
-                    Button { controller.select(.overview, section: "models") } label: {
-                        VStack(spacing: 6) {
-                            SidebarModelShareStrip(items: shares).frame(width: 52, height: 4)
-                            Text("模型占比").font(.system(size: 9)).foregroundStyle(.gray)
-                        }.frame(maxWidth: .infinity, minHeight: 30).contentShape(Rectangle())
                     }.buttonStyle(SidebarPulseButtonStyle())
-                    }
-                    if controller.isModuleVisible(.tasks) {
-                    Rectangle().fill(.white.opacity(0.13)).frame(width: 30, height: 1)
-                    Button { controller.select(.tasks) } label: {
-                        VStack(spacing: 5) {
-                            ZStack {
-                                Circle().stroke(SidebarPalette.amber.opacity(0.5), lineWidth: 3)
-                                Text(tasks.runningThreadSummary.freshness == .fresh ? "\(tasks.runningThreadSummary.total)" : "—").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(SidebarPalette.amber)
-                            }.frame(width: 46, height: 46)
-                            Text(runningText).font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
-                                .contentTransition(.numericText())
-                                .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: runningText)
-                        }
-                        .padding(.horizontal, 6)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .padding(.vertical, 0)
-                        .contentShape(Rectangle())
-                    }.buttonStyle(SidebarPulseButtonStyle())
-                        .accessibilityLabel("查看任务，\(runningText)")
-                        .accessibilityIdentifier("quota-sidebar-tasks")
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAction { controller.select(.tasks) }
-                    }
-                    if controller.isModuleVisible(.radar) {
-                    let recommendations = QuotaSidebarRadarPresentation.rankedModels(radar.crowdSnapshot)
-                    QuotaSidebarRecommendations(models: recommendations, stale: radar.crowdStaleDataDisplayed) {
-                        controller.select(.radar, section: "ranking")
-                    }.id(recommendations.map(\.id))
-                    Rectangle().fill(.white.opacity(0.13)).frame(width: 52, height: 1)
-                    TimelineView(QuotaSidebarRadarPresentation.schedule(radar.snapshot, updatedAt: radar.lastSuccessfulRefreshAt)) { tick in
-                        let state = QuotaSidebarRadarPresentation.windowState(radar.snapshot, stale: radar.staleDataDisplayed, updatedAt: radar.lastSuccessfulRefreshAt, now: tick.date)
-                        Button { controller.select(.radar) } label: {
-                            VStack(spacing: 4) {
-                                Text(state.text)
-                                if state.active, let end = CodexRadarPresentationText.countdownDeadline(snapshot: radar.snapshot), end > tick.date {
-                                    Text(CodexRadarPresentationText.actionDisplay(snapshot: radar.snapshot, now: tick.date).replacingOccurrences(of: "速登 ", with: ""))
-                                        .monospacedDigit()
-                                }
-                            }.font(.system(size: 10)).foregroundStyle(state.active ? .red : .gray)
-                                .frame(maxWidth: .infinity).contentShape(Rectangle().inset(by: -10))
-                        }.buttonStyle(SidebarPulseButtonStyle())
-                    }
-                    }
-                    if controller.isModuleVisible(.credits), quota.snapshot.resetCreditsAvailableCount != nil {
-                        Button { controller.select(.credits) } label: {
-                            VStack(spacing: 2) {
-                                Text("重置卡 \(quota.snapshot.availableResetCreditCount) 张").foregroundStyle(SidebarPalette.amber)
-                                if let card = quota.snapshot.nearestFutureExpiringResetCredit, let expires = card.expiresAt {
-                                    Text(expires.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
-                                        .font(.system(size: 8)).foregroundStyle(.gray).lineLimit(1).minimumScaleFactor(0.7)
-                                }
-                            }.font(.system(size: 9)).frame(maxWidth: .infinity).contentShape(Rectangle())
-                        }.buttonStyle(SidebarPulseButtonStyle())
-                    }
+                        .help("调整侧栏模块显示与顺序")
+                        .accessibilityIdentifier("quota-sidebar-settings")
                 }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
                     .background(GeometryReader { proxy in
                         Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
@@ -234,6 +162,7 @@ struct QuotaSidebarRail: View {
             .accessibilityHidden(!controller.interaction.expanded)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: monitor.latestModelSpeeds30m.count)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: controller.hiddenModules)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.moduleOrder)
             Group {
                 VStack(spacing: 12) {
                     SidebarValueBar(fraction: Double(rateFraction), color: SidebarPalette.blue, vertical: true)
@@ -270,6 +199,88 @@ struct QuotaSidebarRail: View {
         .foregroundStyle(.white)
         .onHover { if $0 { controller.enter() } }
         .onChange(of: cacheWarning?.presentationID, initial: true) { _, id in controller.updateCacheAdvice(id) }
+    }
+
+    @ViewBuilder
+    private func moduleContent(_ module: QuotaSidebarDetail, shares: [FloatingTodayModelUsageItem]) -> some View {
+        switch module {
+        case .speeds:
+                rateRing
+                QuotaSidebarBodySpeedReadings(monitor: monitor, onOpen: { controller.select(.speeds) })
+        case .modeltrace:
+            Button { controller.select(.modeltrace) } label: {
+                Label("模型检测", systemImage: "checkmark.shield")
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(SidebarPalette.green)
+                    .frame(width: 74, height: 28).contentShape(Rectangle())
+            }.buttonStyle(SidebarPulseButtonStyle()).help("打开 ModelTrace，手动检测模型")
+                .accessibilityIdentifier("quota-sidebar-modeltrace")
+        case .overview:
+            if let fiveHour = quota.snapshot.fiveHour {
+                ring(label: "5h", window: fiveHour, color: SidebarPalette.green)
+            }
+            ring(label: "7d", window: quota.snapshot.sevenDay, color: SidebarPalette.purple)
+            ForEach(quota.snapshot.reserveWindows, id: \.label) { window in
+                ring(label: window.compactDisplayLabel, window: window, color: SidebarPalette.blue)
+            }
+            Button { controller.select(.overview, section: "models") } label: {
+                VStack(spacing: 6) {
+                    SidebarModelShareStrip(items: shares).frame(width: 52, height: 4)
+                    Text("模型占比").font(.system(size: 9)).foregroundStyle(.gray)
+                }.frame(maxWidth: .infinity, minHeight: 30).contentShape(Rectangle())
+            }.buttonStyle(SidebarPulseButtonStyle())
+        case .tasks:
+            Button { controller.select(.tasks) } label: {
+                VStack(spacing: 5) {
+                    ZStack {
+                        Circle().stroke(SidebarPalette.amber.opacity(0.5), lineWidth: 3)
+                        Text(tasks.runningThreadSummary.freshness == .fresh ? "\(tasks.runningThreadSummary.total)" : "—").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(SidebarPalette.amber)
+                    }.frame(width: 46, height: 46)
+                    Text(runningText).font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
+                        .contentTransition(.numericText())
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: runningText)
+                }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .padding(.vertical, 0)
+                .contentShape(Rectangle())
+            }.buttonStyle(SidebarPulseButtonStyle())
+                .accessibilityLabel("查看任务，\(runningText)")
+                .accessibilityIdentifier("quota-sidebar-tasks")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { controller.select(.tasks) }
+        case .radar:
+            let recommendations = QuotaSidebarRadarPresentation.rankedModels(radar.crowdSnapshot)
+            QuotaSidebarRecommendations(models: recommendations, stale: radar.crowdStaleDataDisplayed) {
+                controller.select(.radar, section: "ranking")
+            }.id(recommendations.map(\.id))
+            Rectangle().fill(.white.opacity(0.13)).frame(width: 52, height: 1)
+            TimelineView(QuotaSidebarRadarPresentation.schedule(radar.snapshot, updatedAt: radar.lastSuccessfulRefreshAt)) { tick in
+                let state = QuotaSidebarRadarPresentation.windowState(radar.snapshot, stale: radar.staleDataDisplayed, updatedAt: radar.lastSuccessfulRefreshAt, now: tick.date)
+                Button { controller.select(.radar) } label: {
+                    VStack(spacing: 4) {
+                        Text(state.text)
+                        if state.active, let end = CodexRadarPresentationText.countdownDeadline(snapshot: radar.snapshot), end > tick.date {
+                            Text(CodexRadarPresentationText.actionDisplay(snapshot: radar.snapshot, now: tick.date).replacingOccurrences(of: "速登 ", with: ""))
+                                .monospacedDigit()
+                        }
+                    }.font(.system(size: 10)).foregroundStyle(state.active ? .red : .gray)
+                        .frame(maxWidth: .infinity).contentShape(Rectangle().inset(by: -10))
+                }.buttonStyle(SidebarPulseButtonStyle())
+            }
+        case .credits:
+            if quota.snapshot.resetCreditsAvailableCount != nil {
+                Button { controller.select(.credits) } label: {
+                    VStack(spacing: 2) {
+                        Text("重置卡 \(quota.snapshot.availableResetCreditCount) 张").foregroundStyle(SidebarPalette.amber)
+                        if let card = quota.snapshot.nearestFutureExpiringResetCredit, let expires = card.expiresAt {
+                            Text(expires.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
+                                .font(.system(size: 8)).foregroundStyle(.gray).lineLimit(1).minimumScaleFactor(0.7)
+                        }
+                    }.font(.system(size: 9)).frame(maxWidth: .infinity).contentShape(Rectangle())
+                }.buttonStyle(SidebarPulseButtonStyle())
+            }
+        case .settings: EmptyView()
+        }
     }
 
     private func cacheNotice(_ advice: CacheUsageAdvice) -> some View {
@@ -517,8 +528,13 @@ struct QuotaSidebarDetailView: View {
                 tab("重置卡", detail: .credits)
                 tab("模型检测", detail: .modeltrace)
                 Spacer(minLength: 0)
+                Button { controller.select(.settings) } label: {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 12))
+                        .foregroundStyle(controller.interaction.detail == .settings ? SidebarPalette.green : .gray)
+                }.buttonStyle(SidebarPulseButtonStyle()).help("侧栏设置").accessibilityLabel("侧栏设置")
             }
             Divider().overlay(.white.opacity(0.12))
+            if controller.interaction.detail != .settings {
             HStack {
                 Spacer()
                 let module = controller.interaction.detail ?? .overview
@@ -527,13 +543,16 @@ struct QuotaSidebarDetailView: View {
                     set: { controller.setModuleVisible(module, visible: $0) }))
                     .toggleStyle(.checkbox).font(.system(size: 11))
                     .tint(SidebarPalette.green)
-                    .disabled(!controller.canHideModule(module))
-                    .help(controller.canHideModule(module) ? "设置二级菜单中显示的模块" : "至少保留一个入口")
+                    .help("设置二级菜单中显示的模块")
                     .accessibilityIdentifier("quota-sidebar-module-visibility")
             }.padding(.vertical, 2)
+            }
             ScrollViewReader { proxy in
             ScrollView {
-                if controller.interaction.detail == .speeds {
+                if controller.interaction.detail == .settings {
+                    QuotaSidebarModuleSettingsView(controller: controller).id("top")
+                }
+                else if controller.interaction.detail == .speeds {
                     ObservedSpeedSidebarView(monitor: monitor, onOpenDetails: {
                         BodySpeedHistoryWindowController.shared.present(monitor: monitor,
                             screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)

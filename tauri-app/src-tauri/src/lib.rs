@@ -123,6 +123,8 @@ pub fn run() {
             commands::settings::read_app_settings,
             commands::settings::read_sidebar_module_visibility,
             commands::settings::save_sidebar_module_visibility,
+            commands::settings::read_sidebar_module_order,
+            commands::settings::save_sidebar_module_order,
             commands::startup::record_startup_event,
             commands::settings::read_autostart_status,
             commands::settings::set_autostart_enabled,

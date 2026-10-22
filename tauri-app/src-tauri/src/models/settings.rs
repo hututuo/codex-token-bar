@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_SIDEBAR_MODULE_ORDER: [&str; 6] = [
+    "modeltrace",
+    "speeds",
+    "overview",
+    "tasks",
+    "radar",
+    "credits",
+];
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SidebarModuleVisibilitySnapshot {
@@ -66,6 +75,8 @@ pub struct AppSettingsSnapshot {
     pub display_surfaces: DisplaySurfaceSettingsSnapshot,
     #[serde(default)]
     pub sidebar_module_visibility: SidebarModuleVisibilitySnapshot,
+    #[serde(default = "default_sidebar_module_order")]
+    pub sidebar_module_order: Vec<String>,
     #[serde(default)]
     pub setup_guide_completed: bool,
     #[serde(default)]
@@ -91,11 +102,19 @@ impl Default for AppSettingsSnapshot {
             floating_position: None,
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
             sidebar_module_visibility: SidebarModuleVisibilitySnapshot::default(),
+            sidebar_module_order: default_sidebar_module_order(),
             setup_guide_completed: false,
             session_enhancements: SessionEnhancementSettingsSnapshot::default(),
             auto_resume: AutoResumeSettingsSnapshot::default(),
         }
     }
+}
+
+fn default_sidebar_module_order() -> Vec<String> {
+    DEFAULT_SIDEBAR_MODULE_ORDER
+        .iter()
+        .map(|module| (*module).to_owned())
+        .collect()
 }
 
 /// The three local usage cadence controls are intentionally kept together for

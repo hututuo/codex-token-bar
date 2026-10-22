@@ -114,6 +114,8 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         try snapshot("native-3-models.png")
         XCTAssertGreaterThan(third, second + 10, "A second additional model must resize the native frame")
         XCTAssertLessThan(first, 650, "Measured rail should remain compact with model detection entry")
+        controller.select(.settings); settle()
+        try snapshot("native-settings-page.png", detail: true)
         controller.select(.speeds)
         controller.setModuleVisible(.speeds, visible: false); settle()
         let hiddenSpeeds = try XCTUnwrap(controller.railPanel).frame.height
@@ -121,18 +123,17 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         XCTAssertEqual(controller.interaction.detail, .speeds, "Hidden pages remain selected and reachable")
         try snapshot("native-speeds-hidden.png")
         try snapshot("native-detail-speeds-hidden.png", detail: true)
-        for module in QuotaSidebarDetail.allCases { controller.setModuleVisible(module, visible: false) }
+        for module in QuotaSidebarDetail.defaultModuleOrder { controller.setModuleVisible(module, visible: false) }
         settle()
         let minimal = try XCTUnwrap(controller.railPanel).frame.height
         XCTAssertEqual(minimal, 192, accuracy: 1)
-        try snapshot("native-last-module.png")
+        try snapshot("native-all-hidden.png")
         let restored = QuotaSidebarController(settings: defaults)
-        XCTAssertEqual(restored.visibleModuleCount, 1)
-        XCTAssertTrue(restored.isModuleVisible(.modeltrace))
-        XCTAssertFalse(restored.canHideModule(.modeltrace))
-        controller.select(.modeltrace)
+        XCTAssertTrue(QuotaSidebarDetail.defaultModuleOrder.allSatisfy { !restored.isModuleVisible($0) })
+        XCTAssertTrue(restored.isModuleVisible(.settings))
+        controller.select(.settings)
         settle()
-        try snapshot("native-modeltrace-page.png", detail: true)
+        try snapshot("native-settings-all-hidden.png", detail: true)
         controller.setModuleVisible(.speeds, visible: true); settle()
         XCTAssertGreaterThan(try XCTUnwrap(controller.railPanel).frame.height, minimal + 80)
         XCTAssertTrue(QuotaSidebarController(settings: defaults).isModuleVisible(.speeds))
