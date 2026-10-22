@@ -119,6 +119,7 @@ extension LiveRateMonitor {
 
     struct RolloutReadState: Equatable, Sendable {
         var initialCacheContextReset = false
+        var initialCacheContextEstablished = false
         let offset: UInt64
         let currentTurnID: String?
         let fileIdentity: RolloutFileIdentity?
@@ -151,6 +152,7 @@ extension LiveRateMonitor {
         let cacheSamples: [CacheUsageSample]
         let cacheReset: Bool
         let initialCacheContextReset: Bool
+        let initialCacheContextEstablished: Bool
         let currentTurnID: String?
         let fileIdentity: RolloutFileIdentity?
         let boundarySignature: RolloutBoundarySignature?
@@ -164,6 +166,7 @@ extension LiveRateMonitor {
             cacheSamples: [CacheUsageSample] = [],
             cacheReset: Bool = false,
             initialCacheContextReset: Bool = false,
+            initialCacheContextEstablished: Bool = false,
             telemetry: [ThroughputSignal] = [],
             currentTurnID: String? = nil,
             fileIdentity: RolloutFileIdentity? = nil,
@@ -178,6 +181,7 @@ extension LiveRateMonitor {
             self.cacheSamples = cacheSamples
             self.cacheReset = cacheReset
             self.initialCacheContextReset = initialCacheContextReset
+            self.initialCacheContextEstablished = initialCacheContextEstablished
             self.currentTurnID = currentTurnID
             self.fileIdentity = fileIdentity
             self.boundarySignature = boundarySignature
@@ -193,6 +197,7 @@ extension LiveRateMonitor {
                 discardLeadingPartialLine: discardLeadingPartialLine
             )
             state.initialCacheContextReset = initialCacheContextReset
+            state.initialCacheContextEstablished = initialCacheContextEstablished
             return state
         }
     }

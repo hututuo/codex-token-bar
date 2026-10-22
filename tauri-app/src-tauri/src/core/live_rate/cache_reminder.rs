@@ -33,6 +33,7 @@ pub(super) enum CacheObservation {
     Sample(CacheUsageSample),
     Context { model: Option<String> },
     ContextReset,
+    EstablishedContext,
     Reset,
 }
 
@@ -143,6 +144,11 @@ impl CacheReminderTracker {
                     awaiting_first_after_context_reset: true,
                     ..CacheAdviceThreadState::default()
                 };
+            }
+            CacheObservation::EstablishedContext => {
+                state.has_observed_request = true;
+                state.awaiting_first_after_context_reset = false;
+                state.advice = None;
             }
             CacheObservation::Sample(sample) => {
                 state.consume_sample(sample, thread_id, now);
@@ -260,7 +266,7 @@ impl CacheAdviceThreadState {
             self.request_ids.insert_if_new(request_id);
         }
 
-        // A cumulative counter above this request proves that this context had
+        // A cumulative counter above this request proves that this session had
         // earlier usage, unless an explicit reset made this its first request.
         let has_prior_request = sample
             .total_tokens
@@ -428,6 +434,27 @@ mod tests {
             request_total_tokens: request_total,
             request_id: None,
         })
+    }
+
+    #[test]
+    fn established_history_seed_does_not_replay_and_supports_legacy_usage() {
+        let mut tracker = CacheReminderTracker::default();
+        let now = Instant::now();
+        tracker.observe("old", CacheObservation::EstablishedContext, 100.0, now);
+        assert!(
+            tracker.latest(100.0).is_none(),
+            "history never publishes advice"
+        );
+        tracker.observe(
+            "old",
+            sample(101.0, None, Some(20_000), Some(0)),
+            101.0,
+            now,
+        );
+        assert!(
+            tracker.latest(101.0).unwrap().low,
+            "known history must not depend on the latest server carrying cumulative totals"
+        );
     }
 
     #[test]

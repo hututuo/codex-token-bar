@@ -152,6 +152,13 @@ pub(super) fn read_rollout_metrics_with_signals(
         let tail_boundary = (include_cache_reminder && probe_context_tail)
             .then(|| context_history_boundary(&path, file_size))
             .flatten();
+        if let Some(boundary) = tail_boundary {
+            let observation = match boundary {
+                ContextHistoryBoundary::ExplicitContextReset => CacheObservation::ContextReset,
+                ContextHistoryBoundary::ValidTokenCount => CacheObservation::EstablishedContext,
+            };
+            cache_observations.push((thread.id.clone(), observation));
+        }
         if reset_for_rewrite {
             let mut state = rollout_state();
             if state.scope_generations.get(source_scope) == Some(&generation) {
@@ -159,13 +166,7 @@ pub(super) fn read_rollout_metrics_with_signals(
                     reminders.reset_thread(&thread.id);
                 }
             }
-            if tail_boundary == Some(ContextHistoryBoundary::ExplicitContextReset) {
-                cache_observations.push((thread.id.clone(), CacheObservation::ContextReset));
-            }
             continue;
-        }
-        if tail_boundary == Some(ContextHistoryBoundary::ExplicitContextReset) {
-            cache_observations.push((thread.id.clone(), CacheObservation::ContextReset));
         }
 
         let (new_offset, lines) = match read_new_lines(&path, offset) {

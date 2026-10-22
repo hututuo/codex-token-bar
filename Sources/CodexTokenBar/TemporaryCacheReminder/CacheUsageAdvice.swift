@@ -12,6 +12,7 @@ struct CacheUsageSample: Sendable {
     var model: String?
     var context = false
     var reset = false
+    var establishedContext = false
     var input: UInt64?
     var cached: UInt64?
     var total: UInt64?
@@ -88,6 +89,16 @@ struct CacheUsageAdviceTracker {
     mutating func consume(_ sample: CacheUsageSample, threadID: String, now: TimeInterval,
                           monotonic _: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard CacheMissReminderFeature.isEnabled else { states.removeAll(); return }
+        if sample.establishedContext {
+            var state = states[threadID] ?? State()
+            state.hasObservedRequest = true
+            state.awaitingFirstAfterContextReset = false
+            state.advice = nil
+            state.touched = now
+            states[threadID] = state
+            pruneStates()
+            return
+        }
         if sample.reset {
             let model = states[threadID]?.model
             states[threadID] = State(model: model, touched: now, awaitingFirstAfterContextReset: true)

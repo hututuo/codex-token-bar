@@ -20,9 +20,12 @@ extension LiveRateMonitor {
                 newOffset: result.state.offset,
                 events: result.events,
                 cacheSamples: (state.initialCacheContextReset && !result.cacheReset
-                    ? [CacheUsageSample(timestamp: 0, reset: true)] : []) + result.cacheSamples,
+                    ? [CacheUsageSample(timestamp: 0, reset: true)]
+                    : state.initialCacheContextEstablished && !result.cacheReset
+                        ? [CacheUsageSample(timestamp: 0, establishedContext: true)] : []) + result.cacheSamples,
                 cacheReset: result.cacheReset,
                 initialCacheContextReset: result.state.initialCacheContextReset,
+                initialCacheContextEstablished: result.state.initialCacheContextEstablished,
                 telemetry: result.telemetry,
                 currentTurnID: result.state.currentTurnID,
                 fileIdentity: result.state.fileIdentity,
@@ -144,8 +147,9 @@ extension LiveRateMonitor {
             discardLeadingPartialLine: false
         )
         if restarted {
-            nextState.initialCacheContextReset = try initialRolloutReadState(handle: handle, metadata: metadata)
-                .initialCacheContextReset
+            let history = try initialRolloutReadState(handle: handle, metadata: metadata)
+            nextState.initialCacheContextReset = history.initialCacheContextReset
+            nextState.initialCacheContextEstablished = history.initialCacheContextEstablished
         }
         return (
             nextState,
@@ -406,6 +410,7 @@ extension LiveRateMonitor {
         }
         var currentTurnID: String? = nil
         var initialCacheContextReset = false
+        var initialCacheContextEstablished = false
         if parseStart < completeEnd,
            let text = String(data: Data(bytes[parseStart..<completeEnd]), encoding: .utf8) {
             var foundCacheBoundary = !CacheMissReminderFeature.isEnabled
@@ -426,6 +431,7 @@ extension LiveRateMonitor {
                     } else if let input = sample.input, let cached = sample.cached, input > 0, cached <= input,
                               let timestamp = parseTimestamp(object["timestamp"] as? String),
                               timestamp.isFinite, timestamp >= 0 {
+                        initialCacheContextEstablished = true
                         foundCacheBoundary = true
                     }
                 }
@@ -440,6 +446,7 @@ extension LiveRateMonitor {
             discardLeadingPartialLine: false
         )
         state.initialCacheContextReset = initialCacheContextReset
+        state.initialCacheContextEstablished = initialCacheContextEstablished
         return state
     }
 

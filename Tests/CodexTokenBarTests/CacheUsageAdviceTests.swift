@@ -140,6 +140,32 @@ final class CacheUsageAdviceTests: XCTestCase {
         XCTAssertTrue(rewritten.cacheSamples.isEmpty)
     }
 
+    @MainActor
+    func testExistingTailEstablishesHistoryWithoutReplayingAndWorksWithLegacyUsage() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let old = #"{"timestamp":"1970-01-01T00:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":0}}}}"# + "\n"
+        try Data(old.utf8).write(to: path)
+        let option = LiveThreadOption(id: "old", title: "old", updatedAtMS: 0, rolloutPath: path.path)
+        let initial = LiveRateMonitor.initialRolloutReadState(path: path.path)
+        XCTAssertTrue(initial.initialCacheContextEstablished)
+        let initialReads = try LiveRateMonitor.rolloutReads(options: [option], states: [path.path: initial])
+        XCTAssertTrue(initialReads[0].events.isEmpty)
+        XCTAssertEqual(initialReads[0].cacheSamples.count, 1)
+        XCTAssertTrue(initialReads[0].cacheSamples[0].establishedContext)
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "old")
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: initialReads, now: 100)
+        XCTAssertNil(monitor.totalSnapshot.cacheAdvice, "Historical low requests must not publish a warning")
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: [
+            LiveRateMonitor.RolloutRead(threadID: "old", path: path.path, newOffset: initial.offset,
+                events: [], cacheSamples: [sample(101, cached: 0)])
+        ], now: 101)
+        XCTAssertEqual(monitor.totalSnapshot.cacheAdvice?.low, true,
+                       "A known old context must not depend on new cumulative fields")
+        XCTAssertEqual(monitor.totalSnapshot.outputTokens, 0)
+    }
+
     private func settledRequest(at: Double, total: UInt64 = 29_374_965) -> CacheUsageSample {
         CacheUsageSample(timestamp: at, input: 153_566, cached: 0,
                          total: total, requestTotal: 154_786)
