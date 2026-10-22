@@ -143,5 +143,65 @@
         "low": false
       }
     ]
+  },
+  {
+    "name": "resumed-luna-first-observation-with-server-history",
+    "steps": [
+      {
+        "at": 100,
+        "total": 29374965,
+        "requestTotal": 154786,
+        "input": 153566,
+        "cached": 0,
+        "low": true
+      }
+    ]
+  },
+  {
+    "name": "actual-new-context-first-request-with-complete-settlement",
+    "steps": [
+      {
+        "at": 100,
+        "total": 154786,
+        "requestTotal": 154786,
+        "input": 153566,
+        "cached": 0,
+        "low": false
+      },
+      {
+        "at": 101,
+        "total": 309572,
+        "requestTotal": 154786,
+        "input": 153566,
+        "cached": 0,
+        "low": true
+      }
+    ]
+  },
+  {
+    "name": "invalid-request-total-cannot-prove-history",
+    "steps": [
+      {
+        "at": 100,
+        "total": 29374965,
+        "requestTotal": 1,
+        "input": 153566,
+        "cached": 0,
+        "low": false
+      }
+    ]
+  },
+  {
+    "name": "healthy-resumed-first-observation",
+    "steps": [
+      {
+        "at": 100,
+        "total": 29374965,
+        "requestTotal": 154786,
+        "input": 153566,
+        "cached": 150000,
+        "low": false
+      }
+    ]
   }
 ]

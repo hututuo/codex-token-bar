@@ -16,6 +16,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 const RECENT_ROLLOUT_LIMIT: usize = 20;
+const CONTEXT_TAIL_PROBE_BYTES: usize = 64 * 1024;
 // Main/WAL signatures are still checked on each poll and invalidate immediately.
 // Only the fallback reload for an unchanged database is infrequent: repeatedly
 // sorting the same threads every three seconds adds idle CPU without new data.
@@ -100,7 +101,7 @@ pub(super) fn read_rollout_metrics_with_signals(
         }
         let file_size = signature.len;
         let key = (source_scope.clone(), path.clone());
-        let (offset, reset_for_rewrite) = {
+        let (offset, reset_for_rewrite, probe_context_tail) = {
             let mut state = rollout_state();
             if state.scope_generations.get(source_scope) != Some(&generation) {
                 return Ok((Vec::new(), Vec::new()));
@@ -131,9 +132,9 @@ pub(super) fn read_rollout_metrics_with_signals(
                             modified_at: signature.modified_at,
                         },
                     );
-                    (file_size, true)
+                    (file_size, true, true)
                 } else {
-                    (previous.offset, false)
+                    (previous.offset, false, false)
                 }
             } else {
                 state.offsets.insert(
@@ -145,9 +146,12 @@ pub(super) fn read_rollout_metrics_with_signals(
                         modified_at: signature.modified_at,
                     },
                 );
-                (file_size, false)
+                (file_size, false, true)
             }
         };
+        let tail_boundary = (include_cache_reminder && probe_context_tail)
+            .then(|| context_history_boundary(&path, file_size))
+            .flatten();
         if reset_for_rewrite {
             let mut state = rollout_state();
             if state.scope_generations.get(source_scope) == Some(&generation) {
@@ -155,7 +159,13 @@ pub(super) fn read_rollout_metrics_with_signals(
                     reminders.reset_thread(&thread.id);
                 }
             }
+            if tail_boundary == Some(ContextHistoryBoundary::ExplicitContextReset) {
+                cache_observations.push((thread.id.clone(), CacheObservation::ContextReset));
+            }
             continue;
+        }
+        if tail_boundary == Some(ContextHistoryBoundary::ExplicitContextReset) {
+            cache_observations.push((thread.id.clone(), CacheObservation::ContextReset));
         }
 
         let (new_offset, lines) = match read_new_lines(&path, offset) {
@@ -619,14 +629,84 @@ struct RolloutLine {
     text: String,
 }
 
-// A bounded cursor guard, read only on binding or a changed file, never an idle poll.
-fn read_boundary(path: &Path, offset: u64) -> Option<Vec<u8>> {
-    let count = offset.min(256) as usize;
+// A bounded tail read used only on initial file binding, rewrite, or cursor guards.
+fn read_tail(path: &Path, end_offset: u64, max_bytes: usize) -> Option<Vec<u8>> {
+    let count = end_offset.min(max_bytes as u64) as usize;
     let mut file = File::open(path).ok()?;
-    file.seek(SeekFrom::Start(offset - count as u64)).ok()?;
+    file.seek(SeekFrom::Start(end_offset - count as u64)).ok()?;
     let mut bytes = vec![0; count];
     file.read_exact(&mut bytes).ok()?;
     Some(bytes)
+}
+
+// A bounded cursor guard, read only on binding or a changed file, never an idle poll.
+fn read_boundary(path: &Path, offset: u64) -> Option<Vec<u8>> {
+    read_tail(path, offset, 256)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContextHistoryBoundary {
+    ExplicitContextReset,
+    ValidTokenCount,
+}
+
+fn context_history_boundary(path: &Path, end_offset: u64) -> Option<ContextHistoryBoundary> {
+    let bytes = read_tail(path, end_offset, CONTEXT_TAIL_PROBE_BYTES)?;
+    // A concurrently appended or crash-truncated record is not a complete
+    // rollout event. Ignore that suffix while still honoring the latest full
+    // record available within the bounded tail.
+    let complete_len = bytes.iter().rposition(|byte| *byte == b'\n')? + 1;
+    let complete_bytes = &bytes[..complete_len];
+
+    let starts_at_file_head = end_offset <= CONTEXT_TAIL_PROBE_BYTES as u64;
+    let mut lines = complete_bytes
+        .split(|byte| *byte == b'\n')
+        .collect::<Vec<_>>();
+    if lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    if !starts_at_file_head && !lines.is_empty() {
+        lines.remove(0);
+    }
+
+    for line in lines.into_iter().rev() {
+        let Ok(line) = std::str::from_utf8(line) else {
+            continue;
+        };
+        let line = line.trim_end_matches('\r');
+        match history_marker(line) {
+            Some(ContextHistoryBoundary::ExplicitContextReset) => {
+                return Some(ContextHistoryBoundary::ExplicitContextReset);
+            }
+            Some(ContextHistoryBoundary::ValidTokenCount) => {
+                return Some(ContextHistoryBoundary::ValidTokenCount);
+            }
+            None => {}
+        }
+    }
+    None
+}
+
+fn history_marker(line: &str) -> Option<ContextHistoryBoundary> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    let payload = value.get("payload")?.as_object()?;
+    let record_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let payload_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let timestamp = parse_timestamp(value.get("timestamp").and_then(Value::as_str));
+    match cache_reminder::parse_observation(&value, payload, record_type, payload_type, timestamp)?
+    {
+        CacheObservation::ContextReset => Some(ContextHistoryBoundary::ExplicitContextReset),
+        CacheObservation::Sample(sample) if cache_reminder::is_valid_history_sample(&sample) => {
+            Some(ContextHistoryBoundary::ValidTokenCount)
+        }
+        _ => None,
+    }
 }
 
 fn read_new_lines(path: &Path, offset: u64) -> std::io::Result<(u64, Vec<RolloutLine>)> {
@@ -679,6 +759,85 @@ fn parse_event_timestamp(value: Option<&Value>) -> Option<f64> {
 mod rollout_reader_tests {
     use super::*;
 
+    fn history_sample(cumulative: u64, request_total: u64) -> CacheObservation {
+        let value = serde_json::json!({
+            "timestamp": "2026-10-22T00:00:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 153566,
+                        "cached_input_tokens": 0,
+                        "total_tokens": request_total
+                    },
+                    "total_token_usage": {"total_tokens": cumulative}
+                }
+            }
+        });
+        cache_reminder::parse_observation(
+            &value,
+            value["payload"].as_object().unwrap(),
+            "event_msg",
+            "token_count",
+            Some(1_792_627_200.0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn same_thread_id_keeps_source_scope_history_isolated() {
+        let unique = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string();
+        let restored_scope = LiveRateSourceScope::new(
+            format!("cache-reminder-restored-{unique}"),
+            format!("cache-reminder-restored-physical-{unique}"),
+        );
+        let fresh_scope = LiveRateSourceScope::new(
+            format!("cache-reminder-fresh-{unique}"),
+            format!("cache-reminder-fresh-physical-{unique}"),
+        );
+        let monotonic = Instant::now();
+        let mut restored = CacheReminderTracker::default();
+        restored.observe(
+            "same-thread",
+            history_sample(29_374_965, 154_786),
+            1_792_627_200.0,
+            monotonic,
+        );
+        let mut fresh = CacheReminderTracker::default();
+        fresh.observe(
+            "same-thread",
+            history_sample(154_786, 154_786),
+            1_792_627_200.0,
+            monotonic,
+        );
+
+        {
+            let mut state = rollout_state();
+            state
+                .cache_reminders
+                .insert(restored_scope.clone(), restored);
+            state.cache_reminders.insert(fresh_scope.clone(), fresh);
+        }
+        assert!(
+            latest_cache_advice(&restored_scope, 1_792_627_200.0)
+                .unwrap()
+                .low
+        );
+        assert!(
+            !latest_cache_advice(&fresh_scope, 1_792_627_200.0)
+                .unwrap()
+                .low
+        );
+        let mut state = rollout_state();
+        state.cache_reminders.remove(&restored_scope);
+        state.cache_reminders.remove(&fresh_scope);
+    }
+
     #[test]
     fn invalid_utf8_does_not_shift_byte_cursor() {
         let path = std::env::temp_dir().join(format!(
@@ -711,6 +870,91 @@ mod rollout_reader_tests {
         let original = read_boundary(&path, 9).unwrap();
         fs::write(&path, b"rewritten and longer\n").unwrap();
         assert_ne!(read_boundary(&path, 9).unwrap(), original);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn startup_tail_probe_finds_latest_reset_or_request_without_replaying_history() {
+        let path = std::env::temp_dir().join(format!(
+            "rollout-context-tail-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let previous_request = r#"{"timestamp":"2026-10-22T00:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153566,"cached_input_tokens":0,"total_tokens":154786},"total_token_usage":{"total_tokens":29374965}}}}"#;
+        let compacted = r#"{"timestamp":"2026-10-22T00:01:00Z","type":"compacted","payload":{"type":"compacted"}}"#;
+        fs::write(&path, format!("{previous_request}\n{compacted}\n")).unwrap();
+
+        let initial_size = fs::metadata(&path).unwrap().len();
+        assert_eq!(
+            context_history_boundary(&path, initial_size),
+            Some(ContextHistoryBoundary::ExplicitContextReset)
+        );
+        let (offset, old_lines) = read_new_lines(&path, initial_size).unwrap();
+        assert_eq!(offset, initial_size);
+        assert!(old_lines.is_empty(), "startup must not replay old requests");
+
+        let after_reset_request = r#"{"timestamp":"2026-10-22T00:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":0,"total_tokens":20100},"total_token_usage":{"total_tokens":29475065}}}}"#;
+        use std::io::Write as _;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{after_reset_request}").unwrap();
+        drop(file);
+
+        let current_size = fs::metadata(&path).unwrap().len();
+        assert_eq!(
+            context_history_boundary(&path, current_size),
+            Some(ContextHistoryBoundary::ValidTokenCount),
+            "a valid request after compaction supersedes the old cold-context marker"
+        );
+        let (new_offset, new_lines) = read_new_lines(&path, initial_size).unwrap();
+        assert_eq!(new_offset, current_size);
+        assert_eq!(new_lines.len(), 1);
+    }
+
+    #[test]
+    fn startup_tail_probe_is_bounded_and_ignores_partial_or_out_of_window_markers() {
+        use std::io::Write as _;
+
+        let path = std::env::temp_dir().join(format!(
+            "rollout-context-tail-bound-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let compacted = r#"{"timestamp":"2026-10-22T00:00:00Z","type":"compacted","payload":{"type":"compacted"}}"#;
+        let filler = r#"{"timestamp":"2026-10-22T00:00:01Z","type":"event_msg","payload":{"type":"task_started"}}"#;
+        let repetitions = CONTEXT_TAIL_PROBE_BYTES / filler.len() + 4;
+        let body = format!("{compacted}\n{}", format!("{filler}\n").repeat(repetitions));
+        fs::write(&path, &body).unwrap();
+        let size = fs::metadata(&path).unwrap().len();
+        assert!(size > CONTEXT_TAIL_PROBE_BYTES as u64);
+        assert_eq!(
+            read_tail(&path, size, CONTEXT_TAIL_PROBE_BYTES)
+                .unwrap()
+                .len(),
+            CONTEXT_TAIL_PROBE_BYTES
+        );
+        assert_eq!(
+            context_history_boundary(&path, size),
+            None,
+            "a reset marker older than the bounded tail must remain unknown"
+        );
+
+        fs::write(&path, format!("{compacted}\n")).unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"timestamp\":\"2026-10-22T00:00:02Z\"")
+            .unwrap();
+        drop(file);
+        let partial_size = fs::metadata(&path).unwrap().len();
+        assert_eq!(
+            context_history_boundary(&path, partial_size),
+            Some(ContextHistoryBoundary::ExplicitContextReset),
+            "an unterminated tail record must not hide the latest complete marker"
+        );
         fs::remove_file(path).unwrap();
     }
 

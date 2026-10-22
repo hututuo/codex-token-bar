@@ -94,7 +94,8 @@ final class CacheUsageAdviceTests: XCTestCase {
                 tracker.consume(CacheUsageSample(timestamp: at,
                     input: (row["input"] as? NSNumber)?.uint64Value,
                     cached: (row["cached"] as? NSNumber)?.uint64Value,
-                    total: (row["total"] as? NSNumber)?.uint64Value),
+                    total: (row["total"] as? NSNumber)?.uint64Value,
+                    requestTotal: (row["requestTotal"] as? NSNumber)?.uint64Value),
                     threadID: row["thread"] as? String ?? "a", now: at, monotonic: at)
                 XCTAssertEqual(tracker.latest(now: at)?.low, row["low"] as? Bool, "\(fixture["name"] ?? "") at \(at)")
             }
@@ -137,6 +138,120 @@ final class CacheUsageAdviceTests: XCTestCase {
         let rewritten = try LiveRateMonitor.rolloutEvents(path: path.path, state: second.state)
         XCTAssertTrue(rewritten.cacheReset)
         XCTAssertTrue(rewritten.cacheSamples.isEmpty)
+    }
+
+    private func settledRequest(at: Double, total: UInt64 = 29_374_965) -> CacheUsageSample {
+        CacheUsageSample(timestamp: at, input: 153_566, cached: 0,
+                         total: total, requestTotal: 154_786)
+    }
+
+    func testResumedOldLunaRequestAlertsOnFirstFreshObservation() {
+        var tracker = CacheUsageAdviceTracker()
+        tracker.consume(settledRequest(at: 100), threadID: "old-luna", now: 100)
+        XCTAssertEqual(tracker.latest(now: 100)?.hitRate, 0)
+        XCTAssertEqual(tracker.latest(now: 100)?.low, true)
+        XCTAssertEqual(tracker.latest(now: 100)?.shouldRemind(enabled: true, now: 100), true)
+        // Structural loss of monitor state is not a new Codex context.
+        tracker.reset(threadID: "old-luna")
+        tracker.consume(settledRequest(at: 101, total: 29_529_751), threadID: "old-luna", now: 101)
+        XCTAssertEqual(tracker.latest(now: 101)?.low, true)
+    }
+
+    func testExplicitCompactionSuppressesOnlyFirstValidRequestDespiteHistoricalTotals() {
+        var tracker = CacheUsageAdviceTracker()
+        tracker.consume(CacheUsageSample(timestamp: 90, reset: true), threadID: "a", now: 90)
+        tracker.consume(CacheUsageSample(timestamp: 91, model: "luna", context: true), threadID: "a", now: 91)
+        tracker.consume(CacheUsageSample(timestamp: 99, input: 0, cached: 0,
+                                         total: 29_374_965, requestTotal: 46_632), threadID: "a", now: 99)
+        XCTAssertNil(tracker.latest(now: 99))
+        tracker.consume(settledRequest(at: 200), threadID: "a", now: 200)
+        XCTAssertEqual(tracker.latest(now: 200)?.low, false)
+        tracker.consume(settledRequest(at: 201, total: 29_529_751), threadID: "a", now: 201)
+        XCTAssertEqual(tracker.latest(now: 201)?.low, true)
+    }
+
+    func testParserPreservesServerRequestTotalForColdStartRecovery() throws {
+        let line = #"{"timestamp":"2026-10-22T06:21:01.406Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153566,"cached_input_tokens":0,"output_tokens":1220,"total_tokens":154786},"total_token_usage":{"total_tokens":29374965}}}}"#
+        let parsed = LiveRateMonitor.rolloutEvents(fromLines: [line], previousTurnID: nil)
+        let sample = try XCTUnwrap(parsed.cacheSamples.first)
+        XCTAssertEqual(sample.requestTotal, 154_786)
+        XCTAssertTrue(parsed.events.isEmpty, "Input cache observations must not become TPS output")
+        var tracker = CacheUsageAdviceTracker()
+        tracker.consume(sample, threadID: "luna", now: sample.timestamp)
+        XCTAssertEqual(tracker.latest(now: sample.timestamp)?.low, true)
+    }
+
+    @MainActor
+    func testSourceReinitializationStillAlertsOnFirstOldSessionRequest() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        for at in [100.0, 101.0] {
+            monitor.testPrepareForLiveRateProcessing(selectedThreadID: "old")
+            monitor.testProcessPollInputs(streamRows: [], rolloutReads: [
+                LiveRateMonitor.RolloutRead(threadID: "old", path: "/old", newOffset: UInt64(at), events: [],
+                    cacheSamples: [settledRequest(at: at)])
+            ], now: at)
+            XCTAssertEqual(monitor.totalSnapshot.cacheAdvice?.low, true)
+            XCTAssertEqual(monitor.totalSnapshot.outputTokens, 0)
+        }
+    }
+
+    @MainActor
+    func testStartupTailPreservesCompactionAndNeverReplaysOldUsage() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let context = #"{"type":"turn_context","payload":{"turn_id":"old-turn","model":"gpt-6-luna"}}"# + "\n"
+        let compacted = #"{"type":"compacted","payload":{}}"# + "\n"
+        func request(_ at: Int, total: Int) -> String {
+            "{\"timestamp\":\"1970-01-01T00:01:\(at)Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":153566,\"cached_input_tokens\":0,\"total_tokens\":154786},\"total_token_usage\":{\"total_tokens\":\(total)}}}}\n"
+        }
+        try Data((request(20, total: 29_374_965) + compacted + context).utf8).write(to: path)
+        let initial = LiveRateMonitor.initialRolloutReadState(path: path.path)
+        XCTAssertTrue(initial.initialCacheContextReset)
+        XCTAssertEqual(initial.currentTurnID, "old-turn")
+        let option = LiveThreadOption(id: "a", title: "old", updatedAtMS: 0, rolloutPath: path.path)
+        let reads = try LiveRateMonitor.rolloutReads(options: [option], states: [path.path: initial])
+        XCTAssertTrue(reads[0].events.isEmpty)
+        XCTAssertEqual(reads[0].cacheSamples.count, 1)
+        XCTAssertTrue(reads[0].cacheSamples[0].reset)
+        // A partially written following line does not invalidate a complete reset.
+        let partialHandle = try FileHandle(forWritingTo: path)
+        try partialHandle.seekToEnd(); try partialHandle.write(contentsOf: Data("{\"type\":\"event_msg\"".utf8)); try partialHandle.close()
+        XCTAssertTrue(LiveRateMonitor.initialRolloutReadState(path: path.path).initialCacheContextReset)
+        try Data((request(20, total: 29_374_965) + compacted + context).utf8).write(to: path)
+        var tracker = CacheUsageAdviceTracker()
+        tracker.consume(reads[0].cacheSamples[0], threadID: "a", now: 100)
+        XCTAssertNil(tracker.latest(now: 100), "Historical markers never publish a warning")
+        tracker.consume(settledRequest(at: 100), threadID: "a", now: 100)
+        XCTAssertEqual(tracker.latest(now: 100)?.low, false)
+        let noReplay = try LiveRateMonitor.rolloutReads(options: [option], states: [path.path: reads[0].state])
+        XCTAssertTrue(noReplay[0].cacheSamples.isEmpty, "Startup seed is consumed once")
+        // Once a valid request follows compaction, the context is established.
+        let handle = try FileHandle(forWritingTo: path)
+        try handle.seekToEnd(); try handle.write(contentsOf: Data(request(40, total: 29_529_751).utf8)); try handle.close()
+        XCTAssertFalse(LiveRateMonitor.initialRolloutReadState(path: path.path).initialCacheContextReset)
+        // An atomic rewrite is structural: recover its explicit marker without
+        // replaying any historical request in the rewrite batch.
+        try Data((compacted + context).utf8).write(to: path, options: .atomic)
+        let rewritten = try LiveRateMonitor.rolloutReads(options: [option], states: [path.path: noReplay[0].state])
+        XCTAssertTrue(rewritten[0].cacheReset)
+        XCTAssertTrue(rewritten[0].cacheSamples.isEmpty)
+        XCTAssertTrue(rewritten[0].state.initialCacheContextReset)
+        let afterRewrite = try LiveRateMonitor.rolloutReads(options: [option], states: [path.path: rewritten[0].state])
+        XCTAssertEqual(afterRewrite[0].cacheSamples.count, 1)
+        XCTAssertTrue(afterRewrite[0].cacheSamples[0].reset)
+    }
+
+    func testStartupResetBackscanIgnoresTruncatedMarkerOutsideExistingByteLimit() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let compacted = #"{"type":"compacted","payload":{}}"# + "\n"
+        let largeLine = #"{"type":"response_item","payload":{"text":""# + String(repeating: "x", count: 70_000) + #""}}"# + "\n"
+        let context = #"{"type":"turn_context","payload":{"turn_id":"latest","model":"gpt-6-luna"}}"# + "\n"
+        try Data((compacted + largeLine + context).utf8).write(to: path)
+        let state = LiveRateMonitor.initialRolloutReadState(path: path.path)
+        XCTAssertFalse(state.initialCacheContextReset, "Do not extend the bounded tail search or guess unseen markers")
+        XCTAssertEqual(state.currentTurnID, "latest")
+        XCTAssertEqual(state.offset, UInt64(try Data(contentsOf: path).count))
     }
 
     private func sample(_ at: Double, total: UInt64? = nil, cached: UInt64 = 100,

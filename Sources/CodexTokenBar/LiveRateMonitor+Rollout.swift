@@ -19,8 +19,10 @@ extension LiveRateMonitor {
                 path: path,
                 newOffset: result.state.offset,
                 events: result.events,
-                cacheSamples: result.cacheSamples,
+                cacheSamples: (state.initialCacheContextReset && !result.cacheReset
+                    ? [CacheUsageSample(timestamp: 0, reset: true)] : []) + result.cacheSamples,
                 cacheReset: result.cacheReset,
+                initialCacheContextReset: result.state.initialCacheContextReset,
                 telemetry: result.telemetry,
                 currentTurnID: result.state.currentTurnID,
                 fileIdentity: result.state.fileIdentity,
@@ -134,14 +136,19 @@ extension LiveRateMonitor {
             fromLines: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init),
             previousTurnID: previousTurnID, includeCacheSamples: !restarted
         )
+        var nextState = try rolloutReadState(
+            handle: handle,
+            offset: newOffset,
+            currentTurnID: parsed.currentTurnID,
+            fileIdentity: metadata.identity,
+            discardLeadingPartialLine: false
+        )
+        if restarted {
+            nextState.initialCacheContextReset = try initialRolloutReadState(handle: handle, metadata: metadata)
+                .initialCacheContextReset
+        }
         return (
-            try rolloutReadState(
-                handle: handle,
-                offset: newOffset,
-                currentTurnID: parsed.currentTurnID,
-                fileIdentity: metadata.identity,
-                discardLeadingPartialLine: false
-            ),
+            nextState,
             parsed.events, restarted ? [] : parsed.cacheSamples, restarted, parsed.telemetry
         )
     }
@@ -397,34 +404,43 @@ extension LiveRateMonitor {
         } else {
             parseStart = (bytes.firstIndex(of: 0x0A) ?? -1) + 1
         }
-        let currentTurnID: String?
+        var currentTurnID: String? = nil
+        var initialCacheContextReset = false
         if parseStart < completeEnd,
            let text = String(data: Data(bytes[parseStart..<completeEnd]), encoding: .utf8) {
-            currentTurnID = text
-                .split(separator: "\n", omittingEmptySubsequences: true)
-                .reversed()
-                .compactMap { rolloutTurnContextID(fromLine: String($0)) }
-                .first
-        } else {
-            currentTurnID = nil
+            var foundCacheBoundary = !CacheMissReminderFeature.isEnabled
+            for line in text.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+                guard let data = String(line).data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let payload = object["payload"] as? [String: Any] else { continue }
+                if currentTurnID == nil,
+                   object["type"] as? String == "turn_context" || payload["type"] as? String == "turn_context" {
+                    currentTurnID = rolloutTurnID(object: object, payload: payload)
+                }
+                if !foundCacheBoundary,
+                   let sample = CacheUsageSample.parse(object: object, payload: payload,
+                       timestamp: .nan) {
+                    if sample.reset {
+                        initialCacheContextReset = true
+                        foundCacheBoundary = true
+                    } else if let input = sample.input, let cached = sample.cached, input > 0, cached <= input,
+                              let timestamp = parseTimestamp(object["timestamp"] as? String),
+                              timestamp.isFinite, timestamp >= 0 {
+                        foundCacheBoundary = true
+                    }
+                }
+                if currentTurnID != nil && foundCacheBoundary { break }
+            }
         }
-        return try rolloutReadState(
+        var state = try rolloutReadState(
             handle: handle,
             offset: tailOffset + UInt64(completeEnd),
             currentTurnID: currentTurnID,
             fileIdentity: metadata.identity,
             discardLeadingPartialLine: false
         )
-    }
-
-    nonisolated private static func rolloutTurnContextID(fromLine line: String) -> String? {
-        guard let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let payload = object["payload"] as? [String: Any],
-              object["type"] as? String == "turn_context"
-                || payload["type"] as? String == "turn_context"
-        else { return nil }
-        return rolloutTurnID(object: object, payload: payload)
+        state.initialCacheContextReset = initialCacheContextReset
+        return state
     }
 
     nonisolated private static func rolloutReadState(
