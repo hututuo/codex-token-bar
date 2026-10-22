@@ -11,7 +11,8 @@ manifest={
     'generatedAt':datetime.now(timezone.utc).isoformat(),
     'featureBaseline':'v0.9.7',
     'featureBaselineCommit':'e0440813d2c5131ad58be272af57951055005c2d',
-    'data':'Synthetic public demonstration data; no user logs, credentials, or account readings.',
+    'data':'Owner-authorized real local statistics snapshot. No credentials, raw conversations, local paths or auth/routing fields. Instantaneous activity rate is unavailable and its placeholder is disclosed. The separate cache film remains a simulated scenario.',
+    'snapshot':{key:json.loads((root/'tauri-app/showcase/real-data.json').read_text())[key] for key in ['capturedAt','usageDataUpdatedAt']},
     'surfaces':'Production cross-platform React rendering subtrees and unchanged production CSS in isolated iframe documents. Complete existing DetailSurface; full default FloatingPanelSurface, not preview mode. Native geometry constants are extracted at build time. README loops are editorial state crossfades, not native window-motion recordings.',
     'renderingSources':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in [
         'tauri-app/src/quota-sidebar/QuotaSidebarApp.tsx',

@@ -19,15 +19,15 @@
     <div class="section-head"><div><span class="section-number">01 — 多种显示方式</span><h2>不用切回主窗口，<br>也知道发生了什么。</h2></div><p>贴边侧栏、桌面悬浮窗、菜单栏／托盘和主界面。<br>选你顺手的方式，额度监控始终在同一条流程里。</p></div>
     <div class="demo-shell"><iframe id="surface-demo" src="demo/index.html?view=surfaces" title="侧边栏、悬浮窗和额度的原程序组件演示" height="850" loading="eager"></iframe></div>
     <div class="feature-points"><article><b>贴边，留出工作空间</b><p>左右停靠、自动吸附、记住位置。悬停看概要，点击查看完整详情。</p></article><article><b>额度与重置，一起看</b><p>按官方实际提供的窗口显示 5h／7d、重置时间和可用储备额度；白线提供均匀使用参考。</p></article><article><b>悬浮窗，随手摆放</b><p>速率、用量、任务和额度自由组合；还可调整内容顺序、配色、字号和透明度。</p></article></div>
-    <p class="caption">上方直接渲染跨平台端原组件与原 CSS，保留完整详情和默认悬浮窗内容。仅注入模拟数据；窗口位置由离线画布承载。</p>
+    <p class="caption">上方直接渲染跨平台端原组件与原 CSS，保留完整详情和默认悬浮窗内容。用量、额度、会话与 TPS 来自作者本机真实快照，采集时间在画布内标示；窗口位置由离线画布承载。活动速率未持久化，悬浮窗的 0.0 仅为占位。</p>
   </section>
 
   <section id="usage" class="feature usage"><div class="wrap">
     <div class="section-head"><div><span class="section-number">02 — 用量与额度</span><h2>额度花在哪，<br>沿着时间线看清楚。</h2></div><p>刚才用了多少？今天哪段最密集？<br>选一段时间，对照本地用量和额度变化，掌握消耗节奏。</p></div>
     <div class="facts"><span><b>24 小时</b>5 分钟粒度</span><span><b>7 天 / 30 天</b>切换观察范围</span><span><b>365 天</b>年度活动热力图</span></div>
-    <div class="demo-shell light"><iframe src="demo/index.html?view=analytics" title="用量趋势与年度热力图，可切换范围、图例和选择区间" height="700" loading="lazy"></iframe></div>
+    <div class="demo-shell light"><iframe src="demo/index.html?view=analytics" title="用量趋势与年度热力图，可切换范围、图例和选择区间" height="850" loading="lazy"></iframe></div>
     <div class="feature-points"><article><b>用量、缓存、费用、额度</b><p>切换图例，悬停查看数据；点击两个位置汇总区间，还可按同周期数据反推额度容量。</p></article><article><b>按模型拆开看</b><p>查看模型占比、输入／缓存／输出构成，以及有已知价格的 API 等值估算。</p></article><article><b>已有用量，持续留账</b><p>会话归档、移动或删除，已入账统计继续保留；fork 后新增的轮次继续统计。</p></article></div>
-    <p class="caption">图表使用原程序组件和模拟数据。官方剩余额度、使用节奏参考和 API 等值费用分别标示；费用估算不代表订阅实际扣费。</p>
+    <p class="caption">图表使用原程序组件和作者本机的真实历史统计；没有额度观测的区间留空。官方剩余额度、使用节奏参考和 API 等值费用分别标示；费用估算不代表订阅实际扣费。</p>
   </div></section>
 
   <section id="cache" class="wrap feature cache">
@@ -39,7 +39,7 @@
     <div class="section-head"><div><span class="section-number">04 — 模型速度</span><h2>现在在忙什么，<br>哪个模型输出更快。</h2></div><p>实时活动曲线帮你看进度，正文 TPS 帮你比较速度。<br>各模型最新读数、近 15／30 分钟均速，以及每条样本的来处，都能查。</p></div>
     <div class="speed-meanings"><article><span>实时活动速率</span><b>看此刻的工作节奏</b><p>汇总多个会话的本地活动估算；识别到中断时停止，正常完成后最多收尾 5 秒。</p></article><article><span>正文 TPS</span><b>看可追溯的输出样本</b><p>本地正文分词量 ÷ 日志起止时长；包含中间消息和最终文本。低质量样本保留说明，不纳入均速。</p></article></div>
     <div class="demo-shell light"><iframe src="demo/index.html?view=speed" title="各模型正文 TPS 与最近六条可追溯样本" height="420" loading="lazy"></iframe></div>
-    <p class="caption">此处为模拟样本。正文 TPS 不是服务器纯生成速度，计时可能包含网络等待；隐藏思考和工具返回不作为正文测速样本。</p>
+    <p class="caption">此处为作者本机采集到的真实正文样本，均速截至快照时刻。正文 TPS 不是服务器纯生成速度，计时可能包含网络等待；隐藏思考和工具返回不作为正文测速样本。</p>
   </div></section>
 
   <section id="more" class="wrap feature more">
@@ -57,7 +57,7 @@
 
   <section class="download wrap" id="download"><div><span class="section-number">把它放在桌面的一角</span><h2>下一次开工，<br>心里更有数。</h2><p>macOS Apple Silicon · Windows x64 / ARM64</p></div><div><a class="primary" href="https://github.com/hututuo/codex-token-bar/releases/latest">下载 Codex Token Bar ↗</a><a class="text-link" href="../../README.md">安装说明与完整文档 →</a><small>用量与正文统计在本地处理；额度和雷达需要联网。</small></div></section>
 </main>
-<footer class="site-footer wrap"><span>Codex Token Bar · 本地优先的 Codex 工作台</span><div><a href="https://github.com/hututuo/codex-token-bar">GitHub</a><a href="../../README.en.md">English</a><a href="../../LICENSE">AGPL-3.0</a></div><small>基于 v0.9.7 功能制作 · 演示数据不代表模型基准成绩</small></footer>
+<footer class="site-footer wrap"><span>Codex Token Bar · 本地优先的 Codex 工作台</span><div><a href="https://github.com/hututuo/codex-token-bar">GitHub</a><a href="../../README.en.md">English</a><a href="../../LICENSE">AGPL-3.0</a></div><small>基于 v0.9.7 功能制作 · 本机数据为定时快照，不是实时监控或模型基准</small></footer>
 <script>
 window.addEventListener('message',event=>{if(event.origin!==location.origin||event.data?.type!=='tokenbar-demo-navigate')return;if(![...document.querySelectorAll('iframe')].some(frame=>frame.contentWindow===event.source))return;document.getElementById('usage')?.scrollIntoView({behavior:'smooth'});});
 const reduced=matchMedia('(prefers-reduced-motion: reduce)');

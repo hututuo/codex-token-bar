@@ -17,13 +17,15 @@ const sourceSurfaces = {
     const geometry=readFileSync(here('../src-tauri/src/platform/quota_sidebar.rs'),'utf8');
     const metrics=readFileSync(here('../src-tauri/src/platform/quota_sidebar/canvas_metrics.rs'),'utf8');
     const rest=geometry.match(/\(SidebarMode::Rest, true\) => \(([\d.]+), ([\d.]+)\)/);
+    const weeklyRest=geometry.match(/\(SidebarMode::Rest, false\) => \(([\d.]+), ([\d.]+)\)/);
+    const weeklyHeight=geometry.match(/SIDEBAR_WEEKLY_HEIGHT: f64 = ([\d.]+)/);
     const height=metrics.match(/SIDEBAR_CANVAS_HEIGHT: f64 = ([\d.]+)/);
     const detail=geometry.match(/let detail_width = ([\d.]+)_f64/);
     const detailHeight=geometry.match(/let detail_height = ([\d.]+)_f64/);
     const gap=geometry.match(/let gap = ([\d.]+)_f64/);
     const width=geometry.match(/\(_, true\) => \(([\d.]+), SIDEBAR_CANVAS_HEIGHT\)/);
-    if(!rest||!height||!detail||!detailHeight||!gap||!width)throw new Error('Production sidebar geometry changed; review the showcase host');
-    return 'export default '+JSON.stringify({restWidth:+rest[1],restHeight:+rest[2],width:+width[1],height:+height[1],detailWidth:+detail[1],detailHeight:+detailHeight[1],gap:+gap[1]})+';';
+    if(!rest||!weeklyRest||!weeklyHeight||!height||!detail||!detailHeight||!gap||!width)throw new Error('Production sidebar geometry changed; review the showcase host');
+    return 'export default '+JSON.stringify({restWidth:+rest[1],restHeight:+rest[2],weeklyRestHeight:+weeklyRest[2],weeklyHeight:+weeklyHeight[1],width:+width[1],height:+height[1],detailWidth:+detail[1],detailHeight:+detailHeight[1],gap:+gap[1]})+';';
   }
 };
 export default defineConfig({root:here('.'),base:'./',plugins:[sourceSurfaces,react()],build:{outDir:'../../docs/showcase/demo',emptyOutDir:true,rollupOptions:{input:{index:here('index.html'),surface:here('surface.html')}}},resolve:{dedupe:['react','react-dom'],alias:{'@tauri-apps/api/event':here('offline-events.ts'),'/floating-paging-touch.png':here('../public/floating-paging-touch.png')}}});

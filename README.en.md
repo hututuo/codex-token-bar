@@ -82,7 +82,7 @@ Body TPS may include network waiting; it is not pure server generation throughpu
 
 **Interactive showcase:** [source](docs/showcase/index.html). Run `python3 -m http.server 8080` from the repository and visit `http://127.0.0.1:8080/docs/showcase/`. Try sidebar modes, left/right placement, full details, floating-panel paging, chart legends, and time ranges.
 
-New animations and the interactive showcase use synthetic accounts, sessions, and usage, not benchmark results. Display surfaces use unchanged production cross-platform components and styles; the cache film uses a native Bar warning; the Codex interface in the short film is independently simulated. See [asset provenance and rebuild instructions](docs/showcase/README.md).
+Display surfaces, usage charts, and body TPS use an owner-authorized snapshot of real local statistics, dated in the view. They are neither live monitoring nor model benchmarks. Surfaces use production cross-platform components and styles. The separate cache film uses a simulated scenario and a natively rendered Bar warning. See [asset provenance and rebuild instructions](docs/showcase/README.md).
 
 ## Installation
 

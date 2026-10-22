@@ -1,9 +1,13 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-22T11:49:03.336132+00:00",
+  "generatedAt": "2026-10-22T12:44:04.766554+00:00",
   "featureBaseline": "v0.9.7",
   "featureBaselineCommit": "e0440813d2c5131ad58be272af57951055005c2d",
-  "data": "Synthetic public demonstration data; no user logs, credentials, or account readings.",
+  "data": "Owner-authorized real local statistics snapshot. No credentials, raw conversations, local paths or auth/routing fields. Instantaneous activity rate is unavailable and its placeholder is disclosed. The separate cache film remains a simulated scenario.",
+  "snapshot": {
+    "capturedAt": "2026-10-22T12:32:52.955850Z",
+    "usageDataUpdatedAt": "2026-10-22T12:30:50.183000Z"
+  },
   "surfaces": "Production cross-platform React rendering subtrees and unchanged production CSS in isolated iframe documents. Complete existing DetailSurface; full default FloatingPanelSurface, not preview mode. Native geometry constants are extracted at build time. README loops are editorial state crossfades, not native window-motion recordings.",
   "renderingSources": {
     "tauri-app/src/quota-sidebar/QuotaSidebarApp.tsx": "26ed293549732c201f677c51068a562036f48cd336f0650cf726b0d2b170e314",
@@ -19,8 +23,8 @@
   "assets": [
     {
       "file": "Assets/showcase/body-tps.png",
-      "bytes": 46076,
-      "sha256": "7f8a923b7e0dbda45f8b334318b366e468e73af1ec748057fe0dd12767c11ad3"
+      "bytes": 42359,
+      "sha256": "b13cd3aa42acf7fc268bf323c0788fa9d626ea2fa1e1f45d5a00517f25e1bed8"
     },
     {
       "file": "Assets/showcase/cache-poster.jpg",
@@ -39,33 +43,33 @@
     },
     {
       "file": "Assets/showcase/displays-detail.png",
-      "bytes": 67867,
-      "sha256": "6217b5453fc3e72695dd9f2d66f1c1cd78effec6377ccc0ade91dfbc6c2e1ce5"
+      "bytes": 70998,
+      "sha256": "9b948ef3649d78bddbce03dc03862d60c62403e664d507d4fd32d136b60e2e4d"
     },
     {
       "file": "Assets/showcase/displays-hover.png",
-      "bytes": 49808,
-      "sha256": "3b32b0dc04a002d3544dec7cbffb158c8254f7687a185ba9501e7cb6964d918e"
+      "bytes": 50492,
+      "sha256": "08f7c9b51deb0ea0d01bbecc15ea1c44cebbc076bde79f82ece894674518496f"
     },
     {
       "file": "Assets/showcase/displays-rest.png",
-      "bytes": 39659,
-      "sha256": "3fd1a96cc6d1369c526b6c67f9f1faa6acd1877dfee0326f016d5a7668135a64"
+      "bytes": 41256,
+      "sha256": "fcca315f39e9b872a4f2165f782e64c75cdbe406c2501f8a40d28b4d783e3a3c"
     },
     {
       "file": "Assets/showcase/displays-right.png",
-      "bytes": 75654,
-      "sha256": "ea56ec0fbe78f3972ab0c9134673d539d5719c79afb039f7b9ea6e95fd1438f3"
+      "bytes": 78445,
+      "sha256": "0d52f20f9ac1797e5f224590223aeaeaf7fc6218eff5877e706afff0b30ac626"
     },
     {
       "file": "Assets/showcase/displays.gif",
-      "bytes": 1590080,
-      "sha256": "f11bc4eafaf72141d2eaedba2f3bf2f08e0bfc272ba951555e50e8909097a2ee"
+      "bytes": 1560568,
+      "sha256": "c158c524248d8ed477d76a6aec4e4859f9ac64271b7dfc71251b172ce75fe3dc"
     },
     {
       "file": "Assets/showcase/heatmap.png",
-      "bytes": 58322,
-      "sha256": "5d9fe556f172d81cb2f5fce980bed4d72edb9b9804ad50ae3996076142b9efac"
+      "bytes": 41381,
+      "sha256": "457c9d4e0e49562203b02bc6dace5bba83e3f219c355c47969aa9e34f6be3dea"
     },
     {
       "file": "Assets/showcase/icon.png",
@@ -74,23 +78,23 @@
     },
     {
       "file": "Assets/showcase/usage-24h.png",
-      "bytes": 87978,
-      "sha256": "22755a3f009ef65507b92b4a3d1399e07ceca6d0dab8c5e46603610a2896fa29"
+      "bytes": 65402,
+      "sha256": "8b94362b3d2f78a4c7e2381a02ab4e56185de88d99ce0ddbb486ae14d1d90e52"
     },
     {
       "file": "Assets/showcase/usage-30d.png",
-      "bytes": 73547,
-      "sha256": "d0f66e90a24f8b37d92cd2e287a4917c40313aaa79d708ddf0da9920e8a0917c"
+      "bytes": 67611,
+      "sha256": "3230467a36fe84c431eee87284c5fb0fa3844283a720ebb8c453d936b123e6c8"
     },
     {
       "file": "Assets/showcase/usage-7d.png",
-      "bytes": 81460,
-      "sha256": "603a1273714addb4125a51ad1ba95bd0356af8cc48bb0840269b6daef3edf62f"
+      "bytes": 59495,
+      "sha256": "dd38acacdeb68fc7ad07590b0f9cdfc34a788122c57104b8da6af1c4204d3e4e"
     },
     {
       "file": "Assets/showcase/usage.gif",
-      "bytes": 1173974,
-      "sha256": "8357452c00a16de787280b0fbb72a11c0bd2096a2664649e10ff59fb1b5bc858"
+      "bytes": 906086,
+      "sha256": "5cd2a2a4cf80ac678c113c7d866582064a9e7a7aa36f543d27eada2f58ed26b7"
     },
     {
       "file": "docs/showcase/demo/assets/global-DtM-xCD-.css",
@@ -98,14 +102,14 @@
       "sha256": "4c10aa76bb5403b952e5d706520dbb6377a6389335a56bd346a0bde03e6669d5"
     },
     {
-      "file": "docs/showcase/demo/assets/global-nzFTCOWN.js",
-      "bytes": 253980,
-      "sha256": "589355eb7992d7b663080ab44010b1363b68ae5d6eb23a36c9d7c9f32e526aa8"
+      "file": "docs/showcase/demo/assets/global-kjb2y0tq.js",
+      "bytes": 779498,
+      "sha256": "11588063b2b8a4da4aa19ead1d6fe6e1e102fab1d5cf72661cbd1bdea435f556"
     },
     {
-      "file": "docs/showcase/demo/assets/index-B1VyLP9e.js",
-      "bytes": 62147,
-      "sha256": "b07a1bac59b4b20186f83e82810090e82a13466b1ccb1a00dcb6493894c1caef"
+      "file": "docs/showcase/demo/assets/index-Bok6jjRY.js",
+      "bytes": 62497,
+      "sha256": "340cc27656bac2e12b866e1cc020a2575f83909be47f1fe1c5a0cde8ef1b19cf"
     },
     {
       "file": "docs/showcase/demo/assets/index-DlJNXLvj.css",
@@ -113,9 +117,9 @@
       "sha256": "9fe9298b858d9d791f09d751b42844a4ba8aabb99d37ccc9c3648d1c9bc120e5"
     },
     {
-      "file": "docs/showcase/demo/assets/surface-DOaeLAKz.js",
-      "bytes": 88620,
-      "sha256": "2b88326503a2c66e9cf7c2330fe55c50d3325cfd3b73d2e93d9cb9c21d588885"
+      "file": "docs/showcase/demo/assets/surface-CwPLqw5m.js",
+      "bytes": 88616,
+      "sha256": "aff638a89cbdf7b52b52734c96bf7668e5797c1cf81ad928d37660432c352679"
     },
     {
       "file": "docs/showcase/demo/assets/surface-Dj-eT3JN.css",
@@ -125,12 +129,12 @@
     {
       "file": "docs/showcase/demo/index.html",
       "bytes": 526,
-      "sha256": "debf418506a6be442a7f9ff0dd4a981c97c35cdf1a8f8aa3c4216077397cce48"
+      "sha256": "945bc76e0a9a274df1e08196db3833fb009678bd5eb743482f6914f5ced8e313"
     },
     {
       "file": "docs/showcase/demo/surface.html",
       "bytes": 527,
-      "sha256": "b3c21b231b028fb33fcb34e71f95ff94597ed9a7ad3645b3467662c2dc5d1972"
+      "sha256": "36973a7ca0f5e45c1c5e75f97db232c18214ef186ba5ddb3c7f8f2e6c351d87c"
     }
   ]
 }

@@ -34,6 +34,23 @@ for path in sorted((ROOT/'Assets/showcase').glob('*')):
     media.append({'file':path.relative_to(ROOT).as_posix(),'bytes':path.stat().st_size,'duration':probe['format'].get('duration'),'frames':video.get('nb_frames') if video else None,'decode':'PASS' if not decode.returncode else 'FAIL'})
 manifest_path=ROOT/'docs/showcase/asset-manifest.json'
 manifest=json.loads(manifest_path.read_text())
+data=json.loads((ROOT/'tauri-app/showcase/real-data.json').read_text())
+forbidden=re.compile(r'^(?:access_token|refresh_token|id_token|api_key|apiKey|password|authorization|client_secret|backendOrigin|canonicalHome|rollout_path|first_user_message|cwd)$',re.I)
+def inspect(value,path='snapshot'):
+    if isinstance(value,dict):
+        for key,entry in value.items():
+            if forbidden.fullmatch(key):errors.append(f'private field: {path}.{key}')
+            inspect(entry,f'{path}.{key}')
+    elif isinstance(value,list):
+        for i,entry in enumerate(value):inspect(entry,f'{path}[{i}]')
+    elif isinstance(value,str) and ('/Users/' in value or re.search(r'sk-[A-Za-z0-9_-]{24,}',value)):
+        errors.append(f'private string: {path}')
+inspect(data)
+if data['days'][-1]['tokens']!=data['today']['totalTokens']:errors.append('daily total does not reconcile')
+if sum(row['breakdown']['totalTokens'] for row in data['models'])!=data['today']['totalTokens']:errors.append('model totals do not reconcile')
+if [len(data['recent'][key]) for key in ['recentUsage24h','recentUsage7d','recentUsage30d']]!=[288,168,120]:errors.append('incorrect history bucket counts')
+if manifest['snapshot']['capturedAt']!=data['capturedAt']:errors.append('manifest snapshot time mismatch')
+if "import './capture-clock';" not in (ROOT/'tauri-app/showcase/App.tsx').read_text() or "import './capture-clock';" not in (ROOT/'tauri-app/showcase/ProductSurface.tsx').read_text():errors.append('snapshot clock must anchor sample ages')
 for name,digest in manifest.get('renderingSources',{}).items():
     if hashlib.sha256((ROOT/name).read_bytes()).hexdigest()!=digest:errors.append(f'production rendering source changed: {name}')
 host_css=(ROOT/'tauri-app/showcase/demo.css').read_text()
