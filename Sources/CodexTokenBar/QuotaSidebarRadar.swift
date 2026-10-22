@@ -265,43 +265,12 @@ struct QuotaSidebarRadarOutline: View {
     let snapshot: CodexRadarSnapshot?
     let stale: Bool
     let updatedAt: Date?
-    @State private var animationVisible = false
-    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var outline: UnevenRoundedRectangle {
-        let radius: CGFloat = expanded ? 22 : 8
-        return UnevenRoundedRectangle(topLeadingRadius: edge == .right ? radius : 0,
-            bottomLeadingRadius: edge == .right ? radius : 0,
-            bottomTrailingRadius: edge == .left ? radius : 0,
-            topTrailingRadius: edge == .left ? radius : 0)
-    }
-
     var body: some View {
         TimelineView(QuotaSidebarRadarPresentation.schedule(snapshot, updatedAt: updatedAt)) { tick in
             if QuotaSidebarRadarPresentation.windowState(snapshot, stale: stale,
                                                          updatedAt: updatedAt, now: tick.date).active {
-                if !AnimationActivity.runs(visible: animationVisible, reducedMotion: reduceMotion, lowPower: lowPower) {
-                    glow(opacity: 0.9)
-                } else {
-                    TimelineView(.animation(minimumInterval: 0.06)) { context in
-                        let wave = (sin(context.date.timeIntervalSinceReferenceDate * 2 * .pi / 1.6) + 1) / 2
-                        glow(opacity: 0.7 + wave * 0.3, phase: context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3) / 3 * 360)
-                    }
-                }
+                QuotaSidebarRadarGlow(edge: edge, expanded: expanded)
             }
         }
-        .background(AnimationVisibilityProbe { if animationVisible != $0 { animationVisible = $0 } })
-        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
-            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
-        }
-    }
-
-    private func glow(opacity: Double, phase: Double = 0) -> some View {
-        outline.strokeBorder(AngularGradient(colors: [.red.opacity(0.15), .red.opacity(opacity), .red.opacity(0.15)], center: .center, angle: .degrees(phase)), lineWidth: 1.5)
-            .shadow(color: Color.red.opacity(opacity * 0.7), radius: 3)
-            // Clip the glow inside the exact rail bounds. This needs no larger
-            // native window and never changes the pointer interception area.
-            .clipShape(outline)
     }
 }
