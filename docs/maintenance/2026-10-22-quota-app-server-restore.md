@@ -1,6 +1,6 @@
 # 额度和重置卡恢复 Codex 官方查询链路
 
-当前变更仅在 `codex/quota-app-server-restore-20261022`，尚未安装或发布。
+变更在 `codex/quota-app-server-restore-20261022` 集成到 v0.9.7；最终构建、安装、发布状态与资产哈希见 `../releases/v0.9.7-local-locator.json`。
 
 ## 请求与生命周期
 
@@ -21,10 +21,10 @@ macOS 和 Windows 的正式额度入口由 Bar 自建 HTTP 客户端切换为一
 - Windows 原生 Rust 额度/历史相关：177 项通过，0 失败，包含真实 Windows Job Object 关闭清理夹具。远端源码按基线哈希保护同步，更新文件与本机源码逐项校验一致。
 - 新增生命周期回归覆盖共享快照、跨缓存过期复用、RPC 错误、EOF、超时、退避、目录切换和关闭后拒绝新读。
 - Windows 真实账号查询仍受测试所选 Codex Home 未登录限制；只能确认本地握手，不作为实际额度成功验收。
-- 全项目完整回归、安装、UI 验收与发布未执行。
+- v0.9.7 完整回归：Swift1804项、11项环境跳过、0失败；前端1213项、Mac Rust1302项、Windows Rust1252项通过。macOS build929与Windows x64已安装，旧账与测速数据保留核对通过。Mac原生额度/卡片界面和持久进程已验证；Windows UI及ARM64硬件运行未验收。
 
 本机短时常驻资源实验：初始化约 0.30 秒，首次查询 1.36 秒，后续约 0.93/0.95 秒；RSS 65–77 MiB，十秒空闲期无可见 CPU 时间增加。这是特定 macOS/Codex 版本的样本，不代表 Windows 或长期资源上限。
 
 原 0.9.6 维护记录关于“额度 app-server 继承环境”的文字只对应保留的旧实现，并未识别当时正式入口实际使用独立 HTTP。本次以生产入口和真实 RPC 回归重新确认链路。
 
-本地证据：外层 `runs/20261022-quota-transport-audit/`，含不带凭据的审计结果、资源实验、双端日志和完成收据。此前暂停的缓存提醒和 ModelTrace 工作未合入。
+本地证据：外层 `runs/20261022-quota-transport-audit/`，含不带凭据的审计结果、资源实验、双端日志和完成收据。v0.9.7 已恢复独立实际低缓存命中提醒，时间建议及额外扫描仍关闭；ModelTrace PR继续暂停。最终发布证据见 `runs/20261022-quota-cache-v097-release/`。

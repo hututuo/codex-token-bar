@@ -44,7 +44,7 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 
 - 全会话实时活动速率，支持主界面、悬浮窗和状态栏/托盘读数；中断即停、结束最多收尾5秒。
 - 正文 TPS：按本地消息时间和正文分词量计算，展示会话、模型、时间和可信度；主页显示最近6条，详情查看历史，侧栏显示各模型最新及15/30分钟速度。
-- 历史账本保留：会话归档、移动或删除后继续保留已记录用量；fork后自有新增轮次正常统计。低命中提醒与续问建议已移至保留分支，缓存统计、排行、命中率图和费用账本继续提供。
+- 历史账本保留：会话归档、移动或删除后继续保留已记录用量；fork后自有新增轮次正常统计。恢复可关闭的低命中提醒；续问时限建议仍在保留分支，缓存统计、排行、命中率图和费用账本继续提供。
 - 安全自动续跑：先选项目和精确会话，再按间隔、每日时间、额度恢复或服务器容量中断发送一次“继续”；默认关闭，不代替用户批准权限或回答人工输入。
 - 会话增强：支持侧栏删除、Markdown 导出、移动到项目、会话 ID、粘贴修复、阅读宽度和滚动位置恢复，并保留 Codex++ 的 AGPL-3.0 归属。
 - Codex 实例：在 Swift 与跨平台设置中创建或登记隔离实例，独立使用 Codex Home 和桌面数据目录，支持精确启停、严格前缀会话同步、分歧保留、自动同步和校验回滚。
@@ -158,7 +158,7 @@ sessions/
 state_5.sqlite
 ```
 
-`sessions/` 用于精确 token_count、缓存命中率和会话轮次统计。`state_5.sqlite` 在可用时用于补充会话元数据。额度通过官方 HTTP 接口读取当前 Codex 登录，按窗口时长识别 5h / 7d 和接口返回的 Reserve 窗口，并保存轻量额度历史；本地 token 和费用统计仍由本机日志汇总。登录过期时请先在 Codex 中重新登录。
+`sessions/` 用于精确 token_count、缓存命中率和会话轮次统计。`state_5.sqlite` 在可用时用于补充会话元数据。额度和重置卡通过本机常驻 Codex app-server 的官方接口读取，网络请求和鉴权由 Codex 处理；按窗口时长识别 5h / 7d 和接口返回的 Reserve 窗口，并保存轻量额度历史；本地 token 和费用统计仍由本机日志汇总。登录过期时请先在 Codex 中重新登录。
 
 ## 从源码运行
 
@@ -242,7 +242,7 @@ There are now two official implementation lines:
 
 - Live all-session activity speed across the dashboard, floating panel, and status/tray surfaces; interruptions stop promptly and normal completion finishes within five seconds.
 - Body-text TPS from local message timing and tokenized text, with conversation, model, time and confidence; six latest dashboard samples, history details, and latest/15-minute/30-minute model speeds in the sidebar.
-- Durable usage history after sessions are archived, moved or deleted, with fork-owned new rounds counted. Low-cache-hit reminders and follow-up recommendations are kept on a retained branch; cache statistics, rankings, hit-rate charts and the cost ledger remain available.
+- Durable usage history after sessions are archived, moved or deleted, with fork-owned new rounds counted. Optional low-cache-hit reminders are restored; follow-up timing recommendations remain on the retained branch. Cache statistics, rankings, hit-rate charts and the cost ledger remain available.
 - Safe automatic resume: choose a project and exact conversation, then continue on an interval, local daily time, quota recovery, or a confirmed server-capacity interruption. It is off by default and never approves permissions or answers interactive prompts for you.
 - Session enhancements: sidebar deletion, Markdown export, project moves, session IDs, paste repair, reading width, and scroll restoration, with Codex++ AGPL-3.0 attribution preserved.
 - Codex instances: create or register isolated instances in both native and cross-platform settings, with separate Codex Home and desktop data, identity-checked lifecycle control, strict-prefix session sync, conflict preservation, automatic sync, and verified rollback.
@@ -354,7 +354,7 @@ sessions/
 state_5.sqlite
 ```
 
-`sessions/` powers precise token_count, cache hit-rate, and turn-level statistics. `state_5.sqlite` supplements session metadata. Quotas are read through the official HTTP endpoint for the Codex Home currently selected in app settings; window duration identifies 5h, 7d, and any Reserve windows returned by the endpoint. Lightweight quota history and local token and cost totals stay on this device. If the login expires, sign in again in Codex.
+`sessions/` powers precise token_count, cache hit-rate, and turn-level statistics. `state_5.sqlite` supplements session metadata. Quotas and reset cards are read through a persistent local Codex app-server for the Codex Home selected in app settings; Codex handles authentication and network requests, and window duration identifies 5h, 7d, and any Reserve windows returned by the endpoint. Lightweight quota history and local token and cost totals stay on this device. If the login expires, sign in again in Codex.
 
 ## Run From Source
 

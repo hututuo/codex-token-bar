@@ -1,0 +1,87 @@
+{
+  "version": "0.9.7",
+  "macBuild": 929,
+  "minimumNextMacBuild": 930,
+  "tag": "v0.9.7",
+  "status": "VERIFIED_FOR_PUBLICATION",
+  "releaseURL": "https://github.com/hututuo/codex-token-bar/releases/tag/v0.9.7",
+  "runtimeCodeCommit": "ed9db602713207794ee7ef32b2ed543b859acd73",
+  "compiledProductionSourceCommit": "3ab7c45fe16615bf9ab5c229fcb70f9cc9edc555",
+  "productionEquivalence": "PASS: only standalone macOS QA example import differs; shipping targets identical",
+  "ciRunID": 39726847748,
+  "ciStatus": "PASS",
+  "tests": {
+    "swiftTotal": 1804,
+    "swiftSkipped": 11,
+    "swiftFailed": 0,
+    "frontendPassed": 1213,
+    "scriptPassed": 102,
+    "scriptSkipped": 1,
+    "macRustPassed": 1302,
+    "macRustIgnored": 10,
+    "windowsNativePassed": 1252,
+    "windowsNativeIgnored": 10,
+    "windowsNativeFailed": 0
+  },
+  "signatures": "Mac ad-hoc + Sparkle Ed25519; Windows Tauri Ed25519 verified",
+  "notarized": false,
+  "windowsARM64HardwareRuntime": "NOT_RUN",
+  "windowsVisualUI": "NOT_RUN",
+  "windowsAuthenticatedQuota": "NOT_RUN: test host not signed in",
+  "macQuotaAndCards": "PASS native UI with persistent owned child",
+  "macInstalledExecutableSHA256": "2fa12e4bab6fc239be687fc33992fbf749133ee49f06f894acbe789c58074efb",
+  "windowsInstalledExecutableSHA256": "acf442e0b94fc41622145d2a07ed86a7e74c7b57dbe7b020daebe962a88e066d",
+  "releaseNotes": "release-notes/v0.9.7.md",
+  "feed": "https://raw.githubusercontent.com/hututuo/codex-token-bar/main/appcast.xml",
+  "previousPublicBoundary": "v0.9.6",
+  "nextChangelogBase": "v0.9.7",
+  "cacheReminder": "restored actual token low-hit reminder; independent feature gates",
+  "cacheTimeRecommendations": "disabled; no dedicated scanner or side DB writes",
+  "assets": [
+    {
+      "name": "CodexTokenBar-v0.9.7-macos-arm64.dmg",
+      "bytes": 15686631,
+      "sha256": "5f02fb4fe42f7883d28afd15a5b294403dcbe3a94ebbe1dcca7b512592216b4a"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.7-macos-arm64.app.zip",
+      "bytes": 14754032,
+      "sha256": "1692951b14b28834bd56b5ca7bbdbce70c07afb0367d494c6caf4ad1de325b5b"
+    },
+    {
+      "name": "CodexTokenBar.app.zip",
+      "bytes": 14754032,
+      "sha256": "1692951b14b28834bd56b5ca7bbdbce70c07afb0367d494c6caf4ad1de325b5b"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.7-windows-x64-setup.exe",
+      "bytes": 10385151,
+      "sha256": "89a859d16f336aa51b2862cbfbae1d66fab766449b11413f33b85aeb78096b20"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.7-windows-x64-setup.exe.sig",
+      "bytes": 436,
+      "sha256": "60fe7bd9e8d3b45fc4c60e6406d60b255811c5065ff853db0a675a9f6470a822"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.7-windows-arm64-setup.exe",
+      "bytes": 9297689,
+      "sha256": "840bae8860a478683542bb4d2ac75165178a844d4bd740fe879d75bce893331a"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.7-windows-arm64-setup.exe.sig",
+      "bytes": 440,
+      "sha256": "08e57b8ed703b3b6db24b865d3f78859deb3b86403852216ef3bf9cec3ebdd61"
+    },
+    {
+      "name": "latest-windows.json",
+      "bytes": 3364,
+      "sha256": "9260c8ae9f3f2f51b9388f436c5fef87153695111d27cdaa80e14f5943b91705"
+    },
+    {
+      "name": "SHA256SUMS-v0.9.7.txt",
+      "bytes": 832,
+      "sha256": "c6829c5b1c19e537332ee0984cff8937d0e6c08f0c1f4168de10023642d02949"
+    }
+  ]
+}
