@@ -478,7 +478,9 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                         : snap ? QuotaSidebarMotion.snapFrame(from: current, to: next.rail, time: time, area: area, scale: scale)
                         : QuotaSidebarMotion.frame(from: current, to: next.rail, time: time,
                             expanding: expanding, edge: animationEdge, area: area, scale: scale)
-                    if railPanel.frame != frame { railPanel.setFrame(frame, display: true, animate: false) }
+                    // Let AppKit coalesce drawing at the display boundary. Forcing
+                    // a synchronous display here competes with SwiftUI on every tick.
+                    if railPanel.frame != frame { railPanel.setFrame(frame, display: false, animate: false) }
                     if time >= 1 || reduceNow { self.frameAnimationTask = nil; return false }
                     return true
                 }
@@ -542,7 +544,11 @@ final class QuotaSidebarCanvasView: NSView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let hostFrame = CGRect(x: edge == .right ? bounds.width - 88 : 0,
                                y: (bounds.height - canvasHeight) / 2, width: 88, height: canvasHeight)
-        if host.frame != hostFrame { host.frame = hostFrame }
+        // Moving the reveal canvas must not call NSHostingView.setFrameSize:
+        // assigning a complete frame also invalidates its SwiftUI layout when
+        // only the origin changed. The content size stays fixed while clipping.
+        if host.frame.size != hostFrame.size { host.setFrameSize(hostFrame.size) }
+        if host.frame.origin != hostFrame.origin { host.setFrameOrigin(hostFrame.origin) }
         if let signal, signal.frame != bounds { signal.frame = bounds }
         layer?.cornerRadius = min(22, max(8, 8 + (bounds.width - 16) * 14 / 72))
         layer?.maskedCorners = edge == .right ? [.layerMinXMinYCorner, .layerMinXMaxYCorner] : [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
