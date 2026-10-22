@@ -58,6 +58,11 @@ Section
     CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
   ${EndIf}
   !insertmacro NSIS_HOOK_POSTINSTALL
+  ; Model the GUI Finish callback, which runs after POSTINSTALL and honors /NS.
+  ${If} $UpdateMode = 0
+  ${AndIf} $NoShortcutMode != 1
+    CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  ${EndIf}
   ${If} ${Errors}
     StrCpy $1 "hook error flag set"
   ${Else}

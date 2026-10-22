@@ -80,4 +80,9 @@ AllowSkipFiles off
     !insertmacro TokenBarRestoreShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "startmenu"
   !endif
   !insertmacro TokenBarRestoreShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "desktop"
+  ; Tauri's GUI Finish page runs after POSTINSTALL. Do not let its default
+  ; desktop-shortcut checkbox overwrite the link that we just preserved.
+  ${If} ${FileExists} "$PLUGINSDIR\tokenbar-desktop.lnk"
+    StrCpy $NoShortcutMode 1
+  ${EndIf}
 !macroend
