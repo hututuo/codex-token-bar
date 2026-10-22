@@ -2590,6 +2590,8 @@ fn build_full_dashboard_after_precise_sync(
 
     record_dashboard_aggregate_build_for_testing(codex_home);
     let now_utc = OffsetDateTime::now_utc();
+    #[cfg(test)]
+    let now_utc = tests::dashboard_time_for_test(codex_home, now_utc);
     let data = {
         let _stage =
             PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::DashboardData);
@@ -2847,6 +2849,8 @@ fn cached_dashboard_usage_summary_cache_only(
 ) -> Result<Option<TokenUsageSummary>, String> {
     let local_offset = crate::core::localtime::current_local_offset();
     let now_utc = OffsetDateTime::now_utc();
+    #[cfg(test)]
+    let now_utc = tests::dashboard_time_for_test(codex_home, now_utc);
     if let Some(summary) = cached_dashboard_usage_summary_at(codex_home, now_utc, local_offset)? {
         return Ok(Some(summary));
     }
@@ -2862,6 +2866,8 @@ fn cached_dashboard_usage_summary_snapshot_cache_only(
 ) -> Result<Option<TokenUsageSummarySnapshot>, String> {
     let local_offset = crate::core::localtime::current_local_offset();
     let now_utc = OffsetDateTime::now_utc();
+    #[cfg(test)]
+    let now_utc = tests::dashboard_time_for_test(codex_home, now_utc);
     if let Some(summary) =
         cached_dashboard_usage_summary_snapshot_at(codex_home, now_utc, local_offset)?
     {
@@ -3143,6 +3149,8 @@ fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> Dashboar
     record_dashboard_source_scan_for_testing();
     let local_offset = crate::core::localtime::current_local_offset();
     let now_utc = OffsetDateTime::now_utc();
+    #[cfg(test)]
+    let now_utc = tests::dashboard_time_for_test(codex_home, now_utc);
     DashboardScanSignature {
         codex_home: codex_home.to_path_buf(),
         local_date: local_date_string(now_utc.to_offset(local_offset)),

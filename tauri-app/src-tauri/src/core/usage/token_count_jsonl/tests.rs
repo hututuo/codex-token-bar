@@ -10011,11 +10011,14 @@ fn dashboard_aggregate_cache_does_not_persist_conversation_text() {
 #[test]
 fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_details() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    // Production intentionally rejects an aggregate when the closed five-minute
+    // bucket changes. Keep this round trip inside one bucket deterministically.
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
+    let clock = DashboardTestClock::at(&root, "2026-10-22T03:20:14Z");
     write_lines(
         &session_dir.join("rollout-019eslim-aggregate.jsonl"),
         &[
@@ -10082,6 +10085,12 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
         full.precise_recent_usage_covered_at
     );
     assert_eq!(startup.settled_through, full.settled_through);
+    clock.set("2026-10-22T03:20:15Z");
+    assert!(
+        cached_dashboard_snapshot_for_startup(&root).is_none(),
+        "the next settled bucket must invalidate the old startup time axis"
+    );
+    clock.set("2026-10-22T03:20:14Z");
     let compact_index = ExactUsageIndex::open(&root).unwrap();
     let compact_signature = dashboard_index_signature(&root, compact_index.revision().unwrap());
     drop(compact_index);
@@ -12528,6 +12537,47 @@ fn age_file(path: &Path, age: StdDuration) {
     let file = fs::OpenOptions::new().write(true).open(path).unwrap();
     let times = fs::FileTimes::new().set_modified(SystemTime::now() - age);
     file.set_times(times).unwrap();
+}
+
+// Full refreshes execute on an owner thread. Scope the clock by canonical Home
+// so the caller and its owner share time without affecting unrelated tests.
+static DASHBOARD_TEST_CLOCKS: OnceLock<Mutex<HashMap<PathBuf, OffsetDateTime>>> = OnceLock::new();
+
+pub(super) fn dashboard_time_for_test(home: &Path, actual: OffsetDateTime) -> OffsetDateTime {
+    let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    DASHBOARD_TEST_CLOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock().unwrap().get(&home).copied().unwrap_or(actual)
+}
+
+struct DashboardTestClock {
+    home: PathBuf,
+    previous: Option<OffsetDateTime>,
+}
+
+impl DashboardTestClock {
+    fn at(home: &Path, timestamp: &str) -> Self {
+        let home = fs::canonicalize(home).unwrap();
+        let now = OffsetDateTime::parse(timestamp, &Rfc3339).unwrap();
+        let previous = DASHBOARD_TEST_CLOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+            .lock().unwrap().insert(home.clone(), now);
+        Self { home, previous }
+    }
+    fn set(&self, timestamp: &str) {
+        let now = OffsetDateTime::parse(timestamp, &Rfc3339).unwrap();
+        DASHBOARD_TEST_CLOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+            .lock().unwrap().insert(self.home.clone(), now);
+    }
+}
+
+impl Drop for DashboardTestClock {
+    fn drop(&mut self) {
+        let mut clocks = DASHBOARD_TEST_CLOCKS.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+        if let Some(previous) = self.previous {
+            clocks.insert(self.home.clone(), previous);
+        } else {
+            clocks.remove(&self.home);
+        }
+    }
 }
 
 struct AggregateCacheEnvGuard {
