@@ -18,11 +18,11 @@ struct RecentChartInteractionGuide: View {
             if expanded {
                 HStack(spacing: 20) {
                     Group {
-                        if reduceMotion { RecentChartGuideDemo(phase: 3) }
+                        if reduceMotion { RecentChartGuideDemo(phase: 5) }
                         else {
-                            PhaseAnimator([0, 1, 2, 3, 4]) { phase in
+                            PhaseAnimator([0, 1, 2, 3, 4, 5, 6]) { phase in
                                 RecentChartGuideDemo(phase: phase)
-                            } animation: { _ in .easeInOut(duration: 2) }
+                            } animation: { phase in .easeInOut(duration: phase == 2 || phase == 5 ? 1 : 1.6) }
                         }
                     }.frame(width: 220, height: 108).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 6) {
@@ -43,8 +43,8 @@ struct RecentChartInteractionGuide: View {
 
 private struct RecentChartGuideDemo: View {
     let phase: Int
-    private let positions: [CGFloat] = [35, 65, 125, 187, 45]
-    private let values = ["单点 3.2万 Token", "起点 12:05", "区间 8.4万 Token", "区间 12.6万 Token", "重新选择"]
+    private let positions: [CGFloat] = [35, 65, 65, 125, 187, 187, 45]
+    private let values = ["单点 3.2万 Token", "单点 4.1万 Token", "起点 12:05", "区间 8.4万 Token", "区间 12.6万 Token", "区间 12.6万 Token", "重新选择"]
     var body: some View {
         GeometryReader { proxy in
             let x = positions[phase]
@@ -54,7 +54,7 @@ private struct RecentChartGuideDemo: View {
                     p.move(to: CGPoint(x: 14, y: 88)); p.addLine(to: CGPoint(x: 207, y: 88))
                     p.move(to: CGPoint(x: 14, y: 56)); p.addLine(to: CGPoint(x: 207, y: 56))
                 }.stroke(AppTheme.border, lineWidth: 1)
-                if phase == 2 || phase == 3 {
+                if (2...5).contains(phase) {
                     Rectangle().fill(AppTheme.accentBlue.opacity(0.14))
                         .frame(width: max(1, x - 65), height: 51).offset(x: 65, y: 37)
                 }
@@ -62,19 +62,21 @@ private struct RecentChartGuideDemo: View {
                     p.move(to: CGPoint(x: 14, y: 80))
                     p.addLines([CGPoint(x: 35, y: 67), CGPoint(x: 65, y: 74), CGPoint(x: 95, y: 49), CGPoint(x: 125, y: 61), CGPoint(x: 155, y: 44), CGPoint(x: 187, y: 53), CGPoint(x: 207, y: 39)])
                 }.stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: 2, lineJoin: .round))
-                Path { p in p.move(to: CGPoint(x: x, y: 35)); p.addLine(to: CGPoint(x: x, y: 89)) }
+                Path { p in p.move(to: .zero); p.addLine(to: CGPoint(x: 0, y: 54)) }
                     .stroke(AppTheme.accentBlue.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                if phase == 1 || phase == 3 {
+                    .frame(width: 1, height: 54).position(x: x, y: 62)
+                if phase == 2 || phase == 5 {
                     Circle().stroke(AppTheme.accentBlue.opacity(0.7), lineWidth: 2)
-                        .frame(width: 20, height: 20).position(x: x, y: 69)
+                        .frame(width: 20, height: 20).position(x: x, y: 69).transition(.identity)
                 }
                 Image(systemName: "cursorarrow").font(.system(size: 19)).foregroundStyle(.primary)
                     .position(x: x + 5, y: 75)
-                Text(values[phase]).font(.system(size: 10, weight: .semibold)).monospacedDigit()
+                Text(values[phase]).transaction { $0.animation = nil }.font(.system(size: 10, weight: .semibold)).monospacedDigit()
                     .padding(.horizontal, 7).padding(.vertical, 4)
                     .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 5))
                     .position(x: min(proxy.size.width - 68, max(68, x)), y: 19)
-                Text(phase == 1 ? "点击起点" : phase == 3 ? "点击终点 · 弹出数据" : "左右移动查看")
+                Text(phase == 2 ? "点击起点" : phase == 5 ? "点击终点 · 弹出数据" : "左右移动查看")
+                    .transaction { $0.animation = nil }
                     .font(.system(size: 9)).foregroundStyle(.secondary).position(x: 110, y: 100)
             }
         }

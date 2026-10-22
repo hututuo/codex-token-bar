@@ -10,4 +10,6 @@ The collapsed sidebar's meter fills now change actual dimensions rather than sca
 
 Validation: 196 native selected tests (193 passed, 3 opt-in local audit/render tests skipped), 180 frontend tests and the production frontend build passed. The real cache toggle still removes/restores plotted observations; its test now uses the actual host height instead of a fixed 640pt coordinate. Browser checks verified guide collapse/reopen and two real chart clicks producing an interval readout. Family tests preserve Tokens, costs and unknown-price handling. Prior sidebar-storage Rust tests remain 45 passed. Windows source is synchronized; Windows installation, full build and physical multi-monitor acceptance were not performed in this task.
 
-Local installation/rollback records are in `runs/20261022-chart-guide-model-families/` outside the release tree. Build937 was superseded before installation; the final local candidate is build938. No public release is authorized by this maintenance change.
+Local installation/rollback records are in `runs/20261022-chart-guide-model-families/` outside the release tree. Build937 was superseded before installation; build938 was installed and verified before the final animation polish in build939. No public release is authorized by this maintenance change.
+
+Native animation polish: separate movement and click-hold phases, animate the marker position with the cursor, and switch readout/caption text without crossfade ghosting. The 20 production chart interaction tests passed again.
