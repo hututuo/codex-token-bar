@@ -1,7 +1,36 @@
 <?xml version='1.0' encoding='utf-8'?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
-        <title>Codex Token Bar-928</title>
+        <title>Codex Token Bar</title>
+        <item>
+            <title>0.9.7</title>
+            <pubDate>Thu, 22 Oct 2026 13:26:50 +0800</pubDate>
+            <sparkle:version>929</sparkle:version>
+            <sparkle:shortVersionString>0.9.7</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Codex Token Bar v0.9.7
+
+## 简体中文
+
+- 额度和重置卡改由本机 Codex 官方接口查询，复用一个后台子进程，减少反复初始化。额度与卡片共享查询结果，并处理超时、断线重连和退出清理。
+- 恢复可关闭的低缓存命中提醒：按实际返回的输入与缓存 token 判断，提示可能由模型、思考强度或上下文变化造成的低命中。
+- 续问时限建议、缓存间隔图及其额外扫描仍停用。缓存命中统计、费用账本和已有历史数据保留。
+- 保留 v0.9.6 的 Windows 自定义启动入口保护与 RadarBench v6 兼容修复；适配新版 macOS Codex 的内置 CLI 目录。
+
+额度查询需要本机已安装并登录 Codex。macOS 最低 14，当前 Mac 包为 Apple Silicon；Windows 提供 x64 和 ARM64。macOS 为 ad-hoc 签名、未公证，Windows 安装包没有商业代码签名；自动更新使用各自的更新签名验证。
+
+## English
+
+- Query quota and earned reset cards through the local official Codex interface. Reuse one background child process, share the returned snapshot, and handle timeouts, reconnects and owned-process cleanup.
+- Restore optional low-cache-hit reminders based on reported input and cached tokens, with model, reasoning-effort and context changes explained as possible causes.
+- Follow-up timing recommendations, cache interval charts and their extra scanner remain disabled. Cache accounting, the cost ledger and existing history are retained.
+- Keep the Windows custom-launcher protection and RadarBench v6 fixes from v0.9.6, and recognize the current macOS bundled Codex CLI location.
+
+Quota queries require a locally installed and signed-in Codex. macOS 14 or newer is required; the Mac package is for Apple Silicon. Windows x64 and ARM64 packages are included. The Mac app is ad-hoc signed and not notarized; Windows installers do not have a commercial code-signing certificate. Both automatic-update lanes verify their respective update signatures.
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.7/CodexTokenBar-v0.9.7-macos-arm64.app.zip" length="14754032" type="application/octet-stream" sparkle:edSignature="uOnGv8Z/Uvf8w16e3kdBhJx3LP7OthHeJCymr5EXzumOOVDd8HpSYwV3P86xnzxMDqh3otUgu1dbqs6AYiLYAQ==" />
+        </item>
         <item>
             <title>0.9.6</title>
             <pubDate>Thu, 22 Oct 2026 11:12:37 +0800</pubDate>
@@ -123,43 +152,6 @@ The old Windows executable controls its own updater behavior. If automatic updat
 Ordinary API keys cannot query subscription quotas. If the login expires, sign in again in Codex.
 </description>
             <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.3/CodexTokenBar-v0.9.3-macos-arm64.app.zip" length="13052707" type="application/octet-stream" sparkle:edSignature="F5nDJpadOvVLIo8urNDGayUoNndAsawD3OHb3hSgB1vAEaN5Lq7swKavsyl/X0Yb1sOJBMkHwrf3k5vA+nL+AA==" />
-        </item>
-        <item>
-            <title>0.9.2</title>
-            <pubDate>Sat, 26 Sep 2026 14:43:11 +0000</pubDate>
-            <sparkle:version>902</sparkle:version>
-            <sparkle:shortVersionString>0.9.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"># v0.9.2
-
-新增独立额度侧栏；新安装默认启用额度侧栏，升级保留已有浮窗和状态栏显式设置。修复窗口恢复、引导布局及源文件替换漏检，稳定刷新继续使用轻量元数据检查。历史无报价记录明确显示未定价。
-
-修复价格未知提示的显示范围：单个模型缺少报价时，仅该模型显示“价格未知”，其他模型的费用仍然显示，并标记为“已知价格小计”；全部计费用量均无报价时显示“—”，避免误报为零费用。
-
-额度侧栏的 5h 与 7d 圆环内增加本地重置日期和时间；众测推荐每页显示三项，每四秒自动翻页，悬停或键盘聚焦时暂停。
-
-缓存命中偏低时，一级侧栏显示提示并展开二级菜单；提醒优先展示正式会话名称，不把首条提问当成标题，仍可进入详细菜单查看。新建会话和上下文压缩后的首个请求不触发低命中提醒，review 会话也不参与提醒。关闭同一次提醒后不重复弹出，提醒开关继续生效。
-
-速率条满格值在首次运行本版时统一初始化为 150 tok/s，包括升级前保存过其他数值的用户；之后的手动调整仍按本地设置保存。Swift 与跨平台/Windows 端一致，可调范围为 50–500 tok/s。修复 Windows 额度侧栏展开时的原生裁切，使圆环正常显示。
-
-较旧程序不保证能读取已升级的精确索引，降级前请保留数据备份，不要删除永久账本。
-
-## English
-
-Adds a separate quota sidebar, enabled by default for new installations. Upgrades preserve explicit floating-window and menu-bar preferences. Fixes window restoration, onboarding layout, and missed source-file replacements while keeping steady-state refreshes lightweight. Historical usage without a quoted price remains visibly unpriced.
-
-Limits unknown-price messages to the affected model. Other model costs remain visible as a known-price subtotal. When all billable usage is unpriced, the cost shows “—” instead of an incorrect zero.
-
-The 5h and 7d quota rings now show their local reset date and time. Community recommendations show three entries per page, advancing every four seconds and pausing on hover or keyboard focus.
-
-Low cache-hit reminders now appear on the collapsed sidebar and expand its summary. Notices prefer the explicit session name rather than treating the first prompt as a title, with details still available in the full menu. The first request in a new or compacted session and guardian review sessions do not trigger low-hit reminders. Dismissing a request prevents repeat alerts for that request, and the reminder setting remains respected.
-
-On first launch of this version, the rate-bar full scale is initialized to 150 tok/s, including for users with a previously saved value. Later manual changes remain saved locally. Swift and cross-platform/Windows builds share this behavior and a 50–500 tok/s range. Fixes native clipping when the Windows quota sidebar expands so quota rings remain visible.
-
-Older versions may not read an upgraded exact-usage index. Preserve a data backup before downgrading and do not delete the permanent ledger.
-</description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.2/CodexTokenBar-v0.9.2-macos-arm64.app.zip" length="13019250" type="application/octet-stream" sparkle:edSignature="3AM/WZXAve5SYpQFJkSOQn1nzKdlvCnffclU1Lo8F63445aeYGMI6m5jm+pyaCtEURrK4GGzd2Yw86E1hT0UBA==" />
         </item>
     </channel>
 </rss>
