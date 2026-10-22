@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-22T11:15:07.060857+00:00",
+  "featureBaseline": "v0.9.7",
+  "featureBaselineCommit": "e0440813d2c5131ad58be272af57951055005c2d",
+  "data": "Synthetic public demonstration data; no user logs, credentials, or account readings.",
+  "surfaces": "Production React components in an isolated web canvas. README state loops use editorial crossfades, not native window-motion recordings.",
+  "cacheFilm": "Independent simulated Codex UI, original SwiftUI warning rendering, original procedural UI sound effects.",
+  "license": "AGPL-3.0; repository MIT and Codex++ notices retained.",
+  "assets": [
+    {
+      "file": "Assets/showcase/body-tps.png",
+      "bytes": 46076,
+      "sha256": "7f8a923b7e0dbda45f8b334318b366e468e73af1ec748057fe0dd12767c11ad3"
+    },
+    {
+      "file": "Assets/showcase/cache-poster.jpg",
+      "bytes": 87440,
+      "sha256": "ebf0d57792a59f1ea0141518f504bd3c8cf8d3ccd2f8cf961f99658a3f10f1e0"
+    },
+    {
+      "file": "Assets/showcase/cache-reminder.gif",
+      "bytes": 1282550,
+      "sha256": "1412f890763cc529c4a29690a506b5945a1ca323217b01c2911cc1a7c811a8ec"
+    },
+    {
+      "file": "Assets/showcase/cache-reminder.mp4",
+      "bytes": 1187186,
+      "sha256": "b6e406d6c3072f8df5d4585e07e023e317ca73d350e43e322901f60682b3f578"
+    },
+    {
+      "file": "Assets/showcase/displays-detail.png",
+      "bytes": 54908,
+      "sha256": "a2470b0b78c84f509ad50a4f57114698b9826d64c5e3ef4a6c92c3a6ca14aeae"
+    },
+    {
+      "file": "Assets/showcase/displays-dock.png",
+      "bytes": 48022,
+      "sha256": "d2673624b6019635a9ad8c84c9a8d7b7617e68afe09086859e87e58e5ef8d682"
+    },
+    {
+      "file": "Assets/showcase/displays-hover.png",
+      "bytes": 47240,
+      "sha256": "dd037b5b5fc2b0a6d88bc8405cfac2b55fa1704796edea3ae059c7e19e1b6fc4"
+    },
+    {
+      "file": "Assets/showcase/displays-rest.png",
+      "bytes": 40897,
+      "sha256": "c1288c06ff7d064a0b59205cefb5161cdbc65e9cee2f1e9a2ba13ec53c5bc8fe"
+    },
+    {
+      "file": "Assets/showcase/displays-right.png",
+      "bytes": 62011,
+      "sha256": "13037041a08e310f3ff1c2610bbdd1ba35bb070d23da6fae2b96ad9e823c8aff"
+    },
+    {
+      "file": "Assets/showcase/displays.gif",
+      "bytes": 1266986,
+      "sha256": "ebeb573a8c6149b5ffc438059a714ad7997248ed09c9ffaae8b49ce93039f3f1"
+    },
+    {
+      "file": "Assets/showcase/heatmap.png",
+      "bytes": 58322,
+      "sha256": "5d9fe556f172d81cb2f5fce980bed4d72edb9b9804ad50ae3996076142b9efac"
+    },
+    {
+      "file": "Assets/showcase/icon.png",
+      "bytes": 40082,
+      "sha256": "d97664ea82aa6beb9526bb95de01fff2cf23a2c020d4cc0c1d8696073238ef71"
+    },
+    {
+      "file": "Assets/showcase/usage-24h.png",
+      "bytes": 87978,
+      "sha256": "22755a3f009ef65507b92b4a3d1399e07ceca6d0dab8c5e46603610a2896fa29"
+    },
+    {
+      "file": "Assets/showcase/usage-30d.png",
+      "bytes": 73547,
+      "sha256": "d0f66e90a24f8b37d92cd2e287a4917c40313aaa79d708ddf0da9920e8a0917c"
+    },
+    {
+      "file": "Assets/showcase/usage-7d.png",
+      "bytes": 81460,
+      "sha256": "603a1273714addb4125a51ad1ba95bd0356af8cc48bb0840269b6daef3edf62f"
+    },
+    {
+      "file": "Assets/showcase/usage.gif",
+      "bytes": 1173974,
+      "sha256": "8357452c00a16de787280b0fbb72a11c0bd2096a2664649e10ff59fb1b5bc858"
+    },
+    {
+      "file": "docs/showcase/demo/assets/index-BGiMRozG.css",
+      "bytes": 292411,
+      "sha256": "7b150817fd21f8a403b5c55b69b84d705fe16194748687c82f62abc1268e13fd"
+    },
+    {
+      "file": "docs/showcase/demo/assets/index-DXBQmexT.js",
+      "bytes": 390660,
+      "sha256": "4a644607f4858fe69fbdac4d8d6b2d63e277c28f2ac82c817b5ee5e0c6b252a6"
+    },
+    {
+      "file": "docs/showcase/demo/index.html",
+      "bytes": 376,
+      "sha256": "5a6563f9190b778c7d043c915f7f2bbd094f7700cbe8cbb0b52f49b2d8c70d63"
+    }
+  ]
+}
