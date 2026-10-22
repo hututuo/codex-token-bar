@@ -668,7 +668,7 @@ struct StatusBarTokenPopoverView: View {
                             .monospacedDigit()
                     }
                 }
-                StatusBarRateTrack(rate: metricValues.rate)
+                StatusBarRateTrack(rate: metricValues.rate, modelRates: live.modelRates)
             }
         case .usage:
             let usage = StatusBarUsageMetricsPresentation(snapshot: snapshot)
@@ -823,6 +823,7 @@ private struct StatusBarActionButton: View {
 
 private struct StatusBarRateTrack: View {
     let rate: Double?
+    let modelRates: [ModelRateContribution]
     @AppStorage(TokenRateScaleSettings.key) private var tokenRateFullScale = TokenRateScaleSettings.defaultValue
 
     private var fillFraction: CGFloat {
@@ -836,15 +837,7 @@ private struct StatusBarRateTrack: View {
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.primary.opacity(0.07))
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.cyan.opacity(0.95), Color.blue.opacity(0.90)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: rate == nil ? 0 : max(5, proxy.size.width * fillFraction))
+                SmoothRateFillBar(fraction: rate == nil ? 0 : Double(fillFraction), minimumFraction: rate == nil ? 0 : 5 / max(1, proxy.size.width), modelRates: modelRates)
             }
         }
         .frame(height: 6)

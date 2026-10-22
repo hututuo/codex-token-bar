@@ -28,7 +28,7 @@ export function LiveRateMeter({ fullScale, liveRateEnabled, onFullScaleChange, s
             <span>量程 {scaleLimit} tok/s</span>
           </div>
           <div className="rate-track" aria-hidden="true">
-            <i className="rate-fill" style={rateFillStyle(liveRateEnabled ? snapshot.tokensPerSecond : 0, scaleLimit)} />
+            <i className="rate-fill" style={rateFillStyle(liveRateEnabled ? snapshot.tokensPerSecond : 0, scaleLimit, snapshot.modelRates)} />
           </div>
         </div>
       </div>

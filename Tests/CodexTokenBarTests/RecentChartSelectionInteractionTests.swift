@@ -4,6 +4,14 @@ import XCTest
 @testable import CodexTokenBar
 
 final class RecentChartSelectionInteractionTests: XCTestCase {
+    func testGuideCursorFollowsEveryActualPolylineVertexAndIntermediateSegment() {
+        for point in RecentChartGuideGeometry.curve { XCTAssertEqual(RecentChartGuideGeometry.point(at: point.x), point) }
+        XCTAssertEqual(RecentChartGuideGeometry.point(at: 80), CGPoint(x: 80, y: 61.5))
+        XCTAssertEqual(RecentChartGuideGeometry.point(at: 95).y, 49)
+        XCTAssertEqual(RecentChartGuideGeometry.point(at: -10), RecentChartGuideGeometry.curve.first)
+        XCTAssertEqual(RecentChartGuideGeometry.point(at: 500), RecentChartGuideGeometry.curve.last)
+    }
+
     func testSevenDayFineSeriesHitTestingUsesTheDrawnSubpixelSpacing() {
         let count = 30 * 24 * 12
         let width: CGFloat = 980 * 30 / 7

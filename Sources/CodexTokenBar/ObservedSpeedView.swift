@@ -29,7 +29,7 @@ struct ObservedSpeedView: View {
                     HStack(spacing: 6) {
                         Text(speedTimestamp(sample.endedAt)).font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
                             .frame(width: 104, alignment: .leading)
-                        Text(sample.model).font(.system(size: 10, weight: .medium, design: .monospaced))
+                        Text(sample.model).foregroundStyle(ModelUsagePresentation.color(for: sample.model)).font(.system(size: 10, weight: .medium, design: .monospaced))
                             .lineLimit(1).frame(width: 100, alignment: .leading)
                         Text(sample.bodyTypeLabel).font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 44, alignment: .leading)
                         Text(monitor.speedThreadTitle(sample.threadID)).font(.system(size: 10)).foregroundStyle(.secondary)
@@ -73,7 +73,7 @@ struct BodySpeedModelTable: View {
             }.font(.system(size: 10)).foregroundStyle(ink.opacity(0.75))
             ForEach(monitor.latestModelSpeeds30m) { model in
                 HStack(spacing: 6) {
-                    Text(model.model.replacingOccurrences(of: "gpt-", with: "")).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).help(model.model)
+                    Text(model.model.replacingOccurrences(of: "gpt-", with: "")).foregroundStyle(ModelUsagePresentation.color(for: model.model)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).help(model.model)
                     Text(model.tokensPerSecond, format: .number.precision(.fractionLength(1))).bold().monospacedDigit().frame(width: 48, alignment: .trailing)
                         .help("最新一条 · " + (model.lastMeasuredAt.map(speedTimestamp) ?? "时间未知"))
                     average(model.model, monitor.modelSpeeds5m)
@@ -105,7 +105,7 @@ struct ObservedSpeedSidebarView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(speedTimestamp(sample.endedAt)).font(.system(size: 9)).foregroundStyle(.white.opacity(0.85))
-                            Text(sample.model.replacingOccurrences(of: "gpt-", with: "")).font(.system(size: 10, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                            Text(sample.model.replacingOccurrences(of: "gpt-", with: "")).foregroundStyle(ModelUsagePresentation.color(for: sample.model)).font(.system(size: 10, weight: .semibold)).lineLimit(1)
                             Spacer(minLength: 0)
                             Text("\(sample.tokensPerSecond, specifier: "%.1f") TPS").font(.system(size: 11, weight: .semibold)).monospacedDigit()
                                 .foregroundStyle(sample.bodyQuality.included ? Color.white : Color.orange)
@@ -194,8 +194,10 @@ private struct BodySpeedTableRow: View {
                 .frame(width: 112, alignment: .leading)
             VStack(alignment: .leading, spacing: compact ? 1 : 3) {
                 Text(title).lineLimit(1)
-                Text("轮 \(sample.turnID.suffix(6)) · \(sample.model.replacingOccurrences(of: "gpt-", with: ""))")
-                    .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 3) {
+                    Text("轮 \(sample.turnID.suffix(6)) ·").foregroundStyle(.secondary)
+                    Text(sample.model.replacingOccurrences(of: "gpt-", with: "")).foregroundStyle(ModelUsagePresentation.color(for: sample.model))
+                }.font(.system(size: 9)).lineLimit(1)
             }.frame(maxWidth: .infinity, alignment: .leading)
             Text(String(sample.itemID.suffix(9))).font(.system(size: 9, design: .monospaced)).frame(width: 72, alignment: .leading)
             Text(sample.bodyTypeLabel).frame(width: 56, alignment: .leading)

@@ -1,3 +1,4 @@
+import { modelUsageColor } from "./modelUsagePresentation";
 import { DiagnosticNotice } from "./DiagnosticNotice";
 import { radarBenchKnownMean } from "../domain/codexRadar/radarBench";
 import { memo, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -55,6 +56,7 @@ import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../sty
 
 const RADAR_REFRESH_INTERVAL_MS = 300_000;
 const RADAR_CHART_COLORS = ["#18a7f2", "#ff8a2c", "#2f7df6", "#32b85f", "#a65af5"];
+const radarSeriesColor = (series: CodexRadarChartSeries, index: number) => series.model != null ? modelUsageColor(series.model) : RADAR_CHART_COLORS[index % RADAR_CHART_COLORS.length];
 
 interface CodexRadarStripProps {
   refreshGeneration?: number;
@@ -1245,10 +1247,10 @@ function RadarChartToggleRow({
             className={isActive ? "codex-radar-chart-toggle is-active" : "codex-radar-chart-toggle"}
             key={item.id}
             onClick={() => onToggle(item.id, !isActive)}
-            style={{ borderColor: isActive ? RADAR_CHART_COLORS[index % RADAR_CHART_COLORS.length] : undefined }}
+            style={{ borderColor: isActive ? radarSeriesColor(item, index) : undefined }}
             type="button"
           >
-            <i style={{ background: RADAR_CHART_COLORS[index % RADAR_CHART_COLORS.length] }} />
+            <i style={{ background: radarSeriesColor(item, index) }} />
             {compactModelLabel(item.label)}
           </button>
         );
@@ -1350,7 +1352,7 @@ function RadarLineChart({
         const points = item.points
           .filter((point) => xIndex.has(point.rawLabel) && Number.isFinite(point.value))
           .map((point) => ({ x: xPosition(point.rawLabel), y: yPosition(point.value), raw: point.rawLabel, value: point.value }));
-        const color = RADAR_CHART_COLORS[index % RADAR_CHART_COLORS.length];
+        const color = radarSeriesColor(item, index);
         const polyline = points.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
         return (
           <g key={item.id}>

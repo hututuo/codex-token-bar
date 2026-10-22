@@ -55,6 +55,7 @@ export function floatingSnapshotForLiveRate(
   const liveRateStatus = compactLiveRateStatus(liveRate);
   const snapshot: FloatingPanelSnapshot = {
     ...baseFloatingPanelSnapshot,
+    modelRates: liveRate.modelRates,
     speedSamples: liveRate.speedSamples,
     modelSpeeds: liveRate.modelSpeeds,
     modelSpeeds5m: liveRate.modelSpeeds5m,
@@ -117,6 +118,7 @@ export function disabledFloatingLiveSnapshot(
   return {
     ...snapshot,
     tokensPerSecond: 0,
+    modelRates: [],
     maxTokensPerSecond: baseFloatingPanelSnapshot.maxTokensPerSecond,
     liveRateAvailable: false,
     liveRateStatusKind: undefined,
@@ -149,6 +151,7 @@ export function liveRateStreamStartFailureSnapshot(message: string): LiveRateSna
     selectedThreadTitle: "未选择",
     selectedTokensPerSecond: 0,
     tokensPerSecond: 0,
+    modelRates: [],
     totalTokens: 0,
     totalTokensToday: 0,
     requestsToday: 0,

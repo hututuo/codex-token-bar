@@ -12,7 +12,10 @@ export interface CacheUsageAdvice {
   model?: string | null;
 }
 
+export interface ModelRateContribution { model: string; tokensPerSecond: number }
+
 export interface LiveRateSnapshot {
+  modelRates?: ModelRateContribution[];
   speedSamples?: SpeedSample[];
   modelSpeeds?: ModelSpeedSummary[];
   modelSpeeds5m?: ModelSpeedSummary[];
@@ -50,6 +53,7 @@ export interface LiveRateStreamLease {
 }
 
 export interface FloatingPanelSnapshot {
+  modelRates?: ModelRateContribution[];
   speedSamples?: SpeedSample[];
   modelSpeeds?: ModelSpeedSummary[];
   modelSpeeds5m?: ModelSpeedSummary[];

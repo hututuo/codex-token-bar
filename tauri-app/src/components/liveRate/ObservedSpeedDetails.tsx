@@ -1,4 +1,5 @@
 import { BodySpeedTrend } from "./BodySpeedTrend";
+import { modelUsageColor } from "../modelUsagePresentation";
 import { createPortal } from "react-dom";
 import { useBodySpeedDetailsRequests } from "./bodySpeedDetailsBridge";
 import { invoke } from "@tauri-apps/api/core";
@@ -28,7 +29,7 @@ export function ModelSpeedWindows({ data }: { data: ObservedSpeedData }) {
     return <div className="body-speed-window-models" aria-label="各模型5、15、30分钟平均速度">
         <div className="body-speed-window-model-head"><span>模型</span><span>最新</span><span>5分钟</span><span>15分钟</span><span>30分钟</span></div>
         {[...rows.values()].map(row => <div className="body-speed-window-model-row" key={row.model}>
-            <strong title={row.model}>{row.model.replace(/^gpt-/, "")}</strong>
+            <strong title={row.model} style={{ color: modelUsageColor(row.model) }}>{row.model.replace(/^gpt-/, "")}</strong>
             <b title={`最新合格正文 · ${speedTimestamp(data.latestModelSpeeds30m?.find(m => m.model === row.model)?.lastMeasuredAt)}`}>{data.latestModelSpeeds30m?.find(m => m.model === row.model)?.tokensPerSecond.toFixed(1) ?? "—"}</b>
             {average(row.model, data.modelSpeeds5m)}{average(row.model, data.modelSpeeds15m)}{average(row.model, data.modelSpeeds30m)}
         </div>)}
@@ -55,7 +56,7 @@ function BodyTable({ samples, threads, threadTitles, compact = false }: {
     const titles = useMemo(() => new Map([...Object.entries(threadTitles ?? {}), ...threads.map(t => [t.id, t.title] as const)]), [threads, threadTitles]);
     return <div className="body-speed-table-scroll"><table className={`body-speed-table${compact ? " body-speed-table-compact" : ""}`}><thead><tr>{["采样时间", "会话 / 轮次", "正文 ID", "类型", "token", "秒", "TPS", "采样状态"].map(t => <th key={t}>{t}</th>)}</tr></thead><tbody>{samples.map(s => {
             const q = bodySpeedStatus(s), title = titles.get(s.threadId) || s.threadId.slice(0, 12);
-            return <Fragment key={s.id}><tr><td><time title={new Date(s.endedAt * 1000).toLocaleString()}>{speedTimestamp(s.endedAt)}</time></td><td title={`${title}\n会话 ${s.threadId}\n轮次 ${s.turnId}`}><span className="body-speed-session">{title}</span><small>轮 {s.turnId.slice(-6)} · {s.model?.replace("gpt-", "") || "未知模型"}</small></td><td><button className="body-speed-id" title={s.itemId} aria-expanded={expanded === s.id} onClick={() => setExpanded(expanded === s.id ? null : s.id)}>{s.itemId.slice(-9)}</button></td><td>{bodyTypeLabel(s)}</td><td>{s.outputTokens.toLocaleString()}</td><td>{s.durationSeconds.toFixed(2)}</td><td className="body-speed-tps">{s.tokensPerSecond.toFixed(1)}</td><td><span data-confidence={q.confidence} title={q.reason || "计入模型均速"}>{q.label}</span></td></tr>{expanded === s.id && <tr className="body-speed-expanded"><td colSpan={8}><dl><dt>会话 ID</dt><dd>{s.threadId}</dd><dt>轮次 ID</dt><dd>{s.turnId}</dd><dt>正文 ID</dt><dd>{s.itemId}</dd></dl><span>{new Date(s.endedAt * 1000).toLocaleString()} · {q.reason ? `${q.reason}，不计均速` : "计入模型均速"}</span></td></tr>}</Fragment>;
+            return <Fragment key={s.id}><tr><td><time title={new Date(s.endedAt * 1000).toLocaleString()}>{speedTimestamp(s.endedAt)}</time></td><td title={`${title}\n会话 ${s.threadId}\n轮次 ${s.turnId}`}><span className="body-speed-session">{title}</span><small>轮 {s.turnId.slice(-6)} · <span style={{ color: modelUsageColor(s.model) }}>{s.model?.replace("gpt-", "") || "未知模型"}</span></small></td><td><button className="body-speed-id" title={s.itemId} aria-expanded={expanded === s.id} onClick={() => setExpanded(expanded === s.id ? null : s.id)}>{s.itemId.slice(-9)}</button></td><td>{bodyTypeLabel(s)}</td><td>{s.outputTokens.toLocaleString()}</td><td>{s.durationSeconds.toFixed(2)}</td><td className="body-speed-tps">{s.tokensPerSecond.toFixed(1)}</td><td><span data-confidence={q.confidence} title={q.reason || "计入模型均速"}>{q.label}</span></td></tr>{expanded === s.id && <tr className="body-speed-expanded"><td colSpan={8}><dl><dt>会话 ID</dt><dd>{s.threadId}</dd><dt>轮次 ID</dt><dd>{s.turnId}</dd><dt>正文 ID</dt><dd>{s.itemId}</dd></dl><span>{new Date(s.endedAt * 1000).toLocaleString()} · {q.reason ? `${q.reason}，不计均速` : "计入模型均速"}</span></td></tr>}</Fragment>;
         })}</tbody></table>{!samples.length && <p className="observed-speed-empty">等待正文完成</p>}</div>;
 }
 function BodyHistory({ sourceToken, threads, onClose }: {

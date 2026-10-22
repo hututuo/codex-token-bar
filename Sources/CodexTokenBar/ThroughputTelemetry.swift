@@ -140,7 +140,15 @@ struct ThroughputCurve {
             for key in expired { sessions.removeValue(forKey: key) }
         }
     }
-    var total: Double { sessions.values.reduce(0) { $0 + $1.display } }
+    var modelRates: [ModelRateContribution] {
+        var grouped: [String: Double] = [:]
+        for session in sessions.values where session.display.isFinite && session.display > 0 {
+            let model = session.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            grouped[model.isEmpty ? "unknown" : model, default: 0] += session.display
+        }
+        return grouped.keys.sorted().map { ModelRateContribution(model: $0, tokensPerSecond: grouped[$0]!) }
+    }
+    var total: Double { modelRates.reduce(0) { $0 + $1.tokensPerSecond } }
     func rate(thread: String) -> Double { sessions[thread]?.display ?? 0 }
     var active: Bool { sessions.values.contains { !$0.stopped && ($0.budget > 0 || $0.queue.contains { $0 > 0 }) } }
 }

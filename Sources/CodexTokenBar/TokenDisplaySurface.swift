@@ -157,6 +157,7 @@ struct TokenDisplaySnapshot {
     let title: String
     let status: String
     let rate: Double
+    let modelRates: [ModelRateContribution]
     let consumedTokens: Int
     let todayTokens: Int
     let todayRequests: Int
@@ -171,6 +172,7 @@ struct TokenDisplaySnapshot {
         title: String,
         status: String,
         rate: Double,
+        modelRates: [ModelRateContribution] = [],
         consumedTokens: Int,
         todayTokens: Int,
         todayRequests: Int,
@@ -184,6 +186,7 @@ struct TokenDisplaySnapshot {
         self.title = title
         self.status = status
         self.rate = rate
+        self.modelRates = modelRates
         self.consumedTokens = consumedTokens
         self.todayTokens = todayTokens
         self.todayRequests = todayRequests
@@ -212,6 +215,7 @@ struct TokenDisplaySnapshot {
             title: "全会话实时",
             status: monitor.totalSnapshot.status,
             rate: monitor.totalSnapshot.rollingTokensPerSecond,
+            modelRates: monitor.totalSnapshot.modelRates,
             consumedTokens: store.snapshot.stats.totalTokens,
             todayTokens: todayUsage?.tokens ?? 0,
             todayRequests: todayUsage?.calls ?? 0,
@@ -709,7 +713,8 @@ struct TokenDisplayCard: View {
 
             TokenDisplayRateBar(
                 rate: snapshot.rate,
-                usageStatus: usageStatus
+                usageStatus: usageStatus,
+                modelRates: snapshot.modelRates
             )
             .environment(\.tokenDisplayEmbeddedUsageStatusTextPalette, embeddedUsageStatusTextPalette)
             .frame(maxWidth: .infinity, alignment: .trailing)

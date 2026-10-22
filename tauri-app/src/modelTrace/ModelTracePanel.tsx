@@ -1,6 +1,7 @@
+import { modelUsageColor } from "../components/modelUsagePresentation";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import type { CodexHomeSourceToken } from "../types/platform";
 
@@ -46,7 +47,7 @@ export function ModelTraceContent({ sourceToken, onClose, compact = false }: { s
         <p className="mt-note">消耗当前 Codex 配置的额度。6.1 Sol 尚未收录，结果仅供特征比较，不能确认身份或排除 Luna。</p>
         {error && <p className="mt-error" role="alert">{error}</p>}
         <div className="mt-results"><nav aria-label="检测记录">{compact ? <label>检测记录 <select aria-label="选择检测记录" value={run?.id ?? ""} disabled={!snapshot?.runs.length} onChange={e => setSelected(e.target.value)}>{snapshot?.runs.length ? snapshot.runs.map(r => <option value={r.id} key={r.id}>{time(r.startedAt)} · {status(r.status)}</option>) : <option value="">暂无记录</option>}</select></label> : <><h3>检测记录</h3>{snapshot?.runs.map(r => <button key={r.id} aria-current={run?.id === r.id} onClick={() => setSelected(r.id)}><span>{time(r.startedAt)} · {status(r.status)}</span><strong>{r.model}</strong>{r.attribution && <small>更接近 {r.attribution.prediction}</small>}</button>)}{!snapshot?.runs.length && <p>暂无记录</p>}</>}</nav>
-            <section aria-label="检测结果">{run ? <><div className="mt-result-title"><strong>{status(run.status)}</strong><span>已请求 {run.attempts}/3 · 有效 {run.validSamples}/3</span></div>{run.attribution?.candidates.slice(0, 5).map(c => <div className="mt-candidate" key={c.model}><div><span>{c.displayName}</span><strong>{(c.probability * 100).toFixed(1)}%</strong></div><meter value={c.probability} min={0} max={1} aria-label={`${c.displayName} 相对匹配分值`}/></div>)}{run.attribution && <p>相对匹配分值 · 不是身份正确率</p>}{run.message && <p>{run.message}</p>}</> : <p>选择模型后手动开始检测</p>}</section>
+            <section aria-label="检测结果">{run ? <><div className="mt-result-title"><strong>{status(run.status)}</strong><span>已请求 {run.attempts}/3 · 有效 {run.validSamples}/3</span></div>{run.attribution?.candidates.slice(0, 5).map(c => <div className="mt-candidate" key={c.model} style={{ "--model-color": modelUsageColor(c.model) } as CSSProperties}><div><span>{c.displayName}</span><strong>{(c.probability * 100).toFixed(1)}%</strong></div><meter value={c.probability} min={0} max={1} aria-label={`${c.displayName} 相对匹配分值`}/></div>)}{run.attribution && <p>相对匹配分值 · 不是身份正确率</p>}{run.message && <p>{run.message}</p>}</> : <p>选择模型后手动开始检测</p>}</section>
         </div>
         <footer><label className="mt-toggle"><input type="checkbox" checked={snapshot?.settings.enabled ?? false} disabled={!snapshot || pending} onChange={e => void action("save_modeltrace_auto_settings", { enabled: e.target.checked, intervalHours: snapshot?.settings.intervalHours ?? 24 })}/>自动检测</label><select aria-label="自动检测频率" value={snapshot?.settings.intervalHours ?? 24} disabled={!snapshot || pending} onChange={e => void action("save_modeltrace_auto_settings", { enabled: snapshot?.settings.enabled ?? false, intervalHours: Number(e.target.value) })}>{[1, 6, 12, 24, 48, 168].map(hours => <option key={hours} value={hours}>{hours === 24 ? "每天一次" : `每 ${hours} 小时`}</option>)}</select><span>默认关闭 · 每次并行请求 3 次</span></footer>
         {snapshot?.settings.enabled && snapshot.settings.nextRunAt && <p className="mt-note">下次：{time(snapshot.settings.nextRunAt)} · 默认 6.1 Sol / light</p>}

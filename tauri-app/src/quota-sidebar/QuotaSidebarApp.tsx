@@ -1,3 +1,4 @@
+import { modelUsageColor } from "../components/modelUsagePresentation";
 import { useModuleOrder } from "./useModuleOrder";
 import { SidebarModuleSettings } from "./SidebarModuleSettings";
 import { ModelTraceContent } from "../modelTrace/ModelTracePanel";
@@ -29,6 +30,7 @@ import { sidebarRadarSnapshot, sidebarRadarAtTime, sidebarRadarCompact, sidebarR
 import { sidebarLocalTime, sidebarMetricValue, sidebarRingResetTime } from "./detailsModel";
 import { formatTokens } from "../utils/format";
 import { isSidebarDragTarget, createSidebarDragSession } from "./drag";
+import { modelRateGradient, modelRateSlices } from "../components/liveRate/modelRatePresentation";
 import { DEFAULT_TOKEN_RATE_FULL_SCALE, sanitizeRateFullScale, formatLiveRateValue } from "../components/liveRate/rateDisplay";
 import { sidebarRatePercent } from "./rateModel";
 import { createSidebarPublisher, sidebarVisualPercent } from "./presentation";
@@ -310,7 +312,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
     <span className="qs-radar-edge" data-active={sidebarRadarIsActive(radar)} aria-hidden="true" />
     <div className="qs-bars" data-visible={state.mode === "rest"} aria-hidden={state.mode !== "rest"} aria-label="悬停查看额度">
       {cacheWarning && <span className="qs-cache-indicator" style={{ top: `calc(50% - ${showsFiveHour ? 114 : 87}px)` }} role="status" aria-label={`缓存命中偏低：${cacheAdviceTitle(cacheWarning)}`} title={`缓存命中偏低 · ${cacheAdviceTitle(cacheWarning)}`} />}
-      <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ height: `${ratePercent ?? 0}%`, background: "#78b7ff" }} /></span>
+      <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ height: `${ratePercent ?? 0}%`, background: modelRateGradient(data.snapshot.modelRates, "0deg") }} /></span>
       {showsFiveHour && <Bar percent={five} color="#b6ef75" expected={expectedFive} />}<Bar percent={seven} color="#b4acff" expected={expectedSeven} />{modelStrip(true)}
     </div><SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning} onMeasure={onContentMeasurement}>{() => {
       if (cacheWarning) return <section className="qs-cache-notice" aria-label="缓存命中提醒">
@@ -337,7 +339,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
       const nearestCredit = prepareResetCreditsForDisplay(data.quota?.quota?.resetCredit?.credits ?? []).find(item => item.isCountdownEligible)?.credit;
       const moduleContent: Record<SidebarModule, ReactNode> = {
         speeds: <>
-      {visibility.speeds && <><button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
+      {visibility.speeds && <><button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" modelRates={data.snapshot.modelRates} /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
       <SidebarBodySpeeds models={modelSpeeds} data={data.snapshot} onOpen={() => onOpen("quota", "speeds")} /></>}
         </>,
         modeltrace: <>
@@ -374,14 +376,13 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
         </>,
       };
       return <>
-      {order.map(module => <Fragment key={module}>{moduleContent[module]}</Fragment>)}
       <div className="qs-rail-actions">
         <button aria-label={state.pinned ? "取消固定" : "固定"} title={state.pinned ? "取消固定" : "固定"} aria-pressed={state.pinned} onClick={onPin}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill={state.pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 3h6l-1 7 4 4v2H6v-2l4-4-1-7Z"/><path d="M12 16v6"/></svg></button>
         <button aria-label="刷新数据" title="刷新数据" onClick={onRefresh}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg></button>
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
+      <div className="qs-module-scroll"><div className="qs-module-stack">{order.map(module => <Fragment key={module}>{moduleContent[module]}</Fragment>)}{error && <span className="qs-warning" title={error}>窗口异常</span>}</div></div>
       <button className="qs-settings-trigger" onClick={() => onOpen("settings", "top")} aria-label="侧栏设置" title="调整侧栏模块显示与顺序"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/></svg>侧栏设置</button>
-      {error && <span className="qs-warning" title={error}>窗口异常</span>}
       </>;
     }}</SidebarSummaryLayer>
   </>;
@@ -393,7 +394,7 @@ export function SidebarBodySpeeds({ models, data, onOpen }: { models: NonNullabl
     <button type="button" onClick={onOpen} title="各模型最新正文 TPS 与5/15/30分钟均速 · 点击查看图表与记录">
       <span>正文 TPS</span>
       {models.map(model => <span className="qs-model-speed-block" key={model.model}>
-        <span className="qs-model-speed-row" title={`${model.model} · ${speedTimestamp(model.lastMeasuredAt)} · 最新一条正文`}><small>{model.model.replace(/^gpt-/, "")}</small><strong>{model.tokensPerSecond.toFixed(1)}</strong></span>
+        <span className="qs-model-speed-row" title={`${model.model} · ${speedTimestamp(model.lastMeasuredAt)} · 最新一条正文`}><small style={{ color: modelUsageColor(model.model) }}>{model.model.replace(/^gpt-/, "")}</small><strong>{model.tokensPerSecond.toFixed(1)}</strong></span>
         <span className="qs-model-speed-windows">{windows.map(w => { const value = w.values?.find(s => s.model === model.model); return <span key={w.label} title={value ? `${w.label}均速 ${value.tokensPerSecond.toFixed(1)} TPS · ${value.sampleCount}段正文` : "该时段暂无合格样本"}><small>{w.label}</small><b>{value?.tokensPerSecond.toFixed(0) ?? "—"}</b></span>; })}</span>
       </span>)}
       {!models.length && <small>—</small>}
@@ -416,9 +417,25 @@ function Value({ value }: { value: string }) {
 function Bar({ percent, color, expected }: { percent: number | null; color: string; expected?: number | null }) {
   return <span className={`qs-bar ${percent === null ? "qs-unknown" : ""}`}><i style={{ height: `${percent ?? 100}%`, background: color }} />{expected != null && <b className="qs-pace-mark" style={{ bottom: `${expected * 100}%` }} title={`均匀用量参考：预期剩余 ${Math.round(expected * 100)}%`} />}</span>;
 }
-function Ring({ label, percent, color, expected, reset }: { label: string; percent: number | null; color: string; expected?: number | null; reset?: ReturnType<typeof sidebarRingResetTime> }) {
+function ModelRateRingSegments({ rates, fraction }: { rates: import("../types/live").ModelRateContribution[]; fraction: number }) {
+  const slices = modelRateSlices(rates.length ? rates : [{ model: "unknown", tokensPerSecond: 1 }]);
+  const amount = Math.min(1, Math.max(0, fraction));
+  if (!slices.length || amount <= 0) return null;
+  let edge = 0;
+  const endAngle = amount * Math.PI * 2 - Math.PI / 2;
+  return <>
+    {slices.map(slice => {
+      const offset = edge; edge += slice.share;
+      return <circle key={slice.model} cx="26" cy="26" r="22" fill="none" stroke={slice.color} strokeWidth="4" strokeLinecap="butt"
+        strokeDasharray={`${138.23 * slice.share * amount} 138.23`} strokeDashoffset={-138.23 * offset * amount} transform="rotate(-90 26 26)"/>;
+    })}
+    {amount < 1 && <><circle cx="26" cy="4" r="2" fill={slices[0].color}/><circle cx={26 + Math.cos(endAngle) * 22} cy={26 + Math.sin(endAngle) * 22} r="2" fill={slices.at(-1)!.color}/></>}
+  </>;
+}
+
+function Ring({ label, percent, color, expected, reset, modelRates }: { label: string; percent: number | null; color: string; modelRates?: import("../types/live").ModelRateContribution[]; expected?: number | null; reset?: ReturnType<typeof sidebarRingResetTime> }) {
   const title = [reset === null ? "重置时间未知" : reset?.title, expected != null ? `白线为均匀使用参考：预期剩余 ${Math.round(expected * 100)}%` : null].filter(Boolean).join("；");
-  return <div className="qs-ring" data-known={percent !== null} title={title || undefined}><svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="22" className="qs-track" /><circle cx="26" cy="26" r="22" fill="none" stroke={color} strokeWidth="4" strokeLinecap="round" className="qs-ring-value" strokeDasharray="138.23" strokeDashoffset={138.23 * (1 - (percent ?? 0) / 100)} transform="rotate(-90 26 26)" />{expected != null && <line className="qs-pace-tick" x1="26" y1="0" x2="26" y2="8" transform={`rotate(${expected * 360} 26 26)`} />}</svg><span className={reset !== undefined ? "qs-ring-center" : undefined}><span>{label}</span>{reset !== undefined && (reset ? <time className="qs-ring-reset" dateTime={reset.dateTime} aria-label={reset.title}><span>{reset.date}</span><span>{reset.time}</span></time> : <small className="qs-ring-reset-unknown">重置未知</small>)}</span></div>;
+  return <div className="qs-ring" data-known={percent !== null} title={title || undefined}><svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="22" className="qs-track" />{modelRates ? <ModelRateRingSegments rates={modelRates} fraction={(percent ?? 0) / 100}/> : <circle cx="26" cy="26" r="22" fill="none" stroke={color} strokeWidth="4" strokeLinecap="round" className="qs-ring-value" strokeDasharray="138.23" strokeDashoffset={138.23 * (1 - (percent ?? 0) / 100)} transform="rotate(-90 26 26)" />}{expected != null && <line className="qs-pace-tick" x1="26" y1="0" x2="26" y2="8" transform={`rotate(${expected * 360} 26 26)`} />}</svg><span className={reset !== undefined ? "qs-ring-center" : undefined}><span>{label}</span>{reset !== undefined && (reset ? <time className="qs-ring-reset" dateTime={reset.dateTime} aria-label={reset.title}><span>{reset.date}</span><span>{reset.time}</span></time> : <small className="qs-ring-reset-unknown">重置未知</small>)}</span></div>;
 }
 function DetailSurface() {
   const modules = useModuleVisibility();

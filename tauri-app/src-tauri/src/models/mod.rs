@@ -28,7 +28,7 @@ pub use dashboard::{
 };
 pub use live::{
     BodySpeedHistoryPage, CacheAdvice, CurvePoint, FloatingPanelSnapshot, LiveRateSnapshot,
-    LiveThreadOption, ModelSpeedSummary, SpeedSample, UnreadSummary,
+    LiveThreadOption, ModelRate, ModelSpeedSummary, SpeedSample, UnreadSummary,
 };
 pub use platform::{
     AutostartStatus, CodexHomeStatus, PlatformCapabilities, PlatformFeatureCapability,

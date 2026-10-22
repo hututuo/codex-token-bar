@@ -450,6 +450,7 @@ private func tokenDisplayRadarShortModelLabel(_ label: String) -> String {
 struct TokenDisplayRateBar: View {
     let rate: Double
     let usageStatus: String?
+    var modelRates: [ModelRateContribution] = []
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
     @Environment(\.tokenDisplayEmbeddedUsageStatusTextPalette) private var embeddedUsageStatusTextPalette
@@ -495,9 +496,7 @@ struct TokenDisplayRateBar: View {
                     SmoothRateFillBar(
                         fraction: Double(fillFraction),
                         minimumFraction: Double(minimumFillFraction),
-                        colors: [Color.cyan.opacity(0.98), Color.blue.opacity(0.92)],
-                        startPoint: .bottom,
-                        endPoint: .top
+                        modelRates: modelRates
                     )
                 }
                 .frame(width: barWidth, height: barHeight, alignment: .leading)

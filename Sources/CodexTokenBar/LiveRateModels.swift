@@ -1,6 +1,7 @@
 import Foundation
 
 struct LiveRateSnapshot: Equatable {
+    var modelRates: [ModelRateContribution] = []
     var cacheAdvice: CacheUsageAdvice? = nil
     var threadID: String = ""
     var threadTitle: String = "等待当前会话"

@@ -196,7 +196,7 @@ test("floating panel keeps compact Swift proportions with complete readable text
   assert.match(previewSource, /floating-rate-meter--with-status/);
   assert.match(previewSource, /floating-rate-meter--solo/);
   assert.match(previewSource, /hasStatusText \? <FloatingStatusText text=\{statusText\} \/> : null/);
-  assert.match(previewSource, /rateFillStyle\(snapshot\.tokensPerSecond, scaleLimit\)/);
+  assert.match(previewSource, /rateFillStyle\(snapshot\.tokensPerSecond, scaleLimit, snapshot\.modelRates\)/);
   assert.match(stylesSource, /\.floating-rate-track\s*{[\s\S]*?height: calc\(5\.5px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-meter\s*{[\s\S]*?height: calc\(26px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-meter \.floating-status-text\s*{[\s\S]*?top: calc\(3px \* var\(--floating-scale\)\);/);

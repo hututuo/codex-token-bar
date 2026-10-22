@@ -165,6 +165,7 @@ fn idle_snapshot_with_warnings(
         selected_thread_title,
         selected_tokens_per_second: 0.0,
         tokens_per_second: 0.0,
+        model_rates: Vec::new(),
         total_tokens: summary.total_tokens,
         total_tokens_today: summary.today_tokens,
         requests_today: summary.today_requests,
@@ -199,6 +200,7 @@ pub(super) fn pending_snapshot_with_unread(
         },
         selected_tokens_per_second: 0.0,
         tokens_per_second: 0.0,
+        model_rates: Vec::new(),
         total_tokens: 0,
         total_tokens_today: 0,
         requests_today: 0,
@@ -316,8 +318,12 @@ fn read_snapshot_result_at(
     }
     c_curve::apply_signals(source_scope, &post_delta_signals, now);
     let speed_snapshot = observed::process_rows(source_scope, &[], now);
-    let (c_curve_tokens_per_second, selected_c_curve_tokens_per_second, c_curve_points) =
-        c_curve::snapshot(source_scope, now, selected_thread_id);
+    let (
+        c_curve_tokens_per_second,
+        selected_c_curve_tokens_per_second,
+        model_rates,
+        c_curve_points,
+    ) = c_curve::snapshot(source_scope, now, selected_thread_id);
     if let Some(message) = speed_snapshot.storage_warning.clone() {
         warnings.push(live_rate_warning(format!(
             "observed speed history: {message}"
@@ -358,6 +364,7 @@ fn read_snapshot_result_at(
         selected_thread_title,
         selected_tokens_per_second: selected_c_curve_tokens_per_second,
         tokens_per_second: c_curve_tokens_per_second,
+        model_rates,
         total_tokens: summary.total_tokens,
         total_tokens_today: summary.today_tokens,
         requests_today: summary.today_requests,
@@ -424,6 +431,7 @@ pub fn read_floating_snapshot_from_live(
     let summary = token_count_jsonl::cached_dashboard_usage_summary(codex_home);
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
+        model_rates: live.model_rates.clone(),
         max_tokens_per_second: live.max_tokens_per_second,
         cache_advice: live.cache_advice.clone(),
         trend_label: String::new(),

@@ -1,6 +1,6 @@
 use super::LiveRateSourceScope;
-use crate::models::CurvePoint;
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::models::{CurvePoint, ModelRate};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
 const FALLBACK_BASELINE_TPS: f64 = 40.0;
@@ -484,20 +484,27 @@ pub(super) fn snapshot(
     scope: &LiveRateSourceScope,
     now: f64,
     selected_thread_id: Option<&str>,
-) -> (f64, f64, Vec<CurvePoint>) {
+) -> (f64, f64, Vec<ModelRate>, Vec<CurvePoint>) {
     let mut all = CURVES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(threads) = all.get_mut(scope) else {
-        return (0.0, 0.0, Vec::new());
+        return (0.0, 0.0, Vec::new(), Vec::new());
     };
-    let mut total = 0.0;
+    let mut rates_by_model = BTreeMap::<String, f64>::new();
     let mut selected = 0.0;
     let mut points = Vec::new();
     for (thread_id, state) in threads.iter_mut() {
         let rate = state.curve.advance(now);
-        total += rate;
+        if rate.is_finite() && rate > 0.0 {
+            let model = state
+                .model
+                .as_deref()
+                .filter(|model| !model.is_empty())
+                .unwrap_or("unknown");
+            *rates_by_model.entry(model.to_owned()).or_default() += rate;
+        }
         if selected_thread_id == Some(thread_id.as_str()) {
             selected = rate;
         }
@@ -518,7 +525,15 @@ pub(super) fn snapshot(
         }
     }
     points.sort_by(|left, right| left.timestamp.total_cmp(&right.timestamp));
-    (total, selected, points)
+    let model_rates = rates_by_model
+        .into_iter()
+        .map(|(model, tokens_per_second)| ModelRate {
+            model,
+            tokens_per_second,
+        })
+        .collect::<Vec<_>>();
+    let total = model_rates.iter().map(|rate| rate.tokens_per_second).sum();
+    (total, selected, model_rates, points)
 }
 
 pub(super) fn current_context(
@@ -612,6 +627,28 @@ fn signal_timestamp(signal: &RolloutSignal) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn add_active_test_turn(
+        signals: &mut Vec<RolloutSignal>,
+        thread_id: &str,
+        model: Option<&str>,
+        at: f64,
+    ) {
+        let turn_id = format!("{thread_id}-turn");
+        signals.push(RolloutSignal::Context {
+            thread_id: thread_id.into(),
+            turn_id: Some(turn_id.clone()),
+            model: model.map(ToOwned::to_owned),
+            at,
+        });
+        signals.push(RolloutSignal::ReasoningCompleted {
+            thread_id: thread_id.into(),
+            turn_id: Some(turn_id),
+            item_id: format!("{thread_id}-reasoning"),
+            duration_seconds: 2.0,
+            at: at + 0.5,
+        });
+    }
 
     #[test]
     fn smoothed_curve_spends_budget_and_clears_after_completion() {
@@ -771,5 +808,81 @@ mod tests {
         let all = CURVES.get().unwrap().lock().unwrap();
         let thread = all.get(&scope).unwrap().get("t").unwrap();
         assert_eq!(thread.curve.baseline(), FALLBACK_BASELINE_TPS);
+    }
+
+    #[test]
+    fn snapshot_aggregates_current_display_by_sorted_model_and_keeps_unknown_quantity() {
+        let scope = LiveRateSourceScope::new(
+            "c-curve-model-rates-aggregate-test",
+            "c-curve-model-rates-aggregate-test",
+        );
+        let mut signals = Vec::new();
+        add_active_test_turn(&mut signals, "thread-z-a", Some("model-z"), 10.0);
+        add_active_test_turn(&mut signals, "thread-z-b", Some("model-z"), 10.0);
+        add_active_test_turn(&mut signals, "thread-a", Some("model-a"), 10.0);
+        add_active_test_turn(&mut signals, "thread-unknown", None, 10.0);
+        apply_signals(&scope, &signals, 16.0);
+
+        let (total, _, model_rates, _) = snapshot(&scope, 16.0, None);
+        assert_eq!(
+            model_rates
+                .iter()
+                .map(|rate| rate.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["model-a", "model-z", "unknown"]
+        );
+        let model_a = model_rates
+            .iter()
+            .find(|rate| rate.model == "model-a")
+            .unwrap()
+            .tokens_per_second;
+        let model_z = model_rates
+            .iter()
+            .find(|rate| rate.model == "model-z")
+            .unwrap()
+            .tokens_per_second;
+        let unknown = model_rates
+            .iter()
+            .find(|rate| rate.model == "unknown")
+            .unwrap()
+            .tokens_per_second;
+        assert!(model_a > 0.0);
+        assert!(model_z > model_a);
+        assert!(unknown > 0.0);
+        assert_eq!(
+            total,
+            model_rates
+                .iter()
+                .map(|rate| rate.tokens_per_second)
+                .sum::<f64>()
+        );
+    }
+
+    #[test]
+    fn stopped_turn_clears_current_model_rate_immediately() {
+        let scope = LiveRateSourceScope::new(
+            "c-curve-model-rates-stop-test",
+            "c-curve-model-rates-stop-test",
+        );
+        let mut signals = Vec::new();
+        add_active_test_turn(&mut signals, "thread", Some("model-a"), 10.0);
+        apply_signals(&scope, &signals, 16.0);
+        let (running_total, _, running_model_rates, _) = snapshot(&scope, 16.0, None);
+        assert!(running_total > 0.0);
+        assert!(!running_model_rates.is_empty());
+
+        apply_signals(
+            &scope,
+            &[RolloutSignal::TurnCompleted {
+                thread_id: "thread".into(),
+                turn_id: Some("thread-turn".into()),
+                failed: true,
+                at: 16.5,
+            }],
+            16.5,
+        );
+        let (stopped_total, _, stopped_model_rates, _) = snapshot(&scope, 16.5, None);
+        assert_eq!(stopped_total, 0.0);
+        assert!(stopped_model_rates.is_empty());
     }
 }

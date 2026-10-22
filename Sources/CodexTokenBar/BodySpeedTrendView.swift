@@ -28,8 +28,7 @@ struct BodySpeedTrendView: View {
         monitor.speedTrendDays == 1 ? "每点为5分钟均速 · TPS" : monitor.speedTrendDays == 7 ? "30分钟汇总 · 底层5分钟" : "2小时汇总 · 底层5分钟"
     }
     private func color(_ model: String, models: [String]) -> Color {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan]
-        return colors[(models.firstIndex(of: model) ?? 0) % colors.count]
+        ModelUsagePresentation.color(for: model)
     }
     private struct Entry: Identifiable {
         let point: BodySpeedTrendPoint

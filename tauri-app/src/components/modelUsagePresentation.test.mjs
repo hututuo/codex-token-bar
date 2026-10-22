@@ -22,7 +22,7 @@ test("model usage presentation combines aliases and reports token shares", () =>
     { label: "Luna", tokens: 300 },
   ]);
   assert.equal(modelUsageCompactText(rows), "Sol 70% · Luna 30%");
-  assert.equal(dominantModelColor(rows), "#2e6bfa");
+  assert.equal(dominantModelColor(rows), "#6774e8");
 });
 
 test("unknown and custom models remain visible with stable colors", () => {

@@ -22,13 +22,13 @@ test('all modules can be hidden while the permanent settings entry remains reach
   const render=(visibility,order)=>{dom.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data,state:{...initialSidebarState,mode:'hover'},visibility,order,onOpen:()=>{}}));};
   try {
    render(DEFAULT_MODULE_VISIBILITY);
-   assert.ok(dom.document.querySelector(".qs-summary").firstElementChild.matches(".qs-modeltrace-trigger"));
+   assert.ok(dom.document.querySelector(".qs-module-stack").firstElementChild.matches(".qs-modeltrace-trigger"));
    assert.ok(dom.document.querySelector(".qs-summary").lastElementChild.matches(".qs-settings-trigger"));
    assert.ok(dom.document.querySelector('.qs-model-speeds'));
    assert.ok(dom.document.querySelector('.qs-running-trigger'));
    assert.ok(dom.document.querySelector('.qs-window-status'));
    render(DEFAULT_MODULE_VISIBILITY,["radar","tasks","credits","overview","speeds","modeltrace"]);
-   const nodes=[...dom.document.querySelector(".qs-summary").children];
+   const nodes=[...dom.document.querySelector(".qs-module-stack").children];
    assert.ok(nodes.indexOf(dom.document.querySelector(".qs-window-status")) < nodes.indexOf(dom.document.querySelector(".qs-modeltrace-trigger")));
    render({...DEFAULT_MODULE_VISIBILITY,speeds:false});
    assert.equal(dom.document.querySelector('.qs-model-speeds'),null);

@@ -29,8 +29,8 @@ struct RecentChartInteractionGuide: View {
                         Text("移上去预览：鼠标移到图上，查看当前点的时间和用量。")
                             .font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                         Text("点选计算：点一下定起点，移动选择区间，再点一下定终点，弹出用量与反推额度；再点可重选。")
-                            .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                            .font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                    }.foregroundStyle(AppTheme.textPrimary).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }.padding(12)
@@ -57,22 +57,9 @@ private struct RecentChartGuideDemo: View {
                     Rectangle().fill(AppTheme.accentBlue.opacity(0.14))
                         .frame(width: max(1, x - 65), height: 51).offset(x: 65, y: 37)
                 }
-                Path { p in
-                    p.move(to: CGPoint(x: 14, y: 80))
-                    p.addLines([CGPoint(x: 35, y: 67), CGPoint(x: 65, y: 74), CGPoint(x: 95, y: 49), CGPoint(x: 125, y: 61), CGPoint(x: 155, y: 44), CGPoint(x: 187, y: 53), CGPoint(x: 207, y: 39)])
-                }.stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: 2, lineJoin: .round))
-                Path { p in p.move(to: .zero); p.addLine(to: CGPoint(x: 0, y: 54)) }
-                    .stroke(AppTheme.accentBlue.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    .frame(width: 1, height: 54).position(x: x, y: 62)
-                if phase == 2 || phase == 5 {
-                    Circle().stroke(AppTheme.accentBlue.opacity(0.7), lineWidth: 2)
-                        .frame(width: 20, height: 20).position(x: x, y: 69).transition(.identity)
-                }
-                Image(systemName: "cursorarrow").font(.system(size: 19)).foregroundStyle(.primary)
-                    .scaleEffect(animatesPress && (phase == 2 || phase == 5) ? 0.78 : 1, anchor: .topLeading)
-                    .offset(y: animatesPress && (phase == 2 || phase == 5) ? 3 : 0)
-                    .animation(.easeOut(duration: 0.12), value: phase == 2 || phase == 5)
-                    .position(x: x + 5, y: 75)
+                Path { p in p.addLines(RecentChartGuideGeometry.curve) }
+                    .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: 2, lineJoin: .round))
+                RecentChartGuideMarker(x: x, pressed: animatesPress && (phase == 2 || phase == 5))
                 Text(values[phase]).transaction { $0.animation = nil }.font(.system(size: 10, weight: .semibold)).monospacedDigit()
                     .padding(.horizontal, 7).padding(.vertical, 4)
                     .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 5))
@@ -82,6 +69,41 @@ private struct RecentChartGuideDemo: View {
                     .font(.system(size: 9)).foregroundStyle(.secondary).position(x: 110, y: 100)
             }
         }
+    }
+}
+
+enum RecentChartGuideGeometry {
+    static let curve: [CGPoint] = [CGPoint(x: 14, y: 80), CGPoint(x: 35, y: 67), CGPoint(x: 65, y: 74), CGPoint(x: 95, y: 49), CGPoint(x: 125, y: 61), CGPoint(x: 155, y: 44), CGPoint(x: 187, y: 53), CGPoint(x: 207, y: 39)]
+    static func point(at x: CGFloat) -> CGPoint {
+        let clamped = min(curve.last!.x, max(curve.first!.x, x))
+        for pair in zip(curve, curve.dropFirst()) where clamped <= pair.1.x {
+            let fraction = (clamped - pair.0.x) / (pair.1.x - pair.0.x)
+            return CGPoint(x: clamped, y: pair.0.y + fraction * (pair.1.y - pair.0.y))
+        }
+        return curve.last!
+    }
+}
+
+/// One animated x drives both drawings in the same Canvas. The cursor's tip
+/// follows the actual polyline, including vertices between animation phases.
+private struct RecentChartGuideMarker: View, Animatable {
+    nonisolated var x: CGFloat
+    let pressed: Bool
+    nonisolated var animatableData: CGFloat { get { x } set { x = newValue } }
+    var body: some View {
+        Canvas { context, _ in
+            let point = RecentChartGuideGeometry.point(at: x)
+            var line = Path(); line.move(to: CGPoint(x: point.x, y: 35)); line.addLine(to: CGPoint(x: point.x, y: 88))
+            context.stroke(line, with: .color(AppTheme.accentBlue.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            if pressed {
+                context.stroke(Path(ellipseIn: CGRect(x: point.x - 10, y: point.y - 10, width: 20, height: 20)), with: .color(AppTheme.accentBlue), lineWidth: 2)
+            }
+            var arrow = Path(); arrow.addLines([.zero, CGPoint(x: 0, y: 21), CGPoint(x: 6, y: 16), CGPoint(x: 10, y: 24), CGPoint(x: 14, y: 22), CGPoint(x: 10, y: 14), CGPoint(x: 18, y: 13)]); arrow.closeSubpath()
+            let scale: CGFloat = pressed ? 0.78 : 1
+            arrow = arrow.applying(CGAffineTransform(scaleX: scale, y: scale).concatenating(CGAffineTransform(translationX: point.x, y: point.y)))
+            context.fill(arrow, with: .color(AppTheme.textPrimary))
+            context.stroke(arrow, with: .color(AppTheme.insetBackground), lineWidth: 0.7)
+        }.allowsHitTesting(false)
     }
 }
 

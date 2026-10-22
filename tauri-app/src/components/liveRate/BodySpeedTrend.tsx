@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { modelUsageColor } from "../modelUsagePresentation";
 import { useEffect, useId, useMemo, useState } from "react";
 import type { CodexHomeSourceToken } from "../../types/platform";
 
 export interface SpeedTrendPoint { bucketStart: number; model: string; outputTokens: number; durationSeconds: number; sampleCount: number; tokensPerSecond: number }
-const colors = ["#4e80ef", "#d08747", "#47a794", "#ad72cc", "#df748f", "#749a46", "#55a9ca", "#bc8a31"];
 export function trendSegments(points: SpeedTrendPoint[], width: number) {
     const result: SpeedTrendPoint[][] = [];
     for (const model of [...new Set(points.map(p => p.model))].sort()) {
@@ -59,7 +59,7 @@ export function BodySpeedTrend({ sourceToken, revision, compact, preferredModel 
     const { minimum, maximum, last, change } = plot;
     const x = (point: SpeedTrendPoint) => left + (point.bucketStart - start) / span * (right - left);
     const y = (point: SpeedTrendPoint) => bottom - (point.tokensPerSecond - minimum) / (maximum - minimum) * (bottom - top);
-    const color = (model: string) => colors[models.indexOf(model) % colors.length];
+    const color = modelUsageColor;
     return <section className={`body-speed-trend ${compact ? `bst-${compact}` : ""}`} aria-label="模型速度变化">
         <header><strong>速度变化</strong><span>{days === 1 ? "每点为5分钟均速 · TPS" : days === 7 ? "30分钟汇总 · 底层5分钟" : "2小时汇总 · 底层5分钟"}</span><div>{[86400,604800,2592000].map(value => <button key={value} aria-pressed={windowSeconds === value} onClick={() => setWindowSeconds(value)}>{value === 86400 ? "24小时" : value === 604800 ? "7天" : "30天"}</button>)}</div></header>
         <div className="bst-models"><button aria-pressed={focus == null} onClick={() => setSelectedModel("*")}>全部</button>{models.map(model => <button key={model} aria-pressed={focus === model} onClick={() => setSelectedModel(model)}><i style={{background:color(model)}}/>{model.replace(/^gpt-/, "")}</button>)}</div>

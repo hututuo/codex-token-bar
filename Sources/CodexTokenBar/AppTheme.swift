@@ -15,6 +15,7 @@ enum SemanticAccentRole: Equatable {
 }
 
 enum AppTheme {
+    static let textPrimary = adaptive(light: rgba(0.10, 0.12, 0.16), dark: rgba(0.94, 0.96, 0.99))
     static let pageBackground = adaptive(
         light: rgba(0.955, 0.965, 0.980),
         dark: rgba(0.035, 0.045, 0.060)

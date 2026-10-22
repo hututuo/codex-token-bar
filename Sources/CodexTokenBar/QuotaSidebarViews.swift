@@ -8,37 +8,27 @@ private enum SidebarPalette {
     static let background = Color(red: 0.035, green: 0.045, blue: 0.038)
 }
 
-/// Additional server-returned windows must stay reachable on short screens.
-private struct ReserveSidebarScroll: ViewModifier {
-    let enabled: Bool
-    func body(content: Content) -> some View {
-        if enabled {
-            GeometryReader { proxy in
-                ScrollView(.vertical) {
-                    content.padding(.vertical, 12).frame(minHeight: proxy.size.height, alignment: .top)
-                }.scrollIndicators(.hidden)
-            }
-        } else {
-            content
-        }
-    }
-}
-
 // Animate the fill dimensions inside a fixed track. Rebuilding the capsule
 // at its actual size keeps both end caps round, even for small readings.
 private struct SidebarValueBar: View {
     let fraction: Double?
     let color: Color
     var vertical = false
+    var modelRates: [ModelRateContribution]? = nil
     var emphasis = 1.0
     var expected: Double?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var amount: Double { min(1, max(0, fraction ?? 0)) }
+    private var fillStyle: AnyShapeStyle {
+        guard let modelRates else { return AnyShapeStyle(color.opacity(emphasis)) }
+        return AnyShapeStyle(LinearGradient(stops: ModelRatePresentation.stops(modelRates),
+            startPoint: vertical ? .bottom : .leading, endPoint: vertical ? .top : .trailing))
+    }
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: vertical ? .bottom : .leading) {
                 Capsule().fill(.white.opacity(0.12))
-                Capsule().fill(color.opacity(emphasis))
+                Capsule().fill(fillStyle)
                     .frame(width: geometry.size.width * (vertical ? 1 : amount),
                            height: geometry.size.height * (vertical ? amount : 1))
                     .opacity(fraction == nil || amount == 0 ? 0 : 1)
@@ -64,14 +54,20 @@ private struct SidebarValueBar: View {
 private struct SidebarValueRing: View {
     let fraction: Double?
     let color: Color
+    var modelRates: [ModelRateContribution]? = nil
     var emphasis = 1.0
     var expected: Double?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var fillStyle: AnyShapeStyle {
+        guard let modelRates else { return AnyShapeStyle(color.opacity(emphasis)) }
+        return AnyShapeStyle(AngularGradient(gradient: Gradient(stops: ModelRatePresentation.stops(modelRates)),
+            center: .center, startAngle: .zero, endAngle: .degrees(360 * min(1, max(0, fraction ?? 0)))))
+    }
     var body: some View {
         ZStack {
             Circle().stroke(.white.opacity(0.15), lineWidth: 3)
             Circle().trim(from: 0, to: min(1, max(0, fraction ?? 0)))
-                .stroke(color.opacity(emphasis), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .stroke(fillStyle, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-90)).opacity(fraction == nil ? 0 : 1)
             if let expected {
                 Rectangle().fill(.white).frame(width: 1.5, height: 7)
@@ -117,9 +113,6 @@ struct QuotaSidebarRail: View {
                         .transition(.opacity)
                 } else {
                 VStack(spacing: 7) {
-                    ForEach(controller.moduleOrder.filter(controller.isModuleVisible), id: \.self) { module in
-                        moduleContent(module, shares: shares)
-                    }
                     HStack(spacing: 4) {
                         Button { controller.togglePin() } label: {
                             Image(systemName: controller.interaction.pinned ? "pin.fill" : "pin")
@@ -139,6 +132,17 @@ struct QuotaSidebarRail: View {
                         }.help("打开主页面").accessibilityLabel("打开主页面")
                             .accessibilityIdentifier("quota-sidebar-dashboard")
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
+                    ScrollView(.vertical) {
+                        VStack(spacing: 7) {
+                            ForEach(controller.moduleOrder.filter(controller.isModuleVisible), id: \.self) { module in
+                                moduleContent(module, shares: shares)
+                            }
+                        }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
+                            .background(GeometryReader { proxy in
+                                Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
+                                    value: QuotaSidebarContentMeasurement(contentHeight: proxy.size.height + 66))
+                            })
+                    }.scrollIndicators(.hidden).frame(maxHeight: .infinity)
                     Button { controller.select(.settings) } label: {
                         Label("侧栏设置", systemImage: "slider.horizontal.3")
                             .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
@@ -146,13 +150,8 @@ struct QuotaSidebarRail: View {
                     }.buttonStyle(SidebarPulseButtonStyle())
                         .help("调整侧栏模块显示与顺序")
                         .accessibilityIdentifier("quota-sidebar-settings")
-                }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
-                    .background(GeometryReader { proxy in
-                        Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
-                            value: QuotaSidebarContentMeasurement(contentHeight: proxy.size.height))
-                    })
-                    .modifier(ReserveSidebarScroll(enabled: true))
-                    .frame(height: controller.expandedContentHeight)
+                }.padding(.vertical, 12)
+                    .frame(width: 88, height: controller.expandedContentHeight)
                     .frame(maxHeight: .infinity, alignment: .center)
                     .transition(.opacity)
                 }
@@ -165,7 +164,7 @@ struct QuotaSidebarRail: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.moduleOrder)
             Group {
                 VStack(spacing: 12) {
-                    SidebarValueBar(fraction: Double(rateFraction), color: SidebarPalette.blue, vertical: true)
+                    SidebarValueBar(fraction: Double(rateFraction), color: SidebarPalette.blue, vertical: true, modelRates: monitor.totalSnapshot.modelRates)
                         .frame(width: 4, height: 46)
                         .help("全会话实时速率（估算）\(rateText)")
                     if let fiveHour = quota.snapshot.fiveHour {
@@ -347,7 +346,7 @@ struct QuotaSidebarRail: View {
         Button { controller.select(.overview, section: "usage") } label: {
             VStack(spacing: 5) {
                 ZStack {
-                    SidebarValueRing(fraction: Double(rateFraction), color: SidebarPalette.blue)
+                    SidebarValueRing(fraction: Double(rateFraction), color: SidebarPalette.blue, modelRates: monitor.totalSnapshot.modelRates)
                     Text("速率").font(.system(size: 11))
                 }.frame(width: 46, height: 46)
                 Text(rateText).font(.system(size: 11, weight: .medium, design: .rounded))
@@ -459,7 +458,7 @@ struct QuotaSidebarBodySpeedReadings: View {
                             ForEach(monitor.latestModelSpeeds30m) { model in
                                 VStack(spacing: 3) {
                                     HStack(spacing: 3) {
-                                        Text(model.model.replacingOccurrences(of: "gpt-", with: "")).lineLimit(1).minimumScaleFactor(0.65).frame(width: 33, alignment: .leading)
+                                        Text(model.model.replacingOccurrences(of: "gpt-", with: "")).foregroundStyle(ModelUsagePresentation.color(for: model.model)).lineLimit(1).minimumScaleFactor(0.65).frame(width: 33, alignment: .leading)
                                         Text("\(model.tokensPerSecond, specifier: "%.1f")").bold().monospacedDigit().lineLimit(1).minimumScaleFactor(0.8).frame(width: 30, alignment: .trailing)
                                     }.font(.system(size: 9)).foregroundStyle(SidebarPalette.blue)
                                     HStack(spacing: 0) {

@@ -1,5 +1,7 @@
 import type { CSSProperties } from "react";
 import type { LiveRateSnapshot } from "../../types/dashboard";
+import type { ModelRateContribution } from "../../types/live";
+import { modelRateGradient } from "./modelRatePresentation.ts";
 
 import { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../../settings/tokenRateScale.ts";
 export { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../../settings/tokenRateScale.ts";
@@ -28,8 +30,8 @@ export function rateFillScale(tokensPerSecond: number, fullScale: number): numbe
   return rawScale > 0 ? Math.max(MIN_VISIBLE_FILL, rawScale) : 0;
 }
 
-export function rateFillStyle(tokensPerSecond: number, fullScale: number): CSSProperties {
-  return { "--rate-fill-scale": String(rateFillScale(tokensPerSecond, fullScale)) } as CSSProperties;
+export function rateFillStyle(tokensPerSecond: number, fullScale: number, modelRates?: ModelRateContribution[]): CSSProperties {
+  return { "--rate-fill-scale": String(rateFillScale(tokensPerSecond, fullScale)), "--rate-model-gradient": modelRateGradient(modelRates) } as CSSProperties;
 }
 
 export function displayRawRate(raw: number, scope: RateDisplayScope): number {
@@ -74,6 +76,7 @@ export function smoothLiveRateSnapshot(
 export function liveRateDisplayBucket(snapshot: LiveRateSnapshot): string {
   return [
     formatLiveRateValue(snapshot.tokensPerSecond),
+    JSON.stringify(snapshot.modelRates ?? []),
     formatLiveRateValue(snapshot.selectedTokensPerSecond),
     snapshot.speedSamples?.length ?? 0,
     snapshot.speedSamples?.[0]?.id ?? "",

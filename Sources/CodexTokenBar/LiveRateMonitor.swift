@@ -988,6 +988,7 @@ final class LiveRateMonitor: ObservableObject {
             snapshot.threadTitle = "等待会话"
             snapshot.status = "未找到活动会话"
             snapshot.rollingTokensPerSecond = 0
+            snapshot.modelRates = []
             snapshot.averageTokensPerSecond = 0
             snapshot.outputTokens = 0
             snapshot.outputCharacters = 0
@@ -1597,6 +1598,9 @@ final class LiveRateMonitor: ObservableObject {
 
         var updated = snapshot
         updated.rollingTokensPerSecond = rollingTokensPerSecond
+        updated.modelRates = snapshot.scopeLabel == "全会话" ? throughputCurve.modelRates : throughputCurve.sessions[snapshot.threadID].map {
+            $0.display.isFinite && $0.display > 0 ? [ModelRateContribution(model: $0.model, tokensPerSecond: $0.display)] : []
+        } ?? []
         updated.averageTokensPerSecond = averageTokensPerSecond
         updated.outputTokens = outputTokens
         updated.outputCharacters = outputCharacters
@@ -1612,6 +1616,7 @@ final class LiveRateMonitor: ObservableObject {
             || snapshot.outputTokens != updated.outputTokens
             || snapshot.outputCharacters != updated.outputCharacters
             || snapshot.breakdown != updated.breakdown
+            || snapshot.modelRates != updated.modelRates
             || snapshot.status != updated.status
             || snapshot.cacheAdvice != updated.cacheAdvice else {
             return nil
@@ -1675,6 +1680,7 @@ final class LiveRateMonitor: ObservableObject {
     private func disableMonitoringSnapshots() {
         let disabledAt = Date()
         snapshot.rollingTokensPerSecond = 0
+        snapshot.modelRates = []
         snapshot.averageTokensPerSecond = 0
         snapshot.outputTokens = 0
         snapshot.outputCharacters = 0
@@ -1683,6 +1689,7 @@ final class LiveRateMonitor: ObservableObject {
         snapshot.updatedAt = disabledAt
 
         totalSnapshot.rollingTokensPerSecond = 0
+        totalSnapshot.modelRates = []
         totalSnapshot.averageTokensPerSecond = 0
         totalSnapshot.outputTokens = 0
         totalSnapshot.outputCharacters = 0

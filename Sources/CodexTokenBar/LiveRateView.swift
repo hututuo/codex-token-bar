@@ -188,7 +188,8 @@ struct LiveRateInstrument: View {
                                         .fill(AppTheme.insetBackground.opacity(0.82))
                                     SmoothRateFillBar(
                                         fraction: Double(fillFraction),
-                                        minimumFraction: Double(minimumFillFraction)
+                                        minimumFraction: Double(minimumFillFraction),
+                                        modelRates: snapshot.modelRates
                                     )
                                 }
                             }

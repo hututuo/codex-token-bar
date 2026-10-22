@@ -640,7 +640,8 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
             CodexRadarChartSeries(
                 id: latest.modelSeriesID,
                 label: latest.modelDisplayName,
-                points: (recentDays.isEmpty ? [latest] : recentDays).map(CodexRadarChartPoint.init)
+                points: (recentDays.isEmpty ? [latest] : recentDays).map(CodexRadarChartPoint.init),
+                model: latest.model ?? "unknown"
             )
         ] : []
         let comparisonSeries = comparisons
@@ -648,7 +649,8 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
                 CodexRadarChartSeries(
                     id: "\(comparison.value.model)-\(comparison.value.reasoningEffort)",
                     label: comparison.value.label,
-                    points: (comparison.value.recentDays.isEmpty ? [comparison.value.latest] : comparison.value.recentDays).map(CodexRadarChartPoint.init)
+                    points: (comparison.value.recentDays.isEmpty ? [comparison.value.latest] : comparison.value.recentDays).map(CodexRadarChartPoint.init),
+                    model: comparison.value.model
                 )
             }
             .sorted { lhs, rhs in
@@ -733,6 +735,7 @@ struct CodexRadarChartSeries: Equatable, Sendable, Identifiable {
     let id: String
     let label: String
     let points: [CodexRadarChartPoint]
+    var model: String? = nil
 }
 
 struct CodexRadarChartPoint: Equatable, Sendable, Identifiable {

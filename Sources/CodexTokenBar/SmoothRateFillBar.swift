@@ -8,6 +8,7 @@ struct SmoothRateFillBar: NSViewRepresentable {
     var startPoint: UnitPoint = .leading
     var endPoint: UnitPoint = .trailing
     var animationDuration: TimeInterval = 0.2
+    var modelRates: [ModelRateContribution]? = nil
 
     func makeNSView(context: Context) -> SmoothRateFillLayerView {
         let view = SmoothRateFillLayerView()
@@ -18,7 +19,8 @@ struct SmoothRateFillBar: NSViewRepresentable {
             startPoint: startPoint,
             endPoint: endPoint,
             animationDuration: animationDuration,
-            animated: false
+            animated: false,
+            modelRates: modelRates
         )
         return view
     }
@@ -31,7 +33,8 @@ struct SmoothRateFillBar: NSViewRepresentable {
             startPoint: startPoint,
             endPoint: endPoint,
             animationDuration: animationDuration,
-            animated: true
+            animated: true,
+            modelRates: modelRates
         )
     }
 }
@@ -41,6 +44,7 @@ final class SmoothRateFillLayerView: NSView {
     private var fraction: Double = 0
     private var minimumFraction: Double = 0
     private var fillColors: [Color] = []
+    private var modelRates: [ModelRateContribution]?
     private var gradientStartPoint = UnitPoint.leading
     private var gradientEndPoint = UnitPoint.trailing
     private var animationDuration: TimeInterval = 0.2
@@ -73,8 +77,10 @@ final class SmoothRateFillLayerView: NSView {
         startPoint: UnitPoint,
         endPoint: UnitPoint,
         animationDuration: TimeInterval,
-        animated: Bool
+        animated: Bool,
+        modelRates: [ModelRateContribution]? = nil
     ) {
+        self.modelRates = modelRates
         self.fraction = fraction
         self.minimumFraction = minimumFraction
         self.fillColors = colors
@@ -134,11 +140,18 @@ final class SmoothRateFillLayerView: NSView {
 
     private func updateGradientConfiguration(scale: CGFloat) {
         gradientLayer.contentsScale = scale
-        gradientLayer.colors = fillColors.map { color in
-            nsColor(from: color).cgColor
+        if let modelRates {
+            let stops = ModelRatePresentation.stops(modelRates)
+            gradientLayer.colors = stops.map { nsColor(from: $0.color).cgColor }
+            gradientLayer.locations = stops.map { NSNumber(value: Double($0.location)) }
+            gradientLayer.startPoint = CGPoint(x: 0, y: 0.5)
+            gradientLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        } else {
+            gradientLayer.colors = fillColors.map { nsColor(from: $0).cgColor }
+            gradientLayer.locations = nil
+            gradientLayer.startPoint = CGPoint(x: gradientStartPoint.x, y: gradientStartPoint.y)
+            gradientLayer.endPoint = CGPoint(x: gradientEndPoint.x, y: gradientEndPoint.y)
         }
-        gradientLayer.startPoint = CGPoint(x: gradientStartPoint.x, y: gradientStartPoint.y)
-        gradientLayer.endPoint = CGPoint(x: gradientEndPoint.x, y: gradientEndPoint.y)
     }
 
     private func nsColor(from color: Color) -> NSColor {

@@ -86,10 +86,10 @@ struct ModelTraceView: View {
                         HStack { Text(status(run)).font(.headline); Spacer(); Text("已请求 \(run.attempts)/3 · 有效 \(run.validSamples)/3").font(.caption).foregroundStyle(.secondary) }
                         if let attribution = run.attribution {
                             ForEach(Array(attribution.candidates.prefix(5))) { candidate in
-                                HStack { Text(candidate.displayName).font(.system(size: 12, weight: .medium)); Spacer(); Text(candidate.probability, format: .percent.precision(.fractionLength(1))).monospacedDigit() }
+                                HStack { Text(candidate.displayName).foregroundStyle(ModelUsagePresentation.color(for: candidate.model)).font(.system(size: 12, weight: .medium)); Spacer(); Text(candidate.probability, format: .percent.precision(.fractionLength(1))).monospacedDigit() }
                                 GeometryReader { proxy in
-                                    RoundedRectangle(cornerRadius: 3).fill(Color.accentColor.opacity(0.12))
-                                        .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 3).fill(Color.accentColor).frame(width: max(0, proxy.size.width * candidate.probability)) }
+                                    RoundedRectangle(cornerRadius: 3).fill(ModelUsagePresentation.color(for: candidate.model).opacity(0.12))
+                                        .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 3).fill(ModelUsagePresentation.color(for: candidate.model)).frame(width: max(0, proxy.size.width * candidate.probability)) }
                                 }.frame(height: 6)
                             }
                             Text("相对匹配分值 · 不是身份正确率").font(.caption2).foregroundStyle(.secondary)
