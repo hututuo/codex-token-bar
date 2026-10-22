@@ -126,7 +126,7 @@ struct CompletedBodyAssembler: Sendable {
         pending = pending.filter { $0.value.at >= max(now - 3600, at - 600) }
         if let text = part.text, let start = part.start, let end = part.end {
             pending.removeValue(forKey: key)
-            guard end >= now - 1800, end <= now + 2, end > start, !hasFork || createdAt.map({ start >= $0 }) != false else { return nil }
+            guard end >= now - 30 * 86400, end <= now + 2, end > start, !hasFork || createdAt.map({ start >= $0 }) != false else { return nil }
             let tokens = try tokenizer(text), duration = end - start
             guard tokens > 0 else { return nil }
             var sample = ObservedSpeedSample(id: "body/\(thread)/\(key)", threadID: thread, turnID: turn, itemID: part.item,
@@ -182,7 +182,7 @@ actor CompletedBodySpeedReader {
                       let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { continue }
                 defer { try? handle.close() }
                 if states[path] == nil, let modified = attrs[.modificationDate] as? Date,
-                   modified.timeIntervalSince1970 < now - 1800 { continue }
+                   modified.timeIntervalSince1970 < now - 30 * 86400 { continue }
                 let identity = "\(attrs[.systemNumber] ?? "")/\(attrs[.systemFileNumber] ?? "")"
                 var state = states[path] ?? State()
                 let changedBoundary = size >= state.offset && state.boundary != nil
@@ -221,7 +221,7 @@ actor CompletedBodySpeedReader {
                 states[path] = state
             }
             for path in Array(recent.keys) {
-                recent[path] = Array((recent[path] ?? []).filter { $0.endedAt >= now - 1800 }.suffix(2_000))
+                recent[path] = Array((recent[path] ?? []).filter { $0.endedAt >= now - 30 * 86400 }.suffix(2_000))
                 if recent[path]?.isEmpty == true { recent.removeValue(forKey: path) }
             }
             result.samples = recent

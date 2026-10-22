@@ -1,3 +1,4 @@
+import { BodySpeedTrend } from "./BodySpeedTrend";
 import { createPortal } from "react-dom";
 import { useBodySpeedDetailsRequests } from "./bodySpeedDetailsBridge";
 import { invoke } from "@tauri-apps/api/core";
@@ -111,6 +112,7 @@ export function ObservedSpeedDetails({ data, threads = [], sourceToken = null, s
     return <section className={`observed-speed body-speed-surface-${surface}`} aria-label="正文测速" id="qs-section-speeds">
         <div className="observed-speed-heading body-speed-overview-heading">
             <h3>{surface === "sidebar" ? <>各模型最新速度 <small>正文 TPS</small></> : <>正文测速 <small>TPS · token/秒</small></>}</h3>
+            <button className="body-speed-more-details" onClick={() => { void invoke("open_modeltrace").catch(error => setDetailsFailure(String(error))); }}>模型指纹 · 手动检测</button>
             {surface === "home" && <div className="observed-speed-window">{([15, 30] as const).map(v => <button key={v} type="button" aria-pressed={minutes === v} onClick={() => setMinutes(v)}>最近 {v} 分钟</button>)}</div>}
         </div>
         {surface === "home" ? <div className="body-speed-overview-models" aria-label="各模型平均速度">
@@ -129,6 +131,7 @@ export function ObservedSpeedDetails({ data, threads = [], sourceToken = null, s
             </div>)}
             {!data.latestModelSpeeds30m?.length && <p className="observed-speed-empty">近30分钟暂无合格读数</p>}
         </div>}
+        {surface === "home" && <BodySpeedTrend sourceToken={sourceToken} revision={(data.speedSamples ?? []).map(s => `${s.id}/${s.model}/${s.confidence}`).join("|")}/>}
         <div className="body-speed-recent-heading"><span>最近{limit}条{surface === "home" ? " · 已识别模型" : ""}</span>{surface === "home" && <button disabled={!sourceToken} onClick={() => void openDetails()}>查看详情</button>}</div>
         <ol className="body-speed-recent-list" aria-label="最近测速">{samples.map(s => {
             const status = bodySpeedStatus(s), title = titles.get(s.threadId) || s.threadId.slice(0, 12);

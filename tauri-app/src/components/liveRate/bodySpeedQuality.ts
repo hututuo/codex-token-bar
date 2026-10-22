@@ -7,8 +7,8 @@ export function bodySpeedQuality(s: SpeedSample) {
     if (Math.abs(s.endedAt - s.startedAt - s.durationSeconds) > .01 || Math.abs(rate - s.tokensPerSecond) > Math.max(.01, rate * .001))
         return low("数量与计时不一致");
     const elapsedMs = Math.round(s.endedAt * 1000) - Math.round(s.startedAt * 1000);
-    if (elapsedMs <= 550)
-        return low("采样时长不超过 0.55 秒");
+    if (elapsedMs <= 400)
+        return low("采样时长不超过 0.4 秒");
     if (rate > 500)
         return low("速率异常偏高");
     if (rate < 2)

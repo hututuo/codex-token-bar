@@ -157,7 +157,8 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
             Self.defaultVisibilityRebuildTimeBudget
     ) {
         self.transport = transport ?? FoundationAccountQuotaProcessTransport(
-            launchLeasePool: AccountQuotaProcessLaunchLeasePool()
+            launchLeasePool: AccountQuotaProcessLaunchLeasePool(),
+            retainedNotificationMethods: ["turn/started", "turn/completed", "error"]
         )
         self.requestTimeout = max(1, requestTimeout)
         self.turnTimeout = max(5, turnTimeout)

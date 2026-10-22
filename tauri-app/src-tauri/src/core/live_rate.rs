@@ -60,6 +60,12 @@ mod monitor;
 mod observed;
 mod rollout;
 mod speed_models;
+mod speed_trend;
+pub use speed_trend::BodySpeedTrendPoint;
+
+pub fn read_body_speed_trend(scope: &LiveRateSourceScope, now: f64, days: u16) -> Result<Vec<BodySpeedTrendPoint>, String> {
+    observed::trend_points(scope, now, days)
+}
 mod state;
 mod stream;
 

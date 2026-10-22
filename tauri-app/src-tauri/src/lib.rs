@@ -24,6 +24,7 @@ pub fn run() {
     let app_result = tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
         .manage(commands::surface::BodySpeedDetailsRequestState::default())
+        .manage(commands::modeltrace::ModelTraceRegistry::default())
         .manage(commands::thread_activity::ThreadActivityRegistry::default())
         .manage(commands::update::UpdateMonitorRegistry::default())
         .manage(commands::auto_resume::AutoResumeRegistry::default())
@@ -110,6 +111,7 @@ pub fn run() {
                     eprintln!("Codex Token Bar: status tray live text setup failed: {error}");
                 }
             });
+            app.state::<commands::modeltrace::ModelTraceRegistry>().initialize(app.handle().clone());
             core::thread_delete::start_supervisor();
             core::startup_trace::mark("tauri setup returning");
             Ok(())
@@ -166,6 +168,13 @@ pub fn run() {
             commands::codex_instances::rollback_codex_instance_sync,
             commands::live::read_live_rate_snapshot,
             commands::live::read_body_speed_history,
+            commands::live::read_body_speed_trend,
+            commands::modeltrace::read_modeltrace_snapshot,
+            commands::modeltrace::start_modeltrace,
+            commands::modeltrace::cancel_modeltrace,
+            commands::modeltrace::save_modeltrace_auto_settings,
+            commands::modeltrace::open_modeltrace,
+            commands::modeltrace::take_modeltrace_open_request,
             commands::live::read_live_thread_options,
             commands::live::reset_live_rate_monitor,
             commands::live::publish_status_indicator_readout,

@@ -189,9 +189,29 @@ final class CompletedBodySpeedTests: XCTestCase {
         // Drain bounded bootstrap batches before measuring a genuinely idle incremental poll.
         for _ in 0..<8 { _ = await reader.read(options: options, now: time) }
         let secondStart = Date(); _ = await reader.read(options: options, now: time)
-        let metadata: [String: Any] = ["samples": try JSONSerialization.jsonObject(with: JSONEncoder().encode(collector.samples)),
+        var metadata: [String: Any] = ["samples": try JSONSerialization.jsonObject(with: JSONEncoder().encode(collector.samples)),
             "bootstrapAndSecondReadSeconds": Date().timeIntervalSince(start), "idleReadSeconds": Date().timeIntervalSince(secondStart),
             "models": collector.completedBodySummaries(now: time, windowSeconds: 1800).map { ["model": $0.model, "tokens": $0.outputTokens, "seconds": $0.durationSeconds, "rate": $0.tokensPerSecond, "count": $0.sampleCount] as [String: Any] }]
+        if let database = ProcessInfo.processInfo.environment["TOKENBAR_BODY_AUDIT_DATABASE"] {
+            let store = try BodySpeedTrendStore(url: URL(fileURLWithPath: database))
+            let writeStart = Date()
+            try store.ingest(samples: collector.samples, now: time)
+            let writeSeconds = Date().timeIntervalSince(writeStart)
+            let readStart = Date(), first = try store.read(now: time, days: 1)
+            metadata["trend24hReadSeconds"] = Date().timeIntervalSince(readStart)
+            metadata["sqliteWriteSeconds"] = writeSeconds
+            metadata["trend24h"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(first))
+            metadata["trend7d"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(store.read(now: time, days: 7)))
+            metadata["trend30d"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(store.read(now: time, days: 30)))
+            let stored = try store.loadSamples(now: time)
+            XCTAssertEqual(Set(stored.map(\.id)), Set(collector.samples.filter { $0.endedAt <= time }.map(\.id)))
+            XCTAssertFalse(first.isEmpty)
+            let before = stored.count
+            try store.ingest(samples: collector.samples, now: time)
+            XCTAssertEqual(try store.loadSamples(now: time).count, before)
+            XCTAssertEqual(try store.read(now: time, days: 1), first)
+            metadata["sqliteBytes"] = (try FileManager.default.attributesOfItem(atPath: database)[.size] as? NSNumber)?.intValue ?? 0
+        }
         try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: output))
     }
 }

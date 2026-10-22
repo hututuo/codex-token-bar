@@ -13,6 +13,7 @@ struct ObservedSpeedView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("正文测速").font(.headline)
+                Button("模型指纹") { ModelTraceWindowController.shared.present(source: monitor.dataSource) }.buttonStyle(.borderless).font(.caption)
                 Text("TPS · token/秒").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Picker("统计范围", selection: Binding(get: { monitor.speedWindowMinutes }, set: { monitor.setSpeedWindowMinutes($0) })) {
@@ -41,6 +42,7 @@ struct ObservedSpeedView: View {
                     }
                 }
             }
+            BodySpeedTrendView(monitor: monitor)
             HStack {
                 Text("最近6条 · 已识别模型").font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -129,7 +131,11 @@ struct ObservedSpeedSidebarView: View {
                         .overlay(alignment: .bottom) { Divider().opacity(0.35) }
                 }
             }
-            Button("打开详细信息", action: onOpenDetails).buttonStyle(.borderless).font(.system(size: 11))
+            HStack {
+                Button("打开详细信息", action: onOpenDetails).buttonStyle(.borderless).font(.system(size: 11))
+                Spacer()
+                Button("模型指纹 · 手动检测") { ModelTraceWindowController.shared.present(source: monitor.dataSource) }.buttonStyle(.borderless).font(.system(size: 11))
+            }
         }.padding(.top, 5).accessibilityIdentifier("sidebar-body-speeds")
     }
     private func averageText(_ model: String, readings: [ModelSpeedSummary]) -> Text {

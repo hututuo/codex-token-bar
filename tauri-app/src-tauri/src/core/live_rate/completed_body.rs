@@ -21,7 +21,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 const RECENT_THREAD_LIMIT: usize = 64;
-const MAX_BACKFILL_SECONDS: f64 = 30.0 * 60.0;
+const MAX_BACKFILL_SECONDS: f64 = 30.0 * 86_400.0;
 const MAX_TOTAL_BYTES_PER_POLL: usize = 64 * 1024 * 1024;
 const MAX_FILE_BYTES_PER_POLL: usize = 8 * 1024 * 1024;
 const MAX_LINE_BYTES: usize = 1_100_000;
@@ -841,8 +841,8 @@ pub(super) fn apply_body_quality(sample: &mut SpeedSample) {
             || !end_millis.is_finite()
         {
             Some("计时数据不一致")
-        } else if end_millis - start_millis <= 550.0 {
-            Some("采样时长不超过 0.55 秒")
+        } else if end_millis - start_millis <= 400.0 {
+            Some("采样时长不超过 0.4 秒")
         } else {
             let computed_rate = f64::from(sample.output_tokens) / sample.duration_seconds;
             let tolerance = 0.01_f64.max(sample.tokens_per_second.abs() * 0.001);
@@ -1206,8 +1206,8 @@ mod tests {
         let started_at = 1_760_000_000_000_i64;
         let mut sample = retained_sample("boundary", 1_760_000_000.0);
         sample.started_at = started_at as f64 / 1_000.0;
-        sample.ended_at = (started_at + 550) as f64 / 1_000.0;
-        sample.duration_seconds = 0.55;
+        sample.ended_at = (started_at + 400) as f64 / 1_000.0;
+        sample.duration_seconds = 0.4;
         sample.output_tokens = 2;
         sample.tokens_per_second = f64::from(sample.output_tokens) / sample.duration_seconds;
         sample.network_warning = Some("also anomalous".into());
@@ -1215,12 +1215,12 @@ mod tests {
         assert_eq!(sample.confidence, "low");
         assert_eq!(
             sample.quality_reason.as_deref(),
-            Some("采样时长不超过 0.55 秒")
+            Some("采样时长不超过 0.4 秒")
         );
 
         sample.id = "short-accepted".into();
-        sample.ended_at = (started_at + 551) as f64 / 1_000.0;
-        sample.duration_seconds = 0.551;
+        sample.ended_at = (started_at + 401) as f64 / 1_000.0;
+        sample.duration_seconds = 0.401;
         sample.network_warning = None;
         sample.confidence = "low".into();
         sample.quality_reason = Some("legacy low confidence".into());
@@ -1645,13 +1645,13 @@ mod tests {
     }
 
     #[test]
-    fn cached_job_results_are_pruned_after_the_thirty_minute_window() {
+    fn cached_job_results_are_pruned_after_the_thirty_day_window() {
         let mut samples = VecDeque::from([
             retained_sample("old", 1_199.0),
             retained_sample("boundary", 1_200.0),
             retained_sample("recent", 1_201.0),
         ]);
-        prune_job_samples(&mut samples, 3_000.0);
+        prune_job_samples(&mut samples, 1_200.0 + MAX_BACKFILL_SECONDS);
         assert_eq!(
             samples
                 .iter()

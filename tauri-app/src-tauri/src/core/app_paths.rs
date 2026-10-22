@@ -38,6 +38,10 @@ pub fn usage_history_dir() -> Option<PathBuf> {
     tauri_app_support_dir().map(|path| path.join("exact-token-index"))
 }
 
+pub fn modeltrace_database_path() -> Option<PathBuf> {
+    tauri_app_support_dir().map(|p|p.join("modeltrace/modeltrace.sqlite"))
+}
+
 pub fn quota_history_database_path() -> Option<PathBuf> {
     tauri_app_support_dir().map(|path| path.join("quota-history.sqlite"))
 }

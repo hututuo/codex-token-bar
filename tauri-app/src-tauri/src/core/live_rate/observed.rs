@@ -1,11 +1,11 @@
 use super::c_curve;
+use super::speed_trend::{BodySpeedTrendPoint, BodySpeedTrendStore};
 use super::stream::{
     estimate_observed_tokens, LiveTokenCategory, LogRow, ObservedStreamEvent,
     ObservedTokenEstimator,
 };
 use super::LiveRateSourceScope;
 use crate::models::{ModelSpeedSummary, SpeedSample};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,10 +17,10 @@ const IDLE_FINALIZE_SECONDS: f64 = 10.0;
 const SUMMARY_15M_SECONDS: f64 = 15.0 * 60.0;
 const SUMMARY_30M_SECONDS: f64 = 30.0 * 60.0;
 const SUMMARY_WINDOW_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
+const BODY_HISTORY_WINDOW_SECONDS: f64 = 30.0 * 24.0 * 60.0 * 60.0;
 const DEFAULT_BODY_RETENTION_DAYS: u16 = 30;
 const BODY_RETENTION_CLEANUP_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(15 * 60);
-const MAX_STORAGE_BYTES: u64 = 16 * 1024 * 1024;
 const SEEN_ROW_LIMIT: usize = 10_000;
 const MAX_ACTIVE_ITEMS: usize = 32;
 
@@ -30,6 +30,8 @@ static SPEED_STORES: OnceLock<Mutex<HashMap<LiveRateSourceScope, SpeedStore>>> =
 struct SpeedStore {
     loaded: bool,
     samples: VecDeque<SpeedSample>,
+    persisted_body_samples: HashMap<String, SpeedSample>,
+    trend_store: Option<BodySpeedTrendStore>,
     summary_cache: Option<CachedSummaries>,
     active: HashMap<(String, String), ActiveSample>,
     item_starts: HashMap<(String, String), f64>,
@@ -73,15 +75,6 @@ struct ActiveSample {
     saw_finish_marker: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-struct StoredSamples {
-    version: u32,
-    samples: Vec<SpeedSample>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    body_retention_days: Option<u16>,
-}
-
 pub(super) struct Snapshot {
     pub speed_samples: Vec<SpeedSample>,
     pub model_speeds: Vec<ModelSpeedSummary>,
@@ -103,7 +96,8 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
     store
         .item_starts
         .retain(|_, at| now.is_finite() && *at <= now + 1.0 && now - *at <= 20.0);
-    let mut changed = cleanup_body_retention_if_due(store, now);
+    let retention_changed = cleanup_body_retention_if_due(store, now);
+    let mut changed = retention_changed;
 
     for row in rows {
         if !is_retry_row(row) {
@@ -316,7 +310,7 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
     changed |= backfill_unknown_models(store, scope, now);
 
     if changed {
-        if let Err(error) = persist(store, scope) {
+        if let Err(error) = persist(store, scope, now, retention_changed) {
             store.storage_error = Some(error);
         } else {
             store.storage_error = None;
@@ -379,7 +373,8 @@ pub(super) fn process_completed_body(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let store = all.entry(scope.clone()).or_default();
     ensure_loaded(store, scope, now);
-    let mut changed = cleanup_body_retention_if_due(store, now);
+    let retention_changed = cleanup_body_retention_if_due(store, now);
+    let mut changed = retention_changed;
     let mut existing_ids = store
         .samples
         .iter()
@@ -391,7 +386,7 @@ pub(super) fn process_completed_body(
         if !is_completed_body_sample(sample)
             || !sample.ended_at.is_finite()
             || sample.ended_at > now + 2.0
-            || now - sample.ended_at > SUMMARY_WINDOW_SECONDS
+            || now - sample.ended_at > BODY_HISTORY_WINDOW_SECONDS
             || !valid_sample(sample)
         {
             continue;
@@ -438,7 +433,7 @@ pub(super) fn process_completed_body(
     }
     if changed {
         store.summary_cache = None;
-        if let Err(error) = persist(store, scope) {
+        if let Err(error) = persist(store, scope, now, retention_changed) {
             store.storage_error = Some(error);
         } else {
             store.storage_error = None;
@@ -468,17 +463,23 @@ pub(super) fn retained_body_samples(
         }
     }
     if changed {
-        if let Err(error) = persist(store, scope) {
+        if let Err(error) = persist(store, scope, now, true) {
             store.storage_error = Some(error);
         } else {
             store.storage_error = None;
         }
     }
     let retention_days = effective_body_retention_days(store);
+    let cutoff = now - f64::from(retention_days) * 86_400.0;
     let samples = store
         .samples
         .iter()
-        .filter(|sample| is_completed_body_sample(sample))
+        .filter(|sample| {
+            is_completed_body_sample(sample)
+                && sample.ended_at.is_finite()
+                && sample.ended_at >= cutoff
+                && sample.ended_at <= now
+        })
         .cloned()
         .collect();
     (samples, retention_days)
@@ -627,7 +628,7 @@ pub(super) fn process_desktop(
         }
     }
     if changed {
-        if let Err(e) = persist(store, scope) {
+        if let Err(e) = persist(store, scope, now, false) {
             store.storage_error = Some(e);
         } else {
             store.storage_error = None;
@@ -697,7 +698,7 @@ pub(super) fn finish_item(
     mark_finished(&mut active, now, failed);
     if let Some(sample) = finalize_active(&mut active, now, failed) {
         if add_sample(store, sample) {
-            if let Err(error) = persist(store, scope) {
+            if let Err(error) = persist(store, scope, now, false) {
                 store.storage_error = Some(error);
             } else {
                 store.storage_error = None;
@@ -740,7 +741,7 @@ pub(super) fn finish_turn(
         }
     }
     if changed {
-        if let Err(error) = persist(store, scope) {
+        if let Err(error) = persist(store, scope, now, false) {
             store.storage_error = Some(error);
         } else {
             store.storage_error = None;
@@ -1317,46 +1318,60 @@ fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope, now: f64) 
         store.persistence_blocked = true;
         return;
     };
-    if fs::metadata(&path).is_ok_and(|metadata| metadata.len() > MAX_STORAGE_BYTES) {
-        store.storage_error = Some("observed_speed_storage_too_large".into());
+    let Some(parent) = path.parent() else {
+        store.storage_error = Some("observed_speed_storage_invalid_path".into());
+        store.persistence_blocked = true;
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        store.storage_error = Some("observed_speed_storage_create_failed".into());
         store.persistence_blocked = true;
         return;
     }
-    match fs::read(path) {
-        Ok(bytes) => match serde_json::from_slice::<StoredSamples>(&bytes) {
-            Ok(loaded) if loaded.version == 1 => {
-                store.body_retention_days = loaded
-                    .body_retention_days
-                    .filter(|days| matches!(days, 15 | 30));
-                for sample in loaded.samples.into_iter() {
-                    if valid_sample(&sample) {
-                        store.samples.push_back(sample);
-                    }
-                }
-            }
-            Ok(_) => {
-                store.storage_error = Some("observed_speed_storage_version_unsupported".into());
-                store.persistence_blocked = true;
-            }
-            Err(_) => {
-                store.storage_error = Some("observed_speed_storage_invalid".into());
-                store.persistence_blocked = true;
-            }
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+
+    let database = match BodySpeedTrendStore::open(&path) {
+        Ok(database) => database,
         Err(_) => {
-            store.storage_error = Some("observed_speed_storage_read_failed".into());
+            store.storage_error = Some("observed_speed_storage_invalid".into());
             store.persistence_blocked = true;
+            return;
+        }
+    };
+    let retention_days = match database.retention_days() {
+        Ok(days) => days,
+        Err(_) => {
+            store.storage_error = Some("observed_speed_storage_invalid".into());
+            store.persistence_blocked = true;
+            return;
+        }
+    };
+    let samples = match database.read_samples(now, retention_days) {
+        Ok(samples) => samples,
+        Err(_) => {
+            store.storage_error = Some("observed_speed_storage_invalid".into());
+            store.persistence_blocked = true;
+            return;
+        }
+    };
+    let mut persisted = HashMap::new();
+    for sample in samples {
+        if is_completed_body_sample(&sample) && valid_sample(&sample) {
+            persisted.insert(sample.id.clone(), sample.clone());
+            store.samples.push_back(sample);
         }
     }
-
+    store.body_retention_days = Some(retention_days);
+    store.persisted_body_samples = persisted;
+    store.trend_store = Some(database);
     store.last_body_retention_cleanup = Some(std::time::Instant::now());
-    if prune_expired_body_samples(store, now) {
-        store.summary_cache = None;
-        match persist(store, scope) {
-            Ok(()) => store.storage_error = None,
-            Err(error) => store.storage_error = Some(error),
-        }
+    store.summary_cache = None;
+
+    // Apply raw/dedup/aggregate retention once at startup, including when the raw
+    // history preference changed while the app was closed. Existing aggregates
+    // are pruned only by their independent 90-day horizon.
+    match persist(store, scope, now, true) {
+        Ok(()) => store.storage_error = None,
+        Err(error) => store.storage_error = Some(error),
     }
 }
 
@@ -1374,7 +1389,9 @@ fn prune_expired_body_samples(store: &mut SpeedStore, now: f64) -> bool {
     let cutoff = now - f64::from(effective_body_retention_days(store)) * 86_400.0;
     let previous_len = store.samples.len();
     store.samples.retain(|sample| {
-        !is_completed_body_sample(sample) || !sample.ended_at.is_finite() || sample.ended_at >= cutoff
+        !is_completed_body_sample(sample)
+            || !sample.ended_at.is_finite()
+            || sample.ended_at >= cutoff
     });
     previous_len != store.samples.len()
 }
@@ -1401,28 +1418,69 @@ fn current_time_seconds() -> f64 {
         .unwrap_or_default()
 }
 
-fn persist(store: &SpeedStore, scope: &LiveRateSourceScope) -> Result<(), String> {
+fn persist(
+    store: &mut SpeedStore,
+    scope: &LiveRateSourceScope,
+    now: f64,
+    force_prune: bool,
+) -> Result<(), String> {
     if store.persistence_blocked {
         return Err(store
             .storage_error
             .clone()
             .unwrap_or_else(|| "observed_speed_storage_read_failed".into()));
     }
-    let path =
+    if !now.is_finite() || now < 0.0 {
+        return Err("observed_speed_storage_invalid_time".into());
+    }
+    let _path =
         storage_path(scope).ok_or_else(|| "observed_speed_storage_unavailable".to_owned())?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "observed_speed_storage_invalid_path".to_owned())?;
-    fs::create_dir_all(parent).map_err(|_| "observed_speed_storage_create_failed".to_owned())?;
-    let payload = StoredSamples {
-        version: 1,
-        samples: store.samples.iter().cloned().collect(),
-        body_retention_days: Some(effective_body_retention_days(store)),
-    };
-    let bytes = serde_json::to_vec(&payload)
-        .map_err(|_| "observed_speed_storage_serialize_failed".to_owned())?;
-    crate::core::atomic_file::write_atomically(&path, &bytes)
-        .map_err(|_| "observed_speed_storage_publish_failed".to_owned())
+    let database = store
+        .trend_store
+        .as_ref()
+        .ok_or_else(|| "observed_speed_storage_unavailable".to_owned())?;
+    let retention_days = effective_body_retention_days(store);
+    let trend_cutoff = now - BODY_HISTORY_WINDOW_SECONDS;
+    let mut incoming = HashMap::<String, SpeedSample>::new();
+    for sample in &store.samples {
+        if is_completed_body_sample(sample)
+            && valid_sample(sample)
+            && sample.ended_at <= now
+            && sample.ended_at >= trend_cutoff
+        {
+            incoming.insert(sample.id.clone(), sample.clone());
+        }
+    }
+    let mut changed = incoming
+        .values()
+        .filter(|sample| store.persisted_body_samples.get(&sample.id) != Some(*sample))
+        .cloned()
+        .collect::<Vec<_>>();
+    changed.sort_by(|left, right| {
+        left.ended_at
+            .total_cmp(&right.ended_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    if changed.is_empty() && !force_prune {
+        return Ok(());
+    }
+
+    database
+        .ingest(&changed, now, retention_days)
+        .map_err(|_| "observed_speed_storage_write_failed".to_owned())?;
+
+    store
+        .persisted_body_samples
+        .retain(|_, sample| sample.ended_at >= trend_cutoff && sample.ended_at <= now);
+    for sample in changed {
+        if sample.ended_at >= trend_cutoff && sample.ended_at <= now {
+            store
+                .persisted_body_samples
+                .insert(sample.id.clone(), sample);
+        }
+    }
+    Ok(())
 }
 
 fn valid_sample(sample: &SpeedSample) -> bool {
@@ -1482,7 +1540,40 @@ fn storage_path(scope: &LiveRateSourceScope) -> Option<PathBuf> {
         });
         Some(root.join("performance-trace.log"))
     };
-    base.map(|path| path.with_file_name(format!("observed-speed-{hash:016x}.json")))
+    base.map(|path| path.with_file_name(format!("body-speed-{hash:016x}.sqlite")))
+}
+
+pub(super) fn cache_path(scope: &LiveRateSourceScope) -> Option<PathBuf> {
+    storage_path(scope)
+}
+
+pub(super) fn trend_points(
+    scope: &LiveRateSourceScope,
+    now: f64,
+    days: u16,
+) -> Result<Vec<BodySpeedTrendPoint>, String> {
+    let stores = SPEED_STORES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut all = stores
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let store = all.entry(scope.clone()).or_default();
+    ensure_loaded(store, scope, now);
+    if store.persistence_blocked {
+        return Err(store
+            .storage_error
+            .clone()
+            .unwrap_or_else(|| "observed_speed_storage_read_failed".into()));
+    }
+    let result = store
+        .trend_store
+        .as_ref()
+        .ok_or_else(|| "observed_speed_storage_unavailable".to_owned())?
+        .read(now, days)
+        .map_err(|_| "observed_speed_trend_read_failed".to_owned());
+    if let Err(error) = &result {
+        store.storage_error = Some(error.clone());
+    }
+    result
 }
 
 fn sample_id(thread_id: &str, turn_id: &str, item_id: &str, start: f64, end: f64) -> String {
@@ -1820,8 +1911,8 @@ mod tests {
             }
         };
         let samples = VecDeque::from([
-            make_sample("short-boundary", 2, 0.55, 2, "high", false),
-            make_sample("short-accepted", 2, 0.551, 2, "low", false),
+            make_sample("short-boundary", 2, 0.4, 2, "high", false),
+            make_sample("short-accepted", 2, 0.401, 2, "low", false),
             make_sample("qualified", 8, 3.0, 4, "low", false),
             make_sample("warned", 500, 10.0, 4, "high", true),
             make_sample("midstream", 9, 4.0, 4, "low", false),
@@ -1840,8 +1931,8 @@ mod tests {
         assert_eq!(summary[0].qualified_sample_count, 4);
         assert_eq!(summary[0].active_sample_count, 0);
         assert_eq!(summary[0].output_tokens, 35);
-        assert!((summary[0].duration_seconds - 15.551).abs() < 1e-12);
-        assert!((summary[0].tokens_per_second - 35.0 / 15.551).abs() < 1e-12);
+        assert!((summary[0].duration_seconds - 15.401).abs() < 1e-12);
+        assert!((summary[0].tokens_per_second - 35.0 / 15.401).abs() < 1e-12);
         assert_eq!(summary[0].confidence, "high");
     }
 
@@ -1879,7 +1970,7 @@ mod tests {
         let samples = VecDeque::from([
             make_sample("qualified-old", 99_000.0, 5.0, 100, false, true),
             make_sample("newer-warning", 99_900.0, 5.0, 100, true, true),
-            make_sample("newer-short", 99_950.0, 0.55, 2, false, true),
+            make_sample("newer-short", 99_950.0, 0.4, 2, false, true),
             make_sample("newer-legacy-stream", 99_980.0, 5.0, 100, false, false),
         ]);
 
@@ -1942,7 +2033,7 @@ mod tests {
             "newer-short",
             "model-09",
             now - 1.0,
-            0.55,
+            0.4,
             2,
             false,
             true,
@@ -2181,18 +2272,13 @@ mod tests {
             body_phase: None,
             quality_reason: None,
         };
-        let encoded = serde_json::to_string(&StoredSamples {
-            version: 1,
-            samples: vec![sample],
-            body_retention_days: None,
-        })
-        .unwrap();
+        let encoded = serde_json::to_string(&sample).unwrap();
         assert!(!encoded.contains("hello"));
         assert!(encoded.contains("outputBytes"));
     }
 
     #[test]
-    fn completed_body_persistence_keeps_legacy_ipc_details_and_reads_legacy_warning_booleans() {
+    fn completed_body_sqlite_keeps_low_quality_history_outside_the_trend() {
         let unique = format!(
             "body-persist-test-{}",
             std::time::SystemTime::now()
@@ -2203,26 +2289,16 @@ mod tests {
         let scope = LiveRateSourceScope::new(&unique, &unique);
         let path = storage_path(&scope).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let legacy = serde_json::json!({
-            "version": 1,
-            "samples": [{
-                "id":"legacy-ipc", "threadId":"thread", "turnId":"turn", "itemId":"item",
-                "model":"model-a", "startedAt":10.0, "endedAt":12.0, "outputTokens":20,
-                "outputCharacters":20, "outputBytes":20, "chunkCount":4,
-                "durationSeconds":2.0, "tokensPerSecond":10.0, "confidence":"low",
-                "networkWarning":false, "source":"codex_desktop.forwarded_text_stream"
-            }]
-        });
-        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
 
+        let now = current_time_seconds();
         let body = SpeedSample {
             id: "completed-body/new".into(),
             thread_id: "thread".into(),
             turn_id: "turn-new".into(),
             item_id: "item-new".into(),
             model: Some("model-b".into()),
-            started_at: 20.0,
-            ended_at: 24.0,
+            started_at: now - 4.0,
+            ended_at: now,
             output_tokens: 50,
             output_characters: 100,
             output_bytes: 120,
@@ -2237,22 +2313,29 @@ mod tests {
             body_phase: None,
             quality_reason: None,
         };
-        process_completed_body(&scope, &[body], 24.0);
-        let persisted: StoredSamples = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(persisted.version, 1);
-        assert_eq!(persisted.samples.len(), 2);
-        let old = persisted
-            .samples
-            .iter()
-            .find(|sample| sample.id == "legacy-ipc")
+        let mut warned = body.clone();
+        warned.id = "completed-body/warned".into();
+        warned.item_id = "warned-item".into();
+        warned.network_warning = Some("network pause".into());
+        warned.confidence = "low".into();
+        process_completed_body(&scope, &[body, warned], now);
+        let persisted = BodySpeedTrendStore::open(&path)
+            .unwrap()
+            .read_samples(now, 30)
             .unwrap();
-        assert!(old.measurement_kind.is_none());
-        assert!(old.tokenizer.is_none());
-        assert!(old.network_warning.is_none());
+        assert_eq!(persisted.len(), 2);
         assert!(persisted
-            .samples
             .iter()
-            .any(|sample| sample.measurement_kind.as_deref() == Some("completed_body")));
+            .any(|sample| sample.id == "completed-body/warned" && sample.confidence == "low"));
+        let trend = BodySpeedTrendStore::open(&path)
+            .unwrap()
+            .read(now, 1)
+            .unwrap();
+        assert_eq!(trend.len(), 1);
+        assert_eq!(trend[0].model, "model-b");
+        assert!(path
+            .extension()
+            .is_some_and(|extension| extension == "sqlite"));
 
         SPEED_STORES.get().unwrap().lock().unwrap().remove(&scope);
         let _ = fs::remove_file(path);
@@ -2308,6 +2391,20 @@ mod tests {
         assert_eq!(stored.body_phase.as_deref(), Some("final_answer"));
         assert_eq!(stores.get(&scope).unwrap().samples.len(), 1);
         drop(stores);
+        let persisted = BodySpeedTrendStore::open(&path)
+            .unwrap()
+            .read_samples(24.0, 30)
+            .unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(
+            BodySpeedTrendStore::open(&path)
+                .unwrap()
+                .read(24.0, 1)
+                .unwrap()
+                .len(),
+            1
+        );
         SPEED_STORES.get().unwrap().lock().unwrap().remove(&scope);
         let _ = fs::remove_file(path);
     }
@@ -2435,9 +2532,7 @@ mod desktop_tests {
         let saved = saved_samples(&scope);
         assert_eq!(saved.len(), 2);
         assert!(saved[1].network_warning.is_some());
-        assert!(saved
-            .iter()
-            .all(|sample| sample.network_warning.is_some()));
+        assert!(saved.iter().all(|sample| sample.network_warning.is_some()));
         assert!(snapshot.model_speeds_30m.is_empty());
         SPEED_STORES.get().unwrap().lock().unwrap().remove(&scope);
         if let Some(path) = storage_path(&scope) {

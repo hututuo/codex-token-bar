@@ -182,7 +182,7 @@ struct BodySpeedQuality: Equatable, Sendable {
     var statusLabel: String {
         if included { return "计入均速" }
         switch reason {
-        case "采样时长不超过 0.55 秒": return "时长≤0.55秒"
+        case "采样时长不超过 0.4 秒": return "时长≤0.4秒"
         case "速率异常偏高", "速率异常偏低": return "速率待核查"
         case "采样存在异常标记": return "采样告警"
         default: return "计时待核查"
@@ -198,9 +198,9 @@ struct BodySpeedQuality: Equatable, Sendable {
             return .init(confidence: "low", reason: "数量与计时不一致")
         }
         // Rollout timestamps have millisecond precision. Compare their original
-        // resolution so a rounded Unix Double cannot admit an exact 550ms body.
+        // resolution so a rounded Unix Double cannot admit an exact 400ms body.
         let elapsedMS = (sample.endedAt * 1000).rounded() - (sample.startedAt * 1000).rounded()
-        if elapsedMS <= 550 { return .init(confidence: "low", reason: "采样时长不超过 0.55 秒") }
+        if elapsedMS <= 400 { return .init(confidence: "low", reason: "采样时长不超过 0.4 秒") }
         if rate > 500 { return .init(confidence: "low", reason: "速率异常偏高") }
         if rate < 2 { return .init(confidence: "low", reason: "速率异常偏低") }
         if sample.networkWarning != nil { return .init(confidence: "low", reason: "采样存在异常标记") }
@@ -420,20 +420,84 @@ struct ObservedSpeedCollector {
     }
 }
 
-/// Encode and atomically write away from the main actor. Tickets prevent an older
-/// queued snapshot overwriting a newer snapshot after a source switch.
+/// Persist body measurements in SQLite off the main actor. Tickets prevent an older
+/// queued revision from overwriting a newer one after a source switch.
 actor BodySpeedSampleWriter {
+    private struct StoreCache {
+        let store: BodySpeedTrendStore
+        var persistedByID: [String: ObservedSpeedSample]
+        var retentionDays: Int
+    }
+
+    private var caches: [URL: StoreCache] = [:]
+    /// Tracks the last committed revision only. A failed write leaves the ticket retryable.
     private var tickets: [URL: Int] = [:]
-    func persist(_ samples: [ObservedSpeedSample], to url: URL, ticket: Int) -> String? {
-        guard ticket > (tickets[url] ?? -1) else { return nil }
-        tickets[url] = ticket
+
+    func load(from url: URL, now: Double, retentionDays: Int = 30) throws -> [ObservedSpeedSample] {
+        let key = url.standardizedFileURL
+        var cache = try storeCache(for: key, now: now, retentionDays: retentionDays)
+        let samples = try cache.store.loadSamples(now: now, retentionDays: retentionDays)
+        cache.persistedByID = Dictionary(samples.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        caches[key] = cache
+        return samples
+    }
+
+    func persist(
+        _ samples: [ObservedSpeedSample],
+        to url: URL,
+        ticket: Int,
+        now: Double = Date().timeIntervalSince1970,
+        retentionDays: Int = 30
+    ) -> String? {
+        let key = url.standardizedFileURL
+        guard ticket > (tickets[key] ?? -1) else { return nil }
         do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let bytes = try JSONEncoder().encode(samples)
-            guard bytes.count <= 64 * 1_048_576 else { return "测速记录超过保存上限，原文件已保留" }
-            try bytes.write(to: url, options: .atomic)
+            var cache = try storeCache(for: key, now: now, retentionDays: retentionDays)
+            var incomingByID: [String: ObservedSpeedSample] = [:]
+            for sample in samples where sample.isBody {
+                incomingByID[sample.id] = sample
+            }
+            let changed = incomingByID.values
+                .filter { cache.persistedByID[$0.id] != $0 }
+                .sorted { $0.endedAt == $1.endedAt ? $0.id < $1.id : $0.endedAt < $1.endedAt }
+
+            let cutoff = now - Double([15, 30].contains(retentionDays) ? retentionDays : 30) * 86_400
+            let hasExpiredRaw = cache.persistedByID.values.contains { $0.endedAt < cutoff }
+            let normalizedRetention = [15, 30].contains(retentionDays) ? retentionDays : 30
+            if !changed.isEmpty || hasExpiredRaw || cache.retentionDays != normalizedRetention {
+                try cache.store.ingest(samples: changed, now: now, retentionDays: retentionDays)
+                cache.retentionDays = normalizedRetention
+            }
+            cache.persistedByID = cache.persistedByID.filter { $0.value.endedAt >= cutoff && $0.value.endedAt <= now }
+            for sample in changed where sample.endedAt >= cutoff && sample.endedAt <= now {
+                cache.persistedByID[sample.id] = sample
+            }
+            caches[key] = cache
+            tickets[key] = ticket
             return nil
-        } catch { return "测速记录保存失败：\(error.localizedDescription)" }
+        } catch {
+            return "测速记录保存失败：\(error.localizedDescription)"
+        }
+    }
+
+    func trend(from url: URL, now: Double, days: Int) throws -> [BodySpeedTrendPoint] {
+        let key = url.standardizedFileURL
+        var cache = try storeCache(for: key, now: now, retentionDays: 30)
+        let points = try cache.store.read(now: now, days: days)
+        caches[key] = cache
+        return points
+    }
+
+    private func storeCache(for url: URL, now: Double, retentionDays: Int) throws -> StoreCache {
+        if let cache = caches[url] { return cache }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let store = try BodySpeedTrendStore(url: url)
+        let samples = try store.loadSamples(now: now, retentionDays: retentionDays)
+        return StoreCache(
+            store: store,
+            persistedByID: Dictionary(samples.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }),
+            retentionDays: try store.retentionDays()
+        )
     }
 }
 

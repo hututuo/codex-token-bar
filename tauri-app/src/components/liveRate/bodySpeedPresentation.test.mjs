@@ -10,10 +10,10 @@ const summary = (model, end, tps=50) => ({model,lastMeasuredAt:end,tokensPerSeco
 test('home shows latest six known-model bodies without mutating history; exclusion explains timing', async () => {
  await withSsrModules(async load => {
   const {recentBodySpeedSamples,bodySpeedStatus}=await load('/src/components/liveRate/bodySpeedPresentation.ts');
-  const rows=[row('old','sol',10),row('new','luna',50),row('short','sol',40,.5),row('unknown',' unknown ',60),row('middle','astra',30)];
+  const rows=[row('old','sol',10),row('new','luna',50),row('short','sol',40,.4),row('unknown',' unknown ',60),row('middle','astra',30)];
   assert.deepEqual(recentBodySpeedSamples(rows).map(s=>s.id),['new','short','middle','old']);
   assert.equal(rows[0].id,'old');
-  assert.equal(bodySpeedStatus(row('short','sol',40,.5)).label,'时长≤0.55秒');
+  assert.equal(bodySpeedStatus(row('short','sol',40,.4)).label,'时长≤0.4秒');
  });
 });
 test('all retained models appear in overview and current window overrides historical average',async()=>{

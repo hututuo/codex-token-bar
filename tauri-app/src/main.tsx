@@ -4,6 +4,8 @@ import { recordStartupEvent } from "./api/client";
 import { App } from "./app/App";
 import { sidebarCanvasClasses } from "./quota-sidebar/canvas";
 import "./styles/global.css";
+import "./modelTrace/modelTrace.css";
+import "./components/liveRate/bodySpeedTrend.css";
 import "./quota-sidebar/QuotaSidebar.css";
 
 const startupSurface = new URLSearchParams(window.location.search).get("surface") ?? "main";

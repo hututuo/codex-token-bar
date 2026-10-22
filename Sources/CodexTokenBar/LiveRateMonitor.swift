@@ -34,6 +34,13 @@ final class LiveRateMonitor: ObservableObject {
     @Published private(set) var monitoringEnabled: Bool
 
     @Published private(set) var speedSamples: [ObservedSpeedSample] = []
+    @Published private(set) var speedTrendPoints: [BodySpeedTrendPoint] = []
+    @Published private(set) var speedTrendDays = 1
+    @Published private(set) var speedTrendError: String?
+    private var speedDatabaseURL: URL?
+    private var speedDatabaseReady = false
+    private var speedTrendVisible = false
+    private var speedTrendRequest = 0
     @Published private(set) var modelSpeeds: [ModelSpeedSummary] = []
     @Published private(set) var modelSpeeds15m: [ModelSpeedSummary] = []
     @Published private(set) var modelSpeeds30m: [ModelSpeedSummary] = []
@@ -243,6 +250,30 @@ final class LiveRateMonitor: ObservableObject {
         lastModelSpeedSummaryAt = 0
     }
 
+    func showSpeedTrend(_ visible: Bool) {
+        speedTrendVisible = visible
+        if visible { refreshSpeedTrend() }
+    }
+    func setSpeedTrendDays(_ days: Int) {
+        guard [1, 7, 30].contains(days) else { return }
+        speedTrendDays = days; refreshSpeedTrend()
+    }
+    private func refreshSpeedTrend() {
+        guard speedTrendVisible, speedDatabaseReady, let url = speedDatabaseURL else { return }
+        speedTrendRequest += 1
+        let request = speedTrendRequest, days = speedTrendDays, identity = speedSourceIdentity, writer = bodySpeedWriter
+        Task { [weak self] in
+            do {
+                let points = try await writer.trend(from: url, now: Date().timeIntervalSince1970, days: days)
+                guard let self, self.speedSourceIdentity == identity, self.speedTrendRequest == request else { return }
+                self.speedTrendPoints = points; self.speedTrendError = nil
+            } catch {
+                guard let self, self.speedSourceIdentity == identity, self.speedTrendRequest == request else { return }
+                self.speedTrendError = "速度趋势读取失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
     func speedThreadTitle(_ id: String) -> String {
         let title = bodyHistoryTitles[id] ?? threadOptions.first(where: { $0.id == id })?.displayTitle ?? ""
         return title.isEmpty ? String(id.prefix(12)) : title
@@ -252,7 +283,7 @@ final class LiveRateMonitor: ObservableObject {
         guard [15, 30].contains(days), speedRetentionDays != days else { return }
         speedRetentionDays = days
         UserDefaults.standard.set(days, forKey: "bodySpeedRetentionDays")
-        lastSpeedPruneAt = 0
+        lastSpeedPruneAt = 0; savedSpeedRevision = -1
         updateSnapshots(now: Date().timeIntervalSince1970)
     }
 
@@ -1039,7 +1070,23 @@ final class LiveRateMonitor: ObservableObject {
             // Store metadata only in TokenBar support, partitioned by a non-reversible source hash.
             let digest = identity.map { ObservedSpeedCollector.sourceKey($0) } ?? "default"
             let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            speedCollector = ObservedSpeedCollector(storeURL: base.appendingPathComponent("CodexTokenBar/observed-speed-\(digest).json"))
+            speedCollector = ObservedSpeedCollector()
+            let url = base.appendingPathComponent("CodexTokenBar/body-speed-\(digest).sqlite")
+            speedDatabaseURL = url; speedDatabaseReady = false; speedTrendPoints = []; speedTrendError = nil
+            let writer = bodySpeedWriter, days = speedRetentionDays
+            Task { [weak self] in
+                do {
+                    let retained = try await writer.load(from: url, now: Date().timeIntervalSince1970, retentionDays: days)
+                    guard let self, self.speedSourceIdentity == identity else { return }
+                    self.speedCollector.addCompletedBodies(retained)
+                    self.speedDatabaseReady = true; self.savedSpeedRevision = -1
+                    self.updateSnapshots(now: Date().timeIntervalSince1970); self.refreshSpeedTrend()
+                } catch {
+                    guard let self, self.speedSourceIdentity == identity else { return }
+                    self.speedCollector.persistenceError = "测速数据库读取失败：\(error.localizedDescription)"
+                    self.speedTrendError = self.speedCollector.persistenceError
+                }
+            }
             savedSpeedRevision = -1
         }
     }
@@ -1435,17 +1482,18 @@ final class LiveRateMonitor: ObservableObject {
         let samplesChanged = speedCollector.revision != savedSpeedRevision
         if samplesChanged {
             savedSpeedRevision = speedCollector.revision
-            if speedCollector.persistenceAllowed, let url = speedCollector.storeURL {
+            if speedDatabaseReady, speedCollector.persistenceAllowed, let url = speedDatabaseURL {
                 bodySpeedWriteTicket += 1
                 let ticket = bodySpeedWriteTicket, identity = speedSourceIdentity
-                let samples = speedCollector.samples, writer = bodySpeedWriter
+                let samples = speedCollector.samples, writer = bodySpeedWriter, days = speedRetentionDays
                 Task { [weak self] in
-                    let error = await writer.persist(samples, to: url, ticket: ticket)
+                    let error = await writer.persist(samples, to: url, ticket: ticket, now: now, retentionDays: days)
                     guard let self, self.speedSourceIdentity == identity, self.bodySpeedWriteTicket == ticket else { return }
                     if self.speedCollector.persistenceError != error {
                         self.speedCollector.persistenceError = error
                         self.updateSnapshots(now: Date().timeIntervalSince1970)
                     }
+                    if error == nil { self.refreshSpeedTrend() }
                 }
             }
             speedSamples = speedCollector.samples.filter(\.isBody).sorted { $0.endedAt == $1.endedAt ? $0.id < $1.id : $0.endedAt > $1.endedAt }

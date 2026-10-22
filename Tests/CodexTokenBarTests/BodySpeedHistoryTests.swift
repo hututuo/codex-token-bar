@@ -10,7 +10,7 @@ final class BodySpeedHistoryTests: XCTestCase {
               confidence: "high", networkWarning: nil, source: "test", measurementKind: "completed_body", tokenizer: "o200k_base")
     }
     func testOldHighConfidenceCannotBypassTimingAndAnomalyRules() {
-        XCTAssertEqual(sample(tokens: 64, seconds: 0.001).bodyQuality.reason, "采样时长不超过 0.55 秒")
+        XCTAssertEqual(sample(tokens: 64, seconds: 0.001).bodyQuality.reason, "采样时长不超过 0.4 秒")
         XCTAssertTrue(sample(tokens: 50, seconds: 1).bodyQuality.included)
         XCTAssertFalse(sample(tokens: 500, seconds: 500).bodyQuality.included)
         var inconsistent = sample(); inconsistent.durationSeconds = 2
@@ -22,13 +22,13 @@ final class BodySpeedHistoryTests: XCTestCase {
     }
     func testBodyQualityUsesOriginalMillisecondBoundaryAndNoTokenMinimum() {
         for start in [1000.0, 1_792_581_316.123] {
-            for milliseconds in [549, 550, 551] {
+            for milliseconds in [399, 400, 401] {
                 var row = sample(tokens: 20, seconds: Double(milliseconds) / 1000)
                 row.startedAt = start
                 row.endedAt = start + row.durationSeconds
                 row.confidence = "low"
-                XCTAssertEqual(row.bodyQuality.included, milliseconds > 550)
-                XCTAssertEqual(row.bodyQuality.confidence, milliseconds > 550 ? "medium" : "low")
+                XCTAssertEqual(row.bodyQuality.included, milliseconds > 400)
+                XCTAssertEqual(row.bodyQuality.confidence, milliseconds > 400 ? "medium" : "low")
             }
         }
         XCTAssertEqual(sample(tokens: 12, seconds: 5).bodyQuality.confidence, "high")
@@ -38,7 +38,7 @@ final class BodySpeedHistoryTests: XCTestCase {
         var collector = ObservedSpeedCollector()
         var first = sample(tokens: 12, seconds: 0.6); first.confidence = "low"
         var second = sample(tokens: 60, seconds: 1.2); second.id = "second"; second.confidence = "low"
-        var excluded = sample(tokens: 20, seconds: 0.55); excluded.id = "boundary"
+        var excluded = sample(tokens: 20, seconds: 0.4); excluded.id = "boundary"
         collector.samples = [first, second, excluded]
         let summary = collector.completedBodySummaries(now: 1020, windowSeconds: 900).first
         XCTAssertEqual(summary?.sampleCount, 2)
@@ -68,7 +68,7 @@ final class BodySpeedHistoryTests: XCTestCase {
         }
         collector.samples = (0..<12).map { row("m-\($0)", "model-\($0)", now - 10 - Double($0)) }
         collector.samples += [row("old-sol", "sol", now - 80), row("latest-sol", "sol", now - 20),
-            row("short-sol", "sol", now - 1, 0.5), row("expired", "expired", now - 1801),
+            row("short-sol", "sol", now - 1, 0.4), row("expired", "expired", now - 1801),
             row("unknown", " unknown ", now - 1), row("future", "future", now + 1)]
         var warned = row("warned-sol", "sol", now - 2); warned.networkWarning = "retry"
         collector.samples.append(warned)
@@ -94,7 +94,7 @@ final class BodySpeedHistoryTests: XCTestCase {
         var warned = sample(); warned.id = "warned"; warned.networkWarning = "retry"
         collector.samples = [sample(tokens: 100, seconds: 2), warned]
         XCTAssertEqual(collector.completedBodySummaries(now: 1020, windowSeconds: 900).first?.lastMeasuredAt, 1002)
-        XCTAssertEqual(sample(tokens: 25, seconds: 0.5).bodyQuality.statusLabel, "时长≤0.55秒")
+        XCTAssertEqual(sample(tokens: 25, seconds: 0.4).bodyQuality.statusLabel, "时长≤0.4秒")
     }
     func testBodySpeedHistoryWindowCentersWithinChosenDisplay() {
         for area in [CGRect(x: 0, y: 0, width: 1440, height: 900),
@@ -133,14 +133,30 @@ final class BodySpeedHistoryTests: XCTestCase {
         XCTAssertEqual(collector.samples.count, 11_002)
     }
     func testBackgroundWriterRejectsAnOlderQueuedSnapshot() async throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: url) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("body-speed-test.sqlite")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let body = sample()
+        let now = body.endedAt
         let writer = BodySpeedSampleWriter()
-        let error = await writer.persist([sample()], to: url, ticket: 2)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let corrupt = Data("preserve corrupt cache".utf8)
+        try corrupt.write(to: url)
+        let failed = await writer.persist([body], to: url, ticket: 2, now: now)
+        XCTAssertNotNil(failed)
+        XCTAssertEqual(try Data(contentsOf: url), corrupt)
+        try FileManager.default.removeItem(at: url)
+        let error = await writer.persist([body], to: url, ticket: 2, now: now)
         XCTAssertNil(error)
-        _ = await writer.persist([], to: url, ticket: 1)
-        let kept = try JSONDecoder().decode([ObservedSpeedSample].self, from: Data(contentsOf: url))
+        _ = await writer.persist([], to: url, ticket: 1, now: now)
+        let kept = try await writer.load(from: url, now: now)
         XCTAssertEqual(kept.count, 1)
+        let trend = try await writer.trend(from: url, now: now, days: 1)
+        XCTAssertEqual(trend.count, 1)
+        XCTAssertEqual(trend[0].model, "m")
+        XCTAssertEqual(trend[0].outputTokens, Int64(body.outputTokens))
+        XCTAssertEqual(trend[0].sampleCount, 1)
+        XCTAssertEqual(trend[0].tokensPerSecond, 50, accuracy: 0.0001)
     }
     func testLocalHistoryPerformanceAudit() throws {
         guard let input = ProcessInfo.processInfo.environment["TOKENBAR_BODY_PERF_INPUT"],

@@ -63,3 +63,5 @@ where
 }
 
 pub mod floating_guide;
+
+pub(crate) mod modeltrace;

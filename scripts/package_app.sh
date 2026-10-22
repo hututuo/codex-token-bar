@@ -154,6 +154,7 @@ cp "$ROOT_DIR/Resources/CodexSessionEnhancementsInjection.js" "$RESOURCES_DIR/Co
 mkdir -p "$RESOURCES_DIR/OpenSourceLicenses"
 cp "$ROOT_DIR/LICENSE" "$RESOURCES_DIR/OpenSourceLicenses/AGPL-3.0.txt"
 cp "$ROOT_DIR/LICENSES/Tiktoken-MIT.txt" "$RESOURCES_DIR/OpenSourceLicenses/Tiktoken-MIT.txt"
+cp "$ROOT_DIR/LICENSES/ModelTrace-MIT.txt" "$RESOURCES_DIR/OpenSourceLicenses/ModelTrace-MIT.txt"
 cp "$ROOT_DIR/LICENSES/CodexTokenBar-MIT.txt" "$RESOURCES_DIR/OpenSourceLicenses/CodexTokenBar-MIT.txt"
 cp "$ROOT_DIR/LICENSES/Zstandard-BSD-3-Clause.txt" "$RESOURCES_DIR/OpenSourceLicenses/Zstandard-BSD-3-Clause.txt"
 cp "$ROOT_DIR/OPEN_SOURCE_NOTICES.md" "$RESOURCES_DIR/OPEN_SOURCE_NOTICES.md"

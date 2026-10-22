@@ -487,6 +487,7 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
     private let launchLeasePool: AccountQuotaProcessLaunchLeasePool
     private let stdinWriteTimeout: TimeInterval
     private let stdinPollIntervalMilliseconds: Int32
+    private let retainedNotificationMethods: Set<String>
 
     init(
         stderrTailLimit: Int = 16_384,
@@ -494,7 +495,8 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         forcedShutdownTimeout: TimeInterval = 1,
         launchLeasePool: AccountQuotaProcessLaunchLeasePool = .shared,
         stdinWriteTimeout: TimeInterval = 1,
-        stdinPollIntervalMilliseconds: Int32 = 10
+        stdinPollIntervalMilliseconds: Int32 = 10,
+        retainedNotificationMethods: Set<String> = []
     ) {
         self.stderrTailLimit = max(0, stderrTailLimit)
         self.gracefulShutdownTimeout = max(0, gracefulShutdownTimeout)
@@ -502,6 +504,7 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         self.launchLeasePool = launchLeasePool
         self.stdinWriteTimeout = max(0, stdinWriteTimeout)
         self.stdinPollIntervalMilliseconds = max(1, stdinPollIntervalMilliseconds)
+        self.retainedNotificationMethods = retainedNotificationMethods
     }
 
     func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession {
@@ -541,7 +544,7 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         process.terminationHandler = { process in
             exitObserver.record(process: process)
         }
-        let stdoutReader = AccountQuotaLineReader(handle: output.fileHandleForReading)
+        let stdoutReader = AccountQuotaLineReader(handle: output.fileHandleForReading, retainedNotificationMethods: retainedNotificationMethods)
         let stderrTail = AccountQuotaStderrTail(maxBytes: stderrTailLimit)
         errorPipe.fileHandleForReading.readabilityHandler = { handle in
             stderrTail.append(handle.availableData)
@@ -1592,8 +1595,10 @@ private final class AccountQuotaLineReader: @unchecked Sendable {
     private var buffer = Data()
     private var lines: [Data] = []
     private var reachedEOF = false
+    private let retainedNotificationMethods: Set<String>
 
-    init(handle: FileHandle) {
+    init(handle: FileHandle, retainedNotificationMethods: Set<String> = []) {
+        self.retainedNotificationMethods = retainedNotificationMethods
         handle.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty {
@@ -1636,8 +1641,9 @@ private final class AccountQuotaLineReader: @unchecked Sendable {
         buffer.append(data)
         while let newline = buffer.firstIndex(of: 0x0A) {
             let line = buffer[..<newline]
-            if let message = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any], message["id"] != nil {
-                guard lines.count < 64 else {
+            if let message = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+               message["id"] != nil || (message["method"] as? String).map(retainedNotificationMethods.contains) == true {
+                guard lines.count < (retainedNotificationMethods.isEmpty ? 64 : 512) else {
                     buffer.removeAll(); lines.removeAll(); reachedEOF = true; return
                 }
                 lines.append(Data(line))

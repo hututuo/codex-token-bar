@@ -24,7 +24,7 @@ export function modelSpeedReadings(recent: ModelSpeedSummary[], retained: ModelS
 export function bodySpeedStatus(sample: SpeedSample) {
     const quality = bodySpeedQuality(sample);
     const label = quality.included ? "计入均速"
-        : quality.reason === "采样时长不超过 0.55 秒" ? "时长≤0.55秒"
+        : quality.reason === "采样时长不超过 0.4 秒" ? "时长≤0.4秒"
         : quality.reason === "速率异常偏高" || quality.reason === "速率异常偏低" ? "速率待核查"
         : quality.reason === "采样存在异常标记" ? "采样告警" : "计时待核查";
     return { ...quality, label };

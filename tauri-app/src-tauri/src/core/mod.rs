@@ -24,3 +24,5 @@ pub mod unread;
 pub mod usage;
 pub(crate) mod webview_startup;
 pub(crate) mod windows_path;
+
+pub(crate) mod modeltrace;

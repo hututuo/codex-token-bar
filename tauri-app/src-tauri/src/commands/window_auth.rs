@@ -67,6 +67,11 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "check_app_update",
     "install_app_update",
     "take_body_speed_details_request",
+    "read_modeltrace_snapshot",
+    "start_modeltrace",
+    "cancel_modeltrace",
+    "save_modeltrace_auto_settings",
+    "take_modeltrace_open_request",
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
@@ -84,6 +89,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "schedule_precise_dashboard_aggregate",
     "read_live_rate_snapshot",
     "read_body_speed_history",
+    "read_body_speed_trend",
     "claim_live_rate_owner_session",
     "start_live_rate_stream",
     "stop_live_rate_stream",
@@ -120,7 +126,7 @@ pub(crate) fn require_window_label(
 }
 
 pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
-    if command == "open_body_speed_details" {
+    if matches!(command, "open_body_speed_details" | "open_modeltrace") {
         return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
     }
 
