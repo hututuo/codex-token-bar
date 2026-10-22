@@ -33,3 +33,11 @@ test("native requests deduplicate equal budgets but animate a changed target", a
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(heights.at(-1), 4096);
 });
+
+test("explicit module changes shrink while open and hiding TPS removes headroom", () => {
+  const budget = createSidebarHeightBudget();
+  assert.equal(budget.update({ contentHeight: 600, speedRowHeight: 40 }, true), 664);
+  assert.equal(budget.update({ contentHeight: 200, speedRowHeight: 0 }, true, true), 224);
+  assert.equal(budget.update(undefined, false), 224);
+  assert.equal(budget.update({ contentHeight: 60, speedRowHeight: 0 }, true, true), 192);
+});

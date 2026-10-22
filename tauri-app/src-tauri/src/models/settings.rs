@@ -1,5 +1,32 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarModuleVisibilitySnapshot {
+    #[serde(default = "default_enabled")]
+    pub overview: bool,
+    #[serde(default = "default_enabled")]
+    pub speeds: bool,
+    #[serde(default = "default_enabled")]
+    pub tasks: bool,
+    #[serde(default = "default_enabled")]
+    pub radar: bool,
+    #[serde(default = "default_enabled")]
+    pub credits: bool,
+}
+
+impl Default for SidebarModuleVisibilitySnapshot {
+    fn default() -> Self {
+        Self {
+            overview: true,
+            speeds: true,
+            tasks: true,
+            radar: true,
+            credits: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettingsSnapshot {
@@ -35,6 +62,8 @@ pub struct AppSettingsSnapshot {
     #[serde(default)]
     pub display_surfaces: DisplaySurfaceSettingsSnapshot,
     #[serde(default)]
+    pub sidebar_module_visibility: SidebarModuleVisibilitySnapshot,
+    #[serde(default)]
     pub setup_guide_completed: bool,
     #[serde(default)]
     pub session_enhancements: SessionEnhancementSettingsSnapshot,
@@ -58,6 +87,7 @@ impl Default for AppSettingsSnapshot {
             token_rate_scale_initialized_v092: true,
             floating_position: None,
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
+            sidebar_module_visibility: SidebarModuleVisibilitySnapshot::default(),
             setup_guide_completed: false,
             session_enhancements: SessionEnhancementSettingsSnapshot::default(),
             auto_resume: AutoResumeSettingsSnapshot::default(),

@@ -1,3 +1,5 @@
+import { DEFAULT_MODULE_VISIBILITY, sidebarModuleForPage, type SidebarModuleVisibility } from "./moduleVisibility";
+import { useModuleVisibility } from "./useModuleVisibility";
 import { createSidebarHeightBudget, type SidebarContentMeasurement } from "./contentSizing";
 import { latestSidebarModelSpeeds, speedTimestamp } from "../components/liveRate/bodySpeedPresentation";
 import { ObservedSpeedDetails } from "../components/liveRate/ObservedSpeedDetails";
@@ -62,6 +64,7 @@ export function QuotaSidebarApp() {
 }
 
 function RailSurface() {
+  const modules = useModuleVisibility();
   const [display, setDisplay] = useState(INACTIVE_DISPLAY_SURFACES);
   const [rateFullScale, setRateFullScale] = useState(() => sanitizeRateFullScale(DEFAULT_TOKEN_RATE_FULL_SCALE));
   const [quotaRefreshRevision, requestQuotaRefresh] = useReducer((value: number) => value + 1, 0);
@@ -112,10 +115,16 @@ function RailSurface() {
   const heightBudget = useRef(createSidebarHeightBudget());
   const [expandedHeight, setExpandedHeight] = useState<number>();
   const currentMode = useRef(state.mode); currentMode.current = state.mode;
+  const previousVisibility = useRef(modules.visibility);
+  const rebaseHeight = useRef(false);
+  if (previousVisibility.current !== modules.visibility) {
+    previousVisibility.current = modules.visibility; rebaseHeight.current = true;
+  }
   const measureContent = useCallback((measurement: SidebarContentMeasurement) => {
-    const next = heightBudget.current.update(measurement, currentMode.current !== "rest");
+    const next = heightBudget.current.update({ ...measurement, speedRowHeight: modules.visibility.speeds ? measurement.speedRowHeight : 0 }, currentMode.current !== "rest", rebaseHeight.current);
+    rebaseHeight.current = false;
     setExpandedHeight(value => value === next ? value : next);
-  }, []);
+  }, [modules.visibility]);
   useLayoutEffect(() => {
     const next = heightBudget.current.update(undefined, state.mode !== "rest");
     setExpandedHeight(value => value === next ? value : next);
@@ -264,12 +273,13 @@ function RailSurface() {
   useEffect(() => { publisher.current?.update(presentation, display.quotaSidebarEnabled && state.mode === "detail"); }, [presentation, display.quotaSidebarEnabled, state.mode]);
   if (!display.quotaSidebarEnabled) return null;
   return <main className={sidebarRailClassName(display.quotaSidebarSide, state.mode)} onPointerDown={startDrag} onPointerEnter={enter} onPointerLeave={leave} data-dragging={dragging} aria-label="额度侧栏">
-    <SidebarRailContent data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error} onDismissReminder={dismissReminder} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })}  onContentMeasurement={measureContent} />
+    <SidebarRailContent visibility={modules.visibility} data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error ?? modules.error} onDismissReminder={dismissReminder} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })}  onContentMeasurement={measureContent} />
   </main>;
 }
-export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh, onContentMeasurement, onDismissReminder }: {
-  data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onContentMeasurement?: (measurement: SidebarContentMeasurement) => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
+export function SidebarRailContent({ visibility = DEFAULT_MODULE_VISIBILITY, data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh, onContentMeasurement, onDismissReminder }: {
+  visibility?: SidebarModuleVisibility; data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onContentMeasurement?: (measurement: SidebarContentMeasurement) => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
 }) {
+  const [modelTraceError, setModelTraceError] = useState<string | null>(null);
   const [, expireSpeedReadings] = useReducer((tick: number) => tick + 1, 0);
   const modelSpeeds = latestSidebarModelSpeeds(data.snapshot.latestModelSpeeds30m ?? []);
   useEffect(() => {
@@ -327,8 +337,10 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
         <button aria-label="刷新数据" title="刷新数据" onClick={onRefresh}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg></button>
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
-      <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
-      <SidebarBodySpeeds models={modelSpeeds} data={data.snapshot} onOpen={() => onOpen("quota", "speeds")} />
+      {visibility.speeds && <><button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
+      <SidebarBodySpeeds models={modelSpeeds} data={data.snapshot} onOpen={() => onOpen("quota", "speeds")} /></>}
+      <button className="qs-modeltrace-trigger" onClick={() => { setModelTraceError(null); void invoke("open_modeltrace").catch(reason => setModelTraceError(String(reason))); }} title="打开 ModelTrace，手动检测模型"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg>模型检测</button>
+      {visibility.overview && <>
       {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
       <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>
       {reserveWindows.map(window => {
@@ -338,13 +350,19 @@ export function SidebarRailContent({ data, radar, state, rateFullScale = DEFAULT
         </button>;
       })}
       <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}>{modelStrip(false)}<span>模型占比</span></button>
-      <div className="qs-divider" />
+      </>}
+      {visibility.tasks && <><div className="qs-divider" />
       <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><span className="qs-task-ring"><Value value={String(data.runningThreads.total ?? "—")} /></span><span>{data.runningThreads.status === "ready" ? `${data.runningThreads.mainThreads ?? "—"} 主 · ${data.runningThreads.subagents ?? "—"} 子` : data.runningThreads.status === "stale" ? "运行·过期" : "运行·未知"}</span></button>
+      </>}
+      {visibility.radar && <>
       <SidebarRecommendations rows={radar?.crowd.rows ?? []} visible={state.mode !== "rest"} onOpen={() => onOpen("radar", "ranking")} />
       <div className="qs-divider" />
       <button className="qs-window-status" data-active={sidebarRadarIsActive(radar)} onClick={() => onOpen("radar", "top")}><span>{sidebarRadarCompact(radar)}</span>{sidebarRadarIsActive(radar) && radar?.official.deadlineMs && <small>{radar.official.countdown}</small>}</button>
-      {data.quota?.quota?.resetCredit?.updatedAt && <button className="qs-reset-count" onClick={() => onOpen("credits", "top")}>重置卡 {data.quota.quota.resetCredit.availableCount} 张{nearestCredit && <small>{sidebarLocalTime(nearestCredit.expiresAt, nearestCredit.expiresAtUnix)}</small>}</button>}
-      {data.snapshot.quotaDataStale && <span className="qs-warning">额度已过期</span>}
+      </>}
+      {visibility.credits && data.quota?.quota?.resetCredit?.updatedAt && <button className="qs-reset-count" onClick={() => onOpen("credits", "top")}>重置卡 {data.quota.quota.resetCredit.availableCount} 张{nearestCredit && <small>{sidebarLocalTime(nearestCredit.expiresAt, nearestCredit.expiresAtUnix)}</small>}</button>}
+      <button className="qs-menu-trigger" onClick={() => onOpen("quota", "top")} title="打开所有菜单，设置侧栏显示内容">菜单 ›</button>
+      {visibility.overview && data.snapshot.quotaDataStale && <span className="qs-warning">额度已过期</span>}
+      {modelTraceError && <span className="qs-warning" role="alert" title={modelTraceError}>检测未打开</span>}
       {error && <span className="qs-warning" title={error}>窗口异常</span>}
       </>;
     }}</SidebarSummaryLayer>
@@ -385,6 +403,7 @@ function Ring({ label, percent, color, expected, reset }: { label: string; perce
   return <div className="qs-ring" data-known={percent !== null} title={title || undefined}><svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="22" className="qs-track" /><circle cx="26" cy="26" r="22" fill="none" stroke={color} strokeWidth="4" strokeLinecap="round" className="qs-ring-value" strokeDasharray="138.23" strokeDashoffset={138.23 * (1 - (percent ?? 0) / 100)} transform="rotate(-90 26 26)" />{expected != null && <line className="qs-pace-tick" x1="26" y1="0" x2="26" y2="8" transform={`rotate(${expected * 360} 26 26)`} />}</svg><span className={reset !== undefined ? "qs-ring-center" : undefined}><span>{label}</span>{reset !== undefined && (reset ? <time className="qs-ring-reset" dateTime={reset.dateTime} aria-label={reset.title}><span>{reset.date}</span><span>{reset.time}</span></time> : <small className="qs-ring-reset-unknown">重置未知</small>)}</span></div>;
 }
 function DetailSurface() {
+  const modules = useModuleVisibility();
   const [value, setValue] = useState<Presentation | null>(null);
   useEffect(() => {
     let disposed = false; const cleanup: (() => void)[] = [];
@@ -412,6 +431,8 @@ function DetailSurface() {
     {value === null ? <p className="qs-muted">正在读取侧栏快照…</p> : <>
       <header><div><strong>Codex</strong><span className="qs-plan">{value.data.quota.account.planLabel || "套餐未知"}</span><small className="qs-account">{value.data.quota.account.displayName || "账户待读取"}</small><small className="qs-update" title={value.data.quota.updatedAt}>更新 {sidebarLocalTime(value.data.quota.updatedAt, null, true)}</small></div><div className="qs-actions"><button aria-label="打开主界面" title="打开主界面" onClick={() => void desktopPlatform.showDashboardWindow()}>主界面 ↗</button><button className="qs-pin" aria-label={value.state.pinned ? "取消固定详情" : "固定详情"} title={value.state.pinned ? "取消固定详情" : "固定详情"} aria-pressed={value.state.pinned} onClick={() => action({ type: "pin" })}><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill={value.state.pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 3h6l-1 7 4 4v2H6v-2l4-4-1-7Z"/><path d="M12 16v6"/></svg></button><button aria-label="关闭详情" onClick={() => action({ type: "close" })}>×</button></div></header>
       <nav><button aria-selected={value.state.tab === "quota" && value.state.section !== "speeds"} onClick={() => action({ type: "open", tab: "quota" })}>额度概览</button><button aria-selected={value.state.tab === "quota" && value.state.section === "speeds"} onClick={() => action({ type: "open", tab: "quota", section: "speeds" })}>测速</button><button aria-selected={value.state.tab === "running"} onClick={() => action({ type: "open", tab: "running" })}>运行会话 <b>{value.data.runningThreads.total ?? "—"}</b></button><button aria-selected={value.state.tab === "radar"} onClick={() => action({ type: "open", tab: "radar" })}>雷达</button><button aria-selected={value.state.tab === "credits"} onClick={() => action({ type: "open", tab: "credits" })}>重置卡</button></nav>
+      <div className="qs-module-toolbar"><label><input type="checkbox" checked={modules.visibility[sidebarModuleForPage(value.state.tab, value.state.section)]} disabled={!modules.ready || modules.pending} onChange={event => void modules.save(sidebarModuleForPage(value.state.tab, value.state.section), event.target.checked)}/>显示在二级菜单</label></div>
+      {modules.error && <p className="qs-warning" role="alert">{modules.error}</p>}
       <div className="qs-detail-content">{value.state.tab === "quota" && value.state.section === "speeds" ? <ObservedSpeedDetails data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} /> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
       <footer><span>额度 · 用量 · 会话</span><span>{value.state.pinned ? "已固定 · 点击 × 收起" : "移出后收起 · 点击固定"}</span></footer>
       {value.error && <details className="qs-diagnostic"><summary>窗口状态说明</summary><p>{value.error}</p></details>}

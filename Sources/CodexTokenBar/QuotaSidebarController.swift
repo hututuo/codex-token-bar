@@ -43,6 +43,18 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private(set) var hasFiveHour = false
     private var quotaObservation: AnyCancellable?
     private var heightBudget = QuotaSidebarHeightBudget()
+    @Published private(set) var hiddenModules: Set<QuotaSidebarDetail> = []
+    private var rebaseOnMeasurement = false
+    private static let hiddenModulesKey = "quotaSidebarHiddenModules"
+
+    func isModuleVisible(_ module: QuotaSidebarDetail) -> Bool { !hiddenModules.contains(module) }
+
+    func setModuleVisible(_ module: QuotaSidebarDetail, visible: Bool) {
+        guard visible != isModuleVisible(module) else { return }
+        rebaseOnMeasurement = true
+        if visible { hiddenModules.remove(module) } else { hiddenModules.insert(module) }
+        settings.set(hiddenModules.map(\.rawValue).sorted(), forKey: Self.hiddenModulesKey)
+    }
     private let settings: UserDefaults
     private(set) var placement: QuotaSidebarPlacement?
     private(set) var isDragging = false
@@ -66,6 +78,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     init(settings: UserDefaults = .standard) {
         self.settings = settings
+        self.hiddenModules = Set((settings.stringArray(forKey: Self.hiddenModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)))
         self.placement = QuotaSidebarPlacement.load(defaults: settings)
         super.init()
     }
@@ -142,8 +155,10 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     func updateContentMeasurement(_ measurement: QuotaSidebarContentMeasurement) {
         let previous = heightBudget.targetHeight
-        heightBudget.update(contentHeight: measurement.contentHeight, rowHeight: measurement.speedRowHeight,
-                            expanded: interaction.expanded)
+        heightBudget.update(contentHeight: measurement.contentHeight,
+                            rowHeight: isModuleVisible(.speeds) ? measurement.speedRowHeight : 0,
+                            expanded: interaction.expanded, rebase: rebaseOnMeasurement)
+        rebaseOnMeasurement = false
         if previous != heightBudget.targetHeight { updateFrames() }
     }
 

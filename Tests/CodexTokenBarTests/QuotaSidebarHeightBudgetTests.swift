@@ -35,6 +35,14 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         budget.update(contentHeight: -100, rowHeight: -40, expanded: true)
         XCTAssertEqual(budget.targetHeight, 464)
     }
+    func testExplicitVisibilityChangeRebasesOpenHeightAndRemovesTPSHeadroom() {
+        var budget = QuotaSidebarHeightBudget()
+        budget.update(contentHeight: 600, rowHeight: 40, expanded: true)
+        budget.update(contentHeight: 200, rowHeight: 0, expanded: true, rebase: true)
+        XCTAssertEqual(budget.targetHeight, 224)
+        budget.update(contentHeight: 200, expanded: false)
+        XCTAssertEqual(budget.targetHeight, 224)
+    }
     func testLargeContentClampsToShortSecondaryDisplayWithNegativeOrigin() {
         let area = CGRect(x: -1920, y: -900, width: 1920, height: 560)
         let frames = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true,
@@ -85,9 +93,9 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
             let deadline = Date().addingTimeInterval(0.8)
             while Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
         }
-        func snapshot(_ name: String) throws {
+        func snapshot(_ name: String, detail: Bool = false) throws {
             guard let folder = ProcessInfo.processInfo.environment["CODEX_SIDEBAR_HEIGHT_PREVIEW"] else { return }
-            let view = try XCTUnwrap(controller.railPanel?.contentView)
+            let view = try XCTUnwrap(detail ? controller.detailPanel?.contentView : controller.railPanel?.contentView)
             view.layoutSubtreeIfNeeded()
             let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
             view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -105,7 +113,24 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         let third = try XCTUnwrap(controller.railPanel).frame.height
         try snapshot("native-3-models.png")
         XCTAssertGreaterThan(third, second + 10, "A second additional model must resize the native frame")
-        XCTAssertLessThan(first, 590, "Measured rail should remove legacy empty margins")
+        XCTAssertLessThan(first, 650, "Measured rail should remain compact with model detection and menu access")
+        controller.select(.speeds)
+        controller.setModuleVisible(.speeds, visible: false); settle()
+        let hiddenSpeeds = try XCTUnwrap(controller.railPanel).frame.height
+        XCTAssertLessThan(hiddenSpeeds, third - 80, "Hiding TPS must shrink while the detail is open")
+        XCTAssertEqual(controller.interaction.detail, .speeds, "Hidden pages remain selected and reachable")
+        try snapshot("native-speeds-hidden.png")
+        try snapshot("native-detail-speeds-hidden.png", detail: true)
+        for module in QuotaSidebarDetail.allCases { controller.setModuleVisible(module, visible: false) }
+        settle()
+        let minimal = try XCTUnwrap(controller.railPanel).frame.height
+        XCTAssertEqual(minimal, 192, accuracy: 1)
+        try snapshot("native-all-hidden.png")
+        let restored = QuotaSidebarController(settings: defaults)
+        XCTAssertTrue(QuotaSidebarDetail.allCases.allSatisfy { !restored.isModuleVisible($0) })
+        controller.setModuleVisible(.speeds, visible: true); settle()
+        XCTAssertGreaterThan(try XCTUnwrap(controller.railPanel).frame.height, minimal + 80)
+        XCTAssertTrue(QuotaSidebarController(settings: defaults).isModuleVisible(.speeds))
         print("SIDEBAR_MEASURED_HEIGHTS \(first),\(second),\(third)")
     }
 

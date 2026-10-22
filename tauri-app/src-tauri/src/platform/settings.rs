@@ -2,7 +2,8 @@ use crate::core::{app_paths, app_paths::home_dir};
 use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
-    FloatingWindowSettingsSnapshot, UsageRefreshSettingsSnapshot,
+    FloatingWindowSettingsSnapshot, SidebarModuleVisibilitySnapshot,
+    UsageRefreshSettingsSnapshot,
     AUTO_RESUME_TASK_COLLECTION_VERSION,
 };
 use std::{
@@ -96,6 +97,63 @@ pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     read_app_settings_at(&path)
+}
+
+pub fn read_sidebar_module_visibility() -> Result<SidebarModuleVisibilitySnapshot, String> {
+    read_app_settings().map(|settings| settings.sidebar_module_visibility)
+}
+
+pub fn save_sidebar_module_visibility(
+    module: &str,
+    visible: bool,
+) -> Result<SidebarModuleVisibilitySnapshot, String> {
+    save_sidebar_module_visibility_at(&settings_path()?, module, visible)
+}
+
+fn save_sidebar_module_visibility_at(
+    path: &Path,
+    module: &str,
+    visible: bool,
+) -> Result<SidebarModuleVisibilitySnapshot, String> {
+    let module = SidebarModule::parse(module)?;
+    mutate_app_settings_at(path, |settings| {
+        settings.sidebar_module_visibility.set(module, visible)
+    })
+    .map(|settings| settings.sidebar_module_visibility)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SidebarModule {
+    Overview,
+    Speeds,
+    Tasks,
+    Radar,
+    Credits,
+}
+
+impl SidebarModule {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "overview" => Ok(Self::Overview),
+            "speeds" => Ok(Self::Speeds),
+            "tasks" => Ok(Self::Tasks),
+            "radar" => Ok(Self::Radar),
+            "credits" => Ok(Self::Credits),
+            _ => Err(format!("不支持的额度侧栏模块：{value}")),
+        }
+    }
+}
+
+impl SidebarModuleVisibilitySnapshot {
+    fn set(&mut self, module: SidebarModule, visible: bool) {
+        match module {
+            SidebarModule::Overview => self.overview = visible,
+            SidebarModule::Speeds => self.speeds = visible,
+            SidebarModule::Tasks => self.tasks = visible,
+            SidebarModule::Radar => self.radar = visible,
+            SidebarModule::Credits => self.credits = visible,
+        }
+    }
 }
 
 pub fn save_floating_settings(
@@ -4956,6 +5014,68 @@ mod tests {
                 format!("replacement-{index}")
             );
         }
+    }
+
+    #[test]
+    fn sidebar_module_visibility_defaults_round_trips_and_preserves_other_settings() {
+        let root = TestSettingsRoot::new("sidebar-module-visibility");
+        let path = root.settings_path();
+
+        let legacy: AppSettingsSnapshot = serde_json::from_str(
+            r#"{"quotaRefreshIntervalMs":30000}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy.sidebar_module_visibility,
+            SidebarModuleVisibilitySnapshot::default()
+        );
+
+        let defaults = read_app_settings_at(&path).unwrap();
+        assert_eq!(
+            defaults.sidebar_module_visibility,
+            SidebarModuleVisibilitySnapshot::default()
+        );
+
+        mutate_app_settings_at(&path, |settings| {
+            settings.quota_refresh_interval_ms = 30_000;
+            settings.sidebar_module_visibility.overview = false;
+        })
+        .unwrap();
+        let saved = save_sidebar_module_visibility_at(&path, "speeds", false).unwrap();
+        assert_eq!(
+            saved,
+            SidebarModuleVisibilitySnapshot {
+                overview: false,
+                speeds: false,
+                ..SidebarModuleVisibilitySnapshot::default()
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&saved).unwrap(),
+            serde_json::json!({
+                "overview": false,
+                "speeds": false,
+                "tasks": true,
+                "radar": true,
+                "credits": true,
+            })
+        );
+
+        let reloaded = read_app_settings_at(&path).unwrap();
+        assert_eq!(reloaded.sidebar_module_visibility, saved);
+        assert_eq!(reloaded.quota_refresh_interval_ms, 30_000);
+    }
+
+    #[test]
+    fn unsupported_sidebar_module_is_rejected_without_writing_settings() {
+        let root = TestSettingsRoot::new("sidebar-module-visibility-invalid");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let before = std::fs::read(&path).unwrap();
+
+        let error = save_sidebar_module_visibility_at(&path, "Overview", false).unwrap_err();
+        assert!(error.contains("不支持的额度侧栏模块"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     struct TestSettingsRoot {

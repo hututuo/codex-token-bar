@@ -54,6 +54,7 @@ pub use settings::{
     AutoResumeTaskSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
+    SidebarModuleVisibilitySnapshot,
     UsageRefreshSettingsSnapshot,
     AUTO_RESUME_TASK_COLLECTION_VERSION, STATUS_METRIC_IDS, STATUS_SUMMARY_SECTION_IDS,
 };

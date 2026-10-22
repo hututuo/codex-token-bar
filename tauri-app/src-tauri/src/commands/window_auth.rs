@@ -107,6 +107,11 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
 
 pub(crate) const QUOTA_SIDEBAR_ONLY_COMMANDS: &[&str] = &["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "quota_sidebar_pointer_state", "drag_quota_sidebar"];
 
+const SIDEBAR_MODULE_VISIBILITY_COMMANDS: &[&str] = &[
+    "read_sidebar_module_visibility",
+    "save_sidebar_module_visibility",
+];
+
 pub(crate) const STATUS_WINDOW_ONLY_COMMANDS: &[&str] = &["publish_status_indicator_readout"];
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -129,8 +134,14 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
     // The speed detail reads source-validated numeric buckets only. Other
     // history, account and mutation commands keep their existing boundaries.
     if command == "read_body_speed_trend" && label == "quota-sidebar-detail" { return true; }
-    if matches!(command, "open_body_speed_details" | "open_modeltrace") {
+    if SIDEBAR_MODULE_VISIBILITY_COMMANDS.contains(&command) {
+        return matches!(label, "quota-sidebar" | "quota-sidebar-detail");
+    }
+    if command == "open_body_speed_details" {
         return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
+    }
+    if command == "open_modeltrace" {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail" | "quota-sidebar");
     }
 
     if MAIN_WINDOW_ONLY_COMMANDS.contains(&command) {
@@ -201,6 +212,38 @@ mod tests {
         }
         assert!(!allows_window_label("save_display_surfaces", "quota-sidebar"));
     }
+
+    #[test]
+    fn sidebar_module_visibility_commands_are_limited_to_sidebar_surfaces() {
+        for command in SIDEBAR_MODULE_VISIBILITY_COMMANDS {
+            assert!(allows_window_label(command, "quota-sidebar"), "{command}");
+            assert!(allows_window_label(command, "quota-sidebar-detail"), "{command}");
+            for label in ["main", "floating", "status", "unknown"] {
+                assert!(!allows_window_label(command, label), "{command} from {label}");
+            }
+        }
+    }
+
+    #[test]
+    fn quota_sidebar_can_request_modeltrace_open_without_modeltrace_data_authority() {
+        assert!(allows_window_label("open_modeltrace", "quota-sidebar"));
+        assert!(allows_window_label("open_modeltrace", "quota-sidebar-detail"));
+        assert!(allows_window_label("open_modeltrace", "main"));
+        for label in ["floating", "status", "unknown"] {
+            assert!(!allows_window_label("open_modeltrace", label));
+        }
+        assert!(!allows_window_label("open_body_speed_details", "quota-sidebar"));
+        for command in [
+            "read_modeltrace_snapshot",
+            "start_modeltrace",
+            "cancel_modeltrace",
+            "save_modeltrace_auto_settings",
+            "take_modeltrace_open_request",
+        ] {
+            assert!(!allows_window_label(command, "quota-sidebar"), "{command}");
+        }
+    }
+
     #[test]
     fn floating_pointer_state_is_restricted_to_the_floating_surface() {
         assert!(allows_window_label("read_floating_pointer_state", "floating"));

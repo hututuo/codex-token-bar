@@ -8,9 +8,10 @@ struct QuotaSidebarHeightBudget {
     private(set) var rowHeight: CGFloat = 40
     private(set) var targetHeight: CGFloat?
 
-    mutating func update(contentHeight: CGFloat? = nil, rowHeight: CGFloat? = nil, expanded: Bool) {
+    mutating func update(contentHeight: CGFloat? = nil, rowHeight: CGFloat? = nil, expanded: Bool, rebase: Bool = false) {
+        if rebase { targetHeight = nil }
         if let contentHeight, contentHeight.isFinite, contentHeight > 0 { self.contentHeight = ceil(contentHeight) }
-        if let rowHeight, rowHeight.isFinite, rowHeight > 0 { self.rowHeight = ceil(rowHeight) }
+        if let rowHeight, rowHeight.isFinite, rowHeight >= 0 { self.rowHeight = ceil(rowHeight) }
         guard self.contentHeight > 0 else { return }
         let required = self.contentHeight + Self.verticalPadding * 2
         if !expanded || targetHeight == nil {

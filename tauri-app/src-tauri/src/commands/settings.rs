@@ -3,11 +3,12 @@ use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, AutostartStatus,
     DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
-    UsageRefreshSettingsSnapshot,
+    SidebarModuleVisibilitySnapshot, UsageRefreshSettingsSnapshot,
 };
 use super::run_blocking_command;
 use super::window_auth::require_window_label;
 use crate::platform;
+use tauri::Emitter;
 
 #[tauri::command]
 pub async fn read_app_settings(
@@ -21,6 +22,34 @@ pub async fn read_app_settings(
         result
     })
     .await
+}
+
+#[tauri::command]
+pub async fn read_sidebar_module_visibility(
+    window: tauri::WebviewWindow,
+) -> Result<SidebarModuleVisibilitySnapshot, String> {
+    require_window_label(&window, "read_sidebar_module_visibility")?;
+    run_blocking_command(platform::read_sidebar_module_visibility).await
+}
+
+#[tauri::command]
+pub async fn save_sidebar_module_visibility(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    module: String,
+    visible: bool,
+) -> Result<SidebarModuleVisibilitySnapshot, String> {
+    require_window_label(&window, "save_sidebar_module_visibility")?;
+    let saved = run_blocking_command(move || {
+        platform::save_sidebar_module_visibility(&module, visible)
+    })
+    .await?;
+    if let Err(error) = app.emit("sidebar-module-visibility-changed", &saved) {
+        eprintln!(
+            "Codex Token Bar: saved sidebar module visibility but event delivery failed: {error}"
+        );
+    }
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -123,6 +152,8 @@ mod tests {
         let settings_source = include_str!("settings.rs");
         for command in [
             "read_app_settings",
+            "read_sidebar_module_visibility",
+            "save_sidebar_module_visibility",
             "read_autostart_status",
             "set_autostart_enabled",
             "complete_floating_paging_guide",
