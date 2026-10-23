@@ -8812,7 +8812,9 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   isolation: isolate;
   overflow: hidden;
   user-select: none;
-  -webkit-app-region: drag;
+  /* WebView2's native drag region consumes mousedown before React can detach
+     and settle the edge dock. The shared controller owns this gesture. */
+  -webkit-app-region: no-drag;
 }
 
 .floating-panel-surface[data-guide-mode="true"],

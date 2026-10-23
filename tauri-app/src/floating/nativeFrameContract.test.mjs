@@ -14,3 +14,14 @@ test("Windows parent/child frame commit uses suppressed redraw, restoration and 
   assert.match(impl, /DwmFlush\(\)/);
   assert.match(source, /wait_for_paint: true/);
 });
+
+
+test("WebView2 delivers floating presses to the dock controller instead of a native drag region", () => {
+  const css = readFileSync(new URL("../styles/global.css", import.meta.url), "utf8");
+  const rule = /\.floating-panel-surface \{([\s\S]*?)\n\}/.exec(css)?.[1];
+  assert.ok(rule);
+  assert.match(rule, /-webkit-app-region:\s*no-drag/);
+  assert.doesNotMatch(rule, /-webkit-app-region:\s*drag\s*;/);
+  const panel = readFileSync(new URL("./FloatingPanelPreview.tsx", import.meta.url), "utf8");
+  assert.match(panel, /onMouseDown=\{previewMode \? undefined : onDragStart\}/);
+});
