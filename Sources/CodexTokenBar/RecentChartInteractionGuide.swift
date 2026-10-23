@@ -2,18 +2,29 @@ import SwiftUI
 
 /// A small, isolated animation: no data reads, sampling, or dashboard timer.
 struct RecentChartInteractionGuide: View {
-    @State private var expanded = true
+    @AppStorage("recentChartInteractionGuideDismissed") private var dismissed = false
+    @State private var manuallyExpanded = false
+    private var expanded: Bool { !dismissed || manuallyExpanded }
     @State private var visible = false
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { expanded.toggle() } } label: {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                    if expanded {
+                        dismissed = true
+                        manuallyExpanded = false
+                    } else {
+                        manuallyExpanded = true
+                    }
+                }
+            } label: {
                 HStack(spacing: 7) {
                     Image(systemName: "cursorarrow.motionlines.click")
                     Text("图表怎么用").fontWeight(.semibold)
                     Spacer()
-                    Text(expanded ? "收起演示" : "展开演示").font(.system(size: 11))
+                    Text(expanded ? "知道了，收起" : "展开演示").font(.system(size: 11))
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10, weight: .bold))
                 }.font(.system(size: 14)).foregroundStyle(AppTheme.accentBlue).contentShape(Rectangle())
             }.buttonStyle(ChartGuidePressStyle()).accessibilityValue(expanded ? "已展开" : "已收起")

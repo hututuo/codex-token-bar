@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 
+const DISMISSED_STORAGE_KEY = "recentChartInteractionGuideDismissed";
+
+function wasDismissed(): boolean {
+  try {
+    return typeof window !== "undefined" && window.localStorage.getItem(DISMISSED_STORAGE_KEY) === "true";
+  } catch { return false; }
+}
+
 /** Native CSS animation; no sampling timer and no requests. */
 export function RecentChartInteractionGuide() {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(() => !wasDismissed());
   const [active, setActive] = useState(false);
   const root = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
@@ -13,8 +21,15 @@ export function RecentChartInteractionGuide() {
     observer.observe(element); document.addEventListener("visibilitychange", update);
     return () => { observer.disconnect(); document.removeEventListener("visibilitychange", update); };
   }, [expanded]);
-  return <details ref={root} className="recent-interaction-guide" open={expanded} onToggle={event => setExpanded(event.currentTarget.open)} data-active={active}>
-    <summary><strong>↖ 图表怎么用</strong><span>{expanded ? "收起演示" : "展开演示"}</span></summary>
+  return <details ref={root} className="recent-interaction-guide" open={expanded} onToggle={event => {
+    const next = event.currentTarget.open;
+    setExpanded(next);
+    // A manual replay never clears the acknowledgement for the next visit.
+    if (!next) {
+      try { window.localStorage.setItem(DISMISSED_STORAGE_KEY, "true"); } catch { /* Keep this visit usable if storage is unavailable. */ }
+    }
+  }} data-active={active}>
+    <summary><strong>↖ 图表怎么用</strong><span>{expanded ? "知道了，收起" : "展开演示"}</span></summary>
     {expanded && <div className="rig-content"><div className="rig-demo" aria-hidden="true"><svg viewBox="0 0 220 108">
       <path d="M14 88H207M14 56H207" className="rig-grid"/>
       <rect className="rig-selection" x="65" y="37" width="122" height="51"/>
