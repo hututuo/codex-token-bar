@@ -52,7 +52,7 @@ struct ModelTraceView: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         HStack { Text(Date(timeIntervalSince1970: Double(run.startedAt)), format: .dateTime.month().day().hour().minute()); Spacer(); Text(status(run)) }
                                         Text(run.model).fontWeight(.medium)
-                                        if let prediction = run.attribution?.prediction { Text("更接近 \(prediction)").foregroundStyle(.secondary) }
+                                        if let prediction = run.attribution?.prediction { Text("更接近 \(resultLabel(prediction))").foregroundStyle(.secondary) }
                                     }.font(.system(size: 10)).frame(maxWidth: .infinity, alignment: .leading).padding(8)
                                         .background(selected?.id == run.id ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
                                 }.buttonStyle(.plain)
@@ -86,7 +86,7 @@ struct ModelTraceView: View {
                         HStack { Text(status(run)).font(.headline); Spacer(); Text("已请求 \(run.attempts)/3 · 有效 \(run.validSamples)/3").font(.caption).foregroundStyle(.secondary) }
                         if let attribution = run.attribution {
                             ForEach(Array(attribution.candidates.prefix(5))) { candidate in
-                                HStack { Text(candidate.displayName).foregroundStyle(ModelUsagePresentation.color(for: candidate.model)).font(.system(size: 12, weight: .medium)); Spacer(); Text(candidate.probability, format: .percent.precision(.fractionLength(1))).monospacedDigit() }
+                                HStack { Text(resultLabel(candidate.model, name: candidate.displayName)).foregroundStyle(ModelUsagePresentation.color(for: candidate.model)).font(.system(size: 12, weight: .medium)); Spacer(); Text(candidate.probability, format: .percent.precision(.fractionLength(1))).monospacedDigit() }
                                 GeometryReader { proxy in
                                     RoundedRectangle(cornerRadius: 3).fill(ModelUsagePresentation.color(for: candidate.model).opacity(0.12))
                                         .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 3).fill(ModelUsagePresentation.color(for: candidate.model)).frame(width: max(0, proxy.size.width * candidate.probability)) }
@@ -97,6 +97,10 @@ struct ModelTraceView: View {
                         if let message = run.message { Text(message).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
                     } else { Text("选择模型后手动开始检测").foregroundStyle(.secondary) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func resultLabel(_ model: String, name: String? = nil) -> String {
+        let label = name ?? model
+        return model == "gpt-6-astra" ? "\(label)（包括 6.1 Sol）" : label
     }
     private func status(_ run: ModelTrace.Run) -> String {
         switch run.status { case "running": "检测中"; case "completed": "已完成"; case "cancelled": "已停止"; case "interrupted": "已中断"; default: "未完成" }
