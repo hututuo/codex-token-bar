@@ -455,15 +455,29 @@ final class AutoResumeController: ObservableObject {
     }
 
     func stopCurrentRun() {
+        startGuard.invalidatePendingStarts()
         executionTask?.cancel()
         workerTask?.cancel()
         capacityCheckTask?.cancel()
-        executionTask = nil
-        workerTask = nil
         capacityCheckTask = nil
         capacityCheckToken = nil
-        isRunning = false
-        localExecutionGate?.release(ownerID: ownerID)
+        let drainingWorker = workerTask
+        // Keep the local lease until the cancelled process has shut down. A second
+        // click must not overlap the preceding worker's interrupt/cleanup phase.
+        if let drainingWorker {
+            executionTask = Task { [weak self] in
+                _ = await drainingWorker.value
+                guard !Task.isCancelled, let self else { return }
+                self.executionTask = nil
+                self.workerTask = nil
+                self.isRunning = false
+                self.localExecutionGate?.release(ownerID: self.ownerID)
+            }
+        } else {
+            executionTask = nil
+            isRunning = false
+            localExecutionGate?.release(ownerID: ownerID)
+        }
         runtimeState.status = .stopped
         runtimeState.statusMessage = "自动续跑已停止"
         synchronizePendingFreshness()

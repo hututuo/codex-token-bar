@@ -1421,6 +1421,40 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertTrue((params?["input"] as? [[String: Any]])?.isEmpty == true)
     }
 
+    func testCancelledRPCGateRejectsStartAndApprovalWrites() throws {
+        let gate = AutoResumeRPCSideEffectGate()
+        var writes = [String]()
+        try gate.perform { writes.append("before") }
+        gate.cancel()
+        XCTAssertThrowsError(try gate.perform { writes.append("turn/start") }) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertThrowsError(try gate.perform { writes.append("approval") }) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertEqual(writes, ["before"])
+    }
+
+    func testCancellationWhileWaitingForApprovalDoesNotApproveAndInterrupts() async {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: ["thread": ["id": "thread-1"]]),
+            rpcResult(id: 3, result: ["thread": ["id": "thread-1", "turns": [["id": "old-turn", "status": "completed"]]]]),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 2, turnTimeout: 2)
+        let task = Task {
+            try await client.resumeThread(codexPath: "/fake/codex", dataSource: nil,
+                target: thread(id: "thread-1"), prompt: "继续", invisibleResumeEnabled: true,
+                autoApprovalEnabled: true, clientMessageID: "cancel-approval-test", expectedFreshness: nil, startAuthorization: nil)
+        }
+        await waitForAutoResumeCondition("turn/start request") { transport.writes.contains { rpcMethod($0) == "turn/start" } }
+        task.cancel()
+        transport.enqueue(serverRequest(id: 900, method: "item/commandExecution/requestApproval", params: [
+            "threadId": "thread-1", "turnId": "cancel-turn", "itemId": "item-1",
+            "command": "swift test", "availableDecisions": ["accept", "decline"],
+        ]))
+        do { _ = try await task.value; XCTFail("Expected cancellation") }
+        catch { XCTAssertTrue(error is CancellationError, "\(error)") }
+        XCTAssertFalse(transport.writes.contains { (($0["result"] as? [String: Any])?["decision"] as? String) == "accept" })
+        XCTAssertTrue(transport.writes.contains { rpcMethod($0) == "turn/interrupt" })
+    }
+
     func testCancellationBeforeTurnStartResponseWaitsForTurnIDAndInterrupts() async {
         let transport = AutoResumeScriptedTransport(events: [
             rpcResult(id: 1, result: [:]),

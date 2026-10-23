@@ -785,13 +785,15 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
     ) async throws -> T {
         try Task.checkCancellation()
         let session = try transport.start(codexPath: codexPath, dataSource: dataSource)
+        let sideEffects = AutoResumeRPCSideEffectGate()
         let outcome: Result<T, Error> = await withTaskCancellationHandler {
             do {
-                return .success(try operation(session))
+                return .success(try AutoResumeRPCSideEffectGate.$current.withValue(sideEffects) { try operation(session) })
             } catch {
                 return .failure(error)
             }
         } onCancel: {
+            sideEffects.cancel()
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) {
                 session.requestTermination()
             }
@@ -1038,6 +1040,22 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
     }
 }
 
+/// Cancellation and external side-effect writes share one lock. Once cancel returns,
+/// no new turn/start or affirmative approval can cross this session boundary.
+final class AutoResumeRPCSideEffectGate: @unchecked Sendable {
+    @TaskLocal static var current: AutoResumeRPCSideEffectGate?
+    private let lock = NSLock()
+    private var cancelled = false
+    func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+    func perform<T>(_ operation: () throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else { throw CancellationError() }
+        try Task.checkCancellation()
+        return try operation()
+    }
+}
+
 struct CodexAutoResumeRPCChannel {
     // 与 Rust INTERRUPT_GRACE_TIMEOUT 同值：超时发出 turn/interrupt 后
     // 等待 Codex 确认中断的宽限时长。
@@ -1048,6 +1066,7 @@ struct CodexAutoResumeRPCChannel {
     }
 
     private let session: any AccountQuotaProcessSession
+    private let sideEffects = AutoResumeRPCSideEffectGate.current ?? AutoResumeRPCSideEffectGate()
     private var nextRequestID = 1
     private var boundThreadID: String?
     private var boundTurnID: String?
@@ -1123,11 +1142,13 @@ struct CodexAutoResumeRPCChannel {
             "method": method,
             "params": params,
         ]
-        if let startAuthorization {
-            try startAuthorization.withValidatedStart {
-                try write(message)
+        if method == "turn/start" {
+            try sideEffects.perform {
+                if let startAuthorization { try startAuthorization.withValidatedStart { try write(message) } }
+                else { try write(message) }
             }
         } else {
+            try Task.checkCancellation()
             try write(message)
         }
         if method == "turn/start" {
@@ -1375,12 +1396,16 @@ struct CodexAutoResumeRPCChannel {
                     "id": id,
                     "result": ["decision": decision],
                 ]
-                if let approvalAuthorization {
-                    try approvalAuthorization.withValidatedStart {
-                        try write(response)
+                // Bind first so cancellation can interrupt a turn whose start reply is still pending.
+                if boundTurnID == nil { boundTurnID = requestedTurnID }
+                do {
+                    try sideEffects.perform {
+                        if let approvalAuthorization { try approvalAuthorization.withValidatedStart { try write(response) } }
+                        else { try write(response) }
                     }
-                } else {
-                    try write(response)
+                } catch {
+                    try? interruptBoundTurn()
+                    throw error
                 }
                 if boundTurnID == nil {
                     boundTurnID = requestedTurnID

@@ -65,6 +65,7 @@ extension ProviderSyncEngine {
                             "安全修复写后验证失败，Provider 元数据或会话集合发生变化"
                         )
                     }
+                    try rejectMutationIfCodexIsRunning(operation: "安全修复提交")
                     var next = snapshot(
                         from: verified,
                         status: "安全修复完成：仅按各会话首行对齐 SQLite Provider"
@@ -75,9 +76,9 @@ extension ProviderSyncEngine {
                     return next
                 } catch {
                     do {
-                        try restoreProviderMetadataBackup(
-                            backup,
-                            sqliteDirectory: sqliteDirectory
+                        try restoreProviderMetadataColumns(
+                            backup, sqliteDirectory: sqliteDirectory,
+                            expectedProviders: initial.canonicalSessionProviders
                         )
                     } catch let rollbackError {
                         throw providerSyncDescriptorError(
@@ -187,18 +188,8 @@ extension ProviderSyncEngine {
                 next.lastBackupPath = backupURL.path
                 return next
             } catch {
-                do {
-                    try restoreProviderMetadataBackup(
-                        preRollback,
-                        sqliteDirectory: sqliteDirectory
-                    )
-                } catch let compensationError {
-                    throw providerSyncDescriptorError(
-                        "Provider 回滚失败且补偿失败：\(error.localizedDescription)；\(compensationError.localizedDescription)"
-                    )
-                }
                 throw providerSyncDescriptorError(
-                    "Provider 回滚失败，已恢复回滚前状态：\(error.localizedDescription)"
+                    "Provider 显式恢复未完成：\(error.localizedDescription)；为保留期间的其他写入，未自动覆盖整库。回滚前恢复点：\(preRollback.url.path)"
                 )
             }
         }
@@ -334,6 +325,7 @@ extension ProviderSyncEngine {
         let snapshot = canonicalBackup.appendingPathComponent(
             "state_5.sqlite.before"
         )
+        try rejectMutationIfCodexIsRunning(operation: "恢复 Provider 元数据")
         let actualChecksum = try providerSyncSHA256Hex(fileAt: snapshot)
         guard actualChecksum == checksum else {
             throw providerSyncDescriptorError(
@@ -359,6 +351,50 @@ extension ProviderSyncEngine {
         )
     }
 
+    /// Automatic compensation owns only model_provider cells, never the whole database.
+    /// Compare before writing; new rows, other columns and other tables remain intact.
+    func restoreProviderMetadataColumns(
+        _ backup: ProviderSyncMetadataBackup,
+        sqliteDirectory: ProviderSyncHomeDirectory,
+        expectedProviders: [String: String]? = nil,
+        expectedProvider: String? = nil
+    ) throws {
+        try rejectMutationIfCodexIsRunning(operation: "Provider 自动补偿")
+        guard try providerSyncSHA256Hex(fileAt: backup.sqliteSnapshot) == backup.checksum else {
+            throw providerSyncDescriptorError("Provider 恢复点摘要变化，已保留恢复点并停止自动补偿")
+        }
+        let rows = try SQLiteDatabaseDriver(url: backup.sqliteSnapshot, readOnly: true).withConnection { database in
+            guard let columns = try readThreadsTableColumns(database: database), columns.modelProvider else {
+                return [(String, String?)]()
+            }
+            return try database.readRows("SELECT id, model_provider FROM threads;") { ($0.text(0) ?? "", $0.text(1)) }
+        }
+        _ = try withBoundDatabase(homeDirectory: sqliteDirectory, readOnly: false) { database, bound in
+            try database.execute("BEGIN IMMEDIATE;")
+            do {
+                try rejectMutationIfCodexIsRunning(operation: "Provider 自动补偿")
+                try sqliteDirectory.verifyBoundFile(bound)
+                for (id, original) in rows {
+                    guard let expected = expectedProviders?[id] ?? expectedProvider, original != expected else { continue }
+                    let current = try database.readRows("SELECT model_provider FROM threads WHERE id = ?1;", bindings: [.text(id)]) { $0.text(0) }
+                    guard let currentValue = current.first else { continue } // An external deletion is not ours to reverse.
+                    guard currentValue == original || currentValue == expected else {
+                        throw providerSyncDescriptorError("Provider 元数据已被其他写入修改，停止自动补偿；恢复点：\(backup.url.path)")
+                    }
+                    if currentValue == expected {
+                        try database.execute("UPDATE threads SET model_provider = ?2 WHERE id = ?1;", bindings: [.text(id), .optionalText(original)])
+                    }
+                }
+                try rejectMutationIfCodexIsRunning(operation: "Provider 自动补偿提交")
+                try sqliteDirectory.verifyBoundFile(bound)
+                try database.execute("COMMIT;")
+            } catch {
+                try? database.execute("ROLLBACK;")
+                throw error
+            }
+        }
+    }
+
     func restoreProviderMetadataBackup(
         _ backup: ProviderSyncMetadataBackup,
         sqliteDirectory: ProviderSyncHomeDirectory
@@ -376,6 +412,7 @@ extension ProviderSyncEngine {
             readOnly: false
         ) { database, bound in
             try sqliteDirectory.verifyBoundFile(bound)
+            try rejectMutationIfCodexIsRunning(operation: "恢复 Provider 元数据")
             try database.restoreDatabase(from: backup.sqliteSnapshot)
             try sqliteDirectory.verifyBoundFile(bound)
             let integrity = try database.readRows("PRAGMA quick_check;") {

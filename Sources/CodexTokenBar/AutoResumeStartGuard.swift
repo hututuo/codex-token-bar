@@ -113,6 +113,14 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         self.configuration = configuration
     }
 
+    func invalidatePendingStarts() {
+        lock.lock()
+        defer { lock.unlock() }
+        scheduleGeneration &+= 1
+        quotaGeneration &+= 1
+        capacityGeneration &+= 1
+    }
+
     func authorization(
         for triggerKind: AutoResumeTriggerKind,
         targetID: String

@@ -124,7 +124,7 @@ struct RegistryState {
     settings: AutoResumeSettingsSnapshot,
     persisted: PersistedAutoResumeState,
     running: bool,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<Arc<auto_resume::AutoResumeCancellationGate>>,
 }
 
 impl Default for RegistryState {
@@ -344,10 +344,23 @@ impl AutoResumeTaskRuntime {
     }
 
     pub fn cancel(&self) -> AutoResumeRuntimeStatus {
+        let cancel = {
+            let state = lock(&self.state);
+            state.cancel.clone()
+        };
+        if let Some(cancel) = cancel.as_ref() {
+            // Do not hold RegistryState while waiting for an in-flight app-server write.
+            cancel.cancel();
+        }
         let (status, persisted) = {
             let mut state = lock(&self.state);
-            let persisted = if let Some(cancel) = &state.cancel {
-                cancel.store(true, Ordering::Release);
+            let still_running = cancel.as_ref().is_some_and(|cancel| {
+                state
+                    .cancel
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, cancel))
+            });
+            let persisted = if still_running {
                 state.persisted.message = "正在停止本次自动续跑…".into();
                 state.persisted.state = "cancelling".into();
                 bump(&mut state.persisted);
@@ -829,7 +842,7 @@ impl AutoResumeTaskRuntime {
             }
             state.running = true;
             state.persisted.deferred_until = None;
-            let cancel = Arc::new(AtomicBool::new(false));
+            let cancel = Arc::new(auto_resume::AutoResumeCancellationGate::default());
             state.cancel = Some(cancel.clone());
             state.persisted.state = "running".into();
             state.persisted.message = format!("正在执行{}", trigger.label);
@@ -1142,7 +1155,7 @@ impl AutoResumeTaskRuntime {
             state.cancel.clone()
         };
         if let Some(cancel) = cancel {
-            cancel.store(true, Ordering::Release);
+            cancel.cancel();
         }
     }
 

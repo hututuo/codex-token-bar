@@ -37,7 +37,7 @@ pub(crate) fn initialize_provider_recovery_at(
     recovery_state: &ProviderRecoveryState,
     codex_home: &Path,
     backup_root: &Path,
-    probe: impl FnOnce() -> Result<bool, String>,
+    probe: impl FnMut() -> Result<bool, String>,
 ) -> ProviderRecoveryStatus {
     let status =
         provider_repair::reconcile_provider_recovery_on_startup_at(codex_home, backup_root, probe);

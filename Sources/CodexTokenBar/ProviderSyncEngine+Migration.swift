@@ -243,6 +243,7 @@ extension ProviderSyncEngine {
                     )
                 }
 
+                try rejectMutationIfCodexIsRunning(operation: "显式迁移提交")
                 // 提交阶段：数据已写入并通过验证；只有确定未生效才允许回滚。
                 let commitNote: String?
                 switch commitProviderMigrationJournal(
@@ -307,12 +308,12 @@ extension ProviderSyncEngine {
             codexHome: codexHome,
             homeDirectory: homeDirectory
         ) { sqliteHome, sqliteDirectory in
-            try reconcileInterruptedProviderMigration(
-                codexHome: codexHome,
-                homeDirectory: homeDirectory,
-                sqliteHome: sqliteHome,
-                sqliteDirectory: sqliteDirectory
-            )
+            let resolvesPending = try explicitMigrationRecoveryMatches(
+                codexHome: codexHome, sqliteHome: sqliteHome, backupURL: backupURL)
+            if !resolvesPending {
+                try reconcileInterruptedProviderMigration(codexHome: codexHome,
+                    homeDirectory: homeDirectory, sqliteHome: sqliteHome, sqliteDirectory: sqliteDirectory)
+            }
             let selected = try validatedProviderMigrationBackup(
                 at: backupURL,
                 codexHome: codexHome,
@@ -355,7 +356,8 @@ extension ProviderSyncEngine {
                 try restoreProviderMigrationBackup(
                     selected,
                     homeDirectory: homeDirectory,
-                    sqliteDirectory: sqliteDirectory
+                    sqliteDirectory: sqliteDirectory,
+                    automatic: false
                 )
                 let report = try makeReport(
                     codexHome: codexHome,
@@ -370,26 +372,37 @@ extension ProviderSyncEngine {
                         "显式迁移回滚后的 SQLite 完整性失败"
                     )
                 }
+                if resolvesPending { try removeProviderMigrationJournal(codexHome: codexHome) }
                 var next = snapshot(from: report, status: status)
+                next.pendingMigrationRecovery = false
                 next.lastBackupPath = backupURL.path
                 return next
             } catch {
-                do {
-                    try restoreProviderMigrationBackup(
-                        preRollback,
-                        homeDirectory: homeDirectory,
-                        sqliteDirectory: sqliteDirectory
-                    )
-                } catch let compensationError {
-                    throw providerSyncDescriptorError(
-                        "显式迁移回滚失败且补偿失败：\(error.localizedDescription)；\(compensationError.localizedDescription)"
-                    )
-                }
                 throw providerSyncDescriptorError(
-                    "显式迁移回滚失败，已恢复回滚前状态：\(error.localizedDescription)"
+                    "显式迁移恢复未完成：\(error.localizedDescription)；为保留期间的其他写入，未自动覆盖整库。回滚前恢复点：\(preRollback.metadata.url.path)"
                 )
             }
         }
+    }
+
+    /// An explicit selection can resolve a deferred journal; a different backup cannot.
+    private func explicitMigrationRecoveryMatches(codexHome: URL, sqliteHome: URL, backupURL: URL) throws -> Bool {
+        guard try hasInterruptedProviderMigration(codexHome: codexHome) else { return false }
+        try rejectMutationIfCodexIsRunning(operation: "显式恢复未完成迁移")
+        let root = try openProviderBackupRoot()
+        defer { try? root.directory.close() }
+        let journalURL = providerMigrationJournalURL(codexHome: codexHome, backupRoot: root.url)
+        let journal = try JSONDecoder().decode(ProviderSyncMigrationJournal.self,
+            from: providerSyncReadSmallRegularFile(at: journalURL, maximumBytes: 1024 * 1024))
+        guard journal.schemaVersion == 1 || journal.schemaVersion == 2,
+              journal.codexHome == codexHome.path, journal.sqliteHome == sqliteHome.path else {
+            throw providerSyncDescriptorError("未完成迁移 journal 的存储身份不匹配")
+        }
+        guard journal.effectivePhase == .prepared else { return false }
+        guard URL(fileURLWithPath: journal.backupPath).standardizedFileURL == backupURL.standardizedFileURL else {
+            throw providerSyncDescriptorError("请先选择未完成迁移对应的恢复点：\(journal.backupPath)")
+        }
+        return true
     }
 
     func reconcileInterruptedProviderMigration(
@@ -615,8 +628,10 @@ extension ProviderSyncEngine {
     private func restoreProviderMigrationBackup(
         _ backup: ProviderSyncMigrationBackup,
         homeDirectory: ProviderSyncHomeDirectory,
-        sqliteDirectory: ProviderSyncHomeDirectory
+        sqliteDirectory: ProviderSyncHomeDirectory,
+        automatic: Bool = true
     ) throws {
+        try rejectMutationIfCodexIsRunning(operation: "恢复 Provider 迁移")
         var replacements: [ProviderSyncRegularFileReplacement] = []
         do {
             for member in backup.manifest.sessionMembers {
@@ -641,7 +656,12 @@ extension ProviderSyncEngine {
                     file,
                     requireSingleLink: true
                 )
+                if automatic, current.data != parts.line,
+                   current.data != (try rewrittenSessionFirstLine(parts.line, targetProvider: backup.manifest.targetProvider)) {
+                    throw providerSyncDescriptorError("会话首行已被其他写入修改，停止自动补偿：\(member.path)")
+                }
                 if current.data != parts.line {
+                    try rejectMutationIfCodexIsRunning(operation: "恢复 Provider 会话首行")
                     let replacement = try homeDirectory
                         .replaceRegularFileFirstLine(
                             file,
@@ -653,10 +673,12 @@ extension ProviderSyncEngine {
                     replacements.append(replacement)
                 }
             }
-            try restoreProviderMetadataBackup(
-                backup.metadata,
-                sqliteDirectory: sqliteDirectory
-            )
+            if automatic {
+                try restoreProviderMetadataColumns(backup.metadata, sqliteDirectory: sqliteDirectory,
+                    expectedProvider: backup.manifest.targetProvider)
+            } else {
+                try restoreProviderMetadataBackup(backup.metadata, sqliteDirectory: sqliteDirectory)
+            }
             for replacement in replacements {
                 try homeDirectory.commitRegularFileReplacement(replacement)
             }

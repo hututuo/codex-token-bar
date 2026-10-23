@@ -69,6 +69,41 @@ final class AccountQuotaReaderTests: XCTestCase {
         )
     }
 
+    func testAppServerEnvironmentScrubsNodeAndSigningOverridesButPreservesRuntimeEnvironment() {
+        let fakeEnvironment = [
+            "HOME": "/fixture/home",
+            "PATH": "/fixture/bin",
+            "HTTP_PROXY": "http://proxy.example:8080",
+            "HTTPS_PROXY": "http://secure-proxy.example:8443",
+            "ALL_PROXY": "socks5://proxy.example:1080",
+            "NO_PROXY": "localhost,127.0.0.1",
+            "CODEX_HOME": "/fixture/old-codex-home",
+            "NODE_OPTIONS": "--require=/fixture/injected.js",
+            "ELECTRON_RUN_AS_NODE": "1",
+            "TAURI_SIGNING_PRIVATE_KEY": "fixture-private-key",
+            "TAURI_SIGNING_PRIVATE_KEY_PATH": "/fixture/signing.key",
+        ]
+
+        let sanitized = FoundationAccountQuotaProcessTransport.sanitizedEnvironment(fakeEnvironment)
+
+        XCTAssertEqual(sanitized["HOME"], "/fixture/home")
+        XCTAssertEqual(sanitized["PATH"], "/fixture/bin")
+        XCTAssertEqual(sanitized["HTTP_PROXY"], "http://proxy.example:8080")
+        XCTAssertEqual(sanitized["HTTPS_PROXY"], "http://secure-proxy.example:8443")
+        XCTAssertEqual(sanitized["ALL_PROXY"], "socks5://proxy.example:1080")
+        XCTAssertEqual(sanitized["NO_PROXY"], "localhost,127.0.0.1")
+        XCTAssertEqual(sanitized["CODEX_HOME"], "/fixture/old-codex-home")
+        XCTAssertTrue(FoundationAccountQuotaProcessTransport.removedEnvironmentKeys.allSatisfy {
+            sanitized[$0] == nil
+        })
+
+        let selectedHome = FoundationAccountQuotaProcessTransport.sanitizedEnvironment(
+            fakeEnvironment,
+            codexHome: URL(fileURLWithPath: "/fixture/selected-codex-home")
+        )
+        XCTAssertEqual(selectedHome["CODEX_HOME"], "/fixture/selected-codex-home")
+    }
+
     func testNoisyStderrLargerThanPipeCapacityDoesNotBlockSuccessfulRateLimitResponse() async throws {
         let fixture = try makeFakeAppServerScript(
             body: """

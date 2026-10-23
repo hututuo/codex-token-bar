@@ -14,6 +14,33 @@ final class ProviderSyncEngineTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testAutomaticMetadataCompensationPreservesUnrelatedWritesAndRefusesConflicts() throws {
+        let root = try makeTemporaryDirectory(named: "conditional-provider-compensation")
+        let home = root.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let dbURL = home.appendingPathComponent("state_5.sqlite")
+        let database = SQLiteDatabaseDriver(url: dbURL)
+        try database.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, title TEXT);")
+        try database.execute("INSERT INTO threads VALUES ('old', 'original', 'before');")
+        let snapshot = root.appendingPathComponent("snapshot.sqlite")
+        try database.execute("VACUUM main INTO ?1;", bindings: [.text(snapshot.path)])
+        let backup = ProviderSyncMetadataBackup(url: root, sqliteSnapshot: snapshot, checksum: try providerSyncSHA256Hex(fileAt: snapshot))
+        let directory = try ProviderSyncHomeDirectory(canonicalURL: home)
+        defer { try? directory.close() }
+        let engine = ProviderSyncEngine(applicationRunningProbe: { false })
+        try database.execute("UPDATE threads SET model_provider = 'target', title = 'external update'; INSERT INTO threads VALUES ('new', 'new-provider', 'new row');")
+        try engine.restoreProviderMetadataColumns(backup, sqliteDirectory: directory, expectedProvider: "target")
+        let rows = try database.readRows("SELECT id, model_provider, title FROM threads ORDER BY id;") { [$0.text(0), $0.text(1), $0.text(2)] }
+        XCTAssertEqual(rows, [["new", "new-provider", "new row"], ["old", "original", "external update"]])
+        try database.execute("UPDATE threads SET model_provider = 'someone-else' WHERE id = 'old';")
+        XCTAssertThrowsError(try engine.restoreProviderMetadataColumns(backup, sqliteDirectory: directory, expectedProvider: "target"))
+        let providers = try database.readRows("SELECT model_provider FROM threads WHERE id = 'old';") { $0.text(0) }
+        XCTAssertEqual(providers, ["someone-else"])
+        let running = ProviderSyncEngine(applicationRunningProbe: { true })
+        XCTAssertThrowsError(try running.restoreProviderMetadataBackup(backup, sqliteDirectory: directory))
+        XCTAssertEqual(try database.readRows("SELECT COUNT(*) FROM threads;") { $0.int64(0) }, [2])
+    }
+
     func testCodexApplicationMatcherPrefersStableBundleIdentifier() {
         XCTAssertTrue(CodexDesktopApplicationMatcher.matches(
             bundleIdentifier: "com.openai.codex",
@@ -332,6 +359,23 @@ final class ProviderSyncEngineTests: XCTestCase {
         )
         XCTAssertEqual(try readSQLiteProviders(at: sqliteHome), ["openai"])
         XCTAssertEqual(try readSQLiteProviders(at: codexHome), ["decoy-provider"])
+        XCTAssertEqual(try readTail(session, byteCount: appendedTail.count), appendedTail)
+
+        // A foreign provider edit must block automatic recovery, but the user can
+        // explicitly select the journal's backup to resolve it after inspecting it.
+        try SQLiteDatabaseDriver(url: sqliteHome.appendingPathComponent("state_5.sqlite"))
+            .execute("UPDATE threads SET model_provider = 'external-provider';")
+        try JSONSerialization.data(withJSONObject: ["schema_version": 1,
+            "codex_home": codexHome.path, "sqlite_home": sqliteHome.path,
+            "backup_path": migrationBackup.path]).write(to: journal, options: .atomic)
+        XCTAssertThrowsError(try engine.createProviderMetadataBackup(codexHome: codexHome,
+            expectedHomeIdentity: identity, includeArchivedSessions: true))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: journal.path))
+        XCTAssertEqual(try readSQLiteProviders(at: sqliteHome), ["external-provider"])
+        let explicitlyRecovered = try engine.rollback(codexHome: codexHome, backupPath: migrationBackup.path)
+        XCTAssertFalse(explicitlyRecovered.pendingMigrationRecovery)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path))
+        XCTAssertEqual(try readSQLiteProviders(at: sqliteHome), ["openai"])
         XCTAssertEqual(try readTail(session, byteCount: appendedTail.count), appendedTail)
     }
 

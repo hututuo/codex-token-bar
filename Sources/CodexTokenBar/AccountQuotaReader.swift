@@ -480,6 +480,26 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         "--disable", "plugins",
         "--listen", "stdio://",
     ]
+    static let removedEnvironmentKeys: Set<String> = [
+        "NODE_OPTIONS",
+        "ELECTRON_RUN_AS_NODE",
+        "TAURI_SIGNING_PRIVATE_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY_PATH",
+    ]
+
+    static func sanitizedEnvironment(
+        _ baseEnvironment: [String: String],
+        codexHome: URL? = nil
+    ) -> [String: String] {
+        var environment = baseEnvironment
+        for key in removedEnvironmentKeys {
+            environment.removeValue(forKey: key)
+        }
+        if let codexHome {
+            environment["CODEX_HOME"] = codexHome.path
+        }
+        return environment
+    }
 
     private let stderrTailLimit: Int
     private let gracefulShutdownTimeout: TimeInterval
@@ -515,11 +535,13 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         // startup fetch out of this short-lived process removes unrelated network
         // noise without changing the account/rateLimits/read contract.
         process.arguments = Self.appServerArguments
-        if let dataSource {
-            var environment = ProcessInfo.processInfo.environment
-            environment["CODEX_HOME"] = dataSource.codexHome.path
-            process.environment = environment
-        }
+        // Quota reads and ModelTrace share this transport; give the app-server a
+        // clean Node/Tauri launch environment while retaining proxies, HOME, PATH,
+        // and any explicitly selected CODEX_HOME.
+        process.environment = Self.sanitizedEnvironment(
+            ProcessInfo.processInfo.environment,
+            codexHome: dataSource?.codexHome
+        )
 
         let input = Pipe()
         let output = Pipe()
