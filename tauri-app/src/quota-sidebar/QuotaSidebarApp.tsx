@@ -128,12 +128,16 @@ function RailSurface() {
     previousVisibility.current = modules.visibility; previousOrder.current = ordering.order; rebaseHeight.current = true;
   }
   const measureContent = useCallback((measurement: SidebarContentMeasurement) => {
+    // Ignore a queued measurement from the outgoing layer during collapse.
+    if (currentMode.current === "rest") return;
     const next = heightBudget.current.update({ ...measurement, speedRowHeight: modules.visibility.speeds ? measurement.speedRowHeight : 0 }, currentMode.current !== "rest", rebaseHeight.current);
     rebaseHeight.current = false;
     setExpandedHeight(value => value === next ? value : next);
   }, [modules.visibility, ordering.order]);
   useLayoutEffect(() => {
-    const next = heightBudget.current.update(undefined, state.mode !== "rest");
+    // Rest height is rearmed on the native settled receipt, not at shrink start.
+    if (state.mode === "rest") return;
+    const next = heightBudget.current.update(undefined, true);
     setExpandedHeight(value => value === next ? value : next);
   }, [state.mode]);
   const coordinator = useRef<ReturnType<typeof createSidebarNativeCoordinator> | null>(null);
@@ -229,8 +233,13 @@ function RailSurface() {
     add(listen<SidebarAction>("quota-sidebar-action", e => { if (isSidebarAction(e.payload)) dispatch(e.payload); }));
     add(listen("quota-sidebar-detail-ready", () => publisher.current?.ready()));
     add(listen("quota-sidebar-environment-changed", () => coordinator.current?.refresh()));
-    add(listen<{ requestId: number; error: string | null }>("quota-sidebar-motion-result", e =>
-      coordinator.current?.complete(e.payload.requestId, e.payload.error)));
+    add(listen<{ requestId: number; error: string | null }>("quota-sidebar-motion-result", e => {
+      coordinator.current?.complete(e.payload.requestId, e.payload.error);
+      if (currentMode.current === "rest" && coordinator.current?.isSettled()) {
+        const next = heightBudget.current.update(undefined, false);
+        setExpandedHeight(value => value === next ? value : next);
+      }
+    }));
     add(listen<number>("quota-sidebar-expanded-height-changed", e => {
       if (Number.isFinite(e.payload) && e.payload > 0 && e.payload <= 4096) {
         document.documentElement.style.setProperty("--qs-summary-height", `${e.payload}px`);

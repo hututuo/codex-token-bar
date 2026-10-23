@@ -43,6 +43,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private(set) var hasFiveHour = false
     private var quotaObservation: AnyCancellable?
     private var heightBudget = QuotaSidebarHeightBudget()
+    // Keep the expanded layout fixed until the native collapse has settled.
+    private var isCollapsing = false
     @Published private(set) var hiddenModules: Set<QuotaSidebarDetail> = []
     @Published private(set) var moduleOrder = QuotaSidebarDetail.defaultModuleOrder
     private var rebaseOnMeasurement = false
@@ -138,11 +140,12 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             }
             installObservers()
         }
-        if changedEdge { interaction.dismiss() }
+        if changedEdge { isCollapsing = false; interaction.dismiss() }
         updateFrames()
     }
 
     func close() {
+        isCollapsing = false
         cancelFrameAnimation()
         trackingGeneration &+= 1
         isTrackingPress = false
@@ -176,7 +179,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         let previous = heightBudget.targetHeight
         heightBudget.update(contentHeight: measurement.contentHeight,
                             rowHeight: isModuleVisible(.speeds) ? measurement.speedRowHeight : 0,
-                            expanded: interaction.expanded, rebase: rebaseOnMeasurement)
+                            expanded: interaction.expanded || isCollapsing, rebase: rebaseOnMeasurement)
         rebaseOnMeasurement = false
         if previous != heightBudget.targetHeight { updateFrames() }
     }
@@ -196,6 +199,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             if interaction.cacheNoticeID != nil && !interaction.cacheNoticePointerEntered { interaction.enter() }
             return
         }
+        isCollapsing = false
         interaction.enter()
         updateFrames()
     }
@@ -204,6 +208,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         guard !isTrackingPress, !isDragging else { return }
         collapseTask?.cancel(); collapseTask = nil
         detailScrollTarget = section
+        isCollapsing = false
         interaction.select(detail)
         detailScrollRevision += 1
         updateFrames()
@@ -219,7 +224,17 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             settings.set(id, forKey: "cacheHitAdviceDismissed")
             cacheAdviceID = nil
         }
+        isCollapsing = interaction.expanded && railPanel?.isVisible == true
         interaction.dismiss()
+        updateFrames()
+    }
+
+    private func finishCollapse() {
+        guard isCollapsing, !interaction.expanded else { return }
+        isCollapsing = false
+        // Rearm the next opening only after reaching the compact frame. This
+        // avoids resizing the hidden SwiftUI tree in the shrinking frame loop.
+        heightBudget.update(expanded: false)
         updateFrames()
     }
 
@@ -427,7 +442,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             railPanel.orderOut(nil); hideDetail()
             return
         }
-        heightBudget.update(expanded: interaction.expanded)
+        heightBudget.update(expanded: interaction.expanded || isCollapsing)
         let expandedTarget = QuotaSidebarFrames.make(usableFrame: screen.visibleFrame, edge: edge,
             expanded: true, scale: screen.backingScaleFactor, hasFiveHour: hasFiveHour,
             normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight)
@@ -438,11 +453,13 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         // The host keeps a stable canvas for reveal animation, but a weekly-only
         // or short-screen rail clips that canvas. Fit full-panel notices to
         // the settled visible height, not the stable animation canvas.
-        if expandedContentHeight != expandedTarget.rail.height {
-            expandedContentHeight = expandedTarget.rail.height
-        }
-        if let canvas = railPanel.contentView as? QuotaSidebarCanvasView {
-            canvas.canvasHeight = max(QuotaSidebarLayout.expandedCanvasHeight, expandedTarget.rail.height)
+        if !isCollapsing {
+            if expandedContentHeight != expandedTarget.rail.height {
+                expandedContentHeight = expandedTarget.rail.height
+            }
+            if let canvas = railPanel.contentView as? QuotaSidebarCanvasView {
+                canvas.canvasHeight = max(QuotaSidebarLayout.expandedCanvasHeight, expandedTarget.rail.height)
+            }
         }
         frames = next
         let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -481,7 +498,11 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                     // Let AppKit coalesce drawing at the display boundary. Forcing
                     // a synchronous display here competes with SwiftUI on every tick.
                     if railPanel.frame != frame { railPanel.setFrame(frame, display: false, animate: false) }
-                    if time >= 1 || reduceNow { self.frameAnimationTask = nil; return false }
+                    if time >= 1 || reduceNow {
+                        self.frameAnimationTask = nil
+                        self.finishCollapse()
+                        return false
+                    }
                     return true
                 }
 
@@ -500,6 +521,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             if detailPanel?.frame != next.detail { detailPanel?.setFrame(next.detail, display: true, animate: false) }
             if detailPanel?.isVisible != true { detailPanel?.orderFrontRegardless() }
         } else { hideDetail() }
+        if frameAnimationTask == nil, railPanel.frame == next.rail { finishCollapse() }
     }
 }
 
