@@ -2,7 +2,7 @@
 // Keep the floating HWND borderless across those changes, not only at show.
 use std::ffi::c_void;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GWL_STYLE, STYLESTRUCT, WM_NCDESTROY, WM_STYLECHANGING,
+    GWL_EXSTYLE, GWL_STYLE, STYLESTRUCT, WM_NCDESTROY, WM_STYLECHANGING, WM_NCPAINT, WM_NCACTIVATE,
     WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_WINDOWEDGE, WS_POPUP, WS_THICKFRAME,
 };
 
@@ -23,6 +23,11 @@ fn floating_style(style: u32, extended: bool) -> u32 {
 unsafe extern "system" fn style_guard(
     hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize, id: usize, _data: usize,
 ) -> isize {
+    // The whole top-level window is client-rendered. DefWindowProc can still
+    // paint cached caption controls on activation even without WS_CAPTION.
+    // Focus continues through WM_ACTIVATE/WM_SETFOCUS, not these paint messages.
+    if message == WM_NCPAINT { return 0; }
+    if message == WM_NCACTIVATE { return 1; }
     if message == WM_NCDESTROY {
         RemoveWindowSubclass(hwnd, Some(style_guard), id);
     }
@@ -51,7 +56,7 @@ pub(super) fn enforce(window: &tauri::WebviewWindow) -> Result<(), String> {
     use std::ffi::c_void;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_NOCOPYBITS,
     };
 
     let handle = window.hwnd().map_err(|error| error.to_string())?;
@@ -72,7 +77,7 @@ pub(super) fn enforce(window: &tauri::WebviewWindow) -> Result<(), String> {
             0,
             0,
             0,
-            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOCOPYBITS,
         )
     };
     if success == 0 { return Err(std::io::Error::last_os_error().to_string()); }
