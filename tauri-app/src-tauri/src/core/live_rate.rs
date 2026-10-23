@@ -52,6 +52,13 @@ struct StoreFileSignature {
     modified_at: Option<SystemTime>,
 }
 
+mod rate_history;
+pub use rate_history::ActivityRateHistoryPoint;
+pub fn read_activity_rate_history(scope: &LiveRateSourceScope) -> Vec<ActivityRateHistoryPoint> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    rate_history::read(scope, now)
+}
+
 mod c_curve;
 mod cache_reminder;
 mod completed_body;
@@ -324,6 +331,7 @@ fn read_snapshot_result_at(
         model_rates,
         c_curve_points,
     ) = c_curve::snapshot(source_scope, now, selected_thread_id);
+    rate_history::record(source_scope, now, &model_rates);
     if let Some(message) = speed_snapshot.storage_warning.clone() {
         warnings.push(live_rate_warning(format!(
             "observed speed history: {message}"

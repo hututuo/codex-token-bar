@@ -88,6 +88,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "read_usage_summary_snapshot",
     "schedule_precise_dashboard_aggregate",
     "read_live_rate_snapshot",
+    "read_activity_rate_history",
     "read_body_speed_history",
     "read_body_speed_trend",
     "claim_live_rate_owner_session",

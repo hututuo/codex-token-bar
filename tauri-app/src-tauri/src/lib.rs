@@ -171,6 +171,7 @@ pub fn run() {
             commands::codex_instances::list_codex_instance_sync_transactions,
             commands::codex_instances::rollback_codex_instance_sync,
             commands::live::read_live_rate_snapshot,
+            commands::live::read_activity_rate_history,
             commands::live::read_body_speed_history,
             commands::live::read_body_speed_trend,
             commands::modeltrace::read_modeltrace_snapshot,

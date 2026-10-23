@@ -59,6 +59,7 @@ final class LiveRateMonitor: ObservableObject {
     private var bodyHistoryLoaded = false
     @Published private(set) var speedRetentionDays = UserDefaults.standard.integer(forKey: "bodySpeedRetentionDays") == 15 ? 15 : 30
     private var lastSpeedPruneAt = 0.0
+    let activityRateHistory = LiveActivityRateHistory()
     var throughputCurve = ThroughputCurve()
     var speedContexts = ObservedStreamContexts()
     var speedCollector = ObservedSpeedCollector()
@@ -240,6 +241,7 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     func reset() {
+        activityRateHistory.clear()
         let activityGeneration = pollingActivityGeneration
         Task {
             await resetToLatestThread(activityGeneration: activityGeneration)
@@ -394,6 +396,7 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     func resetSourceLocalState(for source: CodexDataSource?) {
+        activityRateHistory.clear()
         logsDirectorySource?.cancel()
         logsDirectorySource = nil
         watchedLogsDirectory = ""
@@ -1605,6 +1608,7 @@ final class LiveRateMonitor: ObservableObject {
         }
         lastSnapshotPublishAt = now
 
+        activityRateHistory.record(now: now, rates: throughputCurve.modelRates)
         let selectedHasRecentActivity = throughputCurve.rate(thread: threadID) > 0
         selectedSmoothedTokensPerSecond = throughputCurve.rate(thread: threadID)
         if let updated = updatedSnapshot(

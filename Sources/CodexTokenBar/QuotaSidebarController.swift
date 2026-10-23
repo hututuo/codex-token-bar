@@ -484,11 +484,17 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                 let scale = screen.backingScaleFactor
                 let generation = frameAnimationGeneration
                 let clock = QuotaSidebarFrameClock()
+                var compactFramePresented = false
                 frameAnimationTask = clock
                 clock.start(screen: screen) { [weak self, weak railPanel] in
                     guard let self, let railPanel, self.frameAnimationGeneration == generation,
                           self.railPanel === railPanel, railPanel.isVisible,
                           !self.isTrackingPress, !self.isDragging else { return false }
+                    if compactFramePresented {
+                        self.frameAnimationTask = nil
+                        self.finishCollapse()
+                        return false
+                    }
                     let time = min(1, (CACurrentMediaTime() - started) / duration)
                     let reduceNow = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
                     let frame = reduceNow ? next.rail
@@ -499,6 +505,12 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                     // a synchronous display here competes with SwiftUI on every tick.
                     if railPanel.frame != frame { railPanel.setFrame(frame, display: false, animate: false) }
                     if time >= 1 || reduceNow {
+                        // Allow the final compact frame to be presented before
+                        // the next display tick applies the hidden content size.
+                        if self.isCollapsing && !reduceNow {
+                            compactFramePresented = true
+                            return true
+                        }
                         self.frameAnimationTask = nil
                         self.finishCollapse()
                         return false

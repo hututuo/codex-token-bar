@@ -1532,6 +1532,21 @@ pub async fn read_live_rate_snapshot(
 }
 
 #[tauri::command]
+pub async fn read_activity_rate_history(
+    window: tauri::WebviewWindow,
+    source_token: Option<CodexHomeSourceToken>,
+) -> Result<Vec<live_rate::ActivityRateHistoryPoint>, String> {
+    require_window_label(&window, "read_activity_rate_history")?;
+    let captured = capture_codex_home_source(source_token.as_ref())?;
+    let token = captured.source_token.clone();
+    let points = run_blocking_command(move || {
+        Ok(live_rate::read_activity_rate_history(&live_rate_source_scope(&captured.source_token)))
+    }).await?;
+    validate_codex_home_source(&token)?;
+    Ok(points)
+}
+
+#[tauri::command]
 pub async fn read_body_speed_history(
     app: AppHandle,
     window: tauri::WebviewWindow,

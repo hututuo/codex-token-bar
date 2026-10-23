@@ -558,10 +558,12 @@ struct QuotaSidebarDetailView: View {
                     QuotaSidebarModuleSettingsView(controller: controller).id("top")
                 }
                 else if controller.interaction.detail == .speeds {
+                    LiveActivityRateDetail(monitor: monitor).id("top")
+                    Divider().overlay(.white.opacity(0.12))
                     ObservedSpeedSidebarView(monitor: monitor, onOpenDetails: {
                         BodySpeedHistoryWindowController.shared.present(monitor: monitor,
                             screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)
-                    }).id("top")
+                    })
                 }
                 else if controller.interaction.detail == .modeltrace {
                     ModelTraceView(controller: ModelTraceController.shared, compact: true).id("top")

@@ -1,3 +1,4 @@
+import { LiveActivityRateHistory } from "../components/liveRate/LiveActivityRateHistory";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 import { useModuleOrder } from "./useModuleOrder";
 import { SidebarModuleSettings } from "./SidebarModuleSettings";
@@ -130,7 +131,7 @@ function RailSurface() {
   const measureContent = useCallback((measurement: SidebarContentMeasurement) => {
     // Ignore a queued measurement from the outgoing layer during collapse.
     if (currentMode.current === "rest") return;
-    const next = heightBudget.current.update({ ...measurement, speedRowHeight: modules.visibility.speeds ? measurement.speedRowHeight : 0 }, currentMode.current !== "rest", rebaseHeight.current);
+    const next = heightBudget.current.update({ ...measurement, speedRowHeight: modules.visibility.speeds ? measurement.speedRowHeight : 0 }, true, rebaseHeight.current);
     rebaseHeight.current = false;
     setExpandedHeight(value => value === next ? value : next);
   }, [modules.visibility, ordering.order]);
@@ -235,7 +236,7 @@ function RailSurface() {
     add(listen("quota-sidebar-environment-changed", () => coordinator.current?.refresh()));
     add(listen<{ requestId: number; error: string | null }>("quota-sidebar-motion-result", e => {
       coordinator.current?.complete(e.payload.requestId, e.payload.error);
-      if (currentMode.current === "rest" && coordinator.current?.isSettled()) {
+      if (currentMode.current === "rest" && coordinator.current?.isSettled("rest")) {
         const next = heightBudget.current.update(undefined, false);
         setExpandedHeight(value => value === next ? value : next);
       }
@@ -480,7 +481,7 @@ function DetailSurface() {
       {activeModule && <div className="qs-module-toolbar"><label><input type="checkbox" checked={modules.visibility[activeModule]} disabled={!modules.ready || modules.pending} onChange={event => void modules.save(activeModule, event.target.checked)}/>显示在二级菜单</label></div>}
 
       {(modules.error || ordering.error) && <p className="qs-warning" role="alert">{modules.error || ordering.error}</p>}
-      <div className="qs-detail-content">{value.state.tab === "settings" ? <SidebarModuleSettings order={ordering.order} visibility={modules.visibility} disabled={!modules.ready || !ordering.ready || modules.pending || ordering.pending} onOrder={next => void ordering.save(next)} onToggle={(module, visible) => void modules.save(module, visible)}/> : value.state.tab === "modeltrace" ? value.state.mode !== "detail" ? null : value.data.sourceToken ? <ModelTraceContent key={JSON.stringify(value.data.sourceToken)} sourceToken={value.data.sourceToken} compact/> : <p className="qs-muted">正在读取数据源…</p> : value.state.tab === "quota" && value.state.section === "speeds" ? <ObservedSpeedDetails data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} /> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
+      <div className="qs-detail-content">{value.state.tab === "settings" ? <SidebarModuleSettings order={ordering.order} visibility={modules.visibility} disabled={!modules.ready || !ordering.ready || modules.pending || ordering.pending} onOrder={next => void ordering.save(next)} onToggle={(module, visible) => void modules.save(module, visible)}/> : value.state.tab === "modeltrace" ? value.state.mode !== "detail" ? null : value.data.sourceToken ? <ModelTraceContent key={JSON.stringify(value.data.sourceToken)} sourceToken={value.data.sourceToken} compact/> : <p className="qs-muted">正在读取数据源…</p> : value.state.tab === "quota" && value.state.section === "speeds" ? <><LiveActivityRateHistory snapshot={value.data.snapshot} sourceToken={value.data.sourceToken}/><ObservedSpeedDetails data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /></> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} /> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
       <footer><span>额度 · 用量 · 会话</span><span>{value.state.pinned ? "已固定 · 点击 × 收起" : "移出后收起 · 点击固定"}</span></footer>
       {value.error && <details className="qs-diagnostic"><summary>窗口状态说明</summary><p>{value.error}</p></details>}
     </>}
