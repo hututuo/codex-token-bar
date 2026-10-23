@@ -1642,6 +1642,19 @@ impl ExactUsageIndex {
             if let Some(error) = assessment.blocking_error() {
                 return Err(error);
             }
+            // Supported schema 9+ databases share the files/events graph
+            // checked by the orphan verifier. If its one-time marker is
+            // absent, check that graph on the existing read-only handle before
+            // opening a writer or running compatibility DDL. A failed
+            // preflight must leave the original database bytes untouched.
+            if metadata_table_exists
+                && metadata_i64(&read_only, "schema_version")?
+                    .is_some_and(|version| version >= GITHUB_BASE_SCHEMA_VERSION)
+                && metadata_text(&read_only, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
+                    != Some(ORPHAN_REPAIR_REVISION)
+            {
+                reject_orphaned_index_rows(&read_only)?;
+            }
             (assessment, metadata_table_exists)
         } else {
             (MigrationAssessment::Compatible, false)
@@ -14579,6 +14592,16 @@ fn open_index_connection(
     Ok(connection)
 }
 
+fn reject_orphaned_index_rows(connection: &Connection) -> Result<(), String> {
+    if orphaned_index_rows_exist(connection)? {
+        return Err(
+            "精确 token 索引发现孤儿行；已保留活动库、上一代统计和全部异常行，repair required"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn verify_no_orphaned_index_rows(connection: &mut Connection) -> Result<(), String> {
     if metadata_text(connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
         == Some(ORPHAN_REPAIR_REVISION)
@@ -14593,12 +14616,7 @@ fn verify_no_orphaned_index_rows(connection: &mut Connection) -> Result<(), Stri
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(|error| format!("无法开始精确 token 孤儿行读取事务：{error}"))?;
-    if orphaned_index_rows_exist(&transaction)? {
-        return Err(
-            "精确 token 索引发现孤儿行；已保留活动库、上一代统计和全部异常行，repair required"
-                .into(),
-        );
-    }
+    reject_orphaned_index_rows(&transaction)?;
     set_metadata(
         &transaction,
         ORPHAN_REPAIR_REVISION_KEY,

@@ -1242,7 +1242,11 @@ fn exact_index_open_preserves_orphaned_rows_and_requires_explicit_repair() {
         Err(error) => error,
     };
     assert!(error.contains("repair required"), "{error}");
-    assert_eq!(fs::read(&index_path).unwrap(), database_bytes_before);
+    assert_eq!(
+        fs::read(&index_path).unwrap(),
+        database_bytes_before,
+        "orphan preflight must reject before any persistent write or DDL"
+    );
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection

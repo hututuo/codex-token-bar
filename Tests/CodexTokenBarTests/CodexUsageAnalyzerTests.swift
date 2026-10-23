@@ -1471,6 +1471,101 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalCalls, 2)
     }
 
+    func testPreciseJSONLScanAllowsEmptyPrimaryRootWhenArchivedRootIsAbsent() throws {
+        let codexHome = try makeCodexHome()
+        let archivedRoot = codexHome.appendingPathComponent(
+            "archived_sessions",
+            isDirectory: true
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: archivedRoot.path))
+
+        let files = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+            .usageJSONLFiles()
+
+        XCTAssertTrue(files.isEmpty)
+    }
+
+    func testPreciseJSONLScanFailsClosedWhenPrimaryRootIsMissingAndRecovers() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageMissingSessionsRoot")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionsRoot = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        _ = try writeTokenCountRollout(
+            in: sessionsRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-missing-primary-root",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let stateBefore = try index.attributionState()
+        let certificateBefore = try XCTUnwrap(index.coverageCertificate())
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let eventCountBefore = try scalarInt("SELECT COUNT(*) FROM events;", in: database)
+        let eventTokensBefore = try scalarInt(
+            "SELECT COALESCE(SUM(tokens), 0) FROM events;",
+            in: database
+        )
+        let sourceCountBefore = try scalarInt("SELECT COUNT(*) FROM sources;", in: database)
+        let ledgerTokensBefore = try scalarInt(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM attribution_source_buckets;",
+            in: database
+        )
+        let missingSourceCountBefore = try scalarInt(
+            "SELECT COUNT(*) FROM usage_ledger_sources WHERE missing = 1;",
+            in: database
+        )
+
+        try FileManager.default.removeItem(at: sessionsRoot)
+        XCTAssertThrowsError(try analyzer.load()) { error in
+            XCTAssertTrue(
+                error.localizedDescription.contains("主 sessions 目录不存在"),
+                error.localizedDescription
+            )
+        }
+
+        XCTAssertEqual(try index.attributionState(), stateBefore)
+        XCTAssertEqual(try index.coverageCertificate(), certificateBefore)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), eventCountBefore)
+        XCTAssertEqual(
+            try scalarInt("SELECT COALESCE(SUM(tokens), 0) FROM events;", in: database),
+            eventTokensBefore
+        )
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), sourceCountBefore)
+        XCTAssertEqual(
+            try scalarInt(
+                "SELECT COALESCE(SUM(total_tokens), 0) FROM attribution_source_buckets;",
+                in: database
+            ),
+            ledgerTokensBefore
+        )
+        XCTAssertEqual(
+            try scalarInt(
+                "SELECT COUNT(*) FROM usage_ledger_sources WHERE missing = 1;",
+                in: database
+            ),
+            missingSourceCountBefore
+        )
+
+        try FileManager.default.createDirectory(
+            at: sessionsRoot,
+            withIntermediateDirectories: true
+        )
+        let recovered = try analyzer.load()
+        XCTAssertEqual(recovered.stats.totalTokens, 120)
+        XCTAssertEqual(try index.coverageCertificate()?.sourceCount, 0)
+    }
+
     func testPreciseJSONLScanRejectsAbsoluteActiveRolloutOutsideSelectedHome() throws {
         let codexHome = try makeCodexHome()
         let trustedFile = try writeTokenCountRollout(
@@ -4242,6 +4337,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let firstWorker = try ConcurrentUsageIndexWorker(codexHome: codexHome, files: files)
         let secondWorker = try ConcurrentUsageIndexWorker(codexHome: codexHome, files: files)
         let parserReachedSecondFile = DispatchSemaphore(value: 0)
+        let firstFileParsingFinished = DispatchSemaphore(value: 0)
         let releaseParser = DispatchSemaphore(value: 0)
         let firstSynchronizationFinished = DispatchSemaphore(value: 0)
         let releaseFirstAggregation = DispatchSemaphore(value: 0)
@@ -4262,6 +4358,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                     parserGateFile: secondFile,
                     parserReachedGate: parserReachedSecondFile,
                     releaseParser: releaseParser,
+                    parserCompletedFile: firstFile,
+                    parserCompleted: firstFileParsingFinished,
                     synchronizationFinished: firstSynchronizationFinished,
                     releaseAggregation: releaseFirstAggregation
                 )
@@ -4270,6 +4368,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
 
         XCTAssertEqual(parserReachedSecondFile.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(
+            firstFileParsingFinished.wait(timeout: .now() + 5),
+            .success,
+            "The first source must finish parsing before the append is introduced"
+        )
         try appendLines([
             try tokenCountLine(
                 timestamp: now.addingTimeInterval(-10),
@@ -6266,7 +6369,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'dashboard_aggregate_schema_version';"
             ) { $0.text(0) }.first,
-            "5"
+            "6"
         )
         XCTAssertEqual(try scalarInt("SELECT SUM(total_tokens) FROM dashboard_5m;", in: database), 120)
     }
@@ -9100,12 +9203,15 @@ private final class ConcurrentUsageIndexWorker: @unchecked Sendable {
         parserGateFile: URL? = nil,
         parserReachedGate: DispatchSemaphore? = nil,
         releaseParser: DispatchSemaphore? = nil,
+        parserCompletedFile: URL? = nil,
+        parserCompleted: DispatchSemaphore? = nil,
         synchronizationFinished: DispatchSemaphore? = nil,
         releaseAggregation: DispatchSemaphore? = nil
     ) throws -> ConcurrentUsageIndexObservation {
         try index.withExclusiveAccess {
             exclusiveAccessEntered?.signal()
             let parserGate = ConcurrentParserGate(target: parserGateFile)
+            let parserCompletionGate = ConcurrentParserGate(target: parserCompletedFile)
             let synchronization = try index.synchronize(
                 files: files,
                 sessionID: analyzer.sessionID(from:)
@@ -9120,13 +9226,17 @@ private final class ConcurrentUsageIndexWorker: @unchecked Sendable {
                         )
                     }
                 }
-                return try analyzer.parseSessionIntoHistoryIndex(
+                let result = try analyzer.parseSessionIntoHistoryIndex(
                     file: file,
                     sessionID: sessionID,
                     request: request,
                     insertFingerprint: insertFingerprint,
                     emit: emit
                 )
+                if parserCompletionGate.claimIfTarget(file) {
+                    parserCompleted?.signal()
+                }
+                return result
             }
             synchronizationFinished?.signal()
             if let releaseAggregation,

@@ -6,6 +6,7 @@ import Foundation
 enum CodexUsageDiscoveryError: LocalizedError, SQLiteTransientReadFailureReporting {
     case selectedHomeUnavailable(path: String)
     case selectedHomeIdentityChanged(path: String)
+    case sessionsRootMissing(path: String)
     case traversalFailed(path: String, reason: String)
     case stateDatabaseReadFailed(path: String, reason: String, transient: Bool)
 
@@ -22,6 +23,8 @@ enum CodexUsageDiscoveryError: LocalizedError, SQLiteTransientReadFailureReporti
             return "所选 Codex Home 身份无法验证：\(path)"
         case .selectedHomeIdentityChanged(let path):
             return "所选 Codex Home 身份已变化，已停止读取：\(path)"
+        case .sessionsRootMissing(let path):
+            return "主 sessions 目录不存在，已拒绝将不完整扫描作为完整覆盖发布：\(path)"
         case .traversalFailed(let path, let reason):
             return "会话目录遍历失败：\(path)（\(reason)）"
         case .stateDatabaseReadFailed(let path, let reason, _):
@@ -600,12 +603,17 @@ extension CodexUsageAnalyzer {
         do {
             let canonicalHome = try canonicalSelectedHome()
             var files: [URL] = []
-            let historyRoots = [
-                dataSource.sessionsRoot,
-                canonicalHome.appendingPathComponent("archived_sessions", isDirectory: true)
+            let historyRoots: [(url: URL, required: Bool)] = [
+                (dataSource.sessionsRoot, true),
+                (canonicalHome.appendingPathComponent("archived_sessions", isDirectory: true), false)
             ]
-            for root in historyRoots {
-                guard try discoveryPathExists(root) else { continue }
+            for (root, required) in historyRoots {
+                guard try discoveryPathExists(root) else {
+                    if required {
+                        throw CodexUsageDiscoveryError.sessionsRootMissing(path: root.path)
+                    }
+                    continue
+                }
                 let sessionFiles = try jsonlFiles(
                     under: root,
                     canonicalHome: canonicalHome
