@@ -140,6 +140,7 @@ struct Assembler {
 struct Ownership {
     is_fork: bool,
     is_paginated: bool,
+    created_at: Option<f64>,
     child_created_ms: Option<u64>,
     history_boundary: Option<u64>,
     own_start_ordinal: Option<u64>,
@@ -155,6 +156,8 @@ struct PendingPart {
     ended_at: Option<f64>,
     touched_at: f64,
     body_phase: Option<String>,
+    owned_by_ordinal: bool,
+    born_own: bool,
 }
 
 impl Assembler {
@@ -176,7 +179,15 @@ impl Assembler {
             || payload
                 .get("source")
                 .and_then(|source| source.get("subagent"))
-                .is_some();
+                .is_some()
+            || payload
+                .get("agent_role")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+            || payload
+                .get("agent_path")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty());
         self.ownership.is_fork = parent || subagent;
         self.ownership.is_paginated =
             payload.get("history_mode").and_then(Value::as_str) == Some("paginated");
@@ -184,6 +195,17 @@ impl Assembler {
             .get("id")
             .and_then(Value::as_str)
             .and_then(uuid_v7_milliseconds);
+        self.ownership.created_at = self
+            .ownership
+            .child_created_ms
+            .map(|milliseconds| milliseconds as f64 / 1_000.0)
+            .or_else(|| {
+                payload
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(parse_rfc3339)
+                    .filter(|value| value.is_finite())
+            });
         self.ownership.history_boundary = payload
             .get("subagent_history_start_ordinal")
             .and_then(Value::as_u64);
@@ -192,6 +214,24 @@ impl Assembler {
     fn owns(&self, root: &Value, turn: Option<&str>) -> bool {
         if !self.ownership.is_fork {
             return true;
+        }
+        if !self.ownership.is_paginated {
+            let event_timestamp = root
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_rfc3339)
+                .filter(|value| value.is_finite());
+            let timestamp_own = self
+                .ownership
+                .created_at
+                .zip(event_timestamp)
+                .is_some_and(|(created_at, event)| event >= created_at);
+            let born_own = self
+                .ownership
+                .child_created_ms
+                .zip(turn.and_then(uuid_v7_milliseconds))
+                .is_some_and(|(child, turn)| turn >= child);
+            return timestamp_own || born_own;
         }
         if self
             .ownership
@@ -234,12 +274,12 @@ impl Assembler {
             self.configure(line);
             return Vec::new();
         }
-        let timestamp = root
+        let event_timestamp = root
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(parse_rfc3339)
-            .filter(|value| value.is_finite())
-            .unwrap_or(now);
+            .filter(|value| value.is_finite());
+        let timestamp = event_timestamp.unwrap_or(now);
 
         if record_type == "turn_context"
             || (record_type == "event_msg" && payload_type == "task_started")
@@ -350,9 +390,28 @@ impl Assembler {
         };
 
         let ((turn, item), timing, text, phase) = part_key;
+        let ordinal = root.get("ordinal").and_then(Value::as_u64);
+        let owned_by_ordinal = self.ownership.is_paginated
+            && (self
+                .ownership
+                .history_boundary
+                .zip(ordinal)
+                .is_some_and(|(boundary, ordinal)| ordinal >= boundary)
+                || self
+                    .ownership
+                    .own_start_ordinal
+                    .zip(ordinal)
+                    .is_some_and(|(start, ordinal)| ordinal >= start));
+        let born_own = self
+            .ownership
+            .child_created_ms
+            .zip(uuid_v7_milliseconds(&turn))
+            .is_some_and(|(child, turn)| turn >= child);
         let key = (turn, item);
         let pending = self.pending.entry(key).or_default();
         pending.touched_at = timestamp;
+        pending.owned_by_ordinal |= owned_by_ordinal;
+        pending.born_own |= born_own;
         if phase.is_some() {
             pending.body_phase = phase;
         }
@@ -522,11 +581,24 @@ impl Assembler {
                     started,
                     ended,
                     part.body_phase.clone(),
+                    part.owned_by_ordinal,
+                    part.born_own,
                 ))
             })
             .collect::<Vec<_>>();
         let mut output = Vec::new();
-        for (turn, item, model, text, started_at, ended_at, body_phase) in ready {
+        for (
+            turn,
+            item,
+            model,
+            text,
+            started_at,
+            ended_at,
+            body_phase,
+            owned_by_ordinal,
+            born_own,
+        ) in ready
+        {
             let key = (turn.clone(), item.clone());
             self.pending.remove(&key);
             let duration = ended_at - started_at;
@@ -537,6 +609,13 @@ impl Assembler {
                 || ended_at <= started_at
                 || ended_at < now - MAX_BACKFILL_SECONDS
                 || ended_at > now + 2.0
+                || (self.ownership.is_fork
+                    && self
+                        .ownership
+                        .created_at
+                        .is_some_and(|created_at| started_at < created_at)
+                    && !owned_by_ordinal
+                    && !born_own)
                 || model.is_empty()
                 || model.len() > 256
                 || text.is_empty()
@@ -614,7 +693,6 @@ impl Reader {
         for thread in threads {
             if budget == 0
                 || file_count >= RECENT_THREAD_LIMIT
-                || thread.thread_source == "subagent"
             {
                 continue;
             }
@@ -1364,6 +1442,37 @@ mod tests {
     }
 
     #[test]
+    fn timing_falls_back_to_nested_agent_message_fields() {
+        let now = 1_800_000_100.0;
+        let turn = "turn-nested";
+        let mut assembler = Assembler::default();
+        assembler.consume_line(&context(turn, "gpt-5.5", now), "thread-a", now);
+        let nested_timing = line(
+            "event_msg",
+            serde_json::json!({
+                "type":"item_completed", "turn_id":turn,
+                "item":{
+                    "type":"AgentMessage", "id":"nested-item",
+                    "started_at_ms":(now - 10.0) * 1_000.0,
+                    "completed_at_ms":now * 1_000.0,
+                }
+            }),
+            &timestamp(now),
+        );
+        assert!(assembler
+            .consume_line(&nested_timing, "thread-a", now)
+            .is_empty());
+        let samples = assembler.consume_line(
+            &body(turn, "nested-item", "nested timing body", now),
+            "thread-a",
+            now,
+        );
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].duration_seconds, 10.0);
+        assert_eq!(samples[0].body_phase.as_deref(), Some("final_answer"));
+    }
+
+    #[test]
     fn duplicate_pair_emits_once_and_negative_times_are_rejected() {
         let now = 1_800_000_100.0;
         let turn = "turn-1";
@@ -1424,6 +1533,278 @@ mod tests {
             now,
         );
         assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].model.as_deref(), Some("child-model"));
+    }
+
+    #[test]
+    fn non_paginated_subagent_uses_metadata_time_to_keep_only_child_bodies() {
+        let now = 1_800_000_100.0;
+        let mut assembler = Assembler::default();
+        let header = serde_json::to_vec(&serde_json::json!({
+            "type":"session_meta",
+            "payload":{
+                "id":"child-thread",
+                "thread_source":"subagent",
+                "timestamp":timestamp(now - 5.0),
+            }
+        }))
+        .unwrap();
+        assembler.configure(&header);
+
+        let inherited_turn = "parent-turn";
+        let inherited_context = line(
+            "turn_context",
+            serde_json::json!({"turn_id":inherited_turn, "model":"parent-model"}),
+            &timestamp(now - 6.0),
+        );
+        assembler.consume_line(&inherited_context, "child-thread", now);
+        let inherited_timing = line(
+            "event_msg",
+            serde_json::json!({
+                "type":"item_completed", "turn_id":inherited_turn,
+                "started_at_ms":(now - 8.0) * 1_000.0,
+                "completed_at_ms":(now - 6.0) * 1_000.0,
+                "item":{"type":"AgentMessage", "id":"inherited-item"},
+            }),
+            &timestamp(now - 6.0),
+        );
+        assert!(assembler
+            .consume_line(&inherited_timing, "child-thread", now)
+            .is_empty());
+        let inherited_body = line(
+            "response_item",
+            serde_json::json!({
+                "type":"message", "role":"assistant", "id":"inherited-item",
+                "turn_id":inherited_turn,
+                "content":[{"type":"output_text", "text":"inherited answer"}],
+            }),
+            &timestamp(now - 6.0),
+        );
+        assert!(assembler
+            .consume_line(&inherited_body, "child-thread", now)
+            .is_empty());
+
+        let child_turn = "child-owned-turn";
+        let child_context = line(
+            "turn_context",
+            serde_json::json!({"turn_id":child_turn, "model":"child-model"}),
+            &timestamp(now),
+        );
+        assembler.consume_line(&child_context, "child-thread", now);
+        let child_timing = line(
+            "event_msg",
+            serde_json::json!({
+                "type":"item_completed", "turn_id":child_turn,
+                "started_at_ms":(now - 2.0) * 1_000.0,
+                "completed_at_ms":now * 1_000.0,
+                "item":{"type":"AgentMessage", "id":"child-item"},
+            }),
+            &timestamp(now),
+        );
+        assembler.consume_line(&child_timing, "child-thread", now);
+        let child_body = line(
+            "response_item",
+            serde_json::json!({
+                "type":"message", "role":"assistant", "id":"child-item",
+                "turn_id":child_turn,
+                "content":[{"type":"output_text", "text":"child answer"}],
+            }),
+            &timestamp(now),
+        );
+        let samples = assembler.consume_line(&child_body, "child-thread", now);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].turn_id, child_turn);
+        assert_eq!(samples[0].model.as_deref(), Some("child-model"));
+    }
+
+    #[test]
+    fn non_paginated_fork_without_birth_proof_rejects_body() {
+        let now = 1_800_000_100.0;
+        let mut assembler = Assembler::default();
+        let header = serde_json::to_vec(&serde_json::json!({
+            "type":"session_meta",
+            "payload":{"id":"child", "thread_source":"subagent"}
+        }))
+        .unwrap();
+        assembler.configure(&header);
+        let turn = "inherited-turn";
+        assembler.consume_line(&context(turn, "parent-model", now), "child-thread", now);
+        assert!(assembler
+            .consume_line(
+                &completed(turn, "inherited-item", (now - 2.0) * 1_000.0, now * 1_000.0, now),
+                "child-thread",
+                now,
+            )
+            .is_empty());
+        assert!(assembler
+            .consume_line(
+                &body(turn, "inherited-item", "inherited answer", now),
+                "child-thread",
+                now,
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn paginated_ordinal_proof_keeps_child_body_without_uuid_birth() {
+        let now = 1_800_000_100.0;
+        let mut assembler = Assembler::default();
+        let header = serde_json::to_vec(&serde_json::json!({
+            "type":"session_meta",
+            "payload":{
+                "id":"child",
+                "forked_from_id":"parent",
+                "history_mode":"paginated",
+                "subagent_history_start_ordinal":900,
+            }
+        }))
+        .unwrap();
+        assembler.configure(&header);
+        assembler.consume_line(
+            &ordinal_line(
+                "turn_context",
+                serde_json::json!({"turn_id":"own-turn", "model":"child-model"}),
+                &timestamp(now),
+                900,
+            ),
+            "child-thread",
+            now,
+        );
+        assembler.consume_line(
+            &ordinal_line(
+                "event_msg",
+                serde_json::json!({
+                    "type":"item_completed", "turn_id":"own-turn",
+                    "started_at_ms":(now - 10.0) * 1_000.0,
+                    "completed_at_ms":now * 1_000.0,
+                    "item":{"type":"AgentMessage", "id":"own-item"},
+                }),
+                &timestamp(now),
+                900,
+            ),
+            "child-thread",
+            now,
+        );
+        let samples = assembler.consume_line(
+            &ordinal_line(
+                "response_item",
+                serde_json::json!({
+                    "type":"message", "role":"assistant", "id":"own-item",
+                    "turn_id":"own-turn",
+                    "content":[{"type":"output_text", "text":"owned output"}],
+                }),
+                &timestamp(now),
+                900,
+            ),
+            "child-thread",
+            now,
+        );
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].turn_id, "own-turn");
+        assert_eq!(samples[0].model.as_deref(), Some("child-model"));
+    }
+
+    #[test]
+    fn reader_includes_subagent_rollout_and_filters_inherited_fork_events() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let child = "018f0000-0001-7000-8000-000000000000";
+        let inherited = "018e0000-0000-7000-8000-000000000000";
+        let path = std::env::temp_dir().join(format!(
+            "completed-body-subagent-{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut content = Vec::new();
+        for line in [
+            serde_json::to_vec(&serde_json::json!({
+                "type":"session_meta",
+                "payload":{
+                    "id":child,
+                    "forked_from_id":"parent",
+                    "thread_source":"subagent",
+                    "history_mode":"paginated",
+                    "subagent_history_start_ordinal":4,
+                }
+            }))
+            .unwrap(),
+            ordinal_line(
+                "turn_context",
+                serde_json::json!({"turn_id":inherited, "model":"parent-model"}),
+                &timestamp(now),
+                1,
+            ),
+            ordinal_line(
+                "event_msg",
+                serde_json::json!({
+                    "type":"item_completed", "turn_id":inherited,
+                    "started_at_ms":(now - 2.0) * 1_000.0,
+                    "completed_at_ms":now * 1_000.0,
+                    "item":{"type":"AgentMessage", "id":"inherited-item"},
+                }),
+                &timestamp(now),
+                2,
+            ),
+            ordinal_line(
+                "response_item",
+                serde_json::json!({
+                    "type":"message", "role":"assistant", "id":"inherited-item",
+                    "turn_id":inherited,
+                    "content":[{"type":"output_text", "text":"inherited answer"}],
+                }),
+                &timestamp(now),
+                3,
+            ),
+            ordinal_line(
+                "turn_context",
+                serde_json::json!({"turn_id":child, "model":"child-model"}),
+                &timestamp(now),
+                4,
+            ),
+            ordinal_line(
+                "event_msg",
+                serde_json::json!({
+                    "type":"item_completed", "turn_id":child,
+                    "started_at_ms":(now - 2.0) * 1_000.0,
+                    "completed_at_ms":now * 1_000.0,
+                    "item":{"type":"AgentMessage", "id":"child-item"},
+                }),
+                &timestamp(now),
+                5,
+            ),
+            ordinal_line(
+                "response_item",
+                serde_json::json!({
+                    "type":"message", "role":"assistant", "id":"child-item",
+                    "turn_id":child,
+                    "content":[{"type":"output_text", "text":"child answer"}],
+                }),
+                &timestamp(now),
+                6,
+            ),
+        ] {
+            content.extend_from_slice(&line);
+            content.push(b'\n');
+        }
+        fs::write(&path, content).unwrap();
+
+        let thread = RolloutThread {
+            id: child.into(),
+            rollout_path: path.clone(),
+            thread_source: "subagent".into(),
+        };
+        let samples = Reader::default()
+            .read_thread_files(vec![thread], now)
+            .unwrap();
+        let _ = fs::remove_file(path);
+
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].turn_id, child);
+        assert_eq!(samples[0].item_id, "child-item");
         assert_eq!(samples[0].model.as_deref(), Some("child-model"));
     }
 

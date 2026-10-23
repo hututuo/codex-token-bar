@@ -171,6 +171,29 @@ final class BodySpeedHistoryTests: XCTestCase {
         XCTAssertEqual(trend[0].sampleCount, 1)
         XCTAssertEqual(trend[0].tokensPerSecond, 50, accuracy: 0.0001)
     }
+    func testFutureBodyRemainsRetryableUntilItCanBePersisted() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("history.sqlite")
+        let writer = BodySpeedSampleWriter(), body = sample()
+        let pending = await writer.persistBatch([body], to: url, ticket: 7, now: body.endedAt - 1)
+        XCTAssertNil(pending.error)
+        XCTAssertEqual(pending.retryAt, body.endedAt)
+        var stale = body
+        stale.endedAt -= 10
+        stale.startedAt -= 10
+        _ = await writer.persist([stale], to: url, ticket: 6, now: body.endedAt - 1)
+        let before = try await writer.load(from: url, now: body.endedAt - 1)
+        XCTAssertTrue(before.isEmpty)
+        let committed = await writer.persistBatch([body], to: url, ticket: 7, now: body.endedAt)
+        XCTAssertNil(committed.error)
+        XCTAssertNil(committed.retryAt)
+        let after = try await writer.load(from: url, now: body.endedAt)
+        XCTAssertEqual(after.map(\.id), [body.id])
+        let trend = try await writer.trend(from: url, now: body.endedAt, days: 1)
+        XCTAssertEqual(trend.first?.sampleCount, 1)
+    }
+
     func testLocalHistoryPerformanceAudit() throws {
         guard let input = ProcessInfo.processInfo.environment["TOKENBAR_BODY_PERF_INPUT"],
               let output = ProcessInfo.processInfo.environment["TOKENBAR_BODY_PERF_OUTPUT"] else { throw XCTSkip("Opt-in numeric history performance audit") }

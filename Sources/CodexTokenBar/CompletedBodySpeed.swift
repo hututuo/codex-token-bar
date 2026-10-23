@@ -37,6 +37,8 @@ struct CompletedBodyAssembler: Sendable {
         var end: Double?
         var at: Double
         var phase: String? = nil
+        var ownedByOrdinal = false
+        var bornOwn = false
     }
     var currentTurn = ""
     var models: [String: String] = [:]
@@ -97,8 +99,8 @@ struct CompletedBodyAssembler: Sendable {
         if type == "event_msg", p["type"] as? String == "item_completed",
            let item = p["item"] as? [String: Any], (item["type"] as? String)?.lowercased() == "agentmessage",
            let id = item["id"] as? String, !id.isEmpty,
-           let start = Self.milliseconds(p["started_at_ms"]),
-           let end = Self.milliseconds(p["completed_at_ms"]),
+           let start = Self.milliseconds(p["started_at_ms"]) ?? Self.milliseconds(item["started_at_ms"]),
+           let end = Self.milliseconds(p["completed_at_ms"]) ?? Self.milliseconds(item["completed_at_ms"]),
            start.isFinite, end.isFinite, start > 0, end > start {
             part = Part(turn: turn, item: id, start: start / 1000, end: end / 1000, at: at, phase: item["phase"] as? String)
         } else if type == "response_item", p["type"] as? String == "message", p["role"] as? String == "assistant",
@@ -108,25 +110,36 @@ struct CompletedBodyAssembler: Sendable {
             guard !text.isEmpty, text.utf8.count <= 1_048_576 else { return nil }
             part = Part(turn: turn, item: id, text: text, at: at, phase: p["phase"] as? String)
         } else { return nil }
-        if let boundary = inheritedBoundary {
+        let ordinalOwn = inheritedBoundary.map { boundary in
             let own = ownership.paginatedOwnStartOrdinal ?? boundary
-            let ordinalOwn = PaginatedHistoryBoundary.unsigned(root["ordinal"]).map { $0 >= own } == true
-            let bornOwn = childCreatedMS.flatMap { created in PaginatedHistoryBoundary.uuidMilliseconds(turn).map { $0 >= created } } == true
+            return PaginatedHistoryBoundary.unsigned(root["ordinal"]).map { $0 >= own } == true
+        } ?? false
+        let bornOwn = childCreatedMS.flatMap { created in
+            PaginatedHistoryBoundary.uuidMilliseconds(turn).map { $0 >= created }
+        } == true
+        if inheritedBoundary != nil {
             guard ordinalOwn || bornOwn else { return nil }
+        } else if hasFork {
+            let timestampOwn = createdAt.map { at >= $0 } == true
+            guard timestampOwn || bornOwn else { return nil }
         }
-        if hasFork, let createdAt, at < createdAt { return nil }
+        part.ownedByOrdinal = ordinalOwn
+        part.bornOwn = bornOwn
         let key = "\(turn)/\(part.item)"
         if let old = pending[key] {
             part.text = part.text ?? old.text
             part.start = part.start ?? old.start
             part.end = part.end ?? old.end
             part.phase = part.phase ?? old.phase
+            part.ownedByOrdinal = part.ownedByOrdinal || old.ownedByOrdinal
+            part.bornOwn = part.bornOwn || old.bornOwn
         }
         // Bound by timestamps as well as entry/byte counts; no reply content is persisted.
         pending = pending.filter { $0.value.at >= max(now - 3600, at - 600) }
         if let text = part.text, let start = part.start, let end = part.end {
             pending.removeValue(forKey: key)
-            guard end >= now - 30 * 86400, end <= now + 2, end > start, !hasFork || createdAt.map({ start >= $0 }) != false else { return nil }
+            guard end >= now - 30 * 86400, end <= now + 2, end > start,
+                  !hasFork || createdAt.map({ start >= $0 }) != false || part.ownedByOrdinal || part.bornOwn else { return nil }
             let tokens = try tokenizer(text), duration = end - start
             guard tokens > 0 else { return nil }
             var sample = ObservedSpeedSample(id: "body/\(thread)/\(key)", threadID: thread, turnID: turn, itemID: part.item,

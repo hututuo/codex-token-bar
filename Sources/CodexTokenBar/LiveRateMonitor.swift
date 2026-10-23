@@ -66,7 +66,10 @@ final class LiveRateMonitor: ObservableObject {
     private var completedBodyReader = CompletedBodySpeedReader()
     private var completedBodyError: String?
     private var acceptedCompletedBodySampleRevisions: [String: UInt64] = [:]
-    private var savedSpeedRevision = -1
+    private var savedSpeedRevision = -1 // Last revision projected into the UI.
+    private var persistedSpeedRevision = -1
+    private var speedWriteRunning = false
+    private var nextSpeedWriteAt: Double = 0
     private let bodySpeedWriter = BodySpeedSampleWriter()
     private var bodySpeedWriteTicket = 0
     private var lastModelSpeedSummaryAt = 0.0
@@ -298,7 +301,7 @@ final class LiveRateMonitor: ObservableObject {
         guard [15, 30].contains(days), speedRetentionDays != days else { return }
         speedRetentionDays = days
         UserDefaults.standard.set(days, forKey: "bodySpeedRetentionDays")
-        lastSpeedPruneAt = 0; savedSpeedRevision = -1
+        lastSpeedPruneAt = 0; savedSpeedRevision = -1; persistedSpeedRevision = -1; nextSpeedWriteAt = 0
         updateSnapshots(now: Date().timeIntervalSince1970)
     }
 
@@ -1091,6 +1094,8 @@ final class LiveRateMonitor: ObservableObject {
             bodyHistoryLoading = false; bodyHistoryLoaded = false
             bodyHistoryTitles = [:]; bodyHistoryStatus = ""; lastSpeedPruneAt = 0
             speedSourceIdentity = identity
+            bodySpeedWriteTicket += 1 // Invalidates completions from the previous source, including A -> B -> A.
+            persistedSpeedRevision = -1; speedWriteRunning = false; nextSpeedWriteAt = 0
             acceptedCompletedBodySampleRevisions.removeAll()
             completedBodyReader = CompletedBodySpeedReader(); completedBodyError = nil
             throughputCurve = ThroughputCurve(); speedContexts = ObservedStreamContexts()
@@ -1547,21 +1552,26 @@ final class LiveRateMonitor: ObservableObject {
         let samplesChanged = speedCollector.revision != savedSpeedRevision
         if samplesChanged {
             savedSpeedRevision = speedCollector.revision
-            if speedDatabaseReady, speedCollector.persistenceAllowed, let url = speedDatabaseURL {
-                bodySpeedWriteTicket += 1
-                let ticket = bodySpeedWriteTicket, identity = speedSourceIdentity
-                let samples = speedCollector.samples, writer = bodySpeedWriter, days = speedRetentionDays
-                Task { [weak self] in
-                    let error = await writer.persist(samples, to: url, ticket: ticket, now: now, retentionDays: days)
-                    guard let self, self.speedSourceIdentity == identity, self.bodySpeedWriteTicket == ticket else { return }
-                    if self.speedCollector.persistenceError != error {
-                        self.speedCollector.persistenceError = error
-                        self.updateSnapshots(now: Date().timeIntervalSince1970)
-                    }
-                    if error == nil { self.refreshSpeedTrend() }
-                }
-            }
             speedSamples = speedCollector.samples.filter(\.isBody).sorted { $0.endedAt == $1.endedAt ? $0.id < $1.id : $0.endedAt > $1.endedAt }
+        }
+        if persistedSpeedRevision != speedCollector.revision, !speedWriteRunning,
+           now >= nextSpeedWriteAt, speedDatabaseReady, speedCollector.persistenceAllowed,
+           let url = speedDatabaseURL {
+            speedWriteRunning = true
+            bodySpeedWriteTicket += 1
+            let ticket = bodySpeedWriteTicket, identity = speedSourceIdentity
+            let revision = speedCollector.revision
+            let samples = speedCollector.samples, writer = bodySpeedWriter, days = speedRetentionDays
+            Task { [weak self] in
+                let result = await writer.persistBatch(samples, to: url, ticket: ticket, now: now, retentionDays: days)
+                guard let self, self.speedSourceIdentity == identity, self.bodySpeedWriteTicket == ticket else { return }
+                self.speedWriteRunning = false
+                self.speedCollector.persistenceError = result.error
+                if result.error == nil && result.retryAt == nil && self.speedRetentionDays == days { self.persistedSpeedRevision = revision }
+                self.nextSpeedWriteAt = result.retryAt ?? 0
+                if result.error == nil { self.refreshSpeedTrend() }
+                self.updateSnapshots(now: Date().timeIntervalSince1970)
+            }
         }
         if BodySpeedSummarySchedule.isDue(now: now, lastUpdatedAt: lastModelSpeedSummaryAt,
             nextChangeAt: nextModelSpeedSummaryChangeAt, samplesChanged: samplesChanged) {

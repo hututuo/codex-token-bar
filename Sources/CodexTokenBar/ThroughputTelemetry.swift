@@ -458,6 +458,12 @@ struct ObservedSpeedCollector {
 
 /// Persist body measurements in SQLite off the main actor. Tickets prevent an older
 /// queued revision from overwriting a newer one after a source switch.
+struct BodySpeedPersistenceResult: Sendable {
+    let error: String?
+    /// Future samples remain pending until their timestamp becomes eligible.
+    let retryAt: Double?
+}
+
 actor BodySpeedSampleWriter {
     private struct StoreCache {
         let store: BodySpeedTrendStore
@@ -468,6 +474,7 @@ actor BodySpeedSampleWriter {
     private var caches: [URL: StoreCache] = [:]
     /// Tracks the last committed revision only. A failed write leaves the ticket retryable.
     private var tickets: [URL: Int] = [:]
+    private var latestTickets: [URL: Int] = [:]
 
     func load(from url: URL, now: Double, retentionDays: Int = 30) throws -> [ObservedSpeedSample] {
         let key = url.standardizedFileURL
@@ -478,15 +485,23 @@ actor BodySpeedSampleWriter {
         return samples
     }
 
-    func persist(
+    func persist(_ samples: [ObservedSpeedSample], to url: URL, ticket: Int,
+                 now: Double = Date().timeIntervalSince1970, retentionDays: Int = 30) -> String? {
+        persistBatch(samples, to: url, ticket: ticket, now: now, retentionDays: retentionDays).error
+    }
+
+    func persistBatch(
         _ samples: [ObservedSpeedSample],
         to url: URL,
         ticket: Int,
         now: Double = Date().timeIntervalSince1970,
         retentionDays: Int = 30
-    ) -> String? {
+    ) -> BodySpeedPersistenceResult {
         let key = url.standardizedFileURL
-        guard ticket > (tickets[key] ?? -1) else { return nil }
+        guard ticket >= (latestTickets[key] ?? -1), ticket > (tickets[key] ?? -1) else {
+            return BodySpeedPersistenceResult(error: nil, retryAt: nil)
+        }
+        latestTickets[key] = ticket
         do {
             var cache = try storeCache(for: key, now: now, retentionDays: retentionDays)
             var incomingByID: [String: ObservedSpeedSample] = [:]
@@ -509,10 +524,11 @@ actor BodySpeedSampleWriter {
                 cache.persistedByID[sample.id] = sample
             }
             caches[key] = cache
-            tickets[key] = ticket
-            return nil
+            let pendingAt = incomingByID.values.filter { $0.endedAt > now }.map(\.endedAt).min()
+            if pendingAt == nil { tickets[key] = ticket }
+            return BodySpeedPersistenceResult(error: nil, retryAt: pendingAt)
         } catch {
-            return "测速记录保存失败：\(error.localizedDescription)"
+            return BodySpeedPersistenceResult(error: "测速记录保存失败：\(error.localizedDescription)", retryAt: now + 5)
         }
     }
 

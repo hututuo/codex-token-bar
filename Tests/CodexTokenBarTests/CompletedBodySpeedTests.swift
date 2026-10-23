@@ -39,6 +39,24 @@ final class CompletedBodySpeedTests: XCTestCase {
         XCTAssertNil(ingest(try body(), &a)) // explicit turn required if context moved
         XCTAssertEqual(ingest(try body(turn: "t"), &a)?.model, "m")
     }
+    func testNestedItemTimingFallsBackWhenPayloadTimingIsMissing() throws {
+        var a = CompletedBodyAssembler()
+        _ = ingest(try context(), &a)
+        let nestedTiming = try line("event_msg", [
+            "type": "item_completed",
+            "turn_id": "t",
+            "item": [
+                "type": "AgentMessage",
+                "id": "i",
+                "started_at_ms": 1_000_000,
+                "completed_at_ms": 1_010_000
+            ]
+        ])
+        XCTAssertNil(ingest(nestedTiming, &a))
+        let sample = try XCTUnwrap(ingest(try body(), &a))
+        XCTAssertEqual(sample.durationSeconds, 10)
+        XCTAssertEqual(sample.tokensPerSecond, 40)
+    }
     func testRejectsInvalidTimeBooleanToolsAndInheritedHistory() throws {
         for (start, end): (Any, Any) in [(1000, 999), (1000, 1000), (true, 1000), (-1, 1000)] {
             var a = CompletedBodyAssembler(); _ = ingest(try context(), &a)
@@ -80,6 +98,37 @@ final class CompletedBodySpeedTests: XCTestCase {
         _ = ingest(try context(own), &a)
         _ = ingest(try timing(turn: own, start: 1_001_000), &a)
         XCTAssertEqual(ingest(try body(turn: own), &a)?.turnID, own)
+    }
+    func testForkWithoutBirthProofIsRejectedButPaginatedOrdinalProofIsAccepted() throws {
+        var unknownBirth = CompletedBodyAssembler()
+        unknownBirth.configure(metadata: ["id": "child", "thread_source": "subagent"])
+        _ = ingest(try context("parent-turn"), &unknownBirth)
+        _ = ingest(try timing("inherited-item", turn: "parent-turn"), &unknownBirth)
+        XCTAssertNil(ingest(try body("inherited-item", turn: "parent-turn"), &unknownBirth))
+
+        var ordinalOwned = CompletedBodyAssembler()
+        ordinalOwned.configure(metadata: [
+            "id": "child",
+            "forked_from_id": "parent",
+            "history_mode": "paginated",
+            "subagent_history_start_ordinal": 900
+        ])
+        _ = ingest(try line("turn_context", ["turn_id": "own-turn", "model": "child-model"], ordinal: 900), &ordinalOwned)
+        _ = ingest(try line("event_msg", [
+            "type": "item_completed",
+            "turn_id": "own-turn",
+            "started_at_ms": 1_000_000,
+            "completed_at_ms": 1_010_000,
+            "item": ["type": "AgentMessage", "id": "own-item"]
+        ], ordinal: 900), &ordinalOwned)
+        let ownBody = try line("response_item", [
+            "type": "message",
+            "role": "assistant",
+            "id": "own-item",
+            "turn_id": "own-turn",
+            "content": [["type": "output_text", "text": "owned output"]]
+        ], ordinal: 900)
+        XCTAssertEqual(ingest(ownBody, &ordinalOwned)?.model, "child-model")
     }
     func testPaginatedForkRejectsRewrittenParentButKeepsNewChildTurn() throws {
         let child = "0000000f-4240-7000-8000-000000000001"

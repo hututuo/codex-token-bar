@@ -907,21 +907,30 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertFalse(rateBarSource.contains("Timer.publish"))
     }
 
-    func testLiveRateNumberUsesAnimatableTextWithoutHighFrequencyTimer() throws {
+    func testLiveRateNumberUsesSnapshotRateWithoutHighFrequencyTimer() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let sourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let rateInstrumentRange = try XCTUnwrap(source.range(of: "struct LiveRateInstrument: View"))
+        let nextStructRange = try XCTUnwrap(
+            source.range(
+                of: "private struct LiveRatePowerToggle: View",
+                range: rateInstrumentRange.upperBound..<source.endIndex
+            )
+        )
+        let rateInstrumentSource = String(source[rateInstrumentRange.lowerBound..<nextStructRange.lowerBound])
 
         XCTAssertFalse(source.contains("struct SmoothRateValueText: View, Animatable"))
-        XCTAssertFalse(source.contains("SmoothRateValueText(value: snapshot.rollingTokensPerSecond)"))
-        XCTAssertFalse(source.contains(".animation(.linear(duration: 0.2), value: snapshot.rollingTokensPerSecond)"))
-        XCTAssertTrue(source.contains("Text(snapshot.rollingTokensPerSecondText)"))
-        XCTAssertFalse(source.contains(#"Text(String(format: "%.1f", snapshot.rollingTokensPerSecond))"#))
-        XCTAssertFalse(source.contains("TimelineView"))
-        XCTAssertFalse(source.contains("Timer.publish"))
+        XCTAssertTrue(rateInstrumentSource.contains("Text(displayUnit.text(displayUnit.value(total: snapshot.rollingTokensPerSecond"))
+        XCTAssertTrue(rateInstrumentSource.contains("rates: snapshot.modelRates"))
+        XCTAssertTrue(rateInstrumentSource.contains(".monospacedDigit()"))
+        XCTAssertFalse(rateInstrumentSource.contains("Text(snapshot.rollingTokensPerSecondText)"))
+        XCTAssertFalse(rateInstrumentSource.contains("SmoothRateValueText"))
+        XCTAssertFalse(rateInstrumentSource.contains("TimelineView"))
+        XCTAssertFalse(rateInstrumentSource.contains("Timer.publish"))
     }
 
     func testLiveRateSnapshotFormatsAllFinitePositiveRatesWithOneDecimal() {

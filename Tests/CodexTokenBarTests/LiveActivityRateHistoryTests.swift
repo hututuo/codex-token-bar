@@ -23,9 +23,19 @@ final class LiveActivityRateHistoryTests: XCTestCase {
         history.record(now: 115, rates: [])
         XCTAssertFalse(history.points.contains { $0.start == 105 })
         XCTAssertTrue(history.points.filter { $0.start >= 110 }.allSatisfy { $0.total == 0 })
-        for at in stride(from: 116.0, through: 2116.0, by: 1) { history.record(now: at, rates: []) }
+        for at in stride(from: 116.0, through: 2115.0, by: 1) { history.record(now: at, rates: []) }
         XCTAssertLessThanOrEqual(history.points.count, 360)
-        XCTAssertTrue(history.points.allSatisfy { $0.start >= 2116 - 1800 })
+        let publishedAtBoundary = history.points
+        XCTAssertEqual(publishedAtBoundary.first?.start, 315)
+        XCTAssertTrue(publishedAtBoundary.allSatisfy { $0.start >= 315 && $0.start.truncatingRemainder(dividingBy: 5) == 0 })
+
+        history.record(now: 2116, rates: [])
+        XCTAssertEqual(history.points, publishedAtBoundary)
+
+        history.record(now: 2120, rates: [])
+        XCTAssertLessThanOrEqual(history.points.count, 360)
+        XCTAssertEqual(history.points.first?.start, 320)
+        XCTAssertTrue(history.points.allSatisfy { $0.start >= 320 && $0.start.truncatingRemainder(dividingBy: 5) == 0 })
         history.clear()
         XCTAssertTrue(history.points.isEmpty)
     }

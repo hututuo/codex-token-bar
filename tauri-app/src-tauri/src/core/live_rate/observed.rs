@@ -40,6 +40,9 @@ struct SpeedStore {
     seen_row_order: VecDeque<i64>,
     storage_error: Option<String>,
     persistence_blocked: bool,
+    persistence_retry_at: Option<f64>,
+    last_persistence_attempt_at: f64,
+    pending_prune: bool,
     body_retention_days: Option<u16>,
     last_body_retention_cleanup: Option<std::time::Instant>,
 }
@@ -47,6 +50,7 @@ struct SpeedStore {
 #[derive(Clone)]
 struct CachedSummaries {
     refreshed_at: f64,
+    next_change_at: f64,
     model_speeds_5m: Vec<ModelSpeedSummary>,
     model_speeds_15m: Vec<ModelSpeedSummary>,
     model_speeds_30m: Vec<ModelSpeedSummary>,
@@ -312,7 +316,8 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
 
     changed |= backfill_unknown_models(store, scope, now);
 
-    if changed {
+    if changed { store.summary_cache = None; }
+    if changed || persistence_is_due(store, now) {
         if let Err(error) = persist(store, scope, now, retention_changed) {
             store.storage_error = Some(error);
         } else {
@@ -321,11 +326,12 @@ pub(super) fn process_rows(scope: &LiveRateSourceScope, rows: &[LogRow], now: f6
     }
     let speed_samples = display_speed_samples(&store.samples);
     let refresh_summaries = store.summary_cache.as_ref().is_none_or(|cache| {
-        !now.is_finite() || now < cache.refreshed_at || now - cache.refreshed_at >= 1.0
+        !now.is_finite() || now < cache.refreshed_at || now >= cache.next_change_at
     });
     if refresh_summaries {
         store.summary_cache = Some(CachedSummaries {
             refreshed_at: now,
+            next_change_at: next_summary_change(&store.samples, now),
             model_speeds_5m: display_summarize(
                 &store.samples,
                 &store.active,
@@ -936,6 +942,7 @@ fn add_sample(store: &mut SpeedStore, sample: SpeedSample) -> bool {
         return false;
     }
     store.samples.push_back(sample);
+    store.summary_cache = None;
     true
 }
 
@@ -1443,7 +1450,46 @@ fn current_time_seconds() -> f64 {
         .unwrap_or_default()
 }
 
-fn persist(
+fn next_summary_change(samples: &VecDeque<SpeedSample>, now: f64) -> f64 {
+    let mut next = f64::INFINITY;
+    for sample in samples.iter().filter(|s| is_completed_body_sample(s) && s.ended_at.is_finite()) {
+        // Averages historically admit one second of skew; latest-body uses wall time.
+        for at in [sample.ended_at - 1.0, sample.ended_at] {
+            if at > now { next = next.min(at); }
+        }
+        for window in [SUMMARY_5M_SECONDS, SUMMARY_15M_SECONDS, SUMMARY_30M_SECONDS, SUMMARY_WINDOW_SECONDS] {
+            let at = (sample.ended_at + window).next_up();
+            if at > now { next = next.min(at); }
+        }
+    }
+    next
+}
+
+fn persistence_is_due(store: &SpeedStore, now: f64) -> bool {
+    store.persistence_retry_at.is_some_and(|at| now >= at || now < store.last_persistence_attempt_at)
+}
+
+/// Failed and future-dated writes stay pending independently of sample deduplication.
+fn persist(store: &mut SpeedStore, scope: &LiveRateSourceScope, now: f64, force_prune: bool) -> Result<(), String> {
+    store.pending_prune |= force_prune;
+    if store.storage_error.is_some() && store.persistence_retry_at.is_some() && !persistence_is_due(store, now) {
+        return Err(store.storage_error.clone().unwrap());
+    }
+    store.last_persistence_attempt_at = now;
+    let result = persist_inner(store, scope, now, store.pending_prune);
+    match &result {
+        Ok(()) => {
+            store.pending_prune = false;
+            store.persistence_retry_at = store.samples.iter()
+                .filter(|s| is_completed_body_sample(s) && valid_sample(s) && s.ended_at > now)
+                .map(|s| s.ended_at).min_by(f64::total_cmp);
+        }
+        Err(_) => store.persistence_retry_at = Some(now + 5.0),
+    }
+    result
+}
+
+fn persist_inner(
     store: &mut SpeedStore,
     scope: &LiveRateSourceScope,
     now: f64,
@@ -1638,6 +1684,69 @@ fn is_retry_row(row: &LogRow) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn audit_body(ended_at: f64) -> SpeedSample {
+        SpeedSample { id: "audit-body".into(), thread_id: "thread".into(), turn_id: "turn".into(),
+            item_id: "body".into(), model: Some("model-a".into()), started_at: ended_at - 2.0, ended_at,
+            output_tokens: 100, output_characters: 200, output_bytes: 200, chunk_count: 0,
+            duration_seconds: 2.0, tokens_per_second: 50.0, confidence: "medium".into(),
+            network_warning: None, source: "test".into(), measurement_kind: Some("completed_body".into()),
+            tokenizer: Some("o200k_base".into()), body_phase: Some("final_answer".into()), quality_reason: None }
+    }
+
+    #[test]
+    fn audit_failed_write_retries_without_a_new_sample_and_future_waits() {
+        let root = std::env::temp_dir().join(format!("tokenbar-speed-audit-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("speed.sqlite");
+        let scope = LiveRateSourceScope::new("audit-retry", "audit-retry");
+        let mut store = SpeedStore::default();
+        store.samples.push_back(audit_body(1001.0));
+        let error = persist(&mut store, &scope, 1000.0, true).unwrap_err();
+        store.storage_error = Some(error);
+        assert!(!persistence_is_due(&store, 1001.0));
+        assert!(persistence_is_due(&store, 1005.0));
+        store.trend_store = Some(BodySpeedTrendStore::open(&path).unwrap());
+        persist(&mut store, &scope, 1005.0, false).unwrap();
+        store.storage_error = None;
+        assert_eq!(store.trend_store.as_ref().unwrap().read_samples(1005.0, 30).unwrap().len(), 1);
+        let mut future = audit_body(1007.0); future.id = "future-body".into();
+        store.samples.push_back(future);
+        persist(&mut store, &scope, 1006.0, false).unwrap();
+        assert_eq!(store.persistence_retry_at, Some(1007.0));
+        persist(&mut store, &scope, 1007.0, false).unwrap();
+        assert_eq!(store.persistence_retry_at, None);
+        assert_eq!(store.trend_store.as_ref().unwrap().read_samples(1007.0, 30).unwrap().len(), 2);
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn audit_idle_summary_cache_is_reused_until_deadline_or_clock_reversal() {
+        let scope = LiveRateSourceScope::new("audit-summary-cache", "audit-summary-cache");
+        SPEED_STORES.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap().insert(scope.clone(), SpeedStore {
+            loaded: true, samples: VecDeque::from([audit_body(1000.0)]),
+            last_body_retention_cleanup: Some(std::time::Instant::now()), ..Default::default()
+        });
+        assert_eq!(process_rows(&scope, &[], 1000.0).model_speeds_5m.len(), 1);
+        for now in [1001.0, 1100.0, 1299.0, 1300.0] { process_rows(&scope, &[], now); }
+        assert_eq!(SPEED_STORES.get().unwrap().lock().unwrap().get(&scope).unwrap().summary_cache.as_ref().unwrap().refreshed_at, 1000.0);
+        assert!(process_rows(&scope, &[], 1300.0_f64.next_up()).model_speeds_5m.is_empty());
+        assert_eq!(process_rows(&scope, &[], 1001.0).model_speeds_5m.len(), 1);
+        SPEED_STORES.get().unwrap().lock().unwrap().remove(&scope);
+    }
+
+    #[test]
+    fn audit_summary_deadlines_track_admission_and_strict_window_expiration() {
+        let samples = VecDeque::from([audit_body(1000.0)]);
+        assert_eq!(next_summary_change(&samples, 998.0), 999.0);
+        assert_eq!(next_summary_change(&samples, 999.0), 1000.0);
+        assert_eq!(next_summary_change(&samples, 1000.0), 1300.0_f64.next_up());
+        assert_eq!(display_summarize(&samples, &HashMap::new(), 1300.0, 300.0).len(), 1);
+        assert!(display_summarize(&samples, &HashMap::new(), 1300.0_f64.next_up(), 300.0).is_empty());
+        assert_eq!(next_summary_change(&samples, 605801.0), f64::INFINITY);
+    }
 
     #[test]
     fn first_chunk_is_excluded_and_text_is_counted_as_a_whole() {
