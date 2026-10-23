@@ -45,6 +45,7 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
 }
 
 enum FloatingTodayModelUsagePresentation {
+    private static let itemCache = FloatingModelUsageCache()
     static let visibleItemLimit = 4
     static let minimumVisibleModelCount = 4
     /// Keep the compact model strip useful even when the current day only
@@ -118,6 +119,19 @@ enum FloatingTodayModelUsagePresentation {
     }
 
     static func items(
+        from rows: [ModelTokenBreakdown],
+        fallbackModel: OfficialAPIPriceModel,
+        showPlaceholders: Bool = false,
+        mergeAutoReview: Bool = false
+    ) -> [FloatingTodayModelUsageItem] {
+        itemCache.value(for: .init(rows: rows, fallbackModel: fallbackModel,
+            showPlaceholders: showPlaceholders, mergeAutoReview: mergeAutoReview)) {
+            makeItems(from: rows, fallbackModel: fallbackModel,
+                      showPlaceholders: showPlaceholders, mergeAutoReview: mergeAutoReview)
+        }
+    }
+
+    static func makeItems(
         from rows: [ModelTokenBreakdown],
         fallbackModel: OfficialAPIPriceModel,
         showPlaceholders: Bool = false,

@@ -173,7 +173,10 @@ final class SmoothRateFillLayerView: NSView {
             gradientLayer.startPoint = CGPoint(x: 0, y: 0.5)
             gradientLayer.endPoint = CGPoint(x: 1, y: 0.5)
         } else {
-            gradientLayer.colors = fillColors.map { nsColor(from: $0).cgColor }
+            // CAGradientLayer paints no fill with a single color. Quota bars
+            // intentionally use one solid tint; repeat it at both endpoints.
+            let colors = fillColors.map { nsColor(from: $0).cgColor }
+            gradientLayer.colors = colors.count == 1 ? [colors[0], colors[0]] : colors
             gradientLayer.locations = nil
             gradientLayer.startPoint = CGPoint(x: gradientStartPoint.x, y: gradientStartPoint.y)
             gradientLayer.endPoint = CGPoint(x: gradientEndPoint.x, y: gradientEndPoint.y)
