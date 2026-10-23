@@ -12,6 +12,35 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         XCTAssertEqual(RecentChartGuideGeometry.point(at: 500), RecentChartGuideGeometry.curve.last)
     }
 
+    @MainActor
+    func testGuideClickFeedbackPreview() throws {
+        guard let folder = ProcessInfo.processInfo.environment["CODEX_CHART_GUIDE_PREVIEW"] else {
+            throw XCTSkip("Opt-in production guide screenshots")
+        }
+        for (name, scheme) in [("light", ColorScheme.light), ("dark", ColorScheme.dark)] {
+            let steps: [RecentChartGuideStep] = [.hoverStart, .pressStart, .releaseStart, .moveRange, .hoverEnd, .pressEnd, .releaseEnd, .result]
+            let host = NSHostingView(rootView: VStack(alignment: .leading, spacing: 12) {
+                Text("正式引导组件 · 点击起点 / 点击终点").font(.system(size: 15, weight: .semibold))
+                ForEach(0..<4) { row in
+                    HStack(spacing: 20) {
+                        ForEach(0..<2) { column in
+                            RecentChartGuideDemo(step: steps[row * 2 + column]).frame(width: 220, height: 108)
+                        }
+                    }
+                }
+            }.padding(20).frame(width: 500, height: 550, alignment: .topLeading)
+                .background(AppTheme.pageBackground).environment(\.colorScheme, scheme))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 550), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = host
+            window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: folder).appendingPathComponent("guide-click-phases-\(name).png"))
+            window.orderOut(nil)
+        }
+    }
+
     func testSevenDayFineSeriesHitTestingUsesTheDrawnSubpixelSpacing() {
         let count = 30 * 24 * 12
         let width: CGFloat = 980 * 30 / 7

@@ -20,11 +20,11 @@ struct RecentChartInteractionGuide: View {
             if expanded {
                 HStack(spacing: 20) {
                     Group {
-                        if !AnimationActivity.runs(visible: visible, reducedMotion: reduceMotion, lowPower: lowPower) { RecentChartGuideDemo(phase: 5, animatesPress: false) }
+                        if !AnimationActivity.runs(visible: visible, reducedMotion: reduceMotion, lowPower: lowPower) { RecentChartGuideDemo(step: .result) }
                         else {
-                            PhaseAnimator([0, 1, 2, 3, 4, 5, 6]) { phase in
-                                RecentChartGuideDemo(phase: phase)
-                            } animation: { phase in .easeInOut(duration: phase == 2 || phase == 5 ? 1 : 1.6) }
+                            PhaseAnimator(RecentChartGuideStep.allCases) { step in
+                                RecentChartGuideDemo(step: step)
+                            } animation: { step in .easeInOut(duration: step.duration) }
                         }
                     }.frame(width: 220, height: 108).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 6) {
@@ -46,36 +46,86 @@ struct RecentChartInteractionGuide: View {
     }
 }
 
-private struct RecentChartGuideDemo: View {
-    let phase: Int
-    var animatesPress = true
-    private let positions: [CGFloat] = [35, 65, 65, 125, 187, 187, 45]
-    private let values = ["单点 3.2万 Token", "单点 4.1万 Token", "起点 12:05", "区间 8.4万 Token", "区间 12.6万 Token", "区间 12.6万 Token", "重新选择"]
+/// Clicks have stationary press/release steps, so feedback finishes before the
+/// cursor moves on. These steps do not add a timer or any data work.
+enum RecentChartGuideStep: Int, CaseIterable {
+    case preview, hoverStart, pressStart, releaseStart, moveRange, hoverEnd, pressEnd, releaseEnd, result, restart
+    var x: CGFloat {
+        switch self {
+        case .preview: 35
+        case .hoverStart, .pressStart, .releaseStart: 65
+        case .moveRange: 125
+        case .hoverEnd, .pressEnd, .releaseEnd, .result: 187
+        case .restart: 35
+        }
+    }
+    var press: CGFloat { self == .pressStart || self == .pressEnd ? 1 : 0 }
+    var hasStart: Bool { (Self.pressStart.rawValue...Self.result.rawValue).contains(rawValue) }
+    var hasEnd: Bool { (Self.pressEnd.rawValue...Self.result.rawValue).contains(rawValue) }
+    var duration: Double {
+        switch self {
+        case .pressStart, .pressEnd: 0.14
+        case .releaseStart, .releaseEnd: 0.32
+        case .preview: 0.8
+        case .result: 1.3
+        default: 1.4
+        }
+    }
+    var value: String {
+        switch self {
+        case .preview: "单点 3.2万 Token"
+        case .hoverStart: "单点 4.1万 Token"
+        case .pressStart, .releaseStart: "起点 12:05"
+        case .moveRange: "区间 8.4万 Token"
+        case .hoverEnd, .pressEnd, .releaseEnd, .result: "区间 12.6万 Token"
+        case .restart: "重新选择"
+        }
+    }
+    var caption: String {
+        switch self {
+        case .pressStart, .releaseStart: "点击起点"
+        case .pressEnd, .releaseEnd: "点击终点 · 弹出数据"
+        case .result: "选区已确定"
+        default: "左右移动查看"
+        }
+    }
+}
+
+struct RecentChartGuideDemo: View {
+    let step: RecentChartGuideStep
     var body: some View {
         GeometryReader { proxy in
-            let x = positions[phase]
+            let x = step.x
             ZStack(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: 8).fill(AppTheme.insetBackground)
                 Path { p in
                     p.move(to: CGPoint(x: 14, y: 88)); p.addLine(to: CGPoint(x: 207, y: 88))
                     p.move(to: CGPoint(x: 14, y: 56)); p.addLine(to: CGPoint(x: 207, y: 56))
                 }.stroke(AppTheme.border, lineWidth: 1)
-                if (2...5).contains(phase) {
+                if step.hasStart {
                     Rectangle().fill(AppTheme.accentBlue.opacity(0.14))
                         .frame(width: max(1, x - 65), height: 51).offset(x: 65, y: 37)
                 }
                 Path { p in p.addLines(RecentChartGuideGeometry.curve) }
                     .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: 2, lineJoin: .round))
-                RecentChartGuideMarker(x: x, pressed: animatesPress && (phase == 2 || phase == 5))
-                Text(values[phase]).transaction { $0.animation = nil }.font(.system(size: 10, weight: .semibold)).monospacedDigit()
+                if step.hasStart { selectedPoint(at: 65) }
+                if step.hasEnd { selectedPoint(at: 187) }
+                RecentChartGuideMarker(x: x, press: step.press)
+                Text(step.value).transaction { $0.animation = nil }.font(.system(size: 10, weight: .semibold)).monospacedDigit()
                     .padding(.horizontal, 7).padding(.vertical, 4)
                     .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 5))
                     .position(x: min(proxy.size.width - 68, max(68, x)), y: 19)
-                Text("演示 · " + (phase == 2 ? "点击起点" : phase == 5 ? "点击终点 · 弹出数据" : "左右移动查看"))
+                Text("演示 · " + step.caption)
                     .transaction { $0.animation = nil }
                     .font(.system(size: 9)).foregroundStyle(.secondary).position(x: 110, y: 100)
             }
         }
+    }
+    private func selectedPoint(at x: CGFloat) -> some View {
+        Circle().fill(AppTheme.insetBackground)
+            .overlay(Circle().stroke(AppTheme.accentBlue, lineWidth: 1.5))
+            .frame(width: 6, height: 6).position(RecentChartGuideGeometry.point(at: x))
+            .transaction { $0.animation = nil }
     }
 }
 
@@ -95,18 +145,27 @@ enum RecentChartGuideGeometry {
 /// follows the actual polyline, including vertices between animation phases.
 private struct RecentChartGuideMarker: View, Animatable {
     nonisolated var x: CGFloat
-    let pressed: Bool
-    nonisolated var animatableData: CGFloat { get { x } set { x = newValue } }
+    nonisolated var press: CGFloat
+    // Include the press in interpolation: start/end clicks keep x unchanged.
+    nonisolated var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(x, press) }
+        set { x = newValue.first; press = newValue.second }
+    }
     var body: some View {
         Canvas { context, _ in
             let point = RecentChartGuideGeometry.point(at: x)
             var line = Path(); line.move(to: CGPoint(x: point.x, y: 35)); line.addLine(to: CGPoint(x: point.x, y: 88))
             context.stroke(line, with: .color(AppTheme.accentBlue.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            if pressed {
-                context.stroke(Path(ellipseIn: CGRect(x: point.x - 10, y: point.y - 10, width: 20, height: 20)), with: .color(AppTheme.accentBlue), lineWidth: 2)
+            let depth = min(1, max(0, press))
+            if depth > 0 {
+                let radius = 9 + (1 - depth) * 5
+                let circle = Path(ellipseIn: CGRect(x: point.x - radius, y: point.y - radius,
+                                                   width: radius * 2, height: radius * 2))
+                context.fill(circle, with: .color(AppTheme.accentBlue.opacity(Double(depth) * 0.12)))
+                context.stroke(circle, with: .color(AppTheme.accentBlue.opacity(Double(depth))), lineWidth: 2)
             }
             var arrow = Path(); arrow.addLines([.zero, CGPoint(x: 0, y: 21), CGPoint(x: 6, y: 16), CGPoint(x: 10, y: 24), CGPoint(x: 14, y: 22), CGPoint(x: 10, y: 14), CGPoint(x: 18, y: 13)]); arrow.closeSubpath()
-            let scale: CGFloat = pressed ? 0.78 : 1
+            let scale: CGFloat = 1 - depth * 0.22
             arrow = arrow.applying(CGAffineTransform(scaleX: scale, y: scale).concatenating(CGAffineTransform(translationX: point.x, y: point.y)))
             context.fill(arrow, with: .color(AppTheme.textPrimary))
             context.stroke(arrow, with: .color(AppTheme.insetBackground), lineWidth: 0.7)
