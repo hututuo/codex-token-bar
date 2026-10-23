@@ -210,6 +210,7 @@ pub fn run() {
             platform::quota_sidebar::drag_quota_sidebar,
             commands::surface::show_floating_window,
             commands::surface::hide_floating_window,
+            commands::surface::start_floating_window_drag,
             commands::surface::read_floating_pointer_state,
             commands::surface::set_floating_dock_frame,
             commands::floating_guide::prepare_floating_guide_overlay,

@@ -150,6 +150,54 @@ pub fn read_floating_pointer_state(
     })
 }
 
+/// Start dragging with cursor coordinates encoded as a Win32 message value.
+/// Tao 0.35.3 posts a pointer to a stack POINTS instead of packed coordinates.
+#[tauri::command]
+pub async fn start_floating_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    require_window_label(&window, "start_floating_window_drag")?;
+    #[cfg(windows)]
+    {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let native = window.clone();
+        window.run_on_main_thread(move || {
+            let _ = sender.send(start_windows_floating_drag(&native));
+        }).map_err(|error| error.to_string())?;
+        receiver.await.map_err(|_| "Floating drag dispatcher closed".to_string())?
+    }
+    #[cfg(not(windows))]
+    window.start_dragging().map_err(|error| error.to_string())
+}
+
+#[cfg(any(windows, test))]
+fn windows_drag_cursor_lparam(x: i32, y: i32) -> Result<isize, String> {
+    let x = i16::try_from(x).map_err(|_| "Floating drag cursor X exceeds Win32 message range")?;
+    let y = i16::try_from(y).map_err(|_| "Floating drag cursor Y exceeds Win32 message range")?;
+    // WM_NCLBUTTONDOWN uses signed screen coordinates in the low/high WORDs.
+    Ok(((x as u16 as u32) | ((y as u16 as u32) << 16)) as isize)
+}
+
+#[cfg(windows)]
+fn start_windows_floating_drag(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, PostMessageW, HTCAPTION, WM_NCLBUTTONDOWN};
+    if !floating_left_button_down()? {
+        return Err("Floating drag ended before native dispatch".into());
+    }
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) } == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let coordinates = windows_drag_cursor_lparam(cursor.x, cursor.y)?;
+    // ReleaseCapture may return zero when capture is already absent.
+    unsafe { ReleaseCapture(); }
+    if unsafe { PostMessageW(hwnd.0, WM_NCLBUTTONDOWN, HTCAPTION as usize, coordinates) } == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn floating_left_button_down() -> Result<bool, String> {
     #[link(name = "CoreGraphics", kind = "framework")]
@@ -558,6 +606,19 @@ pub(super) fn apply_floating_dock_frame(window: &tauri::WebviewWindow, frame: Fl
 #[cfg(test)]
 mod dock_frame_tests {
     use super::{FloatingDockFrame, dock_viewport_offset, floating_dock_frames_match, windows_dock_viewport_offset};
+    #[test]
+    fn drag_message_encodes_coordinates_instead_of_a_stack_pointer() {
+        for (x, y) in [(0, 0), (2547, 705), (-1600, 240), (-2560, -1440), (32767, -32768)] {
+            let packed = super::windows_drag_cursor_lparam(x, y).unwrap() as u32;
+            assert_eq!(packed as u16 as i16 as i32, x);
+            assert_eq!((packed >> 16) as u16 as i16 as i32, y);
+        }
+        assert_eq!(super::windows_drag_cursor_lparam(2547, 705).unwrap(), 0x02c109f3);
+        for (x, y) in [(32768, 0), (0, -32769), (i32::MAX, 0), (0, i32::MIN)] {
+            assert!(super::windows_drag_cursor_lparam(x, y).is_err());
+        }
+    }
+
     #[test]
     fn clipping_preserves_global_viewport_coordinates_on_every_edge() {
         let full = FloatingDockFrame { x: -800.0, y: 200.0, width: 600.0, height: 240.0 };

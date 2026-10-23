@@ -172,7 +172,7 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
         return matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL);
     }
 
-    if matches!(command, "complete_floating_paging_guide" | "read_floating_pointer_state" | "set_floating_dock_frame" | "prepare_floating_guide_overlay" | "floating_guide_overlay_ready" | "update_floating_guide_overlay") {
+    if matches!(command, "complete_floating_paging_guide" | "start_floating_window_drag" | "read_floating_pointer_state" | "set_floating_dock_frame" | "prepare_floating_guide_overlay" | "floating_guide_overlay_ready" | "update_floating_guide_overlay") {
         return label == FLOATING_WINDOW_LABEL;
     }
 
@@ -279,9 +279,11 @@ mod tests {
 
     #[test]
     fn floating_pointer_state_is_restricted_to_the_floating_surface() {
+        assert!(allows_window_label("start_floating_window_drag", "floating"));
         assert!(allows_window_label("read_floating_pointer_state", "floating"));
         assert!(allows_window_label("set_floating_dock_frame", "floating"));
-        for label in ["main", "status", "unknown"] {
+        for label in ["main", "status", "quota-sidebar", "quota-sidebar-detail", "unknown"] {
+            assert!(!allows_window_label("start_floating_window_drag", label));
             assert!(!allows_window_label("read_floating_pointer_state", label));
             assert!(!allows_window_label("set_floating_dock_frame", label));
         }
