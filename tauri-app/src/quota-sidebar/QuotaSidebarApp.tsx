@@ -227,7 +227,7 @@ function RailSurface() {
     };
     add(listen<DisplaySurfaceSettings>("quota-sidebar-settings-changed", e => apply(e.payload)));
     add(desktopPlatform.onDisplaySurfacesChanged(apply));
-    add(desktopPlatform.onAppSettingsChanged(settings => { revision++; setRateFullScale(sanitizeRateFullScale(settings.floatingWindow.tokenRateFullScale)); }));
+    add(desktopPlatform.onAppSettingsChanged(settings => { revision++; setCadence(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs)); setDisplay(sanitizeDisplaySurfaces(settings.displaySurfaces)); setRateFullScale(sanitizeRateFullScale(settings.floatingWindow.tokenRateFullScale)); }));
     add(listen("quota-sidebar-drag-started", () => dispatch({ type: "drag" })));
     add(listen<boolean>("quota-sidebar-native-hover", e => e.payload ? enter() : leave()));
     add(listen<boolean>("quota-sidebar-union-hover", e => e.payload ? enter() : leave()));
@@ -455,7 +455,7 @@ function DetailSurface() {
   useEffect(() => {
     let disposed = false; const cleanup: (() => void)[] = [];
     const add = (p: Promise<() => void>) => void p.then(fn => disposed ? fn() : cleanup.push(fn));
-    void listen<Presentation>("quota-sidebar-presentation", e => { setValue(e.payload); }).then(unlisten => {
+    void listen<Presentation | null>("quota-sidebar-presentation", e => { setValue(e.payload); }).then(unlisten => {
       if (disposed) { unlisten(); return; }
       cleanup.push(unlisten);
       // Announce only after the presentation listener is installed.

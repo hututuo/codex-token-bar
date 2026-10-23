@@ -116,7 +116,7 @@ test("rate bars use shared transform fill styles instead of width animation", as
 
   for (const source of [meter, floating, status]) {
     assert.equal(source.includes("rateFillStyle("), true);
-    assert.equal(source.includes("formatLiveRateValue("), true);
+    assert.equal(source.includes("formatLiveRateValue(") || source.includes("activityRateText("), true);
     assert.equal(source.includes('style={{ width:'), false);
   }
   assert.match(css, /\.rate-fill\s*{[\s\S]*?transform-origin: left center;[\s\S]*?transition: transform 200ms ease-out;/);

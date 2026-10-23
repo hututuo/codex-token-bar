@@ -1,6 +1,7 @@
+import { useDocumentVisible } from "../useDocumentVisible";
 import { invoke } from "@tauri-apps/api/core";
 import { modelUsageColor } from "../modelUsagePresentation";
-import { useEffect, useId, useMemo, useState } from "react";
+import { memo, useEffect, useId, useMemo, useState } from "react";
 import type { CodexHomeSourceToken } from "../../types/platform";
 
 export interface SpeedTrendPoint { bucketStart: number; model: string; outputTokens: number; durationSeconds: number; sampleCount: number; tokensPerSecond: number }
@@ -23,7 +24,8 @@ export function trendPlot(points: SpeedTrendPoint[], asOf: number, windowSeconds
     return { rows, minimum: Math.max(0,low-padding), maximum: Math.max(10,high+padding), last,
         change: model != null && first && last && first.bucketStart !== last.bucketStart ? (last.tokensPerSecond/first.tokensPerSecond-1)*100 : null };
 }
-export function BodySpeedTrend({ sourceToken, revision, compact, preferredModel }: { sourceToken: CodexHomeSourceToken | null; revision: string; compact?: "detail"; preferredModel?: string }) {
+function BodySpeedTrendView({ sourceToken, revision, compact, preferredModel }: { sourceToken: CodexHomeSourceToken | null; revision: string; compact?: "detail"; preferredModel?: string }) {
+    const visible = useDocumentVisible();
     const [windowSeconds, setWindowSeconds] = useState(86400);
     const days = windowSeconds <= 86400 ? 1 : windowSeconds === 604800 ? 7 : 30;
     const [selectedModel, setSelectedModel] = useState<string | null>(null);
@@ -33,10 +35,10 @@ export function BodySpeedTrend({ sourceToken, revision, compact, preferredModel 
     const key = JSON.stringify(sourceToken), id = useId();
     useEffect(() => { setPoints([]); setError(null); }, [key]);
     useEffect(() => {
-        if (!sourceToken) return;
+        if (!sourceToken || !visible) return;
         let disposed = false, busy = false;
         const read = async () => {
-            if (busy) return; busy = true;
+            if (busy || document.hidden) return; busy = true;
             try {
                 const rows = await invoke<SpeedTrendPoint[]>("read_body_speed_trend", { sourceToken, days });
                 if (!disposed) { setPoints(rows); setAsOf(Date.now() / 1000); setError(null); }
@@ -45,16 +47,16 @@ export function BodySpeedTrend({ sourceToken, revision, compact, preferredModel 
         };
         const start = window.setTimeout(() => void read(), 150), timer = window.setInterval(() => void read(), 60_000);
         return () => { disposed = true; window.clearTimeout(start); window.clearInterval(timer); };
-    }, [key, days, revision]);
+    }, [key, days, revision, visible]);
     const resolution = days === 1 ? 300 : days === 7 ? 1800 : 7200;
-    const rangePoints = points.filter(p => p.bucketStart >= asOf - windowSeconds);
-    const models = [...new Set(rangePoints.map(p => p.model))].sort();
+    const rangePoints = useMemo(() => points.filter(p => p.bucketStart >= asOf - windowSeconds), [points, asOf, windowSeconds]);
+    const models = useMemo(() => [...new Set(rangePoints.map(p => p.model))].sort(), [rangePoints]);
     const preferred = preferredModel && models.includes(preferredModel) ? preferredModel : models[0];
     const modelKey = models.join("|");
     useEffect(() => { if (selectedModel !== "*" && (!selectedModel || !models.includes(selectedModel))) setSelectedModel(preferred ?? null); }, [modelKey, preferred, selectedModel]);
     const focus = selectedModel === "*" ? null : selectedModel && models.includes(selectedModel) ? selectedModel : preferred;
-    const plot = trendPlot(points,asOf,windowSeconds,focus ?? null), displayPoints = plot.rows;
-    const segments = trendSegments(displayPoints, resolution);
+    const plot = useMemo(() => trendPlot(points, asOf, windowSeconds, focus ?? null), [points, asOf, windowSeconds, focus]), displayPoints = plot.rows;
+    const segments = useMemo(() => trendSegments(displayPoints, resolution), [displayPoints, resolution]);
     const left = 42, right = 785, top = 12, bottom = 145, span = windowSeconds, start = asOf - span;
     const { minimum, maximum, last, change } = plot;
     const x = (point: SpeedTrendPoint) => left + (point.bucketStart - start) / span * (right - left);
@@ -73,3 +75,10 @@ export function BodySpeedTrend({ sourceToken, revision, compact, preferredModel 
         {error && <p role="status">{error}</p>}
     </section>;
 }
+
+// Snapshot broadcasts reconstruct tokens; equal source values must not redraw the SVG.
+export const BodySpeedTrend = memo(BodySpeedTrendView, (a, b) =>
+    a.revision === b.revision && a.compact === b.compact && a.preferredModel === b.preferredModel &&
+    a.sourceToken?.canonicalHomeKey === b.sourceToken?.canonicalHomeKey &&
+    a.sourceToken?.physicalHomeKey === b.sourceToken?.physicalHomeKey &&
+    a.sourceToken?.transitionGeneration === b.sourceToken?.transitionGeneration);

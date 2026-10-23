@@ -1,3 +1,4 @@
+import { useDocumentVisible } from "../components/useDocumentVisible";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -14,6 +15,7 @@ const resultLabel = (model: string, name = model) => model === "gpt-6-astra" ? `
 const time = (value: number) => new Date(value * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 
 export function ModelTraceContent({ sourceToken, onClose, compact = false }: { sourceToken: CodexHomeSourceToken; onClose?: () => void; compact?: boolean }) {
+    const visible = useDocumentVisible();
     const source = useRef(sourceToken).current;
     const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
     const [model, setModel] = useState("gpt-6.1-sol");
@@ -22,7 +24,7 @@ export function ModelTraceContent({ sourceToken, onClose, compact = false }: { s
     const [pending, setPending] = useState(false);
     const flight = useRef(false), mounted = useRef(false);
     const refresh = useCallback(async () => {
-        if (flight.current) return;
+        if (flight.current || document.hidden) return;
         flight.current = true;
         try { const next = await invoke<Snapshot>("read_modeltrace_snapshot", { sourceToken: source }); if (mounted.current) { setSnapshot(next); setError(null); } }
         catch (e) { if (mounted.current) setError(String(e)); }
@@ -33,7 +35,12 @@ export function ModelTraceContent({ sourceToken, onClose, compact = false }: { s
         const listener = listen("modeltrace-updated", () => void refresh());
         return () => { mounted.current = false; void listener.then(stop => stop()); };
     }, [refresh]);
-    useEffect(() => { const timer = window.setInterval(() => void refresh(), snapshot?.busy ? 2_000 : 30_000); return () => window.clearInterval(timer); }, [refresh, snapshot?.busy]);
+    useEffect(() => { if (visible) void refresh(); }, [visible, refresh]);
+    useEffect(() => {
+        if (!visible) return;
+        const timer = window.setInterval(() => void refresh(), snapshot?.busy ? 2_000 : 30_000);
+        return () => window.clearInterval(timer);
+    }, [refresh, snapshot?.busy, visible]);
     const action = async (command: string, args: Record<string, unknown> = {}) => {
         setPending(true);
         try { await invoke(command, { sourceToken: source, ...args }); await refresh(); }

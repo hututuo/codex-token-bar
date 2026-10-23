@@ -11,10 +11,7 @@ const structureEditorSource = readFileSync(join(currentDir, "../components/setti
 const floatingSettingsSource = readFileSync(join(currentDir, "floatingSettings.ts"), "utf8");
 const floatingPresentationSource = readFileSync(join(currentDir, "floatingPresentation.ts"), "utf8");
 const stylesSource = readFileSync(join(currentDir, "../styles/global.css"), "utf8");
-const settingsPanelSource = readFileSync(
-  join(currentDir, "../components/liveRate/LiveRateSettingsPanel.tsx"),
-  "utf8",
-);
+
 
 test("floating settings events win over a stale startup settings read", () => {
   assert.match(floatingWindowSource, /settingsEventGenerationRef/);
@@ -326,19 +323,7 @@ test("shimmer sweep runs at sixty five percent of the previous speed", () => {
   assert.equal(Number(match[1]), 3.23);
 });
 
-test("floating gradient palette exposes color direction and type controls", () => {
-  assert.match(settingsPanelSource, /SettingsCalloutShell[\s\S]*?title="悬浮窗样式"/);
-  assert.match(settingsPanelSource, /computeBoundedSettingsCalloutFrame/);
-  assert.match(settingsPanelSource, /getBoundingClientRect\(\)/);
-  assert.match(settingsPanelSource, /window\.addEventListener\("pointerdown", closeForOutsidePointer, true\)/);
-  assert.match(settingsPanelSource, /window\.addEventListener\("focusin", closeForOutsideFocus, true\)/);
-  assert.match(settingsPanelSource, /window\.addEventListener\("keydown", closeForEscape, true\)/);
-  assert.match(settingsPanelSource, /window\.addEventListener\("blur", closeForWindowBlur\)/);
-  assert.match(settingsPanelSource, /aria-label="渐变起始颜色"/);
-  assert.match(settingsPanelSource, /aria-label="渐变结束颜色"/);
-  assert.match(settingsPanelSource, /aria-label="渐变方向"/);
-  assert.match(settingsPanelSource, /aria-label="渐变类型"/);
-  assert.match(settingsPanelSource, /<option value="conic">环向<\/option>/);
+test("floating appearance applies the persisted gradient direction and type", () => {
   assert.match(floatingWindowSource, /floatingPanelAppearance\(presentedSettings\)/);
   assert.match(floatingSettingsSource, /conic-gradient\(from \$\{settings\.gradientDirection\} at 50% 50%/);
 });

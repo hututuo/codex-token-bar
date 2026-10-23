@@ -35,17 +35,25 @@ final class BarIdleWorkTests: XCTestCase {
         let signal = FrameAssignmentCountingView()
         let canvas = QuotaSidebarCanvasView(host: content, edge: .right, signal: signal)
         canvas.setFrameSize(NSSize(width: 16, height: 192))
-        let contentWrites = content.frameWrites
-        let signalWrites = signal.frameWrites
+        let contentSizeWrites = content.frameSizeWrites
+        let contentOriginWrites = content.frameOriginWrites
+        let signalFrame = signal.frame
         for _ in 0..<20 {
             canvas.edge = .right
             canvas.layout()
         }
-        XCTAssertEqual(content.frameWrites, contentWrites)
-        XCTAssertEqual(signal.frameWrites, signalWrites)
+        XCTAssertEqual(content.frameSizeWrites, contentSizeWrites)
+        XCTAssertEqual(content.frameOriginWrites, contentOriginWrites)
+        XCTAssertEqual(signal.frame, signalFrame)
+
+        let contentFrame = content.frame
         canvas.setFrameSize(NSSize(width: 88, height: 470))
-        XCTAssertGreaterThan(content.frameWrites, contentWrites)
-        XCTAssertGreaterThan(signal.frameWrites, signalWrites)
+        XCTAssertEqual(content.frame.size, contentFrame.size)
+        XCTAssertNotEqual(content.frame.origin, contentFrame.origin)
+        XCTAssertEqual(content.frameSizeWrites, contentSizeWrites)
+        XCTAssertEqual(content.frameOriginWrites, contentOriginWrites + 1)
+        XCTAssertEqual(signal.frame, canvas.bounds)
+        XCTAssertNotEqual(signal.frame.size, signalFrame.size)
     }
 }
 
@@ -59,8 +67,16 @@ private final class DirectoryScanCountingFileManager: FileManager, @unchecked Se
 
 @MainActor
 private final class FrameAssignmentCountingView: NSView {
-    var frameWrites = 0
-    override var frame: NSRect {
-        didSet { frameWrites += 1 }
+    var frameSizeWrites = 0
+    var frameOriginWrites = 0
+
+    override func setFrameSize(_ newSize: NSSize) {
+        frameSizeWrites += 1
+        super.setFrameSize(newSize)
+    }
+
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        frameOriginWrites += 1
+        super.setFrameOrigin(newOrigin)
     }
 }
