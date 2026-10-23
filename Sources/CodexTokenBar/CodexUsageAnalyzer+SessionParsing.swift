@@ -525,7 +525,10 @@ extension CodexUsageAnalyzer {
                 turnIndexInSession: turn.turnIndexInSession,
                 userPrompt: prompts[turn.id] ?? turn.userPrompt,
                 assistantResponse: assistants[turn.id] ?? turn.assistantResponse,
-                breakdown: turn.breakdown
+                breakdown: turn.breakdown,
+                requestCount: turn.requestCount,
+                lowHitCount: turn.lowHitCount,
+                zeroHitCount: turn.zeroHitCount
             )
         }
         var hydrated = TokenCacheUsage(

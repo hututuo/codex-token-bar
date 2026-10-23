@@ -40,6 +40,15 @@ struct CodexUsageIndexUpgradeRequiredError: LocalizedError, Equatable, Sendable 
     }
 }
 
+struct CodexUsageDashboardAggregateRefreshRequiredError: LocalizedError, Equatable, Sendable {
+    let stored: String
+    let supported: String
+
+    var errorDescription: String? {
+        "本地统计索引版本为 \(stored)，请求明细需要版本 \(supported)。请先刷新精确历史索引后重试；已有事件与归因账本仍保留。"
+    }
+}
+
 struct CodexUsageIndexRepairRequiredError: LocalizedError, Equatable, Sendable {
     let reason: String
 
@@ -510,11 +519,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ]
     private static let eventEnrichmentRevisionKey = "event_enrichment_revision"
     private static let eventEnrichmentRevision = "model-v1"
-    // Turn candidates are grouped by the originating user message, and their
-    // cache denominator uses the latest current-context snapshot. Bump the
-    // disposable aggregate version whenever that ranking contract changes so
-    // older event-level rows cannot remain in the projection.
-    private static let dashboardAggregateSchemaVersion = "5"
+    // Turn candidates are grouped by the originating user message and sum
+    // request-level usage. Bump the disposable aggregate version whenever
+    // that ranking contract changes so older snapshot-level rows cannot
+    // remain in the projection.
+    private static let dashboardAggregateSchemaVersion = "6"
     private static let dashboardAggregatePricingRevision = "raw-token-v1"
     private static let knownDashboardAggregatePricingRevisions: Set<String> = [
         "raw-token-v0",
@@ -3465,7 +3474,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             cached_input_tokens,
                             output_tokens,
                             reasoning_output_tokens,
-                            turn_index
+                            turn_index,
+                            request_count,
+                            low_hit_count,
+                            zero_hit_count
                         FROM dashboard_turn_candidates
                         WHERE \(selection.predicate)
                           AND (?1 IS NULL OR session_id IN (
@@ -3486,7 +3498,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                               let cachedInputTokens = row.int(6),
                               let outputTokens = row.int(7),
                               let reasoningOutputTokens = row.int(8),
-                              let turnIndex = row.int(9) else {
+                              let turnIndex = row.int(9),
+                              let requestCount = row.int(10),
+                              let lowHitCount = row.int(11),
+                              let zeroHitCount = row.int(12) else {
                             return nil
                         }
                         return TurnCacheUsage(
@@ -3507,7 +3522,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                 reasoningOutputTokens: reasoningOutputTokens,
                                 totalTokens: totalTokens,
                                 calls: 1
-                            )
+                            ),
+                            requestCount: requestCount,
+                            lowHitCount: lowHitCount,
+                            zeroHitCount: zeroHitCount
                         )
                     }
                     for candidate in rows.compactMap({ $0 }) {
@@ -3516,6 +3534,156 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 return Array(candidates.values)
         }
+    }
+
+    /// Reads one page of request observations for a logical turn. The turn
+    /// locator is a stable ID for one canonical event; its prompt offset binds
+    /// the page to the remaining request events in that same user turn.
+    func cacheRequests(
+        turnID: String,
+        offset: Int = 0,
+        limit: Int = 100
+    ) throws -> [CacheRequestUsage] {
+        try driver.withConnection { connection in
+            try Self.cacheRequests(
+                turnID: turnID,
+                offset: offset,
+                limit: limit,
+                connection: connection
+            )
+        }
+    }
+
+    /// Detail reads intentionally bypass index construction and migration.
+    /// This keeps opening a turn from scanning logs or writing synchronization
+    /// state, and leaves older aggregate generations visibly stale until the
+    /// normal dashboard load upgrades them.
+    static func readCacheRequests(
+        codexHome: URL,
+        turnID: String,
+        offset: Int = 0,
+        limit: Int = 100,
+        fileManager: FileManager = .default
+    ) throws -> [CacheRequestUsage] {
+        guard parseStableID(turnID) != nil else { return [] }
+
+        let databaseURLs = [
+            databaseURL(for: codexHome),
+            databaseURL(for: codexHome, legacyCache: true),
+        ]
+        for databaseURL in databaseURLs {
+            guard fileManager.fileExists(atPath: databaseURL.path) else { continue }
+            let reader = SQLiteDatabaseDriver(
+                url: databaseURL,
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 1_000,
+                enableWAL: false,
+                fileManager: fileManager
+            )
+            return try reader.withConnection { connection in
+                try connection.execute("PRAGMA query_only=ON;")
+                let aggregateVersion = try connection.readRows(
+                    "SELECT value FROM schema_meta WHERE key='dashboard_aggregate_schema_version' LIMIT 1;"
+                ) { $0.text(0) }.first ?? nil
+                guard aggregateVersion == dashboardAggregateSchemaVersion else {
+                    if aggregateVersion == nil
+                        || aggregateVersion.flatMap(Int.init).map({
+                            $0 < Int(dashboardAggregateSchemaVersion)!
+                        }) == true {
+                        throw CodexUsageDashboardAggregateRefreshRequiredError(
+                            stored: aggregateVersion ?? "missing",
+                            supported: dashboardAggregateSchemaVersion
+                        )
+                    }
+                    throw CodexUsageIndexUpgradeRequiredError(
+                        component: "dashboard aggregate schema",
+                        stored: aggregateVersion ?? "missing",
+                        supported: dashboardAggregateSchemaVersion
+                    )
+                }
+                return try cacheRequests(
+                    turnID: turnID,
+                    offset: offset,
+                    limit: limit,
+                    connection: connection
+                )
+            }
+        }
+        return []
+    }
+
+    private static func cacheRequests(
+        turnID: String,
+        offset: Int,
+        limit: Int,
+        connection: SQLiteDatabaseConnection
+    ) throws -> [CacheRequestUsage] {
+        guard let locator = parseStableID(turnID),
+              locator.sourceOffset <= UInt64(Int64.max) else { return [] }
+        let pageLimit = min(max(limit, 0), 101)
+        guard pageLimit > 0 else { return [] }
+
+        return try connection.readRows(
+            """
+            WITH selected_turn AS (
+                SELECT source_id, user_prompt_offset
+                FROM canonical_usage_events
+                WHERE source_id = ?1
+                  AND source_offset = ?2
+                  AND tokens > 0
+                  AND user_prompt_offset IS NOT NULL
+                LIMIT 1
+            )
+            SELECT
+                request.source_id,
+                request.source_offset,
+                request.timestamp,
+                request.model,
+                request.tokens,
+                request.input_tokens,
+                MIN(request.cached_input_tokens, request.input_tokens),
+                request.output_tokens,
+                request.reasoning_output_tokens
+            FROM canonical_usage_events AS request
+            JOIN selected_turn AS turn
+              ON turn.source_id = request.source_id
+             AND turn.user_prompt_offset = request.user_prompt_offset
+            WHERE request.tokens > 0
+            ORDER BY request.timestamp, request.source_offset
+            LIMIT ?3 OFFSET ?4;
+            """,
+            bindings: [
+                .int64(locator.sourceID),
+                .int64(Int64(locator.sourceOffset)),
+                .int(pageLimit),
+                .int(max(offset, 0)),
+            ]
+        ) { row -> CacheRequestUsage? in
+            guard let sourceID = row.int64(0),
+                  let sourceOffset = row.int64(1), sourceOffset >= 0,
+                  let timestamp = row.double(2),
+                  let inputTokens = row.int(5),
+                  let cachedInputTokens = row.int(6),
+                  let outputTokens = row.int(7),
+                  let reasoningOutputTokens = row.int(8),
+                  let totalTokens = row.int(4) else {
+                return nil
+            }
+            return CacheRequestUsage(
+                id: stableID(sourceID: sourceID, sourceOffset: UInt64(sourceOffset)),
+                timestamp: Date(timeIntervalSince1970: timestamp),
+                model: row.text(3),
+                breakdown: TokenCacheBreakdown(
+                    inputTokens: inputTokens,
+                    cachedInputTokens: cachedInputTokens,
+                    outputTokens: outputTokens,
+                    reasoningOutputTokens: reasoningOutputTokens,
+                    totalTokens: totalTokens,
+                    calls: 1
+                )
+            )
+        }.compactMap { $0 }
     }
 
     func accountingCoverage() throws -> String {
@@ -4274,6 +4442,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     uncached_tokens INTEGER NOT NULL,
                     turn_index INTEGER NOT NULL,
                     session_calls INTEGER NOT NULL,
+                    request_count INTEGER NOT NULL DEFAULT 1,
+                    low_hit_count INTEGER NOT NULL DEFAULT 0,
+                    zero_hit_count INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(source_id, source_offset)
                 ) WITHOUT ROWID;
 
@@ -4292,6 +4463,21 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ON dashboard_turn_candidates(session_id);
                 """
             )
+            // These are derived dashboard fields. Older candidate tables keep
+            // their rows until the versioned aggregate rebuild commits, while
+            // the additive defaults keep an interrupted open queryable.
+            let turnCandidateColumns = Set(try connection.readRows(
+                "PRAGMA table_info(dashboard_turn_candidates);"
+            ) { $0.text(1) ?? "" })
+            for (column, definition) in [
+                ("request_count", "INTEGER NOT NULL DEFAULT 1"),
+                ("low_hit_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("zero_hit_count", "INTEGER NOT NULL DEFAULT 0"),
+            ] where !turnCandidateColumns.contains(column) {
+                try connection.execute(
+                    "ALTER TABLE dashboard_turn_candidates ADD COLUMN \(column) \(definition);"
+                )
+            }
             // `CREATE TABLE IF NOT EXISTS` does not upgrade an attribution
             // ledger created by the v3/v4 index.  Repair its shape before the
             // replay probe can defer the expensive backfill; otherwise a
@@ -4730,14 +4916,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             FROM dashboard_source_5m
             GROUP BY bucket_start, model;
 
-            WITH snapshots AS (
+            WITH requests AS (
                 SELECT
                     e.*,
-                    s.session_id AS session_id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.source_id, s.session_id, e.user_prompt_offset
-                        ORDER BY e.timestamp DESC, e.source_offset DESC
-                    ) AS snapshot_rank
+                    s.session_id AS session_id
                 FROM canonical_usage_events e
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE e.tokens > 0 AND e.user_prompt_offset IS NOT NULL
@@ -4753,13 +4935,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) AS source_offset,
                     MAX(timestamp) AS timestamp,
                     SUM(tokens) AS total_tokens,
-                    MAX(CASE WHEN snapshot_rank = 1 THEN input_tokens ELSE 0 END) AS input_tokens,
-                    MAX(CASE WHEN snapshot_rank = 1
-                        THEN MIN(cached_input_tokens, input_tokens)
-                        ELSE 0 END) AS cached_input_tokens,
+                    SUM(input_tokens) AS input_tokens,
+                    SUM(MIN(cached_input_tokens, input_tokens)) AS cached_input_tokens,
                     SUM(output_tokens) AS output_tokens,
-                    SUM(reasoning_output_tokens) AS reasoning_output_tokens
-                FROM snapshots
+                    SUM(reasoning_output_tokens) AS reasoning_output_tokens,
+                    COUNT(*) AS request_count,
+                    SUM(CASE WHEN input_tokens >= 20000
+                        AND MIN(cached_input_tokens, input_tokens) * 1.0 / input_tokens < 0.3
+                        THEN 1 ELSE 0 END) AS low_hit_count,
+                    SUM(CASE WHEN input_tokens > 0
+                        AND MIN(cached_input_tokens, input_tokens) = 0
+                        THEN 1 ELSE 0 END) AS zero_hit_count
+                FROM requests
                 GROUP BY source_id, session_id, user_prompt_offset
             ),
             ranked AS (
@@ -4773,6 +4960,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     cached_input_tokens,
                     output_tokens,
                     reasoning_output_tokens,
+                    request_count,
+                    low_hit_count,
+                    zero_hit_count,
                     CASE WHEN input_tokens > 0
                         THEN cached_input_tokens * 1.0 / input_tokens
                         ELSE 0
@@ -4789,12 +4979,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 source_id, source_offset, session_id, timestamp,
                 total_tokens, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 hit_rate, uncached_tokens, turn_index, session_calls
             )
             SELECT
                 source_id, source_offset, session_id, timestamp,
                 total_tokens, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 hit_rate, uncached_tokens, turn_index, session_calls
             FROM ranked;
             """
@@ -4897,14 +5089,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             DELETE FROM dashboard_turn_candidates
             WHERE session_id IN (SELECT session_id FROM dashboard_dirty_sessions);
 
-            WITH snapshots AS (
+            WITH requests AS (
                 SELECT
                     e.*,
-                    s.session_id AS session_id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.source_id, s.session_id, e.user_prompt_offset
-                        ORDER BY e.timestamp DESC, e.source_offset DESC
-                    ) AS snapshot_rank
+                    s.session_id AS session_id
                 FROM canonical_usage_events e
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE e.tokens > 0 AND e.user_prompt_offset IS NOT NULL
@@ -4923,13 +5111,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) AS source_offset,
                     MAX(timestamp) AS timestamp,
                     SUM(tokens) AS total_tokens,
-                    MAX(CASE WHEN snapshot_rank = 1 THEN input_tokens ELSE 0 END) AS input_tokens,
-                    MAX(CASE WHEN snapshot_rank = 1
-                        THEN MIN(cached_input_tokens, input_tokens)
-                        ELSE 0 END) AS cached_input_tokens,
+                    SUM(input_tokens) AS input_tokens,
+                    SUM(MIN(cached_input_tokens, input_tokens)) AS cached_input_tokens,
                     SUM(output_tokens) AS output_tokens,
-                    SUM(reasoning_output_tokens) AS reasoning_output_tokens
-                FROM snapshots
+                    SUM(reasoning_output_tokens) AS reasoning_output_tokens,
+                    COUNT(*) AS request_count,
+                    SUM(CASE WHEN input_tokens >= 20000
+                        AND MIN(cached_input_tokens, input_tokens) * 1.0 / input_tokens < 0.3
+                        THEN 1 ELSE 0 END) AS low_hit_count,
+                    SUM(CASE WHEN input_tokens > 0
+                        AND MIN(cached_input_tokens, input_tokens) = 0
+                        THEN 1 ELSE 0 END) AS zero_hit_count
+                FROM requests
                 GROUP BY source_id, session_id, user_prompt_offset
             ),
             ranked AS (
@@ -4943,6 +5136,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     cached_input_tokens,
                     output_tokens,
                     reasoning_output_tokens,
+                    request_count,
+                    low_hit_count,
+                    zero_hit_count,
                     CASE WHEN input_tokens > 0
                         THEN cached_input_tokens * 1.0 / input_tokens
                         ELSE 0
@@ -4959,12 +5155,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 source_id, source_offset, session_id, timestamp,
                 total_tokens, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 hit_rate, uncached_tokens, turn_index, session_calls
             )
             SELECT
                 source_id, source_offset, session_id, timestamp,
                 total_tokens, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 hit_rate, uncached_tokens, turn_index, session_calls
             FROM ranked;
 

@@ -2,6 +2,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "set_codex_home",
     "reset_codex_home",
     "read_dashboard_snapshot",
+    "read_cache_turn_requests",
     "read_cached_dashboard_snapshot",
     "read_precise_dashboard_snapshot",
     "rebuild_precise_index_for_current_version",
@@ -212,6 +213,14 @@ mod tests {
             assert!(!allows_window_label(command, "quota-sidebar-detail"), "{command}");
         }
         assert!(!allows_window_label("take_body_speed_details_request", "quota-sidebar-detail"));
+    }
+
+    #[test]
+    fn cache_turn_request_read_is_main_window_only() {
+        assert!(allows_window_label("read_cache_turn_requests", "main"));
+        for label in ["floating", "status", "quota-sidebar", "quota-sidebar-detail", "unknown"] {
+            assert!(!allows_window_label("read_cache_turn_requests", label), "{label}");
+        }
     }
 
     #[test]

@@ -382,6 +382,7 @@ export function DashboardPage({
             />
             {analyticsReady ? (
               <DashboardAnalyticsSection
+                sourceToken={sourceToken}
                 dashboard={dashboard}
                 sharedAccountAttribution={sharedAccountAttribution}
               />

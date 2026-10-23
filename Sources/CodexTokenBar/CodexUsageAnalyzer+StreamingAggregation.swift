@@ -408,7 +408,10 @@ extension CodexUsageAnalyzer {
                         turnIndexInSession: turn.turnIndexInSession,
                         userPrompt: turn.userPrompt,
                         assistantResponse: turn.assistantResponse,
-                        breakdown: turn.breakdown
+                        breakdown: turn.breakdown,
+                        requestCount: turn.requestCount,
+                        lowHitCount: turn.lowHitCount,
+                        zeroHitCount: turn.zeroHitCount
                     )
                 }
                 .sorted { lhs, rhs in

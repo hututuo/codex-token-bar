@@ -7771,6 +7771,14 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events",in:db),3)
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM dashboard_turn_candidates",in:db),2,"Append must continue the repaired last turn")
         XCTAssertEqual(try scalarInt("SELECT SUM(tokens) FROM events",in:db),before + 1300)
+        XCTAssertEqual(
+            try scalarInt(
+                "SELECT request_count FROM dashboard_turn_candidates WHERE turn_index=2;",
+                in: db
+            ),
+            2,
+            "Incremental refresh must sum the appended request into its logical turn"
+        )
         XCTAssertEqual(scanned,1)
     }
 
@@ -7826,8 +7834,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(snapshot.cacheUsage.sessions.count, 1)
         XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.calls, 2)
-        XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.inputTokens, 1_800)
-        XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.cachedInputTokens, 300)
+        XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.inputTokens, 3_000)
+        XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.cachedInputTokens, 500)
         XCTAssertEqual(snapshot.cacheUsage.turns.count, 2)
         let latest = try XCTUnwrap(snapshot.cacheUsage.turns.first)
         XCTAssertEqual(latest.turnIndexInSession, 2)
@@ -7837,14 +7845,196 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(latest.breakdown.inputTokens, 1_200)
         XCTAssertEqual(latest.breakdown.cachedInputTokens, 200)
         XCTAssertEqual(latest.breakdown.totalTokens, 1_300)
+        XCTAssertEqual(latest.requestCount, 1)
+        XCTAssertEqual(latest.lowHitCount, 0)
+        XCTAssertEqual(latest.zeroHitCount, 0)
 
         let first = try XCTUnwrap(snapshot.cacheUsage.turns.first { $0.turnIndexInSession == 1 })
         XCTAssertEqual(first.userPrompt, "第一条用户问题")
         XCTAssertEqual(first.assistantResponse, "第一条回答")
-        XCTAssertEqual(first.breakdown.inputTokens, 600)
-        XCTAssertEqual(first.breakdown.cachedInputTokens, 100)
+        XCTAssertEqual(first.breakdown.inputTokens, 1_800)
+        XCTAssertEqual(first.breakdown.cachedInputTokens, 300)
         XCTAssertEqual(first.breakdown.totalTokens, 1_960)
         XCTAssertEqual(first.breakdown.calls, 1)
+        XCTAssertEqual(first.requestCount, 2)
+        XCTAssertEqual(first.lowHitCount, 0)
+        XCTAssertEqual(first.zeroHitCount, 0)
+    }
+
+    func testTurnCacheUsageUsesWeightedRequestRatesAndPagedDetails() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "WeightedTurnCacheRequests")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-weighted-turn-requests"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let requests: [(input: Int, cached: Int)] = [
+            (1_000, 900),
+            (99_000, 0),
+            (20_000, 5_900),
+            (50_000, 25_000),
+            (20_000, 6_000),
+        ] + Array(repeating: (100, 50), count: 100)
+        var lines = [
+            messageLine(
+                timestamp: now.addingTimeInterval(-2),
+                type: "user_message",
+                message: "one prompt with many requests"
+            ),
+            messageLine(
+                timestamp: now.addingTimeInterval(-1),
+                type: "agent_message",
+                message: "one response"
+            ),
+        ]
+        for (index, request) in requests.enumerated() {
+            if index == 0 {
+                lines.append(turnContextLine(
+                    timestamp: now.addingTimeInterval(TimeInterval(index)),
+                    model: "gpt-5.6-sol"
+                ))
+            } else if index == 1 {
+                lines.append(turnContextLine(
+                    timestamp: now.addingTimeInterval(TimeInterval(index)),
+                    model: "gpt-5.6-luna"
+                ))
+            }
+            let output = 100 + index
+            let usage = Usage(
+                input: request.input,
+                cachedInput: request.cached,
+                output: output,
+                reasoning: 10,
+                total: request.input + output
+            )
+            lines.append(try tokenCountLine(
+                timestamp: now.addingTimeInterval(TimeInterval(index + 1)),
+                total: usage,
+                last: usage
+            ))
+        }
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+        let turn = try XCTUnwrap(snapshot.cacheUsage.turns.first)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        XCTAssertEqual(snapshot.cacheUsage.sessions.first?.breakdown.calls, 1)
+        XCTAssertEqual(turn.breakdown.calls, 1, "calls remains the logical-turn count")
+        XCTAssertEqual(turn.requestCount, 105)
+        XCTAssertEqual(turn.lowHitCount, 2)
+        XCTAssertEqual(turn.zeroHitCount, 1)
+        XCTAssertEqual(turn.breakdown.inputTokens, 200_000)
+        XCTAssertEqual(turn.breakdown.cachedInputTokens, 42_800)
+        XCTAssertEqual(
+            try XCTUnwrap(database.readRows(
+                "SELECT hit_rate FROM dashboard_turn_candidates LIMIT 1;"
+            ) { $0.double(0) }.first ?? nil),
+            42_800.0 / 200_000.0,
+            accuracy: 1e-9
+        )
+
+        let firstPage = try CodexUsageHistoryIndex.readCacheRequests(
+            codexHome: codexHome,
+            turnID: turn.id,
+            offset: 0,
+            limit: 101
+        )
+        let nextPage = try CodexUsageHistoryIndex.readCacheRequests(
+            codexHome: codexHome,
+            turnID: turn.id,
+            offset: 100,
+            limit: 101
+        )
+        XCTAssertEqual(firstPage.count, 101)
+        XCTAssertEqual(nextPage.count, 5)
+        XCTAssertEqual(nextPage.first?.id, firstPage.last?.id)
+        XCTAssertEqual(firstPage.first?.timestamp, now.addingTimeInterval(1))
+        XCTAssertEqual(firstPage.first?.model, "gpt-5.6-sol")
+        XCTAssertEqual(firstPage.first?.breakdown.inputTokens, 1_000)
+        XCTAssertEqual(firstPage.first?.breakdown.cachedInputTokens, 900)
+        XCTAssertEqual(firstPage.first?.breakdown.outputTokens, 100)
+        XCTAssertEqual(firstPage.first?.breakdown.calls, 1)
+        XCTAssertEqual(firstPage[1].model, "gpt-5.6-luna")
+        XCTAssertEqual(Set(firstPage.map(\.id)).count, firstPage.count)
+
+        let eventCount = try scalarInt("SELECT COUNT(*) FROM events;", in: database)
+        let bindingCount = try scalarInt(
+            "SELECT COUNT(*) FROM usage_ledger_bindings;",
+            in: database
+        )
+        try FileManager.default.removeItem(at: sessionFile)
+        let afterSourceRemoval = try CodexUsageHistoryIndex.readCacheRequests(
+            codexHome: codexHome,
+            turnID: turn.id,
+            offset: 100,
+            limit: 101
+        )
+        XCTAssertEqual(afterSourceRemoval.count, 5)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), eventCount)
+
+        try database.execute(
+            "UPDATE schema_meta SET value='5' WHERE key='dashboard_aggregate_schema_version';"
+        )
+        XCTAssertThrowsError(try CodexUsageHistoryIndex.readCacheRequests(
+            codexHome: codexHome,
+            turnID: turn.id,
+            offset: 0,
+            limit: 10
+        )) { error in
+            XCTAssertTrue(error is CodexUsageDashboardAggregateRefreshRequiredError)
+            XCTAssertTrue(error.localizedDescription.contains("刷新精确历史索引"))
+        }
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), eventCount)
+        try database.execute(
+            """
+            ALTER TABLE dashboard_turn_candidates DROP COLUMN request_count;
+            ALTER TABLE dashboard_turn_candidates DROP COLUMN low_hit_count;
+            ALTER TABLE dashboard_turn_candidates DROP COLUMN zero_hit_count;
+            """
+        )
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key='dashboard_aggregate_schema_version';"
+            ) { $0.text(0) }.first ?? nil,
+            "6"
+        )
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), eventCount)
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM usage_ledger_bindings;", in: database),
+            bindingCount
+        )
+        XCTAssertEqual(
+            Set(try database.readRows("PRAGMA table_info(dashboard_turn_candidates);") {
+                $0.text(1) ?? ""
+            }),
+            Set([
+                "source_id", "source_offset", "session_id", "timestamp", "total_tokens",
+                "input_tokens", "cached_input_tokens", "output_tokens",
+                "reasoning_output_tokens", "hit_rate", "uncached_tokens", "turn_index",
+                "session_calls", "request_count", "low_hit_count", "zero_hit_count",
+            ])
+        )
+        let migratedTurn = try XCTUnwrap(
+            try CodexUsageHistoryIndex.readCacheRequests(
+                codexHome: codexHome,
+                turnID: turn.id,
+                offset: 100,
+                limit: 101
+            ).first
+        )
+        XCTAssertEqual(migratedTurn.breakdown.inputTokens, 100)
     }
 
     func testPreciseScanParsesJSONLLineBeyondFormerSixteenMiBLimitExactly() throws {

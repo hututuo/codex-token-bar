@@ -1,4 +1,4 @@
-import type { CacheHitRankingItem, TokenCacheUsage, TokenCacheBreakdown } from "../../types/usage";
+import type { CacheHitRankingItem, TokenCacheUsage, TokenCacheBreakdown, TurnCacheUsage } from "../../types/usage";
 
 export type CacheRankingScope = "sessions" | "turns";
 export type CacheRankingSortOrder = "lowHit" | "latest";
@@ -19,6 +19,7 @@ export interface CacheRankingDisplayItem {
   context: string | null;
   breakdown: TokenCacheBreakdown;
   sortDate: string | null;
+  turn?: TurnCacheUsage;
 }
 
 export function cacheRankingItemMatchesQuery(item: CacheRankingDisplayItem, query: string) {
@@ -55,6 +56,7 @@ export function buildCacheRankingItems(
           context: `${turn.sessionTitle || fallbackSessionTitle(turn.sessionId)} · 第 ${turn.turnIndexInSession} 轮 · ${formatMonthDayTime(turn.timestamp)}`,
           breakdown: turn.breakdown,
           sortDate: turn.timestamp,
+          turn,
         }));
 
   return source

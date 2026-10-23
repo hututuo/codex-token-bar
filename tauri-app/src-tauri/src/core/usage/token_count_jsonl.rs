@@ -4,8 +4,8 @@ use crate::core::app_paths;
 use crate::core::startup_trace;
 use crate::models::PreciseDashboardProgress;
 use crate::models::{
-    AccountInfo, DashboardSnapshot, LocalDataWarning, ModelTokenBreakdown, QuotaLimit,
-    QuotaSnapshot, ResetCreditSummary,
+    AccountInfo, CacheRequestUsage, DashboardSnapshot, LocalDataWarning, ModelTokenBreakdown,
+    QuotaLimit, QuotaSnapshot, ResetCreditSummary,
 };
 use notify::event::ModifyKind;
 use notify::{
@@ -2764,6 +2764,17 @@ pub fn usage_summary_snapshot(
     codex_home: &Path,
 ) -> Result<Option<TokenUsageSummarySnapshot>, String> {
     cached_dashboard_usage_summary_snapshot_cache_only(codex_home)
+}
+
+/// Reads a bounded page of request-level cache ranking details from the
+/// already-published exact index without scheduling or running a source scan.
+pub fn read_cache_turn_requests(
+    codex_home: &Path,
+    turn_id: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<CacheRequestUsage>, String> {
+    exact_usage_index::read_cache_turn_requests(codex_home, turn_id, offset, limit)
 }
 
 /// Refreshes (or joins) the lightweight owner and returns the cache only after

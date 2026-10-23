@@ -153,6 +153,7 @@ pub fn run() {
             commands::dashboard::read_precise_dashboard_source_probe,
             commands::dashboard::acknowledge_attribution_safety,
             commands::dashboard::read_usage_summary_snapshot,
+            commands::dashboard::read_cache_turn_requests,
             commands::dashboard::read_usage_cache_status,
             commands::dashboard::read_quota_cycles,
             commands::dashboard::read_quota_cycle_usage,

@@ -6,8 +6,8 @@ use crate::core::unread::{UnreadObservation, UnreadObservationBuilder};
 use crate::core::usage::cache_lifecycle::{self, UsageCacheStatus};
 use crate::core::usage::token_count_jsonl::{self, TokenUsageSummarySnapshot};
 use crate::models::{
-    AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities,
-    PreciseDashboardProgress,
+    AccountQuotaBundle, CacheRequestUsage, CodexHomeStatus, DashboardSnapshot,
+    PlatformCapabilities, PreciseDashboardProgress,
 };
 use crate::platform;
 use serde::{Deserialize, Serialize};
@@ -1914,6 +1914,22 @@ pub async fn read_usage_summary_snapshot(
         result_status(&result)
     ));
     result
+}
+
+#[tauri::command]
+pub async fn read_cache_turn_requests(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+    turn_id: String,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<CacheRequestUsage>, String> {
+    require_window_label(&window, "read_cache_turn_requests")?;
+    run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
+        token_count_jsonl::read_cache_turn_requests(&codex_home, &turn_id, offset, limit)
+    })
+    .await
 }
 
 #[tauri::command]

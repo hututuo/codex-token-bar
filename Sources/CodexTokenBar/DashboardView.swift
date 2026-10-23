@@ -239,8 +239,10 @@ struct DashboardView: View {
 
                         CacheHitRankingDetailView(
                             cacheUsage: store.snapshot.cacheUsage,
-                            onClose: { showingCacheHitRankingDetails = false }
+                            onClose: { showingCacheHitRankingDetails = false },
+                            codexHome: store.currentDataSource?.codexHome
                         )
+                        .id(store.dataSourceBindingKey)
                         .frame(width: min(900, max(680, proxy.size.width - 108)))
                         .frame(maxHeight: max(520, proxy.size.height - 90))
                         .padding(.top, 58)
@@ -1213,12 +1215,14 @@ struct DashboardView: View {
             CacheHitRankingSection(
                 cacheUsage: store.snapshot.cacheUsage,
                 cacheUsageRevision: store.snapshot.generatedAt,
+                codexHome: store.currentDataSource?.codexHome,
                 onOpenDetails: {
                     showingCodexRadarDetails = false
                     showingSharedAccountAttributionDetails = false
                     showingCacheHitRankingDetails = true
                 }
             )
+            .id(store.dataSourceBindingKey)
         }
         .padding(.horizontal, 54)
         .padding(.vertical, 20)

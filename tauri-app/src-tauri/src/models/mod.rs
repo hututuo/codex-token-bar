@@ -22,7 +22,7 @@ pub use auto_resume::{
     AutoResumeRuntimeStatus, AutoResumeTaskRuntimeStatus, AutoResumeThreadOption,
 };
 pub use dashboard::{
-    ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, ModelTokenBreakdown,
+    ActivityDay, CacheHitRankingItem, CacheRequestUsage, DashboardSnapshot, DashboardStats, ModelTokenBreakdown,
     PreciseDashboardProgress, RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage,
     TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
 };

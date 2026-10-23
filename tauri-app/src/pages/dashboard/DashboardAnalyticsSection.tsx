@@ -2,16 +2,17 @@ import { memo } from "react";
 import { CacheHitRanking } from "../../components/CacheHitRanking";
 import { RecentUsageChart } from "../../components/RecentUsageChart";
 import { TokenActivitySection } from "../../components/TokenActivitySection";
-import type { DashboardSnapshot } from "../../types/dashboard";
+import type { DashboardSnapshot, CodexHomeSourceToken } from "../../types/dashboard";
 import type { SharedAccountAttributionResult } from "../../components/sharedAccountAttribution/model";
 import { modelCostProjectionAvailable } from "../../components/tokenActivity/modelCostAvailability";
 
 interface DashboardAnalyticsSectionProps {
   dashboard: DashboardSnapshot;
+  sourceToken?: CodexHomeSourceToken | null;
   sharedAccountAttribution: SharedAccountAttributionResult | null;
 }
 
-function DashboardAnalyticsSectionView({ dashboard, sharedAccountAttribution }: DashboardAnalyticsSectionProps) {
+function DashboardAnalyticsSectionView({ dashboard, sharedAccountAttribution, sourceToken }: DashboardAnalyticsSectionProps) {
   return (
     <>
       <TokenActivitySection
@@ -31,7 +32,7 @@ function DashboardAnalyticsSectionView({ dashboard, sharedAccountAttribution }: 
         sevenDayResetAtUnix={dashboard.quota.sevenDay.resetsAtUnix ?? null}
         sharedAccountAttribution={sharedAccountAttribution}
       />
-      <CacheHitRanking cacheUsage={dashboard.cacheUsage} legacyItems={dashboard.cacheHitRanking} />
+      <CacheHitRanking key={JSON.stringify(sourceToken)} sourceToken={sourceToken} cacheUsage={dashboard.cacheUsage} legacyItems={dashboard.cacheHitRanking} />
     </>
   );
 }

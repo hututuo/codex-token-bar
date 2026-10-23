@@ -1,4 +1,5 @@
 @import "../components/liveRate/activityRate.css";
+@import "../components/cacheHitRanking/cacheRequests.css";
 
 :root {
   color-scheme: light dark;

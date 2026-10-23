@@ -31,9 +31,9 @@ use crate::core::{
     sqlite, startup_trace,
 };
 use crate::models::{
-    ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, ModelTokenBreakdown,
-    RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown,
-    TokenCacheUsage, TurnCacheUsage,
+    ActivityDay, CacheHitRankingItem, CacheRequestUsage, DashboardStats, LocalDataWarning,
+    ModelTokenBreakdown, RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage,
+    TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
 };
 use fs2::available_space;
 use rusqlite::{
@@ -118,11 +118,11 @@ const DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY: &str =
     "dashboard_aggregate_published_generation";
 const DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY: &str = "dashboard_aggregate_settled_through";
 const DASHBOARD_AGGREGATE_PRICING_REVISION_KEY: &str = "dashboard_aggregate_pricing_revision";
-// Turn candidates are grouped by the originating user message, and their
-// cache denominator uses the latest current-context snapshot. Bump this
+// Turn candidates are grouped by the originating user message. Cache rate is
+// request-weighted across every canonical usage event in that turn. Bump this
 // disposable projection version whenever that ranking contract changes so an
-// older event-level ranking cannot survive an upgrade.
-const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 6;
+// older snapshot-only ranking cannot survive an upgrade.
+const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 7;
 const DASHBOARD_AGGREGATE_PRICING_REVISION: &str = "raw-token-v1";
 
 fn is_known_dashboard_pricing_revision(value: &str) -> bool {
@@ -912,6 +912,105 @@ pub(super) fn read_only_source_probe(
         published_generation,
         changed: Some(changed),
     })
+}
+
+/// Reads one page of request-level numeric details for an indexed logical turn.
+/// This path opens the existing exact index read-only and never scans source
+/// files, synchronizes the index, or runs a schema/aggregate migration.
+pub(super) fn read_cache_turn_requests(
+    codex_home: &Path,
+    turn_id: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<CacheRequestUsage>, String> {
+    let event_id = turn_id
+        .rsplit_once('-')
+        .and_then(|(_, suffix)| suffix.parse::<i64>().ok())
+        .filter(|event_id| *event_id > 0)
+        .ok_or_else(|| "缓存排行轮次标识无效".to_string())?;
+    let limit = limit.min(101);
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let path = database_path(codex_home)?;
+    if !existing_regular_index(&path)? {
+        return Err("精确 token 索引尚不可用，无法读取请求明细".into());
+    }
+    let connection = sqlite::open_read_only(&path, StdDuration::from_secs(2)).map_err(|error| {
+        format!("无法只读打开精确 token 索引以读取缓存轮次请求：{error}")
+    })?;
+    let schema_version = metadata_i64(&connection, "schema_version")?;
+    if schema_version != Some(CURRENT_SCHEMA_VERSION) {
+        return Err("精确 token 索引版本尚未就绪，无法读取缓存轮次请求".into());
+    }
+    let aggregate_version = metadata_i64(&connection, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?;
+    if aggregate_version != Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION) {
+        return Err("缓存轮次聚合尚未升级完成，无法读取请求明细".into());
+    }
+
+    let mut statement = connection
+        .prepare(
+            r#"
+            WITH published AS (
+                SELECT CAST(value AS INTEGER) AS generation
+                FROM metadata
+                WHERE key = 'published_generation'
+            ), target AS (
+                SELECT
+                    c.source_file_generation,
+                    c.file_path,
+                    c.session_id,
+                    c.user_prompt_start,
+                    c.user_prompt_end
+                FROM dashboard_turn_candidates c
+                JOIN published p ON p.generation = c.aggregate_generation
+                WHERE c.event_id = ?1
+                LIMIT 1
+            )
+            SELECT
+                e.id,
+                e.timestamp,
+                e.model,
+                e.tokens,
+                e.input_tokens,
+                e.cached_input_tokens,
+                e.output_tokens
+            FROM target t
+            JOIN published_events e
+              ON e.file_generation = t.source_file_generation
+             AND e.file_path = t.file_path
+             AND e.session_id = t.session_id
+             AND e.user_prompt_start IS t.user_prompt_start
+             AND e.user_prompt_end IS t.user_prompt_end
+            WHERE e.tokens > 0
+            ORDER BY e.timestamp, e.ordinal, e.id
+            LIMIT ?2 OFFSET ?3
+            "#,
+        )
+        .map_err(|error| format!("无法准备缓存轮次请求明细查询：{error}"))?;
+    let rows = statement
+        .query_map(params![event_id, i64::from(limit), i64::from(offset)], |row| {
+            let request_id = row.get::<_, i64>(0)?;
+            let timestamp = row.get::<_, i64>(1)?;
+            let input_tokens = nonnegative_u64(row.get::<_, i64>(4)?);
+            let cached_input_tokens = nonnegative_u64(row.get::<_, i64>(5)?).min(input_tokens);
+            Ok(CacheRequestUsage {
+                id: request_id.to_string(),
+                timestamp: format_rfc3339_unix(timestamp).unwrap_or_default(),
+                model: row.get(2)?,
+                breakdown: TokenCacheBreakdown {
+                    total_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens: nonnegative_u64(row.get::<_, i64>(6)?),
+                    calls: 1,
+                },
+            })
+        })
+        .map_err(|error| format!("无法读取缓存轮次请求明细：{error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("无法解码缓存轮次请求明细：{error}"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5086,7 +5185,10 @@ impl ExactUsageIndex {
                     '会话 ' || SUBSTR(turn_rows.session_id, 1, 8)
                 ) AS title,
                 f.size,
-                f.modified_ns
+                f.modified_ns,
+                turn_rows.request_count,
+                turn_rows.low_hit_count,
+                turn_rows.zero_hit_count
             FROM selected_turns AS turn_rows
             LEFT JOIN usage_ledger_bindings binding ON binding.event_id=turn_rows.event_id
                 AND (binding.available=1 OR EXISTS(SELECT 1 FROM source_representations r WHERE r.source_id=binding.source_id AND r.verification='metadata_only'))
@@ -5136,6 +5238,9 @@ impl ExactUsageIndex {
                             turn_index_in_session: saturating_u32(row.get::<_, i64>(13)?),
                             user_prompt: String::new(),
                             assistant_response: String::new(),
+                            request_count: saturating_u32(row.get::<_, i64>(17)?),
+                            low_hit_count: saturating_u32(row.get::<_, i64>(18)?),
+                            zero_hit_count: saturating_u32(row.get::<_, i64>(19)?),
                             breakdown: TokenCacheBreakdown {
                                 total_tokens: nonnegative_u64(row.get::<_, i64>(5)?),
                                 input_tokens: nonnegative_u64(row.get::<_, i64>(6)?),
@@ -7855,20 +7960,7 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
     transaction
         .execute(
             r#"
-            WITH snapshots AS (
-                SELECT
-                    e.*,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.file_generation, e.file_path, e.session_id,
-                            e.user_prompt_start, e.user_prompt_end
-                        ORDER BY e.timestamp DESC, e.ordinal DESC
-                    ) AS snapshot_rank
-                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
-                JOIN published_files f
-                  ON f.generation = e.file_generation
-                 AND f.path = e.file_path
-                WHERE e.user_prompt_start IS NOT NULL
-            ), grouped AS (
+            WITH grouped AS (
                 SELECT
                     MIN(e.id) AS event_id,
                     e.file_generation AS source_file_generation,
@@ -7881,16 +7973,26 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                     MAX(e.timestamp) AS timestamp,
                     e.session_id,
                     SUM(e.tokens) AS total_tokens,
-                    MAX(CASE WHEN e.snapshot_rank = 1 THEN e.input_tokens ELSE 0 END) AS input_tokens,
-                    MAX(CASE WHEN e.snapshot_rank = 1
-                        THEN MIN(e.cached_input_tokens, e.input_tokens)
-                        ELSE 0 END) AS cached_input_tokens,
+                    SUM(e.input_tokens) AS input_tokens,
+                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
                     SUM(e.output_tokens) AS output_tokens,
+                    COUNT(*) AS request_count,
+                    SUM(CASE WHEN e.input_tokens >= 20000
+                                  AND MIN(e.cached_input_tokens, e.input_tokens) * 1.0
+                                      / e.input_tokens < 0.3
+                             THEN 1 ELSE 0 END) AS low_hit_count,
+                    SUM(CASE WHEN e.input_tokens > 0
+                                  AND MIN(e.cached_input_tokens, e.input_tokens) = 0
+                             THEN 1 ELSE 0 END) AS zero_hit_count,
                     MIN(e.user_prompt_start) AS user_prompt_start,
                     MAX(e.user_prompt_end) AS user_prompt_end,
                     MIN(e.assistant_response_start) AS assistant_response_start,
                     MAX(e.assistant_response_end) AS assistant_response_end
-                FROM snapshots e
+                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
+                JOIN published_files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+                WHERE e.user_prompt_start IS NOT NULL
                 GROUP BY e.file_generation, e.file_path, e.session_id,
                     e.user_prompt_start, e.user_prompt_end
             ),
@@ -7906,6 +8008,9 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    request_count,
+                    low_hit_count,
+                    zero_hit_count,
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
@@ -7921,6 +8026,7 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                 aggregate_generation, event_id, source_file_generation,
                 file_path, ordinal, timestamp, session_id,
                 total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 user_prompt_start, user_prompt_end,
                 assistant_response_start, assistant_response_end,
                 turn_index, session_calls
@@ -7929,6 +8035,7 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                 ?1, event_id, source_file_generation,
                 file_path, ordinal, timestamp, session_id,
                 total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 user_prompt_start, user_prompt_end,
                 assistant_response_start, assistant_response_end,
                 turn_index, session_calls
@@ -8116,21 +8223,7 @@ fn refresh_dashboard_turn_candidates_for_session(
                  AND f.generation = latest_files.generation
                 WHERE f.deleted = 0
             ),
-            snapshots AS (
-                SELECT
-                    e.*,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.file_generation, e.file_path, e.session_id,
-                            e.user_prompt_start, e.user_prompt_end
-                        ORDER BY e.timestamp DESC, e.ordinal DESC
-                    ) AS snapshot_rank
-                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
-                JOIN visible_files f
-                  ON f.generation = e.file_generation
-                 AND f.path = e.file_path
-                WHERE e.user_prompt_start IS NOT NULL
-                  AND e.session_id IN (SELECT session_id FROM dirty_sessions)
-            ), grouped AS (
+            grouped AS (
                 SELECT
                     MIN(e.id) AS event_id,
                     e.file_generation AS source_file_generation,
@@ -8143,16 +8236,27 @@ fn refresh_dashboard_turn_candidates_for_session(
                     MAX(e.timestamp) AS timestamp,
                     e.session_id,
                     SUM(e.tokens) AS total_tokens,
-                    MAX(CASE WHEN e.snapshot_rank = 1 THEN e.input_tokens ELSE 0 END) AS input_tokens,
-                    MAX(CASE WHEN e.snapshot_rank = 1
-                        THEN MIN(e.cached_input_tokens, e.input_tokens)
-                        ELSE 0 END) AS cached_input_tokens,
+                    SUM(e.input_tokens) AS input_tokens,
+                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_input_tokens,
                     SUM(e.output_tokens) AS output_tokens,
+                    COUNT(*) AS request_count,
+                    SUM(CASE WHEN e.input_tokens >= 20000
+                                  AND MIN(e.cached_input_tokens, e.input_tokens) * 1.0
+                                      / e.input_tokens < 0.3
+                             THEN 1 ELSE 0 END) AS low_hit_count,
+                    SUM(CASE WHEN e.input_tokens > 0
+                                  AND MIN(e.cached_input_tokens, e.input_tokens) = 0
+                             THEN 1 ELSE 0 END) AS zero_hit_count,
                     MIN(e.user_prompt_start) AS user_prompt_start,
                     MAX(e.user_prompt_end) AS user_prompt_end,
                     MIN(e.assistant_response_start) AS assistant_response_start,
                     MAX(e.assistant_response_end) AS assistant_response_end
-                FROM snapshots e
+                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
+                JOIN visible_files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+                WHERE e.user_prompt_start IS NOT NULL
+                  AND e.session_id IN (SELECT session_id FROM dirty_sessions)
                 GROUP BY e.file_generation, e.file_path, e.session_id,
                     e.user_prompt_start, e.user_prompt_end
             ),
@@ -8168,6 +8272,9 @@ fn refresh_dashboard_turn_candidates_for_session(
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    request_count,
+                    low_hit_count,
+                    zero_hit_count,
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
@@ -8183,6 +8290,7 @@ fn refresh_dashboard_turn_candidates_for_session(
                 aggregate_generation, event_id, source_file_generation,
                 file_path, ordinal, timestamp, session_id,
                 total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 user_prompt_start, user_prompt_end,
                 assistant_response_start, assistant_response_end,
                 turn_index, session_calls
@@ -8191,6 +8299,7 @@ fn refresh_dashboard_turn_candidates_for_session(
                 ?1, event_id, source_file_generation,
                 file_path, ordinal, timestamp, session_id,
                 total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 user_prompt_start, user_prompt_end,
                 assistant_response_start, assistant_response_end,
                 turn_index, session_calls
@@ -8815,12 +8924,14 @@ fn publish_schema11_pending_generation(
                 source_id, ordinal, event_id, source_file_generation, timestamp,
                 total_tokens, input_tokens, cached_input_tokens, output_tokens,
                 user_prompt_start, user_prompt_end, assistant_response_start,
-                assistant_response_end, turn_index, session_calls
+                assistant_response_end, turn_index, session_calls,
+                request_count, low_hit_count, zero_hit_count
             )
             SELECT source_id, ordinal, event_id, source_file_generation, timestamp,
                    total_tokens, input_tokens, cached_input_tokens, output_tokens,
                    user_prompt_start, user_prompt_end, assistant_response_start,
-                   assistant_response_end, turn_index, session_calls
+                   assistant_response_end, turn_index, session_calls,
+                   request_count, low_hit_count, zero_hit_count
             FROM pending_dashboard_turn_candidates
             WHERE target_generation = (
                 SELECT CAST(value AS INTEGER) FROM metadata
@@ -8837,7 +8948,10 @@ fn publish_schema11_pending_generation(
                 user_prompt_end = excluded.user_prompt_end,
                 assistant_response_start = excluded.assistant_response_start,
                 assistant_response_end = excluded.assistant_response_end,
-                turn_index = excluded.turn_index, session_calls = excluded.session_calls;
+                turn_index = excluded.turn_index, session_calls = excluded.session_calls,
+                request_count = excluded.request_count,
+                low_hit_count = excluded.low_hit_count,
+                zero_hit_count = excluded.zero_hit_count;
 
             UPDATE sources SET
                 deleted = (SELECT p.deleted FROM pending_sources p
@@ -15552,6 +15666,9 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 assistant_response_end INTEGER,
                 turn_index INTEGER NOT NULL,
                 session_calls INTEGER NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                low_hit_count INTEGER NOT NULL DEFAULT 0,
+                zero_hit_count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(source_id, ordinal)
             ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS pending_dashboard_turn_candidates (
@@ -15571,6 +15688,9 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 assistant_response_end INTEGER,
                 turn_index INTEGER NOT NULL,
                 session_calls INTEGER NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                low_hit_count INTEGER NOT NULL DEFAULT 0,
+                zero_hit_count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(target_generation, source_id, ordinal)
             ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS pending_dashboard_turn_tombstones (
@@ -15820,47 +15940,6 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
             FROM pending_dashboard_5m p
             JOIN active_building_generation b ON b.generation = p.target_generation;
 
-            CREATE VIEW IF NOT EXISTS dashboard_turn_candidates AS
-            SELECT
-                COALESCE((SELECT CAST(value AS INTEGER) FROM metadata
-                          WHERE key = 'published_generation'), 0) AS aggregate_generation,
-                c.event_id, c.source_file_generation, s.path AS file_path,
-                c.ordinal, c.timestamp,
-                s.session_id, c.total_tokens, c.input_tokens, c.cached_input_tokens,
-                c.output_tokens, c.user_prompt_start, c.user_prompt_end,
-                c.assistant_response_start, c.assistant_response_end,
-                c.turn_index, c.session_calls, c.source_id
-            FROM dashboard_turn_candidates_current c
-            JOIN sources s ON s.source_id = c.source_id
-            UNION ALL
-            SELECT b.generation, c.event_id, c.source_file_generation, s.path,
-                   c.ordinal, c.timestamp, s.session_id, c.total_tokens,
-                   c.input_tokens, c.cached_input_tokens, c.output_tokens,
-                   c.user_prompt_start, c.user_prompt_end, c.assistant_response_start,
-                   c.assistant_response_end, c.turn_index, c.session_calls, c.source_id
-            FROM dashboard_turn_candidates_current c
-            JOIN sources s ON s.source_id = c.source_id
-            JOIN active_building_generation b
-            WHERE NOT EXISTS (
-                    SELECT 1 FROM pending_dashboard_turn_candidates p
-                    WHERE p.target_generation = b.generation
-                      AND p.source_id = c.source_id AND p.ordinal = c.ordinal
-              )
-              AND NOT EXISTS (
-                    SELECT 1 FROM pending_dashboard_turn_tombstones t
-                    WHERE t.target_generation = b.generation
-                      AND t.source_id = c.source_id AND t.ordinal = c.ordinal
-              )
-            UNION ALL
-            SELECT p.target_generation, p.event_id, p.source_file_generation, s.path,
-                   p.ordinal, p.timestamp, s.session_id, p.total_tokens,
-                   p.input_tokens, p.cached_input_tokens, p.output_tokens,
-                   p.user_prompt_start, p.user_prompt_end, p.assistant_response_start,
-                   p.assistant_response_end, p.turn_index, p.session_calls, p.source_id
-            FROM pending_dashboard_turn_candidates p
-            JOIN sources s ON s.source_id = p.source_id
-            JOIN active_building_generation b ON b.generation = p.target_generation;
-
             CREATE VIEW IF NOT EXISTS published_files AS
             SELECT
                 s.last_seen_generation AS generation, s.path, s.deleted, s.session_id,
@@ -15888,6 +15967,75 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
             "#,
         )
         .map_err(|error| format!("无法初始化 schema 11 精确 token 索引结构：{error}"))?;
+
+    for table in [
+        "dashboard_turn_candidates_current",
+        "pending_dashboard_turn_candidates",
+    ] {
+        for (column, definition) in [
+            ("request_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("low_hit_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("zero_hit_count", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !column_exists_checked(connection, table, column)? {
+                connection
+                    .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition};"))
+                    .map_err(|error| format!("无法升级轮次候选字段 {table}.{column}：{error}"))?;
+            }
+        }
+    }
+    connection
+        .execute_batch(
+            r#"
+            DROP TRIGGER IF EXISTS dashboard_turn_candidates_schema11_delete;
+            DROP TRIGGER IF EXISTS dashboard_turn_candidates_schema11_insert;
+            DROP VIEW IF EXISTS dashboard_turn_candidates;
+            CREATE VIEW dashboard_turn_candidates AS
+            SELECT
+                COALESCE((SELECT CAST(value AS INTEGER) FROM metadata
+                          WHERE key = 'published_generation'), 0) AS aggregate_generation,
+                c.event_id, c.source_file_generation, s.path AS file_path,
+                c.ordinal, c.timestamp,
+                s.session_id, c.total_tokens, c.input_tokens, c.cached_input_tokens,
+                c.output_tokens, c.user_prompt_start, c.user_prompt_end,
+                c.assistant_response_start, c.assistant_response_end,
+                c.turn_index, c.session_calls, c.request_count,
+                c.low_hit_count, c.zero_hit_count, c.source_id
+            FROM dashboard_turn_candidates_current c
+            JOIN sources s ON s.source_id = c.source_id
+            UNION ALL
+            SELECT b.generation, c.event_id, c.source_file_generation, s.path,
+                   c.ordinal, c.timestamp, s.session_id, c.total_tokens,
+                   c.input_tokens, c.cached_input_tokens, c.output_tokens,
+                   c.user_prompt_start, c.user_prompt_end, c.assistant_response_start,
+                   c.assistant_response_end, c.turn_index, c.session_calls,
+                   c.request_count, c.low_hit_count, c.zero_hit_count, c.source_id
+            FROM dashboard_turn_candidates_current c
+            JOIN sources s ON s.source_id = c.source_id
+            JOIN active_building_generation b
+            WHERE NOT EXISTS (
+                    SELECT 1 FROM pending_dashboard_turn_candidates p
+                    WHERE p.target_generation = b.generation
+                      AND p.source_id = c.source_id AND p.ordinal = c.ordinal
+              )
+              AND NOT EXISTS (
+                    SELECT 1 FROM pending_dashboard_turn_tombstones t
+                    WHERE t.target_generation = b.generation
+                      AND t.source_id = c.source_id AND t.ordinal = c.ordinal
+              )
+            UNION ALL
+            SELECT p.target_generation, p.event_id, p.source_file_generation, s.path,
+                   p.ordinal, p.timestamp, s.session_id, p.total_tokens,
+                   p.input_tokens, p.cached_input_tokens, p.output_tokens,
+                   p.user_prompt_start, p.user_prompt_end, p.assistant_response_start,
+                   p.assistant_response_end, p.turn_index, p.session_calls,
+                   p.request_count, p.low_hit_count, p.zero_hit_count, p.source_id
+            FROM pending_dashboard_turn_candidates p
+            JOIN sources s ON s.source_id = p.source_id
+            JOIN active_building_generation b ON b.generation = p.target_generation;
+            "#,
+        )
+        .map_err(|error| format!("无法重建轮次候选兼容视图：{error}"))?;
 
     connection
         .execute_batch(
@@ -16500,7 +16648,8 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     source_file_generation, timestamp, total_tokens, input_tokens,
                     cached_input_tokens, output_tokens, user_prompt_start,
                     user_prompt_end, assistant_response_start, assistant_response_end,
-                    turn_index, session_calls
+                    turn_index, session_calls, request_count, low_hit_count,
+                    zero_hit_count
                 ) SELECT NEW.aggregate_generation,
                          COALESCE(NULLIF(NEW.source_id, 0),
                                   (SELECT source_id FROM sources WHERE path = NEW.file_path)),
@@ -16509,7 +16658,10 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                          NEW.cached_input_tokens, NEW.output_tokens,
                          NEW.user_prompt_start, NEW.user_prompt_end,
                          NEW.assistant_response_start, NEW.assistant_response_end,
-                         NEW.turn_index, NEW.session_calls
+                         NEW.turn_index, NEW.session_calls,
+                         COALESCE(NEW.request_count, 0),
+                         COALESCE(NEW.low_hit_count, 0),
+                         COALESCE(NEW.zero_hit_count, 0)
                   WHERE NEW.aggregate_generation = COALESCE(
                         (SELECT generation FROM active_building_generation), -1);
                 DELETE FROM pending_dashboard_turn_tombstones
@@ -16522,7 +16674,8 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     timestamp, total_tokens, input_tokens, cached_input_tokens,
                     output_tokens, user_prompt_start, user_prompt_end,
                     assistant_response_start, assistant_response_end,
-                    turn_index, session_calls
+                    turn_index, session_calls, request_count, low_hit_count,
+                    zero_hit_count
                 ) SELECT
                     COALESCE(NULLIF(NEW.source_id, 0),
                              (SELECT source_id FROM sources WHERE path = NEW.file_path)),
@@ -16531,7 +16684,10 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                     NEW.cached_input_tokens, NEW.output_tokens,
                     NEW.user_prompt_start, NEW.user_prompt_end,
                     NEW.assistant_response_start, NEW.assistant_response_end,
-                    NEW.turn_index, NEW.session_calls
+                    NEW.turn_index, NEW.session_calls,
+                    COALESCE(NEW.request_count, 0),
+                    COALESCE(NEW.low_hit_count, 0),
+                    COALESCE(NEW.zero_hit_count, 0)
                   WHERE NEW.aggregate_generation = COALESCE(
                         (SELECT CAST(value AS INTEGER) FROM metadata
                          WHERE key = 'published_generation'), 0)
@@ -16694,6 +16850,9 @@ fn initialize_legacy_index_schema(connection: &Connection) -> Result<(), String>
                 assistant_response_end INTEGER,
                 turn_index INTEGER NOT NULL,
                 session_calls INTEGER NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                low_hit_count INTEGER NOT NULL DEFAULT 0,
+                zero_hit_count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(aggregate_generation, file_path, ordinal)
             ) WITHOUT ROWID;
 
