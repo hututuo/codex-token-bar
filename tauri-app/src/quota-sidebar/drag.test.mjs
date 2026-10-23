@@ -8,8 +8,8 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 test("only blank rail and resting bars initiate dragging; complete quota/task button content remains clickable", () => {
   const window = new Window();
   try {
-    window.document.body.innerHTML = '<main><span class="qs-bar"><i></i></span><button><svg><circle/></svg><strong>70%</strong></button></main>';
-    for (const tag of ["main", "i"]) assert.equal(isSidebarDragTarget(window.document.querySelector(tag)), true);
+    window.document.body.innerHTML = '<main><div class="qs-drag-handle" role="img"><span/></div><span class="qs-bar"><i></i></span><button><svg><circle/></svg><strong>70%</strong></button></main>';
+    for (const tag of ["main", "i", ".qs-drag-handle", ".qs-drag-handle span"]) assert.equal(isSidebarDragTarget(window.document.querySelector(tag)), true);
     for (const tag of ["button", "circle", "strong"]) assert.equal(isSidebarDragTarget(window.document.querySelector(tag)), false);
   } finally { window.close(); }
 });

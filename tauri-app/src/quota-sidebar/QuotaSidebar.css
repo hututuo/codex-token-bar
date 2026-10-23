@@ -236,3 +236,10 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .quota-sidebar-document .qs-summary[data-scrollable=true][data-reminder=false]>.qs-rail-actions{margin:0;flex:0 0 24px}
 .quota-sidebar-document .qs-summary[data-scrollable=true][data-reminder=false]>.qs-settings-trigger{margin:0;flex:0 0 28px}
 .qs-module-scroll{width:88px;flex:1;min-height:0;overflow-y:auto;scrollbar-width:none;overscroll-behavior:contain}.qs-module-stack{display:flex;flex-direction:column;align-items:center;gap:7px;width:88px}
+
+/* A grip in the existing top padding, anchored to the real native clip rather
+   than the fixed animation canvas. It neither adds height nor covers buttons. */
+.qs-drag-handle{position:absolute;z-index:4;top:calc((var(--qs-canvas-height,100vh) - var(--qs-native-height,100vh))/2);right:0;width:var(--qs-native-width,100vw);height:12px;display:grid;place-items:center;cursor:grab;touch-action:none}
+.qs-left .qs-drag-handle{right:auto;left:0}
+.qs-drag-handle>span{display:block;width:clamp(8px,calc(var(--qs-native-width,100vw) - 6px),24px);height:3px;border-radius:2px;background:#e6e6e6a6;pointer-events:none}
+.qs-rail[data-dragging=true] .qs-drag-handle{cursor:grabbing}

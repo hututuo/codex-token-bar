@@ -90,12 +90,15 @@ test("real rail reopens with current rate, quota presence and agent count withou
       }, state: { mode, pinned: false, tab: "quota" }, onOpen: (...args) => calls.push(args),
     })));
     await render("hover", 10, 2);
+    assert.equal(dom.document.querySelectorAll('.qs-drag-handle[aria-label="拖动侧栏，可移到其他屏幕"]').length, 1);
     const summary = dom.document.querySelector(".qs-summary");
+    assert.equal(summary.querySelector(".qs-drag-handle"), null, "the grip must not consume measured content height");
     await render("rest", 10, 2);
     assert.equal(summary.querySelectorAll(".qs-ring").length, 2);
     await React.act(async () => endOpacity(dom, summary));
     for (let i = 1; i <= 10; i++) await render("rest", i * 7.5, i, true);
     assert.equal(summary.children.length, 0);
+    assert.equal(dom.document.querySelector(".qs-drag-handle").getAttribute("role"), "img", "the grip remains available while the summary is retired");
     assert.equal(dom.document.querySelector(".qs-rate-bar i").style.height, "50%");
     await render("hover", 100, 10, true);
     assert.equal(summary.querySelectorAll(".qs-ring").length, 3);

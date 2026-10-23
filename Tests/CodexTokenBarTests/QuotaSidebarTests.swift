@@ -378,6 +378,11 @@ final class QuotaSidebarTests: XCTestCase {
                 XCTAssertEqual(canvas.frame.minX + host.frame.minX, edge == .right ? 1352 : 0)
                 XCTAssertEqual(canvas.frame.minY + host.frame.minY, 260)
                 XCTAssertTrue(canvas.layer?.masksToBounds == true)
+                XCTAssertTrue(canvas.bounds.contains(canvas.dragHandle.frame))
+                XCTAssertEqual(canvas.dragHandle.frame.midX, canvas.bounds.midX)
+                XCTAssertEqual(canvas.dragHandle.frame.maxY, canvas.bounds.maxY - 4.5)
+                XCTAssertEqual(canvas.dragHandle.frame.width, min(24, width - 6))
+                XCTAssertNil(canvas.dragHandle.hitTest(.zero))
             }
         }
     }
@@ -385,6 +390,11 @@ final class QuotaSidebarTests: XCTestCase {
     func testExpandedButtonRowsReceiveOriginalMouseSequence() {
         let size = CGSize(width: 88, height: 470)
         for y in stride(from: 15.0, through: 435.0, by: 20) {
+            XCTAssertFalse(QuotaSidebarPressRouting.shouldTrackDrag(expanded: true, point: CGPoint(x: 44, y: y), size: size))
+        }
+        // The toolbar occupies the padding immediately below the handle. Its
+        // original down/up sequence must not be intercepted by native dragging.
+        for y in [440.0, 450.0, 457.0] {
             XCTAssertFalse(QuotaSidebarPressRouting.shouldTrackDrag(expanded: true, point: CGPoint(x: 44, y: y), size: size))
         }
         XCTAssertTrue(QuotaSidebarPressRouting.shouldTrackDrag(expanded: true, point: CGPoint(x: 44, y: 460), size: size))

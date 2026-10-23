@@ -301,8 +301,17 @@ struct QuotaSidebarDragSession {
 /// The compact rail is draggable everywhere. Expanded rows belong to their
 /// buttons; the top handle and narrow side gutters remain draggable.
 enum QuotaSidebarPressRouting {
+    // Matches the existing 12pt top padding; the toolbar starts immediately below.
+    static let topDragInset: CGFloat = 12
+
+    static func dragHandleFrame(in bounds: CGRect) -> CGRect {
+        let width = min(24, max(0, bounds.width - 6))
+        return CGRect(x: bounds.midX - width / 2, y: bounds.maxY - 7.5,
+                      width: width, height: min(3, max(0, bounds.height)))
+    }
+
     static func shouldTrackDrag(expanded: Bool, point: CGPoint, size: CGSize) -> Bool {
         guard expanded else { return true }
-        return point.y >= size.height - 28 || point.x < 4 || point.x > size.width - 4
+        return point.y >= size.height - topDragInset || point.x < 4 || point.x > size.width - 4
     }
 }

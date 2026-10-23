@@ -561,6 +561,7 @@ private final class QuotaSidebarFrameClock: NSObject {
 final class QuotaSidebarCanvasView: NSView {
     let host: NSView
     let signal: NSView?
+    let dragHandle = QuotaSidebarDragHandleView()
     var canvasHeight: CGFloat = QuotaSidebarLayout.expandedCanvasHeight { didSet { if oldValue != canvasHeight { layoutCanvas() } } }
     var edge: QuotaSidebarEdge { didSet { if oldValue != edge { layoutCanvas() } } }
     init(host: NSView, edge: QuotaSidebarEdge, signal: NSView? = nil) {
@@ -568,7 +569,9 @@ final class QuotaSidebarCanvasView: NSView {
         super.init(frame: .zero)
         wantsLayer = true; layer?.masksToBounds = true
         layer?.backgroundColor = NSColor(calibratedWhite: 0.035, alpha: 1).cgColor
-        addSubview(host); if let signal { addSubview(signal) }; layoutCanvas()
+        addSubview(host); if let signal { addSubview(signal) }
+        addSubview(dragHandle)
+        layoutCanvas()
     }
     required init?(coder: NSCoder) { nil }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -584,10 +587,31 @@ final class QuotaSidebarCanvasView: NSView {
         if host.frame.size != hostFrame.size { host.setFrameSize(hostFrame.size) }
         if host.frame.origin != hostFrame.origin { host.setFrameOrigin(hostFrame.origin) }
         if let signal, signal.frame != bounds { signal.frame = bounds }
+        let gripFrame = QuotaSidebarPressRouting.dragHandleFrame(in: bounds)
+        if dragHandle.frame != gripFrame { dragHandle.frame = gripFrame }
         layer?.cornerRadius = min(22, max(8, 8 + (bounds.width - 16) * 14 / 72))
         layer?.maskedCorners = edge == .right ? [.layerMinXMinYCorner, .layerMinXMaxYCorner] : [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
         CATransaction.commit()
     }
+}
+
+/// Lives in the real native clip, so it stays at the visible top on short
+/// displays and while the stable SwiftUI canvas is being revealed or collapsed.
+@MainActor
+final class QuotaSidebarDragHandleView: NSView {
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedWhite: 0.9, alpha: 0.65).cgColor
+        layer?.cornerRadius = 1.5
+        identifier = NSUserInterfaceItemIdentifier("quota-sidebar-drag-handle")
+        toolTip = "按住拖动侧栏，可移到其他屏幕"
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel("拖动侧栏，可移到其他屏幕")
+    }
+    required init?(coder: NSCoder) { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 
