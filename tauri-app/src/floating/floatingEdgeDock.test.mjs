@@ -471,3 +471,21 @@ test("real-window rehearsal reuses docking, isolates the real pointer, and never
   assert.equal(f.dock.isGuiding(), false);
   assert.deepEqual(f.errors, []);
 });
+
+
+test("native drag completion restores a release check replaced by a temporary hold", async () => {
+  let finish;
+  const native = new Promise(resolve => { finish = resolve; });
+  const f = fixture({ startDrag: () => native });
+  f.pointer({ x: 100, y: 200, leftButtonDown: true });
+  const gesture = f.dock.startDrag(); await drain();
+  await f.dock.holdOpen(true); await f.dock.holdOpen(false);
+  f.geometry(geometry({ x: 890, y: 150, width: 300, height: 120 }));
+  f.pointer({ x: 500, y: 500, leftButtonDown: false });
+  finish(true); await gesture; await f.advance(0);
+  assert.equal(f.dock.state().anchor.edge, "right");
+  await f.advance(700);
+  assert.equal(f.dock.state().compact, true);
+  const reads = f.reads(); await f.advance(60_000);
+  assert.equal(f.reads(), reads); assert.equal(f.timers.size, 0);
+});

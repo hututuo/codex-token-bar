@@ -73,7 +73,7 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOp
           const base = document.querySelector<HTMLElement>(".floating-edge-base")?.getBoundingClientRect();
           const transform = shell ? getComputedStyle(shell).transform : "none";
           void recordPerformanceEvent(
-            `floating_probe phase=${phase}/${paintPhase} inner=${window.innerWidth}x${window.innerHeight}`
+            `floating_probe phase=${phase}/${paintPhase} control=${JSON.stringify(dock.diagnosticState())} inner=${window.innerWidth}x${window.innerHeight}`
             + ` state=${state.collapsed ? 1 : 0},${state.compact ? 1 : 0},${state.railReady ? 1 : 0},${state.motion}`
             + ` commit=${frameCommit.viewportPinned ? 1 : 0},${frameCommit.waitForPaint ? 1 : 0}`
             + ` host=${host ? `${host.x.toFixed(1)},${host.y.toFixed(1)},${host.width.toFixed(1)},${host.height.toFixed(1)}` : "missing"}`

@@ -27,6 +27,10 @@ mod provider_app;
 mod macos;
 #[cfg(target_os = "macos")]
 mod floating_hover_macos;
+#[cfg(any(windows, test))]
+mod floating_drag_windows;
+#[cfg(windows)]
+pub(crate) use floating_drag_windows::drag as drag_floating_window;
 #[cfg(target_os = "windows")]
 mod floating_chrome_windows;
 #[cfg(target_os = "windows")]
