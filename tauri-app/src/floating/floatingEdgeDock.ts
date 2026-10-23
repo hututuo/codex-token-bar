@@ -324,6 +324,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
   }
   return {
     state: () => state,
+    diagnosticState: () => ({ suspended, resizing, dragging, pointerInside, heldOpen, guiding, disposed, generation, anchored: Boolean(state.anchor) }),
     isGuiding: () => guiding,
     async beginGuide(point: { x: number; y: number }) {
       guiding = true; guidePointer = { ...point, leftButtonDown: false };

@@ -17,14 +17,18 @@ import { createFloatingEdgeDockController, FREE_DOCK_PRESENTATION, type DockPres
 export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOpen = false) {
   const [presentation, setPresentation] = useState<DockPresentation>(FREE_DOCK_PRESENTATION);
   const controller = useRef<ReturnType<typeof createFloatingEdgeDockController> | null>(null);
+  const nativeProbe = new URLSearchParams(window.location.search).get("dockProbe") === "1";
   const suspendedRef = useRef(suspended);
   suspendedRef.current = suspended;
+
+  useEffect(() => {
+    if (nativeProbe) void recordPerformanceEvent(`floating_probe lifecycle enabled=${enabled} suspended=${suspended} held=${heldOpen} owner=${Boolean(controller.current)} state=${JSON.stringify(controller.current?.diagnosticState())}`);
+  }, [enabled, suspended, heldOpen]);
 
   useEffect(() => {
     if (!enabled || !isDesktopRuntimeAvailable()) return;
     let disposed = false;
     const appWindow = getCurrentWindow();
-    const nativeProbe = new URLSearchParams(window.location.search).get("dockProbe") === "1";
     let frameCommit = { viewportPinned: false, waitForPaint: true };
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
     const dock = createFloatingEdgeDockController({
@@ -103,7 +107,10 @@ export function useFloatingEdgeDock(enabled: boolean, suspended: boolean, heldOp
         if (frameCommit.waitForPaint) await waitForDockPaint();
       },
       startDrag: startFloatingWindowDrag,
-      report: (error) => warnPlatformFailure("floating-edge-dock", error),
+      report: (error) => {
+        warnPlatformFailure("floating-edge-dock", error);
+        if (nativeProbe) void recordPerformanceEvent(`floating_probe error=${String(error)} state=${JSON.stringify(dock.diagnosticState())}`);
+      },
     });
     controller.current = dock;
     const unregister = registerFloatingGeometryLifecycle(dock);
