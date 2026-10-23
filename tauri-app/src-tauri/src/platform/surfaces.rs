@@ -2314,75 +2314,11 @@ fn enforce_floating_window_chrome(window: &WebviewWindow) {
         startup_trace::mark(&format!("floating window set skip-taskbar skipped: {error}"));
     }
     #[cfg(target_os = "windows")]
-    if let Err(error) = enforce_windows_floating_borderless_chrome(window) {
+    if let Err(error) = super::floating_chrome_windows::enforce(window) {
         startup_trace::mark(&format!("floating window Win32 borderless chrome skipped: {error}"));
     }
 }
 
-#[cfg(target_os = "windows")]
-fn enforce_windows_floating_borderless_chrome(window: &WebviewWindow) -> Result<(), String> {
-    use std::ffi::c_void;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-        WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_WINDOWEDGE, WS_POPUP, WS_THICKFRAME,
-    };
-
-    let handle = window.hwnd().map_err(|error| error.to_string())?;
-    let style = unsafe { GetWindowLongPtrW(handle.0, GWL_STYLE) } as u32;
-    let ex_style = unsafe { GetWindowLongPtrW(handle.0, GWL_EXSTYLE) } as u32;
-    let border_styles = WS_CAPTION | WS_THICKFRAME | WS_BORDER | WS_DLGFRAME;
-    let clean_style = (style & !border_styles) | WS_POPUP;
-    let clean_ex_style = ex_style & !WS_EX_WINDOWEDGE;
-    unsafe {
-        SetWindowLongPtrW(handle.0, GWL_STYLE, clean_style as isize);
-        SetWindowLongPtrW(handle.0, GWL_EXSTYLE, clean_ex_style as isize);
-    }
-    let success = unsafe {
-        SetWindowPos(
-            handle.0,
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            0,
-            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-        )
-    };
-    if success == 0 { return Err(std::io::Error::last_os_error().to_string()); }
-
-    // Windows 11 may still draw/clip an undecorated top-level HWND using DWM
-    // border and corner policy. Mac has no equivalent invisible docking inset;
-    // turn both off so the requested outer frame is the visible frame too.
-    #[link(name = "dwmapi")]
-    extern "system" {
-        fn DwmSetWindowAttribute(
-            hwnd: *mut c_void,
-            attribute: u32,
-            value: *const c_void,
-            size: u32,
-        ) -> i32;
-    }
-    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-    const DWMWA_BORDER_COLOR: u32 = 34;
-    const DWMWCP_DONOTROUND: u32 = 1;
-    const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
-    unsafe {
-        let _ = DwmSetWindowAttribute(
-            handle.0,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            (&DWMWCP_DONOTROUND as *const u32).cast(),
-            std::mem::size_of::<u32>() as u32,
-        );
-        let _ = DwmSetWindowAttribute(
-            handle.0,
-            DWMWA_BORDER_COLOR,
-            (&DWMWA_COLOR_NONE as *const u32).cast(),
-            std::mem::size_of::<u32>() as u32,
-        );
-    }
-    Ok(())
-}
 
 fn create_status_panel_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     if app.get_webview_window("status").is_some() {

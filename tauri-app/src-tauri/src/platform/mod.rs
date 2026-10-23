@@ -28,6 +28,8 @@ mod macos;
 #[cfg(target_os = "macos")]
 mod floating_hover_macos;
 #[cfg(target_os = "windows")]
+mod floating_chrome_windows;
+#[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
 mod windows_process;
