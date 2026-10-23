@@ -56,3 +56,9 @@ swift test --skip-build --filter QuotaFillRenderingTests
 本轮只改macOS原生绘制及共享原生模型展示计算，Tauri没有同一CAGradientLayer路径。新包还包含上一轮全量审查修复及侧栏窗口动画修复。安装状态以回执为准，不能把编译/签名通过说成已安装。
 
 源码回退使用本次修复提交的 `git revert`；应用替换若执行，另存精确旧应用及可执行回滚命令。不要回退用户数据库或删除历史样本。没有公共发布、远端推送或新增收费模型请求。
+
+## 2026-10-24 本机替换追加
+
+用户明确授权接手替换后，本机已安装0.9.7/build952（代码4f328841，PID64808；SHA256 7474162506429765db76bc8a6ed20897e77f358c2c72dddc55b55c726f0fadb1）。旧950及1,436个SQLite在线备份保留在外层backups/20261024-dashboard-scroll-quota-build952。实际主页面额度98%、精确统计与实时速率正常，主页面上下内容可加载；旧502,983条用量事件数值/52条保留事件/77,812条身份及1,370个测速ID均保留。无公共发布或Windows替换。
+
+安装版贴边细栏未被本轮CUA主窗口截图捕获，持续滚轮/hover体感也不以AX跳转代替；打包前像素回归和原生夹具通过状态保留，安装后的这两项目视确认仍单列。安装回执、完整边界和回滚入口见外层runs/20261023-dashboard-scroll-quota/REPORT.md、mac-install-952-receipt.json、installed-data-preservation.json。
