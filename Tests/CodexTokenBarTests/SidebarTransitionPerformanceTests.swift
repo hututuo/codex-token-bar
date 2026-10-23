@@ -98,6 +98,7 @@ final class SidebarTransitionPerformanceTests: XCTestCase {
             }
             settle(0.6)
             var gaps: [Double] = [], updateCosts: [Double] = [], resizeTimes: [Double] = []
+            var visualTimes: [Double] = [], previousVisualFrame: CGRect?
             // Notification delivery is synchronous on the main thread.
             let box = ResizeTimes()
             let observer = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
@@ -110,6 +111,8 @@ final class SidebarTransitionPerformanceTests: XCTestCase {
                     while CACurrentMediaTime() - start < 0.65 {
                         let time = CACurrentMediaTime()
                         gaps.append(time - previous); previous = time
+                        let visualFrame = controller.presentedRailFrame ?? controller.railPanel?.frame
+                        if visualFrame != previousVisualFrame { visualTimes.append(time); previousVisualFrame = visualFrame }
                         if time >= nextUpdate {
                             let update = CACurrentMediaTime()
                             monitor.objectWillChange.send()
@@ -130,7 +133,9 @@ final class SidebarTransitionPerformanceTests: XCTestCase {
                     "max_ms": (sorted.last ?? 0) * 1000]
             }
             report.append(["speed_page_visible": withPage, "points": points.count,
-                "main_loop": stats(gaps), "refresh": stats(updateCosts), "resize_intervals": stats(resizeTimes)])
+                "main_loop": stats(gaps), "refresh": stats(updateCosts), "resize_intervals": stats(resizeTimes),
+                "native_resize_count": box.values.count, "visual_frame_count": visualTimes.count,
+                "visual_frame_intervals": stats(zip(visualTimes.dropFirst(), visualTimes).map { $0 - $1 }.filter { $0 < 0.2 })])
         }
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: output))
         print("SIDEBAR_PERF_REPORT \(output)")
