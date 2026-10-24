@@ -666,6 +666,7 @@ final class QuotaSidebarCanvasView: NSView {
         if let signal, signal.frame != bounds { signal.frame = bounds }
         let gripFrame = QuotaSidebarPressRouting.dragHandleFrame(in: bounds)
         if dragHandle.frame != gripFrame { dragHandle.frame = gripFrame }
+        dragHandle.isHidden = bounds.width <= 16
         layer?.cornerRadius = min(22, max(8, 8 + (bounds.width - 16) * 14 / 72))
         layer?.maskedCorners = edge == .right ? [.layerMinXMinYCorner, .layerMinXMaxYCorner] : [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
         CATransaction.commit()

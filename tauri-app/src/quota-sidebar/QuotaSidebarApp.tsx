@@ -320,7 +320,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const modelStrip = (vertical: boolean) => <div className={`qs-model-strip ${vertical ? "qs-model-strip-vertical" : ""}`} title={modelTitle} aria-label={modelTitle}>{models.map(item => <i key={item.key} style={{ flexGrow: item.share, background: item.color }} />)}</div>;
   return <>
     <span className="qs-radar-edge" data-active={sidebarRadarIsActive(radar)} aria-hidden="true" />
-    <div className="qs-drag-handle" role="img" aria-label="拖动侧栏，可移到其他屏幕" title="按住拖动侧栏，可移到其他屏幕"><span /></div>
+    {state.mode !== "rest" && <div className="qs-drag-handle" role="img" aria-label="拖动侧栏，可移到其他屏幕" title="按住拖动侧栏，可移到其他屏幕"><span /></div>}
     <div className="qs-bars" data-visible={state.mode === "rest"} aria-hidden={state.mode !== "rest"} aria-label="悬停查看额度">
       {cacheWarning && <span className="qs-cache-indicator" style={{ top: `calc(50% - ${showsFiveHour ? 114 : 87}px)` }} role="status" aria-label={`缓存命中偏低：${cacheAdviceTitle(cacheWarning)}`} title={`缓存命中偏低 · ${cacheAdviceTitle(cacheWarning)}`} />}
       <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ height: `${ratePercent ?? 0}%`, background: modelRateGradient(data.snapshot.modelRates, "0deg") }} /></span>

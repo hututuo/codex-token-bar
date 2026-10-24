@@ -370,7 +370,7 @@ final class QuotaSidebarTests: XCTestCase {
         for edge in QuotaSidebarEdge.allCases {
             let host = NSView(frame: .zero)
             let canvas = QuotaSidebarCanvasView(host: host, edge: edge)
-            for (width, height) in [(16.0, 134.0), (28.0, 220.0), (55.0, 350.0), (88.0, 470.0)] {
+            for (width, height) in [(16.0, 134.0), (28.0, 220.0), (55.0, 350.0), (88.0, 470.0), (16.0, 134.0)] {
                 let x = edge == .right ? 1440 - width : 0
                 canvas.frame = CGRect(x: x, y: 600 - height / 2, width: width, height: height)
                 canvas.layout()
@@ -383,6 +383,7 @@ final class QuotaSidebarTests: XCTestCase {
                 XCTAssertEqual(canvas.dragHandle.frame.maxY, canvas.bounds.maxY - 4.5)
                 XCTAssertEqual(canvas.dragHandle.frame.width, min(24, width - 6))
                 XCTAssertNil(canvas.dragHandle.hitTest(.zero))
+                XCTAssertEqual(canvas.dragHandle.isHidden, width <= 16)
             }
         }
     }
