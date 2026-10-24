@@ -1,4 +1,5 @@
-//! Pure retrospective projection for one identity/plan/limit timeline.
+//! Reversible presentation repair over one identity/plan/limit timeline.
+//! Raw quota observations and both usage ledgers remain untouched.
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -8,9 +9,18 @@ pub(super) struct HistoryPolicy {
     pub reset_jitter_tolerance: f64,
 }
 impl HistoryPolicy {
-    pub const FIVE_HOUR: Self = Self { new_cycle_reset_delta: 1800.0, maximum_new_cycle_used_percent: 100, reset_jitter_tolerance: 5.0 };
-    pub const SEVEN_DAY: Self = Self { new_cycle_reset_delta: 900.0, maximum_new_cycle_used_percent: 100, reset_jitter_tolerance: 5.0 };
+    pub const FIVE_HOUR: Self = Self {
+        new_cycle_reset_delta: 1800.0,
+        maximum_new_cycle_used_percent: 100,
+        reset_jitter_tolerance: 5.0,
+    };
+    pub const SEVEN_DAY: Self = Self {
+        new_cycle_reset_delta: 900.0,
+        maximum_new_cycle_used_percent: 100,
+        reset_jitter_tolerance: 5.0,
+    };
 }
+
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Sample {
@@ -20,10 +30,23 @@ pub(super) struct Sample {
     pub seven_used: Option<i32>,
     pub seven_reset: Option<f64>,
 }
+
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum Reason { ReturnToBaseline, Jump, ResetReturned, ResetUnchanged }
+pub(super) enum Reason {
+    ReturnToBaseline,
+    Jump,
+    ResetReturned,
+    ResetUnchanged,
+}
+
 #[derive(Debug)]
-pub(super) struct Rejection { pub baseline: usize, pub start: usize, pub end: usize, pub reason: Reason }
+pub(super) struct Rejection {
+    pub baseline: usize,
+    pub start: usize,
+    pub end: usize,
+    pub reason: Reason,
+}
+
 #[derive(Default)]
 pub(super) struct Projection {
     pub five_rejected: HashSet<usize>,
@@ -32,130 +55,89 @@ pub(super) struct Projection {
     pub seven_bridges: HashMap<usize, usize>,
     pub events: Vec<Rejection>,
 }
-#[derive(Clone, Copy)]
-struct Candidate { baseline: usize, start: usize, last: usize, left_band: bool, reset_left: bool, reset_unchanged: bool }
+
 const EPSILON: f64 = 0.000_001;
-pub(super) fn valid(used: Option<i32>) -> Option<i32> { used.filter(|v| (0..=100).contains(v)) }
+
+pub(super) fn valid(used: Option<i32>) -> Option<i32> {
+    used.filter(|value| (0..=100).contains(value))
+}
+
 fn same_reset(a: Option<f64>, b: Option<f64>) -> bool {
-    a.zip(b).is_some_and(|(a,b)| a.is_finite() && b.is_finite() && (a-b).abs() <= 5.0 + EPSILON)
+    a.zip(b)
+        .is_some_and(|(a, b)| a.is_finite() && b.is_finite() && (a - b).abs() <= 5.0 + EPSILON)
 }
-impl Projection {
-    fn reject(&mut self, c: Candidate, reason: Reason, samples: &[Sample]) {
-        if c.last <= c.start { return; }
-        self.seven_rejected.extend(c.start..c.last);
-        // Preserve the existing 90-minute carry horizon before the event.
-        if samples[c.start].at - samples[c.baseline].at <= 90.0 * 60.0 + EPSILON {
-            self.seven_bridges.insert(c.baseline, c.last);
-        }
-        self.events.push(Rejection { baseline: c.baseline, start: c.start, end: c.last, reason });
-    }
-    fn settle(&mut self, c: Candidate, samples: &[Sample]) {
-        if c.reset_unchanged && samples[c.start].at + 300.0 - samples[c.last].at <= 120.0 + EPSILON {
-            self.reject(c, Reason::ResetUnchanged, samples);
-        }
-    }
-}
+
 pub(super) fn project(samples: &[Sample], plan: Option<&str>, now: f64) -> Projection {
+    project_with_evidence(samples, plan, now, |_, _| {
+        super::cycles::ConsumptionEvidence::Unknown
+    })
+}
+
+pub(super) fn project_with_evidence(
+    samples: &[Sample],
+    _plan: Option<&str>,
+    now: f64,
+    mut consumption: impl FnMut(f64, f64) -> super::cycles::ConsumptionEvidence,
+) -> Projection {
     let mut result = Projection::default();
-    let mut candidate: Option<Candidate> = None;
-    let mut previous: Option<usize> = None;
-    let mut seen: Option<f64> = None;
-    let mut suppressed = false;
+    let mut raw_indices = Vec::new();
+    let mut values = Vec::new();
     let mut fresh = HashSet::new();
-    let rate = match plan.map(|p| p.trim().to_ascii_lowercase()).as_deref() {
-        Some("plus") => Some(10.0), Some("pro") => Some(2.0), _ => None,
-    };
-    for (i, sample) in samples.iter().enumerate() {
-        if !sample.at.is_finite() || sample.at > now + EPSILON || seen.is_some_and(|last| sample.at <= last + EPSILON) { continue; }
-        seen = Some(sample.at);
-        fresh.insert(i);
-        if let Some(c) = candidate {
-            if sample.at > samples[c.start].at + 300.0 + EPSILON {
-                result.settle(c, samples);
-                candidate = None;
-                suppressed = valid(samples[c.last].seven_used).unwrap_or(0) <= 2;
-            }
-        }
-        let Some(used) = valid(sample.seven_used) else {
-            if let Some(c) = candidate.as_mut() { c.reset_unchanged = false; }
+    let mut seen = f64::NEG_INFINITY;
+    for (index, sample) in samples.iter().enumerate() {
+        if !sample.at.is_finite() || sample.at > now || sample.at <= seen + EPSILON {
             continue;
-        };
-        if let Some(mut c) = candidate {
-            let base = &samples[c.baseline];
-            let last = &samples[c.last];
-            let in_band = (used - base.seven_used.unwrap()).abs() <= 3;
-            let reset_same = same_reset(sample.seven_reset, base.seven_reset);
-            let reset_return = c.reset_left && reset_same;
-            let returned = c.left_band && in_band && used > last.seven_used.unwrap();
-            let jumped = rate.is_some_and(|rate| f64::from(used - last.seven_used.unwrap()) * 60.0 / (sample.at-last.at) > rate + EPSILON);
-            c.reset_unchanged = c.reset_unchanged && reset_same && sample.at-last.at <= 120.0+EPSILON;
-            if sample.seven_reset.is_some_and(f64::is_finite) && base.seven_reset.is_some_and(f64::is_finite) && !reset_same { c.reset_left = true; }
-            c.left_band |= !in_band;
-            c.last = i;
-            if returned || jumped || reset_return {
-                result.reject(c, if returned { Reason::ReturnToBaseline } else if jumped { Reason::Jump } else { Reason::ResetReturned }, samples);
-                candidate = None;
-                suppressed = used <= 2;
-            } else if sample.at >= samples[c.start].at + 300.0 - EPSILON {
-                result.settle(c, samples);
-                candidate = None;
-                suppressed = used <= 2;
-            } else { candidate = Some(c); }
-        } else {
-            if used > 2 { suppressed = false; }
-            if !suppressed {
-                if let Some(prev) = previous {
-                    if valid(samples[prev].seven_used).is_some_and(|prior| used < prior && used <= 2) {
-                        let same = same_reset(sample.seven_reset, samples[prev].seven_reset);
-                        let has_resets = sample.seven_reset.is_some_and(f64::is_finite) && samples[prev].seven_reset.is_some_and(f64::is_finite);
-                        candidate = Some(Candidate { baseline: prev, start: i, last: i,
-                            left_band: (used-samples[prev].seven_used.unwrap()).abs()>3,
-                            reset_left: has_resets && !same, reset_unchanged: same });
-                    }
-                }
-            }
         }
-        previous = Some(i);
-    }
-    if let Some(c) = candidate {
-        if now >= samples[c.start].at + 300.0 - EPSILON { result.settle(c, samples); }
-    }
-    // Reject bidirectional provider excursions only on an abrupt return to
-    // the old level/reset. Gradual normal consumption is not a rebound.
-    let seven: Vec<_> = samples.iter().enumerate().filter(|(i,s)| fresh.contains(i) && valid(s.seven_used).is_some()).map(|(i,_)| i).collect();
-    let mut cursor = 1;
-    while cursor < seven.len() {
-        let (base, first) = (seven[cursor-1], seven[cursor]);
-        let (base_used, first_used) = (samples[base].seven_used.unwrap(), samples[first].seven_used.unwrap());
-        if !result.seven_rejected.contains(&base) && !result.seven_rejected.contains(&first) && (first_used-base_used).abs() >= 5 {
-            let mut endpoint = None;
-            for n in cursor+1..seven.len() {
-                let (end, prior) = (seven[n],seven[n-1]);
-                if samples[end].at-samples[first].at > 5400.0 { break; }
-                let (used, previous_used) = (samples[end].seven_used.unwrap(),samples[prior].seven_used.unwrap());
-                if (used-base_used).abs() <= 3 && (used-previous_used).abs() >= 5
-                    && (first_used-base_used)*(used-previous_used) < 0
-                    && same_reset(samples[end].seven_reset,samples[base].seven_reset) {
-                    endpoint = Some(n); break;
-                }
-            }
-            if let Some(endpoint) = endpoint {
-                result.reject(Candidate {baseline:base,start:first,last:seven[endpoint],left_band:true,reset_left:false,reset_unchanged:false},Reason::ReturnToBaseline,samples);
-                cursor=endpoint+1; continue;
-            }
+        seen = sample.at;
+        fresh.insert(index);
+        if let Some(used) = valid(sample.seven_used) {
+            raw_indices.push(index);
+            values.push((sample.at, used));
         }
-        cursor+=1;
     }
-    let five: Vec<usize> = samples.iter().enumerate().filter(|(i,s)| fresh.contains(i) && valid(s.five_used).is_some()).map(|(i,_)|i).collect();
+
+    for reversal in
+        super::cycles::quota_cycle_reversals(&values, |from, through| consumption(from, through))
+    {
+        let baseline = raw_indices[reversal.before_index];
+        let start = raw_indices[reversal.drop_index];
+        let end = raw_indices[reversal.return_index];
+        // Exclude the transient dip, then carry the previous value through the
+        // return point. This matches actual-cycle boundary withdrawal.
+        result.seven_rejected.extend(start..end);
+        result.seven_bridges.insert(baseline, end);
+        result.events.push(Rejection {
+            baseline,
+            start,
+            end,
+            reason: Reason::ReturnToBaseline,
+        });
+    }
+
+    // Preserve the existing five-hour paired repair: only a single 5h zero
+    // point paired with an independently rejected 7d observation can be
+    // repaired, and only with the same-reset A-B-A evidence.
+    let five: Vec<usize> = samples
+        .iter()
+        .enumerate()
+        .filter(|(index, sample)| fresh.contains(index) && valid(sample.five_used).is_some())
+        .map(|(index, _)| index)
+        .collect();
     for triple in five.windows(3) {
-        let (a,b,c) = (triple[0], triple[1], triple[2]);
-        if result.seven_rejected.contains(&b) && samples[a].five_used.unwrap()>0 && samples[b].five_used==Some(0) && samples[c].five_used.unwrap()>0
-            && samples[c].at > samples[b].at + EPSILON && samples[c].at - samples[b].at <= 120.0+EPSILON
-            && (samples[c].five_used.unwrap()-samples[a].five_used.unwrap()).abs()<=1
-            && same_reset(samples[a].five_reset,samples[b].five_reset) && same_reset(samples[a].five_reset,samples[c].five_reset) {
+        let (a, b, c) = (triple[0], triple[1], triple[2]);
+        if result.seven_rejected.contains(&b)
+            && samples[a].five_used.unwrap_or(0) > 0
+            && samples[b].five_used == Some(0)
+            && samples[c].five_used.unwrap_or(0) > 0
+            && samples[c].at > samples[b].at + EPSILON
+            && samples[c].at - samples[b].at <= 120.0 + EPSILON
+            && (samples[c].five_used.unwrap_or(0) - samples[a].five_used.unwrap_or(0)).abs() <= 1
+            && same_reset(samples[a].five_reset, samples[b].five_reset)
+            && same_reset(samples[a].five_reset, samples[c].five_reset)
+        {
             result.five_rejected.insert(b);
             if samples[b].at - samples[a].at <= 90.0 * 60.0 + EPSILON {
-                result.five_bridges.insert(a,c);
+                result.five_bridges.insert(a, c);
             }
         }
     }
@@ -164,24 +146,65 @@ pub(super) fn project(samples: &[Sample], plan: Option<&str>, now: f64) -> Proje
 
 #[cfg(test)]
 mod tests {
+    use super::super::cycles::ConsumptionEvidence;
     use super::*;
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Case {
-        name: String, plan: Option<String>, now: f64, samples: Vec<Sample>,
-        five_rejected: Vec<usize>, seven_rejected: Vec<usize>,
-        five_bridges: Vec<(usize,usize)>, seven_bridges: Vec<(usize,usize)>,
-    }
-    #[test]
-    fn shared_retrospective_scenarios() {
-        let cases: Vec<Case> = serde_json::from_str(include_str!("../../../../../Tests/SharedFixtures/quota-retrospective-v1.json")).unwrap();
-        assert!(cases.len()>40);
-        for case in cases {
-            let p = project(&case.samples, case.plan.as_deref(), case.now);
-            assert_eq!(p.five_rejected, case.five_rejected.into_iter().collect(), "{}", case.name);
-            assert_eq!(p.seven_rejected, case.seven_rejected.into_iter().collect(), "{}", case.name);
-            assert_eq!(p.five_bridges, case.five_bridges.into_iter().collect(), "{}", case.name);
-            assert_eq!(p.seven_bridges, case.seven_bridges.into_iter().collect(), "{}", case.name);
+
+    fn sample(at: f64, seven: i32, five: Option<i32>, reset: Option<f64>) -> Sample {
+        Sample {
+            at,
+            five_used: five,
+            five_reset: reset,
+            seven_used: Some(seven),
+            seven_reset: reset,
         }
+    }
+
+    #[test]
+    fn unknown_and_present_consumption_preserve_the_drop() {
+        let samples = [
+            sample(0.25, 70, None, None),
+            sample(60.125, 0, None, None),
+            sample(120.875, 70, None, None),
+        ];
+        assert!(project(&samples, None, 121.0).seven_rejected.is_empty());
+        let present =
+            project_with_evidence(&samples, None, 121.0, |_, _| ConsumptionEvidence::Present);
+        assert!(present.seven_rejected.is_empty());
+    }
+
+    #[test]
+    fn absent_exact_interval_withdraws_only_matching_drop() {
+        let samples = [
+            sample(0.25, 80, None, Some(1000.0)),
+            sample(60.125, 0, None, Some(5000.0)),
+            sample(120.875, 20, None, Some(1000.0)),
+            sample(180.25, 0, None, Some(2000.0)),
+            sample(240.75, 20, None, Some(2000.0)),
+        ];
+        let projection = project_with_evidence(&samples, None, 241.0, |from, through| {
+            if (from, through) == (180.25, 240.75) {
+                ConsumptionEvidence::Absent
+            } else {
+                ConsumptionEvidence::Unknown
+            }
+        });
+        assert_eq!(projection.seven_rejected, [3].into_iter().collect());
+        assert_eq!(projection.seven_bridges, [(2, 4)].into_iter().collect());
+        assert_eq!(projection.events.len(), 1);
+        assert_eq!(projection.events[0].baseline, 2);
+    }
+
+    #[test]
+    fn paired_five_hour_repair_keeps_its_previous_rules() {
+        let samples = [
+            sample(0.0, 60, Some(50), Some(1000.0)),
+            sample(60.0, 0, Some(0), Some(1000.0)),
+            sample(120.0, 60, Some(49), Some(1000.0)),
+        ];
+        let projection =
+            project_with_evidence(&samples, None, 121.0, |_, _| ConsumptionEvidence::Absent);
+        assert_eq!(projection.seven_rejected, [1].into_iter().collect());
+        assert_eq!(projection.five_rejected, [1].into_iter().collect());
+        assert_eq!(projection.five_bridges, [(0, 2)].into_iter().collect());
     }
 }

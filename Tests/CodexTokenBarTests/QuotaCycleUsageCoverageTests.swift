@@ -56,20 +56,20 @@ final class QuotaCycleUsageCoverageTests: XCTestCase {
         XCTAssertEqual(QuotaCycleUsage(events: events, cycle: current, coverageEnd: later.coverage).total.totalTokens, 300)
     }
 
-    func testEmptyConfirmedInteriorRetainsPendingModelPriceAndRequest() throws {
+    func testImmediateResetHasExactCostRangeAndNoUnassignedAmount() throws {
         let current = try XCTUnwrap(QuotaActualCycleProjector.project([
             .init(at: d(0), usedPercent: 50, resetsAt: d(10000)),
             .init(at: d(300), usedPercent: 0, resetsAt: d(20000)),
             .init(at: d(600), usedPercent: 0, resetsAt: d(20000))
         ], now: d(900)).first)
-        XCTAssertTrue(current.resetChangePending)
+        XCTAssertFalse(current.resetChangePending)
         let key = try request(current, snapshot(coverage: d(900)))
-        XCTAssertEqual(key.start, key.end)
-        let usage = QuotaCycleUsage(events: [event(0, 100), event(300, 200)], cycle: current, coverageEnd: key.coverage)
-        XCTAssertEqual(usage.total, .empty)
-        XCTAssertEqual(usage.unassignedTokens, 300)
-        XCTAssertEqual(usage.unassignedRows.first?.breakdown, usage.unassignedTotal)
-        XCTAssertGreaterThan(try XCTUnwrap(FloatingTodayModelUsagePresentation.knownCostUSD(in: items(usage.unassignedRows))), 0)
+        XCTAssertEqual(key.start, d(300))
+        XCTAssertEqual(key.end, d(600))
+        let usage = QuotaCycleUsage(exactEvents: [event(300, 200)])
+        XCTAssertEqual(usage.total.totalTokens, 200)
+        XCTAssertEqual(usage.unassignedTokens, 0)
+        XCTAssertGreaterThan(try XCTUnwrap(FloatingTodayModelUsagePresentation.knownCostUSD(in: items(usage.rows))), 0)
     }
 
     func testMinuteSlicesPartitionEveryModelAndCacheFieldWithoutTokenSubtraction() throws {

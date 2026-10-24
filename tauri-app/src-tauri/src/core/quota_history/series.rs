@@ -69,7 +69,11 @@ pub(super) fn make_interval_history_at(
 }
 
 pub(super) fn make_interval_history_with_filter(
-    rows: Vec<QuotaHistoryRow>, count: usize, interval_seconds: i64, now: f64, filter_anomalies: bool,
+    rows: Vec<QuotaHistoryRow>,
+    count: usize,
+    interval_seconds: i64,
+    now: f64,
+    filter_anomalies: bool,
 ) -> Vec<QuotaHistoryPoint> {
     let interval_seconds = interval_seconds.max(LONG_RECENT_INTERVAL_SECONDS);
     let bin_starts = aligned_bin_starts(now as i64, interval_seconds, count as i64);
@@ -83,7 +87,8 @@ pub(super) fn make_interval_history_with_filter(
     let five_rows: Vec<&ProjectedRow> = sorted.iter().filter(|r| !r.five_rejected).collect();
     let seven_rows: Vec<&ProjectedRow> = sorted.iter().filter(|r| !r.seven_rejected).collect();
     let (mut five_index, mut seven_index) = (0, 0);
-    let (mut latest_five, mut latest_seven): (Option<&ProjectedRow>, Option<&ProjectedRow>) = (None, None);
+    let (mut latest_five, mut latest_seven): (Option<&ProjectedRow>, Option<&ProjectedRow>) =
+        (None, None);
 
     bin_starts
         .into_iter()
@@ -91,11 +96,17 @@ pub(super) fn make_interval_history_with_filter(
             let bin_start = bin_start as f64;
             let end = bin_start + interval_seconds as f64;
             let sample_at = end.min(now);
-            while five_index < five_rows.len() && five_rows[five_index].created_at <= sample_at + 0.000_001 {
-                latest_five = Some(five_rows[five_index]); five_index += 1;
+            while five_index < five_rows.len()
+                && five_rows[five_index].created_at <= sample_at + 0.000_001
+            {
+                latest_five = Some(five_rows[five_index]);
+                five_index += 1;
             }
-            while seven_index < seven_rows.len() && seven_rows[seven_index].created_at <= sample_at + 0.000_001 {
-                latest_seven = Some(seven_rows[seven_index]); seven_index += 1;
+            while seven_index < seven_rows.len()
+                && seven_rows[seven_index].created_at <= sample_at + 0.000_001
+            {
+                latest_seven = Some(seven_rows[seven_index]);
+                seven_index += 1;
             }
             QuotaHistoryPoint {
                 label: format_unix_time(bin_start),
@@ -126,20 +137,12 @@ pub(super) fn make_interval_history_with_filter(
                 ),
                 five_hour_cycle_id: latest_five.and_then(|row| {
                     row.stable_identity().and_then(|identity| {
-                        quota_cycle_id_for_identity(
-                            &identity,
-                            "5h",
-                            row.five_hour_cycle_generation,
-                        )
+                        quota_cycle_id_for_identity(&identity, "5h", row.five_hour_cycle_generation)
                     })
                 }),
                 seven_day_cycle_id: latest_seven.and_then(|row| {
                     row.stable_identity().and_then(|identity| {
-                        quota_cycle_id_for_identity(
-                            &identity,
-                            "7d",
-                            row.seven_day_cycle_generation,
-                        )
+                        quota_cycle_id_for_identity(&identity, "7d", row.seven_day_cycle_generation)
                     })
                 }),
             }
@@ -147,31 +150,34 @@ pub(super) fn make_interval_history_with_filter(
         .collect()
 }
 
-pub(super) fn make_daily_history(
-    rows: Vec<QuotaHistoryRow>,
-) -> HashMap<String, DailyQuotaHistory> {
+pub(super) fn make_daily_history(rows: Vec<QuotaHistoryRow>) -> HashMap<String, DailyQuotaHistory> {
     make_daily_history_at(rows, now_unix())
 }
 
-pub(super) fn make_daily_history_at(rows: Vec<QuotaHistoryRow>, now: f64) -> HashMap<String, DailyQuotaHistory> {
+pub(super) fn make_daily_history_at(
+    rows: Vec<QuotaHistoryRow>,
+    now: f64,
+) -> HashMap<String, DailyQuotaHistory> {
     make_daily_history_with_filter(rows, now, true)
 }
 
-pub(super) fn make_daily_history_with_filter(rows: Vec<QuotaHistoryRow>, now: f64, filter_anomalies: bool) -> HashMap<String, DailyQuotaHistory> {
+pub(super) fn make_daily_history_with_filter(
+    rows: Vec<QuotaHistoryRow>,
+    now: f64,
+    filter_anomalies: bool,
+) -> HashMap<String, DailyQuotaHistory> {
     let sorted = projected_rows(rows, now, filter_anomalies);
     let local_offset = crate::core::localtime::local_offset();
     let mut grouped: HashMap<String, DailyQuotaAccumulator> = HashMap::new();
 
     for row in sorted {
-        let Some(timestamp) = OffsetDateTime::from_unix_timestamp(row.created_at.round() as i64).ok()
+        let Some(timestamp) =
+            OffsetDateTime::from_unix_timestamp(row.created_at.round() as i64).ok()
         else {
             continue;
         };
         let date = timestamp.to_offset(local_offset).date();
-        grouped
-            .entry(format_date(date))
-            .or_default()
-            .add(&row);
+        grouped.entry(format_date(date)).or_default().add(&row);
     }
 
     grouped
@@ -189,52 +195,153 @@ struct ProjectedRow {
 }
 impl std::ops::Deref for ProjectedRow {
     type Target = QuotaHistoryRow;
-    fn deref(&self) -> &Self::Target { &self.row }
+    fn deref(&self) -> &Self::Target {
+        &self.row
+    }
 }
 
 pub(super) fn sanitized_rows(rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
     sanitized_rows_with_filter(rows, true)
 }
 
-pub(super) fn sanitized_rows_with_filter(rows: Vec<QuotaHistoryRow>, filter_anomalies: bool) -> Vec<QuotaHistoryRow> {
-    let now = rows.iter().map(|r| r.created_at).filter(|at| at.is_finite()).fold(0.0_f64, f64::max);
-    projected_rows(rows, now, filter_anomalies).into_iter().map(|r| r.row).collect()
+pub(super) fn sanitized_rows_with_filter(
+    rows: Vec<QuotaHistoryRow>,
+    filter_anomalies: bool,
+) -> Vec<QuotaHistoryRow> {
+    let now = rows
+        .iter()
+        .map(|r| r.created_at)
+        .filter(|at| at.is_finite())
+        .fold(0.0_f64, f64::max);
+    projected_rows(rows, now, filter_anomalies)
+        .into_iter()
+        .map(|r| r.row)
+        .collect()
 }
 
-fn projected_rows(rows: Vec<QuotaHistoryRow>, now: f64, filter_anomalies: bool) -> Vec<ProjectedRow> {
-    let mut rows = reclassify_legacy_seven_day_only_rows(super::merge_history_rows(rows, Vec::new()));
+fn projected_rows(
+    rows: Vec<QuotaHistoryRow>,
+    now: f64,
+    filter_anomalies: bool,
+) -> Vec<ProjectedRow> {
+    let mut rows =
+        reclassify_legacy_seven_day_only_rows(super::merge_history_rows(rows, Vec::new()));
     rows.retain(|r| r.created_at.is_finite() && r.created_at <= now + 0.000_001);
-    rows.sort_by(|a,b| a.created_at.total_cmp(&b.created_at));
-    let mut groups: HashMap<(Option<super::QuotaHistoryIdentity>, String), Vec<QuotaHistoryRow>> = HashMap::new();
+    rows.sort_by(|a, b| a.created_at.total_cmp(&b.created_at));
+    let mut groups: HashMap<(Option<super::QuotaHistoryIdentity>, String), Vec<QuotaHistoryRow>> =
+        HashMap::new();
     for row in rows {
         let identity = row.stable_identity();
-        let fallback = if identity.is_some() { String::new() } else { row.history_match_key() };
+        let fallback = if identity.is_some() {
+            String::new()
+        } else {
+            row.history_match_key()
+        };
         let group = groups.entry((identity, fallback)).or_default();
-        if group.last().is_some_and(|last| row.created_at <= last.created_at + 0.000_001) { continue; }
+        if group
+            .last()
+            .is_some_and(|last| row.created_at <= last.created_at + 0.000_001)
+        {
+            continue;
+        }
         group.push(row);
     }
     let mut output = Vec::new();
-    for (_, mut timeline) in groups {
-        let samples: Vec<_> = timeline.iter().map(|r| super::protection::Sample {
-            at: r.created_at, five_used: r.five_hour_used_percent, five_reset: r.five_hour_resets_at,
-            seven_used: r.seven_day_used_percent, seven_reset: r.seven_day_resets_at,
-        }).collect();
-        let plan = timeline.iter().find_map(|r| r.identity_plan_type.as_deref()).or_else(|| timeline.first().and_then(|r| r.plan_type.as_deref()));
-        let projection = if filter_anomalies { super::protection::project(&samples, plan, now) }
-            else { super::protection::Projection::default() };
-        for (i,row) in timeline.iter_mut().enumerate() {
-            row.five_hour_used_percent = if projection.five_rejected.contains(&i) { None } else { super::protection::valid(row.five_hour_used_percent) };
-            row.seven_day_used_percent = if projection.seven_rejected.contains(&i) { None } else { super::protection::valid(row.seven_day_used_percent) };
+    for ((identity, _legacy_scope), mut timeline) in groups {
+        let samples: Vec<_> = timeline
+            .iter()
+            .map(|r| super::protection::Sample {
+                at: r.created_at,
+                five_used: r.five_hour_used_percent,
+                five_reset: r.five_hour_resets_at,
+                seven_used: r.seven_day_used_percent,
+                seven_reset: r.seven_day_resets_at,
+            })
+            .collect();
+        let plan = timeline
+            .iter()
+            .find_map(|r| r.identity_plan_type.as_deref())
+            .or_else(|| timeline.first().and_then(|r| r.plan_type.as_deref()));
+        let weekly_values: Vec<_> = samples
+            .iter()
+            .filter_map(|sample| {
+                super::protection::valid(sample.seven_used).map(|used| (sample.at, used))
+            })
+            .collect();
+        let rebound_ranges = if filter_anomalies {
+            super::cycles::quota_cycle_rebound_ranges(&weekly_values)
+        } else {
+            Vec::new()
+        };
+        let evidence = if rebound_ranges.is_empty() {
+            Vec::new()
+        } else if let Some(identity) = identity.as_ref() {
+            crate::core::usage::token_count_jsonl::quota_cycle_consumption_evidence(
+                std::path::Path::new(&identity.home_identity),
+                &rebound_ranges,
+            )
+        } else {
+            vec![super::cycles::ConsumptionEvidence::Unknown; rebound_ranges.len()]
+        };
+        let evidence_by_range: HashMap<_, _> = rebound_ranges
+            .into_iter()
+            .zip(evidence)
+            .map(|(range, evidence)| ((range.0.to_bits(), range.1.to_bits()), evidence))
+            .collect();
+        let projection = if filter_anomalies {
+            super::protection::project_with_evidence(&samples, plan, now, |from, through| {
+                evidence_by_range
+                    .get(&(from.to_bits(), through.to_bits()))
+                    .copied()
+                    .unwrap_or(super::cycles::ConsumptionEvidence::Unknown)
+            })
+        } else {
+            super::protection::Projection::default()
+        };
+        for (i, row) in timeline.iter_mut().enumerate() {
+            row.five_hour_used_percent = if projection.five_rejected.contains(&i) {
+                None
+            } else {
+                super::protection::valid(row.five_hour_used_percent)
+            };
+            row.seven_day_used_percent = if projection.seven_rejected.contains(&i) {
+                None
+            } else {
+                super::protection::valid(row.seven_day_used_percent)
+            };
         }
-        for (i,row) in super::replay_cycle_rows(timeline, None, false).into_iter().enumerate() {
-            output.push(ProjectedRow { row,
-                five_rejected: projection.five_rejected.contains(&i), seven_rejected: projection.seven_rejected.contains(&i),
+        let mut replayed = super::replay_cycle_rows(timeline, None, false);
+        // The seven-day display projection shares observed-drop semantics
+        // with actual periods. Persisted/reset-derived generations remain
+        // untouched in SQLite and are not used as a display-cycle offset.
+        let (mut seven_seen, mut seven_generation, mut previous_seven_used) = (false, 0i64, None);
+        for row in &mut replayed {
+            if let Some(used) = super::protection::valid(row.seven_day_used_percent) {
+                let boundary = previous_seven_used.is_some_and(|previous| previous - used >= 5);
+                if seven_seen && boundary {
+                    seven_generation = seven_generation.saturating_add(1);
+                }
+                let anchor = !seven_seen || boundary;
+                seven_seen = true;
+                previous_seven_used = Some(used);
+                row.seven_day_cycle_generation = Some(seven_generation);
+                row.seven_day_reset_anchor = Some(i64::from(anchor));
+            } else {
+                row.seven_day_cycle_generation = None;
+                row.seven_day_reset_anchor = Some(0);
+            }
+        }
+        for (i, row) in replayed.into_iter().enumerate() {
+            output.push(ProjectedRow {
+                row,
+                five_rejected: projection.five_rejected.contains(&i),
+                seven_rejected: projection.seven_rejected.contains(&i),
                 five_bridge_end: projection.five_bridges.get(&i).map(|end| samples[*end].at),
                 seven_bridge_end: projection.seven_bridges.get(&i).map(|end| samples[*end].at),
             });
         }
     }
-    output.sort_by(|a,b| a.created_at.total_cmp(&b.created_at));
+    output.sort_by(|a, b| a.created_at.total_cmp(&b.created_at));
     output
 }
 
@@ -243,9 +350,9 @@ fn reclassify_legacy_seven_day_only_rows(mut rows: Vec<QuotaHistoryRow>) -> Vec<
         let looks_like_seven_day = row.seven_day_used_percent.is_none()
             && row.seven_day_resets_at.is_none()
             && row.five_hour_used_percent.is_some()
-            && row
-                .five_hour_resets_at
-                .is_some_and(|reset| reset - row.created_at > LEGACY_FIVE_HOUR_MAX_RESET_SPAN_SECONDS);
+            && row.five_hour_resets_at.is_some_and(|reset| {
+                reset - row.created_at > LEGACY_FIVE_HOUR_MAX_RESET_SPAN_SECONDS
+            });
         if looks_like_seven_day {
             row.seven_day_used_percent = row.five_hour_used_percent.take();
             row.seven_day_resets_at = row.five_hour_resets_at.take();
@@ -271,7 +378,11 @@ fn quota_remaining(
     if let Some(next) = next_row {
         if bridge_end == Some(next.created_at) && at > row.created_at && at < next.created_at {
             if let Some(end) = remaining(next) {
-                return Some(value + (end-value) * (at-row.created_at)/(next.created_at-row.created_at));
+                return Some(
+                    value
+                        + (end - value) * (at - row.created_at)
+                            / (next.created_at - row.created_at),
+                );
             }
         }
     }
@@ -281,24 +392,7 @@ fn quota_remaining(
         if at >= reset {
             return None;
         }
-        if let Some(interpolated) =
-            interpolated_quota_remaining(
-                row,
-                next_row,
-                at,
-                value,
-                &remaining,
-                &resets_at,
-                &generation,
-                policy,
-            )
-        {
-            return Some(interpolated);
-        }
-        return Some(value);
-    }
-    if let Some(interpolated) =
-        interpolated_quota_remaining(
+        if let Some(interpolated) = interpolated_quota_remaining(
             row,
             next_row,
             at,
@@ -307,8 +401,21 @@ fn quota_remaining(
             &resets_at,
             &generation,
             policy,
-        )
-    {
+        ) {
+            return Some(interpolated);
+        }
+        return Some(value);
+    }
+    if let Some(interpolated) = interpolated_quota_remaining(
+        row,
+        next_row,
+        at,
+        value,
+        &remaining,
+        &resets_at,
+        &generation,
+        policy,
+    ) {
         return Some(interpolated);
     }
     if at - row.created_at <= MAX_CARRY_GAP_SECONDS {
@@ -358,7 +465,6 @@ fn remaining_used(
 ) -> Option<i32> {
     remaining(row).map(|value| ((1.0 - value).clamp(0.0, 1.0) * 100.0).round() as i32)
 }
-
 
 fn average(total: f64, count: u32) -> Option<f64> {
     if count == 0 {

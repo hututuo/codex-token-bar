@@ -43,7 +43,7 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
             XCTAssertEqual(cycles.count, 2, "shift \(shift)")
             guard cycles.count == 2 else { continue }
             XCTAssertTrue(cycles[1].endedEarly)
-            XCTAssertEqual(cycles[1].end, .init(earliest: d(29940), latest: d(30000)))
+            XCTAssertEqual(cycles[1].end, .exact(d(30000)))
             XCTAssertEqual(cycles[0].start, cycles[1].end)
             XCTAssertEqual(cycles[0].lastObservedAt, d(30060))
         }
@@ -63,18 +63,15 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
         }
     }
 
-    func testResetToleranceAndStrict900SecondBoundaryRetainFreshObservations() throws {
-        for shift in [-901.0, -900, -10, -5, 0, 5, 10, 900] {
+    func testResetScheduleNeverGatesARealDrop() throws {
+        for shift in [-901.0, -900, -10, -5, 0, 5, 10, 900, 901, 7200] {
             let cycles = QuotaActualCycleProjector.project([
                 o(0, 50, 10000), o(60, 0, 10000 + shift), o(120, 1, 10000 + shift)
             ], now: d(180))
-            XCTAssertEqual(cycles.count, 1, "shift \(shift)")
-            XCTAssertEqual(cycles.first?.certainEnd, d(120), "shift \(shift)")
+            XCTAssertEqual(cycles.count, 2, "shift \(shift)")
+            XCTAssertEqual(cycles.first?.start, .exact(d(60)))
+            XCTAssertEqual(cycles.first?.certainEnd, d(120))
         }
-        let reset = QuotaActualCycleProjector.project([
-            o(0, 50, 10000), o(60, 0, 10901), o(120, 1, 10901)
-        ], now: d(180))
-        XCTAssertEqual(reset.count, 2)
     }
 
     func testStableNewResetConsumptionReturningToOldUsageDoesNotUndoCycle() throws {
@@ -90,36 +87,35 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
         let cycles = QuotaActualCycleProjector.project([
             o(0, 50, 10000), o(60, 30, 20000), o(180, 31, 20000),
             o(2400, 50, 10000), o(2460, 51, 10000)
-        ], now: d(2500))
+        ], now: d(2500), consumption: { _, _ in .absent })
         XCTAssertEqual(cycles.count, 1)
         XCTAssertEqual(cycles.first?.lastObservedAt, d(2460))
         XCTAssertFalse(try XCTUnwrap(cycles.first).resetChangePending)
     }
 
-    func testNoConsumptionAndRepeatedResponsesRemainUnconfirmedButVisible() throws {
+    func testIdleResetAndRepeatedResponsesSwitchImmediately() throws {
         for readings in [
             [o(0, 50, 10000), o(300, 0, 20000), o(300, 1, 20000)],
             [o(0, 50, 10000), o(300, 0, 20000), o(360, 0, 20000), o(600, 0, 20000)],
             [o(0, 50, 10000), o(300, 0, 20000), o(350, 1, 20000)]
         ] {
             let cycles = QuotaActualCycleProjector.project(readings, now: d(700))
-            XCTAssertEqual(cycles.count, 1)
+            XCTAssertEqual(cycles.count, 2)
             let current = try XCTUnwrap(cycles.first)
-            XCTAssertTrue(current.resetChangePending)
+            XCTAssertFalse(current.resetChangePending)
             XCTAssertEqual(current.lastObservedAt, readings.last?.at)
-            XCTAssertEqual(current.certainEnd, d(0), "genuine boundary ambiguity must stay separate from fresh observations")
+            XCTAssertEqual(current.certainStart, d(300))
         }
     }
 
-    func testUnconfirmedBoundaryKeepsNewCoverageAsUnassignedUsage() throws {
-        let cycles = QuotaActualCycleProjector.project([
+    func testImmediateBoundaryHasNoPendingCost() throws {
+        let current = try XCTUnwrap(QuotaActualCycleProjector.project([
             o(0, 50, 10000), o(300, 0, 20000), o(600, 0, 20000)
-        ], now: d(900))
-        let current = try XCTUnwrap(cycles.first)
-        let usage = QuotaCycleUsage(events: [event(0, 100), event(300, 200), event(600, 400)],
-                                    cycle: current, coverageEnd: d(900))
-        XCTAssertEqual(usage.total.totalTokens, 0)
-        XCTAssertEqual(usage.unassignedTokens, 300, "do not drop pending usage or include unobserved time")
+        ], now: d(900)).first)
+        XCTAssertEqual(current.certainStart, d(300))
+        let usage = QuotaCycleUsage(exactEvents: [event(300, 200)])
+        XCTAssertEqual(usage.total.totalTokens, 200)
+        XCTAssertEqual(usage.unassignedTokens, 0)
     }
 
     func testConfirmedInteriorsAndSharedBoundaryReconcileWithoutDoubleCounting() throws {
@@ -136,10 +132,10 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
             model: "gpt-5.6-sol", breakdown: minutes.map(\.breakdown).combined, minuteBuckets: minutes)]
         let old = QuotaCycleUsage(events: events, cycle: cycles[1], coverageEnd: d(900))
         let current = QuotaCycleUsage(events: events, cycle: cycles[0], coverageEnd: d(900))
-        XCTAssertEqual(old.total.totalTokens, 100)
+        XCTAssertEqual(old.total.totalTokens, 400)
         XCTAssertEqual(current.total.totalTokens, 1200)
-        XCTAssertEqual(old.unassignedTokens, 300)
-        XCTAssertEqual(current.unassignedTokens, old.unassignedTokens, "both views refer to the same shared uncertain boundary")
+        XCTAssertEqual(old.unassignedTokens, 0)
+        XCTAssertEqual(current.unassignedTokens, 0)
         XCTAssertEqual(old.total.totalTokens + current.total.totalTokens + current.unassignedTokens, 1600)
     }
 
@@ -149,14 +145,14 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
         ], now: d(700))
         XCTAssertEqual(cycles.count, 2)
         guard cycles.count == 2 else { return }
-        XCTAssertEqual(cycles[1].end, .exact(d(610)))
+        XCTAssertEqual(cycles[1].end, .exact(d(660)))
         XCTAssertEqual(cycles[0].start, cycles[1].end)
         let offline = QuotaActualCycleProjector.project([
             o(0, 50, 600), o(300, 60, 610), o(1300000, 5, 1700000)
         ], now: d(1300100))
         XCTAssertEqual(offline.count, 2)
-        XCTAssertNil(offline.first?.start)
-        XCTAssertEqual(offline.last?.end, .exact(d(610)))
+        XCTAssertEqual(offline.first?.start, .exact(d(1300000)))
+        XCTAssertEqual(offline.last?.end, .exact(d(1300000)))
     }
 
     func testProFilterRetainsStableResetLowPointThroughDatabaseRestart() throws {
@@ -224,25 +220,16 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
         XCTAssertEqual(try rawValues(url), [7, 0, 1, 4])
     }
 
-    func testLaterConfirmationCannotPromoteEarlierPendingUsageToOldCycle() throws {
+    func testRepeatedReplenishmentsNeverLeaveAPendingAttributionGap() throws {
         let cycles = QuotaActualCycleProjector.project([
             o(0, 60, 10000), o(300, 30, 20000), o(360, 29, 20000),
             o(600, 15, 20000), o(660, 16, 20000)
         ], now: d(700))
-        XCTAssertEqual(cycles.count, 2)
-        guard cycles.count == 2 else { return }
-        XCTAssertEqual(cycles[1].certainEnd, d(0))
-        XCTAssertEqual(cycles[0].start, .init(earliest: d(0), latest: d(600)))
-        let last = TokenCacheAttributionEvent(id: "new", start: d(600), model: "gpt-5.6-sol",
-            breakdown: breakdown(300), minuteBuckets: [.init(start: d(600), breakdown: breakdown(300))])
-        let events = [event(0, 100), event(300, 200), last]
-        let old = QuotaCycleUsage(events: events, cycle: cycles[1], coverageEnd: d(700))
-        let current = QuotaCycleUsage(events: events, cycle: cycles[0], coverageEnd: d(700))
-        XCTAssertEqual(old.total.totalTokens, 0)
-        XCTAssertEqual(old.unassignedTokens, 300)
-        XCTAssertEqual(current.total.totalTokens, 300)
-        XCTAssertEqual(current.unassignedTokens, 300)
-        XCTAssertEqual(old.total.totalTokens + current.total.totalTokens + current.unassignedTokens, 600)
+        XCTAssertEqual(cycles.count, 3)
+        XCTAssertEqual(cycles.map { $0.start?.latest }, [d(600), d(300), nil])
+        XCTAssertEqual(cycles[1].certainEnd, d(600))
+        XCTAssertEqual(cycles[2].certainEnd, d(300))
+        XCTAssertTrue(cycles.allSatisfy { $0.pendingBoundary == nil && !$0.resetChangePending })
     }
 
     func testLaterPendingResetCannotEraseEarlierConfirmedResetThroughProFilter() throws {
@@ -259,13 +246,13 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
         XCTAssertEqual(rawBefore, [7, 0, 1, 6, 0, 3])
         for db in [database, QuotaHistoryDatabase(databaseURL: url)] {
             let loaded = try db.loadSnapshot(for: samples.last!, now: d(350))
-            XCTAssertEqual(loaded.actualCycles.count, 2)
+            XCTAssertEqual(loaded.actualCycles.count, 3)
             let current = try XCTUnwrap(loaded.actualCycles.first)
-            XCTAssertEqual(current.certainStart, d(60))
-            XCTAssertEqual(current.certainEnd, d(240))
+            XCTAssertEqual(current.certainStart, d(300))
+            XCTAssertEqual(current.certainEnd, d(330))
             XCTAssertEqual(current.lastObservedAt, d(330))
-            XCTAssertEqual(current.pendingBoundary, .init(earliest: d(240), latest: d(300)))
-            XCTAssertTrue(current.resetChangePending)
+            XCTAssertNil(current.pendingBoundary)
+            XCTAssertFalse(current.resetChangePending)
             XCTAssertTrue(loaded.actualCycles.last?.endedEarly == true)
             let observations = loaded.recentBins.flatMap(\.sevenDayObservations)
             XCTAssertTrue(observations.contains { $0.remainingPercent == 100 && $0.observedAt == d(60) })
@@ -286,10 +273,10 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
         let rawBefore = try rawValues(url)
         for db in [database, QuotaHistoryDatabase(databaseURL: url)] {
             let loaded = try db.loadSnapshot(for: samples.last!, now: d(200))
-            XCTAssertEqual(loaded.actualCycles.count, 1)
+            XCTAssertEqual(loaded.actualCycles.count, 2)
             XCTAssertEqual(loaded.actualCycles.first?.lastObservedAt, d(180))
             let observations = loaded.recentBins.flatMap(\.sevenDayObservations)
-            XCTAssertFalse(observations.contains { $0.observedAt == d(60) || $0.observedAt == d(120) })
+            XCTAssertTrue(observations.contains { $0.observedAt == d(60) || $0.observedAt == d(120) })
             XCTAssertTrue(observations.contains { $0.remainingPercent == 98 && $0.observedAt == d(180) })
         }
         XCTAssertEqual(rawBefore, [7, 0, 1, 2])
@@ -303,8 +290,8 @@ final class QuotaActualCycleRegressionTests: XCTestCase {
             o(0, 3, 10000), o(60, 4, 10010), o(120, 50, 10010),
             o(300, 0, 20000), o(360, 1, 20000), o(420, 2, 20000)
         ], now: d(450))
-        XCTAssertEqual(projection.diagnostics.map(\.kind), [.corrected, .candidate, .confirmed])
-        XCTAssertEqual(projection.diagnostics.map(\.at), [d(60), d(300), d(360)])
+        XCTAssertEqual(projection.diagnostics.map(\.kind), [.confirmed])
+        XCTAssertEqual(projection.diagnostics.map(\.at), [d(300)])
     }
 
     private func quota(_ at: Double, _ used: Int, _ reset: Double, plan: String,

@@ -6,150 +6,81 @@ final class QuotaActualCycleTests: XCTestCase {
     private func o(_ at: Double, _ used: Int, _ reset: Double) -> QuotaCycleObservation {
         .init(at: d(at), usedPercent: used, resetsAt: d(reset))
     }
-
-    func testOfflineReplenishmentDoesNotRequireObservingFullQuota() {
-        let c = QuotaActualCycleProjector.project([
-            o(0, 93, 400000), o(16500, 9, 700000), o(16700, 10, 700000), o(17500, 11, 700000)
-        ], now: d(18000))
-        XCTAssertEqual(c.count, 2)
-        XCTAssertTrue(c[1].endedEarly)
-        XCTAssertEqual(c[0].start, .init(earliest: d(0), latest: d(16500)))
+    private struct Scenario: Decodable {
+        let name: String
+        let now: Double
+        let samples: [[Double]]
+        let absentRanges: [[Double]]
+        let presentRanges: [[Double]]
+        let expectedStarts: [Double?]
+        let expectedWithdrawn: Int
     }
 
-    func testLateAbruptReturnCancelsProvisionalReset() {
-        let c = QuotaActualCycleProjector.project([
-            o(0, 50, 10000), o(60, 30, 20000), o(180, 31, 20000),
-            o(2400, 50, 10000), o(2460, 51, 10000)
-        ], now: d(2500))
-        XCTAssertEqual(c.count, 1)
+    func testSharedObservedCycleV3Scenarios() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("SharedFixtures/quota-observed-cycles-v3.json")
+        let scenarios = try JSONDecoder().decode([Scenario].self, from: Data(contentsOf: url))
+        XCTAssertEqual(scenarios.count, 16)
+        for scenario in scenarios {
+            let observations = scenario.samples.map {
+                QuotaCycleObservation(at: Date(timeIntervalSince1970: $0[0]), usedPercent: Int($0[1]),
+                    resetsAt: Date(timeIntervalSince1970: $0[2]))
+            }
+            let projection = QuotaActualCycleProjector.projectWithDiagnostics(observations,
+                now: Date(timeIntervalSince1970: scenario.now)) { from, through in
+                let range = [from.timeIntervalSince1970, through.timeIntervalSince1970]
+                if scenario.presentRanges.contains(range) { return .present }
+                if scenario.absentRanges.contains(where: { $0[0] <= range[0] && $0[1] >= range[1] }) { return .absent }
+                return .unknown
+            }
+            XCTAssertEqual(projection.cycles.map { $0.start?.latest.timeIntervalSince1970 }, scenario.expectedStarts, scenario.name)
+            XCTAssertEqual(projection.diagnostics.filter { $0.kind == .withdrawn }.count, scenario.expectedWithdrawn, scenario.name)
+            XCTAssertTrue(projection.cycles.first?.isCurrent == true, scenario.name)
+            XCTAssertTrue(projection.cycles.allSatisfy { !$0.resetChangePending && $0.pendingBoundary == nil }, scenario.name)
+            for pair in zip(projection.cycles, projection.cycles.dropFirst()) {
+                XCTAssertEqual(pair.0.start, pair.1.end, scenario.name)
+                XCTAssertTrue(pair.0.start?.isExact == true, scenario.name)
+            }
+        }
     }
 
-    func testFirstObservedPeriodNeverBackdatesSevenDays() {
-        let cycles = QuotaActualCycleProjector.project([o(0, 20, 10000), o(60, 21, 10000)], now: d(70))
+    func testFirstObservedPeriodNeverBackdatesAndDeadlineDoesNotExpireIt() {
+        let cycles = QuotaActualCycleProjector.project([o(0, 20, 30), o(60, 21, 30)], now: d(10000))
         XCTAssertEqual(cycles.count, 1)
         XCTAssertNil(cycles[0].start)
         XCTAssertEqual(cycles[0].certainStart, d(0))
         XCTAssertEqual(cycles[0].certainEnd, d(60))
-        XCTAssertFalse(cycles[0].hasCompleteBoundaries)
+        XCTAssertTrue(cycles[0].isCurrent)
+        XCTAssertNil(cycles[0].end)
     }
 
-    func testConfirmedEarlyResetSeparatesBothCertainInteriors() {
+    func testMissingScheduleStillAllowsAUsageReset() {
         let cycles = QuotaActualCycleProjector.project([
-            o(0, 50, 10000), o(300, 65, 10000), o(420, 1, 20000), o(480, 2, 20002)
-        ], now: d(500))
+            .init(at: d(0), usedPercent: 70, resetsAt: .distantPast),
+            .init(at: d(60), usedPercent: 0, resetsAt: .distantPast)
+        ], now: d(100))
         XCTAssertEqual(cycles.count, 2)
-        XCTAssertEqual(cycles[0].certainStart, d(420))
-        XCTAssertEqual(cycles[1].certainEnd, d(300))
-        XCTAssertEqual(cycles[0].start, cycles[1].end)
-        XCTAssertTrue(cycles[1].endedEarly)
-        XCTAssertFalse(cycles[0].start!.isExact)
+        XCTAssertNil(cycles[0].scheduledResetAt)
+        XCTAssertEqual(cycles[0].start, .exact(d(60)))
     }
 
-    func testUnconfirmedOrCorrectionNeverCreatesActualCycle() {
-        for observations in [
-            [o(0, 50, 10000), o(300, 0, 20000)],
-            [o(0, 60, 10000), o(300, 1, 20000), o(420, 60, 20000)],
-            [o(0, 60, 10000), o(300, 2, 20000), o(420, 1, 20000)]
-        ] {
-            let cycles = QuotaActualCycleProjector.project(observations, now: d(500))
-            XCTAssertEqual(cycles.count, 1)
-            XCTAssertTrue(cycles[0].resetChangePending)
-            XCTAssertEqual(cycles[0].certainEnd, d(0))
-            XCTAssertEqual(cycles[0].lastObservedAt, observations.last?.at)
-        }
-        let forward = QuotaActualCycleProjector.project([
-            o(0, 50, 10000), o(300, 51, 20000), o(420, 52, 20000)
-        ], now: d(500))
-        XCTAssertEqual(forward.count, 1)
-        XCTAssertTrue(forward[0].resetChangePending, "the schedule is unconfirmed, not a usage boundary")
-        XCTAssertNil(forward[0].pendingBoundary)
-        XCTAssertEqual(forward[0].certainEnd, d(420))
-        let backward = QuotaActualCycleProjector.project([
-            o(0, 50, 10000), o(300, 0, 9000), o(420, 1, 9000)
-        ], now: d(500))
-        XCTAssertEqual(backward.count, 1)
-        XCTAssertFalse(backward[0].resetChangePending)
-        XCTAssertEqual(backward[0].certainEnd, d(420))
+    func testFutureAndDuplicateObservationsAreExcludedDeterministically() {
+        let input = [o(60, 0, 1000), o(0, 50, 1000), o(60, 40, 1000), o(200, 50, 1000)]
+        let cycles = QuotaActualCycleProjector.project(input, now: d(100))
+        XCTAssertEqual(cycles.count, 2)
+        XCTAssertEqual(cycles[0].start, .exact(d(60)))
+        XCTAssertEqual(cycles[0].lastObservedAt, d(60))
     }
 
-    func testJitterAndDuplicateFreshnessCannotConfirmReset() {
-        let jitter = QuotaActualCycleProjector.project([o(0, 50, 10000), o(60, 51, 10002), o(120, 52, 9999)], now: d(180))
-        XCTAssertEqual(jitter.count, 1)
-        XCTAssertFalse(jitter[0].resetChangePending)
-        let duplicate = QuotaActualCycleProjector.project([o(0, 50, 10000), o(300, 0, 20000), o(300, 1, 20000)], now: d(400))
-        XCTAssertEqual(duplicate.count, 1)
-        XCTAssertTrue(duplicate[0].resetChangePending)
-    }
-
-    func testWeakDropAndCrossAppEchoDoNotConfirmEarlyReset() {
-        for samples in [
-            [o(0, 60, 10000), o(300, 59, 20000), o(420, 59, 20000)],
-            [o(0, 60, 10000), o(300, 0, 20000), o(303, 0, 20000)],
-            [o(0, 60, 10000), o(300, 0, 20000), o(303, 0, 20000), o(350, 60, 10000)]
-        ] {
-            XCTAssertEqual(QuotaActualCycleProjector.project(samples, now: d(500)).count, 1)
-        }
-        let sustained = [o(0, 60, 10000), o(300, 0, 20000), o(303, 0, 20000), o(360, 1, 20000)]
-        XCTAssertEqual(QuotaActualCycleProjector.project(sustained, now: d(500)).count, 2)
-    }
-
-    func testNaturalExpiryAndLongOfflineGapDoNotInventPeriods() {
-        let natural = QuotaActualCycleProjector.project([o(0, 50, 600), o(300, 90, 600), o(660, 5, 605400)], now: d(700))
-        XCTAssertEqual(natural.count, 2)
-        XCTAssertEqual(natural[0].start, .exact(d(600)))
-        XCTAssertEqual(natural[1].end, .exact(d(600)))
-        let offline = QuotaActualCycleProjector.project([o(0, 50, 600), o(1300000, 5, 1700000)], now: d(1300100))
-        XCTAssertEqual(offline.count, 2)
-        XCTAssertNil(offline[0].start)
-        XCTAssertEqual(offline[1].end, .exact(d(600)))
-    }
-
-    func testExpiredObservationIsExcluded() {
-        let cycles = QuotaActualCycleProjector.project([o(0, 50, 600), o(700, 50, 600)], now: d(800))
-        XCTAssertEqual(cycles.count, 1)
-        XCTAssertEqual(cycles[0].lastObservedAt, d(0))
-        XCTAssertLessThanOrEqual(cycles[0].certainStart, cycles[0].certainEnd)
-    }
-
-    func testClockAloneDoesNotMakeObservedExpiryExact() {
-        let cycles = QuotaActualCycleProjector.project([o(0, 50, 600), o(300, 80, 600)], now: d(700))
-        XCTAssertEqual(cycles[0].end, .init(earliest: d(300), latest: d(600)))
-        XCTAssertFalse(cycles[0].isCurrent)
-    }
-
-    func testPendingResetDoesNotKeepExpiredPeriodCurrent() {
-        let cycles = QuotaActualCycleProjector.project([
-            o(0, 50, 600), o(300, 55, 600), o(420, 1, 1600)
-        ], now: d(700))
-        XCTAssertEqual(cycles.count, 1)
-        XCTAssertTrue(cycles[0].resetChangePending)
-        XCTAssertFalse(cycles[0].isCurrent)
-        XCTAssertEqual(cycles[0].end, .init(earliest: d(300), latest: d(600)))
-        XCTAssertEqual(cycles[0].certainEnd, d(300))
-    }
-
-    func testUncertainResetMinutesExcludedFromBothInteriorTotals() {
-        let cycles = QuotaActualCycleProjector.project([
-            o(0, 50, 10000), o(300, 65, 10000), o(420, 1, 20000), o(480, 2, 20000)
-        ], now: d(500))
-        func breakdown(_ amount: Int) -> TokenCacheBreakdown {
-            .init(inputTokens: amount, cachedInputTokens: 0, outputTokens: 0,
-                reasoningOutputTokens: 0, totalTokens: amount, calls: 1)
-        }
-        let minutes = (0..<5).map { i in
-            TokenCacheBucket(start: d(300 + Double(i * 60)), breakdown: breakdown((i + 1) * 100))
-        }
-        let events = [
-            TokenCacheAttributionEvent(id: "inside", start: d(0), model: "gpt-5.6-sol", breakdown: breakdown(100)),
-            TokenCacheAttributionEvent(id: "edge", start: d(300), model: "gpt-5.6-sol",
-                breakdown: minutes.map(\.breakdown).combined, minuteBuckets: minutes)
-        ]
-        let old = QuotaCycleUsage(events: events, cycle: cycles[1], coverageEnd: d(600))
-        let current = QuotaCycleUsage(events: events, cycle: cycles[0], coverageEnd: d(600))
-        XCTAssertEqual(old.total.totalTokens, 100)
-        XCTAssertEqual(current.total.totalTokens, 300)
-        XCTAssertEqual(old.unassignedTokens, 300)
-        XCTAssertEqual(current.unassignedTokens, 300)
+    func testReprojectionChangesBoundariesWithoutChangingInput() {
+        let input = [o(0, 70, 1000), o(60, 0, 1000), o(360000, 0, 1000), o(360060, 70, 1000)]
+        let before = QuotaActualCycleProjector.project(input, now: d(360000))
+        let unknown = QuotaActualCycleProjector.project(input, now: d(360060))
+        let corrected = QuotaActualCycleProjector.project(input, now: d(360060), consumption: { _, _ in .absent })
+        XCTAssertEqual(before.count, 2)
+        XCTAssertEqual(unknown.count, 2)
+        XCTAssertEqual(corrected.count, 1)
+        XCTAssertEqual(input.map(\.usedPercent), [70, 0, 0, 70])
     }
 
     func testHistoryProjectionRestoresAndIsolatesAccountIdentity() throws {

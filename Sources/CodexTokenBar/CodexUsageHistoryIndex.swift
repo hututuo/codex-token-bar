@@ -663,6 +663,76 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             maximumMinuteBucketCount: 4)
     }
 
+    /// Covered-empty is evidence; missing/stale/unsafe publication is unknown.
+    /// This opens only an existing index, never migrates it or rescans sessions.
+    static func quotaCycleConsumption(codexHome: URL, after start: Date,
+                                      through end: Date) -> QuotaCycleConsumption {
+        guard end > start else { return .unknown }
+        do {
+            let reader = try Self(readOnlyCycleHome: codexHome)
+            return try reader.cycleConsumption(after: start, through: end)
+        } catch { return .unknown }
+    }
+
+    func cycleConsumption(after start: Date, through end: Date) throws -> QuotaCycleConsumption {
+        return try driver.withConnection { db in
+                try db.readTransaction { tx in
+                    let state = try currentAttributionState(connection: tx)
+                    let pending = try tx.readRows("SELECT 1 FROM schema_meta WHERE key='canonical_projection_pending'") { $0.int(0) }.first != nil
+                    guard !pending, !state.currentScanUnsafeCauseDetected else { return .unknown }
+                    let found = try tx.readRows("""
+                        SELECT 1 FROM canonical_usage_events
+                        WHERE timestamp > ? AND timestamp <= ? AND tokens > 0 LIMIT 1
+                        """, bindings: [.double(start.timeIntervalSince1970), .double(end.timeIntervalSince1970)]) { $0.int(0) }.first != nil
+                    if found { return .present }
+                    guard state.unsafeSinceGeneration == nil,
+                          let receipt = try UsageIndexCoverageCertificate.read(on: tx), receipt.revision == 1,
+                          receipt.generation == state.generation, receipt.provenanceEpoch == state.provenanceEpoch,
+                          receipt.observedAt >= end else { return .unknown }
+                    let unresolved = try tx.readRows("SELECT 1 FROM usage_ledger_unresolved WHERE timestamp > ? AND timestamp <= ? LIMIT 1",
+                        bindings: [.double(start.timeIntervalSince1970), .double(end.timeIntervalSince1970)]) { $0.int(0) }.first != nil
+                    return unresolved ? .unknown : .absent
+                }
+            }
+    }
+
+    /// Exact half-open cycle bounds over the canonical ledger. Five-minute
+    /// grouping retains dated model pricing, but never clips mixed edge tokens.
+    static func quotaCycleExactUsage(codexHome: URL, provenanceEpoch: String,
+        generation: Int64, from start: Date, before end: Date) throws -> [TokenCacheAttributionEvent] {
+        let reader = try Self(readOnlyCycleHome: codexHome)
+        return try reader.cycleExactUsage(provenanceEpoch: provenanceEpoch, generation: generation, from: start, before: end)
+    }
+
+    func cycleExactUsage(provenanceEpoch: String, generation: Int64,
+                         from start: Date, before end: Date) throws -> [TokenCacheAttributionEvent] {
+        return try driver.withConnection { db in
+            try db.readTransaction { tx in
+                let state = try currentAttributionState(connection: tx)
+                let pending = try tx.readRows("SELECT 1 FROM schema_meta WHERE key='canonical_projection_pending'") { $0.int(0) }.first != nil
+                guard !pending, !state.currentScanUnsafeCauseDetected,
+                      state.generation == generation, state.provenanceEpoch == provenanceEpoch else {
+                    throw SQLiteDatabaseError(operation: "Read observed cycle", code: SQLITE_ABORT,
+                        message: "周期明细等待精确统计更新", path: driver.url.path)
+                }
+                return try tx.readRows("""
+                    SELECT CAST(timestamp/300 AS INTEGER)*300, model,
+                           SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
+                           SUM(reasoning_output_tokens), SUM(tokens), COUNT(*)
+                    FROM canonical_usage_events WHERE timestamp >= ? AND timestamp < ? AND tokens > 0
+                    GROUP BY 1, model ORDER BY 1, model
+                    """, bindings: [.double(start.timeIntervalSince1970), .double(end.timeIntervalSince1970)]) { row in
+                    let timestamp = max(row.double(0) ?? 0, start.timeIntervalSince1970)
+                    return TokenCacheAttributionEvent(id: "cycle-v3:\(timestamp):\(row.text(1) ?? "")",
+                        start: Date(timeIntervalSince1970: timestamp), model: row.text(1),
+                        breakdown: TokenCacheBreakdown(inputTokens: row.int(2) ?? 0,
+                            cachedInputTokens: row.int(3) ?? 0, outputTokens: row.int(4) ?? 0,
+                            reasoningOutputTokens: row.int(5) ?? 0, totalTokens: row.int(6) ?? 0, calls: row.int(7) ?? 0))
+                }
+            }
+        }
+    }
+
     private init(
         databaseURL: URL,
         fileManager: FileManager,

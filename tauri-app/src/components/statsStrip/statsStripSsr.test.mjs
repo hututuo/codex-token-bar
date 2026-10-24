@@ -64,7 +64,7 @@ test("observed cycle models preserve unknown prices, independent review, Tokens 
     const previous=container.querySelector('.quota-calendar-bands button[aria-label^="第 1 期"]');
     await React.act(async()=>{previous.click();await settle();});
     assert.equal(calls.at(-1)[1].cycleId,"previous");
-    assert.match(container.querySelector('.quota-calendar-selection').title,/提前重置（推测）/);
+    assert.match(container.querySelector('.quota-calendar-selection').title,/额度已重置/);
     assert.ok(container.querySelector('.quota-cycle-calendar'));
     assert.equal(container.querySelector('.quota-calendar-disclosure').getAttribute("aria-expanded"), "true");
     assert.equal(container.querySelector('[aria-label="模型费用范围"] button').textContent,"历史");

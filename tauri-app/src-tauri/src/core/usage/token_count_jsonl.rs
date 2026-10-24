@@ -4567,8 +4567,12 @@ pub(crate) fn dashboard_scan_signature_count_for_testing() -> usize {
 }
 
 /// Read existing published aggregates only; period navigation never scans logs.
-pub(crate) fn quota_cycle_model_ranges(codex_home: &Path, ranges: &[(i64, i64)]) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
+pub(crate) fn quota_cycle_model_ranges(codex_home: &Path, ranges: &[(f64, f64)]) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
     exact_usage_index::cycle_range::read(codex_home, ranges)
+}
+
+pub(crate) fn quota_cycle_consumption_evidence(codex_home: &Path, ranges: &[(f64, f64)]) -> Vec<crate::core::quota_history::cycles::ConsumptionEvidence> {
+    exact_usage_index::cycle_range::read_consumption_evidence(codex_home, ranges)
 }
 
 fn history_compression_enabled(codex_home: &Path) -> bool {

@@ -3376,8 +3376,8 @@ pub struct QuotaCycleUsage {
     pending_reason: Option<String>,
     model_breakdowns: Vec<crate::models::ModelTokenBreakdown>,
     boundary_model_breakdowns: Vec<crate::models::ModelTokenBreakdown>,
-    observed_start_unix: i64,
-    observed_end_unix: i64,
+    observed_start_unix: f64,
+    observed_end_unix: f64,
 }
 
 #[tauri::command]
@@ -3389,7 +3389,7 @@ pub async fn read_quota_cycle_usage(
     run_source_bound_dashboard_read(&app, source_token, move |home| {
         let cycles = crate::core::quota::observed_cycles(&home, &expected_scope)?;
         let cycle = cycles.iter().find(|c| c.id == cycle_id).ok_or("额度周期已更新，请重新选择")?;
-        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let now = time::OffsetDateTime::now_utc().unix_timestamp() as f64;
         let start = cycle.start_upper_unix.unwrap_or(cycle.first_observed_unix);
         let end = cycle.end_lower_unix.min(now).max(start);
         let ranges = [(start,end),

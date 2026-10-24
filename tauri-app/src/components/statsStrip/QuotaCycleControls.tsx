@@ -5,7 +5,7 @@ export function quotaCycleLabel(c: QuotaCycle): string {
   const start = c.startLowerUnix === null ? `从 ${date(c.firstObservedUnix)} 开始记录`
     : approximateDate(c.startLowerUnix, c.startUpperUnix ?? c.startLowerUnix);
   const end = c.current ? "至今" : approximateDate(c.endLowerUnix, c.endUpperUnix);
-  return `${start} → ${end}${c.earlyEnd ? " · 提前重置（推测）" : ""}`;
+  return `${start} → ${end}${c.earlyEnd ? " · 额度已重置" : ""}`;
 }
 export function quotaCycleErrorStatus(error: string): string {
   if (error.includes("未解决的校验异常")) return "来源待核验";

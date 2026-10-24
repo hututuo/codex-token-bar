@@ -2192,7 +2192,7 @@ fn history_reclassifies_legacy_seven_day_only_rows_written_into_five_hour_column
 }
 
 #[test]
-fn history_applies_boundary_and_backward_reset_rules_per_window() {
+fn history_keeps_observed_drop_without_exact_absence_evidence() {
     let created_at = 1_800_000_000.0;
     let stable_five_reset = created_at + 4.0 * 60.0 * 60.0;
     let shifted_five_reset = stable_five_reset - 2.0 * 60.0 * 60.0;
@@ -2226,7 +2226,7 @@ fn history_applies_boundary_and_backward_reset_rules_per_window() {
 
     assert_eq!(sanitized[1].five_hour_used_percent, Some(2));
     assert_eq!(sanitized[1].five_hour_resets_at, Some(shifted_five_reset));
-    assert_eq!(sanitized[1].seven_day_used_percent, None);
+    assert_eq!(sanitized[1].seven_day_used_percent, Some(1));
     assert_eq!(sanitized[1].seven_day_resets_at, Some(shifted_seven_reset));
     assert_eq!(sanitized[2].five_hour_used_percent, Some(46));
     assert_eq!(sanitized[2].seven_day_used_percent, Some(33));

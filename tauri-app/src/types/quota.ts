@@ -103,7 +103,7 @@ export interface QuotaCycle {
   endUpperUnix: number;
   firstObservedUnix: number;
   lastObservedUnix: number;
-  expectedResetUnix: number;
+  expectedResetUnix: number | null;
   current: boolean;
   expired: boolean;
   earlyEnd: boolean;

@@ -65,6 +65,14 @@ struct QuotaCycleUsage: Sendable {
     let unassignedSliceIDs: Set<String>
     var unassignedTokens: Int { unassignedTotal.totalTokens }
 
+    /// The reader already applied exact observation boundaries, so there is
+    /// no uncertain edge allocation and no token can belong to both cycles.
+    init(exactEvents: [TokenCacheAttributionEvent]) {
+        rows = ModelUsagePresentation.rows(from: exactEvents)
+        total = exactEvents.map(\.breakdown).combined
+        unassignedRows = []; unassignedTotal = .empty; unassignedSliceIDs = []
+    }
+
     init(events: [TokenCacheAttributionEvent], cycle: QuotaActualCycle, coverageEnd: Date) {
         let certainEnd = min(cycle.certainEnd, coverageEnd)
         let outerStart = cycle.start?.earliest ?? cycle.firstObservedAt
@@ -218,7 +226,7 @@ struct DashboardQuotaCycleBrowser: View {
         var parts: [String] = []
         if let selected {
             parts.append("\(selected.start.map { boundaryText($0) } ?? "从 \(dateText(selected.firstObservedAt)) 开始记录") → \(selected.end.map { boundaryText($0) } ?? "最近额度观测 \(dateText(selected.lastObservedAt))")")
-            if selected.isCurrent { parts.append("计划重置 \(dateText(selected.scheduledResetAt))") }
+            if selected.isCurrent, let reset = selected.scheduledResetAt { parts.append("下次重置 \(dateText(reset))") }
         } else { parts.append("暂无周期记录") }
         if let resultKey, visibleResult != nil {
             parts.append("统计截至 \(dateText(resultKey.outerEnd))")
@@ -253,7 +261,7 @@ struct DashboardQuotaCycleBrowser: View {
     }
 
     @MainActor private func load() async {
-        guard let key = request, let cycle = selected else {
+        guard let key = request, selected != nil else {
             result = nil; resultKey = nil; errorText = nil; return
         }
         errorText = nil
@@ -261,13 +269,10 @@ struct DashboardQuotaCycleBrowser: View {
         if resultKey.map({ !key.canDisplay($0) }) ?? true { result = nil; resultKey = nil }
         do {
             let value = try await Task.detached(priority: .utility) {
-                let start = Date(timeIntervalSince1970: floor(key.outerStart.timeIntervalSince1970 / 300) * 300)
-                let end = Date(timeIntervalSince1970: ceil(key.outerEnd.timeIntervalSince1970 / 300) * 300)
-                let events = try CodexUsageHistoryIndex.quotaCycleSourceBuckets(codexHome: key.home,
-                    provenanceEpoch: key.epoch, generation: key.generation, from: start, before: end,
-                    minuteBucketStarts: key.minuteBoundaries,
-                    useLatestPublishedGeneration: false)
-                return QuotaCycleUsage(events: events, cycle: cycle, coverageEnd: key.outerEnd)
+                let events = try CodexUsageHistoryIndex.quotaCycleExactUsage(codexHome: key.home,
+                    provenanceEpoch: key.epoch, generation: key.generation,
+                    from: key.outerStart, before: key.outerEnd)
+                return QuotaCycleUsage(exactEvents: events)
             }.value
             guard !Task.isCancelled, request == key else { return }
             if cache.count >= 12 { cache.removeAll() }
