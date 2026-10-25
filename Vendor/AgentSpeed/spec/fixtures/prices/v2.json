@@ -1,0 +1,509 @@
+{
+  "_comment": "Fixture price table (fictional prices) for spec/fixtures/price-cases.json, engine cases and history-expected.json. Never edit by hand: spec/tools/generate_fixtures.py.",
+  "schema": 1,
+  "version": 2,
+  "updated": "2026-10-15",
+  "currency": "USD",
+  "unit": "perMillionTokens",
+  "providers": {
+    "anthropic": {
+      "name": "anthropic",
+      "url": "https://example.com/fixture-prices"
+    },
+    "openai": {
+      "name": "openai",
+      "url": "https://example.com/fixture-prices"
+    },
+    "google": {
+      "name": "google",
+      "url": "https://example.com/fixture-prices"
+    },
+    "deepseek": {
+      "name": "deepseek",
+      "url": "https://example.com/fixture-prices"
+    },
+    "fixture": {
+      "name": "fixture",
+      "url": "https://example.com/fixture-prices"
+    }
+  },
+  "normalize": {
+    "freeProviders": [
+      "ollama",
+      "lmstudio",
+      "lm-studio",
+      "llama.cpp",
+      "llamacpp",
+      "vllm",
+      "local"
+    ],
+    "cloudSuffixes": [
+      "-cloud",
+      ":cloud"
+    ],
+    "bedrockRegions": [
+      "global",
+      "us",
+      "eu",
+      "apac",
+      "jp",
+      "au",
+      "ca",
+      "in",
+      "us-gov"
+    ],
+    "bedrockVendors": [
+      "anthropic",
+      "openai",
+      "google",
+      "meta",
+      "mistral",
+      "deepseek",
+      "qwen",
+      "moonshotai",
+      "minimax",
+      "zai",
+      "xai",
+      "amazon"
+    ],
+    "freeSuffixes": [
+      ":free",
+      "-free"
+    ],
+    "variantSuffixes": [
+      ":thinking",
+      ":extended",
+      ":nitro",
+      ":floor",
+      ":exacto",
+      ":online"
+    ],
+    "fastSuffixes": [
+      "-fast"
+    ],
+    "rewrites": [
+      {
+        "prefix": "duo-chat-opus-",
+        "to": "claude-opus-"
+      },
+      {
+        "prefix": "duo-chat-sonnet-",
+        "to": "claude-sonnet-"
+      },
+      {
+        "prefix": "duo-chat-haiku-",
+        "to": "claude-haiku-"
+      }
+    ],
+    "dateSuffixPrefixes": [
+      "claude-"
+    ],
+    "modifierSuffixes": [
+      {
+        "prefix": "claude-",
+        "suffixes": [
+          "-thinking",
+          "-minimal",
+          "-low",
+          "-medium",
+          "-high",
+          "-xhigh",
+          "-max",
+          "-none",
+          "-off"
+        ]
+      },
+      {
+        "prefix": "gemini-",
+        "suffixes": [
+          "-low",
+          "-medium",
+          "-high",
+          "-tiered"
+        ]
+      }
+    ],
+    "dotHyphenPrefixes": [
+      "claude-"
+    ]
+  },
+  "models": [
+    {
+      "id": "claude-opus-5-5",
+      "provider": "anthropic",
+      "name": "claude-opus-5-5",
+      "status": "current",
+      "prices": {
+        "input": 4,
+        "cachedInput": 0.4,
+        "cacheWrite": 5,
+        "cacheWrite1h": 8,
+        "output": 20
+      },
+      "tiers": [
+        {
+          "above": 200000,
+          "input": 8,
+          "cachedInput": 0.8,
+          "cacheWrite": 10,
+          "cacheWrite1h": 16,
+          "output": 30
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 8,
+          "cachedInput": 0.8,
+          "cacheWrite": 10,
+          "cacheWrite1h": 16,
+          "output": 40
+        }
+      },
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "name": "claude-sonnet-5-5",
+      "status": "current",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.3,
+        "cacheWrite": 3.75,
+        "cacheWrite1h": 6,
+        "output": 15
+      },
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "name": "claude-sonnet-4-5",
+      "status": "current",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.3,
+        "cacheWrite": 3.75,
+        "cacheWrite1h": 6,
+        "output": 15
+      },
+      "tiers": [
+        {
+          "above": 200000,
+          "input": 6,
+          "cachedInput": 0.6,
+          "cacheWrite": 7.5,
+          "cacheWrite1h": 12,
+          "output": 22.5
+        }
+      ],
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "claude-haiku-5",
+      "provider": "anthropic",
+      "name": "claude-haiku-5",
+      "status": "current",
+      "prices": {
+        "input": 1,
+        "cachedInput": 0.1,
+        "cacheWrite": 1.25,
+        "cacheWrite1h": 2,
+        "output": 5
+      },
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gpt-5.5",
+      "provider": "openai",
+      "name": "gpt-5.5",
+      "status": "current",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "aliases": [
+        "gpt5.5"
+      ],
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gpt-5.5-mini",
+      "provider": "openai",
+      "name": "gpt-5.5-mini",
+      "status": "current",
+      "prices": {
+        "input": 0.25,
+        "cachedInput": 0.025,
+        "output": 2
+      },
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "provider": "openai",
+      "name": "gpt-6.1-sol",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.2,
+        "output": 16
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 4,
+          "cachedInput": 0.4,
+          "output": 24
+        }
+      ],
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "deepseek-flash",
+      "provider": "deepseek",
+      "name": "deepseek-flash",
+      "status": "current",
+      "prices": {
+        "input": 0.28,
+        "cachedInput": 0.028,
+        "output": 0.42
+      },
+      "periods": [
+        {
+          "to": "2026-09-01",
+          "prices": {
+            "input": 0.5,
+            "cachedInput": 0.05,
+            "output": 1
+          }
+        }
+      ],
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "deepseek-pro",
+      "provider": "deepseek",
+      "name": "deepseek-pro",
+      "status": "current",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.06,
+        "output": 2.4
+      },
+      "offPeak": {
+        "peakUtc": [
+          "01:00-04:00",
+          "06:00-10:00"
+        ],
+        "peakWeekdays": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "offPeakDates": [
+          "2026-10-01"
+        ],
+        "prices": {
+          "input": 0.3,
+          "cachedInput": 0.03,
+          "output": 1.2
+        }
+      },
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "provider": "google",
+      "name": "gemini-2.5-pro",
+      "status": "current",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "tiers": [
+        {
+          "above": 200000,
+          "input": 2.5,
+          "cachedInput": 0.25,
+          "output": 15
+        }
+      ],
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "provider": "google",
+      "name": "gemini-2.5-flash",
+      "status": "current",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.03,
+        "output": 2.5
+      },
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gemini-3-pro-preview",
+      "provider": "google",
+      "name": "gemini-3-pro-preview",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.2,
+        "output": 12
+      },
+      "tiers": [
+        {
+          "above": 200000,
+          "input": 4,
+          "cachedInput": 0.4,
+          "output": 18
+        }
+      ],
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gemini-3-flash-preview",
+      "provider": "google",
+      "name": "gemini-3-flash-preview",
+      "status": "current",
+      "prices": {
+        "input": 0.5,
+        "cachedInput": 0.05,
+        "output": 3
+      },
+      "periods": [
+        {
+          "from": "2026-12-01T00:00Z",
+          "prices": {
+            "input": 1,
+            "cachedInput": 0.1,
+            "output": 6
+          },
+          "tiers": [
+            {
+              "above": 200000,
+              "input": 2,
+              "cachedInput": 0.2,
+              "output": 9
+            }
+          ]
+        }
+      ],
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gemini-3.1-pro",
+      "provider": "google",
+      "name": "gemini-3.1-pro",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.2,
+        "output": 10
+      },
+      "aliases": [
+        "gemini-3.1-pro-high",
+        "gemini-3.1-pro-low",
+        "gemini-3.1-pro-high-exp-b",
+        "gemini 3.1 pro (high)"
+      ],
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gemini-3.1-flash",
+      "provider": "google",
+      "name": "gemini-3.1-flash",
+      "status": "current",
+      "prices": {
+        "input": 0.5,
+        "cachedInput": 0.05,
+        "output": 3
+      },
+      "aliases": [
+        "gemini-3.1-flash-b"
+      ],
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gemini-3.1-flash-lite",
+      "provider": "google",
+      "name": "gemini-3.1-flash-lite",
+      "status": "current",
+      "free": true,
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "plain-model-1",
+      "provider": "fixture",
+      "name": "plain-model-1",
+      "status": "current",
+      "prices": {
+        "input": 1,
+        "output": 2
+      },
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    },
+    {
+      "id": "gpt-6.1-sol-mini",
+      "provider": "openai",
+      "name": "gpt-6.1-sol-mini",
+      "status": "current",
+      "prices": {
+        "input": 0.4,
+        "cachedInput": 0.04,
+        "output": 3.2
+      },
+      "source": "https://example.com/fixture-prices",
+      "checked": "2026-10-01"
+    }
+  ],
+  "unknown": [
+    {
+      "match": "prefix",
+      "value": "neko-model-",
+      "reason": "opaque local router alias"
+    },
+    {
+      "match": "exact",
+      "value": "codex-auto-review",
+      "reason": "internal model, no public price"
+    }
+  ],
+  "tests": [
+    {
+      "model": "claude-opus-5-5",
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "model": "duo-chat-sonnet-5-5",
+      "expect": "claude-sonnet-5-5"
+    },
+    {
+      "model": "neko-model-f1097c63",
+      "expect": "unknown"
+    }
+  ]
+}

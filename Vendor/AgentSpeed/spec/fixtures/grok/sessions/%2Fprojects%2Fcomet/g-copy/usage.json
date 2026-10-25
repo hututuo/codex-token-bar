@@ -1,0 +1,9 @@
+{
+  "sessionId": "g-copy",
+  "session": {
+    "inputTokens": 999999,
+    "outputTokens": 999999,
+    "modelCalls": 999
+  },
+  "turns": []
+}

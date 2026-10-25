@@ -1,0 +1,869 @@
+{
+  "_comment": "METRICS 9.2-9.3 against the fixture tables in `tables` (paths relative to this folder). `resolve.expect` is a model id, `free` or `unknown`. `cost.expect`: exact pico-USD, the rounded micro-USD (null = unknown price) and the index of the tier used (null = the base prices); `at` (UTC, YYYY-MM-DD or YYYY-MM-DDTHH:MMZ) is the response's endMs for periods and off-peak rules (absent = none applies); `fast` marks a fast-mode response. `resolve.expect` adds ` fast` when the id itself selects fast mode. Tokens are normalized usage (METRICS 3.2). `days` (9.7): all tables loaded, the highest version current, `bindings` stored; `version` is the date's binding afterwards.",
+  "tables": {
+    "v1": "prices/v1.json",
+    "v2": "prices/v2.json"
+  },
+  "resolve": [
+    {
+      "table": "v2",
+      "model": "claude-opus-5-5",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "  Claude-Opus-5-5 ",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "claude-opus-5-5[1m]",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "[Proxy] claude-opus-5-5",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "anthropic/claude-sonnet-4.5",
+      "provider": null,
+      "expect": "claude-sonnet-4-5"
+    },
+    {
+      "table": "v2",
+      "model": "openrouter/anthropic/claude-sonnet-4.5:thinking",
+      "provider": null,
+      "expect": "claude-sonnet-4-5"
+    },
+    {
+      "table": "v2",
+      "model": "openai/gpt-5.5:nitro:exacto",
+      "provider": null,
+      "expect": "gpt-5.5"
+    },
+    {
+      "table": "v2",
+      "model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "provider": null,
+      "expect": "claude-sonnet-4-5"
+    },
+    {
+      "table": "v2",
+      "model": "global.anthropic.claude-opus-5-5-v1",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "anthropic.claude-opus-5-5",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "claude-sonnet-4-5@20250929",
+      "provider": null,
+      "expect": "claude-sonnet-4-5"
+    },
+    {
+      "table": "v2",
+      "model": "claude-opus-5-5@default",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "claude-opus-5-5-thinking",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "claude-opus-5-5-xhigh",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "claude-sonnet-4-5-thinking-high",
+      "provider": null,
+      "expect": "claude-sonnet-4-5"
+    },
+    {
+      "table": "v2",
+      "model": "Claude-opus-5-5-off",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "claude-opus-5-5-fast",
+      "provider": null,
+      "expect": "claude-opus-5-5 fast"
+    },
+    {
+      "table": "v2",
+      "model": "anthropic/claude-opus-5.5-fast",
+      "provider": null,
+      "expect": "claude-opus-5-5 fast"
+    },
+    {
+      "table": "v2",
+      "model": "claude-sonnet-5-5-fast",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "claude-opus-5.5",
+      "provider": null,
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "claude-opus-5-5-latest",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "gpt-5.5-2026-04-23",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "gpt5.5",
+      "provider": null,
+      "expect": "gpt-5.5"
+    },
+    {
+      "table": "v2",
+      "model": "gpt-5.5-mini",
+      "provider": null,
+      "expect": "gpt-5.5-mini"
+    },
+    {
+      "table": "v2",
+      "model": "gpt-5.5-pro",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "gpt-5.5-high",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "Gemini 3.1 Pro (High)",
+      "provider": null,
+      "expect": "gemini-3.1-pro"
+    },
+    {
+      "table": "v2",
+      "model": "models/gemini-2.5-pro",
+      "provider": null,
+      "expect": "gemini-2.5-pro"
+    },
+    {
+      "table": "v2",
+      "model": "gemini-2.5-flash-low",
+      "provider": null,
+      "expect": "gemini-2.5-flash"
+    },
+    {
+      "table": "v2",
+      "model": "gemini-3.1-flash-b",
+      "provider": null,
+      "expect": "gemini-3.1-flash"
+    },
+    {
+      "table": "v2",
+      "model": "gemini-3.1-flash-lite",
+      "provider": null,
+      "expect": "free"
+    },
+    {
+      "table": "v2",
+      "model": "deepseek/deepseek-flash:free",
+      "provider": null,
+      "expect": "free"
+    },
+    {
+      "table": "v2",
+      "model": "big-model-free",
+      "provider": null,
+      "expect": "free"
+    },
+    {
+      "table": "v2",
+      "model": "duo-chat-sonnet-5-5",
+      "provider": null,
+      "expect": "claude-sonnet-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "qwen3-coder:30b",
+      "provider": "Ollama",
+      "expect": "free"
+    },
+    {
+      "table": "v2",
+      "model": "qwen3-coder:30b",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "gpt-oss:120b-cloud",
+      "provider": "ollama",
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "claude-opus-5-5",
+      "provider": "lmstudio",
+      "expect": "free"
+    },
+    {
+      "table": "v2",
+      "model": "claude-opus-5-5",
+      "provider": "custom",
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "table": "v2",
+      "model": "neko-model-f1097c63",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "codex-auto-review",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": null,
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v1",
+      "model": "gpt-6.1-sol-mini",
+      "provider": null,
+      "expect": "unknown"
+    },
+    {
+      "table": "v2",
+      "model": "gpt-6.1-sol-mini",
+      "provider": null,
+      "expect": "gpt-6.1-sol-mini"
+    }
+  ],
+  "cost": [
+    {
+      "name": "uncached, cache read, 5-minute and 1-hour cache writes, output",
+      "table": "v2",
+      "model": "claude-opus-5-5",
+      "tokens": {
+        "input": 21002,
+        "cachedInput": 20000,
+        "cacheWriteInput": 1000,
+        "cacheWrite1hInput": 600,
+        "output": 300,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 20808000000,
+        "costMicroUsd": 20808,
+        "tier": null
+      }
+    },
+    {
+      "name": "a long-context tier prices the whole response",
+      "table": "v2",
+      "model": "claude-opus-5-5",
+      "tokens": {
+        "input": 250000,
+        "cachedInput": 200000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 1000,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 590000000000,
+        "costMicroUsd": 590000,
+        "tier": 0
+      }
+    },
+    {
+      "name": "the threshold is exclusive",
+      "table": "v2",
+      "model": "claude-opus-5-5",
+      "tokens": {
+        "input": 200000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 10,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 800200000000,
+        "costMicroUsd": 800200,
+        "tier": null
+      }
+    },
+    {
+      "name": "the tier counts cached and cache-write input",
+      "table": "v1",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 200001,
+        "cachedInput": 150000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 164002500000,
+        "costMicroUsd": 164003,
+        "tier": 0
+      }
+    },
+    {
+      "name": "1-hour writes are clamped to the cache writes",
+      "table": "v2",
+      "model": "claude-sonnet-5-5",
+      "tokens": {
+        "input": 1500,
+        "cachedInput": 0,
+        "cacheWriteInput": 500,
+        "cacheWrite1hInput": 900,
+        "output": 10,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 6150000000,
+        "costMicroUsd": 6150,
+        "tier": null
+      }
+    },
+    {
+      "name": "missing cache prices fall back to the input price",
+      "table": "v2",
+      "model": "plain-model-1",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 600,
+        "cacheWriteInput": 100,
+        "cacheWrite1hInput": 0,
+        "output": 50,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 1100000000,
+        "costMicroUsd": 1100,
+        "tier": null
+      }
+    },
+    {
+      "name": "cache read and write exceeding input never go negative",
+      "table": "v2",
+      "model": "gpt-5.5",
+      "tokens": {
+        "input": 100,
+        "cachedInput": 100,
+        "cacheWriteInput": 50,
+        "cacheWrite1hInput": 0,
+        "output": 0,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 75000000,
+        "costMicroUsd": 75,
+        "tier": null
+      }
+    },
+    {
+      "name": "half a micro-dollar rounds up",
+      "table": "v2",
+      "model": "gpt-5.5",
+      "tokens": {
+        "input": 4,
+        "cachedInput": 4,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 0,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 500000,
+        "costMicroUsd": 1,
+        "tier": null
+      }
+    },
+    {
+      "name": "below half a micro-dollar rounds down",
+      "table": "v2",
+      "model": "gpt-5.5",
+      "tokens": {
+        "input": 3,
+        "cachedInput": 3,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 0,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 375000,
+        "costMicroUsd": 0,
+        "tier": null
+      }
+    },
+    {
+      "name": "token classes are clamped to 100 000 000 tokens",
+      "table": "v2",
+      "model": "gpt-5.5",
+      "tokens": {
+        "input": 250000000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 0,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 125000000000000,
+        "costMicroUsd": 125000000,
+        "tier": null
+      }
+    },
+    {
+      "name": "reasoning is billed as output",
+      "table": "v2",
+      "model": "deepseek-flash",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 400
+      },
+      "expect": {
+        "costPicoUsd": 490000000,
+        "costMicroUsd": 490,
+        "tier": null
+      }
+    },
+    {
+      "name": "a free model costs zero",
+      "table": "v2",
+      "model": "gemini-3.1-flash-lite",
+      "tokens": {
+        "input": 5000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 0,
+        "costMicroUsd": 0,
+        "tier": null
+      }
+    },
+    {
+      "name": "a free provider costs zero",
+      "table": "v2",
+      "model": "qwen3-coder:30b",
+      "tokens": {
+        "input": 5000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 0,
+        "costMicroUsd": 0,
+        "tier": null
+      },
+      "provider": "ollama"
+    },
+    {
+      "name": "an unknown model has no cost",
+      "table": "v1",
+      "model": "gpt-6.1-sol-mini",
+      "tokens": {
+        "input": 5000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": null,
+        "costMicroUsd": null,
+        "tier": null
+      }
+    },
+    {
+      "name": "the same model is priced once the table knows it",
+      "table": "v2",
+      "model": "gpt-6.1-sol-mini",
+      "tokens": {
+        "input": 5000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 3600000000,
+        "costMicroUsd": 3600,
+        "tier": null
+      }
+    },
+    {
+      "name": "a period applies before its `to` instant",
+      "table": "v2",
+      "model": "deepseek-flash",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 600000000,
+        "costMicroUsd": 600,
+        "tier": null
+      },
+      "at": "2026-08-31T23:59Z"
+    },
+    {
+      "name": "from its `to` instant the main prices apply",
+      "table": "v2",
+      "model": "deepseek-flash",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 322000000,
+        "costMicroUsd": 322,
+        "tier": null
+      },
+      "at": "2026-09-01"
+    },
+    {
+      "name": "a scheduled period applies from its `from` instant, with its own tiers",
+      "table": "v2",
+      "model": "gemini-3-flash-preview",
+      "tokens": {
+        "input": 300000,
+        "cachedInput": 100000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 420900000000,
+        "costMicroUsd": 420900,
+        "tier": 0
+      },
+      "at": "2026-12-01T00:00Z"
+    },
+    {
+      "name": "before a scheduled period the main prices apply",
+      "table": "v2",
+      "model": "gemini-3-flash-preview",
+      "tokens": {
+        "input": 300000,
+        "cachedInput": 100000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 105300000000,
+        "costMicroUsd": 105300,
+        "tier": null
+      },
+      "at": "2026-11-30T23:59Z"
+    },
+    {
+      "name": "inside a peak window on a weekday: the main prices",
+      "table": "v2",
+      "model": "deepseek-pro",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 840000000,
+        "costMicroUsd": 840,
+        "tier": null
+      },
+      "at": "2026-10-20T03:00Z"
+    },
+    {
+      "name": "outside the peak windows: off-peak prices",
+      "table": "v2",
+      "model": "deepseek-pro",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 420000000,
+        "costMicroUsd": 420,
+        "tier": null
+      },
+      "at": "2026-10-20T05:00Z"
+    },
+    {
+      "name": "a window's end is exclusive",
+      "table": "v2",
+      "model": "deepseek-pro",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 420000000,
+        "costMicroUsd": 420,
+        "tier": null
+      },
+      "at": "2026-10-20T04:00Z"
+    },
+    {
+      "name": "weekends are off-peak",
+      "table": "v2",
+      "model": "deepseek-pro",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 420000000,
+        "costMicroUsd": 420,
+        "tier": null
+      },
+      "at": "2026-10-24T03:00Z"
+    },
+    {
+      "name": "an off-peak date is off-peak all day",
+      "table": "v2",
+      "model": "deepseek-pro",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 420000000,
+        "costMicroUsd": 420,
+        "tier": null
+      },
+      "at": "2026-10-01T03:00Z"
+    },
+    {
+      "name": "fast mode uses the fast prices",
+      "table": "v2",
+      "model": "claude-opus-5-5",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 600,
+        "cacheWriteInput": 100,
+        "cacheWrite1hInput": 0,
+        "output": 50,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 5880000000,
+        "costMicroUsd": 5880,
+        "tier": null
+      },
+      "fast": true
+    },
+    {
+      "name": "a -fast id uses the fast prices",
+      "table": "v2",
+      "model": "claude-opus-5-5-fast",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 600,
+        "cacheWriteInput": 100,
+        "cacheWrite1hInput": 0,
+        "output": 50,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": 5880000000,
+        "costMicroUsd": 5880,
+        "tier": null
+      }
+    },
+    {
+      "name": "fast mode without a fast price is unknown",
+      "table": "v2",
+      "model": "claude-sonnet-5-5",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 50,
+        "reasoning": 0
+      },
+      "expect": {
+        "costPicoUsd": null,
+        "costMicroUsd": null,
+        "tier": null
+      },
+      "fast": true
+    }
+  ],
+  "days": [
+    {
+      "name": "a bound day keeps its table",
+      "bindings": {
+        "2026-10-20": 1
+      },
+      "date": "2026-10-20",
+      "model": "claude-opus-5-5",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "version": 1,
+      "costMicroUsd": 7500
+    },
+    {
+      "name": "an unbound day binds to the current table",
+      "bindings": {
+        "2026-10-20": 1
+      },
+      "date": "2026-10-21",
+      "model": "claude-opus-5-5",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "version": 2,
+      "costMicroUsd": 6000
+    },
+    {
+      "name": "a response its day's table cannot price takes the current table",
+      "bindings": {
+        "2026-10-20": 1
+      },
+      "date": "2026-10-20",
+      "model": "gpt-6.1-sol-mini",
+      "tokens": {
+        "input": 5000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 0
+      },
+      "version": 1,
+      "costMicroUsd": 3600
+    },
+    {
+      "name": "a binding to a missing table is replaced by the current table",
+      "bindings": {
+        "2026-10-19": 7
+      },
+      "date": "2026-10-19",
+      "model": "claude-opus-5-5",
+      "tokens": {
+        "input": 1000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 100,
+        "reasoning": 0
+      },
+      "version": 2,
+      "costMicroUsd": 6000
+    },
+    {
+      "name": "unknown in every table stays unknown",
+      "bindings": {},
+      "date": "2026-10-20",
+      "model": "neko-model-f1097c63",
+      "tokens": {
+        "input": 5000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 0
+      },
+      "version": 2,
+      "costMicroUsd": null
+    }
+  ]
+}

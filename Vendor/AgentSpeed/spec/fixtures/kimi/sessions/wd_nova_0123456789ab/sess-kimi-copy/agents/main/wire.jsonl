@@ -1,0 +1,15 @@
+{"type":"metadata","protocol_version":"1.5","created_at":1792497600000}
+{"type":"config.update","time":1792497600001,"agentId":"main","environmentDisclosure":{"cwd":"/projects/nova"}}
+{"type":"turn.prompt","time":1792497629000,"agentId":"main","turnId":1}
+{"type":"llm.request","time":1792497630000,"agentId":"main","provider":"moonshot","model":"kimi-k2.5","kind":"loop"}
+{"type":"usage.record","time":1792497634000,"agentId":"main","model":"kimi-k2.5","usage":{"inputOther":100,"output":80,"inputCacheRead":20,"inputCacheCreation":10}}
+{"type":"context.append_message","time":1792497634000,"agentId":"main","message":{"role":"assistant","id":"k-m1","content":[],"toolCalls":[],"usage":{"inputOther":100,"output":80,"inputCacheRead":20,"inputCacheCreation":10},"llmTiming":{"llmFirstTokenLatencyMs":500,"llmStreamDurationMs":3500}}}
+{"type":"context.append_loop_event","time":1792497634000,"agentId":"main","event":{"type":"step.end","uuid":"step-k1","messageId":"k-m1","turnId":"1","step":1,"finishReason":"completed","usage":{"inputOther":100,"output":80,"inputCacheRead":20,"inputCacheCreation":10},"llmFirstTokenLatencyMs":500,"llmStreamDurationMs":3500}}
+{"type":"llm.request","time":1792497640000,"agentId":"main","provider":"moonshot","model":"kimi-k2.5","kind":"loop"}
+{"type":"context.append_loop_event","time":1792497640000,"agentId":"main","event":{"type":"step.begin","uuid":"step-k2","turnId":"1","step":2}}
+{"type":"context.append_loop_event","time":1792497643200,"agentId":"main","event":{"type":"step.end","uuid":"step-k2","messageId":"k-m2","turnId":"1","step":2,"finishReason":"tool_calls","usage":{"inputOther":200,"output":120,"inputCacheRead":80,"inputCacheCreation":20},"llmFirstTokenLatencyMs":700,"llmStreamDurationMs":2500}}
+{"type":"context.append_message","time":1792497643200,"agentId":"main","message":{"role":"assistant","id":"k-m2","content":[],"toolCalls":[{"id":"tool-k","name":"Read","type":"function","arguments":"{}"}],"usage":{"inputOther":200,"output":120,"inputCacheRead":80,"inputCacheCreation":20}}}
+{"type":"llm.request","time":1792497650000,"agentId":"main","provider":"moonshot","model":"kimi-k2.5","kind":"loop"}
+{"type":"human.agent.message.appended","time":1792497652000,"agentId":"main","message":{"message":{"role":"assistant","content":[],"toolCalls":[]},"meta":{"messageId":"k-m3","usage":{"inputOther":50,"output":60,"inputCacheRead":10,"inputCacheCreation":0},"model":{"provider":"moonshot","model":"kimi-k2.5"}}}}
+{"type":"subagent.completed","time":1792497652500,"agentId":"main","subagentId":"agent-0","resultSummary":"Synthetic result","usage":{"inputOther":5000,"output":5000,"inputCacheRead":0,"inputCacheCreation":0}}
+{"type":"turn.ended","time":1792497653000,"agentId":"main","turnId":1,"reason":"completed"}

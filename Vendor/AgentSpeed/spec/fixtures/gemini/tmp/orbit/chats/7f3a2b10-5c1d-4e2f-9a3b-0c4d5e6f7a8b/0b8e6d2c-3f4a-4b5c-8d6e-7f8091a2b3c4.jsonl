@@ -1,0 +1,8 @@
+{"sessionId":"0b8e6d2c-3f4a-4b5c-8d6e-7f8091a2b3c4","projectHash":"9c580b3e8282683f6e2d2dd375b662f2c94724cd108e55bf34ef4dc90231cb79","startTime":"2026-10-20T10:32:07.100Z","lastUpdated":"2026-10-20T10:32:07.100Z","kind":"subagent","directories":["C:\\Users\\dev\\projects\\orbit"]}
+{"id":"b0b0b0b0-0000-4000-8000-000000000001","timestamp":"2026-10-20T10:32:07.200Z","type":"user","content":[{"text":"Find all call sites of parseConfig"}]}
+{"$set":{"lastUpdated":"2026-10-20T10:32:07.201Z"}}
+{"id":"b0b0b0b0-0000-4000-8000-000000000002","timestamp":"2026-10-20T10:32:10.000Z","type":"gemini","content":"","thoughts":[],"tokens":{"input":6000,"output":70,"cached":0,"thoughts":150,"tool":0,"total":6220},"model":"gemini-3-flash-preview"}
+{"$set":{"lastUpdated":"2026-10-20T10:32:10.001Z"}}
+{"id":"b0b0b0b0-0000-4000-8000-000000000002","timestamp":"2026-10-20T10:32:10.000Z","type":"gemini","content":"","thoughts":[],"tokens":{"input":6000,"output":70,"cached":0,"thoughts":150,"tool":0,"total":6220},"model":"gemini-3-flash-preview","toolCalls":[{"id":"grep_search__q1","name":"grep_search","args":{"pattern":"parseConfig"},"result":[{"functionResponse":{"id":"grep_search__q1","name":"grep_search","response":{"output":"ok"}}}],"status":"success","timestamp":"2026-10-20T10:32:10.800Z","displayName":"grep_search","description":"","renderOutputAsMarkdown":false}]}
+{"id":"b0b0b0b0-0000-4000-8000-000000000003","timestamp":"2026-10-20T10:32:10.810Z","type":"user","content":[{"functionResponse":{"id":"grep_search__q1","name":"grep_search","response":{"output":"src/cli.ts:12"}}}]}
+{"$set":{"lastUpdated":"2026-10-20T10:32:10.811Z"}}

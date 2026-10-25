@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>AgentSpeed.Core</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsTrimmable>true</IsTrimmable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Pure managed zstd (MIT) for DeepSeek Harness frame streams; no native binaries. -->
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- METRICS 9 / DESIGN 9: the bundled price table and currency list; spec/assets stays the single source of truth. -->
+    <EmbeddedResource Include="..\..\..\spec\assets\prices.json" Link="Pricing\prices.json" LogicalName="AgentSpeed.Prices.json" />
+    <EmbeddedResource Include="..\..\..\spec\assets\currencies.json" Link="Money\currencies.json" LogicalName="AgentSpeed.Currencies.json" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentSpeed.Core.Tests" />
+    <InternalsVisibleTo Include="AgentSpeed.Probe" />
+  </ItemGroup>
+</Project>

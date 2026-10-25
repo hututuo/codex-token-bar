@@ -76,6 +76,7 @@ import { isTauriRuntimeAvailable } from "../../platform/runtime";
 import { useCompactPanelSource } from "../../surfaces/useCompactPanelSource";
 import { useCompactPanelData } from "../../surfaces/useCompactPanelData";
 import { useFloatingCrowdRadar, useFloatingRadar } from "../../floating/useFloatingRadar";
+import { AgentSpeedReportingSettings } from "./AgentSpeedReporting";
 
 export type AppSettingsCategory =
   | "general"
@@ -85,6 +86,7 @@ export type AppSettingsCategory =
   | "status"
   | "multiClientUsage"
   | "monitoring"
+  | "speedReporting"
   | "automation"
   | "floating"
   | "content"
@@ -108,6 +110,7 @@ const SETTINGS_CATEGORIES: SettingsCategoryDefinition[] = [
   { id: "status", label: "状态栏与托盘", description: "指标、顺序与紧缩预览" },
   { id: "multiClientUsage", label: "多客户端用量", description: "本地 Token 账本与显示设置" },
   { id: "monitoring", label: "监控与额度", description: "实时速率与额度刷新" },
+  { id: "speedReporting", label: "速蹬排行榜", description: "多软件测速与自愿上报" },
   { id: "floating", label: "悬浮窗", description: "尺寸、外观、内容与翻页" },
   { id: "alerts", label: "提醒与更新", description: "未读提示与版本更新" },
   { id: "data", label: "数据与维护", description: "目录、修复与连接状态" },
@@ -455,6 +458,7 @@ export function AppSettingsDialog({
                   usageBackgroundAggregateIntervalMinutes={usageBackgroundAggregateIntervalMinutes}
                 />
               ) : null}
+              {selectedCategory === "speedReporting" ? <AgentSpeedReportingSettings /> : null}
               {selectedCategory === "automation" ? (
                 <AutomationSettings
                   autoResumeCancelling={autoResumeCancelling}

@@ -57,6 +57,7 @@ struct CodexTokenBarApp: App {
             autoResumeController.start()
             MultiClientUsageStore.shared.start()
             ModelTraceController.shared.start(sourceStore: dashboardRuntime.usageStore)
+            AgentSpeedReportingController.shared.start()
         }
     }
 
@@ -70,6 +71,7 @@ struct CodexTokenBarApp: App {
                 runtime: dashboardRuntime
             )
                 .frame(minWidth: 1080, minHeight: 760)
+                .overlay(alignment: .topTrailing) { AgentSpeedReportingInvitation() }
                 .task {
                     loginItemStore.start()
                     updateSettingsStore.refresh()

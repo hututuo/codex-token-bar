@@ -1,0 +1,11 @@
+{"timestamp":"2026-10-20T10:01:00.000Z","type":"session_meta","payload":{"id":"thread-legacy","timestamp":"2026-10-20T10:01:00.000Z","cwd":"/Users/dev/projects/legacy-app","originator":"codex_vscode"}}
+{"timestamp":"2026-10-20T10:01:00.100Z","type":"turn_context","payload":{"cwd":"/Users/dev/projects/legacy-app","model":"gpt-5.5"}}
+{"timestamp":"2026-10-20T10:01:00.500Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t-1"}}
+{"timestamp":"2026-10-20T10:01:00.500Z","type":"event_msg","payload":{"type":"user_message","message":"hi"}}
+{"timestamp":"2026-10-20T10:01:00.600Z","type":"event_msg","payload":{"type":"token_count","info":null}}
+{"timestamp":"2026-10-20T10:01:02.000Z","type":"response_item","payload":{"type":"reasoning","summary":[]}}
+{"timestamp":"2026-10-20T10:01:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":19515,"cached_input_tokens":7040,"output_tokens":698,"reasoning_output_tokens":368,"total_tokens":20213},"last_token_usage":{"input_tokens":19515,"cached_input_tokens":7040,"output_tokens":698,"reasoning_output_tokens":368,"total_tokens":20213}}}}
+{"timestamp":"2026-10-20T10:01:04.001Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":19515,"cached_input_tokens":7040,"output_tokens":698,"reasoning_output_tokens":368,"total_tokens":20213},"last_token_usage":{"input_tokens":19515,"cached_input_tokens":7040,"output_tokens":698,"reasoning_output_tokens":368,"total_tokens":20213}}}}
+{"timestamp":"2026-10-20T10:01:06.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c","output":"x"}}
+{"timestamp":"2026-10-20T10:01:09.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40000,"cached_input_tokens":19000,"output_tokens":1000,"reasoning_output_tokens":400,"total_tokens":41000},"last_token_usage":{"input_tokens":20485,"cached_input_tokens":11960,"output_tokens":302,"reasoning_output_tokens":32,"total_tokens":20787}}}}
+{"timestamp":"2026-10-20T10:01:09.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t-1"}}

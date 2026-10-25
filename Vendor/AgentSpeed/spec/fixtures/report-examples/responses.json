@@ -1,0 +1,149 @@
+{
+  "responses": [
+    {
+      "status": 201,
+      "for": "POST /v1/devices",
+      "body": {
+        "status": "created",
+        "deviceId": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "username": "zoe-mbp",
+        "profileUrl": "https://example.com/u/zoe-mbp"
+      }
+    },
+    {
+      "status": 200,
+      "for": "POST /v1/devices (same device and key again)",
+      "body": {
+        "status": "exists",
+        "deviceId": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "username": "zoe-mbp"
+      }
+    },
+    {
+      "status": 200,
+      "for": "PATCH /v1/devices/{deviceId}",
+      "body": {
+        "status": "updated",
+        "username": "zoe-studio"
+      }
+    },
+    {
+      "status": 200,
+      "for": "PUT /v1/devices/{deviceId}/key",
+      "body": {
+        "status": "rotated"
+      }
+    },
+    {
+      "status": 200,
+      "for": "DELETE /v1/devices/{deviceId}",
+      "body": {
+        "status": "deleted"
+      }
+    },
+    {
+      "status": 200,
+      "for": "POST /v1/reports",
+      "body": {
+        "status": "accepted",
+        "rank": 12
+      }
+    },
+    {
+      "status": 200,
+      "for": "POST /v1/reports (same run and seq, same body)",
+      "body": {
+        "status": "duplicate"
+      }
+    },
+    {
+      "status": 200,
+      "for": "POST /v1/reports (server asks for a slower cadence)",
+      "body": {
+        "status": "accepted",
+        "intervalSeconds": 10
+      }
+    },
+    {
+      "status": 409,
+      "for": "POST /v1/devices",
+      "body": {
+        "error": {
+          "code": "username_taken",
+          "message": "That name belongs to another device."
+        }
+      }
+    },
+    {
+      "status": 422,
+      "for": "POST /v1/devices",
+      "body": {
+        "error": {
+          "code": "username_invalid",
+          "reason": "length"
+        }
+      }
+    },
+    {
+      "status": 401,
+      "for": "any signed request",
+      "body": {
+        "error": {
+          "code": "timestamp_out_of_window",
+          "serverTime": 1792656931
+        }
+      }
+    },
+    {
+      "status": 404,
+      "for": "any request of a deleted or unknown device",
+      "body": {
+        "error": {
+          "code": "unknown_device"
+        }
+      }
+    },
+    {
+      "status": 409,
+      "for": "POST /v1/reports",
+      "body": {
+        "error": {
+          "code": "username_mismatch",
+          "username": "zoe-mbp"
+        }
+      }
+    },
+    {
+      "status": 429,
+      "for": "POST /v1/reports (Retry-After: 20)",
+      "body": {
+        "error": {
+          "code": "rate_limited",
+          "retryAfterSeconds": 20
+        }
+      }
+    },
+    {
+      "status": 400,
+      "for": "POST /v1/reports with an unknown schema",
+      "body": {
+        "error": {
+          "code": "version_unsupported",
+          "supported": [
+            1
+          ]
+        }
+      }
+    },
+    {
+      "status": 410,
+      "for": "any request",
+      "body": {
+        "error": {
+          "code": "gone",
+          "message": "This service no longer accepts reports."
+        }
+      }
+    }
+  ]
+}

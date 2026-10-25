@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>AgentSpeedReporter</AssemblyName>
+    <RootNamespace>CodexTokenBar.AgentSpeedReporter</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <Version>0.9.7</Version>
+    <Description>Codex Token Bar Agent Speed Reporter</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../Vendor/AgentSpeed/windows/src/AgentSpeed.Core/AgentSpeed.Core.csproj" />
+  </ItemGroup>
+</Project>

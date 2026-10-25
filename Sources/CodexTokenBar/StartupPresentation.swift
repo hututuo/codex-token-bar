@@ -39,6 +39,7 @@ final class CodexTokenBarApplicationDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminating else { return .terminateLater }
         isTerminating = true
         Task { @MainActor in
+            AgentSpeedReportingController.shared.shutdown()
             await Task.detached(priority: .utility) {
                 PersistentQuotaService.shared.shutdown()
             }.value

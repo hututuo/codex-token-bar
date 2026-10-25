@@ -24,6 +24,8 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "save_usage_refresh_settings",
     "save_auto_resume_settings",
     "save_session_enhancement_settings",
+    "set_agent_speed_reporting_enabled",
+    "dismiss_agent_speed_invitation",
     "save_setup_guide_completed",
     "scan_provider_repair",
     "list_provider_backups",
@@ -76,6 +78,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
+    "read_agent_speed_reporting_status",
     "read_sidebar_trend",
     "get_codex_home",
     "read_app_settings",

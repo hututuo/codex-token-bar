@@ -1,0 +1,5 @@
+{"type":"title","v":1,"title":"Refactor the pulsar scheduler","source":"auto","updatedAt":"2026-10-20T10:50:05.600Z","pad":"                                                                                                                                 "}
+{"type":"session","version":3,"id":"01a158ee-afc0-7bc4-874c-000278dde6c4","timestamp":"2026-10-20T10:50:00.000Z","cwd":"/Users/dev/projects/pulsar"}
+{"type":"model_change","id":"c0de0001","parentId":null,"timestamp":"2026-10-20T10:50:00.020Z","runtime":{"version":"18.12.6"},"model":"anthropic/claude-opus-5-5"}
+{"type":"thinking_level_change","id":"c0de0002","parentId":"c0de0001","timestamp":"2026-10-20T10:50:00.021Z","runtime":{"version":"18.12.6"},"thinkingLevel":"high","configured":"auto"}
+{"type":"message","id":"c0de0003","parentId":"c0de0002","timestamp":"2026-10-20T10:50:05.000Z","runtime":{"version":"18.12.6"},"message":{"role":"user","content":[{"type":"text","text":"Split the scheduler queue from the dispatcher"}],"timestamp":1792493405000}}

@@ -1,5 +1,6 @@
 import { MultiClientUsageDashboardCard } from "../multiClient/MultiClientUsage";
 import { DiagnosticNotice } from "../components/DiagnosticNotice";
+import { AgentSpeedReportingInvitation } from "../components/settings/AgentSpeedReporting";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { AppSettingsDialog, type AppSettingsCategory } from "../components/settings/AppSettingsDialog";
@@ -259,6 +260,7 @@ export function DashboardPage({
 
   return (
     <main className="app-shell">
+      <AgentSpeedReportingInvitation onOpenSettings={() => openSettings("speedReporting")} />
       <section className="dashboard">
         <DashboardHeader
           account={dashboard.account}

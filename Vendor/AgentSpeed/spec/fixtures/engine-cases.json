@@ -1,0 +1,1317 @@
+{
+  "_comment": "Times are Unix ms. Unless a case sets todayStartMs, use 0. Compare floats with 1e-6 absolute tolerance. historyMeasuredOutput maps bucket start ms to tok/s. `subsets` evaluate 6.8 for a source set: live output, today's peak and live cost over only those sources' responses and agents (keys that are absent are not checked). Responses with `costMicroUsd` carry their priced cost (METRICS 9.3; null = unknown price): `liveCost` is micro-USD per second and `liveCostKnownShare` the share of live output tokens whose cost is known (9.5); `todayCostMicroUsd` and `todayUnpricedRequests` are exact (9.6).",
+  "cases": [
+    {
+      "name": "single completed response",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 10000,
+          "output": 200,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000004000,
+          "liveOutput": 50.0,
+          "liveTotal": 2550.0,
+          "estimatedShare": 0.0
+        },
+        {
+          "nowMs": 1000000005000,
+          "liveOutput": 33.333333333333336,
+          "liveTotal": 1700.0,
+          "estimatedShare": 0.0
+        },
+        {
+          "nowMs": 1000000007000,
+          "liveOutput": 0.0,
+          "liveTotal": 0.0,
+          "estimatedShare": 0.0
+        }
+      ]
+    },
+    {
+      "name": "in-flight estimate from the agent's recent speed",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "generating",
+          "inFlightStartMs": 1000000004500,
+          "lastLineMs": 1000000004500,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 10000,
+          "output": 200,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000006000,
+          "liveOutput": 41.666666666666664,
+          "liveTotal": 2125.0,
+          "estimatedShare": 0.6
+        }
+      ]
+    },
+    {
+      "name": "stale in-flight agents are not estimated",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "generating",
+          "inFlightStartMs": 1000000004500,
+          "lastLineMs": 1000000004500,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 10000,
+          "output": 200,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000304501,
+          "liveOutput": 0.0,
+          "liveTotal": 0.0,
+          "estimatedShare": 0.0
+        }
+      ]
+    },
+    {
+      "name": "parallel agents are summed",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        },
+        {
+          "id": "a2",
+          "source": "claudeCode",
+          "model": "m2",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000003000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 0,
+          "output": 200,
+          "final": true
+        },
+        {
+          "key": "r2",
+          "agentId": "a2",
+          "source": "claudeCode",
+          "model": "m2",
+          "startMs": 1000000001000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 100,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000003000,
+          "liveOutput": 83.33333333333333,
+          "liveTotal": 83.33333333333333,
+          "estimatedShare": 0.0
+        }
+      ]
+    },
+    {
+      "name": "durations shorter than 500 ms are widened backwards",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000001100,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000001000,
+          "endMs": 1000000001100,
+          "input": 0,
+          "output": 10,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000001100,
+          "liveOutput": 3.3333333333333335,
+          "liveTotal": 3.3333333333333335,
+          "estimatedShare": 0.0
+        },
+        {
+          "nowMs": 1000000003700,
+          "liveOutput": 2.6666666666666665,
+          "liveTotal": 2.6666666666666665,
+          "estimatedShare": 0.0
+        }
+      ]
+    },
+    {
+      "name": "unknown or implausible intervals never count as speed",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000960000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": null,
+          "endMs": 1000000002000,
+          "input": 0,
+          "output": 500,
+          "final": true
+        },
+        {
+          "key": "r2",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000960000,
+          "input": 0,
+          "output": 500,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000002000,
+          "liveOutput": 0.0,
+          "liveTotal": 0.0,
+          "estimatedShare": 0.0
+        },
+        {
+          "nowMs": 1000000960000,
+          "liveOutput": 0.0,
+          "liveTotal": 0.0,
+          "estimatedShare": 0.0
+        }
+      ]
+    },
+    {
+      "name": "model fallback when the agent has no history",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        },
+        {
+          "id": "a3",
+          "source": "claudeCode",
+          "model": "m1",
+          "phase": "generating",
+          "inFlightStartMs": 1000000005000,
+          "lastLineMs": 1000000005000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 10000,
+          "output": 200,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000006000,
+          "liveOutput": 33.333333333333336,
+          "liveTotal": 1700.0,
+          "estimatedShare": 0.5
+        }
+      ]
+    },
+    {
+      "name": "source fallback when the model is unknown",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        },
+        {
+          "id": "a4",
+          "source": "codex",
+          "model": "m9",
+          "phase": "generating",
+          "inFlightStartMs": 1000000005000,
+          "lastLineMs": 1000000005000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 10000,
+          "output": 200,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000006000,
+          "liveOutput": 33.333333333333336,
+          "liveTotal": 1700.0,
+          "estimatedShare": 0.5
+        }
+      ]
+    },
+    {
+      "name": "no estimate without any reference speed",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        },
+        {
+          "id": "a5",
+          "source": "claudeDesktop",
+          "model": "m7",
+          "phase": "generating",
+          "inFlightStartMs": 1000000005000,
+          "lastLineMs": 1000000005000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 10000,
+          "output": 200,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000006000,
+          "liveOutput": 16.666666666666668,
+          "liveTotal": 850.0,
+          "estimatedShare": 0.0
+        }
+      ]
+    },
+    {
+      "name": "recent speed uses the last three responses",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "generating",
+          "inFlightStartMs": 1000000007000,
+          "lastLineMs": 1000000007000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000001000,
+          "input": 0,
+          "output": 100,
+          "final": true
+        },
+        {
+          "key": "r2",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000002000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 50,
+          "final": true
+        },
+        {
+          "key": "r3",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000004000,
+          "endMs": 1000000005000,
+          "input": 0,
+          "output": 50,
+          "final": true
+        },
+        {
+          "key": "r4",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000006000,
+          "endMs": 1000000007000,
+          "input": 0,
+          "output": 50,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000009000,
+          "liveOutput": 50.0,
+          "liveTotal": 50.0,
+          "estimatedShare": 0.6666666666666666
+        }
+      ]
+    },
+    {
+      "name": "estimates never overlap the agent's own measured responses",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "claudeCode",
+          "model": "m1",
+          "phase": "generating",
+          "inFlightStartMs": 1000000000000,
+          "lastLineMs": 1000000002000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "claudeCode",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000002000,
+          "input": 0,
+          "output": 100,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000003000,
+          "liveOutput": 50.0,
+          "liveTotal": 50.0,
+          "estimatedShare": 0.3333333333333333
+        }
+      ]
+    },
+    {
+      "name": "unmeasured responses are estimated from a measured reference",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "claudeCode",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        },
+        {
+          "id": "a2",
+          "source": "claudeCode",
+          "model": "m1",
+          "phase": "tools",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000003000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "claudeCode",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 0,
+          "output": 200,
+          "final": true
+        },
+        {
+          "key": "r2",
+          "agentId": "a2",
+          "source": "claudeCode",
+          "model": "m1",
+          "startMs": 1000000001000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 8,
+          "final": false
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000003000,
+          "liveOutput": 83.33333333333333,
+          "liveTotal": 83.33333333333333,
+          "estimatedShare": 0.4
+        }
+      ]
+    },
+    {
+      "name": "agents are listed in parent groups",
+      "agents": [
+        {
+          "id": "P1",
+          "source": "claudeDesktop",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000000000,
+          "parentId": null
+        },
+        {
+          "id": "C1",
+          "source": "claudeDesktop",
+          "model": "m1",
+          "phase": "generating",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000003000,
+          "parentId": "P1"
+        },
+        {
+          "id": "C2",
+          "source": "claudeDesktop",
+          "model": "m1",
+          "phase": "generating",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000003000,
+          "parentId": "P1"
+        },
+        {
+          "id": "P2",
+          "source": "codex",
+          "model": "m2",
+          "phase": "generating",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000003000,
+          "parentId": null
+        },
+        {
+          "id": "R",
+          "source": "codex",
+          "model": "m2",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 999999100000,
+          "parentId": null
+        },
+        {
+          "id": "C3",
+          "source": "codex",
+          "model": "m2",
+          "phase": "generating",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000002000,
+          "parentId": "R"
+        },
+        {
+          "id": "D",
+          "source": "claudeCode",
+          "model": "m3",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 999999999000,
+          "parentId": null
+        },
+        {
+          "id": "Q",
+          "source": "codex",
+          "model": "m2",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 999999300000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "P2",
+          "source": "codex",
+          "model": "m2",
+          "startMs": 1000000000000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 300,
+          "final": true
+        },
+        {
+          "key": "r2",
+          "agentId": "C1",
+          "source": "claudeDesktop",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 150,
+          "final": true
+        },
+        {
+          "key": "r3",
+          "agentId": "C2",
+          "source": "claudeDesktop",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 90,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000003000,
+          "liveOutput": 180.0,
+          "liveTotal": 180.0,
+          "estimatedShare": 0.0,
+          "agentsOrder": [
+            "P2",
+            "P1",
+            "C1",
+            "C2",
+            "R",
+            "C3",
+            "D"
+          ],
+          "agentParents": {
+            "C1": "P1",
+            "C2": "P1",
+            "C3": "R"
+          }
+        }
+      ]
+    },
+    {
+      "name": "today totals, average, peak and history",
+      "todayStartMs": 999996400000,
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r0",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 999996395000,
+          "endMs": 999996399999,
+          "input": 999,
+          "output": 999,
+          "final": true
+        },
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 10000,
+          "output": 200,
+          "final": true
+        },
+        {
+          "key": "r2",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000002000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 300,
+          "final": true
+        },
+        {
+          "key": "r3",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000005000,
+          "endMs": 1000000006000,
+          "input": 0,
+          "output": 8,
+          "final": false
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000010000,
+          "liveOutput": 0.0,
+          "liveTotal": 0.0,
+          "estimatedShare": 0.0,
+          "todayRequests": 3,
+          "todayOutput": 508,
+          "todayInput": 10000,
+          "averageToday": 100.0,
+          "todayUnfinalized": 1,
+          "peakTodayOutput": 150.0,
+          "historyMeasuredOutput": {
+            "1000000000000": 50.0,
+            "1000000001000": 50.0,
+            "1000000002000": 350.0,
+            "1000000003000": 50.0,
+            "1000000004000": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "orb subsets (METRICS 6.8)",
+      "todayStartMs": 999996400000,
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000002000,
+          "parentId": null
+        },
+        {
+          "id": "a2",
+          "source": "claudeCode",
+          "model": "m2",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000003000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000002000,
+          "input": 0,
+          "output": 400,
+          "final": true
+        },
+        {
+          "key": "r2",
+          "agentId": "a2",
+          "source": "claudeCode",
+          "model": "m2",
+          "startMs": 1000000000000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 300,
+          "final": true
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000003000,
+          "liveOutput": 233.33333333333334,
+          "liveTotal": 233.33333333333334,
+          "estimatedShare": 0.0,
+          "subsets": [
+            {
+              "sources": [
+                "codex"
+              ],
+              "liveOutput": 133.33333333333334,
+              "peakTodayOutput": 133.33333333333334
+            },
+            {
+              "sources": [
+                "claudeCode"
+              ],
+              "liveOutput": 100.0,
+              "peakTodayOutput": 100.0
+            },
+            {
+              "sources": [
+                "codex",
+                "claudeCode"
+              ],
+              "liveOutput": 233.33333333333334,
+              "peakTodayOutput": 233.33333333333334
+            },
+            {
+              "sources": [
+                "gemini"
+              ],
+              "liveOutput": 0.0,
+              "peakTodayOutput": 0.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "live cost spreads each response's cost over its interval (METRICS 9.5)",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 10000,
+          "output": 200,
+          "final": true,
+          "costMicroUsd": 4000
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000004000,
+          "liveOutput": 50.0,
+          "liveTotal": 2550.0,
+          "estimatedShare": 0.0,
+          "liveCost": 1000.0,
+          "liveCostKnownShare": 1.0
+        },
+        {
+          "nowMs": 1000000005000,
+          "liveOutput": 33.333333333333336,
+          "liveTotal": 1700.0,
+          "estimatedShare": 0.0,
+          "liveCost": 666.6666666666666,
+          "liveCostKnownShare": 1.0
+        },
+        {
+          "nowMs": 1000000007000,
+          "liveOutput": 0.0,
+          "liveTotal": 0.0,
+          "estimatedShare": 0.0,
+          "liveCost": 0.0,
+          "liveCostKnownShare": 1.0
+        }
+      ]
+    },
+    {
+      "name": "in-flight cost from the agent's recent cost rate",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "generating",
+          "inFlightStartMs": 1000000004500,
+          "lastLineMs": 1000000004500,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 10000,
+          "output": 200,
+          "final": true,
+          "costMicroUsd": 4000
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000006000,
+          "liveOutput": 41.666666666666664,
+          "liveTotal": 2125.0,
+          "estimatedShare": 0.6,
+          "liveCost": 833.3333333333334,
+          "liveCostKnownShare": 1.0
+        }
+      ]
+    },
+    {
+      "name": "unknown prices are never counted as zero",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        },
+        {
+          "id": "a2",
+          "source": "claudeCode",
+          "model": "m2",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000003000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 0,
+          "output": 200,
+          "final": true,
+          "costMicroUsd": 4000
+        },
+        {
+          "key": "r2",
+          "agentId": "a2",
+          "source": "claudeCode",
+          "model": "m2",
+          "startMs": 1000000001000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 100,
+          "final": true,
+          "costMicroUsd": null
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000003000,
+          "liveOutput": 83.33333333333333,
+          "liveTotal": 83.33333333333333,
+          "estimatedShare": 0.0,
+          "liveCost": 1000.0,
+          "liveCostKnownShare": 0.6
+        }
+      ]
+    },
+    {
+      "name": "an unpriced reference leaves the in-flight estimate unpriced",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "generating",
+          "inFlightStartMs": 1000000004500,
+          "lastLineMs": 1000000004500,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 0,
+          "output": 200,
+          "final": true,
+          "costMicroUsd": null
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000006000,
+          "liveOutput": 41.666666666666664,
+          "liveTotal": 41.666666666666664,
+          "estimatedShare": 0.6,
+          "liveCost": 0.0,
+          "liveCostKnownShare": 0.0
+        }
+      ]
+    },
+    {
+      "name": "free responses are a known zero",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 0,
+          "output": 200,
+          "final": true,
+          "costMicroUsd": 0
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000004000,
+          "liveOutput": 50.0,
+          "liveTotal": 50.0,
+          "estimatedShare": 0.0,
+          "liveCost": 0.0,
+          "liveCostKnownShare": 1.0
+        }
+      ]
+    },
+    {
+      "name": "unmeasured responses use the reference cost rate",
+      "agents": [
+        {
+          "id": "a1",
+          "source": "claudeCode",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000004000,
+          "parentId": null
+        },
+        {
+          "id": "a2",
+          "source": "claudeCode",
+          "model": "m1",
+          "phase": "tools",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000003000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "claudeCode",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 0,
+          "output": 200,
+          "final": true,
+          "costMicroUsd": 4000
+        },
+        {
+          "key": "r2",
+          "agentId": "a2",
+          "source": "claudeCode",
+          "model": "m1",
+          "startMs": 1000000001000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 8,
+          "final": false,
+          "costMicroUsd": 999
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000003000,
+          "liveOutput": 83.33333333333333,
+          "liveTotal": 83.33333333333333,
+          "estimatedShare": 0.4,
+          "liveCost": 1666.6666666666667,
+          "liveCostKnownShare": 1.0
+        }
+      ]
+    },
+    {
+      "name": "today's cost and unpriced requests (METRICS 9.6)",
+      "todayStartMs": 999996400000,
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000006000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r0",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 999996395000,
+          "endMs": 999996399999,
+          "input": 0,
+          "output": 999,
+          "final": true,
+          "costMicroUsd": 999
+        },
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000004000,
+          "input": 0,
+          "output": 200,
+          "final": true,
+          "costMicroUsd": 4000
+        },
+        {
+          "key": "r2",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000002000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 300,
+          "final": true,
+          "costMicroUsd": null
+        },
+        {
+          "key": "r3",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000005000,
+          "endMs": 1000000006000,
+          "input": 0,
+          "output": 8,
+          "final": false,
+          "costMicroUsd": 0
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000010000,
+          "liveOutput": 0.0,
+          "liveTotal": 0.0,
+          "estimatedShare": 0.0,
+          "liveCost": 0.0,
+          "liveCostKnownShare": 1.0,
+          "todayCostMicroUsd": 4000,
+          "todayUnpricedRequests": 1
+        }
+      ]
+    },
+    {
+      "name": "cost per source is additive (orb subsets)",
+      "todayStartMs": 999996400000,
+      "agents": [
+        {
+          "id": "a1",
+          "source": "codex",
+          "model": "m1",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000002000,
+          "parentId": null
+        },
+        {
+          "id": "a2",
+          "source": "claudeCode",
+          "model": "m2",
+          "phase": "idle",
+          "inFlightStartMs": null,
+          "lastLineMs": 1000000003000,
+          "parentId": null
+        }
+      ],
+      "responses": [
+        {
+          "key": "r1",
+          "agentId": "a1",
+          "source": "codex",
+          "model": "m1",
+          "startMs": 1000000000000,
+          "endMs": 1000000002000,
+          "input": 0,
+          "output": 400,
+          "final": true,
+          "costMicroUsd": 2000
+        },
+        {
+          "key": "r2",
+          "agentId": "a2",
+          "source": "claudeCode",
+          "model": "m2",
+          "startMs": 1000000000000,
+          "endMs": 1000000003000,
+          "input": 0,
+          "output": 300,
+          "final": true,
+          "costMicroUsd": 900
+        }
+      ],
+      "queries": [
+        {
+          "nowMs": 1000000003000,
+          "liveOutput": 233.33333333333334,
+          "liveTotal": 233.33333333333334,
+          "estimatedShare": 0.0,
+          "liveCost": 966.6666666666666,
+          "liveCostKnownShare": 1.0,
+          "subsets": [
+            {
+              "sources": [
+                "codex"
+              ],
+              "liveOutput": 133.33333333333334,
+              "liveCost": 666.6666666666666
+            },
+            {
+              "sources": [
+                "claudeCode"
+              ],
+              "liveOutput": 100.0,
+              "liveCost": 300.0
+            },
+            {
+              "sources": [
+                "codex",
+                "claudeCode"
+              ],
+              "liveOutput": 233.33333333333334,
+              "liveCost": 966.6666666666666
+            },
+            {
+              "sources": [
+                "gemini"
+              ],
+              "liveOutput": 0.0,
+              "liveCost": 0.0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

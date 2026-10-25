@@ -1,0 +1,164 @@
+{
+  "schema": 1,
+  "client": {
+    "app": "AgentSpeed",
+    "version": "1.3.0",
+    "platform": "macOS",
+    "osMajor": 27
+  },
+  "deviceId": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+  "username": "zoe-mbp",
+  "run": {
+    "id": "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f",
+    "seq": 42
+  },
+  "sentAt": "2026-10-22T08:15:30.500Z",
+  "windowMs": 5000,
+  "activity": "active",
+  "live": {
+    "outputTokS": 412.6,
+    "totalTokS": 182340.2,
+    "estimatedShare": 0.215,
+    "agents": {
+      "generating": 3,
+      "tools": 1,
+      "active": 5
+    }
+  },
+  "peak": {
+    "outputTokS": 655.0,
+    "totalTokS": 240118.7
+  },
+  "delta": {
+    "requests": 4,
+    "output": 1840,
+    "input": 912400,
+    "cachedInput": 880120,
+    "cacheWriteInput": 12050,
+    "reasoning": 310,
+    "measuredOutput": 1702,
+    "measuredMs": 4120
+  },
+  "title": {
+    "level": 8,
+    "metric": "output",
+    "redline": 2000,
+    "heat": 0.388
+  },
+  "cost": {
+    "liveMicroUsdPerSecond": 4213,
+    "peakMicroUsdPerSecond": 6120,
+    "knownShare": 1.0,
+    "deltaMicroUsd": 21003,
+    "unpricedRequests": 0,
+    "priceVersion": 1
+  },
+  "traffic": {
+    "status": "ok",
+    "includesTools": true,
+    "rxBytesPerSecond": 24310,
+    "txBytesPerSecond": 1288,
+    "peakRxBytesPerSecond": 61200,
+    "peakTxBytesPerSecond": 3410,
+    "rxBytes": 121550,
+    "txBytes": 6440
+  },
+  "sources": [
+    {
+      "source": "codex",
+      "live": {
+        "outputTokS": 112.2,
+        "totalTokS": 32120.1,
+        "estimatedShare": 0.47
+      },
+      "agents": {
+        "generating": 1,
+        "tools": 0,
+        "active": 2
+      },
+      "delta": {
+        "requests": 1,
+        "output": 340,
+        "input": 112400,
+        "cachedInput": 100120,
+        "cacheWriteInput": 0,
+        "reasoning": 310,
+        "measuredOutput": 302,
+        "measuredMs": 820
+      },
+      "cost": {
+        "liveMicroUsdPerSecond": 613,
+        "knownShare": 1.0,
+        "deltaMicroUsd": 3000,
+        "unpricedRequests": 0
+      },
+      "traffic": {
+        "rxBytesPerSecond": 4200,
+        "txBytesPerSecond": 288,
+        "rxBytes": 21000,
+        "txBytes": 1440
+      }
+    },
+    {
+      "source": "claudeCode",
+      "live": {
+        "outputTokS": 300.4,
+        "totalTokS": 150220.1,
+        "estimatedShare": 0.12
+      },
+      "agents": {
+        "generating": 2,
+        "tools": 1,
+        "active": 3
+      },
+      "delta": {
+        "requests": 3,
+        "output": 1500,
+        "input": 800000,
+        "cachedInput": 780000,
+        "cacheWriteInput": 12050,
+        "reasoning": 0,
+        "measuredOutput": 1400,
+        "measuredMs": 3300
+      },
+      "cost": {
+        "liveMicroUsdPerSecond": 3600,
+        "knownShare": 1.0,
+        "deltaMicroUsd": 18003,
+        "unpricedRequests": 0
+      },
+      "traffic": {
+        "rxBytesPerSecond": 20110,
+        "txBytesPerSecond": 1000,
+        "rxBytes": 100550,
+        "txBytes": 5000
+      }
+    }
+  ],
+  "models": [
+    {
+      "id": "claude-opus-5-5",
+      "sources": [
+        "claudeCode"
+      ],
+      "requests": 3,
+      "output": 1500,
+      "measuredOutput": 1400,
+      "measuredMs": 3300,
+      "generating": 2,
+      "deltaMicroUsd": 18003
+    },
+    {
+      "id": "gpt-5.5",
+      "sources": [
+        "codex"
+      ],
+      "requests": 1,
+      "output": 340,
+      "measuredOutput": 302,
+      "measuredMs": 820,
+      "generating": 1,
+      "deltaMicroUsd": 3000
+    }
+  ]
+}

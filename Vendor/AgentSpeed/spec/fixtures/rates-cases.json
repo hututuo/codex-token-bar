@@ -1,0 +1,297 @@
+{
+  "_comment": "NETWORK 4. `parse`: provider body -> date (Unix ms) and the rates of `supported` currencies as decimal strings, USD = 1 (null = rejected). `accept`: checks 3-5 for the selected currency; `last` = the stored rates with their date and the time they were accepted, `fallback` = bundled rates, `other` = a second provider's rates.",
+  "supported": [
+    "USD",
+    "CNY",
+    "TWD",
+    "JPY",
+    "EUR"
+  ],
+  "parse": [
+    {
+      "name": "ExchangeRate-API open access",
+      "provider": "open.er-api.com",
+      "body": {
+        "result": "success",
+        "provider": "https://www.exchangerate-api.com",
+        "time_last_update_unix": 1792627351,
+        "base_code": "USD",
+        "rates": {
+          "USD": 1,
+          "CNY": 6.689327,
+          "TWD": 32.411205,
+          "JPY": 158.100039,
+          "EUR": 0.890292,
+          "XAU": 0.000301
+        }
+      },
+      "expect": {
+        "dateMs": 1792627351000,
+        "rates": {
+          "CNY": "6.689327",
+          "EUR": "0.890292",
+          "JPY": "158.100039",
+          "TWD": "32.411205",
+          "USD": "1"
+        }
+      }
+    },
+    {
+      "name": "an error response is rejected",
+      "provider": "open.er-api.com",
+      "body": {
+        "result": "error",
+        "error-type": "unsupported-code"
+      },
+      "expect": null
+    },
+    {
+      "name": "fawazahmed0 currency-api (lower-case codes, extra assets ignored)",
+      "provider": "currency-api",
+      "body": {
+        "date": "2026-10-22",
+        "usd": {
+          "usd": 1,
+          "cny": 6.67476008,
+          "twd": 32.5520031,
+          "jpy": 157.7279153,
+          "eur": 0.88943738,
+          "btc": 9.1e-06
+        }
+      },
+      "expect": {
+        "dateMs": 1792627200000,
+        "rates": {
+          "CNY": "6.67476008",
+          "EUR": "0.88943738",
+          "JPY": "157.7279153",
+          "TWD": "32.5520031",
+          "USD": "1"
+        }
+      }
+    },
+    {
+      "name": "Frankfurter (ECB; no TWD)",
+      "provider": "frankfurter",
+      "body": {
+        "amount": 1.0,
+        "base": "USD",
+        "date": "2026-10-21",
+        "rates": {
+          "CNY": 6.6761,
+          "JPY": 157.88,
+          "EUR": 0.89015
+        }
+      },
+      "expect": {
+        "dateMs": 1792540800000,
+        "rates": {
+          "CNY": "6.6761",
+          "EUR": "0.89015",
+          "JPY": "157.88",
+          "USD": "1"
+        }
+      }
+    },
+    {
+      "name": "a non-positive rate rejects the response",
+      "provider": "currency-api",
+      "body": {
+        "date": "2026-10-22",
+        "usd": {
+          "twd": -1
+        }
+      },
+      "expect": null
+    },
+    {
+      "name": "a non-numeric rate rejects the response",
+      "provider": "open.er-api.com",
+      "body": {
+        "result": "success",
+        "provider": "https://www.exchangerate-api.com",
+        "time_last_update_unix": 1792627351,
+        "base_code": "USD",
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "expect": null
+    }
+  ],
+  "accept": [
+    {
+      "name": "a normal daily change",
+      "selected": "TWD",
+      "dateMs": 1792627200000,
+      "rates": {
+        "TWD": "32.55"
+      },
+      "nowMs": 1792670400000,
+      "last": {
+        "dateMs": 1792540800000,
+        "acceptedMs": 1792584000000,
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "accept": true
+    },
+    {
+      "name": "more than x2 of the last rate",
+      "selected": "TWD",
+      "dateMs": 1792627200000,
+      "rates": {
+        "TWD": "97.2"
+      },
+      "nowMs": 1792670400000,
+      "last": {
+        "dateMs": 1792540800000,
+        "acceptedMs": 1792584000000,
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "accept": false
+    },
+    {
+      "name": "less than x0.5 of the last rate",
+      "selected": "TWD",
+      "dateMs": 1792627200000,
+      "rates": {
+        "TWD": "16.1"
+      },
+      "nowMs": 1792670400000,
+      "last": {
+        "dateMs": 1792540800000,
+        "acceptedMs": 1792584000000,
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "accept": false
+    },
+    {
+      "name": "older than the stored rates",
+      "selected": "TWD",
+      "dateMs": 1792411200000,
+      "rates": {
+        "TWD": "32.5"
+      },
+      "nowMs": 1792670400000,
+      "last": {
+        "dateMs": 1792540800000,
+        "acceptedMs": 1792584000000,
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "accept": false
+    },
+    {
+      "name": "more than two days in the future",
+      "selected": "TWD",
+      "dateMs": 1792929600000,
+      "rates": {
+        "TWD": "32.5"
+      },
+      "nowMs": 1792670400000,
+      "last": {
+        "dateMs": 1792540800000,
+        "acceptedMs": 1792584000000,
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "accept": false
+    },
+    {
+      "name": "first fetch is checked against the bundled rate",
+      "selected": "TWD",
+      "dateMs": 1792670400000,
+      "rates": {
+        "TWD": "33.0"
+      },
+      "nowMs": 1792670400000,
+      "fallback": {
+        "TWD": "32.552"
+      },
+      "accept": true
+    },
+    {
+      "name": "stale last rate: one provider is not enough",
+      "selected": "TWD",
+      "dateMs": 1792670400000,
+      "rates": {
+        "TWD": "45.0"
+      },
+      "nowMs": 1792670400000,
+      "last": {
+        "dateMs": 1789128000000,
+        "acceptedMs": 1789214400000,
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "accept": false
+    },
+    {
+      "name": "stale last rate: two providers within 3 %",
+      "selected": "TWD",
+      "dateMs": 1792670400000,
+      "rates": {
+        "TWD": "45.0"
+      },
+      "nowMs": 1792670400000,
+      "last": {
+        "dateMs": 1789128000000,
+        "acceptedMs": 1789214400000,
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "other": {
+        "TWD": "44.1"
+      },
+      "accept": true
+    },
+    {
+      "name": "stale last rate: two providers more than 3 % apart",
+      "selected": "TWD",
+      "dateMs": 1792670400000,
+      "rates": {
+        "TWD": "45.0"
+      },
+      "nowMs": 1792670400000,
+      "last": {
+        "dateMs": 1789128000000,
+        "acceptedMs": 1789214400000,
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "other": {
+        "TWD": "42.0"
+      },
+      "accept": false
+    },
+    {
+      "name": "a provider without the selected currency",
+      "selected": "TWD",
+      "dateMs": 1792670400000,
+      "rates": {
+        "USD": "1",
+        "JPY": "157.88"
+      },
+      "nowMs": 1792670400000,
+      "last": {
+        "dateMs": 1792540800000,
+        "acceptedMs": 1792584000000,
+        "rates": {
+          "TWD": "32.4"
+        }
+      },
+      "accept": false
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{"type":"metadata","protocol_version":"1.5","created_at":1792497631000}
+{"type":"config.update","time":1792497631001,"agentId":"agent-0","environmentDisclosure":{"cwd":"/projects/nova"}}
+{"type":"llm.request","time":1792497632000,"agentId":"agent-0","provider":"moonshot","model":"kimi-k2.5","kind":"loop"}
+{"type":"context.append_loop_event","time":1792497635000,"agentId":"agent-0","event":{"type":"step.end","uuid":"step-child","messageId":"k-child","turnId":"1","step":1,"finishReason":"completed","usage":{"inputOther":70,"output":45,"inputCacheRead":0,"inputCacheCreation":0},"llmFirstTokenLatencyMs":400,"llmStreamDurationMs":2600}}
+{"type":"turn.ended","time":1792497635001,"agentId":"agent-0","turnId":1,"reason":"completed"}
