@@ -153,6 +153,7 @@ struct AccountQuotaRefreshCadenceMenu: View {
 struct AccountQuotaStrip: View {
     let snapshot: AccountQuotaSnapshot
     @Binding var showingResetCreditDetails: Bool
+    var clientItems: [ClientQuotaItem]? = nil
 
     private var presentation: AccountQuotaStripPresentation {
         AccountQuotaStripPresentation(snapshot: snapshot)
@@ -160,6 +161,9 @@ struct AccountQuotaStrip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
+            if let clientItems {
+                clientRows(clientItems)
+            } else {
             HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
                 AccountQuotaAccountLabel(
                     presentation: presentation.accountLabel,
@@ -218,6 +222,7 @@ struct AccountQuotaStrip: View {
                     }).joined(separator: "\n\n")
                 )
             }
+            }
         }
         .padding(.horizontal, AccountQuotaStripLayout.horizontalPadding)
         .padding(.vertical, shouldShowRetryHint ? 6 : 7)
@@ -233,8 +238,30 @@ struct AccountQuotaStrip: View {
         .zIndex(showingResetCreditDetails ? 10_000 : 0)
     }
 
+    @ViewBuilder private func clientRows(_ items: [ClientQuotaItem]) -> some View {
+        let ids = items.map(\.client).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        ForEach(ids, id: \.self) { client in
+            HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
+                Label {
+                    Text(ClientDisplayScope.title(client)).font(.system(size: 10, weight: .semibold))
+                } icon: { Circle().fill(Color(nsColor: NSColor(clientHex: ClientBrand.hex(client)))).frame(width: 6, height: 6) }
+                .frame(width: AccountQuotaStripLayout.accountLabelWidth, alignment: .leading)
+                HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
+                    ForEach(items.filter { $0.client == client }) { item in
+                        AccountQuotaSegment(window: AccountQuotaWindow(label: item.window, usedPercent: Int((100 - (item.remaining ?? 100)).rounded()), resetsAt: item.resetsAt),
+                            accent: Color(nsColor: NSColor(clientHex: item.brand)), unavailable: item.remaining == nil)
+                            .help(item.remaining == nil ? item.status : item.source)
+                    }
+                }.frame(width: AccountQuotaStripLayout.combinedQuotaSegmentsWidth, alignment: .leading)
+                Spacer(minLength: 8)
+                Text(items.filter { $0.client == client }.allSatisfy { $0.remaining == nil } ? "未接入" : "各窗口独立")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }.padding(.vertical, 2)
+        }
+    }
+
     private var shouldShowRetryHint: Bool {
-        !snapshot.isAvailable && snapshot.status.contains("失败")
+        clientItems == nil && !snapshot.isAvailable && snapshot.status.contains("失败")
     }
 
     private var shouldShowResetCredits: Bool {
@@ -242,6 +269,7 @@ struct AccountQuotaStrip: View {
     }
 
     private var helpText: String {
+        if let clientItems { return clientItems.map { $0.title + " " + ($0.remaining == nil ? $0.status : $0.value) }.joined(separator: "；") }
         guard snapshot.isAvailable else { return snapshot.status }
         return [snapshot.fiveHour, snapshot.sevenDay].compactMap { window -> String? in
             guard let window else { return nil }
@@ -661,13 +689,14 @@ struct AccountQuotaSegment: View {
     let window: AccountQuotaWindow
     let accent: Color
     var isStale = false
+    var unavailable = false
 
     private var presentation: AccountQuotaSegmentPresentation {
         AccountQuotaSegmentPresentation(window: window)
     }
 
     private var remainingFraction: CGFloat {
-        CGFloat(Double(window.remainingPercent) / 100.0)
+        unavailable ? 0 : CGFloat(Double(window.remainingPercent) / 100.0)
     }
 
     var body: some View {
@@ -707,11 +736,11 @@ struct AccountQuotaSegment: View {
                     .clipShape(Capsule())
 
                     HStack(spacing: AccountQuotaSegmentLayout.progressTextSpacing) {
-                        Text("\(presentation.remainingText)\(isStale ? " 旧" : "")")
+                        Text(unavailable ? "—" : "\(presentation.remainingText)\(isStale ? " 旧" : "")")
                             .fontWeight(.semibold)
                             .fixedSize(horizontal: true, vertical: false)
                         Spacer(minLength: 0)
-                        Text(presentation.usedText)
+                        Text(unavailable ? "未接入" : presentation.usedText)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: true, vertical: false)
                     }
@@ -725,7 +754,7 @@ struct AccountQuotaSegment: View {
         .frame(maxWidth: .infinity, minHeight: AccountQuotaSegmentLayout.controlHeight, maxHeight: AccountQuotaSegmentLayout.controlHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
-        .accessibilityValue("剩余 \(window.remainingPercent)%\(isStale ? "，旧数据" : "")，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
+         .accessibilityValue(unavailable ? "未接入" : "剩余 \(window.remainingPercent)%\(isStale ? "，旧数据" : "")，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
     }
 }
 

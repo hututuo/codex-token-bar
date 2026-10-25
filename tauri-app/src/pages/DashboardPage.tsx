@@ -1,7 +1,8 @@
-import { ClientScopeSelector, ScopedClientDashboard, useClientScope } from "../multiClient/IntegratedClients";
+import { projectOriginalDashboard, clientCostPeriods } from "../multiClient/originalDashboardProjection";
+import { ClientScopeSelector, useClientScope, useClientQuotaItems } from "../multiClient/IntegratedClients";
 import { DiagnosticNotice } from "../components/DiagnosticNotice";
 import { AgentSpeedReportingInvitation } from "../components/settings/AgentSpeedReporting";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, useMemo } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { AppSettingsDialog, type AppSettingsCategory } from "../components/settings/AppSettingsDialog";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
@@ -223,6 +224,9 @@ export function DashboardPage({
   threadDeleteBridgeStatus,
 }: DashboardPageProps) {
   const clientScope = useClientScope();
+  const { items: clientQuotaItems } = useClientQuotaItems(dashboard.quota);
+  const displayDashboard = useMemo(() => projectOriginalDashboard(dashboard, clientScope.snapshot, clientScope.allowed), [dashboard, clientScope.snapshot, clientScope.allowed.join(",")]);
+  const displayCosts = useMemo(() => clientScope.codexOnly ? undefined : clientCostPeriods(dashboard, clientScope.snapshot, clientScope.allowed), [dashboard, clientScope.snapshot, clientScope.allowed.join(",")]);
   const [sharedAccountAttribution, setSharedAccountAttribution] = useState<SharedAccountAttributionResult | null>(null);
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
   const [initialSettingsRequest] = useState(consumePendingSettingsRequest);
@@ -263,8 +267,11 @@ export function DashboardPage({
     const renderSummary = (speedOnly = false) => (
       <DashboardSummarySection
         speedOnly={speedOnly}
+        clientCosts={displayCosts}
+        clientQuotaItems={clientScope.codexOnly ? undefined : clientQuotaItems}
+        includesCodex={clientScope.allowed.includes("codex")}
               sourceToken={sourceToken}
-              dashboard={dashboard}
+              dashboard={displayDashboard}
               displaySurfaces={displaySurfaces}
               floatingSettings={floatingSettings}
               quotaRefreshIntervalMs={quotaRefreshIntervalMs}
@@ -388,13 +395,14 @@ export function DashboardPage({
 
         <LocalCommandFailureNotice settingsError={settingsError} diagnostics={diagnostics} />
 
-        {!clientScope.codexOnly ? <ScopedClientDashboard codex={dashboard} sourceToken={sourceToken} codexSpeed={clientScope.allowed.includes("codex") ? renderSummary(true) : undefined} /> : summaryReady ? (
+        {summaryReady ? (
           <>
             {renderSummary()}
             {analyticsReady ? (
               <DashboardAnalyticsSection
+                clientScoped={!clientScope.codexOnly}
                 sourceToken={sourceToken}
-                dashboard={dashboard}
+                dashboard={displayDashboard}
                 sharedAccountAttribution={sharedAccountAttribution}
               />
             ) : (

@@ -9,11 +9,9 @@ export {
   ClientQuotaSettings,
   PairedQuotaRing,
   ClientQuotaDetailRings,
-  ClientDashboardQuotaStrip,
 } from "./ClientQuotaViews";
 export {
   ClientScopeSelector,
-  ScopedClientDashboard,
   ScopedSidebarUsage,
   ClientSidebarUsageRows,
-} from "./ScopedClientDashboard";
+} from "./ClientScopeControls";

@@ -23,6 +23,17 @@ private struct ClientPriceKey: Hashable {
     let model: String
 }
 
+private struct ClientSummaryCacheKey: Hashable {
+    let revision: Int64
+    let since: Date?
+}
+
+private struct ClientSummaryReadResult {
+    let summaries: [ClientUsageSummary]
+    let pendingPriceCache: (revision: Int64, totals: [ClientPriceKey: ClientPriceTally])?
+    let pendingSummaryCache: (key: ClientSummaryCacheKey, summaries: [ClientUsageSummary])?
+}
+
 private struct ClientPriceTally: Sendable {
     var knownCostMicroUSD: Int64?
     var unpricedRequests: Int = 0
@@ -65,6 +76,10 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     private let pricingCacheLock = NSLock()
     private var cachedPricingRevision: Int64?
     private var cachedPricingTotals: [ClientPriceKey: ClientPriceTally] = [:]
+    private let summaryCacheLock = NSLock()
+    private var cachedSummaryRows: [ClientSummaryCacheKey: [ClientUsageSummary]] = [:]
+    private var summaryCacheOrder: [ClientSummaryCacheKey] = []
+    private let summaryCacheLimit = 8
 
     private static let exactBundledPriceEntries: [String: ExactBundledPriceEntry] = {
         var entries: [String: ExactBundledPriceEntry] = [:]
@@ -243,14 +258,18 @@ final class MultiClientUsageLedger: @unchecked Sendable {
 
     func summaries(since: Date? = nil) throws -> [ClientUsageSummary] {
         try database.withConnection { connection in
-            let (summaries, pendingCache) = try connection.readTransaction { snapshot in
-                let revision = since == nil
-                    ? try snapshot.readRows("SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first
-                    : nil
+            let result = try connection.readTransaction { snapshot -> ClientSummaryReadResult in
+                let revision = try snapshot.readRows("SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions") {
+                    $0.int64(0) ?? 0
+                }.first ?? 0
+                let summaryKey = ClientSummaryCacheKey(revision: revision, since: since)
+                if let cached = cachedSummaries(for: summaryKey) {
+                    return ClientSummaryReadResult(summaries: cached, pendingPriceCache: nil, pendingSummaryCache: nil)
+                }
                 let (priceTallies, computedForRevision) = try pricingTotals(
                     in: snapshot,
                     since: since,
-                    revision: revision
+                    revision: since == nil ? revision : nil
                 )
                 let summaries = try snapshot.readRows("""
                 SELECT client,model,SUM(input_tokens),SUM(output_tokens),SUM(cache_read_tokens),SUM(cache_write_tokens),
@@ -273,17 +292,44 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                         incompleteFields: (row.int(9) ?? 0) > 0, apiCostUSD: apiCostUSD,
                         unpricedRequests: tally?.unpricedRequests ?? 0, cacheReadComplete: row.int(10) == 1)
                 }.compactMap { $0 }
-                let pendingCache = revision.flatMap { computedForRevision ? ($0, priceTallies) : nil }
-                return (summaries, pendingCache)
+                let pendingPriceCache = computedForRevision ? (revision, priceTallies) : nil
+                return ClientSummaryReadResult(
+                    summaries: summaries,
+                    pendingPriceCache: pendingPriceCache,
+                    pendingSummaryCache: (summaryKey, summaries)
+                )
             }
 
-            if let (revision, priceTallies) = pendingCache {
+            if let (revision, priceTallies) = result.pendingPriceCache {
                 pricingCacheLock.lock()
                 cachedPricingRevision = revision
                 cachedPricingTotals = priceTallies
                 pricingCacheLock.unlock()
             }
-            return summaries
+            if let (key, summaries) = result.pendingSummaryCache {
+                cacheSummaries(summaries, for: key)
+            }
+            return result.summaries
+        }
+    }
+
+    private func cachedSummaries(for key: ClientSummaryCacheKey) -> [ClientUsageSummary]? {
+        summaryCacheLock.lock()
+        defer { summaryCacheLock.unlock() }
+        guard let summaries = cachedSummaryRows[key] else { return nil }
+        summaryCacheOrder.removeAll { $0 == key }
+        summaryCacheOrder.append(key)
+        return summaries
+    }
+
+    private func cacheSummaries(_ summaries: [ClientUsageSummary], for key: ClientSummaryCacheKey) {
+        summaryCacheLock.lock()
+        defer { summaryCacheLock.unlock() }
+        cachedSummaryRows[key] = summaries
+        summaryCacheOrder.removeAll { $0 == key }
+        summaryCacheOrder.append(key)
+        while summaryCacheOrder.count > summaryCacheLimit {
+            cachedSummaryRows.removeValue(forKey: summaryCacheOrder.removeFirst())
         }
     }
 

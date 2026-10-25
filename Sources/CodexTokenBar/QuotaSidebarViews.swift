@@ -505,6 +505,7 @@ private struct SidebarModelShareStrip: View {
 
 struct QuotaSidebarDetailView: View {
     @ObservedObject private var clients = MultiClientUsageStore.shared
+    @State private var clientProjectionCache = ClientDashboardProjectionCache()
     @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
 
     @ObservedObject var controller: QuotaSidebarController
@@ -648,16 +649,24 @@ struct QuotaSidebarDetailView: View {
     @ViewBuilder
     private func overview(_ snapshot: TokenDisplaySnapshot) -> some View {
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
-        if allowed == ["codex"] {
-            codexOverview(snapshot)
-        } else {
-            ClientQuotaRings(items: detailQuotaItems(snapshot.quota)).id("top")
-            ScopedClientTokenSummary(codex: store.snapshot, allowed: allowed, compact: true).equatable().id("usage")
-            ScopedClientUsageChart(codex: store.snapshot, allowed: allowed).equatable().id("models")
+        if allowed == ["codex"] { codexOverview(snapshot) }
+        else {
+            let display = clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: allowed)
+            let today = clients.todaySummaries.filter { allowed.contains($0.client.rawValue) }
+            let todayRows = (allowed.contains("codex") ? snapshot.todayModelBreakdowns : []) + today.map { row in
+                ModelTokenBreakdown(model: row.model, breakdown: .init(inputTokens: Int(row.inputTokens), cachedInputTokens: Int(row.cacheReadTokens ?? 0), outputTokens: Int(row.outputTokens), reasoningOutputTokens: Int(row.reasoningTokens ?? 0), totalTokens: Int(row.inputTokens + row.outputTokens), calls: row.requests))
+            }
+            let scoped = TokenDisplaySnapshot(title: ClientDisplayScope.title(clientScope), status: "本地统计",
+                rate: allowed.contains("codex") ? snapshot.rate : 0,
+                consumedTokens: display.stats.totalTokens,
+                todayTokens: todayRows.map(\.breakdown).combined.totalTokens,
+                todayRequests: todayRows.map(\.breakdown).combined.calls, todayModelBreakdowns: todayRows,
+                quota: snapshot.quota, updatedAt: display.generatedAt)
+            codexOverview(scoped, projected: display)
         }
     }
 
-    private func codexOverview(_ snapshot: TokenDisplaySnapshot) -> some View {
+    private func codexOverview(_ snapshot: TokenDisplaySnapshot, projected: DashboardSnapshot? = nil) -> some View {
         let total = snapshot.todayModelBreakdowns.map(\.breakdown).combined
         let models = FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         let cost = FloatingTodayModelUsagePresentation.knownCostUSD(in: models)
@@ -686,7 +695,7 @@ struct QuotaSidebarDetailView: View {
                 Text("实时：\(snapshot.status)").font(.system(size: 9)).foregroundStyle(.gray).lineLimit(1).help(snapshot.status)
             }
             modelUsage(snapshot).id("models")
-            SidebarTrendView(bins: Array(store.snapshot.recentBins.suffix(288)), quota: Array(history.snapshot.recentBins.suffix(288)))
+            SidebarTrendView(bins: Array((projected ?? store.snapshot).recentBins.suffix(288)), quota: projected == nil ? Array(history.snapshot.recentBins.suffix(288)) : [])
             tokenComposition(snapshot)
         }.padding(.bottom, 2)
     }

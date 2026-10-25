@@ -10,24 +10,25 @@
   max-width: 100%;
   flex-wrap: wrap;
   padding: 4px;
-  border-radius: 12px;
-  background: var(--panel-bg, #131713);
+  border-radius: 8px;
+  background: var(--control-bg, #20232b);
 }
 .integrated-scope nav button {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 10px 18px;
+  padding: 7px 12px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: inherit;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 .integrated-scope nav button[aria-pressed="true"] {
-  background: #8fcb4826;
+  background: var(--selected-control-bg, #343945);
+  color: var(--accent-blue, #58a6ff);
 }
 .integrated-scope i,
 .integrated-quota-option > i,
@@ -155,56 +156,6 @@
   font-size: 10px;
   opacity: 0.7;
 }
-.integrated-stat-metrics {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px;
-}
-.integrated-stat-metrics > div {
-  display: flex;
-  align-items: center;
-  flex-direction: column;
-  gap: 5px;
-  flex: 1;
-}
-.integrated-stat-metrics strong {
-  font-size: 23px;
-  font-variant-numeric: tabular-nums;
-}
-.integrated-stat-metrics small {
-  opacity: 0.7;
-}
-.integrated-stats {
-  padding: 14px;
-}
-.integrated-stats table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-.integrated-stats :is(th, td) {
-  text-align: left;
-  padding: 7px;
-}
-.integrated-stats small {
-  color: inherit;
-  opacity: 0.7;
-}
-.integrated-trend {
-  padding: 18px;
-  border-radius: 16px;
-  background: var(--panel-bg, #141814);
-}
-.integrated-trend button {
-  padding: 7px 12px;
-  border-radius: 7px;
-  border: 0;
-  margin: 0 2px;
-}
-.integrated-trend button[aria-pressed="true"] {
-  background: #86b64a33;
-}
 .qs-bars .integrated-quota-track {
   position: relative;
   flex: none;
@@ -237,25 +188,6 @@
 }
 .qs-bars > .qs-model-strip-vertical {
   height: var(--integrated-bar-height, 46px);
-}
-.integrated-dashboard-quotas {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 16px;
-}
-.integrated-dashboard-quotas .quota-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.integrated-dashboard-quotas .quota-label i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex: none;
-}
-.integrated-stats {
-  display: block;
 }
 .integrated-paired-ring[data-mode="single"] strong {
   font-size: 17px;
@@ -292,40 +224,4 @@
 }
 .qs-left .integrated-quota-track > .integrated-client-dot {
   left: 6px;
-}
-.integrated-cache {
-  padding: 18px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  display: grid;
-  gap: 10px;
-}
-.integrated-cache header,
-.integrated-cache p {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0;
-}
-.integrated-cache header {
-  justify-content: space-between;
-}
-.integrated-cache h3 {
-  margin: 0;
-}
-.integrated-cache p strong {
-  font-size: 24px;
-  font-variant-numeric: tabular-nums;
-}
-.integrated-cache :is(span, small) {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.integrated-cache button {
-  width: max-content;
-  background: none;
-  color: inherit;
-  border: 0;
-  padding: 5px 0;
 }

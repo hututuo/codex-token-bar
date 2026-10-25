@@ -1,5 +1,7 @@
 # 多客户端原界面整合：实现与验证
 
+> 此文记录v7提交e51bb059。其并行统计/图表展示已被用户否决；当前改回原版组件，见 [v8记录](2026-10-25-original-component-client-integration.md)。
+
 2026-10-25 · 分支 `codex/multi-client-tokens` · 基线 `6698295a`
 
 工作目录：`/Users/huyiyang/.codex/worktrees/multi-client-tokens/codex-token-dashboard`。

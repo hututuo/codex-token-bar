@@ -939,6 +939,7 @@ struct ChartHoverBubble: View {
     let bucketInterval: TimeInterval
     let isHovering: Bool
     let onClose: () -> Void
+    let showsCost: Bool
 
     init(
         bin: BinUsage,
@@ -949,7 +950,8 @@ struct ChartHoverBubble: View {
         sevenDayRemaining: Double?,
         bucketInterval: TimeInterval,
         isHovering: Bool,
-        onClose: @escaping () -> Void = {}
+        onClose: @escaping () -> Void = {},
+        showsCost: Bool = true
     ) {
         self.bin = bin
         self.cacheBreakdown = cacheBreakdown
@@ -960,6 +962,7 @@ struct ChartHoverBubble: View {
         self.bucketInterval = bucketInterval
         self.isHovering = isHovering
         self.onClose = onClose
+        self.showsCost = showsCost
     }
 
     var body: some View {
@@ -992,7 +995,7 @@ struct ChartHoverBubble: View {
             Text("请求 \(bin.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text("金额 \(costUSD.quotaEstimatorMoneyText)")
+            Text(showsCost ? "金额 \(costUSD.quotaEstimatorMoneyText)" : "金额未接入")
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
             Text("缓存命中 \(displayCacheBreakdown.cacheHitRate.percentString) · 命中 \(displayCacheBreakdown.cachedInputTokens.abbreviatedTokens)")
@@ -1063,13 +1066,16 @@ struct ChartHoverBubble: View {
 struct ChartSelectionSummaryBubble: View {
     let selection: QuotaConsumptionSelection
     let onClose: () -> Void
+    let showsCost: Bool
 
     init(
         selection: QuotaConsumptionSelection,
-        onClose: @escaping () -> Void = {}
+        onClose: @escaping () -> Void = {},
+        showsCost: Bool = true
     ) {
         self.selection = selection
         self.onClose = onClose
+        self.showsCost = showsCost
     }
 
     var body: some View {
@@ -1101,7 +1107,7 @@ struct ChartSelectionSummaryBubble: View {
             Text("请求 \(selection.breakdown.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text("金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)")
+            Text(showsCost ? "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)" : "金额未接入")
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
             Text("缓存命中 \(selection.breakdown.cacheHitRate.percentString) · 命中 \(selection.breakdown.cachedInputTokens.abbreviatedTokens)")

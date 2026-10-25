@@ -60,6 +60,7 @@ import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/
 import { modelUsageSlices } from "./modelUsagePresentation.ts";
 
 interface RecentUsageChartProps {
+  pricingAvailable?: boolean;
   recentUsage24h: RecentUsagePoint[];
   recentUsage7d: RecentUsagePoint[];
   recentUsage30d: RecentUsagePoint[];
@@ -102,6 +103,7 @@ function useChartBubbleWidth(fallbackWidth: number) {
 }
 
 export function RecentUsageChart({
+  pricingAvailable = true,
   recentUsage24h,
   recentUsage7d,
   recentUsage30d,
@@ -112,7 +114,8 @@ export function RecentUsageChart({
   sharedAccountAttribution = null,
 }: RecentUsageChartProps) {
   const [range, setRange] = useState<RecentChartRange>(() => readStoredRange());
-  const [visibility, setVisibility] = useState<SeriesVisibility>(() => readStoredVisibility());
+  const [storedVisibility, setVisibility] = useState<SeriesVisibility>(() => readStoredVisibility());
+  const visibility = pricingAvailable ? storedVisibility : {...storedVisibility,cost:false};
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [previewDismissed, setPreviewDismissed] = useState(false);
   const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
@@ -567,7 +570,7 @@ export function RecentUsageChart({
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(visibleWindowSummary.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${visibleWindowSummary.callTotal}`} />
             <LegendDot className="legend-dot--hit" label="命中率" value={percentText(visibleWindowSummary.cacheHitRate)} />
-            <LegendDot className="legend-dot--cost" label="金额" value={moneyText(visibleWindowCostUSD)} />
+            <LegendDot className="legend-dot--cost" label="金额" value={pricingAvailable ? moneyText(visibleWindowCostUSD) : "—"} />
             {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(visibleWindowSummary.latestFiveHourRemaining)} /> : null}
             {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(visibleWindowSummary.latestSevenDayRemaining)} /> : null}
           </div>
@@ -580,7 +583,7 @@ export function RecentUsageChart({
               label="命中率"
               onClick={() => updateVisibility("cacheHitRate")}
             />
-            <LineToggle active={visibility.cost} className="toggle-cost" label="金额" onClick={() => updateVisibility("cost")} />
+            <LineToggle active={visibility.cost} className="toggle-cost" label="金额" onClick={() => { if (pricingAvailable) updateVisibility("cost"); }} />
             {fiveHourQuotaPresent ? <LineToggle active={visibility.fiveHourQuota} className="toggle-five" label="5h" onClick={() => updateVisibility("fiveHourQuota")} /> : null}
             {sevenDayQuotaPresent ? <LineToggle active={visibility.sevenDayQuota} className="toggle-seven" label="7d" onClick={() => updateVisibility("sevenDayQuota")} /> : null}
           </div>
@@ -736,6 +739,7 @@ export function RecentUsageChart({
           ) : null}
           {!previewDismissed && fixedSelectionEndIndex !== null && consumptionSelection ? (
             <SelectionSummaryBubble
+              pricingAvailable={pricingAvailable}
               onClose={() => setPreviewDismissed(true)}
               selection={consumptionSelection}
               viewportWidth={chartViewportWidth}
@@ -747,6 +751,7 @@ export function RecentUsageChart({
             />
           ) : !previewDismissed && activePoint && activeTokenPoint ? (
             <HoverBubble
+              pricingAvailable={pricingAvailable}
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
               costUSD={activeIndex === null ? 0 : plotData.bucketCostsUSD[activeIndex] ?? 0}
@@ -883,6 +888,7 @@ function HoverRing({ className, point, radius }: { className: string; point: { x
 }
 
 function HoverBubble({
+  pricingAvailable = true,
   bucketSeconds,
   cacheVisible,
   costUSD,
@@ -893,6 +899,7 @@ function HoverBubble({
   viewportWidth,
   x,
 }: {
+  pricingAvailable?: boolean;
   bucketSeconds: number;
   cacheVisible: boolean;
   costUSD: number;
@@ -920,7 +927,7 @@ function HoverBubble({
       </div>
       <b>{formatTokens(point.tokens)}</b>
       <span className="chart-hover-row">请求 {point.calls} 次 · avg {formatTokens(average)}</span>
-      <span className="chart-hover-row chart-hover-row--cost">金额 {moneyText(costUSD)}</span>
+      <span className="chart-hover-row chart-hover-row--cost">金额 {pricingAvailable ? moneyText(costUSD) : "未接入"}</span>
       {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
@@ -934,11 +941,13 @@ function HoverBubble({
 }
 
 function SelectionSummaryBubble({
+  pricingAvailable = true,
   onClose,
   selection,
   viewportWidth,
   x,
 }: {
+  pricingAvailable?: boolean;
   onClose: () => void;
   selection: QuotaConsumptionSelection;
   viewportWidth: number;
@@ -956,7 +965,7 @@ function SelectionSummaryBubble({
       </div>
       <b>{formatTokens(selection.totalTokens)}</b>
       <span className="chart-hover-row">请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
-      <span className="chart-hover-row chart-hover-row--cost">金额 {moneyText(selection.selectedCostUSD)}</span>
+      <span className="chart-hover-row chart-hover-row--cost">金额 {pricingAvailable ? moneyText(selection.selectedCostUSD) : "未接入"}</span>
       {selection.calls > 0 ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(selection.cacheHitRate)} · 命中 {formatTokens(selection.cachedInputTokens)}

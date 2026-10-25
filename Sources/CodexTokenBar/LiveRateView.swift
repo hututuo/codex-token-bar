@@ -15,9 +15,13 @@ struct LiveRateView: View {
     @Binding var floatingPanelShowRateAndBar: Bool
     @Binding var tokenRateFullScale: Double
     let onOpenSettings: () -> Void
+    var sourceLabel: String? = nil
+    var sourceAvailable = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let sourceLabel { Text(sourceLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+            if sourceAvailable {
             LiveRateHeader(monitor: monitor, onReset: monitor.reset)
             if liveRateMonitoringEnabled && CacheMissReminderFeature.isEnabled { CacheUsageAdviceView(monitor: monitor) }
 
@@ -44,6 +48,9 @@ struct LiveRateView: View {
             }
             .frame(height: LiveRatePanelLayout.contentHeight)
             ObservedSpeedView(monitor: monitor)
+            } else {
+                Text("暂无正文测速样本").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -65,6 +72,7 @@ struct LiveRateView: View {
     }
 
     private func syncMonitoringEnabled(_ enabled: Bool) {
+        guard sourceAvailable else { return }
         monitor.setMonitoringEnabled(enabled)
         floatingPanelShowRateAndBar = enabled
     }

@@ -346,39 +346,3 @@ export function ClientQuotaDetailRings({
     </div>
   );
 }
-
-export function ClientDashboardQuotaStrip({ items }: { items: QuotaItem[] }) {
-  const { selection } = useClientQuotaSelection();
-  return (
-    <section className="integrated-dashboard-quotas" aria-label="各客户端额度">
-      {items.map((i) => (
-        <div className="quota-bar" key={i.id}>
-          <span className="quota-label">
-            <i style={{ background: clientBrand[i.client] }} />
-            {clientTitle(i.client)} · {i.window}
-          </span>
-          <div className="quota-track">
-            <i
-              className="quota-track-fill"
-              style={{
-                width: `${i.remaining ?? 0}%`,
-                background: selection.colors[i.id] ?? clientBrand[i.client],
-                opacity: i.remaining === null ? 0 : 1,
-              }}
-            />
-          </div>
-          <div className="quota-bar-meta">
-            <b>{value(i)}</b>
-            <em>
-              {i.remaining === null
-                ? i.status
-                : i.resetsAt
-                  ? new Date(i.resetsAt).toLocaleString()
-                  : "重置时间未知"}
-            </em>
-          </div>
-        </div>
-      ))}
-    </section>
-  );
-}

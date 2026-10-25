@@ -33,11 +33,14 @@ static MULTI_CLIENT_USAGE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static MULTI_CLIENT_SCAN_CURSOR: OnceLock<Mutex<usize>> = OnceLock::new();
 static MULTI_CLIENT_AGGREGATE_CACHE: OnceLock<Mutex<MultiClientAggregateCache>> = OnceLock::new();
 static MULTI_CLIENT_PRICE_CACHE: OnceLock<Mutex<MultiClientPriceCache>> = OnceLock::new();
+static MULTI_CLIENT_SCOPED_SUMMARY_CACHE: OnceLock<Mutex<MultiClientScopedSummaryCache>> =
+    OnceLock::new();
 static DEEPSEEK_SESSION_HINT_CACHE: OnceLock<Mutex<VecDeque<(String, String, String)>>> =
     OnceLock::new();
 const MAX_DEEPSEEK_SESSION_HINT_CACHE: usize = 1_024;
 const BUNDLED_PRICE_TABLE: &str =
     include_str!("../../../../Vendor/AgentSpeed/spec/assets/prices.json");
+const MAX_SCOPED_SUMMARY_CACHE_ENTRIES: usize = 8;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MultiClientAggregateCacheKey {
@@ -51,6 +54,8 @@ struct MultiClientAggregateCacheKey {
 #[derive(Clone, Debug)]
 struct MultiClientAggregateArrays {
     summaries: Vec<MultiClientUsageSummary>,
+    today_summaries: Vec<MultiClientUsageSummary>,
+    seven_day_summaries: Vec<MultiClientUsageSummary>,
     trend_buckets: Vec<MultiClientUsageTrendBucket>,
     daily_buckets: Vec<MultiClientUsageTrendBucket>,
 }
@@ -157,6 +162,48 @@ impl MultiClientPriceCache {
     }
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct MultiClientScopedSummaryCacheKey {
+    database_path: PathBuf,
+    revision: i64,
+    cutoff_unix: i64,
+}
+
+#[derive(Default)]
+struct MultiClientScopedSummaryCache {
+    entries: VecDeque<(
+        MultiClientScopedSummaryCacheKey,
+        Vec<MultiClientUsageSummary>,
+    )>,
+}
+
+impl MultiClientScopedSummaryCache {
+    fn get(
+        &mut self,
+        key: &MultiClientScopedSummaryCacheKey,
+    ) -> Option<Vec<MultiClientUsageSummary>> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(cached_key, _)| cached_key == key)?;
+        let (cached_key, summaries) = self.entries.remove(index)?;
+        self.entries.push_back((cached_key, summaries.clone()));
+        Some(summaries)
+    }
+
+    fn put(
+        &mut self,
+        key: MultiClientScopedSummaryCacheKey,
+        summaries: Vec<MultiClientUsageSummary>,
+    ) {
+        self.entries.retain(|(cached_key, _)| cached_key != &key);
+        self.entries.push_back((key, summaries));
+        while self.entries.len() > MAX_SCOPED_SUMMARY_CACHE_ENTRIES {
+            self.entries.pop_front();
+        }
+    }
+}
+
 const CLIENTS: [&str; 5] = [
     "claudeCode",
     "claudeDesktop",
@@ -207,6 +254,10 @@ pub struct MultiClientUsageSummary {
 pub struct MultiClientUsageSnapshot {
     pub preferences: Vec<MultiClientUsagePreference>,
     pub summaries: Vec<MultiClientUsageSummary>,
+    #[serde(default)]
+    pub today_summaries: Vec<MultiClientUsageSummary>,
+    #[serde(default)]
+    pub seven_day_summaries: Vec<MultiClientUsageSummary>,
     pub detections: Vec<ProductDetection>,
     pub trend_buckets: Vec<MultiClientUsageTrendBucket>,
     pub daily_buckets: Vec<MultiClientUsageTrendBucket>,
@@ -428,38 +479,57 @@ fn read_multi_client_usage_snapshot_at(
     database_path: &Path,
 ) -> Result<MultiClientUsageSnapshot, String> {
     let (preferences, mut diagnostics) = load_preferences(settings_path);
-    let (summaries, updated_at, trend_buckets, daily_buckets) = if database_path.exists() {
-        let connection = open_read_only(database_path).map_err(|error| error.to_string())?;
-        let version = read_schema_version(&connection).map_err(|error| error.to_string())?;
-        if version > SCHEMA_VERSION {
-            return Err(format!(
-                "多客户端用量数据库版本 {version} 高于此程序支持的版本 {SCHEMA_VERSION}"
-            ));
-        }
-        if version > 0 {
-            let now = now_unix_seconds();
-            let aggregates = read_cached_multi_client_aggregates(
-                &connection,
-                database_path,
-                now,
-                MULTI_CLIENT_AGGREGATE_CACHE.get_or_init(Default::default),
-            )?;
-            (
-                aggregates.arrays.summaries,
-                aggregates.updated_at,
-                aggregates.arrays.trend_buckets,
-                aggregates.arrays.daily_buckets,
-            )
+    let (summaries, today_summaries, seven_day_summaries, updated_at, trend_buckets, daily_buckets) =
+        if database_path.exists() {
+            let connection = open_read_only(database_path).map_err(|error| error.to_string())?;
+            let version = read_schema_version(&connection).map_err(|error| error.to_string())?;
+            if version > SCHEMA_VERSION {
+                return Err(format!(
+                    "多客户端用量数据库版本 {version} 高于此程序支持的版本 {SCHEMA_VERSION}"
+                ));
+            }
+            if version > 0 {
+                let now = now_unix_seconds();
+                let aggregates = read_cached_multi_client_aggregates(
+                    &connection,
+                    database_path,
+                    now,
+                    MULTI_CLIENT_AGGREGATE_CACHE.get_or_init(Default::default),
+                )?;
+                (
+                    aggregates.arrays.summaries,
+                    aggregates.arrays.today_summaries,
+                    aggregates.arrays.seven_day_summaries,
+                    aggregates.updated_at,
+                    aggregates.arrays.trend_buckets,
+                    aggregates.arrays.daily_buckets,
+                )
+            } else {
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
         } else {
-            (Vec::new(), None, Vec::new(), Vec::new())
-        }
-    } else {
-        (Vec::new(), None, Vec::new(), Vec::new())
-    };
+            (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                Vec::new(),
+                Vec::new(),
+            )
+        };
     diagnostics.shrink_to_fit();
     Ok(make_snapshot(
         preferences,
         summaries,
+        today_summaries,
+        seven_day_summaries,
         diagnostics,
         updated_at,
         trend_buckets,
@@ -470,6 +540,8 @@ fn read_multi_client_usage_snapshot_at(
 fn make_snapshot(
     preferences: Vec<MultiClientUsagePreference>,
     summaries: Vec<MultiClientUsageSummary>,
+    today_summaries: Vec<MultiClientUsageSummary>,
+    seven_day_summaries: Vec<MultiClientUsageSummary>,
     diagnostics: Vec<String>,
     updated_at: Option<String>,
     trend_buckets: Vec<MultiClientUsageTrendBucket>,
@@ -479,6 +551,8 @@ fn make_snapshot(
     MultiClientUsageSnapshot {
         preferences,
         summaries,
+        today_summaries,
+        seven_day_summaries,
         detections: multi_client_product::detect_clients_cached(),
         trend_buckets,
         daily_buckets,
@@ -501,6 +575,8 @@ fn refresh_multi_client_usage_at(
     if enabled.is_empty() && !database_path.exists() {
         return Ok(make_snapshot(
             preferences,
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             diagnostics,
             None,
@@ -525,6 +601,8 @@ fn refresh_multi_client_usage_at(
         return Ok(make_snapshot(
             preferences,
             aggregates.arrays.summaries,
+            aggregates.arrays.today_summaries,
+            aggregates.arrays.seven_day_summaries,
             diagnostics,
             aggregates.updated_at,
             aggregates.arrays.trend_buckets,
@@ -672,6 +750,8 @@ fn refresh_multi_client_usage_at(
     Ok(make_snapshot(
         preferences,
         aggregates.arrays.summaries,
+        aggregates.arrays.today_summaries,
+        aggregates.arrays.seven_day_summaries,
         diagnostics,
         aggregates.updated_at,
         aggregates.arrays.trend_buckets,
@@ -2997,14 +3077,29 @@ fn read_summary_rows_with_prices(
     connection: &Connection,
     price_totals: Option<&HashMap<MultiClientPriceModelKey, MultiClientPriceTally>>,
 ) -> rusqlite::Result<Vec<MultiClientUsageSummary>> {
-    let mut statement = connection.prepare(
+    read_summary_rows_since_with_prices(connection, price_totals, None)
+}
+
+fn read_summary_rows_since_with_prices(
+    connection: &Connection,
+    price_totals: Option<&HashMap<MultiClientPriceModelKey, MultiClientPriceTally>>,
+    since_unix: Option<i64>,
+) -> rusqlite::Result<Vec<MultiClientUsageSummary>> {
+    let query = if since_unix.is_some() {
         "SELECT client, model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), MAX(timestamp), \
          SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL), \
          SUM(cache_read_tokens IS NULL)=0 \
-         FROM client_usage_events GROUP BY client, model ORDER BY client, model",
-    )?;
-    let rows = statement.query_map([], |row| {
+         FROM client_usage_events WHERE timestamp >= ?1 GROUP BY client, model ORDER BY client, model"
+    } else {
+        "SELECT client, model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
+         SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), MAX(timestamp), \
+         SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL), \
+         SUM(cache_read_tokens IS NULL)=0 \
+         FROM client_usage_events GROUP BY client, model ORDER BY client, model"
+    };
+    let mut statement = connection.prepare(query)?;
+    let read_row = |row: &rusqlite::Row<'_>| {
         let timestamp_seconds: Option<f64> = row.get(8)?;
         let client: String = row.get(0)?;
         let model: String = row.get(1)?;
@@ -3038,8 +3133,88 @@ fn read_summary_rows_with_prices(
             unpriced_requests: price_tally.map_or(0, |tally| tally.unpriced_requests),
             cache_read_complete: row.get::<_, i64>(10)? != 0,
         })
-    })?;
+    };
+    let rows = if let Some(cutoff) = since_unix {
+        statement.query_map([cutoff as f64], read_row)?
+    } else {
+        statement.query_map([], read_row)?
+    };
     rows.collect::<rusqlite::Result<Vec<_>>>()
+}
+
+fn read_scoped_api_price_aggregates(
+    connection: &Connection,
+    cutoff_unix: i64,
+) -> Result<HashMap<MultiClientPriceModelKey, MultiClientPriceTally>, String> {
+    let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
+    let mut statement = connection
+        .prepare(
+            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens \
+             FROM client_usage_events WHERE timestamp >= ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([cutoff_unix as f64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        let (client, model, input, output, cache_read, cache_write) =
+            row.map_err(|error| error.to_string())?;
+        totals
+            .entry(MultiClientPriceModelKey {
+                client,
+                model: model.clone(),
+            })
+            .or_default()
+            .add(api_cost_micro_usd(
+                &model,
+                input,
+                output,
+                cache_read,
+                cache_write,
+            ));
+    }
+    Ok(totals)
+}
+
+fn read_cached_scoped_summaries(
+    connection: &Connection,
+    database_path: &Path,
+    revision: i64,
+    cutoff_unix: i64,
+    cache: &Mutex<MultiClientScopedSummaryCache>,
+) -> Result<
+    (
+        Vec<MultiClientUsageSummary>,
+        Option<(
+            MultiClientScopedSummaryCacheKey,
+            Vec<MultiClientUsageSummary>,
+        )>,
+    ),
+    String,
+> {
+    let key = MultiClientScopedSummaryCacheKey {
+        database_path: database_path.to_path_buf(),
+        revision,
+        cutoff_unix,
+    };
+    if let Some(summaries) = cache.lock().ok().and_then(|mut cache| cache.get(&key)) {
+        return Ok((summaries, None));
+    }
+
+    let price_totals = read_scoped_api_price_aggregates(connection, cutoff_unix)?;
+    let summaries =
+        read_summary_rows_since_with_prices(connection, Some(&price_totals), Some(cutoff_unix))
+            .map_err(|error| error.to_string())?;
+    Ok((summaries.clone(), Some((key, summaries))))
 }
 
 fn read_cached_api_price_aggregates(
@@ -3146,7 +3321,7 @@ fn read_cached_multi_client_aggregates(
     let snapshot = connection
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    let (result, pending_price_cache, pending_aggregate_cache) =
+    let (result, pending_price_cache, pending_aggregate_cache, pending_scoped_summary_caches) =
         read_cached_multi_client_aggregates_in_snapshot(
             &snapshot,
             database_path,
@@ -3168,6 +3343,14 @@ fn read_cached_multi_client_aggregates(
             cache.put(key, arrays);
         }
     }
+    if let Ok(mut cache) = MULTI_CLIENT_SCOPED_SUMMARY_CACHE
+        .get_or_init(Default::default)
+        .lock()
+    {
+        for (key, summaries) in pending_scoped_summary_caches {
+            cache.put(key, summaries);
+        }
+    }
     Ok(result)
 }
 
@@ -3185,6 +3368,10 @@ fn read_cached_multi_client_aggregates_in_snapshot(
             HashMap<MultiClientPriceModelKey, MultiClientPriceTally>,
         )>,
         Option<(MultiClientAggregateCacheKey, MultiClientAggregateArrays)>,
+        Vec<(
+            MultiClientScopedSummaryCacheKey,
+            Vec<MultiClientUsageSummary>,
+        )>,
     ),
     String,
 > {
@@ -3192,14 +3379,47 @@ fn read_cached_multi_client_aggregates_in_snapshot(
         .map_err(|error| error.to_string())?;
     if let Some(arrays) = cache.lock().ok().and_then(|mut cache| cache.get(&key)) {
         let updated_at = read_updated_at(connection).map_err(|error| error.to_string())?;
-        return Ok((MultiClientAggregateRead { arrays, updated_at }, None, None));
+        return Ok((
+            MultiClientAggregateRead { arrays, updated_at },
+            None,
+            None,
+            Vec::new(),
+        ));
     }
 
     let (price_totals, pending_price_cache) =
         read_cached_api_price_aggregates(connection, database_path, price_cache)?;
+    let today_start =
+        crate::core::localtime::local_day_bounds(crate::core::localtime::local_date_at(now_unix))
+            .map_err(|error| error.to_string())?
+            .0;
+    let seven_day_start = now_unix
+        .div_euclid(300)
+        .saturating_mul(300)
+        .saturating_sub(7 * 24 * 60 * 60);
+    let scoped_cache = MULTI_CLIENT_SCOPED_SUMMARY_CACHE.get_or_init(Default::default);
+    let (today_summaries, today_cache) = read_cached_scoped_summaries(
+        connection,
+        database_path,
+        key.revision,
+        today_start,
+        scoped_cache,
+    )?;
+    let (seven_day_summaries, seven_day_cache) = read_cached_scoped_summaries(
+        connection,
+        database_path,
+        key.revision,
+        seven_day_start,
+        scoped_cache,
+    )?;
+    let mut pending_scoped_summary_caches = Vec::with_capacity(2);
+    pending_scoped_summary_caches.extend(today_cache);
+    pending_scoped_summary_caches.extend(seven_day_cache);
     let arrays = MultiClientAggregateArrays {
         summaries: read_summary_rows_with_prices(connection, Some(&price_totals))
             .map_err(|error| error.to_string())?,
+        today_summaries,
+        seven_day_summaries,
         trend_buckets: read_trend_buckets(connection, now_unix)
             .map_err(|error| error.to_string())?,
         daily_buckets: read_daily_buckets(connection, now_unix)?,
@@ -3212,6 +3432,7 @@ fn read_cached_multi_client_aggregates_in_snapshot(
         MultiClientAggregateRead { arrays, updated_at },
         pending_price_cache,
         pending_aggregate_cache,
+        pending_scoped_summary_caches,
     ))
 }
 
@@ -4182,6 +4403,22 @@ mod tests {
             .unwrap();
     }
 
+    fn insert_model_summary_event(
+        connection: &Connection,
+        client: &str,
+        event_id: &str,
+        model: &str,
+        timestamp: i64,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO client_usage_events(client,event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,payload) VALUES(?1,?2,?2,?3,?4,100,10,0,0,0,'{}')",
+                params![client, event_id, model, timestamp as f64],
+            )
+            .unwrap();
+        insert_revision(connection, client, event_id, timestamp as f64);
+    }
+
     fn read_priced_summaries_for_test(
         connection: &Connection,
         database: &Path,
@@ -4431,6 +4668,166 @@ mod tests {
         .unwrap();
         assert_eq!(other_path.arrays.summaries[0].input_tokens, 7);
         assert_eq!(cache.lock().unwrap().hits, 2);
+    }
+
+    #[test]
+    fn scoped_model_summaries_include_cutoff_and_invalidate_for_cutoff_and_revision() {
+        let temporary = TempDir::new("scoped-model-summaries");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+
+        let now = 1_800_000_000_i64;
+        let seven_day_start = now.div_euclid(300) * 300 - 7 * 24 * 60 * 60;
+        let today_start =
+            crate::core::localtime::local_day_bounds(crate::core::localtime::local_date_at(now))
+                .unwrap()
+                .0;
+        insert_model_summary_event(
+            &connection,
+            "claudeCode",
+            "outside-seven-days",
+            "gpt-6.1-sol",
+            seven_day_start - 1,
+        );
+        insert_model_summary_event(
+            &connection,
+            "claudeCode",
+            "at-seven-day-cutoff",
+            "gpt-6.1-sol",
+            seven_day_start,
+        );
+        insert_model_summary_event(
+            &connection,
+            "claudeCode",
+            "near-seven-day-edge",
+            "gpt-6.1-sol",
+            seven_day_start + 100,
+        );
+        insert_model_summary_event(
+            &connection,
+            "claudeCode",
+            "before-today",
+            "gpt-6.1-sol",
+            today_start - 1,
+        );
+        insert_model_summary_event(
+            &connection,
+            "claudeCode",
+            "at-today-cutoff",
+            "gpt-6.1-sol",
+            today_start,
+        );
+        insert_model_summary_event(&connection, "claudeCode", "current", "gpt-6.1-sol", now);
+
+        let aggregate_cache = Mutex::new(MultiClientAggregateCache::default());
+        let first =
+            read_cached_multi_client_aggregates(&connection, &database, now, &aggregate_cache)
+                .unwrap();
+        let all_time = &first.arrays.summaries[0];
+        let seven_days = &first.arrays.seven_day_summaries[0];
+        let today = &first.arrays.today_summaries[0];
+        assert_eq!(all_time.requests, 6);
+        assert_eq!(all_time.api_cost_usd, Some(0.0018));
+        assert_eq!(
+            seven_days.requests, 5,
+            "the exact rolling cutoff is included"
+        );
+        assert_eq!(seven_days.api_cost_usd, Some(0.0015));
+        assert_eq!(
+            today.requests, 2,
+            "local midnight is included, the prior second is excluded"
+        );
+        assert_eq!(today.api_cost_usd, Some(0.0006));
+        assert!(today.cache_read_complete);
+        assert_eq!(today.unpriced_requests, 0);
+
+        let later = read_cached_multi_client_aggregates(
+            &connection,
+            &database,
+            now + 300,
+            &aggregate_cache,
+        )
+        .unwrap();
+        assert_eq!(later.arrays.seven_day_summaries[0].requests, 3);
+        assert_eq!(
+            later.arrays.seven_day_summaries[0].api_cost_usd,
+            Some(0.0009)
+        );
+
+        insert_model_summary_event(
+            &connection,
+            "claudeCode",
+            "after-revision",
+            "gpt-6.1-sol",
+            now + 100,
+        );
+        let revised = read_cached_multi_client_aggregates(
+            &connection,
+            &database,
+            now + 300,
+            &aggregate_cache,
+        )
+        .unwrap();
+        assert_eq!(revised.arrays.seven_day_summaries[0].requests, 4);
+        assert_eq!(
+            revised.arrays.seven_day_summaries[0].api_cost_usd,
+            Some(0.0012)
+        );
+        assert_eq!(revised.arrays.today_summaries[0].requests, 3);
+    }
+
+    #[test]
+    fn snapshot_serializes_today_and_seven_day_model_summary_arrays_additively() {
+        let legacy: MultiClientUsageSnapshot = serde_json::from_value(serde_json::json!({
+            "preferences": [],
+            "summaries": [],
+            "detections": [],
+            "trendBuckets": [],
+            "dailyBuckets": [],
+            "quotas": [],
+            "diagnostics": [],
+            "updatedAt": null
+        }))
+        .unwrap();
+        assert!(legacy.today_summaries.is_empty());
+        assert!(legacy.seven_day_summaries.is_empty());
+
+        let wire = serde_json::to_value(legacy).unwrap();
+        assert_eq!(wire["todaySummaries"], serde_json::json!([]));
+        assert_eq!(wire["sevenDaySummaries"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn scoped_summary_cache_is_bounded_and_keeps_recent_cutoffs() {
+        let mut cache = MultiClientScopedSummaryCache::default();
+        let keys = (0..MAX_SCOPED_SUMMARY_CACHE_ENTRIES + 2)
+            .map(|cutoff_unix| MultiClientScopedSummaryCacheKey {
+                database_path: PathBuf::from("fixture.sqlite"),
+                revision: 1,
+                cutoff_unix: cutoff_unix as i64,
+            })
+            .collect::<Vec<_>>();
+        for key in &keys {
+            cache.put(key.clone(), Vec::new());
+        }
+        assert_eq!(cache.entries.len(), MAX_SCOPED_SUMMARY_CACHE_ENTRIES);
+        assert!(cache.get(&keys[0]).is_none());
+        assert!(cache.get(&keys[2]).is_some());
+        cache.put(
+            MultiClientScopedSummaryCacheKey {
+                database_path: PathBuf::from("fixture.sqlite"),
+                revision: 1,
+                cutoff_unix: 99,
+            },
+            Vec::new(),
+        );
+        assert!(
+            cache.get(&keys[2]).is_some(),
+            "a hit refreshes the LRU position"
+        );
+        assert!(cache.get(&keys[3]).is_none());
+        assert_eq!(cache.entries.len(), MAX_SCOPED_SUMMARY_CACHE_ENTRIES);
     }
 
     #[test]

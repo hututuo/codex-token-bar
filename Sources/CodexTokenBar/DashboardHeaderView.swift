@@ -322,6 +322,7 @@ struct InitialLoadingOverlay: View {
 struct HeaderView: View {
     let snapshot: DashboardSnapshot
     let quotaSnapshot: AccountQuotaSnapshot
+    var clientQuotaItems: [ClientQuotaItem]? = nil
     let status: String
     let dataSourceLabel: String
     let dataSourceOrigin: String
@@ -763,7 +764,8 @@ struct HeaderView: View {
 
                 AccountQuotaStrip(
                     snapshot: quotaSnapshot,
-                    showingResetCreditDetails: $showingResetCreditDetails
+                    showingResetCreditDetails: $showingResetCreditDetails,
+                    clientItems: clientQuotaItems
                 )
             }
         }
@@ -892,6 +894,7 @@ struct StatStrip: View, @preconcurrency Equatable {
     var isRefreshing = false
     var preciseTimeSeriesFresh = false
     var cacheStatus = ""
+    var clientCosts: ClientModelCostPeriods? = nil
 
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @AppStorage(DashboardModelCostScope.storageKey) private var modelCostScopeRaw = DashboardModelCostScope.defaultScope.rawValue
@@ -972,7 +975,8 @@ struct StatStrip: View, @preconcurrency Equatable {
     static func == (lhs: StatStrip, rhs: StatStrip) -> Bool {
         let left = lhs.snapshot
         let right = rhs.snapshot
-        return left.generatedAt == right.generatedAt
+        return lhs.clientCosts == rhs.clientCosts
+            && left.generatedAt == right.generatedAt
             && left.preciseTimeSeriesGeneratedAt == right.preciseTimeSeriesGeneratedAt
             && left.usagePrecision == right.usagePrecision
             && left.stats.totalTokens == right.stats.totalTokens
@@ -1026,14 +1030,14 @@ struct StatStrip: View, @preconcurrency Equatable {
                 StatCell(value: tokenValue(stats.totalTokens.abbreviatedTokens), label: "累计 Token 数")
                 Divider().frame(height: 40)
                 StatCell(
-                    value: savingsPresentation.valueText,
-                    label: savingsPresentation.labelText,
-                    help: savingsPresentation.helpText
+                    value: clientCosts.map { ClientMoney.text(FloatingTodayModelUsagePresentation.knownCostUSD(in: $0.lifetime)) } ?? savingsPresentation.valueText,
+                    label: clientCosts == nil ? savingsPresentation.labelText : "已知 API 等值",
+                    help: clientCosts == nil ? savingsPresentation.helpText : "所选客户端标准API价估算；未知价格不计入，不代表订阅扣费。"
                 )
                 Divider().frame(height: 40)
                 StatCell(value: tokenValue(stats.peakDayTokens.abbreviatedTokens), label: "峰值 Token 数")
                 Divider().frame(height: 40)
-                StatCell(value: tokenValue(stats.peakThreadTokens.abbreviatedTokens), label: "单会话最大 Token")
+                StatCell(value: clientCosts == nil ? tokenValue(stats.peakThreadTokens.abbreviatedTokens) : "—", label: "单会话最大 Token")
                 Divider().frame(height: 40)
                 StatCell(value: tokenValue("\(stats.currentStreakDays) 天"), label: "当前连续天数")
                 Divider().frame(height: 40)
@@ -1044,7 +1048,7 @@ struct StatStrip: View, @preconcurrency Equatable {
                 DiagnosticNotice(summary: "用量读取失败", logs: cacheStatus)
             }
 
-            if showsModelCostRow, modelCostScopeBinding.wrappedValue == .sevenDay {
+            if showsModelCostRow, clientCosts == nil, modelCostScopeBinding.wrappedValue == .sevenDay {
                 DashboardQuotaCycleBrowser(scope: modelCostScopeBinding, history: quotaCycleHistory,
                     identity: quotaSnapshot?.historyIdentity, codexHome: cycleCodexHome,
                     snapshot: snapshot, fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
@@ -1061,10 +1065,11 @@ struct StatStrip: View, @preconcurrency Equatable {
                     sevenDayBoundaryTokens: sevenDayModelData.boundaryTokens,
                     fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
                     dataAvailable: snapshot.hasPreciseTokenUsage,
-                    todayModelDisplayState: todayModelDisplayState,
-                    sevenDayDataAvailable: sevenDayModelData.dataAvailable,
-                    sevenDayModelDisplayState: sevenDayModelDisplayState,
-                    sevenDayEstimateSource: sevenDayModelData.estimateSource
+                    todayModelDisplayState: clientCosts == nil ? todayModelDisplayState : .current,
+                    sevenDayDataAvailable: clientCosts != nil || sevenDayModelData.dataAvailable,
+                    sevenDayModelDisplayState: clientCosts == nil ? sevenDayModelDisplayState : .current,
+                    sevenDayEstimateSource: sevenDayModelData.estimateSource,
+                    clientCosts: clientCosts
                 )
             }
         }
@@ -1214,6 +1219,7 @@ struct DashboardModelCostRow: View {
     var selectedCycle: QuotaActualCycle?
     var cycleSummary = ""
     var onSelectCycle: ((String?) -> Void)?
+    var clientCosts: ClientModelCostPeriods? = nil
     @State private var calendarExpanded = false
 
     private var sourceRows: [ModelTokenBreakdown] {
@@ -1232,6 +1238,7 @@ struct DashboardModelCostRow: View {
     }
 
     private var items: [FloatingTodayModelUsageItem] {
+        if let clientCosts { return clientCosts.items(scope) }
         guard selectedDataAvailable, hasModelDetail else { return [] }
         return FloatingTodayModelUsagePresentation.items(
             from: sourceRows,
@@ -1248,7 +1255,7 @@ struct DashboardModelCostRow: View {
     }
 
     private var hasModelDetail: Bool {
-        expectedTokens == 0 || !sourceRows.isEmpty
+        clientCosts != nil || expectedTokens == 0 || !sourceRows.isEmpty
     }
 
     private var missingDetailText: String {
@@ -1291,7 +1298,7 @@ struct DashboardModelCostRow: View {
         let visibleReferenceCostSummary = visibleReferenceEntries.isEmpty
             ? nil
             : visibleReferenceEntries.joined(separator: " · ")
-        let modelFamilies = FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: visibleItems)
+        let modelFamilies = clientCosts?.groups(scope) ?? FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: visibleItems)
         let pendingItems = scope == .sevenDay ? FloatingTodayModelUsagePresentation.items(
             from: sevenDayPendingRows, fallbackModel: fallbackModel
         ) : []
@@ -1305,7 +1312,7 @@ struct DashboardModelCostRow: View {
                     .fixedSize()
 
                 DashboardModelCostScopePicker(scope: $scope,
-                    periodLabel: selectedCycle?.isCurrent == false ? "历史" : "本期",
+                    periodLabel: clientCosts != nil ? "近7天" : selectedCycle?.isCurrent == false ? "历史" : "本期",
                     onCurrent: {
                         if let current = cycles.first(where: \.isCurrent) { onSelectCycle?(current.id) }
                         calendarExpanded = false

@@ -300,7 +300,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertTrue(headerSource.contains(".accessibilityLabel(\"运行线程\")"))
         XCTAssertTrue(
             dashboardSource.contains(
-                "runningThreadSummary: taskCompletionMonitor.runningThreadSummary"
+                "runningThreadSummary: allowedClients.contains(\"codex\") ? taskCompletionMonitor.runningThreadSummary : .unavailable"
             )
         )
     }

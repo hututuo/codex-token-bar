@@ -9,7 +9,8 @@ struct ClientScopePicker: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 0) {
+            HStack(spacing: 10) {
+                HStack(spacing: 2) {
                 scopeButton("Codex", id: "codex")
                 ForEach(choices.prefix(2)) { scopeButton($0.client.displayName, id: $0.client.rawValue) }
                 if choices.count > 2 {
@@ -17,20 +18,22 @@ struct ClientScopePicker: View {
                         .menuStyle(.borderlessButton).frame(width: 68)
                 }
                 scopeButton("汇总", id: "all")
+                }.padding(3).background(AppTheme.solidControlBackground, in: RoundedRectangle(cornerRadius: 8))
                 Spacer()
-                if scope != "codex" { Text("本地已记录 · 各额度独立").font(.caption).foregroundStyle(.secondary) }
+                if ClientPreviewMode.simulated { Text("Claude 模拟数据").font(.caption.weight(.medium)).foregroundStyle(AppTheme.accentAmber) }
             }
             MultiClientDiscoveryNotice()
-        }.task { clients.start() }
+        }.frame(maxWidth: 980, alignment: .leading).task { clients.start() }
     }
     private func scopeButton(_ title: String, id: String) -> some View {
         Button { scope = id } label: {
             HStack(spacing: 6) {
                 if id != "all" { Circle().fill(Color(nsColor: NSColor(clientHex: ClientBrand.hex(id)))).frame(width: 7, height: 7) }
-                Text(title).font(.system(size: 14, weight: .semibold))
-            }.padding(.horizontal, 16).padding(.vertical, 10)
-                .background(scope == id ? AppTheme.accentGreen.opacity(0.16) : AppTheme.panelBackground,
-                    in: RoundedRectangle(cornerRadius: 9))
+                Text(title).font(.system(size: 12, weight: .medium))
+            }.padding(.horizontal, 12).frame(height: 29)
+                .foregroundStyle(scope == id ? AppTheme.accentBlue : .primary)
+                .background(scope == id ? AppTheme.selectedControlBackground : .clear,
+                    in: RoundedRectangle(cornerRadius: 6))
         }.buttonStyle(.plain).accessibilityAddTraits(scope == id ? .isSelected : [])
     }
 }
@@ -166,168 +169,5 @@ struct ClientPairedQuotaRing: View {
             Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 4, height: 4)
             Text(item.title).lineLimit(1).minimumScaleFactor(0.8)
         }.font(.system(size: 8)).foregroundStyle(.white.opacity(0.8))
-    }
-}
-
-struct ScopedClientTokenSummary: View, @preconcurrency Equatable {
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.compact == rhs.compact && lhs.allowed == rhs.allowed && lhs.codex.generatedAt == rhs.codex.generatedAt && lhs.codex.exactGeneration == rhs.codex.exactGeneration
-    }
-    let codex: DashboardSnapshot
-    let allowed: Set<String>
-    var compact = false
-    @ObservedObject private var clients = MultiClientUsageStore.shared
-    private var rows: [ClientUsageSummary] { clients.summaries.filter { allowed.contains($0.client.rawValue) } }
-    private var knownCosts: [Double] {
-        rows.compactMap(\.apiCostUSD) + (allowed.contains("codex") ? codex.cacheUsage.modelBreakdowns.compactMap(codexCost) : [])
-    }
-    private var unpricedRequests: Int { rows.reduce(0) { $0 + $1.unpricedRequests } }
-    private func codexCost(_ row: ModelTokenBreakdown) -> Double? {
-        guard let model = row.model, StandardAPIPriceSchedule.quote(for: model, at: nil) != nil else { return nil }
-        let items = FloatingTodayModelUsagePresentation.items(from: [row], fallbackModel: .gpt56Sol, mergeAutoReview: true)
-        return FloatingTodayModelUsagePresentation.knownCostUSD(in: items)
-    }
-    private func compactRow(_ title: String, tokens: String, model: String, cost: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack { Text(title).lineLimit(1); Spacer(); Text(tokens).monospacedDigit() }
-            HStack { Text("标准 API 等值"); Spacer(); Text(ClientMoney.text(cost)).help("参考单价 " + ClientReferencePrice.text(model)) }
-                .foregroundStyle(.secondary)
-        }.font(.caption)
-    }
-    var body: some View {
-        let input = rows.reduce(0) { $0 + $1.inputTokens } + (allowed.contains("codex") ? Int64(codex.stats.totalInputTokens ?? 0) : 0)
-        let output = rows.reduce(0) { $0 + $1.outputTokens } + (allowed.contains("codex") ? Int64(codex.stats.totalOutputTokens ?? 0) : 0)
-        let total = rows.reduce(0) { $0 + $1.inputTokens + $1.outputTokens } + (allowed.contains("codex") ? Int64(codex.stats.totalTokens) : 0)
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                metric("累计 Token 数", total)
-                Divider().frame(height: 40)
-                metric("输入 Token", input)
-                Divider().frame(height: 40)
-                metric("输出 Token", output)
-                Divider().frame(height: 40)
-                VStack { Text("部分").font(.title3); Text("本地已记录").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity)
-            }
-            Divider()
-            HStack {
-                Text("模型 / API 等值 · 累计已记录").font(.callout.weight(.semibold))
-                Spacer()
-                Text("已知小计 " + ClientMoney.text(knownCosts.isEmpty ? nil : knownCosts.reduce(0, +))).font(.callout.bold()).monospacedDigit()
-            }
-            if compact {
-                VStack(alignment: .leading, spacing: 10) {
-                    if allowed.contains("codex") {
-                        ForEach(Array(codex.cacheUsage.modelBreakdowns.enumerated()), id: \.offset) { _, row in
-                            compactRow("Codex · " + (row.model ?? "未知模型"), tokens: row.breakdown.totalTokens.abbreviatedTokens,
-                                model: row.model ?? "", cost: codexCost(row))
-                        }
-                    }
-                    ForEach(rows) { row in
-                        compactRow(row.client.displayName + " · " + row.model,
-                            tokens: MultiClientUsageStore.compact(row.inputTokens + row.outputTokens), model: row.model, cost: row.apiCostUSD)
-                    }
-                }
-            } else {
-            Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
-                GridRow { Text("客户端 · 模型"); Text("Token"); Text("缓存读 / 写"); Text("标准 API 等值") }.font(.caption).foregroundStyle(.secondary)
-                if allowed.contains("codex") {
-                    ForEach(Array(codex.cacheUsage.modelBreakdowns.enumerated()), id: \.offset) { _, row in
-                        GridRow { Text("Codex · " + (row.model ?? "未知模型")); Text(row.breakdown.totalTokens.abbreviatedTokens); Text(row.breakdown.cachedInputTokens.abbreviatedTokens + " / —"); Text(ClientMoney.text(codexCost(row))).help("参考单价（输入/输出，每百万Token） " + ClientReferencePrice.text(row.model ?? "")) }.font(.caption)
-                    }
-                }
-                ForEach(rows) { row in
-                    GridRow {
-                        Text(row.client.displayName + " · " + row.model)
-                        Text(MultiClientUsageStore.compact(row.inputTokens + row.outputTokens))
-                        Text((row.cacheReadTokens.map(MultiClientUsageStore.compact) ?? "—") + " / " + (row.cacheWriteTokens.map(MultiClientUsageStore.compact) ?? "—"))
-                        Text(ClientMoney.text(row.apiCostUSD)).help("参考单价（输入/输出，每百万Token） " + ClientReferencePrice.text(row.model))
-                    }.font(.caption).monospacedDigit()
-                }
-            }
-            }
-            Text("标准 API 价估算 · 缓存与思考不重复累加 · 不是订阅扣费记录").font(.caption).foregroundStyle(.secondary)
-            if unpricedRequests > 0 { Text("\(unpricedRequests) 次请求因价目规则或用量字段不足，未计入金额").font(.caption).foregroundStyle(.secondary) }
-        }.padding(18).background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 16))
-    }
-    private func metric(_ title: String, _ value: Int64) -> some View {
-        VStack(spacing: 5) { Text(MultiClientUsageStore.compact(value)).font(.system(size: 22, weight: .semibold)).monospacedDigit(); Text(title).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity)
-    }
-}
-
-struct ScopedClientUsageChart: View, @preconcurrency Equatable {
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.allowed == rhs.allowed && lhs.codex.generatedAt == rhs.codex.generatedAt && lhs.codex.exactGeneration == rhs.codex.exactGeneration
-    }
-    let codex: DashboardSnapshot
-    let allowed: Set<String>
-    @ObservedObject private var clients = MultiClientUsageStore.shared
-    @State private var days = 1
-    @State private var split = false
-    @State private var selected: Date?
-    var body: some View {
-        let source = ClientUsageChartProjection.points(codex: codex.recentBins, others: clients.trendBuckets, days: days, now: clients.updatedAt ?? Date(), allowed: allowed)
-        let points = split ? source : Dictionary(grouping: source, by: \.start).map { date, values in ClientChartPoint(client: "all", start: date, tokens: values.reduce(0) { $0 + $1.tokens }) }.sorted { $0.start < $1.start }
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("近期 Token 用量").font(.headline)
-                Spacer()
-                if allowed.count > 1 { Toggle("按客户端", isOn: $split).toggleStyle(.checkbox) }
-                Picker("范围", selection: $days) { Text("24 小时").tag(1); Text("7 天").tag(7); Text("30 天").tag(30) }.pickerStyle(.segmented).frame(width: 240)
-            }
-            Chart(points) { point in
-                LineMark(x: .value("时间", point.start), y: .value("Token", point.tokens), series: .value("客户端", point.client))
-                    .foregroundStyle(by: .value("客户端", point.client))
-            }.chartForegroundStyleScale(domain: ["all"] + allowed.sorted(), range: [AppTheme.accentGreen] + allowed.sorted().map { Color(nsColor: NSColor(clientHex: ClientBrand.hex($0))) })
-                .chartXSelection(value: $selected).chartLegend(.hidden).frame(height: 240)
-            if let selected, let point = source.min(by: { abs($0.start.timeIntervalSince(selected)) < abs($1.start.timeIntervalSince(selected)) }) {
-                Text(point.start.formatted() + " · " + source.filter { $0.start == point.start }.map { ClientDisplayScope.title($0.client) + " " + MultiClientUsageStore.compact($0.tokens) }.joined(separator: " · ")).font(.caption).monospacedDigit()
-            }
-            Text("\(days == 1 ? "5 分钟" : days == 7 ? "1 小时" : "6 小时")桶（含两端未满桶）· 本地已记录，缺失记录不补推").font(.caption).foregroundStyle(.secondary)
-        }.padding(18).background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 16))
-    }
-}
-
-
-struct ScopedClientActivity: View, @preconcurrency Equatable {
-    let codex: DashboardSnapshot
-    let allowed: Set<String>
-    @ObservedObject private var clients = MultiClientUsageStore.shared
-    @State private var mode = ActivityMode.daily
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.allowed == rhs.allowed && lhs.codex.generatedAt == rhs.codex.generatedAt && lhs.codex.exactGeneration == rhs.codex.exactGeneration
-    }
-    var body: some View {
-        ActivitySection(dailyUsage: ClientActivityProjection.days(codex: codex.dailyUsage,
-            others: clients.dailyBuckets, allowed: allowed), cacheDaily: [], quotaDaily: [], selectedMode: $mode, tokensOnly: true)
-    }
-}
-
-/// The dashboard retains its original horizontal quota tracks; full rings belong
-/// to the larger third-level detail, not a new standalone dashboard card.
-struct ClientDashboardQuotaStrip: View {
-    let items: [ClientQuotaItem]
-    @AppStorage(ClientQuotaSelection.key) private var selectionRaw = ""
-    var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 240))], alignment: .leading, spacing: 12) {
-            ForEach(items) { item in
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 5) {
-                        Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 6, height: 6)
-                        Text(item.title).font(.callout.weight(.medium))
-                        Spacer()
-                        Text(item.value).monospacedDigit().font(.callout.weight(.semibold))
-                    }
-                    GeometryReader { geometry in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.secondary.opacity(0.15))
-                            Capsule().fill(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.brand)))
-                                .frame(width: geometry.size.width * (item.remaining ?? 0) / 100).opacity(item.remaining == nil ? 0 : 1)
-                        }
-                    }.frame(height: 7)
-                    Text(item.remaining == nil ? item.status : item.resetsAt.map { "重置 " + $0.formatted(date: .numeric, time: .shortened) } ?? "重置时间未知")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(.vertical, 4)
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }

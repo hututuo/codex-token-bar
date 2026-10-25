@@ -1,3 +1,5 @@
+import type { QuotaItem } from "../multiClient/integratedClientModel";
+import { clientTitle } from "../multiClient/useClientScope";
 import { DiagnosticNotice } from "./DiagnosticNotice";
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type {
@@ -83,6 +85,7 @@ import { quotaPaceAccent, semanticMetricColor } from "../styles/semanticColors";
 import { hasStaleAccountQuotaData } from "../state/dashboardWarnings";
 
 interface QuotaStripProps {
+  clientItems?: QuotaItem[];
   attributionIdentity?: QuotaAttributionIdentity | null;
   onQuotaRefreshIntervalChange?: (intervalMs: number) => void | Promise<void>;
   onAttributionPreciseRefreshNeeded?: (comparisonUpdatedAt: string) => void;
@@ -1955,4 +1958,16 @@ function emptyBucketMergeResult(): AttributionBucketMergeResult {
   };
 }
 
-export const QuotaStrip = memo(QuotaStripView);
+// Generic display never enters the Codex attribution owner and its persisted high-water marks.
+function QuotaStripEntry(props: QuotaStripProps) {
+  if (props.clientItems) return <section className="quota-strip" aria-label="账户额度"
+    style={{gridTemplateColumns:`84px repeat(${Math.max(1,props.clientItems.length)}, minmax(0,1fr)) 154px`}}>
+    <div className="quota-plan"><span>所选额度</span><strong>独立窗口</strong></div>
+    {props.clientItems.map(item=><QuotaBar key={item.id} quota={{label:clientTitle(item.client)+' · '+item.window,
+      availability:item.remaining===null?'unavailable':'measured',remainingPercent:item.remaining===null?null:item.remaining/100,
+      usedPercent:item.remaining===null?null:1-item.remaining/100,resetsAt:item.resetsAt?new Date(item.resetsAt).toLocaleString():'重置时间未知'}} />)}
+    <div className="quota-side-card quota-pace"><strong>分别计算</strong><span>不合计百分比</span></div>
+  </section>;
+  return <QuotaStripView {...props}/>;
+}
+export const QuotaStrip = memo(QuotaStripEntry);

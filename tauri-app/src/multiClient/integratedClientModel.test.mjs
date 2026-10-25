@@ -187,7 +187,7 @@ test("the nested quota track keeps its four-pixel box and unknown fill stays hid
 test("unknown cache counts are excluded rather than interpreted as misses", async () =>
   withSsrModules(async (load) => {
     const { cacheCoverage } = await load(
-      "/src/multiClient/ScopedClientCacheView.tsx",
+      "/src/multiClient/clientCacheCoverage.ts",
     );
     const rows = [
       {

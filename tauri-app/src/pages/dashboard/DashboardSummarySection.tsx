@@ -1,3 +1,5 @@
+import type { ClientCostPeriods } from "../../multiClient/originalDashboardProjection";
+import type { QuotaItem } from "../../multiClient/integratedClientModel";
 import { LiveRateCard } from "../../components/LiveRateCard";
 import { CodexRadarStrip } from "../../components/CodexRadarStrip";
 import { QuotaStrip } from "../../components/QuotaStrip";
@@ -15,6 +17,9 @@ import type { SharedAccountAttributionResult } from "../../components/sharedAcco
 
 interface DashboardSummarySectionProps {
   speedOnly?: boolean;
+  clientCosts?: ClientCostPeriods;
+  clientQuotaItems?: QuotaItem[];
+  includesCodex?: boolean;
   sourceToken?: CodexHomeSourceToken | null;
   dashboard: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
@@ -53,6 +58,9 @@ interface DashboardSummarySectionProps {
 
 export function DashboardSummarySection({
   speedOnly = false,
+  clientCosts,
+  clientQuotaItems,
+  includesCodex = true,
   sourceToken = null,
   dashboard,
   displaySurfaces,
@@ -93,6 +101,7 @@ export function DashboardSummarySection({
     <>
       {!speedOnly && <>
       <QuotaStrip
+        clientItems={clientQuotaItems}
         attributionIdentity={dashboard.attributionIdentity ?? null}
         diagnostics={dashboard.diagnostics}
         onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
@@ -121,6 +130,7 @@ export function DashboardSummarySection({
         warnings={dashboard.warnings}
       />
       <StatsStrip
+        clientCosts={clientCosts}
         sourceToken={sourceToken}
         attributionIdentity={dashboard.attributionIdentity ?? null}
         quotaUpdatedAt={dashboard.quotaUpdatedAt}
@@ -135,8 +145,8 @@ export function DashboardSummarySection({
         warnings={dashboard.warnings}
       />
       </>}
-      <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />
-      <LiveRateCard
+      {includesCodex && <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />}
+      {includesCodex && <LiveRateCard
         sourceToken={sourceToken}
         liveThreadOptions={liveThreadOptions}
         floatingEnabled={displaySurfaces.floatingWindowEnabled}
@@ -157,7 +167,7 @@ export function DashboardSummarySection({
         refreshing={refreshing}
         snapshot={liveRate}
         usageCacheInitializing={usageCacheInitializing}
-      />
+      />}
     </>
   );
 }

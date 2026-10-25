@@ -1303,7 +1303,25 @@ final class RecentChartSeriesVisibilityStore: ObservableObject {
 // This view owns interaction state captured by GeometryReader/ScrollViewReader.
 // Comparing only its source arrays makes SwiftUI reuse those closures after a
 // visibility or viewport change, leaving buttons and plotted data out of sync.
+struct RecentChartViewportOriginKey: PreferenceKey {
+    static let defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) { value = nextValue() ?? value }
+}
+
+enum RecentChartViewportGeometry {
+    static func offset(originX: CGFloat, viewportWidth: CGFloat, contentWidth: CGFloat, positioned: Bool) -> CGFloat? {
+        guard originX.isFinite, viewportWidth.isFinite, contentWidth.isFinite, viewportWidth > 0 else { return nil }
+        let maximum = max(0, contentWidth - viewportWidth)
+        let value = min(max(-originX, 0), maximum)
+        // Before SwiftUI applies its trailing anchor a zero geometry value is
+        // transient. Keep the default latest window until it actually settles.
+        if !positioned, maximum > 0.5, value <= 0.5 { return nil }
+        return value
+    }
+}
+
 struct RecentUsageChart: View {
+    let pricingAvailable: Bool
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
@@ -1337,6 +1355,8 @@ struct RecentUsageChart: View {
     @State private var consumptionSelectionInvalidationMessage: String?
     @State private var previewVisibility = RecentChartPreviewVisibilityState()
     @State private var accessibilityCursorState = RecentChartAccessibilityCursorState()
+    @Namespace private var scrollViewportSpace
+    @State private var scrollGeometryPositioned = false
     @State private var scrollPresentation: RecentChartScrollPresentation?
     @State private var cachedBucketCostsUSD: [Double]
     @State private var cachedFixedScales: RecentChartFixedScaleMap
@@ -1356,8 +1376,10 @@ struct RecentUsageChart: View {
         quotaHourlyBins: [QuotaHistoryRecentBucket],
         currentFiveHourQuotaPresent: Bool = true,
         currentSevenDayQuotaPresent: Bool = true,
-        sharedAccountAttributionContext: QuotaSelectionAttributionContext? = nil
+        sharedAccountAttributionContext: QuotaSelectionAttributionContext? = nil,
+        pricingAvailable: Bool = true
     ) {
+        self.pricingAvailable = pricingAvailable
         self.bins = bins
         self.hourlyBins = hourlyBins
         self.cacheRecentBins = cacheRecentBins
@@ -1400,7 +1422,7 @@ struct RecentUsageChart: View {
     private var showTokens: Bool { lineVisibility.showTokens }
     private var showCalls: Bool { lineVisibility.showCalls }
     private var showCacheHitRate: Bool { lineVisibility.showCacheHitRate }
-    private var showCost: Bool { lineVisibility.showCost }
+    private var showCost: Bool { pricingAvailable && lineVisibility.showCost }
     private var showFiveHourQuota: Bool { lineVisibility.showFiveHourQuota }
     private var showSevenDayQuota: Bool { lineVisibility.showSevenDayQuota }
 
@@ -1489,7 +1511,7 @@ struct RecentUsageChart: View {
                     ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
                     ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
                     ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
-                    ChartLegend(color: AppTheme.chartCost, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
+                    ChartLegend(color: AppTheme.chartCost, label: "金额", value: pricingAvailable ? visibleWindowCostUSD.quotaEstimatorMoneyText : "—")
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
                     }
@@ -1519,8 +1541,8 @@ struct RecentUsageChart: View {
                     ChartLineToggle(
                         title: "金额",
                         color: AppTheme.chartCost,
-                        isOn: lineVisibilityBinding(for: \.showCost)
-                    )
+                        isOn: pricingAvailable ? lineVisibilityBinding(for: \.showCost) : .constant(false)
+                    ).disabled(!pricingAvailable).help(pricingAvailable ? "显示金额" : "该范围暂无逐模型时间桶金额")
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLineToggle(
                             title: "5h",
@@ -1584,15 +1606,17 @@ struct RecentUsageChart: View {
                                     RecentChartScrollOffsetReader(
                                         showsPersistentHorizontalScroller: contentWidth > viewportWidth + 1,
                                         initialContentOffset: max(contentWidth - viewportWidth, 0)
-                                    ) { contentOffset in
-                                        updateScrollPresentation(
-                                            contentOffset: contentOffset,
-                                            viewportWidth: viewportWidth,
-                                            contentWidth: contentWidth,
-                                            windowCount: windowCount
-                                        )
+                                    ) { _ in
+                                        // AppKit retains native scroller styling and initial
+                                        // placement. Its ancestor bounds are not the render
+                                        // coordinate system after SwiftUI's trailing anchor.
                                     }
                                     .frame(width: 1, height: 1)
+
+                                    GeometryReader { marker in
+                                        Color.clear.preference(key: RecentChartViewportOriginKey.self,
+                                            value: marker.frame(in: .named(scrollViewportSpace)).minX)
+                                    }.frame(width: 0, height: 0).allowsHitTesting(false)
 
                                     chartScrollAnchors(
                                         windowCount: windowCount,
@@ -1608,6 +1632,14 @@ struct RecentUsageChart: View {
                             }
                         }
                         .defaultScrollAnchor(.trailing)
+                        .coordinateSpace(name: scrollViewportSpace)
+                        .onPreferenceChange(RecentChartViewportOriginKey.self) { origin in
+                            guard let origin, let offset = RecentChartViewportGeometry.offset(originX: origin,
+                                viewportWidth: viewportWidth, contentWidth: contentWidth, positioned: scrollGeometryPositioned) else { return }
+                            scrollGeometryPositioned = true
+                            updateScrollPresentation(contentOffset: offset, viewportWidth: viewportWidth,
+                                contentWidth: contentWidth, windowCount: windowCount)
+                        }
                         .id(preparedData.range)
                         .scrollClipDisabled()
                         .mask(chartViewportMask)
@@ -2067,7 +2099,8 @@ struct RecentUsageChart: View {
                     if let selection = consumptionSelection {
                         ChartSelectionSummaryBubble(
                             selection: selection,
-                            onClose: dismissTopPreview
+                            onClose: dismissTopPreview,
+                            showsCost: pricingAvailable
                         )
                     }
                 } else {
@@ -2084,7 +2117,8 @@ struct RecentUsageChart: View {
                             : nil,
                         bucketInterval: preparedData.bucketInterval,
                         isHovering: true,
-                        onClose: dismissTopPreview
+                        onClose: dismissTopPreview,
+                        showsCost: pricingAvailable
                     )
                 }
             }
@@ -2114,6 +2148,7 @@ struct RecentUsageChart: View {
     private func scrollChartToLatest(_ proxy: ScrollViewProxy) {
         guard preparedData.bins.count > 1 else { return }
         scrollPresentation = nil
+        scrollGeometryPositioned = false
         DispatchQueue.main.async {
             var transaction = Transaction()
             transaction.disablesAnimations = true

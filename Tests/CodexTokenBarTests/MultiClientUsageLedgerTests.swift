@@ -220,6 +220,75 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertEqual(try ledger.summaries().first?.requests, 2)
     }
 
+    func testSinceSummariesIncludeExactCutoffAndPriceEachPeriodIndependently() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let todayStart = Calendar.current.startOfDay(for: now)
+        let sevenDayStart = Date(timeIntervalSince1970:
+            floor((now.timeIntervalSince1970 - 7 * 24 * 60 * 60) / 300) * 300)
+        func request(_ id: String, at timestamp: Date) -> ClientUsageEvent {
+            ClientUsageEvent(client: .claudeCode, eventID: id, sessionID: id, model: "gpt-6.1-sol",
+                timestamp: timestamp, inputTokens: 100, outputTokens: 10,
+                cacheReadTokens: 0, cacheWriteTokens: 0)
+        }
+        _ = try ledger.ingest([
+            request("before-seven-days", at: sevenDayStart.addingTimeInterval(-1)),
+            request("at-seven-day-cutoff", at: sevenDayStart),
+            request("before-today", at: todayStart.addingTimeInterval(-1)),
+            request("at-today-cutoff", at: todayStart),
+            request("current", at: now)
+        ])
+
+        let allTime = try XCTUnwrap(ledger.summaries().first)
+        let sevenDays = try XCTUnwrap(ledger.summaries(since: sevenDayStart).first)
+        let today = try XCTUnwrap(ledger.summaries(since: todayStart).first)
+        XCTAssertEqual(allTime.requests, 5)
+        XCTAssertEqual(allTime.apiCostUSD, 0.0015)
+        XCTAssertEqual(sevenDays.requests, 4, "The exact lower boundary is included")
+        XCTAssertEqual(sevenDays.apiCostUSD, 0.0012)
+        XCTAssertEqual(today.requests, 2, "Local midnight is included and the prior second is excluded")
+        XCTAssertEqual(today.apiCostUSD, 0.0006)
+        XCTAssertTrue(today.cacheReadComplete)
+        XCTAssertEqual(today.unpricedRequests, 0)
+    }
+
+    func testSinceSummaryCacheSeparatesCutoffsAndInvalidatesOnRevision() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
+        let anchor = Date(timeIntervalSince1970: 1_800_000_000)
+        func request(_ id: String, at offset: TimeInterval) -> ClientUsageEvent {
+            ClientUsageEvent(client: .claudeCode, eventID: id, sessionID: id, model: "gpt-6.1-sol",
+                timestamp: anchor.addingTimeInterval(offset), inputTokens: 100, outputTokens: 10,
+                cacheReadTokens: 0, cacheWriteTokens: 0)
+        }
+        _ = try ledger.ingest([request("old", at: -1_000), request("new", at: -500)])
+        let broadCutoff = anchor.addingTimeInterval(-1_000)
+        let narrowCutoff = anchor.addingTimeInterval(-500)
+        XCTAssertEqual(try ledger.summaries(since: broadCutoff).first?.requests, 2)
+        XCTAssertEqual(try ledger.summaries(since: narrowCutoff).first?.requests, 1)
+        XCTAssertEqual(try ledger.summaries(since: broadCutoff).first?.apiCostUSD, 0.0006)
+
+        _ = try ledger.ingest([request("newer", at: -250)])
+        XCTAssertEqual(try ledger.summaries(since: broadCutoff).first?.requests, 3)
+        XCTAssertEqual(try ledger.summaries(since: narrowCutoff).first?.requests, 2)
+        XCTAssertEqual(try ledger.summaries(since: narrowCutoff).first?.apiCostUSD, 0.0006)
+    }
+
+    func testScannerReturnsAllTimeTodayAndSevenDayModelSummaries() async throws {
+        let database = root.appendingPathComponent("usage.sqlite")
+        let ledger = try MultiClientUsageLedger(url: database)
+        _ = try ledger.ingest([
+            ClientUsageEvent(client: .claudeCode, eventID: "now", sessionID: "now", model: "gpt-6.1-sol",
+                timestamp: Date(), inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0)
+        ])
+        let scanner = MultiClientUsageScanner(databaseURL: database, home: root, environment: [:])
+        let result = try await scanner.scan([])
+        XCTAssertEqual(result.summaries.first?.requests, 1)
+        XCTAssertEqual(result.todaySummaries.first?.requests, 1)
+        XCTAssertEqual(result.sevenDaySummaries.first?.requests, 1)
+        XCTAssertEqual(result.todaySummaries.first?.apiCostUSD, 0.0003)
+        XCTAssertEqual(result.sevenDaySummaries.first?.apiCostUSD, 0.0003)
+    }
+
     func testPricingRowsAndSummaryStayOnOneSQLiteReadSnapshot() throws {
         let url = root.appendingPathComponent("usage.sqlite")
         let reader = try MultiClientUsageLedger(url: url)

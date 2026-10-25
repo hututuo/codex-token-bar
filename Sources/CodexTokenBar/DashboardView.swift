@@ -49,6 +49,7 @@ struct DashboardView: View {
     private var allowedClients: Set<String> {
         ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
     }
+    @State private var clientProjectionCache = ClientDashboardProjectionCache()
     private var codexOnly: Bool { allowedClients == ["codex"] }
 
     @Environment(\.openWindow) private var openWindow
@@ -1053,20 +1054,25 @@ struct DashboardView: View {
         // Keep offscreen historical charts out of live-rate layout passes. The
         // sections retain their own state; ScrollViewReader still targets the
         // chart's stable ID when jumping from the radar card.
+        let display = clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: allowedClients)
+        let costs = codexOnly ? nil : ClientModelCostPeriods.make(codex: store.snapshot,
+            todayCodex: store.todayModelBreakdowns, rows: clients.summaries, today: clients.todaySummaries,
+            sevenDay: clients.sevenDaySummaries, allowed: allowedClients)
         LazyVStack(spacing: 18) {
             ClientScopePicker()
             HeaderView(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
+                clientQuotaItems: codexOnly ? nil : ClientQuotaProjection.items(codex: quotaStore.snapshot, claude: clients.quotaReading(.claudeCode), includeClaude: allowedClients.contains("claudeCode") || allowedClients.contains("claudeDesktop")).filter { allowedClients.contains($0.client) || ($0.client == "claudeCode" && allowedClients.contains("claudeDesktop")) },
                 status: store.status,
-                dataSourceLabel: store.dataSourceLabel,
-                dataSourceOrigin: store.dataSourceOrigin,
+                dataSourceLabel: codexOnly ? store.dataSourceLabel : (clientScope == "all" ? "所选客户端本地记录" : ClientDisplayScope.title(clientScope)),
+                dataSourceOrigin: codexOnly ? store.dataSourceOrigin : (ClientPreviewMode.simulated ? "Claude 模拟" : "本地日志"),
                 isRefreshing: store.isRefreshing,
                 lastCheckedAt: store.lastCheckedAt,
                 dataUpdatedAt: store.dataUpdatedAt,
                 preciseIndexProgress: store.preciseIndexProgress,
                 unreadThreadCount: taskCompletionMonitor.unreadThreadCount,
-                runningThreadSummary: taskCompletionMonitor.runningThreadSummary,
+                runningThreadSummary: allowedClients.contains("codex") ? taskCompletionMonitor.runningThreadSummary : .unavailable,
                 presentationMode: .dashboard,
                 onRefresh: {
                     refreshAllData()
@@ -1140,9 +1146,8 @@ struct DashboardView: View {
                 )
             }
 
-            if codexOnly {
             StatStrip(
-                snapshot: store.snapshot,
+                snapshot: display,
                 quotaSnapshot: quotaStore.snapshot,
                 quotaCycleHistory: quotaHistoryStore.snapshot,
                 cycleCodexHome: store.currentDataSource?.codexHome,
@@ -1153,18 +1158,13 @@ struct DashboardView: View {
                 isPreparingUsageCache: store.isPreparingUsageCache,
                 isRefreshing: store.isRefreshing,
                 preciseTimeSeriesFresh: store.preciseTimeSeriesFresh,
-                cacheStatus: store.status
+                cacheStatus: store.status,
+                clientCosts: costs
             )
             // LiveRateMonitor publishes independently of historical usage. The
             // equatable boundary keeps those one-second rate ticks from
             // rebuilding the expensive model-attribution strip.
             .equatable()
-            } else {
-                ClientDashboardQuotaStrip(items: ClientQuotaProjection.items(codex: quotaStore.snapshot,
-                    claude: clients.quotaReading(.claudeCode), includeClaude: allowedClients.contains("claudeCode") || allowedClients.contains("claudeDesktop"))
-                    .filter { allowedClients.contains($0.client) || ($0.client == "claudeCode" && allowedClients.contains("claudeDesktop")) })
-                ScopedClientTokenSummary(codex: store.snapshot, allowed: allowedClients).equatable()
-            }
 
             if allowedClients.contains("codex") {
             CodexRadarStrip(
@@ -1188,7 +1188,7 @@ struct DashboardView: View {
                 }
             )
 
-            if !codexOnly { Text("正文 TPS · 当前仅 Codex 有可靠正文时间样本").font(.caption).foregroundStyle(.secondary) }
+            }
             LiveRateView(
                 monitor: liveMonitor,
                 floatingPanelEnabled: $floatingPanelEnabled,
@@ -1197,49 +1197,46 @@ struct DashboardView: View {
                 liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
                 floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
                 tokenRateFullScale: $tokenRateFullScale,
-                onOpenSettings: { showingAppSettings = true }
+                onOpenSettings: { showingAppSettings = true },
+                sourceLabel: codexOnly ? nil : (allowedClients.contains("codex") ? "Codex 正文 TPS" : ClientDisplayScope.title(clientScope) + " · 正文 TPS 未接入"),
+                sourceAvailable: allowedClients.contains("codex")
             )
 
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("正文 TPS").font(.headline)
-                    Text("暂无可用样本；不会用 Agent Speed 的请求均速代替正文 TPS。").font(.callout).foregroundStyle(.secondary)
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(18).background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 16))
-            }
-
-            if codexOnly {
             ActivitySection(
-                dailyUsage: store.snapshot.dailyUsage,
-                cacheDaily: store.snapshot.cacheUsage.daily,
-                dailyModelBreakdowns: store.snapshot.cacheUsage.dailyModelBreakdowns,
-                attributionEvents: store.snapshot.cacheUsage.attributionEvents,
-                quotaDaily: quotaHistoryStore.snapshot.daily,
-                selectedMode: $store.selectedMode
+                dailyUsage: display.dailyUsage,
+                cacheDaily: display.cacheUsage.daily,
+                dailyModelBreakdowns: display.cacheUsage.dailyModelBreakdowns,
+                attributionEvents: display.cacheUsage.attributionEvents,
+                quotaDaily: codexOnly ? quotaHistoryStore.snapshot.daily : [],
+                selectedMode: $store.selectedMode,
+                tokensOnly: !codexOnly
             )
 
             RecentUsageChart(
-                bins: store.snapshot.recentBins,
-                hourlyBins: store.snapshot.hourlyUsage,
-                cacheRecentBins: store.snapshot.cacheUsage.recentBins,
-                cacheHourlyBins: store.snapshot.cacheUsage.hourly,
-                attributionEvents: store.snapshot.cacheUsage.attributionEvents,
-                attributionEventsComplete: store.snapshot.cacheUsage.attributionEventsComplete,
-                quotaRecentBins: quotaHistoryStore.snapshot.recentBins,
-                quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins,
-                currentFiveHourQuotaPresent: quotaStore.snapshot.fiveHour != nil,
-                currentSevenDayQuotaPresent: quotaStore.snapshot.sevenDay != nil,
-                sharedAccountAttributionContext: sharedAccountAttributionEnabled
+                bins: display.recentBins,
+                hourlyBins: display.hourlyUsage,
+                cacheRecentBins: display.cacheUsage.recentBins,
+                cacheHourlyBins: display.cacheUsage.hourly,
+                attributionEvents: display.cacheUsage.attributionEvents,
+                attributionEventsComplete: display.cacheUsage.attributionEventsComplete,
+                quotaRecentBins: codexOnly ? quotaHistoryStore.snapshot.recentBins : [],
+                quotaHourlyBins: codexOnly ? quotaHistoryStore.snapshot.hourlyBins : [],
+                currentFiveHourQuotaPresent: codexOnly && quotaStore.snapshot.fiveHour != nil,
+                currentSevenDayQuotaPresent: codexOnly && quotaStore.snapshot.sevenDay != nil,
+                sharedAccountAttributionContext: codexOnly && sharedAccountAttributionEnabled
                     ? sharedAccountAttributionResult.map(
                         QuotaSelectionAttributionContext.init(result:)
                     )
-                    : nil
+                    : nil,
+                pricingAvailable: codexOnly
             )
+            .id(clientScope)
             .id("recent-usage-chart")
             // RecentUsageChart owns interactive line-visibility state. Keep the
             // chart outside an EquatableView so a toggle can repaint immediately.
 
             CacheHitRankingSection(
-                cacheUsage: store.snapshot.cacheUsage,
+                cacheUsage: display.cacheUsage,
                 cacheUsageRevision: store.snapshot.generatedAt,
                 codexHome: store.currentDataSource?.codexHome,
                 onOpenDetails: {
@@ -1248,16 +1245,8 @@ struct DashboardView: View {
                     showingCacheHitRankingDetails = true
                 }
             )
-            .id(store.dataSourceBindingKey)
-            } else {
-                ScopedClientActivity(codex: store.snapshot, allowed: allowedClients).equatable()
-                ScopedClientUsageChart(codex: store.snapshot, allowed: allowedClients).equatable()
-                ScopedClientCacheView(codex: store.snapshot, allowed: allowedClients, codexHome: store.currentDataSource?.codexHome, onOpenCodexDetails: {
-                    showingCodexRadarDetails = false
-                    showingSharedAccountAttributionDetails = false
-                    showingCacheHitRankingDetails = true
-                }).equatable()
-            }
+            .id(clientScope + "|" + store.dataSourceBindingKey)
+
         }
         .padding(.horizontal, 54)
         .padding(.vertical, 20)
@@ -1277,6 +1266,7 @@ struct DashboardView: View {
     }
 
     private func refreshAllData(trigger: DashboardRefreshTrigger = .manual) {
+        if case .manual = trigger { clients.refresh() }
         let context = DashboardRefreshContext.fromSurfaces(
             providerSyncVisible: showingProviderSync,
             appActive: NSApp.isActive,

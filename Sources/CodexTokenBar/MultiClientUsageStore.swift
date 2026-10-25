@@ -52,6 +52,8 @@ extension UsageClient {
 struct MultiClientScanResult: Sendable {
     let summaries: [ClientUsageSummary]
     let diagnostics: [String]
+    var todaySummaries: [ClientUsageSummary] = []
+    var sevenDaySummaries: [ClientUsageSummary] = []
     var trendBuckets: [ClientTrendBucket] = []
     var dailyBuckets: [ClientTrendBucket] = []
 }
@@ -63,7 +65,8 @@ actor MultiClientUsageScanner {
     private var ledger: MultiClientUsageLedger?
     private var cursor = 0
     private var aggregateCache: (revision: Int64, minute: Int64, timezone: String,
-        summaries: [ClientUsageSummary], trend: [ClientTrendBucket], daily: [ClientTrendBucket])?
+        summaries: [ClientUsageSummary], todaySummaries: [ClientUsageSummary],
+        sevenDaySummaries: [ClientUsageSummary], trend: [ClientTrendBucket], daily: [ClientTrendBucket])?
     private var scanNotices: [String] = []
     private var deepSeekContexts: [String: (identity: String, session: String)] = [:]
     init(databaseURL: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -111,14 +114,20 @@ actor MultiClientUsageScanner {
             if count < entries.count { diagnostics.append("本轮检查 \(count)/\(entries.count) 个文件，后续自动继续；已入账数据保留") }
         }
         let now = Date(), minute = Int64(now.timeIntervalSince1970 / 60)
+        let todayStart = Calendar.current.startOfDay(for: now)
+        let sevenDayStartUnix = floor((now.timeIntervalSince1970 - 7 * 24 * 60 * 60) / 300) * 300
+        let sevenDayStart = Date(timeIntervalSince1970: sevenDayStartUnix)
         let revision = try ledger.database.readRows("SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first ?? 0
         let timezone = TimeZone.current.identifier + ":" + String(TimeZone.current.secondsFromGMT(for: now))
         if aggregateCache?.revision != revision || aggregateCache?.minute != minute || aggregateCache?.timezone != timezone {
             aggregateCache = (revision, minute, timezone, try ledger.summaries(),
+                try ledger.summaries(since: todayStart), try ledger.summaries(since: sevenDayStart),
                 try ledger.trendBuckets(now: now), try ledger.dailyBuckets(now: now))
         }
         return MultiClientScanResult(summaries: aggregateCache?.summaries ?? [],
             diagnostics: Array((diagnostics + scanNotices).prefix(12)),
+            todaySummaries: aggregateCache?.todaySummaries ?? [],
+            sevenDaySummaries: aggregateCache?.sevenDaySummaries ?? [],
             trendBuckets: aggregateCache?.trend ?? [], dailyBuckets: aggregateCache?.daily ?? [])
     }
 
@@ -273,6 +282,8 @@ final class MultiClientUsageStore: ObservableObject {
     @Published private(set) var dailyBuckets: [ClientTrendBucket] = []
     @Published private(set) var acknowledgedClients: Set<String> = []
     @Published private(set) var summaries: [ClientUsageSummary] = []
+    @Published private(set) var todaySummaries: [ClientUsageSummary] = []
+    @Published private(set) var sevenDaySummaries: [ClientUsageSummary] = []
     @Published private(set) var diagnostics: [String] = []
     @Published private(set) var refreshing = false
     @Published private(set) var updatedAt: Date?
@@ -332,7 +343,10 @@ final class MultiClientUsageStore: ObservableObject {
                 let quota = await Task.detached(priority: .utility) { ClaudeLocalQuota.read() }.value
                 guard let self else { return }
                 if self.generation == generation {
-                    self.summaries = result.summaries; self.diagnostics = result.diagnostics
+                    self.summaries = result.summaries
+                    self.todaySummaries = result.todaySummaries
+                    self.sevenDaySummaries = result.sevenDaySummaries
+                    self.diagnostics = result.diagnostics
                     self.detections = detected; self.trendBuckets = result.trendBuckets; self.dailyBuckets = result.dailyBuckets
                     self.claudeQuota = quota
                     self.updatedAt = Date(); self.syncMenuItems()

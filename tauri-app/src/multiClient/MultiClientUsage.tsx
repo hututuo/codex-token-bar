@@ -11,11 +11,11 @@ export const clientNames: Record<UsageClient, string> = {
 export interface ClientPreference {
   client: UsageClient; enabled: boolean; showSidebar: boolean; showQuota?: boolean; showMenuBar: boolean; color: string; order: number; style: string; path: string;
 }
-interface Summary {
+export interface Summary {
   client: UsageClient; model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number | null;
   cacheWriteTokens: number | null; reasoningTokens: number | null; requests: number; lastSeen: string; incompleteFields?: boolean; apiCostUSD?:number|null; unpricedRequests?:number; cacheReadComplete?:boolean;
 }
-export interface Snapshot { detections?: ClientDetection[]; trendBuckets?: ClientTrendBucket[]; dailyBuckets?: ClientTrendBucket[]; quotas?: ClientQuotaReading[]; preferences: ClientPreference[]; summaries: Summary[]; diagnostics: string[]; updatedAt: string | null; }
+export interface Snapshot { detections?: ClientDetection[]; trendBuckets?: ClientTrendBucket[]; dailyBuckets?: ClientTrendBucket[]; quotas?: ClientQuotaReading[]; preferences: ClientPreference[]; summaries: Summary[]; todaySummaries?: Summary[]; sevenDaySummaries?: Summary[]; diagnostics: string[]; updatedAt: string | null; }
 export const defaultClientPreferences: ClientPreference[] = (Object.keys(clientNames) as UsageClient[]).map((client, order) => ({
   client, enabled: false, showSidebar: false, showQuota: false, showMenuBar: false, color: { claudeCode: "#D97757", claudeDesktop: "#D97757", deepseek: "#4D6BFE", gemini: "#4796E4", opencode: "#B7B1B1" }[client], order, style: "compact", path: "",
 }));

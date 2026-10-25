@@ -253,9 +253,7 @@ struct TokenHeatmap: View {
 
     private func adaptiveCellSize(containerWidth: CGFloat, columnCount: Int) -> CGFloat {
         guard columnCount > 0 else { return 12 }
-        let targetWidth = max(0, containerWidth - trailingInset)
-        let availableForCells = targetWidth - CGFloat(columnCount - 1) * gap
-        return max(10, availableForCells / CGFloat(columnCount))
+        return HeatmapGridMetrics.cellSize(containerWidth: containerWidth, columnCount: columnCount, gap: gap, trailingInset: trailingInset)
     }
 
     private func gridHeight(cellSize: CGFloat) -> CGFloat {
@@ -534,5 +532,13 @@ private struct HeatmapCells: View, Equatable {
                 }
             }
         }
+    }
+}
+
+/// A short history must not expand a cell beyond the original yearly-grid size.
+enum HeatmapGridMetrics {
+    static func cellSize(containerWidth: CGFloat, columnCount: Int, gap: CGFloat = 4, trailingInset: CGFloat = 9) -> CGFloat {
+        let columns = max(53, columnCount)
+        return max(10, (max(0, containerWidth - trailingInset) - CGFloat(columns - 1) * gap) / CGFloat(columns))
     }
 }
