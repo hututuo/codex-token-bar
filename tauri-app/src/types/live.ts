@@ -71,6 +71,8 @@ export interface FloatingPanelSnapshot {
   resetCreditLabel: string;
   resetCreditRateBarLabel?: string;
   resetCreditStandaloneLabel?: string;
+  /** Exact local total for multi-client aggregation; never parse the compact label. */
+  totalTokensValue?: number;
   totalTokensLabel: string;
   todayTokensLabel: string;
   requestsLabel: string;

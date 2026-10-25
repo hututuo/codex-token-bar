@@ -7,6 +7,7 @@ struct MultiClientUsagePreference: Codable, Equatable, Identifiable, Sendable {
     var id: String { client.rawValue }
     var client: UsageClient
     var enabled = false
+    var showQuota = false
     var showSidebar = false
     var showMenuBar = false
     var color: String
@@ -51,6 +52,7 @@ extension UsageClient {
 struct MultiClientScanResult: Sendable {
     let summaries: [ClientUsageSummary]
     let diagnostics: [String]
+    var trendBuckets: [ClientTrendBucket] = []
 }
 
 actor MultiClientUsageScanner {
@@ -105,7 +107,7 @@ actor MultiClientUsageScanner {
             cursor = (start + count) % entries.count
             if count < entries.count { diagnostics.append("本轮检查 \(count)/\(entries.count) 个文件，后续自动继续；已入账数据保留") }
         }
-        return MultiClientScanResult(summaries: try ledger.summaries(), diagnostics: Array((diagnostics + scanNotices).prefix(12)))
+        return MultiClientScanResult(summaries: try ledger.summaries(), diagnostics: Array((diagnostics + scanNotices).prefix(12)), trendBuckets: try ledger.trendBuckets())
     }
 
     private func deepSeekSession(_ url: URL, identity: String) throws -> String {
@@ -254,6 +256,9 @@ final class MultiClientUsageStore: ObservableObject {
             .appendingPathComponent("CodexTokenBar/multi-client-usage.sqlite")
     }
     @Published private(set) var preferences: [MultiClientUsagePreference]
+    @Published private(set) var detections: [DetectedUsageClient] = []
+    @Published private(set) var trendBuckets: [ClientTrendBucket] = []
+    @Published private(set) var acknowledgedClients: Set<String> = []
     @Published private(set) var summaries: [ClientUsageSummary] = []
     @Published private(set) var diagnostics: [String] = []
     @Published private(set) var refreshing = false
@@ -271,6 +276,7 @@ final class MultiClientUsageStore: ObservableObject {
         let decoded = defaults.data(forKey: Self.preferencesKey).flatMap { try? JSONDecoder().decode([MultiClientUsagePreference].self, from: $0) } ?? []
         preferences = MultiClientUsagePreference.normalized(decoded)
         scanner = MultiClientUsageScanner(databaseURL: databaseURL)
+        acknowledgedClients = Set(defaults.stringArray(forKey: "multiClient.discoveryAcknowledged.v1") ?? [])
     }
     func start() {
         guard loop == nil else { return }
@@ -307,17 +313,39 @@ final class MultiClientUsageStore: ObservableObject {
         let preferences = preferences, generation = generation
         refreshTask = Task { [weak self, scanner] in
             do {
+                let detected = await Task.detached(priority: .utility) { UsageClientDetection.detect() }.value
+                self?.detections = detected
                 let result = try await scanner.scan(preferences)
                 let quota = await Task.detached(priority: .utility) { ClaudeLocalQuota.read() }.value
                 guard let self else { return }
                 if self.generation == generation {
                     self.summaries = result.summaries; self.diagnostics = result.diagnostics
+                    self.detections = detected; self.trendBuckets = result.trendBuckets
                     self.claudeQuota = quota
                     self.updatedAt = Date(); self.syncMenuItems()
                 }
             } catch { self?.diagnostics = [error.localizedDescription] }
             self?.refreshing = false
+            if self?.generation != generation { self?.refresh() }
         }
+    }
+    var availablePreferences: [MultiClientUsagePreference] {
+        preferences.filter { value in value.enabled || !value.path.isEmpty || detections.contains { $0.client == value.client } || summaries.contains { $0.client == value.client } }
+    }
+    var newDetections: [DetectedUsageClient] {
+        detections.filter { detected in !acknowledgedClients.contains(detected.client.rawValue) && !preferences.contains { $0.client == detected.client && $0.enabled } }
+    }
+    func acknowledge(_ client: UsageClient) {
+        acknowledgedClients.insert(client.rawValue)
+        defaults.set(Array(acknowledgedClients).sorted(), forKey: "multiClient.discoveryAcknowledged.v1")
+    }
+    func enable(_ client: UsageClient) {
+        guard var value = preferences.first(where: { $0.client == client }) else { return }
+        value.enabled = true; value.showSidebar = true; value.showQuota = client == .claudeCode
+        acknowledge(client); update(value)
+    }
+    func quotaReading(_ client: UsageClient) -> ClientQuotaReading {
+        client == .claudeCode ? ClaudeCapturedQuotaProvider(snapshot: claudeQuota).reading() : UnavailableClientQuotaProvider(client: client).reading()
     }
     func backup() async throws -> URL { try await scanner.backup() }
     func total(_ client: UsageClient) -> Int64 {
@@ -369,5 +397,24 @@ extension NSColor {
         let value = UInt32(clientHex.dropFirst(), radix: 16) ?? 0x888888
         self.init(srgbRed: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255,
                   blue: CGFloat(value & 255) / 255, alpha: 1)
+    }
+}
+
+// Keep persisted v1 preferences readable when adding optional display capabilities.
+extension MultiClientUsagePreference {
+    enum CodingKeys: String, CodingKey { case client, enabled, showSidebar, showMenuBar, showQuota, color, order, style, path }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedClient = try c.decode(UsageClient.self, forKey: .client)
+        client = decodedClient
+        let fallback = Self.defaults.first { $0.client == decodedClient }!
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        showSidebar = try c.decodeIfPresent(Bool.self, forKey: .showSidebar) ?? false
+        showMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showMenuBar) ?? false
+        showQuota = try c.decodeIfPresent(Bool.self, forKey: .showQuota) ?? false
+        color = try c.decodeIfPresent(String.self, forKey: .color) ?? fallback.color
+        order = try c.decodeIfPresent(Int.self, forKey: .order) ?? fallback.order
+        style = try c.decodeIfPresent(String.self, forKey: .style) ?? "compact"
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
     }
 }

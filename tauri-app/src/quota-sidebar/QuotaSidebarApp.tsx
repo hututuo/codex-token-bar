@@ -394,7 +394,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
         <button aria-label="刷新数据" title="刷新数据" onClick={onRefresh}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg></button>
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
-      <div className="qs-module-scroll"><div className="qs-module-stack">{order.map(module => <Fragment key={module}>{moduleContent[module]}</Fragment>)}<MultiClientUsageSidebarRows />{error && <span className="qs-warning" title={error}>窗口异常</span>}</div></div>
+      <div className="qs-module-scroll"><div className="qs-module-stack">{order.map(module => <Fragment key={module}>{moduleContent[module]}</Fragment>)}<MultiClientUsageSidebarRows codexTokens={data.snapshot.totalTokensValue} />{error && <span className="qs-warning" title={error}>窗口异常</span>}</div></div>
       <button className="qs-settings-trigger" onClick={() => onOpen("settings", "top")} aria-label="侧栏设置" title="调整侧栏模块显示与顺序"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/></svg>侧栏设置</button>
       </>;
     }}</SidebarSummaryLayer>

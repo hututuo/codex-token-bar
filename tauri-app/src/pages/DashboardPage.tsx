@@ -301,7 +301,7 @@ export function DashboardPage({
           runningThreads={runningThreads}
         />
 
-        <MultiClientUsageDashboardCard />
+        <MultiClientUsageDashboardCard codex={dashboard} />
 
         {preciseIndexUpgradeRequired ? (
           <section aria-live="assertive" className="index-upgrade-warning" role="alert">
@@ -502,7 +502,7 @@ function consumePendingSettingsRequest(): AppSettingsCategory | null {
     return null;
   }
   window.localStorage.removeItem("open-app-settings-requested");
-  return pending === "status" ? "status" : "general";
+  return pending === "multiClientUsage" ? "multiClientUsage" : pending === "status" ? "status" : "general";
 }
 
 function UsageCacheInitializationNotice() {

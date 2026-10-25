@@ -1,4 +1,5 @@
 import { DEFAULT_MODULE_ORDER, SIDEBAR_MODULE_TITLES, moveSidebarModule, type SidebarModule, type SidebarModuleVisibility } from "./moduleVisibility";
+import { desktopPlatform } from "../platform/desktop";
 
 export function SidebarModuleSettings({ order, visibility, disabled = false, onOrder, onToggle }: {
   order: readonly SidebarModule[]; visibility: SidebarModuleVisibility; disabled?: boolean;
@@ -13,5 +14,9 @@ export function SidebarModuleSettings({ order, visibility, disabled = false, onO
       <button aria-label={`下移${SIDEBAR_MODULE_TITLES[module]}`} title="下移" disabled={disabled || index === order.length - 1} onClick={() => onOrder(moveSidebarModule(order, module, 1))}>↓</button>
     </li>)}</ol>
     <p>设置入口固定在底部，隐藏的项目会保留顺序。</p>
+    <button onClick={() => {
+      window.localStorage.setItem("open-app-settings-requested", "multiClientUsage");
+      void desktopPlatform.showDashboardWindow().then(() => desktopPlatform.publishOpenAppSettings());
+    }}>客户端用量与额度设置</button>
   </section>;
 }

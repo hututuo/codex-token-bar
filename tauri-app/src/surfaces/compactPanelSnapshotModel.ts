@@ -195,7 +195,8 @@ export function mergeFloatingUsageSummary(
   const nextTotalTokensLabel = `总 ${compactTokens(summary.totalTokens)}`;
   const nextTodayTokensLabel = `今 ${compactTokens(summary.todayTokens)}`;
   const nextRequestsLabel = `次 ${summary.todayRequests}`;
-  if (snapshot.totalTokensLabel === nextTotalTokensLabel
+  if (snapshot.totalTokensValue === summary.totalTokens
+    && snapshot.totalTokensLabel === nextTotalTokensLabel
     && snapshot.todayTokensLabel === nextTodayTokensLabel
     && snapshot.requestsLabel === nextRequestsLabel
     && modelBreakdownsSignature(snapshot.todayModelBreakdowns)
@@ -206,6 +207,7 @@ export function mergeFloatingUsageSummary(
 
   const next = {
     ...snapshot,
+    totalTokensValue: summary.totalTokens,
     totalTokensLabel: nextTotalTokensLabel,
     todayTokensLabel: nextTodayTokensLabel,
     requestsLabel: nextRequestsLabel,

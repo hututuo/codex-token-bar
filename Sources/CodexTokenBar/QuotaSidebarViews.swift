@@ -132,7 +132,7 @@ struct QuotaSidebarRail: View {
                             ForEach(controller.moduleOrder.filter(controller.isModuleVisible), id: \.self) { module in
                                 moduleContent(module, shares: shares)
                             }
-                            MultiClientUsageSidebarRows()
+                            MultiClientUsageSidebarRows(codexTokens: Int64(store.snapshot.stats.totalTokens))
                         }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
                             .background(GeometryReader { proxy in
                                 Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,

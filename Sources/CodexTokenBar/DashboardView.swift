@@ -1095,7 +1095,7 @@ struct DashboardView: View {
                 showingResetCreditDetails: $showingResetCreditDetails
             )
 
-            MultiClientUsageDashboardCard()
+            MultiClientUsageDashboardCard(codex: store.snapshot, codexQuota: quotaStore.snapshot)
 
             if let upgrade = store.indexUpgradeRequired {
                 HStack(spacing: 14) {

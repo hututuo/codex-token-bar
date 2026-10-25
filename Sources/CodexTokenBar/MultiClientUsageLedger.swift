@@ -23,7 +23,7 @@ struct MultiClientFileCheckpoint: Sendable {
 
 /// An additive ledger in its own file. Never opens or migrates the Codex accounting database.
 final class MultiClientUsageLedger: @unchecked Sendable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     let database: SQLiteDatabaseDriver
     let url: URL
 
@@ -59,7 +59,8 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                     PRIMARY KEY(client,source_key));
                 """)
                 try connection.execute("CREATE INDEX IF NOT EXISTS client_usage_by_model ON client_usage_events(client,model,timestamp)")
-                try connection.execute("PRAGMA user_version=1")
+                try connection.execute("CREATE INDEX IF NOT EXISTS client_usage_by_time ON client_usage_events(timestamp,client)")
+                try connection.execute("PRAGMA user_version=2")
             }
         }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -143,6 +144,21 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                               bindings: [.text(client.rawValue), .text(sourceKey)]) {
             MultiClientFileCheckpoint(offset: $0.int64(0) ?? 0, size: $0.int64(1) ?? 0, modified: $0.double(2) ?? 0, identity: $0.text(3) ?? "")
         }.first
+    }
+
+    func trendBuckets(now: Date = Date()) throws -> [ClientTrendBucket] {
+        let start = floor((now.timeIntervalSince1970 - 30 * 86400) / 3600) * 3600
+        return try database.readRows("""
+        SELECT client,CAST(timestamp/3600 AS INTEGER)*3600,SUM(input_tokens),SUM(output_tokens),
+        SUM(cache_read_tokens),SUM(cache_write_tokens),SUM(reasoning_tokens),COUNT(*)
+        FROM client_usage_events WHERE timestamp >= ? AND timestamp <= ?
+        GROUP BY client,CAST(timestamp/3600 AS INTEGER) ORDER BY 2,1 LIMIT 3605
+        """, bindings: [.double(start), .date(now)]) { row in
+            guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientTrendBucket? }
+            return ClientTrendBucket(client: client, startUnix: row.int64(1) ?? 0, inputTokens: row.int64(2) ?? 0,
+                outputTokens: row.int64(3) ?? 0, cacheReadTokens: row.int64(4), cacheWriteTokens: row.int64(5),
+                reasoningTokens: row.int64(6), requests: row.int(7) ?? 0)
+        }.compactMap { $0 }
     }
 
     func summaries(since: Date? = nil) throws -> [ClientUsageSummary] {

@@ -27,7 +27,7 @@ test("unknown token fields remain unknown and reasoning is labeled as an output 
 test("Claude quota panel remains unavailable without a captured local provider window", async () => {
   await withSsrModules(async load => {
     const { ClaudeLocalQuotaPanel, MultiClientUsageSettings } = await load("/src/multiClient/MultiClientUsage.tsx");
-    assert.match(renderToStaticMarkup(React.createElement(ClaudeLocalQuotaPanel)), /未采集/);
+    assert.match(renderToStaticMarkup(React.createElement(ClaudeLocalQuotaPanel)), /额度未接入/);
     const settings = renderToStaticMarkup(React.createElement(MultiClientUsageSettings));
     assert.match(settings, /不读取凭据、不联网/); assert.doesNotMatch(settings, /api\.anthropic\.com/);
   });

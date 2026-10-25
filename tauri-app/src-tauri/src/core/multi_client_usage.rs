@@ -1,4 +1,7 @@
-use crate::core::{app_paths, atomic_file};
+use crate::core::{
+    app_paths, atomic_file,
+    multi_client_product::{self, ProductDetection, QuotaProviderSnapshot},
+};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use rusqlite::backup::Backup;
@@ -15,7 +18,7 @@ use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const MAX_SCAN_DEPTH: usize = 6;
 const MAX_SCANNED_ENTRIES: usize = 200_000;
 const MAX_FILES_PER_CLIENT: usize = 20_000;
@@ -47,6 +50,8 @@ pub struct MultiClientUsagePreference {
     pub enabled: bool,
     pub show_sidebar: bool,
     pub show_menu_bar: bool,
+    #[serde(default)]
+    pub show_quota: bool,
     pub color: String,
     pub order: u32,
     pub style: String,
@@ -69,13 +74,29 @@ pub struct MultiClientUsageSummary {
     pub incomplete_fields: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MultiClientUsageSnapshot {
     pub preferences: Vec<MultiClientUsagePreference>,
     pub summaries: Vec<MultiClientUsageSummary>,
+    pub detections: Vec<ProductDetection>,
+    pub trend_buckets: Vec<MultiClientUsageTrendBucket>,
+    pub quotas: Vec<QuotaProviderSnapshot>,
     pub diagnostics: Vec<String>,
     pub updated_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiClientUsageTrendBucket {
+    pub client: String,
+    pub start_unix: i64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub requests: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -187,6 +208,7 @@ pub fn default_preferences() -> Vec<MultiClientUsagePreference> {
             enabled: false,
             show_sidebar: false,
             show_menu_bar: false,
+            show_quota: false,
             color: colors[order].to_string(),
             order: order as u32,
             style: "compact".into(),
@@ -242,32 +264,9 @@ pub fn configured_menu_bar_usage_lines(
 pub fn read_multi_client_usage_snapshot() -> Result<MultiClientUsageSnapshot, String> {
     let settings_path = app_paths::multi_client_usage_settings_path()
         .ok_or_else(|| "无法定位多客户端用量设置目录".to_string())?;
-    let (preferences, mut diagnostics) = load_preferences(&settings_path);
     let database_path = app_paths::multi_client_usage_database_path()
         .ok_or_else(|| "无法定位多客户端用量数据库目录".to_string())?;
-    let (summaries, updated_at) = if database_path.exists() {
-        let connection = open_read_only(&database_path).map_err(|error| error.to_string())?;
-        let version = read_schema_version(&connection).map_err(|error| error.to_string())?;
-        if version > SCHEMA_VERSION {
-            return Err(format!(
-                "多客户端用量数据库版本 {version} 高于此程序支持的版本 {SCHEMA_VERSION}"
-            ));
-        }
-        if version == SCHEMA_VERSION {
-            read_summaries(&connection).map_err(|error| error.to_string())?
-        } else {
-            (Vec::new(), None)
-        }
-    } else {
-        (Vec::new(), None)
-    };
-    diagnostics.shrink_to_fit();
-    Ok(MultiClientUsageSnapshot {
-        preferences,
-        summaries,
-        diagnostics,
-        updated_at,
-    })
+    read_multi_client_usage_snapshot_at(&settings_path, &database_path)
 }
 
 pub fn save_multi_client_usage_preferences(
@@ -290,33 +289,102 @@ pub fn refresh_multi_client_usage() -> Result<MultiClientUsageSnapshot, String> 
     let _guard = usage_gate();
     let settings_path = app_paths::multi_client_usage_settings_path()
         .ok_or_else(|| "无法定位多客户端用量设置目录".to_string())?;
-    let (preferences, mut diagnostics) = load_preferences(&settings_path);
     let database_path = app_paths::multi_client_usage_database_path()
         .ok_or_else(|| "无法定位多客户端用量数据库目录".to_string())?;
+    refresh_multi_client_usage_at(&settings_path, &database_path)
+}
+
+fn read_multi_client_usage_snapshot_at(
+    settings_path: &Path,
+    database_path: &Path,
+) -> Result<MultiClientUsageSnapshot, String> {
+    let (preferences, mut diagnostics) = load_preferences(settings_path);
+    let (summaries, updated_at, trend_buckets) = if database_path.exists() {
+        let connection = open_read_only(database_path).map_err(|error| error.to_string())?;
+        let version = read_schema_version(&connection).map_err(|error| error.to_string())?;
+        if version > SCHEMA_VERSION {
+            return Err(format!(
+                "多客户端用量数据库版本 {version} 高于此程序支持的版本 {SCHEMA_VERSION}"
+            ));
+        }
+        if version > 0 {
+            let (summaries, updated_at) =
+                read_summaries(&connection).map_err(|error| error.to_string())?;
+            let trends = read_trend_buckets(&connection, now_unix_seconds())
+                .map_err(|error| error.to_string())?;
+            (summaries, updated_at, trends)
+        } else {
+            (Vec::new(), None, Vec::new())
+        }
+    } else {
+        (Vec::new(), None, Vec::new())
+    };
+    diagnostics.shrink_to_fit();
+    Ok(make_snapshot(
+        preferences,
+        summaries,
+        diagnostics,
+        updated_at,
+        trend_buckets,
+    ))
+}
+
+fn make_snapshot(
+    preferences: Vec<MultiClientUsagePreference>,
+    summaries: Vec<MultiClientUsageSummary>,
+    diagnostics: Vec<String>,
+    updated_at: Option<String>,
+    trend_buckets: Vec<MultiClientUsageTrendBucket>,
+) -> MultiClientUsageSnapshot {
+    let local_claude_quota = read_claude_local_quota();
+    MultiClientUsageSnapshot {
+        preferences,
+        summaries,
+        detections: multi_client_product::detect_clients_cached(),
+        trend_buckets,
+        quotas: multi_client_product::quota_provider_snapshots(&local_claude_quota),
+        diagnostics,
+        updated_at,
+    }
+}
+
+fn refresh_multi_client_usage_at(
+    settings_path: &Path,
+    database_path: &Path,
+) -> Result<MultiClientUsageSnapshot, String> {
+    let (preferences, mut diagnostics) = load_preferences(settings_path);
     let enabled = preferences
         .iter()
         .filter(|preference| preference.enabled)
         .collect::<Vec<_>>();
     // First-run defaults must not create a database or read any provider logs.
     if enabled.is_empty() && !database_path.exists() {
-        return Ok(MultiClientUsageSnapshot {
+        return Ok(make_snapshot(
             preferences,
-            summaries: Vec::new(),
+            Vec::new(),
             diagnostics,
-            updated_at: None,
-        });
+            None,
+            Vec::new(),
+        ));
     }
     // Disabling all readers stops scanning but leaves the independent ledger intact.
     if enabled.is_empty() {
-        let connection = open_read_only(&database_path).map_err(|error| error.to_string())?;
+        let connection = Connection::open(database_path).map_err(|error| error.to_string())?;
+        connection
+            .busy_timeout(DATABASE_BUSY_TIMEOUT)
+            .map_err(|error| error.to_string())?;
+        ensure_schema(&connection, database_path).map_err(|error| error.to_string())?;
         let (summaries, updated_at) =
             read_summaries(&connection).map_err(|error| error.to_string())?;
-        return Ok(MultiClientUsageSnapshot {
+        let trend_buckets = read_trend_buckets(&connection, now_unix_seconds())
+            .map_err(|error| error.to_string())?;
+        return Ok(make_snapshot(
             preferences,
             summaries,
             diagnostics,
             updated_at,
-        });
+            trend_buckets,
+        ));
     }
     if let Some(parent) = database_path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -450,12 +518,15 @@ pub fn refresh_multi_client_usage() -> Result<MultiClientUsageSnapshot, String> 
     let (summaries, updated_at) = read_summaries(&connection).map_err(|error| error.to_string())?;
     diagnostics.sort();
     diagnostics.dedup();
-    Ok(MultiClientUsageSnapshot {
+    let trend_buckets =
+        read_trend_buckets(&connection, now_unix_seconds()).map_err(|error| error.to_string())?;
+    Ok(make_snapshot(
         preferences,
         summaries,
         diagnostics,
         updated_at,
-    })
+        trend_buckets,
+    ))
 }
 
 pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
@@ -1122,7 +1193,10 @@ fn scan_opencode(connection: &mut Connection, database_path: &Path) -> Result<Ve
         .map(|metadata| format!("{}:{}", metadata.len(), modified_ns(metadata)))
         .unwrap_or_else(|| "no-wal".into());
     let source_identity = file_identity(&metadata);
-    let stat_fingerprint = format!("{source_identity}:{}:{db_modified_ns}:{wal_stamp}", metadata.len());
+    let stat_fingerprint = format!(
+        "{source_identity}:{}:{db_modified_ns}:{wal_stamp}",
+        metadata.len()
+    );
     let path_key = database_path.to_string_lossy().to_string();
     let previous =
         read_checkpoint(connection, "opencode", &path_key).map_err(|error| error.to_string())?;
@@ -1135,8 +1209,7 @@ fn scan_opencode(connection: &mut Connection, database_path: &Path) -> Result<Ve
             .as_deref()?
             .strip_prefix("opencode-page:")?;
         let bytes = BASE64.decode(encoded).ok()?;
-        let continuation =
-            serde_json::from_slice::<OpenCodeDatabaseContinuation>(&bytes).ok()?;
+        let continuation = serde_json::from_slice::<OpenCodeDatabaseContinuation>(&bytes).ok()?;
         (continuation.source_identity == source_identity).then_some(continuation)
     });
     let cursor = continuation.as_ref().map(|value| &value.cursor);
@@ -1660,16 +1733,15 @@ fn parse_gemini(bytes: &[u8], path: &Path) -> Vec<UsageEvent> {
 /// source path and its bounded prefix fingerprint. The transcript itself is never cached or stored.
 fn deepseek_session_hint(path: &Path) -> String {
     let path_key = path.to_string_lossy().into_owned();
-    let size = fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0);
+    let size = fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     let fingerprint = file_prefix_identity(path, size.min(4_096) as usize).unwrap_or_default();
     let cache = DEEPSEEK_SESSION_HINT_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
     if let Ok(cache) = cache.lock() {
-        if let Some((_, _, session)) = cache
-            .iter()
-            .find(|(cached_path, cached_fingerprint, _)| {
-                cached_path == &path_key && cached_fingerprint == &fingerprint
-            })
-        {
+        if let Some((_, _, session)) = cache.iter().find(|(cached_path, cached_fingerprint, _)| {
+            cached_path == &path_key && cached_fingerprint == &fingerprint
+        }) {
             return session.clone();
         }
     }
@@ -1734,7 +1806,12 @@ fn deepseek_header_id(value: &Value) -> Option<String> {
             .get("id")
             .and_then(Value::as_str)
             .or_else(|| object.get("sessionId").and_then(Value::as_str))
-            .or_else(|| object.get("header").and_then(|header| header.get("id")).and_then(Value::as_str)),
+            .or_else(|| {
+                object
+                    .get("header")
+                    .and_then(|header| header.get("id"))
+                    .and_then(Value::as_str)
+            }),
         "snapshot" => object
             .get("header")
             .and_then(|header| header.get("id"))
@@ -1744,14 +1821,12 @@ fn deepseek_header_id(value: &Value) -> Option<String> {
     }
     .map(str::trim)
     .filter(|value| !value.is_empty());
-    candidate
-        .map(str::to_string)
-        .or_else(|| {
-            object
-                .get("records")
-                .and_then(Value::as_array)
-                .and_then(|records| records.iter().find_map(deepseek_header_id))
-        })
+    candidate.map(str::to_string).or_else(|| {
+        object
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|records| records.iter().find_map(deepseek_header_id))
+    })
 }
 
 fn deepseek_path_session_hint(path: &Path) -> String {
@@ -2075,12 +2150,8 @@ fn normalized_event(
         session_id
     };
     let session_hash = hex_digest(session.as_bytes());
-    let source_id = source_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let sequence = sequence
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let source_id = source_id.map(str::trim).filter(|value| !value.is_empty());
+    let sequence = sequence.map(str::trim).filter(|value| !value.is_empty());
     let (identity, quality) = if let Some(source_id) = source_id {
         (
             format!("id:{}", hex_digest(source_id.as_bytes())),
@@ -2366,6 +2437,10 @@ fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Res
     if schema_version > SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
     }
+    if schema_version > 0 && !has_expected_usage_tables(connection)? {
+        // Never reinterpret a database that claims to be supported but has another layout.
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     if schema_version < SCHEMA_VERSION {
         let existing_tables: i64 = connection.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
@@ -2374,18 +2449,6 @@ fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Res
         )?;
         if existing_tables > 0 {
             backup_before_upgrade(connection, database_path, schema_version)?;
-        }
-    }
-    if schema_version == SCHEMA_VERSION {
-        let has_expected_schema: i64 = connection.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN \
-             ('client_usage_events','client_usage_revisions','client_file_checkpoints')",
-            [],
-            |row| row.get(0),
-        )?;
-        if has_expected_schema != 3 {
-            // Version 1 has an established cross-platform layout. Never reinterpret a different v1 DB.
-            return Err(rusqlite::Error::InvalidQuery);
         }
     }
     connection.execute_batch(
@@ -2406,6 +2469,8 @@ fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Res
         );
         CREATE INDEX IF NOT EXISTS client_usage_by_model
             ON client_usage_events(client,model,timestamp);
+        CREATE INDEX IF NOT EXISTS client_usage_by_time
+            ON client_usage_events(timestamp,client);
         CREATE TABLE IF NOT EXISTS client_usage_revisions (
             revision INTEGER PRIMARY KEY AUTOINCREMENT,
             client TEXT NOT NULL,
@@ -2430,6 +2495,63 @@ fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Res
     )?;
     connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
+}
+
+fn has_expected_usage_tables(connection: &Connection) -> rusqlite::Result<bool> {
+    let count: i64 = connection.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN \
+         ('client_usage_events','client_usage_revisions','client_file_checkpoints')",
+        [],
+        |row| row.get(0),
+    )?;
+    if count != 3 {
+        return Ok(false);
+    }
+    for (table, expected) in [
+        (
+            "client_usage_events",
+            &[
+                "client",
+                "event_id",
+                "session_id",
+                "model",
+                "timestamp",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "reasoning_tokens",
+                "payload",
+            ][..],
+        ),
+        (
+            "client_usage_revisions",
+            &["revision", "client", "event_id", "captured_at", "payload"][..],
+        ),
+        (
+            "client_file_checkpoints",
+            &[
+                "client",
+                "source_key",
+                "offset",
+                "size",
+                "modified",
+                "identity",
+            ][..],
+        ),
+    ] {
+        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if expected
+            .iter()
+            .any(|column| !columns.iter().any(|actual| actual == column))
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn backup_before_upgrade(
@@ -2529,6 +2651,51 @@ fn read_summaries(
     Ok((summaries, updated_at))
 }
 
+fn read_trend_buckets(
+    connection: &Connection,
+    now_unix: i64,
+) -> rusqlite::Result<Vec<MultiClientUsageTrendBucket>> {
+    const HOUR_SECONDS: i64 = 60 * 60;
+    const WINDOW_SECONDS: i64 = 30 * 24 * HOUR_SECONDS;
+    const MAX_TREND_BUCKETS: i64 = 3_605;
+    let start_unix = now_unix
+        .saturating_sub(WINDOW_SECONDS)
+        .div_euclid(HOUR_SECONDS)
+        .saturating_mul(HOUR_SECONDS);
+    let mut statement = connection.prepare(
+        "SELECT client, CAST(timestamp / 3600 AS INTEGER) * 3600 AS start_unix, \
+         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
+         SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*) \
+         FROM client_usage_events \
+         WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2 \
+         GROUP BY client, CAST(timestamp / 3600 AS INTEGER) \
+         ORDER BY client, start_unix LIMIT ?3",
+    )?;
+    let rows = statement.query_map(params![start_unix, now_unix, MAX_TREND_BUCKETS], |row| {
+        Ok(MultiClientUsageTrendBucket {
+            client: row.get(0)?,
+            start_unix: row.get(1)?,
+            input_tokens: row.get::<_, i64>(2)?.max(0) as u64,
+            output_tokens: row.get::<_, i64>(3)?.max(0) as u64,
+            cache_read_tokens: row
+                .get::<_, Option<i64>>(4)?
+                .map(|value| value.max(0) as u64),
+            cache_write_tokens: row
+                .get::<_, Option<i64>>(5)?
+                .map(|value| value.max(0) as u64),
+            reasoning_tokens: row
+                .get::<_, Option<i64>>(6)?
+                .map(|value| value.max(0) as u64),
+            requests: row.get::<_, i64>(7)?.max(0) as u64,
+        })
+    })?;
+    rows.collect()
+}
+
+fn now_unix_seconds() -> i64 {
+    OffsetDateTime::now_utc().unix_timestamp()
+}
+
 fn now_ms() -> i64 {
     i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000).unwrap_or(i64::MAX)
 }
@@ -2608,9 +2775,39 @@ mod tests {
                 .collect::<Vec<_>>(),
             CLIENTS
         );
-        assert!(preferences
+        assert!(preferences.iter().all(|value| !value.enabled
+            && !value.show_sidebar
+            && !value.show_menu_bar
+            && !value.show_quota));
+    }
+
+    #[test]
+    fn legacy_preferences_decode_show_quota_as_false() {
+        let preference: MultiClientUsagePreference = serde_json::from_value(serde_json::json!({
+            "client": "claudeCode",
+            "enabled": false,
+            "showSidebar": false,
+            "showMenuBar": false,
+            "color": "#d87757",
+            "order": 0,
+            "style": "compact"
+        }))
+        .unwrap();
+        assert!(!preference.show_quota);
+    }
+
+    #[test]
+    fn disabled_first_run_returns_detection_without_creating_usage_database() {
+        let temporary = TempDir::new("disabled-first-run");
+        let settings = temporary.path().join("settings.json");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let snapshot = refresh_multi_client_usage_at(&settings, &database).unwrap();
+        assert!(snapshot
+            .preferences
             .iter()
-            .all(|value| !value.enabled && !value.show_sidebar && !value.show_menu_bar));
+            .all(|preference| !preference.enabled));
+        assert!(database.exists() == false);
+        assert_eq!(snapshot.quotas.len(), 5);
     }
 
     #[test]
@@ -2704,7 +2901,10 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(revisions, 1, "smaller replay preserves the merged projection");
+        assert_eq!(
+            revisions, 1,
+            "smaller replay preserves the merged projection"
+        );
         drop(connection);
 
         fs::write(
@@ -2721,7 +2921,9 @@ mod tests {
         assert_eq!(corrected[0].cache_read_tokens, Some(20));
         assert_eq!(corrected[0].cache_write_tokens, Some(10));
         let revisions: i64 = connection
-            .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(revisions, 2);
         drop(connection);
@@ -2781,13 +2983,17 @@ mod tests {
         upsert_event(&transaction, &incoming).unwrap();
         transaction.commit().unwrap();
         let stored: String = connection
-            .query_row("SELECT payload FROM client_usage_events", [], |row| row.get(0))
+            .query_row("SELECT payload FROM client_usage_events", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let stored: Value = serde_json::from_str(&stored).unwrap();
         assert_eq!(stored["timestamp"].as_f64(), Some(1_792_490_524_000.25));
         assert_eq!(stored["inputTokens"], 20);
         let revisions: i64 = connection
-            .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(revisions, 0);
     }
@@ -2812,13 +3018,9 @@ mod tests {
         fs::write(&transcript, &bytes).unwrap();
 
         scan_transcript_file(&mut connection, "gemini", &transcript).unwrap();
-        let checkpoint = read_checkpoint(
-            &connection,
-            "gemini",
-            &transcript.to_string_lossy(),
-        )
-        .unwrap()
-        .unwrap();
+        let checkpoint = read_checkpoint(&connection, "gemini", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
         assert!(checkpoint.offset > 0);
         assert!(checkpoint.offset < bytes.len() as u64);
         assert!(read_summaries(&connection).unwrap().0.is_empty());
@@ -2828,13 +3030,9 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].requests, 1);
         assert_eq!(summaries[0].input_tokens, 8);
-        let checkpoint = read_checkpoint(
-            &connection,
-            "gemini",
-            &transcript.to_string_lossy(),
-        )
-        .unwrap()
-        .unwrap();
+        let checkpoint = read_checkpoint(&connection, "gemini", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
         assert_eq!(checkpoint.offset, bytes.len() as u64);
     }
 
@@ -2902,7 +3100,9 @@ mod tests {
         assert_eq!(complete[0].output_tokens, 1_004);
 
         let replay_notices = scan_opencode(&mut connection, &source_path).unwrap();
-        assert!(replay_notices.iter().any(|notice| notice.contains("500 条")));
+        assert!(replay_notices
+            .iter()
+            .any(|notice| notice.contains("500 条")));
         assert!(scan_opencode(&mut connection, &source_path)
             .unwrap()
             .is_empty());
@@ -3213,10 +3413,238 @@ mod tests {
         assert_eq!(value, 7);
     }
 
+    #[test]
+    fn schema_v1_upgrade_backs_up_and_preserves_events_and_checkpoints() {
+        let temporary = TempDir::new("schema-v1-to-v2");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE client_usage_events (client TEXT NOT NULL,event_id TEXT NOT NULL,session_id TEXT NOT NULL,model TEXT NOT NULL,timestamp REAL NOT NULL,input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,cache_read_tokens INTEGER,cache_write_tokens INTEGER,reasoning_tokens INTEGER,payload TEXT NOT NULL,PRIMARY KEY(client,event_id));\
+                 CREATE INDEX client_usage_by_model ON client_usage_events(client,model,timestamp);\
+                 CREATE TABLE client_usage_revisions (revision INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,event_id TEXT NOT NULL,captured_at REAL NOT NULL,payload TEXT NOT NULL);\
+                 CREATE TABLE client_file_checkpoints (client TEXT NOT NULL,source_key TEXT NOT NULL,offset INTEGER NOT NULL,size INTEGER NOT NULL,modified REAL NOT NULL,identity TEXT NOT NULL,PRIMARY KEY(client,source_key));\
+                 INSERT INTO client_usage_events VALUES('claudeCode','e1','s1','fixture',1800000000,12,4,NULL,2,NULL,'{}');\
+                 INSERT INTO client_file_checkpoints VALUES('claudeCode','/fixture/session.jsonl',128,256,1800000000,'fingerprint');\
+                 PRAGMA user_version=1;",
+            )
+            .unwrap();
+
+        ensure_schema(&connection, &database).unwrap();
+        assert_eq!(read_schema_version(&connection).unwrap(), 2);
+        let event_count: i64 = connection
+            .query_row("SELECT count(*) FROM client_usage_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let event_tokens: (i64, i64) = connection
+            .query_row(
+                "SELECT input_tokens,output_tokens FROM client_usage_events WHERE event_id='e1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let checkpoint_count: i64 = connection
+            .query_row("SELECT count(*) FROM client_file_checkpoints", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let timestamp_index: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='client_usage_by_time'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(event_count, 1);
+        assert_eq!(event_tokens, (12, 4));
+        assert_eq!(checkpoint_count, 1);
+        assert_eq!(timestamp_index, 1);
+
+        drop(connection);
+        let backups = fs::read_dir(temporary.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.to_string_lossy().contains("backup-v1"))
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        let backup = Connection::open(&backups[0]).unwrap();
+        assert_eq!(read_schema_version(&backup).unwrap(), 1);
+        assert_eq!(
+            backup
+                .query_row("SELECT count(*) FROM client_usage_events", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            backup
+                .query_row("SELECT count(*) FROM client_file_checkpoints", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
+    }
+
     fn open_database(path: &Path) -> rusqlite::Result<Connection> {
         let connection = Connection::open(path)?;
         connection.busy_timeout(DATABASE_BUSY_TIMEOUT)?;
         Ok(connection)
+    }
+
+    fn insert_trend_event(
+        connection: &Connection,
+        client: &str,
+        event_id: &str,
+        timestamp: f64,
+        input: i64,
+        output: i64,
+        cache_read: Option<i64>,
+        cache_write: Option<i64>,
+        reasoning: Option<i64>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO client_usage_events(client,event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,payload) VALUES(?1,?2,?2,'fixture',?3,?4,?5,?6,?7,?8,'{}')",
+                params![client, event_id, timestamp, input, output, cache_read, cache_write, reasoning],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn hourly_trends_align_utc_and_preserve_unknown_fields_within_30_days() {
+        let temporary = TempDir::new("hourly-trends");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+
+        let now = 1_800_000_123_i64;
+        let window_start = (now - 30 * 24 * 60 * 60).div_euclid(3600) * 3600;
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "at-start",
+            window_start as f64,
+            10,
+            1,
+            None,
+            Some(2),
+            None,
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "same-hour",
+            (window_start + 11) as f64,
+            3,
+            4,
+            Some(5),
+            None,
+            Some(7),
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "unknowns",
+            (window_start + 3601) as f64,
+            2,
+            3,
+            None,
+            None,
+            None,
+        );
+        insert_trend_event(
+            &connection,
+            "deepseek",
+            "latest",
+            (now - 1) as f64,
+            8,
+            9,
+            Some(10),
+            Some(11),
+            Some(12),
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "too-old",
+            (window_start - 1) as f64,
+            100,
+            100,
+            Some(100),
+            Some(100),
+            Some(100),
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "at-upper-bound",
+            now as f64,
+            100,
+            100,
+            Some(100),
+            Some(100),
+            Some(100),
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "future",
+            (now + 1) as f64,
+            100,
+            100,
+            Some(100),
+            Some(100),
+            Some(100),
+        );
+        insert_trend_event(
+            &connection,
+            "codex",
+            "codex-is-not-a-multi-client-trend",
+            (now - 1) as f64,
+            100,
+            100,
+            Some(100),
+            Some(100),
+            Some(100),
+        );
+
+        let buckets = read_trend_buckets(&connection, now).unwrap();
+        assert!(buckets.len() <= 3_605);
+        assert_eq!(buckets.len(), 4);
+        assert!(buckets.iter().all(|bucket| bucket.client != "codex"));
+        assert_eq!(buckets.iter().map(|b| b.input_tokens + b.output_tokens).sum::<u64>(), 240);
+
+        let first = buckets
+            .iter()
+            .find(|bucket| bucket.client == "claudeCode" && bucket.start_unix == window_start)
+            .unwrap();
+        assert_eq!(first.input_tokens, 13);
+        assert_eq!(first.output_tokens, 5);
+        assert_eq!(first.cache_read_tokens, Some(5));
+        assert_eq!(first.cache_write_tokens, Some(2));
+        assert_eq!(first.reasoning_tokens, Some(7));
+        assert_eq!(first.requests, 2);
+
+        let unknown = buckets
+            .iter()
+            .find(|bucket| {
+                bucket.client == "claudeCode" && bucket.start_unix == window_start + 3600
+            })
+            .unwrap();
+        assert_eq!(unknown.cache_read_tokens, None);
+        assert_eq!(unknown.cache_write_tokens, None);
+        assert_eq!(unknown.reasoning_tokens, None);
+        assert_eq!(unknown.requests, 1);
+
+        let latest = buckets
+            .iter()
+            .find(|bucket| bucket.client == "deepseek")
+            .unwrap();
+        assert_eq!(latest.start_unix, (now - 1).div_euclid(3600) * 3600);
+        assert_eq!(latest.input_tokens, 8);
     }
 
     fn table_columns(connection: &Connection, table: &str) -> Vec<String> {
