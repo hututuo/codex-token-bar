@@ -118,7 +118,7 @@ function Initialize-FixtureProject {
     $TauriConfigDir = Join-Path $Root "tauri-app\src-tauri"
     New-Item -ItemType Directory -Force -Path $TauriConfigDir | Out-Null
     $TauriConfig = Join-Path $TauriConfigDir "tauri.conf.json"
-    [IO.File]::WriteAllText($TauriConfig, '{"version":"0.7.2","bundle":{"createUpdaterArtifacts":true}}', (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($TauriConfig, '{"version":"0.7.2","bundle":{"createUpdaterArtifacts":true,"resources":{}}}', (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $Root "tauri-app\package.json"), '{"version":"0.7.2"}')
     [IO.File]::WriteAllText((Join-Path $TauriConfigDir "Cargo.toml"), "[package]`nname = `"fixture`"`nversion = `"0.7.2`"`n")
     $ReporterDir = Join-Path $Root "tools\AgentSpeedReporter"
