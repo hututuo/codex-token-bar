@@ -9130,6 +9130,7 @@ fn cache_turn_candidates_do_not_merge_requests_with_null_prompt_boundaries() {
         "requests without a prompt start must not be grouped as one session-wide turn"
     );
 
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }
 
