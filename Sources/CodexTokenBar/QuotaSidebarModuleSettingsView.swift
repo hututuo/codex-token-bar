@@ -29,6 +29,7 @@ struct QuotaSidebarModuleSettingsView: View {
                         .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
                 }
             }
+            Button("各客户端用量与额度显示…") { AppSettingsRouteRequest.request(.multiClientUsage) }
             Text("设置入口固定在底部，隐藏的项目会保留顺序。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading)

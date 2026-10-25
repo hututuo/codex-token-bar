@@ -105,6 +105,7 @@ static STATUS_INDICATOR_WINDOW_CREATION_SCHEDULED: AtomicBool = AtomicBool::new(
 static UPDATE_TRAY_FALLBACK_VERSION: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static STATUS_TRAY_LIVE_READOUT: OnceLock<Mutex<StatusTrayReadout>> = OnceLock::new();
 static STATUS_TRAY_APPLIED_READOUT: OnceLock<Mutex<Option<StatusTrayReadout>>> = OnceLock::new();
+static MULTI_CLIENT_USAGE_TRAY_LINES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1172,6 +1173,23 @@ pub fn set_status_tray_readout_native(
     apply_status_tray_readout(app, readout)
 }
 
+pub(crate) fn set_multi_client_usage_tray_lines(
+    app: &tauri::AppHandle,
+    lines: Vec<String>,
+) -> Result<bool, String> {
+    if let Ok(mut cached) = MULTI_CLIENT_USAGE_TRAY_LINES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+    {
+        *cached = lines
+            .into_iter()
+            .filter(|line| !line.trim().is_empty())
+            .take(5)
+            .collect();
+    }
+    apply_status_tray_readout(app, visible_status_tray_readout())
+}
+
 pub fn set_status_indicator_enabled_native(
     app: &tauri::AppHandle,
     enabled: bool,
@@ -1774,11 +1792,27 @@ fn status_tray_readout_with_update(readout: StatusTrayReadout, update_version: O
             }
         })
         .unwrap_or(readout.tooltip);
+    let tooltip = append_multi_client_usage_tooltip(tooltip);
     StatusTrayReadout {
         columns,
         title,
         tooltip,
     }
+}
+
+fn append_multi_client_usage_tooltip(mut tooltip: String) -> String {
+    let lines = MULTI_CLIENT_USAGE_TRAY_LINES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .map(|lines| lines.clone())
+        .unwrap_or_default();
+    if !lines.is_empty() {
+        if !tooltip.is_empty() {
+            tooltip.push_str(" · ");
+        }
+        tooltip.push_str(&lines.join(" · "));
+    }
+    tooltip.chars().take(127).collect()
 }
 
 fn create_status_tray(app: &tauri::AppHandle) -> tauri::Result<()> {

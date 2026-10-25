@@ -1,0 +1,20 @@
+.multi-client-settings { display: grid; gap: 16px; color: var(--text); }
+.multi-client-settings header, .multi-client-card header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.multi-client-settings h3, .multi-client-card h3, .multi-client-quota h4, .multi-client-settings p { margin: 0; }
+.multi-client-settings p, .multi-client-note { color: var(--text-muted); font-size: 13px; line-height: 1.6; }
+.multi-client-settings fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 12px; }
+.multi-client-settings legend { font-weight: 650; padding: 0 6px; }
+.multi-client-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 13px; }
+.multi-client-controls label { display: flex; align-items: center; gap: 5px; }
+.multi-client-controls input[type=color] { width: 28px; height: 26px; border: 0; padding: 0; background: transparent; }
+.multi-client-settings button, .multi-client-card button, .multi-client-settings select, .multi-client-path { padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; color: inherit; background: var(--panel); }
+.multi-client-path { width: 100%; box-sizing: border-box; }
+.multi-client-card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin: 16px 0; }
+.multi-client-table-wrap { overflow: auto; margin-top: 14px; }
+.multi-client-table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.multi-client-table th { text-align: left; color: var(--text-muted); font-weight: 500; }
+.multi-client-table td, .multi-client-table th { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); }
+.multi-client-table small { display: block; color: var(--text-muted); margin-top: 3px; }
+.multi-client-sidebar-row { display: grid; justify-items: center; padding: 5px 0; gap: 3px; font-size: 9px; width: 74px; }
+.multi-client-sidebar-row strong { font-size: 13px; }
+.multi-client-quota { border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 8px; }

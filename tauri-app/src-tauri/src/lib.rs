@@ -56,6 +56,8 @@ pub fn run() {
                 ));
             }
 
+            commands::multi_client_usage::initialize_background_refresh(app.handle().clone());
+
             let recovery_state = app
                 .state::<core::provider_repair::ProviderRecoveryState>()
                 .inner()
@@ -155,6 +157,10 @@ pub fn run() {
             commands::dashboard::read_usage_summary_snapshot,
             commands::dashboard::read_cache_turn_requests,
             commands::dashboard::read_usage_cache_status,
+            commands::multi_client_usage::read_multi_client_usage_snapshot,
+            commands::multi_client_usage::save_multi_client_usage_preferences,
+            commands::multi_client_usage::refresh_multi_client_usage,
+            commands::multi_client_usage::read_claude_local_quota,
             commands::dashboard::read_quota_cycles,
             commands::dashboard::read_quota_cycle_usage,
             commands::codex_instances::list_codex_instances,

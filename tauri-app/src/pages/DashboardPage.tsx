@@ -1,3 +1,4 @@
+import { MultiClientUsageDashboardCard } from "../multiClient/MultiClientUsage";
 import { DiagnosticNotice } from "../components/DiagnosticNotice";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
@@ -297,6 +298,8 @@ export function DashboardPage({
           threadDeleteBridgeStatus={threadDeleteBridgeStatus}
           runningThreads={runningThreads}
         />
+
+        <MultiClientUsageDashboardCard />
 
         {preciseIndexUpgradeRequired ? (
           <section aria-live="assertive" className="index-upgrade-warning" role="alert">

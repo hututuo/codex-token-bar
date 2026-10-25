@@ -87,6 +87,8 @@ struct QuotaSidebarRail: View {
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
     @AppStorage("cacheHitAdviceEnabled") private var cacheRemindersEnabled = true
     @AppStorage("cacheHitAdviceDismissed") private var dismissedCacheAdviceID = ""
+    @AppStorage("multiClient.codexQuotaSidebar") private var showCodexQuota = true
+    @AppStorage("multiClient.codexQuotaColor") private var codexQuotaColor = "#b6ef75"
     @State private var shares: [FloatingTodayModelUsageItem] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -130,6 +132,7 @@ struct QuotaSidebarRail: View {
                             ForEach(controller.moduleOrder.filter(controller.isModuleVisible), id: \.self) { module in
                                 moduleContent(module, shares: shares)
                             }
+                            MultiClientUsageSidebarRows()
                         }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
                             .background(GeometryReader { proxy in
                                 Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
@@ -169,10 +172,12 @@ struct QuotaSidebarRail: View {
                     SidebarValueBar(fraction: Double(rateFraction), color: SidebarPalette.blue, vertical: true, modelRates: monitor.totalSnapshot.modelRates)
                         .frame(width: 4, height: 46)
                         .help("全会话实时速率（估算）\(rateText)")
+                    if showCodexQuota {
                     if let fiveHour = quota.snapshot.fiveHour {
-                        bar(window: fiveHour, color: SidebarPalette.green)
+                        bar(window: fiveHour, color: Color(nsColor: NSColor(clientHex: codexQuotaColor)))
                     }
-                    bar(window: quota.snapshot.sevenDay, color: SidebarPalette.purple)
+                    bar(window: quota.snapshot.sevenDay, color: codexQuotaColor == "#b6ef75" ? SidebarPalette.purple : Color(nsColor: NSColor(clientHex: codexQuotaColor)))
+                    }
                     SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: 46)
                 }.frame(width: 16).frame(maxHeight: .infinity)
                     .overlay(alignment: .center) {
@@ -220,12 +225,14 @@ struct QuotaSidebarRail: View {
             }.buttonStyle(SidebarPulseButtonStyle()).help("打开 ModelTrace，手动检测模型")
                 .accessibilityIdentifier("quota-sidebar-modeltrace")
         case .overview:
+            if showCodexQuota {
             if let fiveHour = quota.snapshot.fiveHour {
-                ring(label: "5h", window: fiveHour, color: SidebarPalette.green)
+                ring(label: "5h", window: fiveHour, color: Color(nsColor: NSColor(clientHex: codexQuotaColor)))
             }
-            ring(label: "7d", window: quota.snapshot.sevenDay, color: SidebarPalette.purple)
+            ring(label: "7d", window: quota.snapshot.sevenDay, color: codexQuotaColor == "#b6ef75" ? SidebarPalette.purple : Color(nsColor: NSColor(clientHex: codexQuotaColor)))
             ForEach(quota.snapshot.reserveWindows, id: \.label) { window in
                 ring(label: window.compactDisplayLabel, window: window, color: SidebarPalette.blue)
+            }
             }
             Button { controller.select(.overview, section: "models") } label: {
                 VStack(spacing: 6) {

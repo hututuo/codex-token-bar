@@ -1,3 +1,4 @@
+import { MultiClientUsageSettings } from "../../multiClient/MultiClientUsage";
 import {
   useEffect,
   useMemo,
@@ -82,6 +83,7 @@ export type AppSettingsCategory =
   | "instances"
   | "surfaces"
   | "status"
+  | "multiClientUsage"
   | "monitoring"
   | "automation"
   | "floating"
@@ -104,6 +106,7 @@ const SETTINGS_CATEGORIES: SettingsCategoryDefinition[] = [
   { id: "automation", label: "自动续跑", description: "按所选中断原因、定时或额度恢复继续" },
   { id: "surfaces", label: "显示面", description: "主窗口、悬浮窗与状态栏" },
   { id: "status", label: "状态栏与托盘", description: "指标、顺序与紧缩预览" },
+  { id: "multiClientUsage", label: "多客户端用量", description: "本地 Token 账本与显示设置" },
   { id: "monitoring", label: "监控与额度", description: "实时速率与额度刷新" },
   { id: "floating", label: "悬浮窗", description: "尺寸、外观、内容与翻页" },
   { id: "alerts", label: "提醒与更新", description: "未读提示与版本更新" },
@@ -437,6 +440,7 @@ export function AppSettingsDialog({
                   platform={platform}
                 />
               ) : null}
+              {selectedCategory === "multiClientUsage" ? <MultiClientUsageSettings /> : null}
               {selectedCategory === "monitoring" ? (
                 <MonitoringSettings
                   floatingSettings={floatingSettings}

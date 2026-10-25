@@ -55,6 +55,7 @@ struct CodexTokenBarApp: App {
         Task { @MainActor in
             threadDeleteBridge.start()
             autoResumeController.start()
+            MultiClientUsageStore.shared.start()
             ModelTraceController.shared.start(sourceStore: dashboardRuntime.usageStore)
         }
     }

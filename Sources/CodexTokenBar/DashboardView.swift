@@ -1095,6 +1095,8 @@ struct DashboardView: View {
                 showingResetCreditDetails: $showingResetCreditDetails
             )
 
+            MultiClientUsageDashboardCard()
+
             if let upgrade = store.indexUpgradeRequired {
                 HStack(spacing: 14) {
                     Image(systemName: "exclamationmark.triangle.fill")

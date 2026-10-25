@@ -9,6 +9,7 @@ pub mod dashboard;
 pub mod desktop_stream;
 pub mod live_rate;
 pub mod localtime;
+pub mod multi_client_usage;
 pub mod provider_repair;
 pub(crate) mod process_tail;
 pub mod quota;

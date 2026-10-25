@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>多客户端用量 · 独立分支预览</title></head><body><div id="root"></div><script type="module">
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {MultiClientUsageSettings,MultiClientUsageTable,defaultClientPreferences} from '/src/multiClient/MultiClientUsage.tsx';
+import '/src/styles/global.css';
+const samples={preferences:defaultClientPreferences,diagnostics:[],updatedAt:null,summaries:[
+{client:'claudeCode',model:'claude-opus-4-1',inputTokens:1045800,outputTokens:48500,cacheReadTokens:830000,cacheWriteTokens:125800,reasoningTokens:null,requests:128,lastSeen:'2026-10-25T00:00:00Z'},
+{client:'deepseek',model:'deepseek-v4',inputTokens:380000,outputTokens:21400,cacheReadTokens:220000,cacheWriteTokens:null,reasoningTokens:null,requests:41,lastSeen:'2026-10-25T00:00:00Z'},
+{client:'gemini',model:'gemini-2.5-pro',inputTokens:216000,outputTokens:32400,cacheReadTokens:188000,cacheWriteTokens:null,reasoningTokens:16200,requests:28,lastSeen:'2026-10-25T00:00:00Z'}]};
+createRoot(document.getElementById('root')).render(React.createElement('main',{style:{maxWidth:980,margin:'28px auto',padding:24}},React.createElement('h2',{},'多客户端 Token 用量'),React.createElement('p',{},'界面预览 · 以下是测试样例，不是真实账本读数'),React.createElement(MultiClientUsageTable,{snapshot:samples}),React.createElement('hr',{style:{margin:'28px 0'}}),React.createElement(MultiClientUsageSettings)));
+</script></body></html>

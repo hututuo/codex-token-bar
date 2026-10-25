@@ -1,3 +1,4 @@
+import { MultiClientUsageSidebarRows, useQuotaDisplay } from "../multiClient/MultiClientUsage";
 import { LiveActivityRateHistory } from "../components/liveRate/LiveActivityRateHistory";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 import { useModuleOrder } from "./useModuleOrder";
@@ -296,6 +297,7 @@ function RailSurface() {
 export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = DEFAULT_MODULE_VISIBILITY, data, radar, state, rateFullScale = DEFAULT_TOKEN_RATE_FULL_SCALE, liveRateEnabled = true, error = null, onOpen, onPin, onRefresh, onContentMeasurement, onDismissReminder }: {
   order?: readonly SidebarModule[]; visibility?: SidebarModuleVisibility; data: SidebarData; radar?: SidebarRadar; state: SidebarState; rateFullScale?: number; liveRateEnabled?: boolean; error?: string | null; onDismissReminder?: () => void; onPin?: () => void; onRefresh?: () => void; onContentMeasurement?: (measurement: SidebarContentMeasurement) => void; onOpen: (tab: SidebarState["tab"], section?: SidebarSection) => void;
 }) {
+  const { value: quotaDisplay } = useQuotaDisplay();
   const [, expireSpeedReadings] = useReducer((tick: number) => tick + 1, 0);
   const modelSpeeds = latestSidebarModelSpeeds(data.snapshot.latestModelSpeeds30m ?? []);
   useEffect(() => {
@@ -324,7 +326,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
     <div className="qs-bars" data-visible={state.mode === "rest"} aria-hidden={state.mode !== "rest"} aria-label="悬停查看额度">
       {cacheWarning && <span className="qs-cache-indicator" style={{ top: `calc(50% - ${showsFiveHour ? 114 : 87}px)` }} role="status" aria-label={`缓存命中偏低：${cacheAdviceTitle(cacheWarning)}`} title={`缓存命中偏低 · ${cacheAdviceTitle(cacheWarning)}`} />}
       <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ height: `${ratePercent ?? 0}%`, background: modelRateGradient(data.snapshot.modelRates, "0deg") }} /></span>
-      {showsFiveHour && <Bar percent={five} color="#b6ef75" expected={expectedFive} />}<Bar percent={seven} color="#b4acff" expected={expectedSeven} />{modelStrip(true)}
+      {quotaDisplay.codexSidebar && <>{showsFiveHour && <Bar percent={five} color={quotaDisplay.codexColor} expected={expectedFive} />}<Bar percent={seven} color={quotaDisplay.codexColor === "#b6ef75" ? "#b4acff" : quotaDisplay.codexColor} expected={expectedSeven} /></>}{modelStrip(true)}
     </div><SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning} onMeasure={onContentMeasurement}>{() => {
       if (cacheWarning) return <section className="qs-cache-notice" aria-label="缓存命中提醒">
         <div className="qs-cache-heading">
@@ -358,9 +360,9 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
         </>,
         overview: <>
       {visibility.overview && <>
-      {showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color="#b6ef75" expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
-      <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color="#b4acff" expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>
-      {reserveWindows.map(window => {
+      {quotaDisplay.codexSidebar && showsFiveHour && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看五小时额度详情"><Ring label="5h" percent={five} color={quotaDisplay.codexColor} expected={expectedFive} reset={sidebarRingResetTime(data.quota?.quota?.fiveHour?.resetsAt, data.quota?.quota?.fiveHour?.resetsAtUnix)} /><Value value={quotaText(five)} /></button>}
+      {quotaDisplay.codexSidebar && <button className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label="查看七天额度详情"><Ring label="7d" percent={seven} color={quotaDisplay.codexColor === "#b6ef75" ? "#b4acff" : quotaDisplay.codexColor} expected={expectedSeven} reset={sidebarRingResetTime(data.quota?.quota?.sevenDay?.resetsAt, data.quota?.quota?.sevenDay?.resetsAtUnix)} /><Value value={quotaText(seven)} /></button>}
+      {quotaDisplay.codexSidebar && reserveWindows.map(window => {
         const percent = sidebarVisualPercent(quotaPercent(window.availability, window.remainingPercent));
         return <button key={window.label} className="qs-quota-trigger" onClick={() => onOpen("quota", "top")} aria-label={`查看${quotaWindowDisplayLabel(window.label)}额度详情`}>
           <Ring label={quotaWindowShortLabel(window.label)} percent={percent} color="#78b7ff" reset={sidebarRingResetTime(window.resetsAt, window.resetsAtUnix)} /><Value value={quotaText(percent)} />
@@ -368,7 +370,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
       })}
       <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}>{modelStrip(false)}<span>模型占比</span></button>
       </>}
-      {visibility.overview && data.snapshot.quotaDataStale && <span className="qs-warning">额度已过期</span>}
+      {quotaDisplay.codexSidebar && visibility.overview && data.snapshot.quotaDataStale && <span className="qs-warning">额度已过期</span>}
         </>,
         tasks: <>
       {visibility.tasks && <>
@@ -392,7 +394,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
         <button aria-label="刷新数据" title="刷新数据" onClick={onRefresh}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg></button>
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
-      <div className="qs-module-scroll"><div className="qs-module-stack">{order.map(module => <Fragment key={module}>{moduleContent[module]}</Fragment>)}{error && <span className="qs-warning" title={error}>窗口异常</span>}</div></div>
+      <div className="qs-module-scroll"><div className="qs-module-stack">{order.map(module => <Fragment key={module}>{moduleContent[module]}</Fragment>)}<MultiClientUsageSidebarRows />{error && <span className="qs-warning" title={error}>窗口异常</span>}</div></div>
       <button className="qs-settings-trigger" onClick={() => onOpen("settings", "top")} aria-label="侧栏设置" title="调整侧栏模块显示与顺序"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/></svg>侧栏设置</button>
       </>;
     }}</SidebarSummaryLayer>

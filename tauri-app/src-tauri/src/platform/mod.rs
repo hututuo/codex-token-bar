@@ -66,6 +66,7 @@ pub use settings::{
     save_sidebar_module_visibility, save_sidebar_module_order, save_usage_refresh_settings,
 };
 pub(crate) use surfaces::StatusTrayColumn;
+pub(crate) use surfaces::set_multi_client_usage_tray_lines;
 pub use surfaces::{
     dismiss_status_panel_on_blur, hide_floating_window, hide_status_panel_window,
     handle_application_reopen,
