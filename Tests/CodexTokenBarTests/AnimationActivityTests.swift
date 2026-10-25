@@ -31,6 +31,42 @@ final class AnimationActivityTests: XCTestCase {
         XCTAssertFalse(check(hidden: true))
     }
     @MainActor
+    func testGuidePausesThroughScrollAndResumesAfterIdleWithoutDuplicateUpdates() async throws {
+        let scroll = NSScrollView(frame: .init(x: 0, y: 0, width: 200, height: 100))
+        let document = NSView(frame: .init(x: 0, y: 0, width: 200, height: 800))
+        let probe = AnimationVisibilityView(frame: .init(x: 0, y: 0, width: 200, height: 800))
+        probe.pausesDuringScroll = true
+        var states: [Bool] = []
+        probe.changed = { states.append($0) }
+        document.addSubview(probe); scroll.documentView = document
+        let window = VisibilityTestWindow(contentRect: .init(x: 140, y: 140, width: 200, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = scroll
+        defer { probe.changed = nil; probe.stop(); window.close() }
+        window.orderFrontRegardless()
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(states.last, true)
+        for offset in [20, 40, 60, 80, 100] {
+            scroll.contentView.scroll(to: .init(x: 0, y: offset))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            try await Task.sleep(for: .milliseconds(60))
+            XCTAssertEqual(states.last, false, "Pause must cover continuous wheel/trackpad or programmatic scrolling")
+        }
+        XCTAssertEqual(states.filter { !$0 }.count, 1, "Do not invalidate the guide once per scroll frame")
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(states.last, true, "Resume after scrolling settles")
+        let count = states.count
+        // A duplicate bounds notification with no position change is not scrolling.
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        try await Task.sleep(for: .milliseconds(220))
+        XCTAssertEqual(states.count, count)
+        probe.changed = nil; probe.stop()
+        scroll.contentView.scroll(to: .init(x: 0, y: 120))
+        try await Task.sleep(for: .milliseconds(220))
+        XCTAssertEqual(states.count, count, "Detached probe must not publish delayed animation updates")
+    }
+
+    @MainActor
     func testUnscaledDashboardContainerKeepsOffscreenSectionsLazy() async throws {
         var appeared: Set<Int> = []
         let content = ScrollView {

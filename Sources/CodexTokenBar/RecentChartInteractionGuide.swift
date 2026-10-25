@@ -47,7 +47,7 @@ struct RecentChartInteractionGuide: View {
                 }
             }
         }
-        .background(AnimationVisibilityProbe { if visible != $0 { visible = $0 } })
+        .background(AnimationVisibilityProbe(pausesDuringScroll: true) { if visible != $0 { visible = $0 } })
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
             lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
