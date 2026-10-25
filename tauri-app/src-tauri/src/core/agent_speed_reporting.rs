@@ -798,9 +798,9 @@ mod tests {
     #[test]
     fn stale_helper_generation_cannot_publish_or_clear_current_state() {
         let data = RegistryData {
-            status: None,
             active_username: Some("TokenBar-current".into()),
             generation: 9,
+            ..RegistryData::default()
         };
         assert!(!status_writer_is_current(&data, 8, "TokenBar-previous"));
         assert!(!status_writer_is_current(&data, 8, "TokenBar-current"));
