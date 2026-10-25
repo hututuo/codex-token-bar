@@ -61,3 +61,11 @@
 - Windows 补齐费用后重新真实编译、自测、离线 fixture 和正式 HTTP/WS 全流程通过。cost 六字段齐全、priceVersion=2。最终脱敏 JSON 的 19 个检查均为 true：assets/20261025-ws-integration/windows-production-cost.json。空用量的 knownShare=1 是协议语义（当前无输出），不是未知费用被冒充为免费。
 - Windows 当前代理 bypass 诊断为 false，正式 API 的两条通道都可达；没有改变代理、网络或整机睡眠状态。这不等于全部代理组合/物理睡眠/切网验收。
 - 新费用回归：Mac 6 项本地通过（1 项公网门控跳过）；Windows helper 自测包含已知/部分未知/全部未知费用、HTTP/WS 白名单、价格版本检查；开启页 3 项、TypeScript/Vite 构建通过。完整原核心 650 项未因这个接线改动重复运行，先前结果保留。
+
+### Windows 完整安装验收（10月26日凌晨）
+
+从 d2cddc0c 冻结源完成 x64 全套构建：Rust 1327 通过、11 跳过，Node 发布校验13通过、25跳过，PowerShell fixture通过；NSIS 安装器 SHA256 为288203ee0865b7c99bbfa18c26cd2a6175baad0a5e6ca1810c6572cef2f80923。已在 HTTWIN 原安装路径完成备份、完整安装和桌面启动。已安装主程序与包内程序相同（8c70b03a…）；其与 Cargo 原始文件的唯一区别是 Tauri 的三个 NSIS 类型标记字节，Reporter 与12份许可证资源全部吻合。
+
+正式客户端的两页开启流程、昵称输入、设备注册和 helper 启停已实测。HTTP 到达 reporting 状态。现场没有新的生成活动，故未验证正式客户端非零 Token/金额增量；WS 在无活动时先等待，未进入连接/ACK验收。此前独立 Windows HTTP/WS/费用六字段探针的19项通过证据保持有效，不能替代这项待测。无活动的 WS 界面仍显示“正在注册设备”，为待修的状态文案问题。
+
+测试后已恢复原开关关闭、HTTP 默认，并确认 helper 进程为0。40份备份文件核对通过，6个 SQLite 完整性及15项原始事实表比较无丢失/改写；该机器原始事实表均为空，不能据此声称完成大历史数据验收。原有额度/索引读取错误在安装前后均存在，未以删除索引方式处理。未发布、未合并多客户端功能。私有原始截图与安装回执保留在项目 runs/20261025-windows-reporting-install。
