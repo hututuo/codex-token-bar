@@ -8,6 +8,7 @@ private enum LiveRatePanelLayout {
 
 struct LiveRateView: View {
     let monitor: LiveRateMonitor
+    var quotaHistory: QuotaHistorySnapshot = .empty
     @Binding var floatingPanelEnabled: Bool
     @Binding var quotaSidebarEnabled: Bool
     @Binding var statusBarPanelEnabled: Bool
@@ -43,7 +44,7 @@ struct LiveRateView: View {
                 }
             }
             .frame(height: LiveRatePanelLayout.contentHeight)
-            ObservedSpeedView(monitor: monitor)
+            ObservedSpeedView(monitor: monitor, quotaHistory: quotaHistory)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

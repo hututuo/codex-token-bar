@@ -560,7 +560,7 @@ struct QuotaSidebarDetailView: View {
                 else if controller.interaction.detail == .speeds {
                     LiveActivityRateDetail(monitor: monitor).id("top")
                     Divider().overlay(.white.opacity(0.12))
-                    ObservedSpeedSidebarView(monitor: monitor, onOpenDetails: {
+                    ObservedSpeedSidebarView(monitor: monitor, quotaHistory: history.snapshot, onOpenDetails: {
                         BodySpeedHistoryWindowController.shared.present(monitor: monitor,
                             screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)
                     })

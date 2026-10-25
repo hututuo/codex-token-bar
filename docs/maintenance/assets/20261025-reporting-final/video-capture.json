@@ -1,0 +1,15 @@
+{
+  "source_frames_full": 610,
+  "source_seconds_full": 19.92000699043274,
+  "source_fps_full": 30.62247921363548,
+  "source_frames_in_clip": 496,
+  "clip_seconds": 16,
+  "clip_fps": 60,
+  "duplicate_frames_for_cfr": true,
+  "synthetic_motion_interpolation": false,
+  "width": 1684,
+  "height": 1100,
+  "crf": 17,
+  "size_bytes": 10550916,
+  "source_gap_p95_ms": 69.63396072387695
+}

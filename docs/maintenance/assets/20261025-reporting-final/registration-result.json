@@ -1,0 +1,16 @@
+{
+  "clientApp" : "CodexTokenBar",
+  "message" : "服务暂未接受此次接入（HTTP 422），请重试",
+  "phase" : "error",
+  "productionPreferencesChanged" : false,
+  "readerStarts" : 0,
+  "responses" : [
+    {
+      "code" : "payload_invalid",
+      "field" : "\/client\/app",
+      "reason" : "",
+      "status" : "422"
+    }
+  ],
+  "sameDeviceRetry" : true
+}

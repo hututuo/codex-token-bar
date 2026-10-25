@@ -10,7 +10,22 @@ struct BodySpeedTrendPoint: Codable, Equatable, Identifiable, Sendable {
     var sampleCount: Int64
     var tokensPerSecond: Double
 
+    var bucketEnd: Int64? = nil
+    var lowerQuartile: Double? = nil
+    var median: Double? = nil
+    var upperQuartile: Double? = nil
+    var bucketCount: Int64? = nil
+    var isPartial: Bool? = nil
+
     var id: String { "\(model):\(bucketStart)" }
+    var isDistribution: Bool {
+        guard let end = bucketEnd, end > bucketStart,
+              let lower = lowerQuartile, let median, let upper = upperQuartile,
+              lower.isFinite, median.isFinite, upper.isFinite,
+              lower > 0, lower <= median, median <= upper,
+              let count = bucketCount, count >= 3, sampleCount >= 6 else { return false }
+        return true
+    }
 }
 
 /// Durable numeric storage for completed response-body samples and their five-minute trend.
@@ -147,6 +162,67 @@ final class BodySpeedTrendStore {
                 tokensPerSecond: rate
             )
         }
+    }
+
+    /// Distribution of completed five-minute bucket rates, not individual response samples.
+    /// Numeric history remains unchanged; preparation runs on the existing persistence actor.
+    func readDistribution(now: Double, days: Int) throws -> [BodySpeedTrendPoint] {
+        guard Self.safeNow(now), [1, 7, 30].contains(days) else { return [] }
+        let width: Int64 = days == 1 ? 1_800 : days == 7 ? 7_200 : 21_600
+        let first = Int64(ceil((now - Double(days) * 86_400) / 300)) * 300
+        let completedThrough = Int64(floor(now / 300)) * 300
+        lock.lock()
+        defer { lock.unlock() }
+        let raw: [BodySpeedTrendPoint] = try driver.readRows(
+            "SELECT bucket_start, model, output_tokens, duration_seconds, sample_count FROM speed_5m " +
+            "WHERE bucket_start >= ? AND bucket_start < ? ORDER BY bucket_start, model",
+            bindings: [.int64(first), .int64(completedThrough)]
+        ) { row in
+            guard let start = row.int64(0), let model = row.text(1), let tokens = row.int64(2),
+                  let seconds = row.double(3), let count = row.int64(4),
+                  seconds.isFinite, seconds > 0, tokens > 0, count > 0,
+                  (Double(tokens) / seconds).isFinite else {
+                throw Self.storageError("Invalid completed body distribution bucket")
+            }
+            return .init(bucketStart: start, model: model, outputTokens: tokens,
+                         durationSeconds: seconds, sampleCount: count, tokensPerSecond: Double(tokens) / seconds)
+        }
+        return try Self.distributions(raw, width: width, completedThrough: completedThrough)
+    }
+
+    static func distributions(_ points: [BodySpeedTrendPoint], width: Int64,
+                              completedThrough: Int64) throws -> [BodySpeedTrendPoint] {
+        struct Key: Hashable { let model: String; let start: Int64 }
+        guard width > 0 else { return [] }
+        let grouped = Dictionary(grouping: points) { Key(model: $0.model, start: $0.bucketStart / width * width) }
+        return try grouped.compactMap { key, rows -> BodySpeedTrendPoint? in
+            guard rows.count >= 3 else { return nil }
+            var tokens: Int64 = 0, count: Int64 = 0, seconds = 0.0
+            for row in rows {
+                let (newTokens, tokenOverflow) = tokens.addingReportingOverflow(row.outputTokens)
+                let (newCount, countOverflow) = count.addingReportingOverflow(row.sampleCount)
+                guard !tokenOverflow, !countOverflow, row.tokensPerSecond.isFinite,
+                      row.tokensPerSecond > 0, row.durationSeconds.isFinite, row.durationSeconds > 0 else {
+                    throw storageError("Invalid completed body distribution totals")
+                }
+                tokens = newTokens; count = newCount; seconds += row.durationSeconds
+            }
+            guard count >= 6 else { return nil }
+            guard seconds.isFinite, seconds > 0, (Double(tokens) / seconds).isFinite else {
+                throw storageError("Invalid completed body distribution duration")
+            }
+            let rates = rows.map(\.tokensPerSecond).sorted()
+            func quantile(_ p: Double) -> Double {
+                let position = Double(rates.count - 1) * p
+                let lower = Int(floor(position)), upper = Int(ceil(position))
+                return rates[lower] + (rates[upper] - rates[lower]) * (position - Double(lower))
+            }
+            return .init(bucketStart: key.start, model: key.model, outputTokens: tokens,
+                         durationSeconds: seconds, sampleCount: count, tokensPerSecond: Double(tokens) / seconds,
+                         bucketEnd: min(key.start + width, completedThrough), lowerQuartile: quantile(0.25),
+                         median: quantile(0.5), upperQuartile: quantile(0.75), bucketCount: Int64(rows.count),
+                         isPartial: key.start + width > completedThrough)
+        }.sorted { $0.bucketStart == $1.bucketStart ? $0.model < $1.model : $0.bucketStart < $1.bucketStart }
     }
 
     private static func createSchema(_ connection: SQLiteDatabaseConnection) throws {

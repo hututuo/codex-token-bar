@@ -148,6 +148,7 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
     // The speed detail reads source-validated numeric buckets only. Other
     // history, account and mutation commands keep their existing boundaries.
     if command == "read_body_speed_trend" && label == "quota-sidebar-detail" { return true; }
+    if command == "read_quota_cycles" && label == "quota-sidebar-detail" { return true; }
     if SIDEBAR_MODULE_SETTINGS_COMMANDS.contains(&command) {
         return matches!(label, "quota-sidebar" | "quota-sidebar-detail");
     }
@@ -197,6 +198,16 @@ fn is_app_surface_label(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quota_cycle_context_is_available_only_to_main_and_speed_detail() {
+        assert!(allows_window_label("read_quota_cycles", "main"));
+        assert!(allows_window_label("read_quota_cycles", "quota-sidebar-detail"));
+        for label in ["floating", "status", "quota-sidebar", "unknown"] {
+            assert!(!allows_window_label("read_quota_cycles", label));
+        }
+        assert!(!allows_window_label("read_quota_cycle_usage", "quota-sidebar-detail"));
+    }
 
     #[test]
     fn speed_detail_can_read_numeric_trend_without_account_or_history_authority() {

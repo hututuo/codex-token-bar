@@ -1639,7 +1639,7 @@ pub(super) fn trend_points(
         .trend_store
         .as_ref()
         .ok_or_else(|| "observed_speed_storage_unavailable".to_owned())?
-        .read(now, days)
+        .read_distribution(now, days)
         .map_err(|_| "observed_speed_trend_read_failed".to_owned());
     if let Err(error) = &result {
         store.storage_error = Some(error.clone());

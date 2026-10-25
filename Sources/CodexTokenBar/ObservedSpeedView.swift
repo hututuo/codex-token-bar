@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ObservedSpeedView: View {
     @ObservedObject var monitor: LiveRateMonitor
+    var quotaHistory: QuotaHistorySnapshot = .empty
     private var recentSamples: [ObservedSpeedSample] {
         Array(monitor.speedSamples.lazy.filter { $0.isBody && $0.hasKnownModel }.prefix(6))
     }
@@ -15,7 +16,7 @@ struct ObservedSpeedView: View {
                 Spacer()
             }
             BodySpeedModelTable(monitor: monitor)
-            BodySpeedTrendView(monitor: monitor)
+            BodySpeedTrendView(monitor: monitor, resetMarkers: BodySpeedResetMarker.from(quotaHistory))
             HStack {
                 Text("最近6条 · 已识别模型").font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -89,6 +90,7 @@ struct BodySpeedModelTable: View {
 /// The edge detail has its own compact ten-row layout, never a dashboard sheet.
 struct ObservedSpeedSidebarView: View {
     @ObservedObject var monitor: LiveRateMonitor
+    var quotaHistory: QuotaHistorySnapshot = .empty
     let onOpenDetails: () -> Void
     private var samples: [ObservedSpeedSample] {
         Array(monitor.speedSamples.lazy.filter { $0.isBody && $0.hasKnownModel }.prefix(10))
@@ -97,7 +99,7 @@ struct ObservedSpeedSidebarView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("各模型最新速度 · 正文 TPS").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
             BodySpeedModelTable(monitor: monitor, dark: true)
-            BodySpeedTrendView(monitor: monitor, compact: true)
+            BodySpeedTrendView(monitor: monitor, compact: true, resetMarkers: BodySpeedResetMarker.from(quotaHistory))
             Text("最近10条").font(.system(size: 10)).foregroundStyle(.secondary)
             if samples.isEmpty { Text("等待带模型的正文测速").font(.caption).foregroundStyle(.secondary) }
             VStack(spacing: 0) {

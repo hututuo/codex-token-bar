@@ -14,7 +14,7 @@ test('trend polling pauses while hidden, resumes once, and equal source broadcas
  dom.setInterval = (fn,ms) => { const id=++sequence;timers.set(id,{fn,ms,once:false});return id; };
  dom.clearTimeout = dom.clearInterval = id => timers.delete(id);
  const now = Date.now()/1000;
- dom.__TAURI_INTERNALS__ = {invoke:async command => {assert.equal(command,'read_body_speed_trend');reads++;return [{bucketStart:now-10,model:'gpt-6-luna',tokensPerSecond:50,outputTokens:100,durationSeconds:2,sampleCount:1}];}};
+ dom.__TAURI_INTERNALS__ = {invoke:async command => {assert.equal(command,'read_body_speed_trend');reads++;return [{bucketStart:now-1800,bucketEnd:now,lowerQuartile:40,median:50,upperQuartile:60,bucketCount:4,model:'gpt-6-luna',tokensPerSecond:50,outputTokens:100,durationSeconds:2,sampleCount:8}];}};
  let root;
  const fire = async ms => {for(const [id,t] of [...timers]) if(t.ms===ms){if(t.once)timers.delete(id);await t.fn();}};
  try {
@@ -24,9 +24,9 @@ test('trend polling pauses while hidden, resumes once, and equal source broadcas
    const token={canonicalHomeKey:'fixture',physicalHomeKey:'fixture',transitionGeneration:1};
    await React.act(async()=>root.render(React.createElement(BodySpeedTrend,{sourceToken:token,revision:'1'})));
    await React.act(async()=>fire(150));assert.equal(reads,1);
-   const line=dom.document.querySelector('polyline');assert.ok(line);
+   const line=dom.document.querySelector('.bst-band');assert.ok(line);
    for(let i=0;i<10;i++)await React.act(async()=>root.render(React.createElement(BodySpeedTrend,{sourceToken:{...token},revision:'1'})));
-   assert.equal(reads,1);assert.equal(dom.document.querySelector('polyline'),line);
+   assert.equal(reads,1);assert.equal(dom.document.querySelector('.bst-band'),line);
    await React.act(async()=>{Object.defineProperty(dom.document,'hidden',{value:true,configurable:true});dom.document.dispatchEvent(new dom.Event('visibilitychange'));});
    assert.equal([...timers.values()].filter(t=>t.ms===60000).length,0);
    await React.act(async()=>fire(60000));assert.equal(reads,1);

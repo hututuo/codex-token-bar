@@ -162,17 +162,18 @@ export function AgentSpeedInvitationCard({ username, busy = false, error = "", o
     <SpeedLeaderboardMovie />
     <h3>加入速蹬 Token 排行榜</h3>
     <p>加入 Token 排行榜，看看各软件、各模型的速度。</p>
-    <label className="speed-report-invitation-switch"><span>参加速蹬排行榜</span>
-      <input type="checkbox" role="switch" checked={joining} disabled={busy}
+    <label className="speed-report-invitation-switch" data-joining={joining}><span>① 参加速蹬排行榜</span>
+      <input type="checkbox" role="switch" aria-describedby="speed-report-join-hint" checked={joining} disabled={busy}
         onChange={event => setJoining(event.target.checked)} />
     </label>
+    <p className="speed-report-join-hint" id="speed-report-join-hint">{joining ? "已选择参加 → 点击右下角“开启并参加”完成" : "↑ 先打开上方开关，再点右下角“开启并参加”"}</p>
     <p className="speed-report-note">仅上报 Token、速度、模型和软件统计，以及公开昵称、设备标识和客户端版本信息；不上传对话内容、文件路径或账号凭据。可随时在设置中关闭。</p>
-    {joining && <p className="speed-report-note">公开昵称：{username}。同一数据源请勿与 Agent Speed 重复上报。</p>}
+    <p className="speed-report-note speed-report-public-name">公开昵称：<span title={username}>{username}</span>。同一数据源请勿与 Agent Speed 重复上报。</p>
     {error && <p role="alert" className="speed-report-error">{error}</p>}
     <div className="speed-report-actions">
       <button type="button" className="speed-report-text-button" onClick={onOpenSettings}>设置与说明</button>
       <button type="button" onClick={onDismiss}>暂不参加</button>
-      <button type="button" className="speed-report-primary" disabled={!joining || busy} onClick={onJoin}>
+      <button type="button" className="speed-report-primary" title={!joining ? "先打开上方“参加速蹬排行榜”开关" : "确认参加并开始上报"} disabled={!joining || busy} onClick={onJoin}>
         {busy ? "正在开启…" : "开启并参加"}
       </button>
     </div>

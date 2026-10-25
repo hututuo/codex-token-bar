@@ -133,3 +133,65 @@ final class BodySpeedTrendStoreTests: XCTestCase {
         )
     }
 }
+
+extension BodySpeedTrendStoreTests {
+    func testDistributionUsesBucketQuantilesRatherThanWeightedMeanAndPreservesStoredTotals() throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let base = 1_728_000.0
+        var samples: [ObservedSpeedSample] = []
+        for (i, rate) in [10, 20, 40, 100].enumerated() {
+            let duration = i == 0 ? 10.0 : 2.0
+            for j in 0..<2 {
+                samples.append(body(id: "\(i)/\(j)", model: "sol", endedAt: base + Double(i * 300 + 30 + j),
+                                    tokens: Int(Double(rate) * duration), duration: duration))
+            }
+        }
+        // A different model's sparse buckets cannot satisfy Sol's distribution gate.
+        samples.append(body(id: "other", model: "luna", endedAt: base + 30, tokens: 200, duration: 2))
+        try store.ingest(samples: samples, now: base + 1_800)
+        let stored = try store.read(now: base + 1_800, days: 1)
+        let values = try store.readDistribution(now: base + 1_800, days: 1)
+        let p = try XCTUnwrap(values.first)
+        XCTAssertEqual(values.count, 1)
+        XCTAssertEqual(p.lowerQuartile, 17.5)
+        XCTAssertEqual(p.median, 30)
+        XCTAssertEqual(p.upperQuartile, 55)
+        XCTAssertEqual(p.bucketCount, 4)
+        XCTAssertEqual(p.sampleCount, 8)
+        XCTAssertEqual(p.bucketEnd, Int64(base + 1_800))
+        XCTAssertEqual(p.isPartial, false)
+        XCTAssertNotEqual(p.median, p.tokensPerSecond)
+        XCTAssertEqual(try store.read(now: base + 1_800, days: 1), stored)
+    }
+
+    func testDistributionExcludesActiveFiveMinuteBucketAndReportsPartialDisplayInterval() throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let base = 1_728_000.0
+        var samples = (0..<3).flatMap { i in
+            (0..<2).map { j in body(id: "\(i)/\(j)", model: "sol", endedAt: base + Double(i * 300 + 30 + j), tokens: 80, duration: 2) }
+        }
+        samples.append(body(id: "active", model: "sol", endedAt: base + 910, tokens: 800, duration: 2))
+        try store.ingest(samples: samples, now: base + 930)
+        for days in [1, 7, 30] {
+            let points = try store.readDistribution(now: base + 930, days: days)
+            let p = try XCTUnwrap(points.first)
+            XCTAssertEqual(p.sampleCount, 6)
+            XCTAssertEqual(p.median, 40)
+            XCTAssertEqual(p.bucketEnd, Int64(base + 900))
+            XCTAssertEqual(p.isPartial, true)
+        }
+    }
+
+    func testDistributionRequiresThreeNonemptyBucketsAndSixSamples() throws {
+        let base: Int64 = 1_728_000
+        func p(_ i: Int64, _ n: Int64) -> BodySpeedTrendPoint {
+            .init(bucketStart: base + i * 300, model: "sol", outputTokens: n * 100,
+                  durationSeconds: Double(n) * 2, sampleCount: n, tokensPerSecond: 50)
+        }
+        XCTAssertTrue(try BodySpeedTrendStore.distributions([p(0, 5), p(1, 5)], width: 1800, completedThrough: base + 1800).isEmpty)
+        XCTAssertTrue(try BodySpeedTrendStore.distributions([p(0, 1), p(1, 1), p(2, 1)], width: 1800, completedThrough: base + 1800).isEmpty)
+        XCTAssertEqual(try BodySpeedTrendStore.distributions([p(0, 2), p(1, 2), p(2, 2)], width: 1800, completedThrough: base + 1800).count, 1)
+    }
+}

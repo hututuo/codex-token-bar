@@ -63,3 +63,12 @@ At the user’s request, re-recorded the public leaderboard at 2× device pixel 
 - NOT_RUN: actual Windows helper/app execution, DPAPI acceptance, installed invitation rendering, complete Windows installer build, real backend registration/reporting.
 - Verified setup-dotnet v6.0.0 immutable tag SHA: `a98b56852c35b8e3190ac28c8c2271da59106c68`.
 - Higher clarity media follow-up: native `swift build -j 4` passed; invitation UI tests 2/2 passed; browser confirmed videoWidth=1128, videoHeight=826, duration=17.933333, muted=true, loop=false.
+
+
+## Build955 local acceptance follow-up
+
+After the user explicitly authorized local replacement and real reporting, macOS build955 was installed with prior-app/preferences/three-DB rollback backups. TPS distribution and invitation changes are documented in [the build955 receipt](2026-10-25-tps-distribution-build955.md). The previous NOT_RUN statements above describe the initial source-only implementation.
+
+The new invitation recording is 1684×1100,16seconds,60fpsplayback,10,550,916bytes; actual source capture30.6fps versus old9.8fps. Both clients have the same new asset and two-step highlighted consent hint; the nickname/hint layout no longer changes height on toggle.
+
+Real discovery returned200, but registration returned422 `payload_invalid` at `/client/app` for `CodexTokenBar`, confirmed by one same-device signed retry. The installed UI is enabled/error; no report reader or statistics submission began. Live registration/authentication/report/leaderboard acceptance is **BLOCKED on service compatibility**, not passed. No impersonation as AgentSpeed, public release, push, or multi-client merge occurred.

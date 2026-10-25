@@ -1,0 +1,113 @@
+[
+  {
+    "id": "A",
+    "y_limits": [
+      15,
+      65
+    ],
+    "phases": [
+      {
+        "start": 1792670400,
+        "end": 1792673400,
+        "tps": 29.50431974922947,
+        "supported": true,
+        "bucket_count": 10
+      },
+      {
+        "start": 1792674300,
+        "end": 1792683900,
+        "tps": 31.897460787895035,
+        "supported": true,
+        "bucket_count": 27
+      },
+      {
+        "start": 1792683900,
+        "end": 1792686600,
+        "tps": 40.32949758429054,
+        "supported": true,
+        "bucket_count": 9
+      },
+      {
+        "start": 1792689000,
+        "end": 1792692900,
+        "tps": 41.51829777039813,
+        "supported": true,
+        "bucket_count": 11
+      },
+      {
+        "start": 1792693500,
+        "end": 1792697400,
+        "tps": 34.31880974926896,
+        "supported": true,
+        "bucket_count": 13
+      }
+    ]
+  },
+  {
+    "id": "B",
+    "y_limits": [
+      45,
+      90
+    ],
+    "phases": [
+      {
+        "start": 1792758600,
+        "end": 1792759200,
+        "tps": 45.92064137254268,
+        "supported": false,
+        "bucket_count": 2
+      },
+      {
+        "start": 1792767300,
+        "end": 1792767900,
+        "tps": 31.92570059072001,
+        "supported": false,
+        "bucket_count": 2
+      },
+      {
+        "start": 1792787700,
+        "end": 1792789500,
+        "tps": 60.15240764945967,
+        "supported": true,
+        "bucket_count": 6
+      }
+    ]
+  },
+  {
+    "id": "C",
+    "y_limits": [
+      10,
+      55
+    ],
+    "phases": [
+      {
+        "start": 1792899600,
+        "end": 1792902000,
+        "tps": 20.821159028253994,
+        "supported": true,
+        "bucket_count": 7
+      },
+      {
+        "start": 1792902000,
+        "end": 1792904700,
+        "tps": 44.16307951653904,
+        "supported": true,
+        "bucket_count": 7
+      },
+      {
+        "start": 1792906500,
+        "end": 1792907100,
+        "tps": 110.45365556366482,
+        "supported": false,
+        "bucket_count": 2
+      },
+      {
+        "start": 1792914000,
+        "end": 1792915500,
+        "tps": 34.842584879400036,
+        "supported": false,
+        "bucket_count": 5
+      }
+    ]
+  }
+]

@@ -98,13 +98,17 @@ struct AgentSpeedReportingInvitation: View {
                         .font(.title3.bold())
                     Text("加入 Token 排行榜，看看各软件、各模型的速度。")
                         .font(.callout)
-                    Toggle("参加速蹬排行榜", isOn: $joining).toggleStyle(.switch)
+                    Toggle("① 参加速蹬排行榜", isOn: $joining).toggleStyle(.switch)
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 9).fill((joining ? Color.green : Color.blue).opacity(0.08)))
+                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder((joining ? Color.green : Color.blue).opacity(0.45)))
+                    Text(joining ? "已选择参加 → 点击右下角“开启并参加”完成" : "↑ 先打开上方开关，再点右下角“开启并参加”")
+                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.blue)
+                        .lineLimit(1).minimumScaleFactor(0.8).frame(height: 18, alignment: .leading)
                     Text("仅上报 Token、速度、模型和软件统计，以及公开昵称、设备标识和客户端版本信息；不上传对话内容、文件路径或账号凭据。可随时在设置中关闭。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    if joining {
-                        Text("公开昵称：\(controller.username)。同一数据源请勿与 Agent Speed 重复上报。")
-                            .font(.caption).fixedSize(horizontal: false, vertical: true)
-                    }
+                    Text("公开昵称：\(controller.username)。同一数据源请勿与 Agent Speed 重复上报。")
+                        .font(.caption).lineLimit(2).frame(height: 32, alignment: .topLeading)
                     HStack(spacing: 12) {
                         Button("设置与说明") {
                             controller.dismissInvitation()
@@ -114,6 +118,7 @@ struct AgentSpeedReportingInvitation: View {
                         Button("暂不参加") { controller.dismissInvitation() }
                         Button("开启并参加") { controller.setEnabled(true) }
                             .buttonStyle(.borderedProminent).disabled(!joining)
+                            .help(joining ? "确认参加并开始上报" : "先打开上方“参加速蹬排行榜”开关")
                     }
                 }
                 .padding(20).frame(width: 500)
@@ -153,7 +158,7 @@ private struct SpeedLeaderboardMovie: View {
                let poster = NSImage(contentsOf: url) {
                 Image(nsImage: poster).resizable().aspectRatio(contentMode: .fit)
             }
-            LeaderboardPlayer(player: player).aspectRatio(1128.0 / 826.0, contentMode: .fit)
+            LeaderboardPlayer(player: player).aspectRatio(1684.0 / 1100.0, contentMode: .fit)
             HStack {
                 Text("排行榜实录 · 非当前实时数据").font(.caption2)
                 Spacer()

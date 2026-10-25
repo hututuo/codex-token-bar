@@ -1173,6 +1173,7 @@ struct DashboardView: View {
 
             LiveRateView(
                 monitor: liveMonitor,
+                quotaHistory: quotaHistoryStore.snapshot,
                 floatingPanelEnabled: $floatingPanelEnabled,
                 quotaSidebarEnabled: $quotaSidebarEnabled,
                 statusBarPanelEnabled: $statusBarPanelEnabled,

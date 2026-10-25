@@ -31,3 +31,25 @@ test('profile URL accepts only the reporting website, and supported source list 
   assert.equal(supportedHarnesses.split('、').length,13);
  });
 });
+
+test('invitation clearly explains the two-step consent and keeps its name/hint slots mounted on toggle',async()=>{
+ const w=new Window();const keys=['window','document','navigator','HTMLElement','IS_REACT_ACT_ENVIRONMENT'];
+ const saved=keys.map(k=>[k,Object.getOwnPropertyDescriptor(globalThis,k)]);
+ for(const k of keys)Object.defineProperty(globalThis,k,{configurable:true,writable:true,value:k==='IS_REACT_ACT_ENVIRONMENT'?true:w[k]});
+ let root,joined=0;
+ try{
+  w.HTMLMediaElement.prototype.play=()=>Promise.resolve();w.HTMLMediaElement.prototype.pause=()=>{};
+  const {createRoot}=await import('react-dom/client');root=createRoot(w.document.body);
+  await withSsrModules(async load=>{
+   const {AgentSpeedInvitationCard}=await load('/src/components/settings/AgentSpeedReporting.tsx');
+   await React.act(async()=>root.render(React.createElement(AgentSpeedInvitationCard,{username:'TokenBar-test',onJoin:()=>joined++,onDismiss(){},onOpenSettings(){}})));
+   const checkbox=w.document.querySelector('[role=switch]'),button=w.document.querySelector('.speed-report-primary'),name=w.document.querySelector('.speed-report-public-name'),hint=w.document.querySelector('.speed-report-join-hint');
+   assert.ok(button.disabled);assert.equal(checkbox.getAttribute('aria-describedby'),hint.id);assert.match(hint.textContent,/先打开上方开关/);
+   await React.act(async()=>button.click());assert.equal(joined,0);
+   await React.act(async()=>checkbox.click());assert.equal(button.disabled,false);assert.match(hint.textContent,/已选择参加/);
+   assert.equal(w.document.querySelector('.speed-report-public-name'),name);
+   await React.act(async()=>button.click());assert.equal(joined,1);
+   await React.act(async()=>checkbox.click());assert.equal(button.disabled,true);assert.equal(w.document.querySelector('.speed-report-public-name'),name);assert.equal(w.document.querySelector('.speed-report-join-hint'),hint);
+  });
+ }finally{if(root)await React.act(async()=>root.unmount());for(const[k,v]of saved)v?Object.defineProperty(globalThis,k,v):delete globalThis[k];w.close();}
+});

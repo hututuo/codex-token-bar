@@ -166,3 +166,51 @@ final class AgentSpeedReportingTests: XCTestCase {
         XCTAssertEqual(Set(SourceKind.allCases.map(AgentSpeedReportingController.sourceName)).count, 13)
     }
 }
+
+/// Explicit opt-in live acceptance probe. Reuses this device's existing identity;
+/// never seeds a new device, reads transcripts, or changes production preferences.
+private actor SpeedReportAcceptanceTransport: ReportTransport {
+    private let underlying = URLSessionReportTransport()
+    private var outcomes: [[String: String]] = []
+    func snapshot() -> [[String: String]] { outcomes }
+    func get(_ url: URL, etag: String?, userAgent: String, maxBytes: Int, timeout: TimeInterval)
+        async throws(ReportTransportError) -> ReportHTTPResponse {
+        try await underlying.get(url, etag: etag, userAgent: userAgent, maxBytes: maxBytes, timeout: timeout)
+    }
+    func send(_ request: ReportRequest, maxBytes: Int, timeout: TimeInterval)
+        async throws(ReportTransportError) -> ReportHTTPResponse {
+        let response = try await underlying.send(request, maxBytes: maxBytes, timeout: timeout)
+        let parsed = ReportReply.parse(status: response.status, headers: response.headers, body: response.body)
+        outcomes.append(["status": String(response.status), "code": parsed.code ?? "", "field": parsed.field ?? "", "reason": parsed.reason ?? ""])
+        return response
+    }
+}
+
+extension AgentSpeedReportingTests {
+    func testExplicitLiveRegistrationDiagnostics() async throws {
+        guard let output = ProcessInfo.processInfo.environment["CODEX_SPEED_LIVE_ACCEPTANCE_OUTPUT"] else {
+            throw XCTSkip("Live service requests require explicit local acceptance opt-in")
+        }
+        let production = try XCTUnwrap(UserDefaults(suiteName: "local.codex.token-bar"))
+        let device = try XCTUnwrap(production.string(forKey: AgentSpeedReportingController.deviceKey))
+        let username = try XCTUnwrap(production.string(forKey: AgentSpeedReportingController.usernameKey))
+        XCTAssertTrue(ReportCanonical.isDeviceId(device))
+        let name = "test.speed-acceptance." + UUID().uuidString
+        let prefs = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { prefs.removePersistentDomain(forName: name) }
+        prefs.set(device, forKey: AgentSpeedReportingController.deviceKey)
+        let transport = SpeedReportAcceptanceTransport(), monitor = SpeedReportTestMonitor()
+        let controller = AgentSpeedReportingController(defaults: prefs, transport: transport, makeMonitor: { _ in monitor })
+        controller.setEnabled(true, username: username)
+        for _ in 0..<300 where controller.phase != "error" && monitor.starts == 0 {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let result = await transport.snapshot()
+        let record: [String: Any] = ["responses": result, "phase": controller.phase, "message": controller.message,
+                                    "readerStarts": monitor.starts, "sameDeviceRetry": true,
+                                    "productionPreferencesChanged": false, "clientApp": "CodexTokenBar"]
+        try JSONSerialization.data(withJSONObject: record, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: output))
+        controller.shutdown()
+        XCTAssertFalse(result.isEmpty, "The explicit probe must reach the registered API")
+    }
+}

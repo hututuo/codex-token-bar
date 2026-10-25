@@ -1,3 +1,4 @@
+import type { QuotaAttributionIdentity } from "../types/quota";
 import { CacheUsageNotice } from "./cacheReminder/CacheUsageNotice";
 import { ObservedSpeedDetails } from "./liveRate/ObservedSpeedDetails";
 import { canUseQuotaSidebar } from "../settings/displaySettings";
@@ -8,6 +9,8 @@ import { liveRateNotice } from "./liveRate/liveRateNotice";
 
 interface LiveRateCardProps {
   sourceToken?: CodexHomeSourceToken | null;
+  quotaIdentity?: QuotaAttributionIdentity | null;
+  quotaUpdatedAt?: string | null;
   liveThreadOptions?: LiveThreadOption[];
   floatingSettings: FloatingWindowSettings;
   floatingEnabled: boolean;
@@ -31,6 +34,7 @@ interface LiveRateCardProps {
 
 export function LiveRateCard({
   sourceToken = null,
+  quotaIdentity, quotaUpdatedAt,
   liveThreadOptions = [],
   floatingSettings,
   floatingEnabled,
@@ -193,7 +197,7 @@ export function LiveRateCard({
           </div>
         </div>
       </div>
-      <ObservedSpeedDetails data={snapshot} threads={liveThreadOptions} sourceToken={sourceToken} />
+      <ObservedSpeedDetails quotaIdentity={quotaIdentity} quotaUpdatedAt={quotaUpdatedAt} data={snapshot} threads={liveThreadOptions} sourceToken={sourceToken} />
     </section>
   );
 }

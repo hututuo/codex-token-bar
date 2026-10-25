@@ -19,13 +19,19 @@ const SCHEMA_VERSION: &str = "1";
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BodySpeedTrendPoint {
-    /// UTC Unix seconds, aligned to five minutes, thirty minutes, or two hours.
+    /// UTC Unix seconds, aligned to a display bucket boundary.
     pub bucket_start: i64,
     pub model: String,
     pub output_tokens: i64,
     pub duration_seconds: f64,
     pub sample_count: i64,
     pub tokens_per_second: f64,
+    pub bucket_end: Option<i64>,
+    pub lower_quartile: Option<f64>,
+    pub median: Option<f64>,
+    pub upper_quartile: Option<f64>,
+    pub bucket_count: Option<i64>,
+    pub is_partial: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +42,14 @@ struct TrendRow {
     output_tokens: i64,
     duration_seconds: f64,
     eligible: bool,
+}
+
+#[derive(Debug)]
+struct DistributionBucket {
+    output_tokens: i64,
+    duration_seconds: f64,
+    sample_count: i64,
+    five_minute_rates: Vec<f64>,
 }
 
 /// SQLite storage for completed-body detail rows and their weighted speed trend.
@@ -188,6 +202,125 @@ impl BodySpeedTrendStore {
                 duration_seconds,
                 sample_count,
                 tokens_per_second,
+                bucket_end: None,
+                lower_quartile: None,
+                median: None,
+                upper_quartile: None,
+                bucket_count: None,
+                is_partial: None,
+            });
+        }
+        Ok(points)
+    }
+
+    /// Read completed five-minute rows and summarize their per-row rates into
+    /// fixed UTC display buckets. Quantiles weight each five-minute row equally.
+    pub fn read_distribution(
+        &self,
+        now: f64,
+        days: u16,
+    ) -> rusqlite::Result<Vec<BodySpeedTrendPoint>> {
+        if !safe_now(now) || !matches!(days, 1 | 7 | 30) {
+            return Ok(Vec::new());
+        }
+        let resolution = match days {
+            1 => 1_800_i64,
+            7 => 7_200_i64,
+            30 => 21_600_i64,
+            _ => unreachable!(),
+        };
+        let cutoff = now - f64::from(days) * 86_400.0;
+        let first_bucket = ceil_bucket_start(cutoff).ok_or(rusqlite::Error::InvalidQuery)?;
+        let last_completed_boundary = bucket_start(now).ok_or(rusqlite::Error::InvalidQuery)?;
+        if first_bucket >= last_completed_boundary {
+            return Ok(Vec::new());
+        }
+
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT bucket_start, model, output_tokens, duration_seconds, sample_count \
+             FROM speed_5m WHERE bucket_start >= ?1 AND bucket_start < ?2 \
+             ORDER BY bucket_start ASC, model ASC",
+        )?;
+        let mut rows = statement.query(params![first_bucket, last_completed_boundary])?;
+        let mut grouped: std::collections::BTreeMap<(i64, String), DistributionBucket> =
+            std::collections::BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            let five_minute_start: i64 = row.get(0)?;
+            let model: String = row.get(1)?;
+            let output_tokens: i64 = row.get(2)?;
+            let duration_seconds: f64 = row.get(3)?;
+            let sample_count: i64 = row.get(4)?;
+            if output_tokens <= 0
+                || sample_count <= 0
+                || !duration_seconds.is_finite()
+                || duration_seconds <= 0.0
+            {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            let five_minute_rate = output_tokens as f64 / duration_seconds;
+            if !five_minute_rate.is_finite() || five_minute_rate <= 0.0 {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+
+            let display_bucket_start = five_minute_start.div_euclid(resolution) * resolution;
+            let bucket = grouped
+                .entry((display_bucket_start, model))
+                .or_insert_with(|| DistributionBucket {
+                    output_tokens: 0,
+                    duration_seconds: 0.0,
+                    sample_count: 0,
+                    five_minute_rates: Vec::new(),
+                });
+            bucket.output_tokens = bucket
+                .output_tokens
+                .checked_add(output_tokens)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            bucket.sample_count = bucket
+                .sample_count
+                .checked_add(sample_count)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            bucket.duration_seconds += duration_seconds;
+            if !bucket.duration_seconds.is_finite() {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            bucket.five_minute_rates.push(five_minute_rate);
+        }
+
+        let mut points = Vec::new();
+        for ((bucket_start, model), mut bucket) in grouped {
+            let bucket_count = i64::try_from(bucket.five_minute_rates.len())
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+            if bucket_count < 3 || bucket.sample_count < 6 {
+                continue;
+            }
+            bucket.five_minute_rates.sort_by(f64::total_cmp);
+            let lower_quartile = type7_quantile(&bucket.five_minute_rates, 0.25)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            let median = type7_quantile(&bucket.five_minute_rates, 0.50)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            let upper_quartile = type7_quantile(&bucket.five_minute_rates, 0.75)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            let tokens_per_second = bucket.output_tokens as f64 / bucket.duration_seconds;
+            if !tokens_per_second.is_finite() || tokens_per_second <= 0.0 {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            let nominal_bucket_end = bucket_start
+                .checked_add(resolution)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            points.push(BodySpeedTrendPoint {
+                bucket_start,
+                model,
+                output_tokens: bucket.output_tokens,
+                duration_seconds: bucket.duration_seconds,
+                sample_count: bucket.sample_count,
+                tokens_per_second,
+                bucket_end: Some(nominal_bucket_end.min(last_completed_boundary)),
+                lower_quartile: Some(lower_quartile),
+                median: Some(median),
+                upper_quartile: Some(upper_quartile),
+                bucket_count: Some(bucket_count),
+                is_partial: Some(nominal_bucket_end > last_completed_boundary),
             });
         }
         Ok(points)
@@ -457,6 +590,29 @@ fn bucket_start(timestamp: f64) -> Option<i64> {
     (bucket.is_finite() && bucket < i64::MAX as f64).then_some(bucket as i64)
 }
 
+fn ceil_bucket_start(timestamp: f64) -> Option<i64> {
+    if !timestamp.is_finite() {
+        return None;
+    }
+    let bucket = (timestamp / BUCKET_SECONDS as f64).ceil() * BUCKET_SECONDS as f64;
+    (bucket.is_finite() && bucket >= i64::MIN as f64 && bucket < i64::MAX as f64)
+        .then_some(bucket as i64)
+}
+
+fn type7_quantile(sorted_values: &[f64], probability: f64) -> Option<f64> {
+    if sorted_values.is_empty() || !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+        return None;
+    }
+    let index = (sorted_values.len() - 1) as f64 * probability;
+    let lower_index = index.floor() as usize;
+    let upper_index = index.ceil() as usize;
+    let fraction = index - lower_index as f64;
+    let lower = *sorted_values.get(lower_index)?;
+    let upper = *sorted_values.get(upper_index)?;
+    let value = lower + (upper - lower) * fraction;
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
 fn is_completed_body_sample(sample: &SpeedSample) -> bool {
     sample.measurement_kind.as_deref() == Some("completed_body")
         && sample.tokenizer.as_deref() == Some("o200k_base")
@@ -567,6 +723,8 @@ mod tests {
         assert_eq!(initial.len(), 1);
         assert_eq!(initial[0].output_tokens, 100);
         assert_eq!(initial[0].sample_count, 1);
+        assert_eq!(initial[0].bucket_end, None);
+        assert_eq!(initial[0].median, None);
 
         let corrected = sample("one", Some("model-b"), now, 200, 4.0, None);
         store.ingest(&[corrected], now, 30).unwrap();
@@ -607,6 +765,277 @@ mod tests {
         assert_eq!(merged.tokens_per_second, 50.0);
         let two_hour = store.read(now, 30).unwrap();
         assert_eq!(two_hour.len(), 2);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn distribution_uses_type7_quartiles_of_five_minute_rates() {
+        let (store, path) = store();
+        let base = 1_728_000.0;
+        let now = base + 86_400.0 - 60.0;
+        let samples = [
+            sample("q1a", Some("model-a"), base + 30.0, 10, 1.0, None),
+            sample("q1b", Some("model-a"), base + 60.0, 10, 1.0, None),
+            sample("q1c", Some("model-a"), base + 90.0, 10, 1.0, None),
+            sample("q2", Some("model-a"), base + 330.0, 20, 1.0, None),
+            sample("q3", Some("model-a"), base + 630.0, 40, 1.0, None),
+            sample("q4", Some("model-a"), base + 930.0, 100, 1.0, None),
+        ];
+        store.ingest(&samples, now, 30).unwrap();
+
+        let points = store.read_distribution(now, 1).unwrap();
+        assert_eq!(points.len(), 1);
+        let point = &points[0];
+        assert_eq!(point.bucket_count, Some(4));
+        assert_eq!(point.sample_count, 6);
+        assert_eq!(point.lower_quartile, Some(17.5));
+        assert_eq!(point.median, Some(30.0));
+        assert_eq!(point.upper_quartile, Some(55.0));
+        assert_ne!(point.tokens_per_second, point.median.unwrap());
+        assert!((point.tokens_per_second - 190.0 / 6.0).abs() < 1e-12);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn distribution_keeps_models_separate_and_requires_three_buckets_and_six_samples() {
+        let (store, path) = store();
+        let base = 1_728_000.0;
+        let now = base + 86_400.0 - 60.0;
+        let mut samples = Vec::new();
+        for model in ["model-a", "model-b"] {
+            for bucket in [0.0, 300.0, 600.0] {
+                for copy in 0..2 {
+                    let id = format!("{model}-{bucket}-{copy}");
+                    samples.push(sample(
+                        &id,
+                        Some(model),
+                        base + bucket + 30.0 + f64::from(copy),
+                        if model == "model-a" { 10 } else { 20 },
+                        1.0,
+                        None,
+                    ));
+                }
+            }
+        }
+        for bucket in [900.0, 1_200.0] {
+            for copy in 0..3 {
+                let id = format!("two-buckets-{bucket}-{copy}");
+                samples.push(sample(
+                    &id,
+                    Some("two-buckets"),
+                    base + bucket + 30.0 + f64::from(copy),
+                    10,
+                    1.0,
+                    None,
+                ));
+            }
+        }
+        for bucket in [0.0, 300.0, 600.0] {
+            let id = format!("too-few-samples-{bucket}");
+            samples.push(sample(
+                &id,
+                Some("too-few-samples"),
+                base + bucket + 30.0,
+                10,
+                1.0,
+                None,
+            ));
+        }
+        store.ingest(&samples, now, 30).unwrap();
+
+        let points = store.read_distribution(now, 1).unwrap();
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].model, "model-a");
+        assert_eq!(points[0].output_tokens, 60);
+        assert_eq!(points[1].model, "model-b");
+        assert_eq!(points[1].output_tokens, 120);
+        assert!(points
+            .iter()
+            .all(|point| { point.bucket_count == Some(3) && point.sample_count == 6 }));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn distribution_excludes_current_incomplete_five_minute_bucket() {
+        let (store, path) = store();
+        let base = 1_728_000.0;
+        let now = base + 910.0;
+        let mut samples = Vec::new();
+        for bucket in [0.0, 300.0, 600.0, 900.0] {
+            for copy in 0..2 {
+                let id = format!("current-boundary-{bucket}-{copy}");
+                samples.push(sample(
+                    &id,
+                    Some("model-a"),
+                    base + bucket + 30.0 + f64::from(copy),
+                    10,
+                    1.0,
+                    None,
+                ));
+            }
+        }
+        store.ingest(&samples, now, 30).unwrap();
+
+        let points = store.read_distribution(now, 1).unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].bucket_count, Some(3));
+        assert_eq!(points[0].sample_count, 6);
+        assert_eq!(points[0].bucket_end, Some(base as i64 + 900));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn distribution_uses_the_requested_fixed_utc_bucket_widths() {
+        let base = 1_728_000.0;
+        for (days, width) in [(1_u16, 1_800_i64), (7, 7_200), (30, 21_600)] {
+            let (store, path) = store();
+            let now = base + f64::from(days) * 86_400.0 - 60.0;
+            let mut samples = Vec::new();
+            for display_bucket in [0_i64, width] {
+                for five_minute in [0_i64, 300, 600] {
+                    for copy in 0..2 {
+                        let id = format!("{days}-{display_bucket}-{five_minute}-{copy}");
+                        let ended_at =
+                            base + (display_bucket + five_minute) as f64 + 30.0 + f64::from(copy);
+                        samples.push(sample(&id, Some("model-a"), ended_at, 10, 1.0, None));
+                    }
+                }
+            }
+            store.ingest(&samples, now, 30).unwrap();
+
+            let points = store.read_distribution(now, days).unwrap();
+            assert_eq!(points.len(), 2, "days={days}");
+            assert_eq!(points[0].bucket_start, base as i64, "days={days}");
+            assert_eq!(points[1].bucket_start - points[0].bucket_start, width);
+            assert_eq!(points[0].is_partial, Some(false));
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn distribution_marks_a_truncated_last_display_bucket_as_partial() {
+        let (store, path) = store();
+        let base = 1_728_000.0;
+        let now = base + 2_710.0;
+        let mut samples = Vec::new();
+        for bucket in [1_800.0, 2_100.0, 2_400.0] {
+            for copy in 0..2 {
+                let id = format!("partial-{bucket}-{copy}");
+                samples.push(sample(
+                    &id,
+                    Some("model-a"),
+                    base + bucket + 30.0 + f64::from(copy),
+                    10,
+                    1.0,
+                    None,
+                ));
+            }
+        }
+        store.ingest(&samples, now, 30).unwrap();
+
+        let points = store.read_distribution(now, 1).unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].bucket_start, base as i64 + 1_800);
+        assert_eq!(points[0].bucket_end, Some(base as i64 + 2_700));
+        assert_eq!(points[0].is_partial, Some(true));
+        assert_eq!(points[0].bucket_count, Some(3));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn distribution_reads_without_rewriting_legacy_rows_or_metadata() {
+        let (store, path) = store();
+        let base = 1_728_000.0;
+        let now = base + 86_400.0 - 60.0;
+        let mut samples = Vec::new();
+        for bucket in [0.0, 300.0, 600.0] {
+            for copy in 0..2 {
+                let id = format!("preserved-{bucket}-{copy}");
+                samples.push(sample(
+                    &id,
+                    Some("model-a"),
+                    base + bucket + 30.0 + f64::from(copy),
+                    10,
+                    1.0,
+                    None,
+                ));
+            }
+        }
+        store.ingest(&samples, now, 15).unwrap();
+
+        let read_rows = || {
+            let connection = store.connect().unwrap();
+            let mut statement = connection
+                .prepare(
+                    "SELECT bucket_start, model, output_tokens, duration_seconds, sample_count \
+                     FROM speed_5m ORDER BY bucket_start, model",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, f64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let before_rows = read_rows();
+        let before_retention = store.retention_days().unwrap();
+        let before_schema: String = store
+            .connect()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM speed_trend_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before_schema, "1");
+
+        assert_eq!(store.read_distribution(now, 1).unwrap().len(), 1);
+        assert_eq!(store.read(now, 1).unwrap().len(), 3);
+        assert_eq!(read_rows(), before_rows);
+        assert_eq!(store.retention_days().unwrap(), before_retention);
+        let after_schema: String = store
+            .connect()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM speed_trend_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_schema, "1");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn distribution_returns_an_error_for_invalid_persisted_rates() {
+        let (store, path) = store();
+        let base = 1_728_000.0;
+        let now = base + 86_400.0 - 60.0;
+        let samples = [
+            sample("invalid-a", Some("model-a"), base + 30.0, 10, 1.0, None),
+            sample("invalid-b", Some("model-a"), base + 330.0, 10, 1.0, None),
+            sample("invalid-c", Some("model-a"), base + 630.0, 10, 1.0, None),
+        ];
+        store.ingest(&samples, now, 30).unwrap();
+        store
+            .connect()
+            .unwrap()
+            .execute(
+                "UPDATE speed_5m SET duration_seconds = 0 WHERE bucket_start = ?1",
+                [base as i64],
+            )
+            .unwrap();
+
+        assert!(store.read_distribution(now, 1).is_err());
         let _ = fs::remove_file(path);
     }
 

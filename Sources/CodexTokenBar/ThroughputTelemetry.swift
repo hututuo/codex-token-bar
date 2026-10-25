@@ -534,8 +534,8 @@ actor BodySpeedSampleWriter {
 
     func trend(from url: URL, now: Double, days: Int) throws -> [BodySpeedTrendPoint] {
         let key = url.standardizedFileURL
-        var cache = try storeCache(for: key, now: now, retentionDays: 30)
-        let points = try cache.store.read(now: now, days: days)
+        let cache = try storeCache(for: key, now: now, retentionDays: 30)
+        let points = try cache.store.readDistribution(now: now, days: days)
         caches[key] = cache
         return points
     }

@@ -7,7 +7,8 @@ final class BodySpeedTrendProjectionTests: XCTestCase {
     private let now: Int64 = 1_800_000_000
     private func point(_ model: String, _ offset: Int64, _ speed: Double = 50) -> BodySpeedTrendPoint {
         .init(bucketStart: now + offset, model: model, outputTokens: 500,
-              durationSeconds: 10, sampleCount: 2, tokensPerSecond: speed)
+              durationSeconds: 10, sampleCount: 6, tokensPerSecond: speed, bucketEnd: now + offset + 300,
+              lowerQuartile: speed - 5, median: speed, upperQuartile: speed + 5, bucketCount: 3, isPartial: false)
     }
     private func input(_ points: [BodySpeedTrendPoint], days: Int = 1) -> BodySpeedTrendInput {
         .init(points: points, days: days, windowSeconds: days * 86400,
@@ -21,20 +22,25 @@ final class BodySpeedTrendProjectionTests: XCTestCase {
         XCTAssertEqual(preferred.visiblePoints, [rows[1]])
         let all = BodySpeedTrendProjection(input: input(rows), selectedModel: "*")
         XCTAssertNil(all.focusModel)
-        XCTAssertEqual(all.visiblePoints, rows)
-        XCTAssertEqual(all.entries.count, rows.count)
+        XCTAssertEqual(Set(all.visiblePoints.map(\.id)), Set(rows.map(\.id)))
+        XCTAssertEqual(all.visiblePoints.count, rows.count)
     }
     func testExplicitModelPersistsAndMissingModelFallsBack() {
         let rows = [point("sol", -300), point("luna", -300)]
         XCTAssertEqual(BodySpeedTrendProjection(input: input(rows), selectedModel: "sol").focusModel, "sol")
         XCTAssertEqual(BodySpeedTrendProjection(input: input(rows), selectedModel: "old").focusModel, "luna")
     }
-    func testGapsRemainDisconnectedAtEachAggregationWidth() {
-        for (days, width) in [(1, Int64(300)), (7, 1800), (30, 7200)] {
-            let rows = [point("sol", -4 * width), point("sol", -3 * width), point("sol", -width)]
-            let result = BodySpeedTrendProjection(input: input(rows, days: days), selectedModel: "sol")
-            XCTAssertEqual(result.entries.map(\.segment), ["sol/0", "sol/0", "sol/1"])
-        }
+    func testEmptyIntervalsNeverSelectTheNearestMeasuredDistribution() {
+        let rows = [point("sol", -1200), point("sol", -300)]
+        let result = BodySpeedTrendProjection(input: input(rows), selectedModel: "sol")
+        XCTAssertTrue(result.selected(at: Date(timeIntervalSince1970: Double(now - 600))).isEmpty)
+        XCTAssertEqual(result.selected(at: Date(timeIntervalSince1970: Double(now - 100))).first?.id, rows.last?.id)
+    }
+    func testLegacyMeanPointsAreNotDisplayedAsDistributions() {
+        var legacy = point("sol", -300)
+        legacy.median = nil
+        let result = BodySpeedTrendProjection(input: input([legacy]), selectedModel: nil)
+        XCTAssertTrue(result.visiblePoints.isEmpty)
     }
     func testWindowFilteringBoundsAndFirstLastDoNotDependOnInputOrder() {
         let rows = [point("sol", -300, 80), point("sol", -90000), point("sol", -600, 40), point("sol", 300)]
@@ -42,20 +48,46 @@ final class BodySpeedTrendProjectionTests: XCTestCase {
         XCTAssertEqual(result.visiblePoints.count, 2)
         XCTAssertEqual(result.first?.tokensPerSecond, 40)
         XCTAssertEqual(result.last?.tokensPerSecond, 80)
-        XCTAssertEqual(result.yBounds, 32...88)
+        XCTAssertEqual(result.yBounds, 27.5...92.5)
     }
     func testEmptyAndChangedInput() {
         let empty = input([])
         XCTAssertEqual(empty, input([]))
         let result = BodySpeedTrendProjection(input: empty, selectedModel: nil)
-        XCTAssertTrue(result.entries.isEmpty)
-        XCTAssertEqual(result.yBounds, 0...15)
+        XCTAssertTrue(result.visiblePoints.isEmpty)
+        XCTAssertEqual(result.yBounds, 0...13)
         var changed = empty
         changed.points = [point("sol", -300)]
         XCTAssertNotEqual(empty, changed)
         changed = empty; changed.error = "read failed"; XCTAssertNotEqual(empty, changed)
         changed = empty; changed.minute += 1; XCTAssertNotEqual(empty, changed)
         changed = empty; changed.windowSeconds = 604800; XCTAssertNotEqual(empty, changed)
+    }
+    func testResetMarkersUseAcceptedObservedDropsAndPreservePreviousObservationBounds() {
+        let date = Date(timeIntervalSince1970: Double(now))
+        let observations = [
+            QuotaCycleObservation(at: date.addingTimeInterval(-7200), usedPercent: 70, resetsAt: date.addingTimeInterval(10000)),
+            QuotaCycleObservation(at: date.addingTimeInterval(-3600), usedPercent: 0, resetsAt: date.addingTimeInterval(10000)),
+            QuotaCycleObservation(at: date, usedPercent: 1, resetsAt: date.addingTimeInterval(20000))
+        ]
+        let projection = QuotaActualCycleProjector.projectWithDiagnostics(observations, now: date)
+        var history = QuotaHistorySnapshot.empty
+        history.actualCycles = projection.cycles; history.cycleDiagnostics = projection.diagnostics
+        XCTAssertEqual(BodySpeedResetMarker.from(history), [.init(observedAt: observations[1].at, previousAt: observations[0].at)])
+        history.isStale = true
+        XCTAssertTrue(BodySpeedResetMarker.from(history).isEmpty)
+    }
+    func testWithdrawnResetAndChangedScheduleNeverCreateMarkers() {
+        let date = Date(timeIntervalSince1970: Double(now))
+        let observations = [
+            QuotaCycleObservation(at: date.addingTimeInterval(-7200), usedPercent: 70, resetsAt: date),
+            QuotaCycleObservation(at: date.addingTimeInterval(-3600), usedPercent: 0, resetsAt: date),
+            QuotaCycleObservation(at: date, usedPercent: 70, resetsAt: date.addingTimeInterval(20000))
+        ]
+        let projection = QuotaActualCycleProjector.projectWithDiagnostics(observations, now: date, consumption: { _, _ in .absent })
+        var history = QuotaHistorySnapshot.empty
+        history.actualCycles = projection.cycles; history.cycleDiagnostics = projection.diagnostics
+        XCTAssertTrue(BodySpeedResetMarker.from(history).isEmpty)
     }
     @MainActor
     func testOpenSettingsPreviewStillReceivesLivePublications() {
