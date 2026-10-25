@@ -14,3 +14,9 @@
 本机安装：`/Applications/Codex Token Bar.app`，0.9.7/build956。启动并检查主页、总体设置成功；核对运行进程及安装包媒体哈希。安装器只替换应用包，不读写数据库或改偏好。上报开关保持原选择；既有服务 HTTP422 问题未随此次资源剪辑改变。
 
 构建及安装回执：`runs/20261025-leaderboard-trim-build956/`（项目根目录下）。旧 build955 与偏好导出保存在 `backups/20261025-leaderboard-trim-build956/`；该目录内有 `rollback-app.py`，正常退出 Bar 后运行即可恢复旧应用，不回滚数据库。
+
+## 用户指定整段剪除后 · build957
+
+此前只删重复帧的版本已被用户复审替代。按原始16秒时间轴删除 [0,2.1)、[5.1,6.1)、[9.9,11.1)、[14,16)，保留三段拼成9.7秒/582帧/60fps/1684×1100/7,911,340字节。首帧海报也同步更新，双端MP4 SHA256为 `069f626653d0ca43594cb7ef54ae36733cd9263cfd1450b8c5d1ad535adb4a6c`。精确区间见 `assets/20261025-leaderboard-trim/segment-edit-report.json`。
+
+邀请页测试3/3，整片解码、签名、更新身份、双端哈希通过；浏览器播放至9.7秒结束。已替换本机0.9.7/build957并验证主页启动，未发布。回执在项目根 `runs/20261025-leaderboard-segment-build957`；旧build956和回滚脚本在 `backups/20261025-leaderboard-segment-build957`。

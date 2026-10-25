@@ -3,17 +3,17 @@
   "source_seconds_full": 19.92000699043274,
   "source_fps_full": 30.62247921363548,
   "source_frames_in_clip": 496,
-  "clip_seconds": 14.233333333333333,
+  "clip_seconds": 9.7,
   "clip_fps": 60,
   "duplicate_frames_for_cfr": true,
   "synthetic_motion_interpolation": false,
   "width": 1684,
   "height": 1100,
   "crf": 16,
-  "size_bytes": 10666450,
+  "size_bytes": 7911340,
   "source_gap_p95_ms": 69.63396072387695,
   "original_clip_seconds": 16,
   "original_clip_size_bytes": 10550916,
-  "trimmed_surplus_hold_frames": 106,
-  "trim_report": "../20261025-leaderboard-trim/edit-report.json"
+  "trim_report": "../20261025-leaderboard-trim/segment-edit-report.json",
+  "supersedes_duplicate_frame_edit": true
 }

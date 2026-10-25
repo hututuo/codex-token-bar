@@ -1,0 +1,49 @@
+{
+  "source": "Original 16-second recording, before previous duplicate-only edit",
+  "source_sha256": "5383953fdcc8db8280fdd7f4d9d89d5a0b468bcd827334332e5e2b57bf59616a",
+  "removed_seconds_original_timeline": [
+    [
+      0,
+      2.1
+    ],
+    [
+      5.1,
+      6.1
+    ],
+    [
+      9.9,
+      11.1
+    ],
+    [
+      14,
+      16
+    ]
+  ],
+  "kept_seconds_original_timeline": [
+    [
+      2.1,
+      5.1
+    ],
+    [
+      6.1,
+      9.9
+    ],
+    [
+      11.1,
+      14
+    ]
+  ],
+  "new_join_seconds": [
+    3,
+    6.8
+  ],
+  "output_seconds": 9.7,
+  "output_frames": 582,
+  "fps": 60,
+  "width": 1684,
+  "height": 1100,
+  "size_bytes": 7911340,
+  "sha256": "069f626653d0ca43594cb7ef54ae36733cd9263cfd1450b8c5d1ad535adb4a6c",
+  "crossfade": false,
+  "synthetic_interpolation": false
+}
