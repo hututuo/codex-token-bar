@@ -1,6 +1,13 @@
 import AppKit
+import QuartzCore
 import XCTest
 @testable import CodexTokenBar
+
+@MainActor
+private final class SidebarTestDisplayPulse: NSObject {
+    private(set) var ticks = 0
+    @objc func tick() { ticks += 1 }
+}
 
 final class QuotaSidebarRevealTests: XCTestCase {
     @MainActor
@@ -34,6 +41,21 @@ final class QuotaSidebarRevealTests: XCTestCase {
     func testNativeRevealDoesNotResizeTheWindowOnEachVisualFrameAndReversesContinuously() throws {
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             throw XCTSkip("Animated transition contract; system Reduce Motion is enabled")
+        }
+        // Probe AppKit independently of the production animation. Command-line
+        // test hosts can expose NSScreen while delivering no display-link ticks.
+        // That is not evidence that the controller's lost-mouse-up path froze.
+        let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first)
+        let pulse = SidebarTestDisplayPulse()
+        let link = screen.displayLink(target: pulse, selector: #selector(SidebarTestDisplayPulse.tick))
+        link.add(to: .main, forMode: .common)
+        let pulseDeadline = Date().addingTimeInterval(0.25)
+        while pulse.ticks == 0 && Date() < pulseDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.002))
+        }
+        link.invalidate()
+        guard pulse.ticks > 0 else {
+            throw XCTSkip("AppKit display-link callbacks unavailable in this test host; native animation requires live validation")
         }
         let suite = "SidebarReveal-\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }

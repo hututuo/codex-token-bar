@@ -102,9 +102,9 @@ struct ClientChartPoint: Identifiable, Equatable {
 enum ClientUsageChartProjection {
     /// Fixed UTC buckets give every source the same boundaries. Gaps stay zero, never interpolated.
     static func points(codex: [BinUsage], others: [ClientTrendBucket], days: Int, now: Date, allowed: Set<String>) -> [ClientChartPoint] {
-        let seconds = days == 1 ? 3600.0 : 86400.0
+        let seconds = days == 1 ? 300.0 : days == 7 ? 3600.0 : 21600.0
         let last = floor(now.timeIntervalSince1970 / seconds) * seconds
-        let count = days == 1 ? 24 : days
+        let count = days * 86400 / Int(seconds) + 1
         let first = last - Double(count - 1) * seconds
         var sums: [String: [Double: Int64]] = [:]
         func add(_ client: String, _ timestamp: Double, _ tokens: Int64) {

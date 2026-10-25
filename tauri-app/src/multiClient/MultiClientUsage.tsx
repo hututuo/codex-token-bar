@@ -13,11 +13,11 @@ export interface ClientPreference {
 }
 interface Summary {
   client: UsageClient; model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number | null;
-  cacheWriteTokens: number | null; reasoningTokens: number | null; requests: number; lastSeen: string; incompleteFields?: boolean;
+  cacheWriteTokens: number | null; reasoningTokens: number | null; requests: number; lastSeen: string; incompleteFields?: boolean; apiCostUSD?:number|null; unpricedRequests?:number; cacheReadComplete?:boolean;
 }
-export interface Snapshot { detections?: ClientDetection[]; trendBuckets?: ClientTrendBucket[]; quotas?: ClientQuotaReading[]; preferences: ClientPreference[]; summaries: Summary[]; diagnostics: string[]; updatedAt: string | null; }
+export interface Snapshot { detections?: ClientDetection[]; trendBuckets?: ClientTrendBucket[]; dailyBuckets?: ClientTrendBucket[]; quotas?: ClientQuotaReading[]; preferences: ClientPreference[]; summaries: Summary[]; diagnostics: string[]; updatedAt: string | null; }
 export const defaultClientPreferences: ClientPreference[] = (Object.keys(clientNames) as UsageClient[]).map((client, order) => ({
-  client, enabled: false, showSidebar: false, showQuota: false, showMenuBar: false, color: ["#d87757", "#b875c7", "#507de8", "#36a183", "#b79a4b"][order], order, style: "compact", path: "",
+  client, enabled: false, showSidebar: false, showQuota: false, showMenuBar: false, color: { claudeCode: "#D97757", claudeDesktop: "#D97757", deepseek: "#4D6BFE", gemini: "#4796E4", opencode: "#B7B1B1" }[client], order, style: "compact", path: "",
 }));
 function hasRuntime() { return typeof window !== "undefined" && isTauriRuntimeAvailable(); }
 const initial: Snapshot = { preferences: defaultClientPreferences, summaries: [], diagnostics: [], updatedAt: null };
@@ -58,7 +58,7 @@ function subscribe(listener: () => void) {
   }
   return () => { listeners.delete(listener); if (!listeners.size) clearTimeout(timer); };
 }
-function useMultiClientUsage() {
+export function useMultiClientUsage() {
   useSyncExternalStore(subscribe, () => revision, () => 0);
   const snapshot = cached;
   const [saving, setSaving] = useState(false);
@@ -125,12 +125,12 @@ export function MultiClientUsageSettings() {
     <header><h3>多客户端 Token 用量</h3><button disabled={busy} onClick={() => void refresh()}>读取本地记录</button></header>
     <p>只读本地日志，各客户端账本与 Codex 并列保存。关闭读取或删除原会话，不会删除已经记录的用量。</p>
     <MultiClientDiscoveryNotice />
-    <label><input type="checkbox" checked={quotaDisplay.value.overviewSidebar} onChange={e=>quotaDisplay.change({overviewSidebar:e.target.checked})} />侧栏显示合计（Codex + 已启用客户端）</label>
+
     {snapshot.preferences.map((preference, index) => (showCustom || clientIsAvailable(preference.client, snapshot.detections ?? [], snapshot.preferences, snapshot.summaries)) && <fieldset key={preference.client} disabled={busy || !hasRuntime()}>
       <legend style={{ color: preference.color }}>{clientNames[preference.client]}</legend>
       <div className="multi-client-controls">
         <label><input type="checkbox" checked={preference.enabled} onChange={e => change(preference.client, { enabled: e.target.checked })} />读取本地用量</label>
-        <label><input type="checkbox" checked={preference.showQuota ?? false} onChange={e => change(preference.client, { showQuota: e.target.checked })} />额度</label>
+
         <label><input type="checkbox" checked={preference.showSidebar} onChange={e => change(preference.client, { showSidebar: e.target.checked })} />侧栏</label>
         <label><input type="checkbox" checked={preference.showMenuBar} onChange={e => change(preference.client, { showMenuBar: e.target.checked })} />菜单栏 / 托盘</label>
         <input aria-label={`${clientNames[preference.client]}颜色`} type="color" value={preference.color} onChange={e => change(preference.client, { color: e.target.value })} />
@@ -145,14 +145,6 @@ export function MultiClientUsageSettings() {
       {preference.client === "claudeDesktop" && <p>仅支持本地 Code / Agent 会话；云端聊天未落地的用量无法读取。</p>}
     </fieldset>)}
     <button onClick={()=>setShowCustom(value=>!value)}>{showCustom ? "只显示已发现的客户端" : "手动接入其他日志目录"}</button>
-    <fieldset><legend>额度显示</legend><div className="multi-client-controls">
-      <label><input type="checkbox" checked={quotaDisplay.value.codexSidebar} onChange={e => quotaDisplay.change({codexSidebar:e.target.checked})} />侧栏显示 Codex 额度</label>
-      <input type="color" aria-label="Codex 额度颜色" value={quotaDisplay.value.codexColor} onChange={e=>quotaDisplay.change({codexColor:e.target.value})} />
-      <label><input type="checkbox" checked={quotaDisplay.value.claudeSidebar} onChange={e => quotaDisplay.change({claudeSidebar:e.target.checked})} />侧栏显示 Claude 额度</label>
-      <input type="color" aria-label="Claude 额度颜色" value={quotaDisplay.value.claudeColor} onChange={e=>quotaDisplay.change({claudeColor:e.target.value})} />
-      <label><input type="checkbox" checked={quotaDisplay.value.claudeFirst} onChange={e => quotaDisplay.change({claudeFirst:e.target.checked})} />Claude 额度排在其他客户端前面</label>
-      <select aria-label="Claude 额度样式" value={quotaDisplay.value.claudeStyle} onChange={e=>quotaDisplay.change({claudeStyle:e.target.value})}><option value="compact">紧凑</option><option value="detailed">详细</option></select>
-    </div></fieldset>
     <ClaudeLocalQuotaPanel />
     <p>Claude 额度只读已有状态栏缓存，不安装钩子、不读取凭据、不联网。没有有效记录时不推算剩余百分比。Codex 额度显示继续使用原有侧栏和状态栏设置。</p>
     {error && <p role="alert">{error}</p>}
@@ -179,7 +171,7 @@ function useDiscoveryAcknowledgements() {
 export function MultiClientDiscoveryNotice() {
   const {snapshot, save, busy} = useMultiClientUsage();
   const {seen, acknowledge} = useDiscoveryAcknowledgements();
-  return <>{(snapshot.detections ?? []).filter(d=>!seen.has(d.client) && !snapshot.preferences.some(p=>p.client===d.client && p.enabled)).map(d=><div className="multi-client-discovery" key={d.client}>
+  return <>{(snapshot.detections ?? []).filter(d=>!seen.has(d.client) && !snapshot.preferences.some(p=>p.client===d.client && p.enabled)).slice(0,1).map(d=><div className="multi-client-discovery" key={d.client}>
     <div><strong>发现 {clientNames[d.client as UsageClient] ?? d.client}</strong><small>启用后在本机统计 Token，随时可关闭。</small></div>
     <button disabled={busy} onClick={async()=>{if (await save(snapshot.preferences.map(p=>p.client===d.client ? {...p,enabled:true,showSidebar:true,showQuota:p.client==="claudeCode"}:p))) acknowledge(d.client);}}>启用</button>
     <button onClick={()=>acknowledge(d.client)}>暂不启用</button>
@@ -209,32 +201,6 @@ export function ClientUsageChart({points, colors, combined=false}: {points:Clien
     </svg>
     <div className="multi-client-chart-readout" aria-live="polite">{hover !== null && grouped[hover] ? <>{new Date(starts[hover]*1000).toLocaleString(undefined,{timeZone:"UTC"})} UTC · {grouped[hover].map(p=>`${clientName(p.client)} ${p.tokens.toLocaleString()}`).join(" · ")}</> : "移入或点选柱形，查看每个客户端的精确数值"}</div>
   </div>;
-}
-export function MultiClientUsageDashboardCard({codex}: {codex?:DashboardSnapshot}) {
-  const {snapshot, error} = useMultiClientUsage();
-  const [selected,setSelected]=useState("codex"),[days,setDays]=useState(1),[combined,setCombined]=useState(false);
-  const clients=snapshot.preferences.filter(p=>p.enabled || snapshot.summaries.some(s=>s.client===p.client));
-  const allowed=selected==="all" ? ["codex",...clients.map(p=>p.client)] : [selected];
-  // The ledger timestamp can be old when scanning is disabled; ranges still end now.
-  const now=Date.now()/1000;
-  const points=useMemo(()=>projectClientChart(codex?.recentUsage30d ?? codex?.recentUsage24h ?? [],snapshot.trendBuckets ?? [],days,now,allowed),[codex,snapshot.trendBuckets,days,now,selected,clients.map(p=>p.client).join(",")]);
-  const colors=Object.fromEntries([["codex","#72b743"],["all","#72b743"],...snapshot.preferences.map(p=>[p.client,p.color])]);
-  return <><MultiClientDiscoveryNotice />{clients.length>0 && <section className="multi-client-card">
-    <header><h3>客户端用量</h3><span>本地账本 · 额度独立显示</span></header>
-    <div className="multi-client-toolbar"><select aria-label="统计客户端" value={selected} onChange={e=>setSelected(e.target.value)}><option value="codex">Codex</option><option value="all">全部客户端</option>{clients.map(p=><option value={p.client} key={p.client}>{clientNames[p.client]}</option>)}</select>
-      <div className="multi-client-ranges">{[1,7,30].map(d=><button key={d} aria-pressed={days===d} onClick={()=>setDays(d)}>{d===1?"24小时":d+"天"}</button>)}</div>
-    </div>
-    <div className="multi-client-total"><strong>{points.reduce((n,p)=>n+p.tokens,0).toLocaleString()}</strong><span>区间已记录 Token</span>{selected==="all" && <label><input type="checkbox" checked={combined} onChange={e=>setCombined(e.target.checked)}/>合并总量</label>}</div>
-    {allowed.includes("codex") && !(codex?.recentUsage30d?.length || codex?.recentUsage24h?.length) && <p className="multi-client-note">Codex 图表尚无可用记录，当前合计可能不完整。</p>}
-    <ClientUsageChart points={points} colors={colors} combined={combined && selected==="all"}/>
-    <div className="multi-client-legend">{allowed.map(client=><span key={client}><i style={{background:colors[client]}}/>{clientName(client)}</span>)}</div>
-    <p className="multi-client-note">{days===1?"每小时":"每日"} Token · UTC 时桶。合计为输入 + 输出，缓存与思考不重复相加。</p>
-    {(selected==="codex" || selected==="all") && <ClientQuotaPanel reading={codexQuotaProvider(codex?.quota).reading()}/>}
-    {clients.filter(p=>selected==="all" || p.client===selected).map(p=><div key={p.client}><h4 style={{color:p.color}}>{clientNames[p.client]}</h4><ClientQuotaPanel reading={snapshot.quotas?.find(q=>q.client===p.client) ?? unavailableQuota(p.client)}/></div>)}
-    {selected!=="codex" && <details><summary>模型与 Token 明细（累计已记录）</summary><MultiClientUsageTable snapshot={{...snapshot,preferences:snapshot.preferences.filter(p=>selected==="all" || p.client===selected)}}/></details>}
-    <p className="multi-client-note">历史分批读取，缺失日志不补推。下方原有统计与费用仍属于 Codex。</p>
-    {error && <p role="alert">{error}</p>}{snapshot.diagnostics.map((line,i)=><p className="multi-client-note" key={i}>{line}</p>)}
-  </section>}</>;
 }
 export function MultiClientUsageSidebarRows({codexTokens}: {codexTokens?:number}) {
   const {snapshot}=useMultiClientUsage(); const {value:display}=useQuotaDisplay();

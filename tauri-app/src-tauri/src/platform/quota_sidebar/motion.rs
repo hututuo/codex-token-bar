@@ -68,11 +68,11 @@ impl Controller {
 }
 pub(super) fn cancel() { if let Ok(mut motion) = MOTION.lock() { motion.cancel(); } }
 
-pub(super) fn start(rail: &WebviewWindow, detail: &WebviewWindow, side: &str, mode: super::SidebarMode, five: bool, expanded_height: f64, reduced: bool, refresh_geometry: bool, request_id: u64) -> Result<SidebarFrame, String> {
+pub(super) fn start(rail: &WebviewWindow, detail: &WebviewWindow, side: &str, mode: super::SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>, reduced: bool, refresh_geometry: bool, request_id: u64) -> Result<SidebarFrame, String> {
     REDUCED.store(reduced, Ordering::Relaxed);
     // Capture monitor/workarea once per intent or explicit environment refresh.
     // No disk reads or monitor enumeration occur in the frame loop.
-    let target = placement::geometry(rail, side, mode, five, expanded_height)?;
+    let target = placement::geometry(rail, side, mode, five, expanded_height, compact_height)?;
     if mode == super::SidebarMode::Detail { placement::set_frame(detail, target.card)?; }
     begin(rail, target, reduced, refresh_geometry, false, Some(request_id))
 }
@@ -87,7 +87,7 @@ pub(super) fn snap(rail: &WebviewWindow, target: Geometry) -> Result<(), String>
 fn begin(rail: &WebviewWindow, target: Geometry, reduced: bool, refresh: bool, snapping: bool, request_id: Option<u64>) -> Result<SidebarFrame, String> {
     // Snap targets can be constructed directly by the drag path, so ensure a
     // large canvas exists before either an immediate jump or the first sample.
-    super::canvas_metrics::ensure_canvas_height(target.expanded_height)?;
+    super::canvas_metrics::ensure_canvas_height(target.expanded_height.max(target.compact_height))?;
     let current = placement::window_frame(rail)?;
     let mut motion = MOTION.lock().map_err(|e| e.to_string())?;
     let environment_changed = refresh && motion.active.as_ref().is_some_and(|a| !environment_matches(&a.target, &target));
@@ -125,7 +125,7 @@ fn begin(rail: &WebviewWindow, target: Geometry, reduced: bool, refresh: bool, s
 }
 
 fn tick(rail: &WebviewWindow, revision: u64) -> Result<bool, String> {
-    let enabled = STATE.lock().map_err(|e| e.to_string())?.as_ref().is_some_and(|(display, _, _, _)| display.quota_sidebar_enabled);
+    let enabled = STATE.lock().map_err(|e| e.to_string())?.as_ref().is_some_and(|(display, _, _, _, _)| display.quota_sidebar_enabled);
     if !enabled || placement::is_dragging() || !rail.is_visible().map_err(|e| e.to_string())? { cancel(); return Ok(false); }
     let mut motion = MOTION.lock().map_err(|e| e.to_string())?;
     if motion.revision != revision { return Ok(false); }
@@ -158,7 +158,7 @@ fn recover_failed_motion(rail: &WebviewWindow, revision: u64, target: &Geometry,
     // Runs on the same UI queue as disable and new intents. A late failure may
     // never restore an older animation over a newer window configuration.
     let enabled = STATE.lock().map_err(|e| e.to_string())?.as_ref()
-        .is_some_and(|(display, _, _, _)| display.quota_sidebar_enabled);
+        .is_some_and(|(display, _, _, _, _)| display.quota_sidebar_enabled);
     if !enabled || placement::is_dragging() { return Ok(()); }
     let mut motion = MOTION.lock().map_err(|e| e.to_string())?;
     let Some(request_id) = motion.fail(revision) else { return Ok(()); };
@@ -188,11 +188,15 @@ mod tests {
     use super::*;
     fn target(side: &str, mode: super::super::SidebarMode, work: SidebarFrame, center: f64) -> Geometry {
         let (rail, card) = super::super::frames_for_at(work, side, mode, false, center);
-        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: super::super::default_expanded_height(false), side: side.into(), rail, card }
+        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: super::super::default_expanded_height(false), compact_height: super::super::default_compact_height(false), side: side.into(), rail, card }
     }
     fn target_with_height(side: &str, mode: super::super::SidebarMode, work: SidebarFrame, center: f64, height: f64) -> Geometry {
         let (rail, card) = super::super::frames_for_at_height(work, side, mode, false, height, center);
-        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: height, side: side.into(), rail, card }
+        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: height, compact_height: super::super::default_compact_height(false), side: side.into(), rail, card }
+    }
+    fn target_with_compact_height(side: &str, mode: super::super::SidebarMode, work: SidebarFrame, center: f64, height: f64) -> Geometry {
+        let (rail, card) = super::super::frames_for_at_height_with_compact(work, side, mode, false, super::super::default_expanded_height(false), Some(height), center);
+        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: super::super::default_expanded_height(false), compact_height: height, side: side.into(), rail, card }
     }
     fn work() -> SidebarFrame { SidebarFrame { x: -1440.0, y: 24.0, width: 1440.0, height: 1000.0 } }
     #[test]
@@ -255,6 +259,21 @@ mod tests {
         assert!(early.height > rest.height && early.height < expanded.rail.height);
         assert!(middle.height > early.height && middle.height < expanded.rail.height);
         assert_eq!(controller.sample(revision, 440.0, &expanded), Some(expanded.rail));
+    }
+    #[test]
+    fn compact_height_changes_retarget_rest_without_changing_expanded_geometry() {
+        let work = work();
+        let rest = target("right", super::super::SidebarMode::Rest, work, 0.5);
+        let expanded = target_with_height("right", super::super::SidebarMode::Hover, work, 0.5, 760.0);
+        let taller_rest = target_with_compact_height("right", super::super::SidebarMode::Rest, work, 0.5, 380.0);
+        assert_eq!(taller_rest.expanded_height, rest.expanded_height);
+        assert_eq!(expanded.rail.height, 760.0);
+
+        let mut controller = Controller::default();
+        let revision = controller.request(rest.rail, taller_rest.clone(), false, 0.0).unwrap();
+        let early = controller.sample(revision, 40.0, &taller_rest).unwrap();
+        assert!(early.height > rest.rail.height && early.height < taller_rest.rail.height);
+        assert_eq!(controller.sample(revision, 440.0, &taller_rest), Some(taller_rest.rail));
     }
     #[test]
     fn every_frame_stays_inside_workarea_on_both_edges_with_center_or_boundary_clamp() {

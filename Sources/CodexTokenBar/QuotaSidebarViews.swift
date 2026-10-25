@@ -87,8 +87,23 @@ struct QuotaSidebarRail: View {
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
     @AppStorage("cacheHitAdviceEnabled") private var cacheRemindersEnabled = true
     @AppStorage("cacheHitAdviceDismissed") private var dismissedCacheAdviceID = ""
-    @AppStorage("multiClient.codexQuotaSidebar") private var showCodexQuota = true
-    @AppStorage("multiClient.codexQuotaColor") private var codexQuotaColor = "#b6ef75"
+    @ObservedObject private var clients = MultiClientUsageStore.shared
+    @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
+    @AppStorage(ClientQuotaSelection.key) private var quotaSelectionRaw = ""
+    @AppStorage("multiClient.railLength.v1") private var railLength = "auto"
+    private var quotaSelection: ClientQuotaSelection { .decode(quotaSelectionRaw) }
+    private var quotaItems: [ClientQuotaItem] {
+        let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
+        let items = ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode),
+            includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
+            includeFiveHour: quotaSelection.enabled.contains("codex:5h"))
+        return quotaSelection.arranged(items).filter { quotaSelection.includes($0) &&
+            (allowed.contains($0.client) || ($0.client == "claudeCode" && allowed.contains("claudeDesktop"))) }
+    }
+    private func railLayout(_ height: CGFloat) -> ClientRailLayout {
+        ClientRailLayout.make(quotaCount: quotaItems.count, mode: railLength,
+            hasFiveHour: quota.snapshot.fiveHour != nil, availableHeight: Double(height))
+    }
     @State private var shares: [FloatingTodayModelUsageItem] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -132,7 +147,7 @@ struct QuotaSidebarRail: View {
                             ForEach(controller.moduleOrder.filter(controller.isModuleVisible), id: \.self) { module in
                                 moduleContent(module, shares: shares)
                             }
-                            MultiClientUsageSidebarRows(codexTokens: Int64(store.snapshot.stats.totalTokens))
+                            MultiClientUsageSidebarRows(codexTokens: Int64(store.snapshot.stats.totalTokens), onOpen: { controller.select(.overview, section: "usage") })
                         }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
                             .background(GeometryReader { proxy in
                                 Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
@@ -168,17 +183,23 @@ struct QuotaSidebarRail: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: controller.hiddenModules)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.moduleOrder)
             Group {
-                VStack(spacing: 12) {
-                    SidebarValueBar(fraction: Double(rateFraction), color: SidebarPalette.blue, vertical: true, modelRates: monitor.totalSnapshot.modelRates)
-                        .frame(width: 4, height: 46)
-                        .help("全会话实时速率（估算）\(rateText)")
-                    if showCodexQuota {
-                    if let fiveHour = quota.snapshot.fiveHour {
-                        bar(window: fiveHour, color: Color(nsColor: NSColor(clientHex: codexQuotaColor)))
-                    }
-                    bar(window: quota.snapshot.sevenDay, color: codexQuotaColor == "#b6ef75" ? SidebarPalette.purple : Color(nsColor: NSColor(clientHex: codexQuotaColor)))
-                    }
-                    SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: 46)
+                GeometryReader { geometry in
+                    let layout = railLayout(geometry.size.height)
+                    ScrollView(.vertical) {
+                        VStack(spacing: layout.gap) {
+                            SidebarValueBar(fraction: clientScope == "codex" || clientScope == "all" ? Double(rateFraction) : nil, color: SidebarPalette.blue, vertical: true, modelRates: monitor.totalSnapshot.modelRates)
+                                .frame(width: 4, height: layout.barHeight).help("Codex 全会话实时速率（估算）\(rateText)")
+                            ForEach(quotaItems) { item in
+                                SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
+                                    color: Color(nsColor: NSColor(clientHex: quotaSelection.colors[item.id] ?? item.brand)), vertical: true, expected: item.expected)
+                                    .frame(width: 4, height: layout.barHeight)
+                                    .overlay(alignment: .topLeading) {
+                                        Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 3, height: 3).offset(x: controller.edge == .right ? -5 : 6, y: 0)
+                                    }.help(item.title + " · " + item.value + " " + item.status)
+                            }
+                            SidebarModelShareStrip(items: clientScope == "codex" || clientScope == "all" ? shares : [], vertical: true).frame(width: 4, height: layout.barHeight)
+                        }.frame(width: 16).padding(.vertical, 15).frame(minHeight: geometry.size.height)
+                    }.scrollIndicators(.hidden)
                 }.frame(width: 16).frame(maxHeight: .infinity)
                     .overlay(alignment: .center) {
                         if let advice = cacheWarning {
@@ -204,6 +225,9 @@ struct QuotaSidebarRail: View {
             shares = FloatingTodayModelUsagePresentation.items(from: rows,
                 fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         }
+        .onChange(of: quotaItems, initial: true) { _, _ in updateCompactLayout() }
+        .onChange(of: railLength) { _, _ in updateCompactLayout() }
+        .onChange(of: controller.availableRailHeight) { _, _ in updateCompactLayout() }
         .onPreferenceChange(QuotaSidebarContentMeasurementKey.self) { controller.updateContentMeasurement($0) }
         .clipShape(QuotaSidebarEdgeShape(edge: controller.edge))
         .foregroundStyle(.white)
@@ -211,12 +235,21 @@ struct QuotaSidebarRail: View {
         .onChange(of: cacheWarning?.presentationID, initial: true) { _, id in controller.updateCacheAdvice(id) }
     }
 
+    private func updateCompactLayout() {
+        let layout = railLayout(controller.availableRailHeight)
+        controller.updateCompactHeight(layout.height)
+    }
+
     @ViewBuilder
     private func moduleContent(_ module: QuotaSidebarDetail, shares: [FloatingTodayModelUsageItem]) -> some View {
         switch module {
         case .speeds:
+            if clientScope == "codex" || clientScope == "all" {
                 rateRing
                 QuotaSidebarBodySpeedReadings(monitor: monitor, onOpen: { controller.select(.speeds) })
+            } else {
+                Button { controller.select(.speeds) } label: { Text("正文 TPS\n暂无样本").font(.system(size: 10)).foregroundStyle(.gray).frame(width: 74, height: 48) }.buttonStyle(.plain)
+            }
         case .modeltrace:
             Button { controller.select(.modeltrace) } label: {
                 Label("模型检测", systemImage: "checkmark.shield")
@@ -225,21 +258,19 @@ struct QuotaSidebarRail: View {
             }.buttonStyle(SidebarPulseButtonStyle()).help("打开 ModelTrace，手动检测模型")
                 .accessibilityIdentifier("quota-sidebar-modeltrace")
         case .overview:
-            if showCodexQuota {
-            if let fiveHour = quota.snapshot.fiveHour {
-                ring(label: "5h", window: fiveHour, color: Color(nsColor: NSColor(clientHex: codexQuotaColor)))
+            ForEach(ClientQuotaRingGroup.make(quotaItems, acrossClients: quotaSelection.pairAcrossClients)) { group in
+                Button { controller.select(.overview) } label: {
+                    ClientPairedQuotaRing(left: group.left, right: group.right)
+                }.buttonStyle(SidebarPulseButtonStyle())
             }
-            ring(label: "7d", window: quota.snapshot.sevenDay, color: codexQuotaColor == "#b6ef75" ? SidebarPalette.purple : Color(nsColor: NSColor(clientHex: codexQuotaColor)))
-            ForEach(quota.snapshot.reserveWindows, id: \.label) { window in
-                ring(label: window.compactDisplayLabel, window: window, color: SidebarPalette.blue)
-            }
-            }
+            if clientScope == "codex" || clientScope == "all" {
             Button { controller.select(.overview, section: "models") } label: {
                 VStack(spacing: 6) {
                     SidebarModelShareStrip(items: shares).frame(width: 52, height: 4)
                     Text("模型占比").font(.system(size: 9)).foregroundStyle(.gray)
                 }.frame(maxWidth: .infinity, minHeight: 30).contentShape(Rectangle())
             }.buttonStyle(SidebarPulseButtonStyle())
+            }
         case .tasks:
             Button { controller.select(.tasks) } label: {
                 VStack(spacing: 5) {
@@ -397,48 +428,7 @@ struct QuotaSidebarRail: View {
         }
     }
 
-    private func bar(window: AccountQuotaWindow?, color: Color) -> some View {
-        let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: quota.snapshot)
-        return SidebarValueBar(fraction: data.remaining.map { Double($0) / 100 }, color: color,
-                               vertical: true, emphasis: data.stale ? 0.4 : 1, expected: expected(window: window))
-            .frame(width: 4, height: 46)
-    }
 
-    private func ring(label: String, window: AccountQuotaWindow?, color: Color) -> some View {
-        let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: quota.snapshot)
-        let reset = QuotaSidebarResetTimePresentation.make(window?.resetsAt)
-        let resetDescription = reset.map { "重置时间：\($0.date) \($0.time)（本地时间）" } ?? "重置时间未知"
-        return Button { controller.select(.overview, section: "top") } label: {
-            VStack(spacing: 5) {
-                ZStack {
-                    SidebarValueRing(fraction: data.remaining.map { Double($0) / 100 }, color: color,
-                                     emphasis: data.stale ? 0.45 : 1, expected: expected(window: window))
-                    SidebarQuotaRingLabel(label: label, reset: reset)
-                }.frame(width: 46, height: 46)
-                Text(data.text).font(.system(size: 17, weight: .medium, design: .rounded)).monospacedDigit()
-                    .contentTransition(.numericText())
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: data.remaining)
-                if data.stale { Text("刷新未成功").font(.system(size: 8)).foregroundStyle(.orange) }
-            }
-            .padding(.horizontal, 6)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .padding(.vertical, 0)
-            // Hit testing includes the ring, value and every blank pixel in
-            // this row. The native rail remains exactly 88 pt wide.
-            .contentShape(Rectangle())
-        }.buttonStyle(SidebarPulseButtonStyle())
-            .help(resetDescription)
-            .accessibilityLabel("\(label) 剩余 \(data.accessibilityText)，\(resetDescription)，点击查看详情")
-            .accessibilityIdentifier("quota-sidebar-\(label)")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { controller.select(.overview, section: "top") }
-    }
-
-    private func expected(window: AccountQuotaWindow?) -> Double? {
-        let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: quota.snapshot)
-        guard !data.stale, data.remaining != nil, let value = window?.expectedRemainingPercentByEvenPace else { return nil }
-        return Double(value) / 100
-    }
 }
 
 struct SidebarPulseButtonStyle: ButtonStyle {
@@ -514,6 +504,9 @@ private struct SidebarModelShareStrip: View {
 }
 
 struct QuotaSidebarDetailView: View {
+    @ObservedObject private var clients = MultiClientUsageStore.shared
+    @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
+
     @ObservedObject var controller: QuotaSidebarController
     @ObservedObject var store: CodexUsageStore
     @ObservedObject var monitor: LiveRateMonitor
@@ -562,15 +555,20 @@ struct QuotaSidebarDetailView: View {
             ScrollViewReader { proxy in
             ScrollView {
                 if controller.interaction.detail == .settings {
-                    QuotaSidebarModuleSettingsView(controller: controller).id("top")
+                    QuotaSidebarModuleSettingsView(controller: controller, quotaSnapshot: quota.snapshot).id("top")
                 }
                 else if controller.interaction.detail == .speeds {
+                    if clientScope == "codex" || clientScope == "all" {
+                    if clientScope == "all" { Text("Codex · 正文 TPS").font(.caption).foregroundStyle(.secondary) }
                     LiveActivityRateDetail(monitor: monitor).id("top")
                     Divider().overlay(.white.opacity(0.12))
                     ObservedSpeedSidebarView(monitor: monitor, onOpenDetails: {
                         BodySpeedHistoryWindowController.shared.present(monitor: monitor,
                             screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)
                     })
+                    } else {
+                        Text("正文 TPS · 暂无可用样本").font(.callout).foregroundStyle(.secondary)
+                    }
                 }
                 else if controller.interaction.detail == .modeltrace {
                     ModelTraceView(controller: ModelTraceController.shared, compact: true).id("top")
@@ -606,14 +604,16 @@ struct QuotaSidebarDetailView: View {
                 .padding(9).background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text("Codex").font(.system(size: 19, weight: .semibold))
-                    Text(quota.displayName).font(.system(size: 9, weight: .semibold))
+                    Text(ClientDisplayScope.title(clientScope)).font(.system(size: 19, weight: .semibold))
+                    if clientScope == "codex" || clientScope == "all" {
+                    Text((clientScope == "all" ? "Codex · " : "") + quota.displayName).font(.system(size: 9, weight: .semibold))
                         .lineLimit(1).padding(.horizontal, 6).padding(.vertical, 3)
                         .background(SidebarPalette.green.opacity(0.12), in: Capsule())
                         .foregroundStyle(SidebarPalette.green)
+                    }
                 }
-                Text(quota.accountDisplayName).font(.system(size: 10)).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
-                Text(quota.updatedAt.map { "额度更新 \($0.formatted(date: .omitted, time: .shortened))" } ?? "额度尚未读取")
+                Text(clientScope == "codex" || clientScope == "all" ? quota.accountDisplayName : "本地记录 · 额度来源独立").font(.system(size: 10)).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                Text(clientScope == "codex" || clientScope == "all" ? quota.updatedAt.map { "Codex 额度更新 \($0.formatted(date: .omitted, time: .shortened))" } ?? "Codex 额度尚未读取" : "额度仅来自本地缓存")
                     .font(.system(size: 9)).foregroundStyle(.gray)
             }
             Spacer(minLength: 0)
@@ -638,40 +638,36 @@ struct QuotaSidebarDetailView: View {
         }.buttonStyle(.plain)
     }
 
+    private func detailQuotaItems(_ quota: AccountQuotaSnapshot) -> [ClientQuotaItem] {
+        let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
+        return ClientQuotaProjection.items(codex: quota, claude: clients.quotaReading(.claudeCode),
+            includeClaude: allowed.contains("claudeCode") || allowed.contains("claudeDesktop"))
+            .filter { allowed.contains($0.client) || ($0.client == "claudeCode" && allowed.contains("claudeDesktop")) }
+    }
+
+    @ViewBuilder
     private func overview(_ snapshot: TokenDisplaySnapshot) -> some View {
+        let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
+        if allowed == ["codex"] {
+            codexOverview(snapshot)
+        } else {
+            ClientQuotaRings(items: detailQuotaItems(snapshot.quota)).id("top")
+            ScopedClientTokenSummary(codex: store.snapshot, allowed: allowed, compact: true).equatable().id("usage")
+            ScopedClientUsageChart(codex: store.snapshot, allowed: allowed).equatable().id("models")
+        }
+    }
+
+    private func codexOverview(_ snapshot: TokenDisplaySnapshot) -> some View {
         let total = snapshot.todayModelBreakdowns.map(\.breakdown).combined
         let models = FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         let cost = FloatingTodayModelUsagePresentation.knownCostUSD(in: models)
         let costLabel = models.contains { !$0.usesIndependentQuota && $0.costUSD == nil } ? "今日 API 等值 · 已知小计" : "今日 API 等值"
 
         return VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 6) {
-                if let fiveHour = snapshot.quota.fiveHour {
-                    quotaRow("5 小时额度", window: fiveHour, snapshot: snapshot.quota, color: SidebarPalette.green)
-                }
-                quotaRow("7 天额度", window: snapshot.quota.sevenDay, snapshot: snapshot.quota, color: SidebarPalette.purple)
-                ForEach(snapshot.quota.reserveWindows, id: \.label) { window in
-                    quotaRow(window.displayLabel, window: window, snapshot: snapshot.quota, color: SidebarPalette.blue)
-                }
-                if snapshot.quota.reserveHasUnavailableWindow {
-                    Text("Luna 储备：部分窗口未返回有效读数").font(.caption).foregroundStyle(.secondary)
-                }
-                if let pace = snapshot.quota.sevenDayPaceStatus {
-                    HStack(spacing: 6) {
-                        Text(pace.compactTitle).font(.system(size: 11)).foregroundStyle(SidebarPalette.green)
-                            .help(pace.compactDetail)
-                        Spacer(minLength: 0)
-                        if !QuotaSidebarQuotaPresentation.make(window: snapshot.quota.sevenDay, snapshot: snapshot.quota).stale {
-                            Text("均匀使用参考 · 余量应为 \(pace.expectedRemainingPercent)%")
-                                .font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
-                        }
-                    }.lineLimit(1).minimumScaleFactor(0.8)
-                }
-                if !snapshot.quota.isAvailable || snapshot.quota.staleDataDisplayed {
-                    Text(snapshot.quota.status).font(.system(size: 9)).foregroundStyle(.orange)
-                        .lineLimit(1).help(snapshot.quota.status)
-                }
-            }.padding(8).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14)).id("top")
+            ClientQuotaRings(items: detailQuotaItems(snapshot.quota)).id("top")
+            if let pace = snapshot.quota.sevenDayPaceStatus {
+                Text(pace.compactDetail).font(.caption).foregroundStyle(.secondary)
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear.frame(height: 0).id("usage")
@@ -778,26 +774,6 @@ struct QuotaSidebarDetailView: View {
                 }
             }
         }.padding(8).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
-    }
-
-    private func quotaRow(_ title: String, window: AccountQuotaWindow?, snapshot: AccountQuotaSnapshot, color: Color) -> some View {
-        let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: snapshot)
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title).font(.system(size: 12))
-                Spacer()
-                Text(data.text).font(.system(size: 26, weight: .medium, design: .rounded)).foregroundStyle(color).monospacedDigit()
-                Text("剩余").font(.system(size: 10)).foregroundStyle(.gray)
-            }
-            SidebarValueBar(fraction: data.remaining.map { Double($0) / 100 }, color: color,
-                            emphasis: data.stale ? 0.4 : 1,
-                            expected: !data.stale && data.remaining != nil ? window?.expectedRemainingPercentByEvenPace.map { Double($0) / 100 } : nil).frame(height: 5)
-            HStack {
-                Text(window.map { $0.resetsAt == nil ? "重置时间未知" : "重置：\($0.compactResetText)" } ?? "重置时间未知")
-                Spacer(minLength: 0)
-                if data.stale { Text("刷新未成功").foregroundStyle(.orange) }
-            }.font(.system(size: 9)).foregroundStyle(.gray)
-        }.id(title == "5 小时额度" ? "five" : "seven")
     }
 
     private func metric(_ label: String, _ value: String, color: Color) -> some View {

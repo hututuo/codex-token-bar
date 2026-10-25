@@ -14,6 +14,7 @@ import type {
 import type { SharedAccountAttributionResult } from "../../components/sharedAccountAttribution/model";
 
 interface DashboardSummarySectionProps {
+  speedOnly?: boolean;
   sourceToken?: CodexHomeSourceToken | null;
   dashboard: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
@@ -51,6 +52,7 @@ interface DashboardSummarySectionProps {
 }
 
 export function DashboardSummarySection({
+  speedOnly = false,
   sourceToken = null,
   dashboard,
   displaySurfaces,
@@ -89,6 +91,7 @@ export function DashboardSummarySection({
   const latestTodayModels = dashboard.usageSummary?.todayModelBreakdowns ?? [];
   return (
     <>
+      {!speedOnly && <>
       <QuotaStrip
         attributionIdentity={dashboard.attributionIdentity ?? null}
         diagnostics={dashboard.diagnostics}
@@ -131,6 +134,7 @@ export function DashboardSummarySection({
         sevenDayResetAtUnix={dashboard.quota.sevenDay.resetsAtUnix}
         warnings={dashboard.warnings}
       />
+      </>}
       <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />
       <LiveRateCard
         sourceToken={sourceToken}

@@ -2,12 +2,12 @@ import type { SidebarMode } from "./model";
 
 /** One queue per rail, deduplicated across data renders and explicit environment checks. */
 export function createSidebarNativeCoordinator(
-  apply: (mode: SidebarMode, showsFiveHour: boolean, refreshGeometry: boolean, requestId: number, expandedHeight?: number) => Promise<unknown>,
+  apply: (mode: SidebarMode, showsFiveHour: boolean, refreshGeometry: boolean, requestId: number, expandedHeight?: number, compactHeight?: number) => Promise<unknown>,
   report: (error: unknown | null) => void,
 ) {
   let enabled = false;
   let epoch = 0;
-  let latest = { mode: "rest" as SidebarMode, showsFiveHour: false, expandedHeight: undefined as number | undefined };
+  let latest = { mode: "rest" as SidebarMode, showsFiveHour: false, expandedHeight: undefined as number | undefined, compactHeight: undefined as number | undefined };
   let accepted = "";
   let pending = false;
   let refresh = false;
@@ -16,7 +16,7 @@ export function createSidebarNativeCoordinator(
   let activeRequest = 0;
   let failedRequest = 0;
   let completedRequest = 0;
-  const key = () => `${latest.mode}:${latest.showsFiveHour}:${latest.expandedHeight ?? ""}`;
+  const key = () => `${latest.mode}:${latest.showsFiveHour}:${latest.expandedHeight ?? ""}:${latest.compactHeight ?? ""}`;
   let activeMode: SidebarMode | null = null;
   async function drain() {
     if (running) return;
@@ -28,10 +28,10 @@ export function createSidebarNativeCoordinator(
       const requestKey = key();
       const requestId = ++serial;
       activeRequest = requestId;
-      const { mode, showsFiveHour, expandedHeight } = latest;
+      const { mode, showsFiveHour, expandedHeight, compactHeight } = latest;
       activeMode = mode;
       const refreshGeometry = refresh; refresh = false;
-      try { await (expandedHeight === undefined ? apply(mode, showsFiveHour, refreshGeometry, requestId) : apply(mode, showsFiveHour, refreshGeometry, requestId, expandedHeight)); if (enabled && epoch === requestEpoch && failedRequest !== requestId) { accepted = requestKey; report(null); } }
+      try { await (compactHeight !== undefined ? apply(mode, showsFiveHour, refreshGeometry, requestId, expandedHeight, compactHeight) : expandedHeight === undefined ? apply(mode, showsFiveHour, refreshGeometry, requestId) : apply(mode, showsFiveHour, refreshGeometry, requestId, expandedHeight)); if (enabled && epoch === requestEpoch && failedRequest !== requestId) { accepted = requestKey; report(null); } }
       catch (error) { if (enabled && epoch === requestEpoch) { accepted = ""; report(error); } }
     }
     running = false;
@@ -43,7 +43,7 @@ export function createSidebarNativeCoordinator(
       else completedRequest = requestId;
     },
     isSettled(mode?: SidebarMode) { return enabled && activeRequest !== 0 && completedRequest === activeRequest && failedRequest !== activeRequest && (mode === undefined || (activeMode === mode && latest.mode === mode)); },
-    update(mode: SidebarMode, showsFiveHour = false, expandedHeight?: number) { latest = { mode, showsFiveHour, expandedHeight: expandedHeight !== undefined && Number.isFinite(expandedHeight) ? Math.max(192, Math.min(4096, Math.ceil(expandedHeight))) : undefined }; if (enabled) { pending = true; void drain(); } },
+    update(mode: SidebarMode, showsFiveHour = false, expandedHeight?: number, compactHeight?: number) { latest = { mode, showsFiveHour, expandedHeight: expandedHeight !== undefined && Number.isFinite(expandedHeight) ? Math.max(192, Math.min(4096, Math.ceil(expandedHeight))) : undefined, compactHeight: compactHeight !== undefined && Number.isFinite(compactHeight) && compactHeight > 0 ? Math.min(4096, compactHeight) : undefined }; if (enabled) { pending = true; void drain(); } },
     refresh() { refresh = true; if (enabled) { pending = true; void drain(); } },
     setEnabled(value: boolean) {
       if (enabled === value) return;

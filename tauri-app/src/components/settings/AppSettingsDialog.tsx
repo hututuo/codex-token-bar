@@ -1,3 +1,5 @@
+import type { QuotaSnapshot } from "../../types/quota";
+import { ClientQuotaSettings } from "../../multiClient/IntegratedClients";
 import { MultiClientUsageSettings } from "../../multiClient/MultiClientUsage";
 import {
   useEffect,
@@ -126,6 +128,7 @@ interface AppUpdateViewState {
 }
 
 interface AppSettingsDialogProps {
+  quotaSnapshot?: QuotaSnapshot;
   appUpdateState: AppUpdateViewState;
   autostartStatus: AutostartStatus;
   autoResumeCancelling: boolean;
@@ -183,6 +186,7 @@ interface AppSettingsDialogProps {
 }
 
 export function AppSettingsDialog({
+  quotaSnapshot,
   appUpdateState,
   autostartStatus,
   autoResumeCancelling,
@@ -443,7 +447,7 @@ export function AppSettingsDialog({
                   platform={platform}
                 />
               ) : null}
-              {selectedCategory === "multiClientUsage" ? <MultiClientUsageSettings /> : null}
+              {selectedCategory === "multiClientUsage" ? <><ClientQuotaSettings codex={quotaSnapshot}/><MultiClientUsageSettings /></> : null}
               {selectedCategory === "monitoring" ? (
                 <MonitoringSettings
                   floatingSettings={floatingSettings}

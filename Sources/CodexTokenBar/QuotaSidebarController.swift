@@ -43,6 +43,14 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private(set) var hasFiveHour = false
     private var quotaObservation: AnyCancellable?
     private var heightBudget = QuotaSidebarHeightBudget()
+    @Published private(set) var availableRailHeight: CGFloat = 900
+    private var compactContentHeight: CGFloat?
+    func updateCompactHeight(_ height: CGFloat) {
+        guard height.isFinite, height > 0, compactContentHeight != height else { return }
+        compactContentHeight = height
+        if !interaction.expanded && !isCollapsing { updateFrames() }
+    }
+
     // Keep the expanded layout fixed until the native collapse has settled.
     private var isCollapsing = false
     @Published private(set) var hiddenModules: Set<QuotaSidebarDetail> = []
@@ -470,13 +478,14 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             railPanel.orderOut(nil); hideDetail()
             return
         }
+        if availableRailHeight != screen.visibleFrame.height { availableRailHeight = screen.visibleFrame.height }
         heightBudget.update(expanded: interaction.expanded || isCollapsing)
         let expandedTarget = QuotaSidebarFrames.make(usableFrame: screen.visibleFrame, edge: edge,
             expanded: true, scale: screen.backingScaleFactor, hasFiveHour: hasFiveHour,
-            normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight)
+            normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight, compactHeight: compactContentHeight)
         let next = QuotaSidebarFrames.make(usableFrame: screen.visibleFrame, edge: edge,
                                           expanded: interaction.expanded, scale: screen.backingScaleFactor,
-                                          hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight)
+                                          hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight, compactHeight: compactContentHeight)
         let previous = frames
         // The host keeps a stable canvas for reveal animation, but a weekly-only
         // or short-screen rail clips that canvas. Fit full-panel notices to

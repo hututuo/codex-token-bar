@@ -1,4 +1,5 @@
 import Foundation
+import AgentSpeedCore
 
 struct ClientUsageSummary: Identifiable, Equatable, Sendable {
     var id: String { client.rawValue + ":" + model }
@@ -12,6 +13,41 @@ struct ClientUsageSummary: Identifiable, Equatable, Sendable {
     let requests: Int
     let lastSeen: Date
     let incompleteFields: Bool
+    var apiCostUSD: Double? = nil
+    var unpricedRequests: Int = 0
+    var cacheReadComplete: Bool = false
+}
+
+private struct ClientPriceKey: Hashable {
+    let client: String
+    let model: String
+}
+
+private struct ClientPriceTally: Sendable {
+    var knownCostMicroUSD: Int64?
+    var unpricedRequests: Int = 0
+    var hasKnownRequest = false
+    var overflowed = false
+
+    mutating func add(_ cost: Int64?) {
+        guard let cost else {
+            unpricedRequests = unpricedRequests == .max ? .max : unpricedRequests + 1
+            return
+        }
+        hasKnownRequest = true
+        guard !overflowed else { return }
+        let (sum, overflow) = (knownCostMicroUSD ?? 0).addingReportingOverflow(cost)
+        if overflow {
+            overflowed = true
+            knownCostMicroUSD = nil
+        }
+        else { knownCostMicroUSD = sum }
+    }
+}
+
+private enum ExactBundledPriceEntry {
+    case unique(PriceModel)
+    case ambiguous
 }
 
 struct MultiClientFileCheckpoint: Sendable {
@@ -26,6 +62,28 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     static let schemaVersion = 2
     let database: SQLiteDatabaseDriver
     let url: URL
+    private let pricingCacheLock = NSLock()
+    private var cachedPricingRevision: Int64?
+    private var cachedPricingTotals: [ClientPriceKey: ClientPriceTally] = [:]
+
+    private static let exactBundledPriceEntries: [String: ExactBundledPriceEntry] = {
+        var entries: [String: ExactBundledPriceEntry] = [:]
+        for priceModel in PriceBook.bundled.models {
+            for identifier in [priceModel.id] + priceModel.aliases {
+                let key = identifier.lowercased()
+                guard !key.isEmpty else { continue }
+                switch entries[key] {
+                case nil:
+                    entries[key] = .unique(priceModel)
+                case .some(.unique(let previous)) where previous.id == priceModel.id:
+                    break
+                default:
+                    entries[key] = .ambiguous
+                }
+            }
+        }
+        return entries
+    }()
 
     init(url: URL) throws {
         self.url = url
@@ -147,12 +205,12 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     }
 
     func trendBuckets(now: Date = Date()) throws -> [ClientTrendBucket] {
-        let start = floor((now.timeIntervalSince1970 - 30 * 86400) / 3600) * 3600
+        let start = now.timeIntervalSince1970 - 30 * 86400
         return try database.readRows("""
-        SELECT client,CAST(timestamp/3600 AS INTEGER)*3600,SUM(input_tokens),SUM(output_tokens),
+        SELECT client,CAST(timestamp/300 AS INTEGER)*300,SUM(input_tokens),SUM(output_tokens),
         SUM(cache_read_tokens),SUM(cache_write_tokens),SUM(reasoning_tokens),COUNT(*)
         FROM client_usage_events WHERE timestamp >= ? AND timestamp <= ?
-        GROUP BY client,CAST(timestamp/3600 AS INTEGER) ORDER BY 2,1 LIMIT 3605
+        GROUP BY client,CAST(timestamp/300 AS INTEGER) ORDER BY 2,1
         """, bindings: [.double(start), .date(now)]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientTrendBucket? }
             return ClientTrendBucket(client: client, startUnix: row.int64(1) ?? 0, inputTokens: row.int64(2) ?? 0,
@@ -161,17 +219,169 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         }.compactMap { $0 }
     }
 
-    func summaries(since: Date? = nil) throws -> [ClientUsageSummary] {
-        try database.readRows("""
-        SELECT client,model,SUM(input_tokens),SUM(output_tokens),SUM(cache_read_tokens),SUM(cache_write_tokens),
-        SUM(reasoning_tokens),COUNT(*),MAX(timestamp),SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL)
-        FROM client_usage_events WHERE timestamp >= ? GROUP BY client,model ORDER BY MAX(timestamp) DESC
-        """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0))]) { row in
-            guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientUsageSummary? }
-            return ClientUsageSummary(client: client, model: row.text(1) ?? "unknown", inputTokens: row.int64(2) ?? 0,
+    /// Daily event totals for the last 365 local calendar dates. SQLite's
+    /// localtime modifier follows the same system timezone as Calendar.current;
+    /// local midnight is converted back to Unix seconds for the shared model.
+    func dailyBuckets(now: Date = Date()) throws -> [ClientTrendBucket] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let firstDay = calendar.date(byAdding: .day, value: -364, to: today) ?? today
+        return try database.readRows("""
+        SELECT client,
+        CAST(strftime('%s',date(timestamp,'unixepoch','localtime'),'utc') AS INTEGER),
+        SUM(input_tokens),SUM(output_tokens),SUM(cache_read_tokens),SUM(cache_write_tokens),
+        SUM(reasoning_tokens),COUNT(*)
+        FROM client_usage_events WHERE timestamp >= ? AND timestamp <= ?
+        GROUP BY client,date(timestamp,'unixepoch','localtime') ORDER BY 2,1
+        """, bindings: [.date(firstDay), .date(now)]) { row in
+            guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientTrendBucket? }
+            return ClientTrendBucket(client: client, startUnix: row.int64(1) ?? 0, inputTokens: row.int64(2) ?? 0,
                 outputTokens: row.int64(3) ?? 0, cacheReadTokens: row.int64(4), cacheWriteTokens: row.int64(5),
-                reasoningTokens: row.int64(6), requests: row.int(7) ?? 0, lastSeen: row.date(8) ?? .distantPast,
-                incompleteFields: (row.int(9) ?? 0) > 0)
+                reasoningTokens: row.int64(6), requests: row.int(7) ?? 0)
         }.compactMap { $0 }
+    }
+
+    func summaries(since: Date? = nil) throws -> [ClientUsageSummary] {
+        try database.withConnection { connection in
+            let (summaries, pendingCache) = try connection.readTransaction { snapshot in
+                let revision = since == nil
+                    ? try snapshot.readRows("SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first
+                    : nil
+                let (priceTallies, computedForRevision) = try pricingTotals(
+                    in: snapshot,
+                    since: since,
+                    revision: revision
+                )
+                let summaries = try snapshot.readRows("""
+                SELECT client,model,SUM(input_tokens),SUM(output_tokens),SUM(cache_read_tokens),SUM(cache_write_tokens),
+                SUM(reasoning_tokens),COUNT(*),MAX(timestamp),SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL),
+                SUM(cache_read_tokens IS NULL)=0
+                FROM client_usage_events WHERE timestamp >= ? GROUP BY client,model ORDER BY MAX(timestamp) DESC
+                """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0))]) { row in
+                    guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientUsageSummary? }
+                    let model = row.text(1) ?? "unknown"
+                    let tally = priceTallies[ClientPriceKey(client: client.rawValue, model: model)]
+                    let apiCostUSD: Double?
+                    if let tally, tally.hasKnownRequest, !tally.overflowed, let knownCost = tally.knownCostMicroUSD {
+                        apiCostUSD = Double(knownCost) / 1_000_000
+                    } else {
+                        apiCostUSD = nil
+                    }
+                    return ClientUsageSummary(client: client, model: model, inputTokens: row.int64(2) ?? 0,
+                        outputTokens: row.int64(3) ?? 0, cacheReadTokens: row.int64(4), cacheWriteTokens: row.int64(5),
+                        reasoningTokens: row.int64(6), requests: row.int(7) ?? 0, lastSeen: row.date(8) ?? .distantPast,
+                        incompleteFields: (row.int(9) ?? 0) > 0, apiCostUSD: apiCostUSD,
+                        unpricedRequests: tally?.unpricedRequests ?? 0, cacheReadComplete: row.int(10) == 1)
+                }.compactMap { $0 }
+                let pendingCache = revision.flatMap { computedForRevision ? ($0, priceTallies) : nil }
+                return (summaries, pendingCache)
+            }
+
+            if let (revision, priceTallies) = pendingCache {
+                pricingCacheLock.lock()
+                cachedPricingRevision = revision
+                cachedPricingTotals = priceTallies
+                pricingCacheLock.unlock()
+            }
+            return summaries
+        }
+    }
+
+    private func pricingTotals(
+        in connection: SQLiteDatabaseConnection,
+        since: Date?,
+        revision: Int64?
+    ) throws -> ([ClientPriceKey: ClientPriceTally], Bool) {
+        if let revision {
+            pricingCacheLock.lock()
+            let cached = cachedPricingRevision == revision ? cachedPricingTotals : nil
+            pricingCacheLock.unlock()
+            if let cached { return (cached, false) }
+        }
+
+        var totals: [ClientPriceKey: ClientPriceTally] = [:]
+        try connection.forEachRow("""
+        SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens
+        FROM client_usage_events WHERE timestamp >= ?
+        """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0))]) { row in
+            guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return }
+            let model = row.text(1) ?? "unknown"
+            let key = ClientPriceKey(client: client.rawValue, model: model)
+            let cost = Self.apiCostMicroUSD(
+                model: model,
+                input: row.int64(2) ?? 0,
+                output: row.int64(3) ?? 0,
+                cacheRead: row.int64(4),
+                cacheWrite: row.int64(5)
+            )
+            var tally = totals[key] ?? ClientPriceTally(knownCostMicroUSD: nil)
+            tally.add(cost)
+            totals[key] = tally
+        }
+        return (totals, revision != nil)
+    }
+
+    private static func apiCostMicroUSD(
+        model rawModel: String,
+        input: Int64,
+        output: Int64,
+        cacheRead: Int64?,
+        cacheWrite: Int64?
+    ) -> Int64? {
+        var identifier = rawModel.split(separator: "/", omittingEmptySubsequences: false).last.map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard !identifier.isEmpty else { return nil }
+
+        var explicitFast = false
+        var entry = exactBundledPriceEntries[identifier]
+        if entry == nil, identifier.hasSuffix("-fast") {
+            identifier.removeLast("-fast".count)
+            entry = exactBundledPriceEntries[identifier]
+            explicitFast = true
+        }
+        guard case .unique(let priceModel)? = entry else { return nil }
+        if priceModel.isFree { return 0 }
+        guard priceModel.periods.isEmpty,
+              let standardPricing = priceModel.pricing,
+              standardPricing.offPeak == nil else { return nil }
+
+        let pricing: TieredPrices
+        if explicitFast {
+            guard let fastPricing = priceModel.fast else { return nil }
+            pricing = fastPricing
+        } else {
+            pricing = standardPricing.base
+        }
+
+        let rates = pricing.select(inputTokens: input).prices
+        guard input >= 0, output >= 0,
+              let cacheRead, let cacheWrite,
+              cacheRead >= 0, cacheWrite >= 0,
+              cacheRead <= input, cacheWrite <= input - cacheRead,
+              cacheWrite == 0 || rates.cacheWrite == rates.cacheWrite1h else { return nil }
+        let uncachedInput = input - cacheRead - cacheWrite
+        let maxClass: Int64 = 100_000_000
+        guard uncachedInput <= maxClass, cacheRead <= maxClass, cacheWrite <= maxClass, output <= maxClass else { return nil }
+
+        func multiply(_ tokens: Int64, _ rate: Int64) -> Int64? {
+            let (result, overflow) = tokens.multipliedReportingOverflow(by: rate)
+            return overflow ? nil : result
+        }
+        let components = [
+            multiply(uncachedInput, rates.input),
+            multiply(cacheRead, rates.cachedInput),
+            multiply(cacheWrite, rates.cacheWrite),
+            multiply(output, rates.output)
+        ]
+        guard components.allSatisfy({ $0 != nil }) else { return nil }
+        var picoUSD: Int64 = 0
+        for component in components.compactMap({ $0 }) {
+            let (sum, overflow) = picoUSD.addingReportingOverflow(component)
+            guard !overflow else { return nil }
+            picoUSD = sum
+        }
+        let (rounded, overflow) = picoUSD.addingReportingOverflow(500_000)
+        guard !overflow else { return nil }
+        return rounded / 1_000_000
     }
 }

@@ -84,7 +84,7 @@ struct QuotaSidebarFrames: Equatable {
     // Cocoa points already account for display scaling; round to physical pixels.
     static func make(usableFrame: CGRect, edge: QuotaSidebarEdge,
                      expanded: Bool, scale: CGFloat = 1, hasFiveHour: Bool = true,
-                     normalizedY: Double = 0.5, expandedHeight: CGFloat? = nil) -> Self {
+                     normalizedY: Double = 0.5, expandedHeight: CGFloat? = nil, compactHeight: CGFloat? = nil) -> Self {
         let safeScale = scale.isFinite && scale > 0 ? scale : 1
         let source = usableFrame.standardized
         // Stay inside the usable display even when its origin is fractional.
@@ -96,7 +96,8 @@ struct QuotaSidebarFrames: Equatable {
         let railWidth = min(expanded ? 88.0 : 16.0, area.width)
         let contentHeight = expanded ? (hasFiveHour ? QuotaSidebarLayout.expandedCanvasHeight : QuotaSidebarLayout.weeklyExpandedHeight) : (hasFiveHour ? 250.0 : 192.0)
         let measuredHeight = expandedHeight.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
-        let railHeight = min(expanded ? (measuredHeight ?? contentHeight) : contentHeight, area.height)
+        let compact = compactHeight.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? contentHeight
+        let railHeight = min(expanded ? (measuredHeight ?? contentHeight) : compact, area.height)
         let gap = min(12.0, max(0, area.width - railWidth))
         let detailWidth = min(420.0, max(0, area.width - railWidth - gap))
         let detailHeight = min(600.0, area.height)

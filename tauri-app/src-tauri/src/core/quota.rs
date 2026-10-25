@@ -606,10 +606,27 @@ fn reusable_cached_quota(
     after_inflight: bool,
     success_freshness: Duration,
 ) -> bool {
+    reusable_cached_quota_at(
+        entry,
+        force_refresh,
+        after_inflight,
+        success_freshness,
+        Instant::now(),
+    )
+}
+
+fn reusable_cached_quota_at(
+    entry: &QuotaCacheEntry,
+    force_refresh: bool,
+    after_inflight: bool,
+    success_freshness: Duration,
+    now: Instant,
+) -> bool {
+    let age = now.saturating_duration_since(entry.cached_at);
     if !force_refresh {
-        return entry.cached_at.elapsed() <= cache_ttl(&entry.result, success_freshness);
+        return age <= cache_ttl(&entry.result, success_freshness);
     }
-    after_inflight && entry.cached_at.elapsed() <= FORCED_REFRESH_COALESCE_TTL
+    after_inflight && age <= FORCED_REFRESH_COALESCE_TTL
 }
 
 fn cache_scope_matches(
@@ -1614,22 +1631,25 @@ mod tests {
 
         for cadence_ms in [30_000, 60_000, 120_000, 180_000, 300_000, 600_000] {
             let freshness = success_freshness_for_cadence_ms(cadence_ms);
+            // Freeze the read time: scheduling more than 1ms between setup and
+            // assertion must not turn this boundary test into an expired entry.
+            let now = Instant::now();
             let fresh = QuotaCacheEntry {
                 scope: quota_cache_scope(Path::new("freshness-home"), Some("sub:freshness".into())),
                 result: Ok(bundle.clone()),
-                cached_at: Instant::now()
+                cached_at: now
                     .checked_sub(freshness - Duration::from_millis(1))
                     .unwrap(),
             };
             let expired = QuotaCacheEntry {
-                cached_at: Instant::now()
+                cached_at: now
                     .checked_sub(freshness + Duration::from_millis(1))
                     .unwrap(),
                 ..fresh.clone()
             };
 
-            assert!(reusable_cached_quota(&fresh, false, false, freshness));
-            assert!(!reusable_cached_quota(&expired, false, false, freshness));
+            assert!(reusable_cached_quota_at(&fresh, false, false, freshness, now));
+            assert!(!reusable_cached_quota_at(&expired, false, false, freshness, now));
         }
     }
 

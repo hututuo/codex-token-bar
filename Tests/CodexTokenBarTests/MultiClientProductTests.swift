@@ -75,7 +75,7 @@ final class MultiClientProductTests: XCTestCase {
         for days in [1,7,30] {
             let points = ClientUsageChartProjection.points(codex: codex, others: other, days: days, now: now, allowed: ["codex", "gemini"])
             XCTAssertEqual(points.reduce(0) { $0 + $1.tokens }, 230)
-            XCTAssertEqual(points.count, (days == 1 ? 24 : days) * 2)
+            XCTAssertEqual(points.count, (days * 86400 / (days == 1 ? 300 : days == 7 ? 3600 : 21600) + 1) * 2)
             XCTAssertEqual(ClientUsageChartProjection.points(codex: codex, others: other, days: days, now: now, allowed: ["codex"]).reduce(0) { $0 + $1.tokens }, 110)
         }
     }

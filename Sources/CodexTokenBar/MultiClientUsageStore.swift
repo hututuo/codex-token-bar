@@ -17,7 +17,7 @@ struct MultiClientUsagePreference: Codable, Equatable, Identifiable, Sendable {
 
     static var defaults: [Self] {
         UsageClient.allCases.enumerated().map { index, client in
-            Self(client: client, color: ["#d87757", "#b875c7", "#507de8", "#36a183", "#b79a4b"][index % 5], order: index)
+            Self(client: client, color: ClientBrand.hex(client.rawValue), order: index)
         }
     }
     static func normalized(_ values: [Self]) -> [Self] {
@@ -53,6 +53,7 @@ struct MultiClientScanResult: Sendable {
     let summaries: [ClientUsageSummary]
     let diagnostics: [String]
     var trendBuckets: [ClientTrendBucket] = []
+    var dailyBuckets: [ClientTrendBucket] = []
 }
 
 actor MultiClientUsageScanner {
@@ -61,6 +62,8 @@ actor MultiClientUsageScanner {
     private let environment: [String: String]
     private var ledger: MultiClientUsageLedger?
     private var cursor = 0
+    private var aggregateCache: (revision: Int64, minute: Int64, timezone: String,
+        summaries: [ClientUsageSummary], trend: [ClientTrendBucket], daily: [ClientTrendBucket])?
     private var scanNotices: [String] = []
     private var deepSeekContexts: [String: (identity: String, session: String)] = [:]
     init(databaseURL: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -107,7 +110,16 @@ actor MultiClientUsageScanner {
             cursor = (start + count) % entries.count
             if count < entries.count { diagnostics.append("本轮检查 \(count)/\(entries.count) 个文件，后续自动继续；已入账数据保留") }
         }
-        return MultiClientScanResult(summaries: try ledger.summaries(), diagnostics: Array((diagnostics + scanNotices).prefix(12)), trendBuckets: try ledger.trendBuckets())
+        let now = Date(), minute = Int64(now.timeIntervalSince1970 / 60)
+        let revision = try ledger.database.readRows("SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first ?? 0
+        let timezone = TimeZone.current.identifier + ":" + String(TimeZone.current.secondsFromGMT(for: now))
+        if aggregateCache?.revision != revision || aggregateCache?.minute != minute || aggregateCache?.timezone != timezone {
+            aggregateCache = (revision, minute, timezone, try ledger.summaries(),
+                try ledger.trendBuckets(now: now), try ledger.dailyBuckets(now: now))
+        }
+        return MultiClientScanResult(summaries: aggregateCache?.summaries ?? [],
+            diagnostics: Array((diagnostics + scanNotices).prefix(12)),
+            trendBuckets: aggregateCache?.trend ?? [], dailyBuckets: aggregateCache?.daily ?? [])
     }
 
     private func deepSeekSession(_ url: URL, identity: String) throws -> String {
@@ -258,6 +270,7 @@ final class MultiClientUsageStore: ObservableObject {
     @Published private(set) var preferences: [MultiClientUsagePreference]
     @Published private(set) var detections: [DetectedUsageClient] = []
     @Published private(set) var trendBuckets: [ClientTrendBucket] = []
+    @Published private(set) var dailyBuckets: [ClientTrendBucket] = []
     @Published private(set) var acknowledgedClients: Set<String> = []
     @Published private(set) var summaries: [ClientUsageSummary] = []
     @Published private(set) var diagnostics: [String] = []
@@ -320,7 +333,7 @@ final class MultiClientUsageStore: ObservableObject {
                 guard let self else { return }
                 if self.generation == generation {
                     self.summaries = result.summaries; self.diagnostics = result.diagnostics
-                    self.detections = detected; self.trendBuckets = result.trendBuckets
+                    self.detections = detected; self.trendBuckets = result.trendBuckets; self.dailyBuckets = result.dailyBuckets
                     self.claudeQuota = quota
                     self.updatedAt = Date(); self.syncMenuItems()
                 }
@@ -328,6 +341,9 @@ final class MultiClientUsageStore: ObservableObject {
             self?.refreshing = false
             if self?.generation != generation { self?.refresh() }
         }
+    }
+    var displayClientIDs: [String] {
+        preferences.filter { value in value.enabled || summaries.contains { $0.client == value.client } }.map { $0.client.rawValue }
     }
     var availablePreferences: [MultiClientUsagePreference] {
         preferences.filter { value in value.enabled || !value.path.isEmpty || detections.contains { $0.client == value.client } || summaries.contains { $0.client == value.client } }

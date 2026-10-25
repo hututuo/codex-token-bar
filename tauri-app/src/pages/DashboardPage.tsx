@@ -1,4 +1,4 @@
-import { MultiClientUsageDashboardCard } from "../multiClient/MultiClientUsage";
+import { ClientScopeSelector, ScopedClientDashboard, useClientScope } from "../multiClient/IntegratedClients";
 import { DiagnosticNotice } from "../components/DiagnosticNotice";
 import { AgentSpeedReportingInvitation } from "../components/settings/AgentSpeedReporting";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
@@ -222,6 +222,7 @@ export function DashboardPage({
   selectedLiveThreadId,
   threadDeleteBridgeStatus,
 }: DashboardPageProps) {
+  const clientScope = useClientScope();
   const [sharedAccountAttribution, setSharedAccountAttribution] = useState<SharedAccountAttributionResult | null>(null);
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
   const [initialSettingsRequest] = useState(consumePendingSettingsRequest);
@@ -252,12 +253,50 @@ export function DashboardPage({
       if (disposed) handler();
       else unlisten = handler;
     });
-    return () => {
+
+  return () => {
       disposed = true;
       unlisten?.();
     };
   }, [openSettings]);
 
+    const renderSummary = (speedOnly = false) => (
+      <DashboardSummarySection
+        speedOnly={speedOnly}
+              sourceToken={sourceToken}
+              dashboard={dashboard}
+              displaySurfaces={displaySurfaces}
+              floatingSettings={floatingSettings}
+              quotaRefreshIntervalMs={quotaRefreshIntervalMs}
+              liveRate={liveRate}
+              liveThreadOptions={liveThreadOptions}
+              onTokenRateFullScaleChange={onTokenRateFullScaleChange}
+              onOpenSettings={() => openSettings("general")}
+              onLiveRateReset={onLiveRateReset}
+              onLiveRateRetry={onLiveRateRetry}
+              onAcknowledgeUnread={onAcknowledgeUnread}
+              onLiveThreadSelect={onLiveThreadSelect}
+              onQuotaRefresh={onQuotaRefresh}
+              onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
+              onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
+              onAttributionSafetyAcknowledge={onAttributionSafetyAcknowledge}
+              onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
+              onAttributionChange={setSharedAccountAttribution}
+              onToggleLiveRate={onToggleLiveRate}
+              onQuotaSidebarChange={onQuotaSidebarChange}
+              onToggleFloating={onToggleFloating}
+              onToggleStatusTray={onToggleStatusTray}
+              platform={platform}
+              radarRefreshGeneration={radarRefreshGeneration}
+              refreshing={refreshing}
+              liveRateEnabled={liveRateEnabled}
+              selectedLiveThreadId={selectedLiveThreadId}
+              sourceHomeIdentity={sourceToken === null
+                ? providerSourceKey
+                : dashboardStatisticsSourceKey(sourceToken) ?? providerSourceKey}
+              usageCacheInitializing={usageCacheInitializing}
+            />
+  );
   return (
     <main className="app-shell">
       <AgentSpeedReportingInvitation onOpenSettings={() => openSettings("speedReporting")} />
@@ -301,7 +340,7 @@ export function DashboardPage({
           runningThreads={runningThreads}
         />
 
-        <MultiClientUsageDashboardCard codex={dashboard} />
+        <ClientScopeSelector />
 
         {preciseIndexUpgradeRequired ? (
           <section aria-live="assertive" className="index-upgrade-warning" role="alert">
@@ -349,42 +388,9 @@ export function DashboardPage({
 
         <LocalCommandFailureNotice settingsError={settingsError} diagnostics={diagnostics} />
 
-        {summaryReady ? (
+        {!clientScope.codexOnly ? <ScopedClientDashboard codex={dashboard} sourceToken={sourceToken} codexSpeed={clientScope.allowed.includes("codex") ? renderSummary(true) : undefined} /> : summaryReady ? (
           <>
-            <DashboardSummarySection
-              sourceToken={sourceToken}
-              dashboard={dashboard}
-              displaySurfaces={displaySurfaces}
-              floatingSettings={floatingSettings}
-              quotaRefreshIntervalMs={quotaRefreshIntervalMs}
-              liveRate={liveRate}
-              liveThreadOptions={liveThreadOptions}
-              onTokenRateFullScaleChange={onTokenRateFullScaleChange}
-              onOpenSettings={() => openSettings("general")}
-              onLiveRateReset={onLiveRateReset}
-              onLiveRateRetry={onLiveRateRetry}
-              onAcknowledgeUnread={onAcknowledgeUnread}
-              onLiveThreadSelect={onLiveThreadSelect}
-              onQuotaRefresh={onQuotaRefresh}
-              onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
-              onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
-              onAttributionSafetyAcknowledge={onAttributionSafetyAcknowledge}
-              onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
-              onAttributionChange={setSharedAccountAttribution}
-              onToggleLiveRate={onToggleLiveRate}
-              onQuotaSidebarChange={onQuotaSidebarChange}
-              onToggleFloating={onToggleFloating}
-              onToggleStatusTray={onToggleStatusTray}
-              platform={platform}
-              radarRefreshGeneration={radarRefreshGeneration}
-              refreshing={refreshing}
-              liveRateEnabled={liveRateEnabled}
-              selectedLiveThreadId={selectedLiveThreadId}
-              sourceHomeIdentity={sourceToken === null
-                ? providerSourceKey
-                : dashboardStatisticsSourceKey(sourceToken) ?? providerSourceKey}
-              usageCacheInitializing={usageCacheInitializing}
-            />
+            {renderSummary()}
             {analyticsReady ? (
               <DashboardAnalyticsSection
                 sourceToken={sourceToken}
@@ -411,6 +417,7 @@ export function DashboardPage({
         snapshot={providerRepairSnapshot}
       />
       <AppSettingsDialog
+        quotaSnapshot={dashboard.quota}
         appUpdateState={appUpdateState}
         autostartStatus={autostartStatus}
         autoResumeCancelling={autoResumeCancelling}

@@ -10,7 +10,7 @@ test("multi-client chart sums token totals once and keeps every window aligned",
   const now=1800000000, codex=[{startUnix:now-3600,tokens:110}], others=[{client:"gemini",startUnix:now-3600,inputTokens:100,outputTokens:20,cacheReadTokens:80,reasoningTokens:5,requests:1}];
   for(const days of [1,7,30]){
    const p=projectClientChart(codex,others,days,now,["codex","gemini"]);
-   assert.equal(p.reduce((n,p)=>n+p.tokens,0),230);assert.equal(p.length,(days===1?24:days)*2);
+   assert.equal(p.reduce((n,p)=>n+p.tokens,0),230);assert.equal(p.length,(days*86400/(days===1?300:days===7?3600:21600)+1)*2);
    assert.equal(projectClientChart(codex,others,days,now,["gemini"]).reduce((n,p)=>n+p.tokens,0),120);
   }
   assert.equal(projectClientChart([{startUnix:now+1,tokens:999},{startUnix:now-40*86400,tokens:999}],[],1,now,["codex"]).reduce((n,p)=>n+p.tokens,0),0);
@@ -36,10 +36,10 @@ test("uninstalled clients stay hidden while configured and retained clients rema
 });
 test("new controls preserve Codex defaults and no percent is added into the token graph",async()=>{
  await withSsrModules(async load=>{
-  const {MultiClientUsageSettings,ClientUsageChart,MultiClientUsageDashboardCard}=await load("/src/multiClient/MultiClientUsage.tsx");
+  const {MultiClientUsageSettings,ClientUsageChart}=await load("/src/multiClient/MultiClientUsage.tsx");
   const settings=renderToStaticMarkup(React.createElement(MultiClientUsageSettings));
   assert.doesNotMatch(settings,/<legend[^>]*>Gemini CLI/);assert.match(settings,/手动接入其他日志目录/);assert.match(settings,/联网额度：关闭/);
-  assert.equal(renderToStaticMarkup(React.createElement(MultiClientUsageDashboardCard)),"");
+
   const chart=renderToStaticMarkup(React.createElement(ClientUsageChart,{points:[{client:"codex",startUnix:1800000000,tokens:120},{client:"gemini",startUnix:1800000000,tokens:30}],colors:{codex:"#00ff00",gemini:"#0000ff"}}));
   assert.match(chart,/role="button"/);assert.match(chart,/Codex 120/);assert.match(chart,/Gemini CLI 30/);assert.doesNotMatch(chart,/usedPercent/);
  });

@@ -25,16 +25,16 @@ test("Reserve rings and detail preserve ordinary navigation and remain reachable
     ];
     const hover = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover", tab: "quota", pinned: false }, onOpen() {} }));
     assert.match(hover, /data-scrollable="true"/);
-    assert.ok(hover.includes("查看五小时额度详情"));
-    assert.ok(hover.includes("查看七天额度详情"));
+    assert.ok(hover.includes("左侧 Codex 5h"));
+    assert.ok(hover.includes("右侧 Codex 7d"));
     assert.ok(hover.includes("储备5h"));
     assert.ok(hover.includes("储备7d"));
-    assert.equal((hover.match(/class="qs-ring"/g) || []).length, 5);
+    assert.equal((hover.match(/class="integrated-paired-ring"/g) || []).length, 2);
     const detail = renderToStaticMarkup(React.createElement(QuotaDetails, { data }));
     for (const id of ["five", "seven", "Reserve-5h", "Reserve-7d"]) assert.ok(detail.includes(`id="qs-section-${id}"`));
     for (const label of ["Luna 储备 · 5小时", "Luna 储备 · 7天", "75%", "40%"]) assert.ok(detail.includes(label));
     const rest = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "rest", tab: "quota", pinned: false }, onOpen() {} }));
-    assert.equal((rest.match(/class="qs-bar(?: |")/g) || []).length, 3);
+    assert.equal((rest.match(/class="qs-bar(?: |")/g) || []).length, 5);
     assert.doesNotMatch(rest, /class="qs-ring"/);
   });
 });
@@ -46,9 +46,9 @@ test("Unreadable Reserve stays unknown in detail and never creates a zero ring",
     data.quota.quota.reserveWindows = [{ label: "Reserve 7d", availability: "unavailable", remainingPercent: null, resetsAt: "待读取" }];
     const hover = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover", tab: "quota", pinned: false }, onOpen() {} }));
     assert.match(hover, /data-scrollable="true"/);
-    assert.doesNotMatch(hover, /储备7d/);
+    assert.match(hover, /储备7d.*不可用/s);
     const detail = renderToStaticMarkup(React.createElement(QuotaDetails, { data }));
-    assert.match(detail, /Luna 储备 · 7天.*暂不可用/s);
+    assert.match(detail, /Luna 储备 · 7天.*不可用/s);
   });
 });
 test("missing 5h is absent in bars, rings and detail; measured zero remains present", async () => {
@@ -57,14 +57,16 @@ test("missing 5h is absent in bars, rings and detail; measured zero remains pres
     for (const [availability, percent, present] of [["absent", null, false], ["unavailable", 0.75, false], ["measured", null, false], ["measured", 0, true], ["measured", 0.38, true]]) {
       const data = fixture(availability, percent);
       assert.equal(hasFiveHourQuota(availability, percent), present);
+      const windowPresent = present;
       const rest = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "rest", tab: "quota", pinned: false }, onOpen() {} }));
-      assert.equal((rest.match(/class="qs-bar(?: |")/g) || []).length, present ? 3 : 2);
+      assert.equal((rest.match(/class="qs-bar(?: |")/g) || []).length, windowPresent ? 3 : 2);
       assert.equal((rest.match(/class="qs-radar-mark"/g) || []).length, 0);
       const hover = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover", tab: "quota", pinned: false }, onOpen() {} }));
-      assert.equal(hover.includes("查看五小时额度详情"), present); assert.ok(hover.includes("查看七天额度详情"));
-      assert.equal((hover.match(/class="qs-ring"/g) || []).length, present ? 3 : 2);
+      assert.equal(hover.includes("Codex 5h"), windowPresent); assert.ok(hover.includes("Codex 7d"));
+      assert.equal((hover.match(/class="qs-ring"/g) || []).length, 1);
+      assert.equal((hover.match(/class="integrated-paired-ring"/g) || []).length, 1);
       const detail = renderToStaticMarkup(React.createElement(QuotaDetails, { data }));
-      assert.equal(detail.includes("5 小时额度"), present); assert.ok(detail.includes("7 天额度"));
+      assert.equal(detail.includes("5 小时额度"), windowPresent); assert.ok(detail.includes("7 天额度"));
     }
     assert.equal(hasFiveHourQuota("measured", NaN), false);
     assert.equal(hasFiveHourQuota("measured", Infinity), false);
@@ -82,17 +84,21 @@ test("rich quota detail renders actual model shares, four metrics and a working 
     const html = renderToStaticMarkup(React.createElement(QuotaDetails, { data, onOpenRunning }));
     for (const text of ["今日模型用量", "全部模型为分母", "gpt-6-astra", "60.0%", "今日 Tokens", "累计 Tokens", "今日请求", "3.2 t/s", "主会话 1", "子代理 1"]) assert.ok(html.includes(text), text);
     assert.ok(!html.includes("暂无可信"));
-    const queue = [QuotaDetails({ data, onOpenRunning })];
-    let activity;
-    while (queue.length) {
-      const node = queue.shift();
-      if (Array.isArray(node)) { queue.push(...node); continue; }
-      if (node && typeof node === "object") {
-        if (node.type === "button" && node.props.className === "qs-activity") activity = node;
-        queue.push(node.props?.children);
-      }
+    const dom = new (await import("happy-dom")).Window();
+    const names = ["window", "document", "navigator", "HTMLElement", "Element", "Node", "Event", "IS_REACT_ACT_ENVIRONMENT"];
+    const previous = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis,name)]);
+    for (const name of names) Object.defineProperty(globalThis,name,{configurable:true,writable:true,value:name === "window" ? dom : name === "IS_REACT_ACT_ENVIRONMENT" ? true : dom[name]});
+    const {createRoot} = await import("react-dom/client");
+    const root=createRoot(dom.document.body);
+    try {
+      await React.act(async()=>root.render(React.createElement(QuotaDetails,{data,onOpenRunning})));
+      await React.act(async()=>dom.document.querySelector(".qs-activity").click());
+      assert.equal(opened,1);
+    } finally {
+      await React.act(async()=>root.unmount());
+      for (const [name,descriptor] of previous) descriptor ? Object.defineProperty(globalThis,name,descriptor) : delete globalThis[name];
+      dom.close();
     }
-    assert.ok(activity); activity.props.onClick(); assert.equal(opened, 1);
   });
 });
 
@@ -107,6 +113,7 @@ test("weekly even-pace reference appears only for a measured nonstale snapshot",
     html = renderToStaticMarkup(React.createElement(QuotaDetails, { data }));
     assert.ok(!html.includes("余量应为"));
     data.snapshot.quotaDataStale = false; data.snapshot.sevenDayAvailability = "unavailable";
+    data.quota.quota.sevenDay.availability = "unavailable"; data.quota.quota.sevenDay.remainingPercent = null;
     html = renderToStaticMarkup(React.createElement(QuotaDetails, { data }));
     assert.ok(!html.includes("余量应为"));
   });

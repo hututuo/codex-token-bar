@@ -355,7 +355,7 @@ struct AppSettingsView: View {
             case .statusBar:
                 statusBarSettings
             case .multiClientUsage:
-                MultiClientUsageSettingsView()
+                MultiClientUsageSettingsView(codexQuota: floatingPreviewSnapshot.quota)
             case .monitoring:
                 monitoringSettings
             case .speedReporting:

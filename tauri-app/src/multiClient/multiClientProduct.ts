@@ -22,7 +22,7 @@ export function unavailableQuota(client: string): ClientQuotaReading {
 }
 export interface ClientChartPoint { client: string; startUnix: number; tokens: number; }
 export function projectClientChart(codex: {startUnix:number;tokens:number}[], others: ClientTrendBucket[], days: number, now: number, allowed: string[]): ClientChartPoint[] {
-  const step = days === 1 ? 3600 : 86400, count = days === 1 ? 24 : days;
+  const step = days === 1 ? 300 : days === 7 ? 3600 : 21600, count = days * 86400 / step + 1;
   const last = Math.floor(now / step) * step, first = last - (count - 1) * step;
   const sums = new Map<string, number>();
   const clients = new Set(allowed);

@@ -19,7 +19,8 @@ test('both positioning layers persist; an initially hidden summary has no mounte
         assert.equal(summary.dataset.visible,String(mode!=='rest'));
         assert.equal(summary.hasAttribute('inert'),mode==='rest');
         assert.equal(summary.getAttribute('aria-hidden'),String(mode==='rest'));
-        assert.equal(summary.querySelectorAll('.qs-ring').length,mode==='rest'?0:2);
+        assert.equal(summary.querySelectorAll('.qs-ring').length,mode==='rest'?0:1);
+        assert.equal(summary.querySelectorAll('.integrated-paired-ring').length,mode==='rest'?0:1);
       }
     } finally {dom.close();}
   });

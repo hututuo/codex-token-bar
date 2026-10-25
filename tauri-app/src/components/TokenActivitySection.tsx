@@ -21,9 +21,10 @@ import {
 interface TokenActivitySectionProps {
   days: ActivityDay[];
   modelCostDataAvailable?: boolean;
+  tokensOnly?: boolean;
 }
 
-export function TokenActivitySection({ days, modelCostDataAvailable = true }: TokenActivitySectionProps) {
+export function TokenActivitySection({ days, modelCostDataAvailable = true, tokensOnly = false }: TokenActivitySectionProps) {
   const [mode, setMode] = useState<ActivityMode>("daily");
   const [rangeStart, setRangeStart] = useState<string | null>(null);
   const [rangeEnd, setRangeEnd] = useState<string | null>(null);
@@ -77,7 +78,7 @@ export function TokenActivitySection({ days, modelCostDataAvailable = true }: To
     <section className="activity-section" aria-label="Token 活动">
       <div className="section-title-row">
         <h2>Token 活动</h2>
-        <ActivityModeSelector mode={mode} onModeChange={setMode} />
+        <ActivityModeSelector mode={mode} onModeChange={setMode} tokensOnly={tokensOnly} />
       </div>
 
       <HeatmapGrid

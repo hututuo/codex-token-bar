@@ -94,7 +94,8 @@ test("real rail reopens with current rate, quota presence and agent count withou
     const summary = dom.document.querySelector(".qs-summary");
     assert.equal(summary.querySelector(".qs-drag-handle"), null, "the grip must not consume measured content height");
     await render("rest", 10, 2);
-    assert.equal(summary.querySelectorAll(".qs-ring").length, 2);
+    assert.equal(summary.querySelectorAll(".qs-ring").length, 1);
+    assert.equal(summary.querySelectorAll(".integrated-paired-ring").length, 1);
     await React.act(async () => endOpacity(dom, summary));
     for (let i = 1; i <= 10; i++) await render("rest", i * 7.5, i, true);
     assert.equal(summary.children.length, 0);
@@ -102,7 +103,8 @@ test("real rail reopens with current rate, quota presence and agent count withou
     assert.equal(dom.document.querySelector(".qs-rate-bar i").style.height, "50%");
     await render("hover", 100, 10, true);
     assert.equal(dom.document.querySelector(".qs-drag-handle").getAttribute("role"), "img", "the expanded rail retains its drag hint");
-    assert.equal(summary.querySelectorAll(".qs-ring").length, 3);
+    assert.equal(summary.querySelectorAll(".qs-ring").length, 1);
+    assert.equal(summary.querySelectorAll(".integrated-paired-ring").length, 1);
     assert.equal(summary.querySelector(".qs-rate-trigger strong").getAttribute("aria-label"), "100.0");
     assert.equal(summary.querySelector(".qs-task-ring strong").getAttribute("aria-label"), "10");
     assert.equal(summary.querySelectorAll(".qs-digit-old").length, 0);

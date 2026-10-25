@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
+use time::{Date, Duration as CalendarDuration, OffsetDateTime};
 
 const SCHEMA_VERSION: i64 = 2;
 const MAX_SCAN_DEPTH: usize = 6;
@@ -31,9 +31,131 @@ type EventKey = (String, String, String);
 
 static MULTI_CLIENT_USAGE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static MULTI_CLIENT_SCAN_CURSOR: OnceLock<Mutex<usize>> = OnceLock::new();
+static MULTI_CLIENT_AGGREGATE_CACHE: OnceLock<Mutex<MultiClientAggregateCache>> = OnceLock::new();
+static MULTI_CLIENT_PRICE_CACHE: OnceLock<Mutex<MultiClientPriceCache>> = OnceLock::new();
 static DEEPSEEK_SESSION_HINT_CACHE: OnceLock<Mutex<VecDeque<(String, String, String)>>> =
     OnceLock::new();
 const MAX_DEEPSEEK_SESSION_HINT_CACHE: usize = 1_024;
+const BUNDLED_PRICE_TABLE: &str =
+    include_str!("../../../../Vendor/AgentSpeed/spec/assets/prices.json");
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MultiClientAggregateCacheKey {
+    database_path: PathBuf,
+    revision: i64,
+    minute: i64,
+    local_day: Date,
+    local_offset_seconds: i32,
+}
+
+#[derive(Clone, Debug)]
+struct MultiClientAggregateArrays {
+    summaries: Vec<MultiClientUsageSummary>,
+    trend_buckets: Vec<MultiClientUsageTrendBucket>,
+    daily_buckets: Vec<MultiClientUsageTrendBucket>,
+}
+
+#[derive(Clone, Debug)]
+struct MultiClientAggregateRead {
+    arrays: MultiClientAggregateArrays,
+    updated_at: Option<String>,
+}
+
+#[derive(Default)]
+struct MultiClientAggregateCache {
+    entry: Option<(MultiClientAggregateCacheKey, MultiClientAggregateArrays)>,
+    hits: u64,
+}
+
+impl MultiClientAggregateCache {
+    fn get(&mut self, key: &MultiClientAggregateCacheKey) -> Option<MultiClientAggregateArrays> {
+        let (cached_key, arrays) = self.entry.as_ref()?;
+        if cached_key != key {
+            return None;
+        }
+        self.hits = self.hits.saturating_add(1);
+        Some(arrays.clone())
+    }
+
+    fn put(&mut self, key: MultiClientAggregateCacheKey, arrays: MultiClientAggregateArrays) {
+        self.entry = Some((key, arrays));
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct MultiClientPriceAggregateKey {
+    database_path: PathBuf,
+    revision: i64,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct MultiClientPriceModelKey {
+    client: String,
+    model: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MultiClientPriceTally {
+    known_cost_micro_usd: Option<u128>,
+    unpriced_requests: u64,
+    has_known_request: bool,
+    overflowed: bool,
+}
+
+impl MultiClientPriceTally {
+    fn add(&mut self, cost_micro_usd: Option<i64>) {
+        let Some(cost) = cost_micro_usd else {
+            self.unpriced_requests = self.unpriced_requests.saturating_add(1);
+            return;
+        };
+        self.has_known_request = true;
+        if self.overflowed {
+            return;
+        }
+        match self
+            .known_cost_micro_usd
+            .unwrap_or_default()
+            .checked_add(cost.max(0) as u128)
+        {
+            Some(total) => self.known_cost_micro_usd = Some(total),
+            None => {
+                self.overflowed = true;
+                self.known_cost_micro_usd = None;
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct MultiClientPriceCache {
+    entry: Option<(
+        MultiClientPriceAggregateKey,
+        HashMap<MultiClientPriceModelKey, MultiClientPriceTally>,
+    )>,
+    hits: u64,
+}
+
+impl MultiClientPriceCache {
+    fn get(
+        &mut self,
+        key: &MultiClientPriceAggregateKey,
+    ) -> Option<HashMap<MultiClientPriceModelKey, MultiClientPriceTally>> {
+        let (cached_key, totals) = self.entry.as_ref()?;
+        if cached_key != key {
+            return None;
+        }
+        self.hits = self.hits.saturating_add(1);
+        Some(totals.clone())
+    }
+
+    fn put(
+        &mut self,
+        key: MultiClientPriceAggregateKey,
+        totals: HashMap<MultiClientPriceModelKey, MultiClientPriceTally>,
+    ) {
+        self.entry = Some((key, totals));
+    }
+}
 
 const CLIENTS: [&str; 5] = [
     "claudeCode",
@@ -59,7 +181,7 @@ pub struct MultiClientUsagePreference {
     pub path: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MultiClientUsageSummary {
     pub client: String,
@@ -72,6 +194,12 @@ pub struct MultiClientUsageSummary {
     pub requests: u64,
     pub last_seen: Option<String>,
     pub incomplete_fields: bool,
+    #[serde(default, rename = "apiCostUSD")]
+    pub api_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub unpriced_requests: u64,
+    #[serde(default)]
+    pub cache_read_complete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -81,6 +209,7 @@ pub struct MultiClientUsageSnapshot {
     pub summaries: Vec<MultiClientUsageSummary>,
     pub detections: Vec<ProductDetection>,
     pub trend_buckets: Vec<MultiClientUsageTrendBucket>,
+    pub daily_buckets: Vec<MultiClientUsageTrendBucket>,
     pub quotas: Vec<QuotaProviderSnapshot>,
     pub diagnostics: Vec<String>,
     pub updated_at: Option<String>,
@@ -199,7 +328,7 @@ struct OpenCodeDatabaseContinuation {
 }
 
 pub fn default_preferences() -> Vec<MultiClientUsagePreference> {
-    let colors = ["#d87757", "#b875c7", "#507de8", "#36a183", "#b79a4b"];
+    let colors = ["#D97757", "#D97757", "#4D6BFE", "#4796E4", "#B7B1B1"];
     CLIENTS
         .iter()
         .enumerate()
@@ -299,7 +428,7 @@ fn read_multi_client_usage_snapshot_at(
     database_path: &Path,
 ) -> Result<MultiClientUsageSnapshot, String> {
     let (preferences, mut diagnostics) = load_preferences(settings_path);
-    let (summaries, updated_at, trend_buckets) = if database_path.exists() {
+    let (summaries, updated_at, trend_buckets, daily_buckets) = if database_path.exists() {
         let connection = open_read_only(database_path).map_err(|error| error.to_string())?;
         let version = read_schema_version(&connection).map_err(|error| error.to_string())?;
         if version > SCHEMA_VERSION {
@@ -308,16 +437,24 @@ fn read_multi_client_usage_snapshot_at(
             ));
         }
         if version > 0 {
-            let (summaries, updated_at) =
-                read_summaries(&connection).map_err(|error| error.to_string())?;
-            let trends = read_trend_buckets(&connection, now_unix_seconds())
-                .map_err(|error| error.to_string())?;
-            (summaries, updated_at, trends)
+            let now = now_unix_seconds();
+            let aggregates = read_cached_multi_client_aggregates(
+                &connection,
+                database_path,
+                now,
+                MULTI_CLIENT_AGGREGATE_CACHE.get_or_init(Default::default),
+            )?;
+            (
+                aggregates.arrays.summaries,
+                aggregates.updated_at,
+                aggregates.arrays.trend_buckets,
+                aggregates.arrays.daily_buckets,
+            )
         } else {
-            (Vec::new(), None, Vec::new())
+            (Vec::new(), None, Vec::new(), Vec::new())
         }
     } else {
-        (Vec::new(), None, Vec::new())
+        (Vec::new(), None, Vec::new(), Vec::new())
     };
     diagnostics.shrink_to_fit();
     Ok(make_snapshot(
@@ -326,6 +463,7 @@ fn read_multi_client_usage_snapshot_at(
         diagnostics,
         updated_at,
         trend_buckets,
+        daily_buckets,
     ))
 }
 
@@ -335,6 +473,7 @@ fn make_snapshot(
     diagnostics: Vec<String>,
     updated_at: Option<String>,
     trend_buckets: Vec<MultiClientUsageTrendBucket>,
+    daily_buckets: Vec<MultiClientUsageTrendBucket>,
 ) -> MultiClientUsageSnapshot {
     let local_claude_quota = read_claude_local_quota();
     MultiClientUsageSnapshot {
@@ -342,6 +481,7 @@ fn make_snapshot(
         summaries,
         detections: multi_client_product::detect_clients_cached(),
         trend_buckets,
+        daily_buckets,
         quotas: multi_client_product::quota_provider_snapshots(&local_claude_quota),
         diagnostics,
         updated_at,
@@ -365,6 +505,7 @@ fn refresh_multi_client_usage_at(
             diagnostics,
             None,
             Vec::new(),
+            Vec::new(),
         ));
     }
     // Disabling all readers stops scanning but leaves the independent ledger intact.
@@ -374,16 +515,20 @@ fn refresh_multi_client_usage_at(
             .busy_timeout(DATABASE_BUSY_TIMEOUT)
             .map_err(|error| error.to_string())?;
         ensure_schema(&connection, database_path).map_err(|error| error.to_string())?;
-        let (summaries, updated_at) =
-            read_summaries(&connection).map_err(|error| error.to_string())?;
-        let trend_buckets = read_trend_buckets(&connection, now_unix_seconds())
-            .map_err(|error| error.to_string())?;
+        let now = now_unix_seconds();
+        let aggregates = read_cached_multi_client_aggregates(
+            &connection,
+            database_path,
+            now,
+            MULTI_CLIENT_AGGREGATE_CACHE.get_or_init(Default::default),
+        )?;
         return Ok(make_snapshot(
             preferences,
-            summaries,
+            aggregates.arrays.summaries,
             diagnostics,
-            updated_at,
-            trend_buckets,
+            aggregates.updated_at,
+            aggregates.arrays.trend_buckets,
+            aggregates.arrays.daily_buckets,
         ));
     }
     if let Some(parent) = database_path.parent() {
@@ -515,17 +660,22 @@ fn refresh_multi_client_usage_at(
             [refreshed_at.to_string()],
         )
         .map_err(|error| error.to_string())?;
-    let (summaries, updated_at) = read_summaries(&connection).map_err(|error| error.to_string())?;
     diagnostics.sort();
     diagnostics.dedup();
-    let trend_buckets =
-        read_trend_buckets(&connection, now_unix_seconds()).map_err(|error| error.to_string())?;
+    let now = now_unix_seconds();
+    let aggregates = read_cached_multi_client_aggregates(
+        &connection,
+        database_path,
+        now,
+        MULTI_CLIENT_AGGREGATE_CACHE.get_or_init(Default::default),
+    )?;
     Ok(make_snapshot(
         preferences,
-        summaries,
+        aggregates.arrays.summaries,
         diagnostics,
-        updated_at,
-        trend_buckets,
+        aggregates.updated_at,
+        aggregates.arrays.trend_buckets,
+        aggregates.arrays.daily_buckets,
     ))
 }
 
@@ -2593,20 +2743,280 @@ fn read_schema_version(connection: &Connection) -> rusqlite::Result<i64> {
     connection.pragma_query_value(None, "user_version", |row| row.get(0))
 }
 
+#[derive(Clone)]
+struct ApiPriceRates {
+    input: i64,
+    cached_input: i64,
+    cache_write: i64,
+    cache_write_1h: i64,
+    output: i64,
+}
+
+#[derive(Clone)]
+struct ApiTieredPrices {
+    base: ApiPriceRates,
+    tiers: Vec<(i64, ApiPriceRates)>,
+}
+
+impl ApiTieredPrices {
+    fn select(&self, input_tokens: i64) -> &ApiPriceRates {
+        self.tiers
+            .iter()
+            .filter(|(above, _)| input_tokens > *above)
+            .map(|(_, rates)| rates)
+            .last()
+            .unwrap_or(&self.base)
+    }
+}
+
+struct BundledApiPriceModel {
+    id: String,
+    aliases: Vec<String>,
+    free: bool,
+    has_time_dependent_price: bool,
+    base: Option<ApiTieredPrices>,
+    fast: Option<ApiTieredPrices>,
+}
+
+struct BundledApiPriceCatalog {
+    models: Vec<BundledApiPriceModel>,
+    identifiers: HashMap<String, Option<usize>>,
+}
+
+fn bundled_api_price_catalog() -> &'static BundledApiPriceCatalog {
+    static CATALOG: OnceLock<BundledApiPriceCatalog> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let value = serde_json::from_str::<Value>(BUNDLED_PRICE_TABLE).unwrap_or(Value::Null);
+        let raw_models = value
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let models = raw_models
+            .iter()
+            .filter_map(|raw| {
+                let id = raw.get("id")?.as_str()?.to_string();
+                let aliases = raw
+                    .get("aliases")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+                let time_dependent_period = raw
+                    .get("periods")
+                    .and_then(Value::as_array)
+                    .is_some_and(|periods| !periods.is_empty());
+                let time_dependent_off_peak =
+                    raw.get("offPeak").is_some_and(|value| !value.is_null());
+                let base = raw
+                    .get("prices")
+                    .and_then(|prices| parse_tiered_prices(prices, raw.get("tiers")));
+                let fast = raw
+                    .get("fast")
+                    .and_then(|fast| parse_tiered_prices(fast.get("prices")?, fast.get("tiers")));
+                Some(BundledApiPriceModel {
+                    id,
+                    aliases,
+                    free: raw.get("free").and_then(Value::as_bool).unwrap_or(false),
+                    has_time_dependent_price: time_dependent_period || time_dependent_off_peak,
+                    base,
+                    fast,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut identifiers = HashMap::new();
+        for (index, model) in models.iter().enumerate() {
+            for identifier in std::iter::once(&model.id).chain(model.aliases.iter()) {
+                let key = identifier.to_ascii_lowercase();
+                identifiers
+                    .entry(key)
+                    .and_modify(|existing: &mut Option<usize>| {
+                        if *existing != Some(index) {
+                            *existing = None;
+                        }
+                    })
+                    .or_insert(Some(index));
+            }
+        }
+        BundledApiPriceCatalog {
+            models,
+            identifiers,
+        }
+    })
+}
+
+fn parse_tiered_prices(prices: &Value, tiers: Option<&Value>) -> Option<ApiTieredPrices> {
+    let base = parse_api_price_rates(prices)?;
+    let mut parsed_tiers = Vec::new();
+    for tier in tiers.and_then(Value::as_array).into_iter().flatten() {
+        let above = tier.get("above")?.as_i64()?;
+        parsed_tiers.push((above, parse_api_price_rates(tier)?));
+    }
+    Some(ApiTieredPrices {
+        base,
+        tiers: parsed_tiers,
+    })
+}
+
+fn parse_api_price_rates(value: &Value) -> Option<ApiPriceRates> {
+    let input = price_rate_micro_usd(value.get("input")?)?;
+    let output = price_rate_micro_usd(value.get("output")?)?;
+    let cache_write = value
+        .get("cacheWrite")
+        .filter(|value| !value.is_null())
+        .and_then(price_rate_micro_usd)
+        .unwrap_or(input);
+    let cached_input = value
+        .get("cachedInput")
+        .filter(|value| !value.is_null())
+        .and_then(price_rate_micro_usd)
+        .unwrap_or(input);
+    let cache_write_1h = value
+        .get("cacheWrite1h")
+        .filter(|value| !value.is_null())
+        .and_then(price_rate_micro_usd)
+        .unwrap_or(cache_write);
+    Some(ApiPriceRates {
+        input,
+        cached_input,
+        cache_write,
+        cache_write_1h,
+        output,
+    })
+}
+
+/// Parse the pinned USD/million-token decimal exactly into integer micro-USD/million,
+/// which is pico-USD per token in the bundled PriceBook.
+fn price_rate_micro_usd(value: &Value) -> Option<i64> {
+    let literal = value.as_number()?.to_string();
+    let (whole, fraction) = literal.split_once('.').unwrap_or((&literal, ""));
+    if whole.starts_with('-')
+        || whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    if !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let whole = whole.parse::<i64>().ok()?;
+    let significant_fraction = &fraction[..fraction.len().min(6)];
+    if fraction.len() > 6 && fraction[6..].bytes().any(|byte| byte != b'0') {
+        return None;
+    }
+    let fraction_value = if significant_fraction.is_empty() {
+        0
+    } else {
+        significant_fraction.parse::<i64>().ok()?
+    };
+    let scaled_fraction =
+        fraction_value.checked_mul(10_i64.pow(6 - significant_fraction.len() as u32))?;
+    whole.checked_mul(1_000_000)?.checked_add(scaled_fraction)
+}
+
+fn api_cost_micro_usd(
+    raw_model: &str,
+    input: i64,
+    output: i64,
+    cache_read: Option<i64>,
+    cache_write: Option<i64>,
+) -> Option<i64> {
+    let identifier = raw_model.rsplit('/').next()?.trim().to_ascii_lowercase();
+    if identifier.is_empty() {
+        return None;
+    }
+    let catalog = bundled_api_price_catalog();
+    let (model_index, explicit_fast) = match catalog.identifiers.get(&identifier) {
+        Some(Some(index)) => (*index, false),
+        Some(None) => return None,
+        None if identifier.ends_with("-fast") => {
+            let base = identifier.strip_suffix("-fast")?;
+            match catalog.identifiers.get(base) {
+                Some(Some(index)) => (*index, true),
+                _ => return None,
+            }
+        }
+        None => return None,
+    };
+    let model = catalog.models.get(model_index)?;
+    if model.free {
+        return Some(0);
+    }
+    if model.has_time_dependent_price {
+        return None;
+    }
+    let pricing = if explicit_fast {
+        model.fast.as_ref()?
+    } else {
+        model.base.as_ref()?
+    };
+    let rates = pricing.select(input);
+    let cache_read = cache_read?;
+    let cache_write = cache_write?;
+    if input < 0
+        || output < 0
+        || cache_read < 0
+        || cache_write < 0
+        || cache_read > input
+        || cache_write > input - cache_read
+        || (cache_write > 0 && rates.cache_write != rates.cache_write_1h)
+    {
+        return None;
+    }
+    let uncached_input = input - cache_read - cache_write;
+    const MAX_CLASS_TOKENS: i64 = 100_000_000;
+    if [uncached_input, cache_read, cache_write, output]
+        .into_iter()
+        .any(|count| count > MAX_CLASS_TOKENS)
+    {
+        return None;
+    }
+    let components = [
+        uncached_input.checked_mul(rates.input)?,
+        cache_read.checked_mul(rates.cached_input)?,
+        cache_write.checked_mul(rates.cache_write)?,
+        output.checked_mul(rates.output)?,
+    ];
+    let pico_usd = components.into_iter().try_fold(0_i64, i64::checked_add)?;
+    pico_usd.checked_add(500_000).map(|value| value / 1_000_000)
+}
+
 fn read_summaries(
     connection: &Connection,
 ) -> rusqlite::Result<(Vec<MultiClientUsageSummary>, Option<String>)> {
+    Ok((read_summary_rows(connection)?, read_updated_at(connection)?))
+}
+
+fn read_summary_rows(connection: &Connection) -> rusqlite::Result<Vec<MultiClientUsageSummary>> {
+    read_summary_rows_with_prices(connection, None)
+}
+
+fn read_summary_rows_with_prices(
+    connection: &Connection,
+    price_totals: Option<&HashMap<MultiClientPriceModelKey, MultiClientPriceTally>>,
+) -> rusqlite::Result<Vec<MultiClientUsageSummary>> {
     let mut statement = connection.prepare(
         "SELECT client, model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), MAX(timestamp), \
-         SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL) \
+         SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL), \
+         SUM(cache_read_tokens IS NULL)=0 \
          FROM client_usage_events GROUP BY client, model ORDER BY client, model",
     )?;
     let rows = statement.query_map([], |row| {
         let timestamp_seconds: Option<f64> = row.get(8)?;
+        let client: String = row.get(0)?;
+        let model: String = row.get(1)?;
+        let price_tally = price_totals.and_then(|totals| {
+            totals.get(&MultiClientPriceModelKey {
+                client: client.clone(),
+                model: model.clone(),
+            })
+        });
         Ok(MultiClientUsageSummary {
-            client: row.get(0)?,
-            model: row.get(1)?,
+            client,
+            model,
             input_tokens: row.get::<_, i64>(2)?.max(0) as u64,
             output_tokens: row.get::<_, i64>(3)?.max(0) as u64,
             cache_read_tokens: row
@@ -2621,9 +3031,85 @@ fn read_summaries(
             requests: row.get::<_, i64>(7)?.max(0) as u64,
             last_seen: timestamp_seconds.and_then(format_timestamp_seconds),
             incomplete_fields: row.get::<_, i64>(9)? != 0,
+            api_cost_usd: price_tally
+                .filter(|tally| tally.has_known_request && !tally.overflowed)
+                .and_then(|tally| tally.known_cost_micro_usd)
+                .map(|cost| cost as f64 / 1_000_000.0),
+            unpriced_requests: price_tally.map_or(0, |tally| tally.unpriced_requests),
+            cache_read_complete: row.get::<_, i64>(10)? != 0,
         })
     })?;
-    let summaries = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+}
+
+fn read_cached_api_price_aggregates(
+    connection: &Connection,
+    database_path: &Path,
+    cache: &Mutex<MultiClientPriceCache>,
+) -> Result<
+    (
+        HashMap<MultiClientPriceModelKey, MultiClientPriceTally>,
+        Option<(
+            MultiClientPriceAggregateKey,
+            HashMap<MultiClientPriceModelKey, MultiClientPriceTally>,
+        )>,
+    ),
+    String,
+> {
+    let revision = connection
+        .query_row(
+            "SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let key = MultiClientPriceAggregateKey {
+        database_path: database_path.to_path_buf(),
+        revision,
+    };
+    if let Some(totals) = cache.lock().ok().and_then(|mut cache| cache.get(&key)) {
+        return Ok((totals, None));
+    }
+
+    let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
+    let mut statement = connection
+        .prepare(
+            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens \
+             FROM client_usage_events",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        let (client, model, input, output, cache_read, cache_write) =
+            row.map_err(|error| error.to_string())?;
+        let key = MultiClientPriceModelKey {
+            client,
+            model: model.clone(),
+        };
+        totals.entry(key).or_default().add(api_cost_micro_usd(
+            &model,
+            input,
+            output,
+            cache_read,
+            cache_write,
+        ));
+    }
+
+    Ok((totals.clone(), Some((key, totals))))
+}
+
+fn read_updated_at(connection: &Connection) -> rusqlite::Result<Option<String>> {
     let metadata_exists: i64 = connection.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='multi_usage_metadata'",
         [],
@@ -2648,30 +3134,122 @@ fn read_summaries(
         )?;
         latest_revision.and_then(format_timestamp_seconds)
     };
-    Ok((summaries, updated_at))
+    Ok(updated_at)
+}
+
+fn read_cached_multi_client_aggregates(
+    connection: &Connection,
+    database_path: &Path,
+    now_unix: i64,
+    cache: &Mutex<MultiClientAggregateCache>,
+) -> Result<MultiClientAggregateRead, String> {
+    let snapshot = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let (result, pending_price_cache, pending_aggregate_cache) =
+        read_cached_multi_client_aggregates_in_snapshot(
+            &snapshot,
+            database_path,
+            now_unix,
+            cache,
+            MULTI_CLIENT_PRICE_CACHE.get_or_init(Default::default),
+        )?;
+    snapshot.commit().map_err(|error| error.to_string())?;
+    if let Some((key, totals)) = pending_price_cache {
+        if let Ok(mut cache) = MULTI_CLIENT_PRICE_CACHE
+            .get_or_init(Default::default)
+            .lock()
+        {
+            cache.put(key, totals);
+        }
+    }
+    if let Some((key, arrays)) = pending_aggregate_cache {
+        if let Ok(mut cache) = cache.lock() {
+            cache.put(key, arrays);
+        }
+    }
+    Ok(result)
+}
+
+fn read_cached_multi_client_aggregates_in_snapshot(
+    connection: &Connection,
+    database_path: &Path,
+    now_unix: i64,
+    cache: &Mutex<MultiClientAggregateCache>,
+    price_cache: &Mutex<MultiClientPriceCache>,
+) -> Result<
+    (
+        MultiClientAggregateRead,
+        Option<(
+            MultiClientPriceAggregateKey,
+            HashMap<MultiClientPriceModelKey, MultiClientPriceTally>,
+        )>,
+        Option<(MultiClientAggregateCacheKey, MultiClientAggregateArrays)>,
+    ),
+    String,
+> {
+    let key = multi_client_aggregate_cache_key(connection, database_path, now_unix)
+        .map_err(|error| error.to_string())?;
+    if let Some(arrays) = cache.lock().ok().and_then(|mut cache| cache.get(&key)) {
+        let updated_at = read_updated_at(connection).map_err(|error| error.to_string())?;
+        return Ok((MultiClientAggregateRead { arrays, updated_at }, None, None));
+    }
+
+    let (price_totals, pending_price_cache) =
+        read_cached_api_price_aggregates(connection, database_path, price_cache)?;
+    let arrays = MultiClientAggregateArrays {
+        summaries: read_summary_rows_with_prices(connection, Some(&price_totals))
+            .map_err(|error| error.to_string())?,
+        trend_buckets: read_trend_buckets(connection, now_unix)
+            .map_err(|error| error.to_string())?,
+        daily_buckets: read_daily_buckets(connection, now_unix)?,
+    };
+    let updated_at = read_updated_at(connection).map_err(|error| error.to_string())?;
+
+    // The caller publishes these only after the read transaction commits.
+    let pending_aggregate_cache = Some((key, arrays.clone()));
+    Ok((
+        MultiClientAggregateRead { arrays, updated_at },
+        pending_price_cache,
+        pending_aggregate_cache,
+    ))
+}
+
+fn multi_client_aggregate_cache_key(
+    connection: &Connection,
+    database_path: &Path,
+    now_unix: i64,
+) -> rusqlite::Result<MultiClientAggregateCacheKey> {
+    let revision = connection.query_row(
+        "SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(MultiClientAggregateCacheKey {
+        database_path: database_path.to_path_buf(),
+        revision,
+        minute: now_unix.div_euclid(60),
+        local_day: crate::core::localtime::local_date_at(now_unix),
+        local_offset_seconds: crate::core::localtime::local_offset_at(now_unix).whole_seconds(),
+    })
 }
 
 fn read_trend_buckets(
     connection: &Connection,
     now_unix: i64,
 ) -> rusqlite::Result<Vec<MultiClientUsageTrendBucket>> {
-    const HOUR_SECONDS: i64 = 60 * 60;
-    const WINDOW_SECONDS: i64 = 30 * 24 * HOUR_SECONDS;
-    const MAX_TREND_BUCKETS: i64 = 3_605;
-    let start_unix = now_unix
-        .saturating_sub(WINDOW_SECONDS)
-        .div_euclid(HOUR_SECONDS)
-        .saturating_mul(HOUR_SECONDS);
+    const WINDOW_SECONDS: i64 = 30 * 24 * 60 * 60;
+    let start_unix = now_unix.saturating_sub(WINDOW_SECONDS);
     let mut statement = connection.prepare(
-        "SELECT client, CAST(timestamp / 3600 AS INTEGER) * 3600 AS start_unix, \
+        "SELECT client, CAST(timestamp / 300 AS INTEGER) * 300 AS start_unix, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*) \
          FROM client_usage_events \
          WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2 \
-         GROUP BY client, CAST(timestamp / 3600 AS INTEGER) \
-         ORDER BY client, start_unix LIMIT ?3",
+         GROUP BY client, CAST(timestamp / 300 AS INTEGER) \
+         ORDER BY client, start_unix",
     )?;
-    let rows = statement.query_map(params![start_unix, now_unix, MAX_TREND_BUCKETS], |row| {
+    let rows = statement.query_map(params![start_unix, now_unix], |row| {
         Ok(MultiClientUsageTrendBucket {
             client: row.get(0)?,
             start_unix: row.get(1)?,
@@ -2690,6 +3268,88 @@ fn read_trend_buckets(
         })
     })?;
     rows.collect()
+}
+
+/// Stream the raw multi-client events and retain only one aggregate per
+/// client/local-date. This deliberately has no LIMIT: history size is reduced
+/// by day aggregation without silently dropping clients or source rows.
+fn read_daily_buckets(
+    connection: &Connection,
+    now_unix: i64,
+) -> Result<Vec<MultiClientUsageTrendBucket>, String> {
+    let today = crate::core::localtime::local_date_at(now_unix);
+    let first_day = today
+        .checked_sub(CalendarDuration::days(364))
+        .ok_or_else(|| "Daily bucket window is outside the supported date range".to_string())?;
+    let (start_unix, _) = crate::core::localtime::local_day_bounds(first_day)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT client,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens \
+             FROM client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![start_unix, now_unix], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut grouped = BTreeMap::<(String, i64), MultiClientUsageTrendBucket>::new();
+    let mut day_starts = BTreeMap::<Date, i64>::new();
+    for row in rows {
+        let (client, timestamp, input, output, cache_read, cache_write, reasoning) =
+            row.map_err(|error| error.to_string())?;
+        if !timestamp.is_finite() {
+            continue;
+        }
+        let event_unix = timestamp.floor() as i64;
+        let day = crate::core::localtime::local_date_at(event_unix);
+        if day < first_day || day > today {
+            continue;
+        }
+        let start_unix = if let Some(start) = day_starts.get(&day) {
+            *start
+        } else {
+            let start = crate::core::localtime::local_day_bounds(day)?.0;
+            day_starts.insert(day, start);
+            start
+        };
+        let key = (client.clone(), start_unix);
+        let bucket = grouped
+            .entry(key)
+            .or_insert_with(|| MultiClientUsageTrendBucket {
+                client,
+                start_unix,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                requests: 0,
+            });
+        bucket.input_tokens = bucket.input_tokens.saturating_add(input.max(0) as u64);
+        bucket.output_tokens = bucket.output_tokens.saturating_add(output.max(0) as u64);
+        bucket.cache_read_tokens = sum_optional(bucket.cache_read_tokens, cache_read);
+        bucket.cache_write_tokens = sum_optional(bucket.cache_write_tokens, cache_write);
+        bucket.reasoning_tokens = sum_optional(bucket.reasoning_tokens, reasoning);
+        bucket.requests = bucket.requests.saturating_add(1);
+    }
+    Ok(grouped.into_values().collect())
+}
+
+fn sum_optional(current: Option<u64>, incoming: Option<i64>) -> Option<u64> {
+    match incoming {
+        Some(value) => Some(current.unwrap_or(0).saturating_add(value.max(0) as u64)),
+        None => current,
+    }
 }
 
 fn now_unix_seconds() -> i64 {
@@ -3513,15 +4173,40 @@ mod tests {
             .unwrap();
     }
 
+    fn insert_revision(connection: &Connection, client: &str, event_id: &str, captured_at: f64) {
+        connection
+            .execute(
+                "INSERT INTO client_usage_revisions(client,event_id,captured_at,payload) VALUES(?1,?2,?3,'{}')",
+                params![client, event_id, captured_at],
+            )
+            .unwrap();
+    }
+
+    fn read_priced_summaries_for_test(
+        connection: &Connection,
+        database: &Path,
+        cache: &Mutex<MultiClientPriceCache>,
+    ) -> Vec<MultiClientUsageSummary> {
+        let snapshot = connection.unchecked_transaction().unwrap();
+        let (totals, pending) =
+            read_cached_api_price_aggregates(&snapshot, database, cache).unwrap();
+        let summaries = read_summary_rows_with_prices(&snapshot, Some(&totals)).unwrap();
+        snapshot.commit().unwrap();
+        if let Some((key, totals)) = pending {
+            cache.lock().unwrap().put(key, totals);
+        }
+        summaries
+    }
+
     #[test]
-    fn hourly_trends_align_utc_and_preserve_unknown_fields_within_30_days() {
-        let temporary = TempDir::new("hourly-trends");
+    fn five_minute_trends_align_utc_and_conserve_raw_events_within_30_days() {
+        let temporary = TempDir::new("five-minute-trends");
         let database = temporary.path().join("multi-client-usage.sqlite");
         let connection = open_database(&database).unwrap();
         ensure_schema(&connection, &database).unwrap();
 
-        let now = 1_800_000_123_i64;
-        let window_start = (now - 30 * 24 * 60 * 60).div_euclid(3600) * 3600;
+        let now = 1_800_000_600_i64;
+        let window_start = now - 30 * 24 * 60 * 60;
         insert_trend_event(
             &connection,
             "claudeCode",
@@ -3536,8 +4221,8 @@ mod tests {
         insert_trend_event(
             &connection,
             "claudeCode",
-            "same-hour",
-            (window_start + 11) as f64,
+            "same-bucket",
+            (window_start + 299) as f64,
             3,
             4,
             Some(5),
@@ -3547,8 +4232,8 @@ mod tests {
         insert_trend_event(
             &connection,
             "claudeCode",
-            "unknowns",
-            (window_start + 3601) as f64,
+            "next-bucket",
+            (window_start + 300) as f64,
             2,
             3,
             None,
@@ -3612,10 +4297,18 @@ mod tests {
         );
 
         let buckets = read_trend_buckets(&connection, now).unwrap();
-        assert!(buckets.len() <= 3_605);
         assert_eq!(buckets.len(), 4);
         assert!(buckets.iter().all(|bucket| bucket.client != "codex"));
-        assert_eq!(buckets.iter().map(|b| b.input_tokens + b.output_tokens).sum::<u64>(), 240);
+        assert!(buckets
+            .iter()
+            .all(|bucket| bucket.start_unix.rem_euclid(300) == 0));
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|b| b.input_tokens + b.output_tokens)
+                .sum::<u64>(),
+            240
+        );
 
         let first = buckets
             .iter()
@@ -3630,9 +4323,7 @@ mod tests {
 
         let unknown = buckets
             .iter()
-            .find(|bucket| {
-                bucket.client == "claudeCode" && bucket.start_unix == window_start + 3600
-            })
+            .find(|bucket| bucket.client == "claudeCode" && bucket.start_unix == window_start + 300)
             .unwrap();
         assert_eq!(unknown.cache_read_tokens, None);
         assert_eq!(unknown.cache_write_tokens, None);
@@ -3643,8 +4334,483 @@ mod tests {
             .iter()
             .find(|bucket| bucket.client == "deepseek")
             .unwrap();
-        assert_eq!(latest.start_unix, (now - 1).div_euclid(3600) * 3600);
+        assert_eq!(latest.start_unix, now - 300);
         assert_eq!(latest.input_tokens, 8);
+    }
+
+    #[test]
+    fn aggregate_cache_hits_unchanged_key_and_invalidates_revision_minute_and_path() {
+        let temporary = TempDir::new("aggregate-cache");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let now = 1_800_000_600_i64;
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "cache-event",
+            (now - 10) as f64,
+            5,
+            2,
+            Some(1),
+            None,
+            None,
+        );
+        insert_revision(&connection, "claudeCode", "cache-event", (now - 10) as f64);
+        connection
+            .execute(
+                "INSERT INTO multi_usage_metadata(key,value) VALUES('updated_at_ms','1800000000000')",
+                [],
+            )
+            .unwrap();
+
+        let cache = Mutex::new(MultiClientAggregateCache::default());
+        let first =
+            read_cached_multi_client_aggregates(&connection, &database, now, &cache).unwrap();
+        assert_eq!(first.arrays.summaries[0].input_tokens, 5);
+        let unchanged =
+            read_cached_multi_client_aggregates(&connection, &database, now + 20, &cache).unwrap();
+        assert_eq!(unchanged.arrays.summaries[0].input_tokens, 5);
+        assert_eq!(cache.lock().unwrap().hits, 1);
+
+        connection
+            .execute(
+                "UPDATE client_usage_events SET input_tokens=20 WHERE client='claudeCode' AND event_id='cache-event'",
+                [],
+            )
+            .unwrap();
+        insert_revision(&connection, "claudeCode", "cache-event", (now + 20) as f64);
+        connection
+            .execute(
+                "UPDATE multi_usage_metadata SET value='1800000060000' WHERE key='updated_at_ms'",
+                [],
+            )
+            .unwrap();
+        let revised =
+            read_cached_multi_client_aggregates(&connection, &database, now + 30, &cache).unwrap();
+        assert_eq!(revised.arrays.summaries[0].input_tokens, 20);
+        assert_eq!(revised.updated_at, format_timestamp(1_800_000_060_000));
+        assert_eq!(cache.lock().unwrap().hits, 1);
+
+        let revised_hit =
+            read_cached_multi_client_aggregates(&connection, &database, now + 40, &cache).unwrap();
+        assert_eq!(revised_hit.arrays.summaries[0].input_tokens, 20);
+        assert_eq!(cache.lock().unwrap().hits, 2);
+
+        let next_minute =
+            read_cached_multi_client_aggregates(&connection, &database, now + 60, &cache).unwrap();
+        assert_eq!(next_minute.arrays.summaries[0].input_tokens, 20);
+        assert_eq!(cache.lock().unwrap().hits, 2);
+
+        let other_database = temporary.path().join("other.sqlite");
+        let other_connection = open_database(&other_database).unwrap();
+        ensure_schema(&other_connection, &other_database).unwrap();
+        insert_trend_event(
+            &other_connection,
+            "claudeCode",
+            "cache-event",
+            (now - 10) as f64,
+            7,
+            2,
+            None,
+            None,
+            None,
+        );
+        insert_revision(
+            &other_connection,
+            "claudeCode",
+            "cache-event",
+            (now - 10) as f64,
+        );
+        let other_path = read_cached_multi_client_aggregates(
+            &other_connection,
+            &other_database,
+            now + 60,
+            &cache,
+        )
+        .unwrap();
+        assert_eq!(other_path.arrays.summaries[0].input_tokens, 7);
+        assert_eq!(cache.lock().unwrap().hits, 2);
+    }
+
+    #[test]
+    fn api_cost_prices_each_request_and_keeps_unknowns_explicit() {
+        let standard = api_cost_micro_usd("gpt-6.1-sol", 100, 10, Some(0), Some(0));
+        assert_eq!(standard, Some(300));
+
+        let small = api_cost_micro_usd("gpt-6.1-sol", 140_000, 0, Some(0), Some(0));
+        let long = api_cost_micro_usd("gpt-6.1-sol", 280_000, 0, Some(0), Some(0));
+        let mut two_small_requests = MultiClientPriceTally::default();
+        two_small_requests.add(small);
+        two_small_requests.add(small);
+        assert_eq!(two_small_requests.known_cost_micro_usd, Some(560_000));
+        assert_eq!(long, Some(1_120_000));
+
+        assert_eq!(
+            api_cost_micro_usd("unlisted-provider-model", 100, 10, Some(0), Some(0)),
+            None
+        );
+        assert_eq!(
+            api_cost_micro_usd("claude-opus-5-5", 100, 0, Some(0), Some(1)),
+            None
+        );
+        assert_eq!(
+            api_cost_micro_usd("gpt-6.1-sol", 100_000_001, 0, Some(0), Some(0)),
+            None
+        );
+        assert_eq!(
+            api_cost_micro_usd("glm-4.7-flash", 0, 0, None, None),
+            Some(0)
+        );
+        assert_eq!(
+            api_cost_micro_usd("openai/gpt-5.5-2026-04-23", 100, 10, Some(0), Some(0)),
+            Some(800)
+        );
+        assert_eq!(
+            api_cost_micro_usd("gpt-6.1-sol-fast", 100, 10, Some(0), Some(0)),
+            Some(600)
+        );
+        assert_eq!(
+            api_cost_micro_usd("deepseek-reasoner", 100, 10, Some(0), Some(0)),
+            None
+        );
+        assert_eq!(
+            api_cost_micro_usd("gpt-5.5", 1, 0, Some(1), Some(0)),
+            Some(1),
+            "half-micro-USD per request rounds half-up"
+        );
+
+        let mut partial = MultiClientPriceTally::default();
+        partial.add(standard);
+        partial.add(api_cost_micro_usd("gpt-6.1-sol", 100, 10, None, Some(0)));
+        assert_eq!(partial.known_cost_micro_usd, Some(300));
+        assert_eq!(partial.unpriced_requests, 1);
+
+        let mut overflow = MultiClientPriceTally {
+            known_cost_micro_usd: Some(u128::MAX),
+            has_known_request: true,
+            ..Default::default()
+        };
+        overflow.add(Some(1));
+        assert!(overflow.overflowed);
+        assert_eq!(overflow.known_cost_micro_usd, None);
+        overflow.add(Some(1));
+        assert_eq!(overflow.known_cost_micro_usd, None);
+    }
+
+    #[test]
+    fn summary_pricing_fields_are_additive_and_use_the_shared_wire_names() {
+        let legacy: MultiClientUsageSummary = serde_json::from_value(serde_json::json!({
+            "client": "claudeCode",
+            "model": "gpt-6.1-sol",
+            "inputTokens": 100,
+            "outputTokens": 10,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": null,
+            "requests": 1,
+            "lastSeen": null,
+            "incompleteFields": false
+        }))
+        .unwrap();
+        assert_eq!(legacy.api_cost_usd, None);
+        assert_eq!(legacy.unpriced_requests, 0);
+        assert!(!legacy.cache_read_complete);
+
+        let wire = serde_json::to_value(MultiClientUsageSummary {
+            api_cost_usd: Some(0.0003),
+            unpriced_requests: 1,
+            cache_read_complete: true,
+            ..legacy
+        })
+        .unwrap();
+        assert_eq!(wire["apiCostUSD"], 0.0003);
+        assert_eq!(wire["unpricedRequests"], 1);
+        assert_eq!(wire["cacheReadComplete"], true);
+        assert!(wire.get("apiCostUsd").is_none());
+    }
+
+    #[test]
+    fn api_price_aggregate_cache_invalidates_on_revision_and_reports_cache_read_completeness() {
+        let temporary = TempDir::new("api-price-cache");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "known",
+            1_800_000_000.0,
+            100,
+            10,
+            Some(0),
+            Some(0),
+            None,
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "missing-cache-read",
+            1_800_000_001.0,
+            100,
+            10,
+            None,
+            Some(0),
+            None,
+        );
+        connection
+            .execute(
+                "UPDATE client_usage_events SET model='gpt-6.1-sol' WHERE event_id IN ('known','missing-cache-read')",
+                [],
+            )
+            .unwrap();
+        insert_revision(&connection, "claudeCode", "known", 1_800_000_000.0);
+        insert_revision(
+            &connection,
+            "claudeCode",
+            "missing-cache-read",
+            1_800_000_001.0,
+        );
+        let cache = Mutex::new(MultiClientPriceCache::default());
+
+        let first = read_priced_summaries_for_test(&connection, &database, &cache);
+        assert_eq!(first[0].api_cost_usd, Some(0.0003));
+        assert_eq!(first[0].unpriced_requests, 1);
+        assert!(!first[0].cache_read_complete);
+        let unchanged = read_priced_summaries_for_test(&connection, &database, &cache);
+        assert_eq!(unchanged[0].api_cost_usd, Some(0.0003));
+        assert_eq!(cache.lock().unwrap().hits, 1);
+
+        connection
+            .execute(
+                "UPDATE client_usage_events SET cache_read_tokens=0 WHERE event_id='missing-cache-read'",
+                [],
+            )
+            .unwrap();
+        insert_revision(
+            &connection,
+            "claudeCode",
+            "missing-cache-read",
+            1_800_000_002.0,
+        );
+        let revised = read_priced_summaries_for_test(&connection, &database, &cache);
+        assert_eq!(revised[0].api_cost_usd, Some(0.0006));
+        assert_eq!(revised[0].unpriced_requests, 0);
+        assert!(revised[0].cache_read_complete);
+        assert_eq!(cache.lock().unwrap().hits, 1);
+    }
+
+    #[test]
+    fn daily_trends_use_local_midnights_across_dst_and_keep_all_sources() {
+        use time::Month;
+
+        let temporary = TempDir::new("daily-trends");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+
+        fn unix(value: &str) -> i64 {
+            OffsetDateTime::parse(value, &Rfc3339)
+                .unwrap()
+                .unix_timestamp()
+        }
+        let now = unix("2026-03-10T12:00:00Z");
+        let today = crate::core::localtime::local_date_at(now);
+        let first_day = today - CalendarDuration::days(364);
+        let (window_start, _) = crate::core::localtime::local_day_bounds(first_day).unwrap();
+        let dst_day = Date::from_calendar_date(2026, Month::March, 8).unwrap();
+        let (dst_start, dst_end) = crate::core::localtime::local_day_bounds(dst_day).unwrap();
+        let (next_day_start, _) =
+            crate::core::localtime::local_day_bounds(dst_day + CalendarDuration::days(1)).unwrap();
+        let (today_start, _) = crate::core::localtime::local_day_bounds(today).unwrap();
+        assert!((22 * 60 * 60..=26 * 60 * 60).contains(&(dst_end - dst_start)));
+
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "before-window",
+            (window_start - 1) as f64,
+            100,
+            100,
+            None,
+            None,
+            None,
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "at-window",
+            window_start as f64,
+            10,
+            1,
+            Some(9),
+            Some(8),
+            Some(7),
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "dst-before",
+            (dst_start + 60) as f64,
+            1,
+            10,
+            Some(5),
+            None,
+            None,
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "dst-after",
+            (dst_start + 3_600) as f64,
+            2,
+            20,
+            None,
+            Some(2),
+            Some(3),
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "dst-last-second",
+            (dst_end - 1) as f64,
+            3,
+            30,
+            Some(7),
+            Some(4),
+            Some(5),
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "next-local-day",
+            next_day_start as f64,
+            4,
+            40,
+            None,
+            None,
+            None,
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "at-upper-bound",
+            now as f64,
+            5,
+            50,
+            Some(1),
+            Some(2),
+            Some(3),
+        );
+        insert_trend_event(
+            &connection,
+            "customSource",
+            "source-beyond-defaults",
+            (now - 1) as f64,
+            6,
+            60,
+            None,
+            None,
+            None,
+        );
+        insert_trend_event(
+            &connection,
+            "claudeCode",
+            "future",
+            (now + 1) as f64,
+            100,
+            100,
+            None,
+            None,
+            None,
+        );
+        insert_trend_event(
+            &connection,
+            "codex",
+            "codex-excluded",
+            (now - 1) as f64,
+            100,
+            100,
+            None,
+            None,
+            None,
+        );
+
+        let buckets = read_daily_buckets(&connection, now).unwrap();
+        assert_eq!(buckets.len(), 5);
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| bucket.input_tokens + bucket.output_tokens)
+                .sum::<u64>(),
+            242
+        );
+        for bucket in &buckets {
+            assert_eq!(
+                crate::core::localtime::local_day_bounds(crate::core::localtime::local_date_at(
+                    bucket.start_unix
+                ))
+                .unwrap()
+                .0,
+                bucket.start_unix
+            );
+        }
+
+        let first = buckets
+            .iter()
+            .find(|bucket| bucket.client == "claudeCode" && bucket.start_unix == window_start)
+            .unwrap();
+        assert_eq!(
+            (first.input_tokens, first.output_tokens, first.requests),
+            (10, 1, 1)
+        );
+        assert_eq!(
+            (
+                first.cache_read_tokens,
+                first.cache_write_tokens,
+                first.reasoning_tokens
+            ),
+            (Some(9), Some(8), Some(7))
+        );
+
+        let dst = buckets
+            .iter()
+            .find(|bucket| bucket.client == "claudeCode" && bucket.start_unix == dst_start)
+            .unwrap();
+        assert_eq!(
+            (dst.input_tokens, dst.output_tokens, dst.requests),
+            (6, 60, 3)
+        );
+        assert_eq!(
+            (
+                dst.cache_read_tokens,
+                dst.cache_write_tokens,
+                dst.reasoning_tokens
+            ),
+            (Some(12), Some(6), Some(8))
+        );
+
+        let next = buckets
+            .iter()
+            .find(|bucket| bucket.client == "claudeCode" && bucket.start_unix == next_day_start)
+            .unwrap();
+        assert_eq!(
+            (next.input_tokens, next.output_tokens, next.requests),
+            (4, 40, 1)
+        );
+        assert_eq!(
+            (
+                next.cache_read_tokens,
+                next.cache_write_tokens,
+                next.reasoning_tokens
+            ),
+            (None, None, None)
+        );
+
+        assert!(buckets
+            .iter()
+            .any(|bucket| bucket.client == "customSource" && bucket.start_unix == today_start));
+        assert!(!buckets.iter().any(|bucket| bucket.client == "codex"));
     }
 
     fn table_columns(connection: &Connection, table: &str) -> Vec<String> {
@@ -3674,6 +4840,9 @@ mod tests {
             requests: 1,
             last_seen: None,
             incomplete_fields: true,
+            api_cost_usd: None,
+            unpriced_requests: 1,
+            cache_read_complete: true,
         };
         assert_eq!(
             configured_menu_bar_usage_lines(&preferences, &[summary]),

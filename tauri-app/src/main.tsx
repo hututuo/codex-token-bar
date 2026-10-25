@@ -7,6 +7,7 @@ import "./styles/global.css";
 import "./modelTrace/modelTrace.css";
 import "./components/liveRate/bodySpeedTrend.css";
 import "./quota-sidebar/QuotaSidebar.css";
+import "./multiClient/integratedClients.css";
 
 const startupSurface = new URLSearchParams(window.location.search).get("surface") ?? "main";
 if (startupSurface === "quota-sidebar" || startupSurface === "quota-sidebar-detail") document.documentElement.classList.add("quota-sidebar-document");

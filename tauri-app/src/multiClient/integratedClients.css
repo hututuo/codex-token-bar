@@ -1,0 +1,331 @@
+.integrated-scope {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.integrated-scope nav {
+  display: flex;
+  gap: 4px;
+  max-width: 100%;
+  flex-wrap: wrap;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--panel-bg, #131713);
+}
+.integrated-scope nav button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.integrated-scope nav button[aria-pressed="true"] {
+  background: #8fcb4826;
+}
+.integrated-scope i,
+.integrated-quota-option > i,
+.integrated-quota-details h4 i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+.integrated-quota-details {
+  color: inherit;
+}
+.integrated-quota-details h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 0;
+}
+.integrated-quota-details p {
+  font-size: 11px;
+  opacity: 0.7;
+}
+.integrated-full-rings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+}
+.integrated-full-rings > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+.integrated-full-rings small {
+  font-size: 10px;
+  color: inherit;
+  opacity: 0.7;
+}
+.integrated-full-ring {
+  position: relative;
+  width: 100px;
+  height: 100px;
+}
+.integrated-full-ring svg {
+  width: 100%;
+  height: 100%;
+}
+.integrated-full-ring > span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
+}
+.integrated-full-ring strong {
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+}
+.integrated-paired-ring {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 4px;
+  width: 74px;
+  padding: 3px 0;
+}
+.integrated-paired-ring > div {
+  width: 60px;
+  height: 60px;
+  position: relative;
+}
+.integrated-paired-ring svg {
+  width: 100%;
+  height: 100%;
+}
+.integrated-paired-ring strong {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.integrated-paired-ring b {
+  font-weight: 400;
+  opacity: 0.5;
+}
+.integrated-ring-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 8px;
+  line-height: 10px;
+  max-width: 74px;
+  color: #e1e7de;
+}
+.integrated-ring-legend i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  flex: none;
+}
+.integrated-quota-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 0;
+}
+.integrated-quota-option label {
+  flex: 1;
+}
+.integrated-quota-option input[type="color"] {
+  width: 25px;
+  height: 23px;
+  padding: 0;
+}
+.integrated-quota-settings p {
+  font-size: 10px;
+  opacity: 0.7;
+}
+.integrated-stat-metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+}
+.integrated-stat-metrics > div {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+}
+.integrated-stat-metrics strong {
+  font-size: 23px;
+  font-variant-numeric: tabular-nums;
+}
+.integrated-stat-metrics small {
+  opacity: 0.7;
+}
+.integrated-stats {
+  padding: 14px;
+}
+.integrated-stats table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.integrated-stats :is(th, td) {
+  text-align: left;
+  padding: 7px;
+}
+.integrated-stats small {
+  color: inherit;
+  opacity: 0.7;
+}
+.integrated-trend {
+  padding: 18px;
+  border-radius: 16px;
+  background: var(--panel-bg, #141814);
+}
+.integrated-trend button {
+  padding: 7px 12px;
+  border-radius: 7px;
+  border: 0;
+  margin: 0 2px;
+}
+.integrated-trend button[aria-pressed="true"] {
+  background: #86b64a33;
+}
+.qs-bars .integrated-quota-track {
+  position: relative;
+  flex: none;
+  width: 4px;
+}
+.integrated-quota-track .qs-bar {
+  height: 100%;
+}
+.integrated-quota-track > .integrated-client-dot {
+  position: absolute;
+  top: 0;
+  left: -5px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+}
+
+/* The compact viewport may scroll only at a physical pixel limit. Safe centering
+   keeps the first track reachable when content is taller than the monitor. */
+.quota-sidebar-document .qs-bars {
+  justify-content: safe center;
+  scrollbar-width: none;
+}
+.qs-bars::-webkit-scrollbar {
+  display: none;
+}
+.qs-bars .qs-unknown i {
+  opacity: 0;
+  background: none !important;
+}
+.qs-bars > .qs-model-strip-vertical {
+  height: var(--integrated-bar-height, 46px);
+}
+.integrated-dashboard-quotas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+.integrated-dashboard-quotas .quota-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.integrated-dashboard-quotas .quota-label i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+.integrated-stats {
+  display: block;
+}
+.integrated-paired-ring[data-mode="single"] strong {
+  font-size: 17px;
+}
+.integrated-scope .multi-client-discovery {
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  min-height: 0;
+}
+.integrated-scope .multi-client-discovery small {
+  display: none;
+}
+.integrated-client-usage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 74px;
+  padding: 5px 0;
+  background: none;
+  border: 0;
+  font-size: 9px;
+}
+.integrated-client-usage strong {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+/* Bar is now nested beside its identity dot; inline spans must keep track dimensions. */
+.integrated-quota-track .qs-bar {
+  display: block;
+  width: 4px;
+  height: 100%;
+}
+.qs-left .integrated-quota-track > .integrated-client-dot {
+  left: 6px;
+}
+.integrated-cache {
+  padding: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  display: grid;
+  gap: 10px;
+}
+.integrated-cache header,
+.integrated-cache p {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+}
+.integrated-cache header {
+  justify-content: space-between;
+}
+.integrated-cache h3 {
+  margin: 0;
+}
+.integrated-cache p strong {
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+}
+.integrated-cache :is(span, small) {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.integrated-cache button {
+  width: max-content;
+  background: none;
+  color: inherit;
+  border: 0;
+  padding: 5px 0;
+}

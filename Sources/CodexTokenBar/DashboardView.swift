@@ -44,6 +44,13 @@ enum DashboardPreciseCatchUpPolicy {
 }
 
 struct DashboardView: View {
+    @ObservedObject private var clients = MultiClientUsageStore.shared
+    @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
+    private var allowedClients: Set<String> {
+        ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
+    }
+    private var codexOnly: Bool { allowedClients == ["codex"] }
+
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
@@ -1047,6 +1054,7 @@ struct DashboardView: View {
         // sections retain their own state; ScrollViewReader still targets the
         // chart's stable ID when jumping from the radar card.
         LazyVStack(spacing: 18) {
+            ClientScopePicker()
             HeaderView(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
@@ -1095,7 +1103,6 @@ struct DashboardView: View {
                 showingResetCreditDetails: $showingResetCreditDetails
             )
 
-            MultiClientUsageDashboardCard(codex: store.snapshot, codexQuota: quotaStore.snapshot)
 
             if let upgrade = store.indexUpgradeRequired {
                 HStack(spacing: 14) {
@@ -1133,6 +1140,7 @@ struct DashboardView: View {
                 )
             }
 
+            if codexOnly {
             StatStrip(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
@@ -1151,7 +1159,14 @@ struct DashboardView: View {
             // equatable boundary keeps those one-second rate ticks from
             // rebuilding the expensive model-attribution strip.
             .equatable()
+            } else {
+                ClientDashboardQuotaStrip(items: ClientQuotaProjection.items(codex: quotaStore.snapshot,
+                    claude: clients.quotaReading(.claudeCode), includeClaude: allowedClients.contains("claudeCode") || allowedClients.contains("claudeDesktop"))
+                    .filter { allowedClients.contains($0.client) || ($0.client == "claudeCode" && allowedClients.contains("claudeDesktop")) })
+                ScopedClientTokenSummary(codex: store.snapshot, allowed: allowedClients).equatable()
+            }
 
+            if allowedClients.contains("codex") {
             CodexRadarStrip(
                 snapshot: radarStore.snapshot,
                 crowdSnapshot: radarStore.crowdSnapshot,
@@ -1173,6 +1188,7 @@ struct DashboardView: View {
                 }
             )
 
+            if !codexOnly { Text("正文 TPS · 当前仅 Codex 有可靠正文时间样本").font(.caption).foregroundStyle(.secondary) }
             LiveRateView(
                 monitor: liveMonitor,
                 floatingPanelEnabled: $floatingPanelEnabled,
@@ -1184,6 +1200,14 @@ struct DashboardView: View {
                 onOpenSettings: { showingAppSettings = true }
             )
 
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("正文 TPS").font(.headline)
+                    Text("暂无可用样本；不会用 Agent Speed 的请求均速代替正文 TPS。").font(.callout).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(18).background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 16))
+            }
+
+            if codexOnly {
             ActivitySection(
                 dailyUsage: store.snapshot.dailyUsage,
                 cacheDaily: store.snapshot.cacheUsage.daily,
@@ -1225,6 +1249,15 @@ struct DashboardView: View {
                 }
             )
             .id(store.dataSourceBindingKey)
+            } else {
+                ScopedClientActivity(codex: store.snapshot, allowed: allowedClients).equatable()
+                ScopedClientUsageChart(codex: store.snapshot, allowed: allowedClients).equatable()
+                ScopedClientCacheView(codex: store.snapshot, allowed: allowedClients, codexHome: store.currentDataSource?.codexHome, onOpenCodexDetails: {
+                    showingCodexRadarDetails = false
+                    showingSharedAccountAttributionDetails = false
+                    showingCacheHitRankingDetails = true
+                }).equatable()
+            }
         }
         .padding(.horizontal, 54)
         .padding(.vertical, 20)

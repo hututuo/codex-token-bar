@@ -19,7 +19,7 @@ test("ring reset times use local dates, Unix precedence, and explicit unknowns",
   assert.equal(sidebarRingResetTime("", 1e30), null);
 });
 
-test("both reset labels stay inside the existing rings and absent 5h stays absent", async () => {
+test("paired quota labels retain reset tooltips and absent 5h stays absent", async () => {
   await withSsrModules(async load => {
     const { SidebarRailContent } = await load("/src/quota-sidebar/QuotaSidebarApp.tsx");
     const five = new Date(2026, 8, 26, 13, 30);
@@ -33,15 +33,15 @@ test("both reset labels stay inside the existing rings and absent 5h stays absen
     const render = () => { dom.document.body.innerHTML = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover" }, onOpen() {} })); };
     try {
       render();
-      assert.deepEqual([...dom.document.querySelectorAll(".qs-ring time")].map(time => time.getAttribute("datetime")), [five.toISOString(), seven.toISOString()]);
+      assert.deepEqual([...dom.document.querySelectorAll(".integrated-ring-legend")].map(el => el.title), [`Codex 5h · 重置 ${five.toLocaleString()}`, `Codex 7d · 重置 ${seven.toLocaleString()}`]);
       assert.equal(dom.document.querySelector(".qs-rate-trigger time"), null);
       data.snapshot.fiveHourAvailability = "absent";
       render();
-      assert.equal(dom.document.querySelectorAll(".qs-ring time").length, 1);
+      assert.equal(dom.document.querySelectorAll(".integrated-ring-legend").length, 1);
       data.quota.quota.sevenDay = { resetsAt: "unknown" };
       render();
       assert.equal(dom.document.querySelector(".qs-ring time"), null);
-      assert.equal(dom.document.querySelector(".qs-ring-reset-unknown").textContent, "重置未知");
+      assert.match(dom.document.querySelector(".integrated-ring-legend").title, /重置时间未知/);
     } finally { dom.close(); }
   });
 });
