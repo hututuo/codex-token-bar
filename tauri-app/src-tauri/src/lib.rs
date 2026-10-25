@@ -153,6 +153,7 @@ pub fn run() {
             commands::settings::save_session_enhancement_settings,
             commands::agent_speed_reporting::read_agent_speed_reporting_status,
             commands::agent_speed_reporting::set_agent_speed_reporting_enabled,
+            commands::agent_speed_reporting::set_agent_speed_reporting_transport,
             commands::agent_speed_reporting::dismiss_agent_speed_invitation,
             commands::settings::save_setup_guide_completed,
             commands::startup::record_performance_event,

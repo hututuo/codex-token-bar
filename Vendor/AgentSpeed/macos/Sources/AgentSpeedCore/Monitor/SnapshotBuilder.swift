@@ -60,7 +60,11 @@ struct SnapshotContext: Sendable {
 
 /// Maps engine output onto the public `SpeedSnapshot`.
 enum SnapshotBuilder {
-    static func running(_ output: EngineOutput, context: SnapshotContext) -> SpeedSnapshot {
+    static func running(
+        _ output: EngineOutput,
+        context: SnapshotContext,
+        readObservation: SourceReadObservation? = nil
+    ) -> SpeedSnapshot {
         let agents = output.agents.map { row in
             AgentStatus(
                 id: row.agent.id,
@@ -116,7 +120,8 @@ enum SnapshotBuilder {
             dayStart: date(output.todayStartMs),
             liveCost: output.liveCost,
             todayCost: output.todayCost,
-            report: output.report
+            report: output.report,
+            readObservation: readObservation
         )
     }
 

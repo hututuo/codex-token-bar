@@ -16,6 +16,7 @@ final class MonitorCore: @unchecked Sendable {
     private let configuration: MonitorConfiguration
     private let pricing: PriceBook?
     private let mailbox: SnapshotMailbox
+    private let realtimeEventMode: Bool
     private let queue = DispatchQueue(label: "app.agentspeed.monitor", qos: .utility)
     /// Whole-file reads (METRICS 5.3), one at a time, off the live loop.
     private let wholeFileQueue = DispatchQueue(label: "app.agentspeed.monitor.whole-file", qos: .utility)
@@ -39,11 +40,13 @@ final class MonitorCore: @unchecked Sendable {
         mailbox: SnapshotMailbox,
         subsets: Set<SourceSet> = [],
         pricing: PriceBook? = nil,
+        realtimeEventMode: Bool = false,
         wholeFileReadHook: (@Sendable (String) -> Void)? = nil
     ) {
         self.configuration = configuration
         self.pricing = pricing
         self.mailbox = mailbox
+        self.realtimeEventMode = realtimeEventMode
         self.subsets = OSAllocatedUnfairLock(initialState: subsets)
         self.wholeFileReadHook = wholeFileReadHook
     }
@@ -159,7 +162,7 @@ final class MonitorCore: @unchecked Sendable {
         }
         guard !flushScheduled else { return }
         flushScheduled = true
-        queue.asyncAfter(deadline: .now() + Self.changeDebounce) { [weak self] in self?.flush() }
+        queue.asyncAfter(deadline: .now() + eventDebounce) { [weak self] in self?.flush() }
     }
 
     private func flush() {
@@ -168,12 +171,15 @@ final class MonitorCore: @unchecked Sendable {
         var changed = false
         if needsRescan {
             needsRescan = false
-            changed = session.rediscover(todayStartMs: Self.todayStartMs(for: Date()))
+            changed = session.rediscover(
+                todayStartMs: Self.todayStartMs(for: Date()),
+                readContext: .logEvent
+            )
             updateWatcher()
         }
         let paths = dirtyPaths
         dirtyPaths.removeAll()
-        changed = session.handleChanges(atCanonicalPaths: paths) || changed
+        changed = session.handleChanges(atCanonicalPaths: paths, readContext: .logEvent) || changed
         if changed { publish() }
     }
 
@@ -194,12 +200,15 @@ final class MonitorCore: @unchecked Sendable {
 
     private func poll() {
         guard let session, isLive else { return }
-        if session.pollRecentFiles(nowMs: Clock.milliseconds(Date())) { publish() }
+        if session.pollRecentFiles(nowMs: Clock.milliseconds(Date()), readContext: .oneSecondPoll) { publish() }
     }
 
     private func rediscover() {
         guard let session, isLive else { return }
-        let changed = session.rediscover(todayStartMs: Self.todayStartMs(for: Date()))
+        let changed = session.rediscover(
+            todayStartMs: Self.todayStartMs(for: Date()),
+            readContext: .tenSecondRediscovery
+        )
         updateWatcher()
         if changed { publish() }
     }
@@ -214,7 +223,8 @@ final class MonitorCore: @unchecked Sendable {
             nowMs: Clock.milliseconds(now), todayStartMs: todayStartMs, emitsEvents: true, subsets: requested
         )
         let context = SnapshotContext(session: session, todayStartMs: todayStartMs)
-        mailbox.post(SnapshotBuilder.running(output, context: context), events: events)
+        let readObservation = session.consumeReadObservation()
+        mailbox.post(SnapshotBuilder.running(output, context: context, readObservation: readObservation), events: events)
     }
 
     private func publishPlaceholder(_ state: MonitorState, session: TranscriptSession) {
@@ -230,11 +240,18 @@ final class MonitorCore: @unchecked Sendable {
         let paths = session.watchedPaths
         guard paths != watchedPaths || watcher == nil else { return }
         watcher?.stop()
-        watcher = DirectoryWatcher(paths: paths, queue: queue, latency: Self.watcherLatency) { [weak self] events in
+        let latency = realtimeEventMode ? Self.realtimeWatcherLatency : Self.watcherLatency
+        watcher = DirectoryWatcher(paths: paths, queue: queue, latency: latency) { [weak self] events in
             self?.handle(events)
         }
         watchedPaths = watcher == nil ? [] : paths
     }
+
+    private var eventDebounce: DispatchTimeInterval {
+        realtimeEventMode ? .milliseconds(50) : Self.changeDebounce
+    }
+
+    private static let realtimeWatcherLatency: TimeInterval = 0.05
 
     private func makeTimer(
         every interval: DispatchTimeInterval,

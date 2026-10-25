@@ -18,5 +18,6 @@
   <ItemGroup>
     <InternalsVisibleTo Include="AgentSpeed.Core.Tests" />
     <InternalsVisibleTo Include="AgentSpeed.Probe" />
+    <InternalsVisibleTo Include="AgentSpeedReporter" />
   </ItemGroup>
 </Project>

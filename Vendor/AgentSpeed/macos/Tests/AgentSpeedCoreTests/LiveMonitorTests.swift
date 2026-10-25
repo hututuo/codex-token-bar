@@ -15,6 +15,87 @@ struct LiveMonitorTests {
         return condition()
     }
 
+    @Test func observationMergeKeepsEarliestAndUnknownResolution() {
+        let earliest = SourceReadObservation(
+            observedAtMs: 1_000,
+            observedTickMs: 100,
+            sourceMode: "log",
+            sourceResolutionMs: nil
+        )
+        let later = SourceReadObservation(
+            observedAtMs: 2_000,
+            observedTickMs: 200,
+            sourceMode: "poll",
+            sourceResolutionMs: 1_000
+        )
+
+        let merged = earliest.merged(with: later)
+        #expect(merged.observedAtMs == earliest.observedAtMs)
+        #expect(merged.observedTickMs == earliest.observedTickMs)
+        #expect(merged.sourceMode == "mixed")
+        #expect(merged.sourceResolutionMs == nil)
+    }
+
+    @Test func timerTickDoesNotReissueAnObservation() {
+        let store = SpeedStore()
+        let observation = SourceReadObservation(
+            observedAtMs: 1_000,
+            observedTickMs: 100,
+            sourceMode: "log",
+            sourceResolutionMs: 0
+        )
+        var delivered: [SourceReadObservation?] = []
+        let listener = store.addLiveListener { snapshot in delivered.append(snapshot.readObservation) }
+
+        var observedSnapshot = SpeedSnapshot.empty
+        observedSnapshot.readObservation = observation
+        store.publishLive(observedSnapshot)
+
+        var timerSnapshot = observedSnapshot
+        timerSnapshot.timestamp = Date()
+        timerSnapshot.readObservation = nil
+        store.publishLive(timerSnapshot)
+        store.removeLiveListener(listener)
+
+        #expect(delivered.count == 2)
+        #expect(delivered[0] == observation)
+        #expect(delivered[1] == nil)
+        #expect(store.liveSnapshot.readObservation == nil)
+    }
+
+    @Test func mailboxKeepsTheEarliestObservationWhenItCoalescesSnapshots() async throws {
+        let received = Received()
+        let mailbox = SnapshotMailbox { snapshot, _ in received.snapshots.append(snapshot) }
+        let earliest = SourceReadObservation(
+            observedAtMs: 1_000,
+            observedTickMs: 100,
+            sourceMode: "log",
+            sourceResolutionMs: 0
+        )
+        let later = SourceReadObservation(
+            observedAtMs: 2_000,
+            observedTickMs: 200,
+            sourceMode: "poll",
+            sourceResolutionMs: 1_000
+        )
+        var first = SpeedSnapshot.empty
+        first.readObservation = earliest
+        var second = SpeedSnapshot.empty
+        second.readObservation = later
+
+        mailbox.post(first)
+        mailbox.post(second)
+        mailbox.post(.empty) // A timer snapshot must not erase the still-unbuilt observation.
+        #expect(await Self.waitUntil { !received.snapshots.isEmpty })
+        mailbox.close()
+
+        let merged = try #require(received.snapshots.first?.readObservation)
+        #expect(merged.observedAtMs == earliest.observedAtMs)
+        #expect(merged.observedTickMs == earliest.observedTickMs)
+        #expect(merged.sourceMode == "mixed")
+        #expect(merged.sourceResolutionMs == 1_000)
+    }
+
     @Test func reportsNoSourcesWhenRootsAreMissing() async throws {
         let directory = try TempDirectory()
         let store = SpeedStore()

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.Json.Serialization;
 
 namespace AgentSpeed.Core;
 
@@ -192,6 +193,10 @@ public sealed record SpeedSnapshot(
     /// <summary>Live reporting's agent counts and cumulative ledger (METRICS 11.2, 11.4).</summary>
     public Reporting.ReportLiveFacts Report { get; init; } = Reporting.ReportLiveFacts.Empty;
     public IReadOnlyList<ExecutionModeUsage> TodayModes { get; init; } = [];
+
+    /// <summary>One-use source read timing for newly committed responses, kept out of UI serialization.</summary>
+    [JsonIgnore]
+    public SourceReadObservation? SourceReadObservation { get; init; }
 
     public static SpeedSnapshot Empty { get; } = new(
         DateTimeOffset.MinValue,

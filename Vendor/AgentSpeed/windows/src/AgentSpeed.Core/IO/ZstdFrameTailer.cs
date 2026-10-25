@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
+using AgentSpeed.Core;
 using AgentSpeed.Core.Parsing;
 using Microsoft.Win32.SafeHandles;
 using ZstdSharp.Unsafe;
@@ -57,6 +58,7 @@ internal sealed class ZstdFrameTailer : TranscriptTailer
         }
 
         long consumed = 0;
+        SourceReadObservation? observation = null;
         if (length > Offset)
         {
             using var decoder = new FrameDecoder();
@@ -68,6 +70,10 @@ internal sealed class ZstdFrameTailer : TranscriptTailer
                     cancellationToken.ThrowIfCancellationRequested();
                     var available = length - Offset;
                     var fill = Fill(handle, window, (int)Math.Min(window.Length, available), Offset);
+                    if (fill > 0)
+                    {
+                        observation ??= SourceReadObservation.Capture(SourceReadMode.Log, sourceResolutionMs: null);
+                    }
                     var atEnd = fill >= available || fill < Math.Min(window.Length, available);
                     var used = Scan(window.AsSpan(0, fill), decoder, sink);
                     Offset += used;
@@ -101,7 +107,7 @@ internal sealed class ZstdFrameTailer : TranscriptTailer
 
         TotalBytesRead += consumed;
         Lines.Trim();
-        return new TailReadResult(wasReset, length, File.GetLastWriteTimeUtc(handle), consumed);
+        return new TailReadResult(wasReset, length, File.GetLastWriteTimeUtc(handle), consumed, observation);
     }
 
     private static byte[] Rent(int size) =>

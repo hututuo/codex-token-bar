@@ -55,6 +55,7 @@ internal sealed partial class MonitorCore : IDisposable
     private long _removedOversizedLines;
     private int _responsesSeen;
     private bool _partialHistory;
+    private SourceReadObservation? _pendingSourceReadObservation;
 
     public MonitorCore(
         MonitorConfiguration configuration,
@@ -592,7 +593,13 @@ internal sealed partial class MonitorCore : IDisposable
             TodayCost = frame.TodayCost,
             Report = frame.Report,
             TodayModes = frame.TodayModes,
+            SourceReadObservation = observeLive ? _pendingSourceReadObservation : null,
         };
+        if (observeLive)
+        {
+            _pendingSourceReadObservation = null;
+        }
+
         return (snapshot, frame.Events);
     }
 
@@ -848,6 +855,12 @@ internal sealed partial class MonitorCore : IDisposable
             if (_enabled.Contains(response.Source))
             {
                 _engine.Upsert(response, isCompletion, seeded, liveNowMs);
+                if (!seeded)
+                {
+                    _pendingSourceReadObservation = SourceReadObservation.MergeEarliest(
+                        _pendingSourceReadObservation,
+                        prepared.Result.SourceReadObservation);
+                }
             }
 
             _observer?.OnResponse(response, isCompletion, seeded);
@@ -1010,6 +1023,13 @@ internal sealed partial class MonitorCore : IDisposable
         }
 
         long? liveNowMs = seeded ? null : Clock();
+        if (!seeded && update.Responses.Count > 0)
+        {
+            _pendingSourceReadObservation = SourceReadObservation.MergeEarliest(
+                _pendingSourceReadObservation,
+                update.SourceReadObservation);
+        }
+
         foreach (var (response, isCompletion) in update.Responses)
         {
             _responsesSeen++;

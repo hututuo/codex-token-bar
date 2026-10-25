@@ -247,6 +247,44 @@ public enum MonitorWarning: Equatable, Sendable {
     case unsupportedFormat(SourceKind)
 }
 
+/// The earliest new source data read for one live snapshot/report window.
+///
+/// `observedAtMs` is a wall-clock timestamp at the local read boundary. `observedTickMs` is the matching monotonic
+/// timestamp, so callers can calculate age without depending on wall-clock stability. This describes local source
+/// acquisition; it does not imply that a provider emitted a token event.
+public struct SourceReadObservation: Equatable, Sendable {
+    public var observedAtMs: Int64
+    public var observedTickMs: Int64
+    public var sourceMode: String
+    public var sourceResolutionMs: Int?
+
+    public init(observedAtMs: Int64, observedTickMs: Int64, sourceMode: String, sourceResolutionMs: Int?) {
+        self.observedAtMs = observedAtMs
+        self.observedTickMs = observedTickMs
+        self.sourceMode = sourceMode
+        self.sourceResolutionMs = sourceResolutionMs
+    }
+
+    /// Keeps the earliest observation, combines acquisition modes, and reports a resolution only when both inputs
+    /// are known. The caller may use this while a report window has not yet been built.
+    public func merged(with other: SourceReadObservation) -> SourceReadObservation {
+        let earliest = observedTickMs <= other.observedTickMs ? self : other
+        let mode = sourceMode == other.sourceMode ? sourceMode : "mixed"
+        let resolution: Int?
+        if let lhs = sourceResolutionMs, let rhs = other.sourceResolutionMs {
+            resolution = max(lhs, rhs)
+        } else {
+            resolution = nil
+        }
+        return SourceReadObservation(
+            observedAtMs: earliest.observedAtMs,
+            observedTickMs: earliest.observedTickMs,
+            sourceMode: mode,
+            sourceResolutionMs: resolution
+        )
+    }
+}
+
 public struct SpeedSnapshot: Equatable, Sendable {
     public var timestamp: Date
     public var state: MonitorState
@@ -277,6 +315,8 @@ public struct SpeedSnapshot: Equatable, Sendable {
     public var todayCost: CostTally
     /// Live reporting's agent counts and cumulative ledger (METRICS 11.2, 11.4).
     public var report: ReportLiveFacts
+    /// New local source data read since the preceding published snapshot; timer-only snapshots have no observation.
+    public var readObservation: SourceReadObservation?
 
     public init(
         timestamp: Date,
@@ -298,7 +338,8 @@ public struct SpeedSnapshot: Equatable, Sendable {
         dayStart: Date = .distantPast,
         liveCost: LiveCost = .zero,
         todayCost: CostTally = .zero,
-        report: ReportLiveFacts = .empty
+        report: ReportLiveFacts = .empty,
+        readObservation: SourceReadObservation? = nil
     ) {
         self.timestamp = timestamp
         self.state = state
@@ -320,6 +361,7 @@ public struct SpeedSnapshot: Equatable, Sendable {
         self.liveCost = liveCost
         self.todayCost = todayCost
         self.report = report
+        self.readObservation = readObservation
     }
 
     public static let empty = SpeedSnapshot(

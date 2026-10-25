@@ -1,4 +1,4 @@
-use crate::models::AgentSpeedReportingSettingsSnapshot;
+use crate::models::{AgentSpeedReportingSettingsSnapshot, AgentSpeedReportingTransport};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 #[cfg(windows)]
@@ -30,6 +30,7 @@ pub struct AgentSpeedReportingStatus {
     pub enabled: bool,
     pub invitation_handled: bool,
     pub username: String,
+    pub transport: AgentSpeedReportingTransport,
     pub phase: String,
     #[serde(rename = "message")]
     pub status_message: String,
@@ -46,6 +47,7 @@ impl AgentSpeedReportingStatus {
             enabled: settings.enabled,
             invitation_handled: settings.invitation_handled,
             username: settings.username.clone(),
+            transport: settings.transport,
             phase: if settings.enabled { "starting" } else { "off" }.into(),
             status_message: if settings.enabled {
                 "正在启动实时速度上报".into()
@@ -65,6 +67,8 @@ impl AgentSpeedReportingStatus {
 struct RegistryData {
     status: Option<AgentSpeedReportingStatus>,
     active_username: Option<String>,
+    #[cfg(windows)]
+    active_transport: Option<AgentSpeedReportingTransport>,
     #[cfg(any(windows, test))]
     generation: u64,
 }
@@ -105,6 +109,7 @@ impl AgentSpeedReportingRegistry {
         status.enabled = settings.enabled;
         status.invitation_handled = settings.invitation_handled;
         status.username = settings.username.clone();
+        status.transport = settings.transport;
         data.status = Some(status.clone());
         status
     }
@@ -121,6 +126,7 @@ impl AgentSpeedReportingRegistry {
                 enabled: false,
                 invitation_handled: true,
                 username: String::new(),
+                transport: AgentSpeedReportingTransport::Http,
                 phase: "off".into(),
                 status_message: "未开启".into(),
                 live_output_tps: 0.0,
@@ -157,7 +163,7 @@ impl AgentSpeedReportingRegistry {
                     return Err(error);
                 }
             };
-            if self.child_is_running_for(&username) {
+            if self.child_is_running_for(&username, settings.transport) {
                 return Ok(());
             }
 
@@ -195,7 +201,11 @@ impl AgentSpeedReportingRegistry {
                 "Agent Speed reporter helper could not start.".to_owned()
             })?;
 
-            let startup = serde_json::json!({ "enabled": true, "username": username.clone() });
+            let startup = serde_json::json!({
+                "enabled": true,
+                "username": username.clone(),
+                "transport": settings.transport.as_str(),
+            });
             let mut line = serde_json::to_vec(&startup)
                 .map_err(|_| "Agent Speed reporter helper could not start.".to_owned())?;
             line.push(b'\n');
@@ -211,6 +221,7 @@ impl AgentSpeedReportingRegistry {
             {
                 let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
                 data.active_username = Some(username.clone());
+                data.active_transport = Some(settings.transport);
                 data.status = Some(AgentSpeedReportingStatus::from_settings(settings));
             }
             *self.stdin.lock().await = Some(child_stdin);
@@ -218,13 +229,21 @@ impl AgentSpeedReportingRegistry {
 
             let data = Arc::clone(&self.data);
             let status_username = username.clone();
+            let status_transport = settings.transport;
             let generation = self
                 .data
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .generation;
             tauri::async_runtime::spawn(async move {
-                read_helper_status(child_stdout, data, status_username, generation).await;
+                read_helper_status(
+                    child_stdout,
+                    data,
+                    status_username,
+                    status_transport,
+                    generation,
+                )
+                .await;
             });
             Ok(())
         }
@@ -240,6 +259,15 @@ impl AgentSpeedReportingRegistry {
 
         let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
         data.active_username = None;
+        #[cfg(windows)]
+        {
+            data.active_transport = None;
+        }
+        let transport = data
+            .status
+            .as_ref()
+            .map(|status| status.transport)
+            .unwrap_or(AgentSpeedReportingTransport::Http);
         data.status = Some(AgentSpeedReportingStatus {
             enabled: false,
             invitation_handled: true,
@@ -248,6 +276,7 @@ impl AgentSpeedReportingRegistry {
                 .as_ref()
                 .map(|status| status.username.clone())
                 .unwrap_or_default(),
+            transport,
             phase: "off".into(),
             status_message: "未开启".into(),
             live_output_tps: 0.0,
@@ -300,10 +329,15 @@ impl AgentSpeedReportingRegistry {
         let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
         data.generation = data.generation.wrapping_add(1).max(1);
         data.active_username = None;
+        data.active_transport = None;
     }
 
     #[cfg(windows)]
-    fn child_is_running_for(&self, username: &str) -> bool {
+    fn child_is_running_for(
+        &self,
+        username: &str,
+        transport: AgentSpeedReportingTransport,
+    ) -> bool {
         let mut child = self.child.lock().unwrap_or_else(|error| error.into_inner());
         let running = match child.as_mut() {
             Some(child) => matches!(child.try_wait(), Ok(None)),
@@ -311,7 +345,8 @@ impl AgentSpeedReportingRegistry {
         };
         if running {
             let data = self.data.lock().unwrap_or_else(|error| error.into_inner());
-            return data.active_username.as_deref() == Some(username);
+            return data.active_username.as_deref() == Some(username)
+                && data.active_transport == Some(transport);
         }
 
         child.take();
@@ -332,6 +367,7 @@ impl AgentSpeedReportingRegistry {
                     }
                 }
                 data.active_username = None;
+                data.active_transport = None;
             }
         }
     }
@@ -382,6 +418,7 @@ async fn read_helper_status(
     stdout: tokio::process::ChildStdout,
     data: Arc<Mutex<RegistryData>>,
     username: String,
+    transport: AgentSpeedReportingTransport,
     generation: u64,
 ) {
     use tokio::io::AsyncBufReadExt as _;
@@ -396,7 +433,7 @@ async fn read_helper_status(
         let Ok(raw) = serde_json::from_slice::<RawStatusLine>(&line) else {
             continue;
         };
-        let Some(status) = sanitize_status(raw, &username) else {
+        let Some(status) = sanitize_status(raw, &username, transport) else {
             continue;
         };
         let mut state = data.lock().unwrap_or_else(|error| error.into_inner());
@@ -414,6 +451,7 @@ async fn read_helper_status(
             }
         }
         state.active_username = None;
+        state.active_transport = None;
     }
 }
 
@@ -463,11 +501,21 @@ where
     }
 }
 
-fn sanitize_status(raw: RawStatusLine, username: &str) -> Option<AgentSpeedReportingStatus> {
+fn sanitize_status(
+    raw: RawStatusLine,
+    username: &str,
+    transport: AgentSpeedReportingTransport,
+) -> Option<AgentSpeedReportingStatus> {
     if raw.version != 1
         || !matches!(
             raw.phase.as_str(),
-            "waiting_for_snapshot" | "discovering" | "registering" | "reporting" | "error"
+            "waiting_for_snapshot"
+                | "discovering"
+                | "registering"
+                | "connected"
+                | "reporting"
+                | "reconnecting"
+                | "error"
         )
         || raw.message_code.len() > 48
     {
@@ -497,6 +545,7 @@ fn sanitize_status(raw: RawStatusLine, username: &str) -> Option<AgentSpeedRepor
         enabled: true,
         invitation_handled: true,
         username: username.to_owned(),
+        transport,
         phase: if raw.phase == "reporting" {
             "running".into()
         } else {
@@ -543,7 +592,14 @@ fn message_for(code: &str) -> &'static str {
         "waiting_for_snapshot" => "正在等待实时快照",
         "discovering" => "正在检查上报服务",
         "registering" => "正在注册此设备",
+        "websocket_connected" => "WebSocket 已连接，等待有效上报确认",
         "reporting" => "正在上报实时速度",
+        "websocket_reconnecting" => "WebSocket 正在重新连接",
+        "websocket_not_supported" => "此上报服务尚未支持 WebSocket",
+        "websocket_configuration_mismatch" => "服务连接设置不一致，请手动重试",
+        "websocket_protocol_error" => "WebSocket 服务协议不兼容",
+        "websocket_replaced" => "此设备已在其他位置连接",
+        "unknown_device" => "服务端找不到此设备，请稍后重试",
         "service_unavailable" => "上报服务不可用",
         "service_unsupported" => "上报服务不受支持",
         "username_invalid" => "用户名不符合服务要求",
@@ -702,7 +758,8 @@ mod tests {
             ],
             profile_url: Some("https://evil.example/profile".into()),
         };
-        let status = sanitize_status(raw, "TokenBar-a1b2").unwrap();
+        let status =
+            sanitize_status(raw, "TokenBar-a1b2", AgentSpeedReportingTransport::Http).unwrap();
         assert_eq!(status.phase, "running");
         assert_eq!(status.live_output_tps, 0.0);
         assert_eq!(status.estimated_share, 1.0);

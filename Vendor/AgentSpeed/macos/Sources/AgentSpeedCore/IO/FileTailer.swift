@@ -1,6 +1,19 @@
 import Darwin
 import Foundation
 
+/// Wall and monotonic clocks captured at a local source-read boundary.
+struct SourceReadBoundary: Equatable, Sendable {
+    let observedAtMs: Int64
+    let observedTickMs: Int64
+
+    static func now() -> SourceReadBoundary {
+        SourceReadBoundary(
+            observedAtMs: Int64(Date().timeIntervalSince1970 * 1000),
+            observedTickMs: Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000)
+        )
+    }
+}
+
 /// Reads complete lines appended to one file (METRICS 5). Read-only, never follows symlinks.
 struct FileTailer: Sendable {
     static let defaultMaxLineBytes = 32 << 20
@@ -19,12 +32,21 @@ struct FileTailer: Sendable {
 
     struct ReadResult: Equatable, Sendable {
         var bytesRead = 0
+        /// Time at which the first bytes or rows crossed into the local reader.
+        var readBoundary: SourceReadBoundary?
         /// The file shrank or was replaced; offset and parser state must restart.
         var didReset = false
         var failed = false
         var stat: FileStat?
         /// A whole-document file over its size limit was not read (`partialHistory`).
         var oversized = false
+
+        mutating func recordReadBoundary(onReadBoundary: (SourceReadBoundary) -> Void) {
+            guard readBoundary == nil else { return }
+            let boundary = SourceReadBoundary.now()
+            readBoundary = boundary
+            onReadBoundary(boundary)
+        }
     }
 
     let path: String
@@ -43,7 +65,11 @@ struct FileTailer: Sendable {
     }
 
     /// Reads every complete line appended since the last call.
-    mutating func read(onReset: () -> Void = {}, onLine: (UnsafeRawBufferPointer) -> Void) -> ReadResult {
+    mutating func read(
+        onReset: () -> Void = {},
+        onReadBoundary: (SourceReadBoundary) -> Void = { _ in },
+        onLine: (UnsafeRawBufferPointer) -> Void
+    ) -> ReadResult {
         var result = ReadResult()
         let descriptor = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard descriptor >= 0 else {
@@ -72,6 +98,7 @@ struct FileTailer: Sendable {
         let capacity = Int(min(Int64(Self.chunkBytes), stat.size - offset))
         let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: capacity, alignment: 16)
         defer { buffer.deallocate() }
+        var reportedBoundary = false
         while offset < stat.size {
             let wanted = Int(min(Int64(capacity), stat.size - offset))
             let count = Darwin.pread(descriptor, buffer.baseAddress, wanted, off_t(offset))
@@ -81,6 +108,10 @@ struct FileTailer: Sendable {
                 break
             }
             if count == 0 { break }
+            if !reportedBoundary {
+                result.recordReadBoundary(onReadBoundary: onReadBoundary)
+                reportedBoundary = true
+            }
             lines.consume(UnsafeRawBufferPointer(rebasing: buffer[0..<count]), onLine: onLine)
             offset += Int64(count)
             result.bytesRead += count

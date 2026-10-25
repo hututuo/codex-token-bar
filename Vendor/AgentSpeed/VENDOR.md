@@ -9,3 +9,10 @@
 - Test-only adaptations: the Swift strict-body checker and loopback end-to-end server overlay the client `app` schema in memory to accept both `AgentSpeed` (upstream fixtures) and `CodexTokenBar` (this product); `spec/report-schema.json` and signed vectors remain untouched. Session and live-monitor fixture tests set explicit scratch roots for every source family so nil-root defaults cannot read files from the developer's home directory.
 - The Swift target uses the checkout's existing `CZstd` package target. Its public Zstd headers are version 1.5.7, matching upstream's API version; no duplicate Zstd source is vendored here.
 - The upstream Swift tests are exposed as a separate `AgentSpeedCoreTests` SwiftPM test target. Fixture paths resolve inside this vendored tree at `spec/fixtures`.
+
+## Local optional WebSocket extension (2026-10-25)
+
+- Adds strict Draft-1 WebSocket capability parsing in the Swift/C# discovery models; invalid optional WS fields do not disable HTTP. HTTP remains the default. Token Bar owns each platform's connection/window controller outside the vendored reporting math.
+- Adds nullable source-read observations (matched wall/monotonic tuple) through readers/monitor snapshots, consumed once. Event notifications for log files are labelled `log`, never provider token events; unknown cadence remains null. WS event debounce is 50ms while existing HTTP monitor defaults and the 3-second TPS/usage/fee rules remain unchanged.
+- Swift JSON parsing adds an opt-in duplicate-key rejection for WS control messages; legacy log parsing retains its existing default. Upstream signed fixtures and report schema remain reference data, not an assertion of current receiver client-ID compatibility.
+- Protocol reference: https://speed-test.codexradar.com/integration.html and its `/protocol/REPORTING-WEBSOCKET.md`; production discovery at https://deng.codexradar.com/.well-known/agent-speed-report.

@@ -125,6 +125,36 @@ pub struct AgentSpeedReportingSettingsSnapshot {
     pub invitation_handled: bool,
     #[serde(default)]
     pub username: String,
+    #[serde(default, deserialize_with = "deserialize_agent_speed_transport")]
+    pub transport: AgentSpeedReportingTransport,
+}
+
+/// The user's explicit Agent Speed reporting transport choice. Missing or unrecognized values
+/// from older or hand-edited settings are kept on the established HTTP path.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentSpeedReportingTransport {
+    #[default]
+    Http,
+    Websocket,
+}
+
+impl AgentSpeedReportingTransport {
+    #[cfg(windows)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Websocket => "websocket",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "http" => Some(Self::Http),
+            "websocket" => Some(Self::Websocket),
+            _ => None,
+        }
+    }
 }
 
 impl Default for AgentSpeedReportingSettingsSnapshot {
@@ -133,8 +163,23 @@ impl Default for AgentSpeedReportingSettingsSnapshot {
             enabled: false,
             invitation_handled: false,
             username: String::new(),
+            transport: AgentSpeedReportingTransport::Http,
         }
     }
+}
+
+fn deserialize_agent_speed_transport<'de, D>(
+    deserializer: D,
+) -> Result<AgentSpeedReportingTransport, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        Some("websocket") => AgentSpeedReportingTransport::Websocket,
+        Some("http") => AgentSpeedReportingTransport::Http,
+        _ => AgentSpeedReportingTransport::Http,
+    })
 }
 
 impl AgentSpeedReportingSettingsSnapshot {
@@ -855,5 +900,34 @@ mod rate_scale_tests {
             ).unwrap();
             assert_eq!(settings.token_rate_full_scale, value);
         }
+    }
+
+    #[test]
+    fn agent_speed_transport_defaults_legacy_and_unknown_settings_to_http() {
+        let legacy: AgentSpeedReportingSettingsSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "enabled": true,
+                "username": "TokenBar-a1b2"
+            }))
+            .unwrap();
+        assert_eq!(legacy.transport, AgentSpeedReportingTransport::Http);
+
+        let unknown: AgentSpeedReportingSettingsSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "transport": "future-transport"
+            }))
+            .unwrap();
+        assert_eq!(unknown.transport, AgentSpeedReportingTransport::Http);
+
+        let websocket: AgentSpeedReportingSettingsSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "transport": "websocket"
+            }))
+            .unwrap();
+        assert_eq!(websocket.transport, AgentSpeedReportingTransport::Websocket);
+        assert_eq!(
+            serde_json::to_value(websocket).unwrap()["transport"],
+            "websocket"
+        );
     }
 }

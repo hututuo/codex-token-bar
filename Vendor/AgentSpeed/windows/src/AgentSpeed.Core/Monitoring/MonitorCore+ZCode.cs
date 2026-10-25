@@ -70,6 +70,13 @@ internal sealed partial class MonitorCore
         }
 
         long? liveNow = seeded ? null : Clock();
+        if (!seeded && update.Responses.Count > 0)
+        {
+            _pendingSourceReadObservation = SourceReadObservation.MergeEarliest(
+                _pendingSourceReadObservation,
+                update.SourceReadObservation);
+        }
+
         foreach (var (response, completion) in update.Responses)
         {
             _responsesSeen++;

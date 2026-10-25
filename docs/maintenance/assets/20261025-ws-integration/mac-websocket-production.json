@@ -1,0 +1,17 @@
+{
+  "accepted" : true,
+  "buildToACKMs" : 414,
+  "clientApp" : "CodexTokenBar",
+  "platform" : "macOS",
+  "productionKeyReused" : false,
+  "published" : false,
+  "ready" : true,
+  "registration" : true,
+  "service" : "production",
+  "status" : "WebSocket 已连接 · 等待有效上报",
+  "syntheticMetrics" : false,
+  "systemDeviceKey" : true,
+  "terminal" : "",
+  "username" : "TokenBar-Mac-WS-B3A367",
+  "zeroUsageProtocolProbe" : true
+}

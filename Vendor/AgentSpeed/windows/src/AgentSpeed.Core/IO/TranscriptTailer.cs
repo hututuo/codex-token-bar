@@ -1,9 +1,15 @@
 using AgentSpeed.Core.Parsing;
+using AgentSpeed.Core;
 using Microsoft.Win32.SafeHandles;
 
 namespace AgentSpeed.Core.IO;
 
-internal readonly record struct TailReadResult(bool WasReset, long Length, DateTime LastWriteUtc, long BytesRead);
+internal readonly record struct TailReadResult(
+    bool WasReset,
+    long Length,
+    DateTime LastWriteUtc,
+    long BytesRead,
+    SourceReadObservation? SourceReadObservation = null);
 
 /// <summary>How a tailer that starts inside a file treats the bytes before the first newline (METRICS 5).</summary>
 internal enum StartAlignment

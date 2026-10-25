@@ -9,6 +9,8 @@ internal sealed class OpenCodeUpdate
 {
     public List<(ParsedResponse Response, bool IsCompletion)> Responses { get; } = [];
 
+    public SourceReadObservation? SourceReadObservation { get; set; }
+
     /// <summary>Agent id → state of sessions whose state may have changed.</summary>
     public Dictionary<string, OpenCodeAgentState> Agents { get; } = new(StringComparer.Ordinal);
 
@@ -210,6 +212,7 @@ internal sealed class OpenCodeSource : IDisposable
         _walStamp = Stamp(WalPath);
         try
         {
+            update.SourceReadObservation = SourceReadObservation.Capture(SourceReadMode.Poll, sourceResolutionMs: 1_000);
             var advanced = new List<string>();
             foreach (var info in database.Sessions((_sessionCursor ?? 0) - CursorOverlapMs))
             {

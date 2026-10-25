@@ -1,4 +1,5 @@
 using System.Buffers;
+using AgentSpeed.Core;
 using AgentSpeed.Core.Parsing;
 
 namespace AgentSpeed.Core.IO;
@@ -45,6 +46,7 @@ internal class FileTailer : TranscriptTailer
 
         _alignment = StartAlignment.None;
         long bytesRead = 0;
+        SourceReadObservation? observation = null;
         if (length > Offset)
         {
             var buffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(ChunkBytes, length - Offset));
@@ -60,6 +62,7 @@ internal class FileTailer : TranscriptTailer
                         break;
                     }
 
+                    observation ??= SourceReadObservation.Capture(SourceReadMode.Log, sourceResolutionMs: null);
                     Offset += read;
                     bytesRead += read;
                     Lines.Consume(buffer.AsSpan(0, read), sink);
@@ -73,6 +76,6 @@ internal class FileTailer : TranscriptTailer
 
         TotalBytesRead += bytesRead;
         Lines.Trim();
-        return new TailReadResult(wasReset, length, File.GetLastWriteTimeUtc(handle), bytesRead);
+        return new TailReadResult(wasReset, length, File.GetLastWriteTimeUtc(handle), bytesRead, observation);
     }
 }

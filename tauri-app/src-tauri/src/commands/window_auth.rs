@@ -25,6 +25,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "save_auto_resume_settings",
     "save_session_enhancement_settings",
     "set_agent_speed_reporting_enabled",
+    "set_agent_speed_reporting_transport",
     "dismiss_agent_speed_invitation",
     "save_setup_guide_completed",
     "scan_provider_repair",

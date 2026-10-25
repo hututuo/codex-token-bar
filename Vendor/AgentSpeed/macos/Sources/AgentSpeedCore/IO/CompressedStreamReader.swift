@@ -23,6 +23,7 @@ struct CompressedStreamReader: Sendable {
     mutating func read(
         onReset: () -> Void,
         onMalformed: () -> Void,
+        onReadBoundary: (SourceReadBoundary) -> Void = { _ in },
         onLine: (UnsafeRawBufferPointer) -> Void
     ) -> FileTailer.ReadResult {
         var result = FileTailer.ReadResult()
@@ -71,6 +72,7 @@ struct CompressedStreamReader: Sendable {
         var lines = LineSplitter(maxLineBytes: maxLineBytes)
         var offset: Int64 = 0
         var frameOpen = false
+        var reportedBoundary = false
         reading: while offset < stat.size {
             let wanted = Int(min(Int64(Self.inputChunkBytes), stat.size - offset))
             let count = Darwin.pread(descriptor, input.baseAddress, wanted, off_t(offset))
@@ -80,6 +82,10 @@ struct CompressedStreamReader: Sendable {
                 break
             }
             if count == 0 { break }
+            if !reportedBoundary {
+                result.recordReadBoundary(onReadBoundary: onReadBoundary)
+                reportedBoundary = true
+            }
             offset += Int64(count)
             result.bytesRead += count
             var source = ZSTD_inBuffer(src: input.baseAddress, size: count, pos: 0)

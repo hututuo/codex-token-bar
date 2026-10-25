@@ -62,6 +62,17 @@ public sealed class ReportServiceUrl : IEquatable<ReportServiceUrl>
         return new Uri(Text + path, UriKind.Absolute);
     }
 
+    /// <summary>Derives the report WebSocket from this exact API authority and base path.</summary>
+    public Uri WebSocketEndpoint()
+    {
+        var endpoint = Endpoint(ReportWebSocketSettings.Path);
+        var builder = new UriBuilder(endpoint)
+        {
+            Scheme = Scheme == "https" ? "wss" : "ws",
+        };
+        return builder.Uri;
+    }
+
     /// <summary>REPORTING 2.1: trims, prefixes <c>https://</c> when no scheme is given, then normalizes.</summary>
     public static ReportServiceUrl? Parse(string? input) => TryParse(input, out var url, out _) ? url : null;
 

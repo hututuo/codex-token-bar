@@ -19,6 +19,10 @@ final class TrackedFile {
     var lastReadNs: UInt64 = 0
     /// The database changed while a read was throttled; read it once the interval has passed.
     var isDirty = false
+    /// Provenance retained when a database read is deferred by its minimum read interval.
+    var pendingReadContext: SourceReadContext?
+    /// Provenance of a change received while a whole-file read is already in flight.
+    var pendingWholeReadContext: SourceReadContext?
 
     init(
         path: String,

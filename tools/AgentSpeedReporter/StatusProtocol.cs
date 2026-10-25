@@ -4,7 +4,7 @@ using AgentSpeed.Core;
 
 namespace CodexTokenBar.AgentSpeedReporter;
 
-internal sealed record StartCommand(bool Enabled, string Username);
+internal sealed record StartCommand(bool Enabled, string Username, string Transport);
 
 internal sealed record StatusSource(
     [property: JsonPropertyName("id")] string Id,
@@ -67,7 +67,9 @@ internal static class StatusProtocol
             using var document = JsonDocument.Parse(bytes.AsMemory(0, count), new JsonDocumentOptions { MaxDepth = 4 });
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object
-                || root.EnumerateObject().Any(property => property.Name is not ("enabled" or "username"))
+                || root.EnumerateObject().Select(property => property.Name).Distinct(StringComparer.Ordinal).Count()
+                    != root.EnumerateObject().Count()
+                || root.EnumerateObject().Any(property => property.Name is not ("enabled" or "username" or "transport"))
                 || !root.TryGetProperty("enabled", out var enabled) || enabled.ValueKind != JsonValueKind.True
                 || !root.TryGetProperty("username", out var username) || username.ValueKind != JsonValueKind.String)
             {
@@ -81,7 +83,15 @@ internal static class StatusProtocol
                 return null;
             }
 
-            return new StartCommand(true, value.Trim());
+            var transport = root.TryGetProperty("transport", out var requestedTransport)
+                ? requestedTransport.ValueKind == JsonValueKind.String ? requestedTransport.GetString() : null
+                : "http";
+            if (transport is not ("http" or "websocket"))
+            {
+                return null;
+            }
+
+            return new StartCommand(true, value.Trim(), transport);
         }
         catch (JsonException)
         {
@@ -118,7 +128,14 @@ internal static class StatusProtocol
         "waiting_for_snapshot" => "Waiting for a live snapshot",
         "discovering" => "Checking the reporting service",
         "registering" => "Registering this device",
+        "websocket_connected" => "WebSocket connected; waiting for a valid report acknowledgement",
         "reporting" => "Reporting live speed",
+        "websocket_reconnecting" => "WebSocket reconnecting",
+        "websocket_not_supported" => "This service does not support WebSocket reports",
+        "websocket_configuration_mismatch" => "The WebSocket service settings do not match discovery",
+        "websocket_protocol_error" => "The WebSocket service is incompatible",
+        "websocket_replaced" => "This device is connected elsewhere",
+        "unknown_device" => "The reporting service no longer recognizes this device",
         "service_unavailable" => "Reporting service unavailable",
         "service_unsupported" => "Reporting service is not supported",
         "username_invalid" => "Username is not accepted",

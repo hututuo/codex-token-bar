@@ -6,6 +6,7 @@ struct AgentSpeedReportingSettingsView: View {
     @ObservedObject private var controller = AgentSpeedReportingController.shared
     @State private var nickname = ""
     @State private var confirming = false
+    @State private var showNickname = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -13,10 +14,16 @@ struct AgentSpeedReportingSettingsView: View {
                 Label("速蹬排行榜", systemImage: "speedometer").font(.title3.bold())
                 Spacer()
                 Toggle("参加排行榜", isOn: Binding(get: { controller.enabled }, set: {
-                    if $0 { confirming = true } else { controller.setEnabled(false) }
+                    if $0 { if controller.username.hasPrefix("TokenBar-") { nickname = "" }; confirming = true } else { controller.setEnabled(false) }
                 })).toggleStyle(.switch)
             }
             Text("按 Agent Speed 标准统计各软件的请求速度，与你的正文 TPS 独立。")
+            Picker("上报方式", selection: Binding(get: { controller.transport }, set: { controller.setTransport($0) })) {
+                Text("HTTP（默认）").tag(AgentSpeedReportingMode.http)
+                Text("WebSocket 即时").tag(AgentSpeedReportingMode.websocket)
+            }.pickerStyle(.segmented)
+            Text("WebSocket 需服务支持；断线后自动重连，不会自动切回 HTTP。日志写入仍可能延迟。")
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Text("公开昵称")
                 TextField("排行榜昵称", text: $nickname).textFieldStyle(.roundedBorder)
@@ -28,7 +35,7 @@ struct AgentSpeedReportingSettingsView: View {
                 .font(.callout).foregroundStyle(.secondary)
             Divider()
             HStack {
-                Circle().fill(controller.enabled ? Color.green : Color.secondary).frame(width: 8, height: 8)
+                Circle().fill(controller.enabled ? (controller.phase == "error" ? Color.red : (controller.phase == "running" && controller.lastReportAt != nil ? Color.green : Color.orange)) : Color.secondary).frame(width: 8, height: 8)
                 Text(controller.message).font(.callout)
                 Spacer()
                 if controller.enabled && controller.phase == "error" {
@@ -71,9 +78,15 @@ struct AgentSpeedReportingSettingsView: View {
         .onAppear { nickname = controller.username }
         .alert("参加速蹬排行榜？", isPresented: $confirming) {
             Button("暂不参加", role: .cancel) {}
-            Button("同意并开启") { controller.setEnabled(true, username: nickname) }
+            Button("同意参加，下一步") { showNickname = true }
         } message: {
             Text("开启后将以“\(nickname)”公开参与排行榜，发送各软件的速度、Token、模型和 Harness 等统计。请确认这台电脑没有另一客户端重复上报。你可以随时在这里关闭。")
+        }
+        .sheet(isPresented: $showNickname) {
+            SpeedReportingNicknameStep(nickname: $nickname, onBack: { showNickname = false }) {
+                controller.setEnabled(true, username: nickname)
+                if controller.enabled { showNickname = false }
+            }.padding(24).frame(width: 440)
         }
     }
 }
@@ -82,6 +95,8 @@ struct AgentSpeedReportingSettingsView: View {
 struct AgentSpeedReportingInvitation: View {
     @ObservedObject private var controller = AgentSpeedReportingController.shared
     @State private var joining = false
+    @State private var naming = false
+    @State private var nickname = ""
     @State private var invitationReady = false
     var body: some View {
         Group {
@@ -93,6 +108,7 @@ struct AgentSpeedReportingInvitation: View {
                         Button { controller.dismissInvitation() } label: { Image(systemName: "xmark") }
                             .buttonStyle(.plain).accessibilityLabel("暂不参加速蹬排行榜")
                     }
+                    if !naming {
                     SpeedLeaderboardMovie()
                     Text("加入速蹬 Token 排行榜")
                         .font(.title3.bold())
@@ -102,12 +118,12 @@ struct AgentSpeedReportingInvitation: View {
                         .padding(10)
                         .background(RoundedRectangle(cornerRadius: 9).fill((joining ? Color.green : Color.blue).opacity(0.08)))
                         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder((joining ? Color.green : Color.blue).opacity(0.45)))
-                    Text(joining ? "已选择参加 → 点击右下角“开启并参加”完成" : "↑ 先打开上方开关，再点右下角“开启并参加”")
+                    Text(joining ? "已选择参加 → 下一步填写您的昵称" : "↑ 先打开上方开关，再点右下角“下一步”")
                         .font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.blue)
                         .lineLimit(1).minimumScaleFactor(0.8).frame(height: 18, alignment: .leading)
                     Text("仅上报 Token、速度、模型和软件统计，以及公开昵称、设备标识和客户端版本信息；不上传对话内容、文件路径或账号凭据。可随时在设置中关闭。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Text("公开昵称：\(controller.username)。同一数据源请勿与 Agent Speed 重复上报。")
+                    Text("下一步设置公开昵称。同一数据源请勿与 Agent Speed 重复上报。")
                         .font(.caption).lineLimit(2).frame(height: 32, alignment: .topLeading)
                     HStack(spacing: 12) {
                         Button("设置与说明") {
@@ -116,9 +132,17 @@ struct AgentSpeedReportingInvitation: View {
                         }.buttonStyle(.link)
                         Spacer()
                         Button("暂不参加") { controller.dismissInvitation() }
-                        Button("开启并参加") { controller.setEnabled(true) }
+                        Button("同意参加，下一步") {
+                            nickname = controller.username.hasPrefix("TokenBar-") ? "" : controller.username
+                            naming = true
+                        }
                             .buttonStyle(.borderedProminent).disabled(!joining)
                             .help(joining ? "确认参加并开始上报" : "先打开上方“参加速蹬排行榜”开关")
+                    }
+                    } else {
+                        SpeedReportingNicknameStep(nickname: $nickname, onBack: { naming = false }) {
+                            controller.setEnabled(true, username: nickname)
+                        }.frame(minHeight: 310)
                     }
                 }
                 .padding(20).frame(width: 500)
@@ -145,6 +169,29 @@ struct AgentSpeedReportingInvitation: View {
         if invitationReady, NSApp.windows.contains(where: { !($0 is NSPanel) && $0.isVisible && $0.contentViewController != nil }) {
             controller.offerInvitation()
         }
+    }
+}
+
+private struct SpeedReportingNicknameStep: View {
+    @Binding var nickname: String
+    let onBack: () -> Void
+    let onJoin: () -> Void
+    @FocusState private var focused: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("② 设置排行榜昵称").font(.callout.weight(.semibold)).foregroundStyle(Color.blue)
+            Text("怎么称呼您？").font(.title2.bold())
+            Text("这个昵称会公开显示在排行榜上。")
+            TextField("请输入您的昵称", text: $nickname).textFieldStyle(.roundedBorder).focused($focused)
+            Text("2–32 个字符。上报方式默认 HTTP，可在设置中选择 WebSocket。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("上一步", action: onBack)
+                Spacer()
+                Button("开启并参加", action: onJoin).buttonStyle(.borderedProminent)
+                    .disabled(nickname.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars.count < 2 || nickname.unicodeScalars.count > 32)
+            }
+        }.onAppear { focused = true }
     }
 }
 
