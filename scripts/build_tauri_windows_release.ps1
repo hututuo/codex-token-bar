@@ -207,10 +207,11 @@ function Build-Target {
     Write-Host "==> Building Windows $Label ($RustTarget)"
     $DotnetRuntime = if ($Label -eq "arm64") { "win-arm64" } else { "win-x64" }
     $ReporterOutput = Join-Path $ReporterArtifactsRoot $DotnetRuntime
+    # Preserve each MSBuild property as one argv token for native dotnet and the PS5.1 fixture.
     Invoke-Checked "Agent Speed reporter publish $DotnetRuntime" {
         dotnet publish $ReporterProject --configuration Release --runtime $DotnetRuntime --self-contained true `
-            --output $ReporterOutput -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:PublishTrimmed=false -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable
+            --output $ReporterOutput "-p:PublishSingleFile=true" "-p:IncludeNativeLibrariesForSelfExtract=true" `
+            "-p:PublishTrimmed=false" "-p:LangVersion=latest" "-p:Nullable=enable" "-p:ImplicitUsings=enable"
     }
     $ReporterExecutable = Join-Path $ReporterOutput "AgentSpeedReporter.exe"
     if (-not (Test-Path -LiteralPath $ReporterExecutable)) {
@@ -363,8 +364,8 @@ try {
             (Join-Path $PSScriptRoot "build_tauri_windows_release.test.mjs")
     }
     Invoke-Checked "Agent Speed reporter local privacy tests" {
-        dotnet run --project $ReporterProject --configuration Release -p:LangVersion=latest `
-            -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
+        dotnet run --project $ReporterProject --configuration Release "-p:LangVersion=latest" `
+            "-p:Nullable=enable" "-p:ImplicitUsings=enable" -- --self-test
     }
 
     $HadCargoTargetDir = Test-Path Env:CARGO_TARGET_DIR
