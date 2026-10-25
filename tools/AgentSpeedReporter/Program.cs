@@ -5,6 +5,7 @@ using System.Text.Json;
 using AgentSpeed.Core;
 using AgentSpeed.Core.Monitoring;
 using AgentSpeed.Core.Reporting;
+using AgentSpeed.Core.Pricing;
 
 namespace CodexTokenBar.AgentSpeedReporter;
 
@@ -82,6 +83,7 @@ internal static class SelfTests
             await TransportChoiceIsExplicitAsync().ConfigureAwait(false);
             RealtimeModeOnlyTightensEventDrivenPublication();
             PayloadIsWhitelisted();
+            CostReportingPreservesKnownAndUnknownParts();
             DiscoveryWebSocketCapabilityIsStrict();
             WebSocketRealtimeTimingCarriesFreshSourceReadMetadata();
             SourceReadObservationTracksOnlyNewTranscriptResponses();
@@ -164,6 +166,37 @@ internal static class SelfTests
         if (!lifetime.IsCancellationRequested)
         {
             throw new InvalidOperationException();
+        }
+    }
+
+    private static void CostReportingPreservesKnownAndUnknownParts()
+    {
+        using var monitor = new LiveMonitor(new SpeedHub(context: null), pricing: new PriceBook());
+        if (monitor.Pricing is null) throw new InvalidOperationException();
+        foreach (var unknownOnly in new[] { false, true })
+        {
+            var counters = new ReportCounters();
+            counters.Add(new ReportUsage(Requests: 2, Output: 100, CostMicroUsd: unknownOnly ? 0 : 1234,
+                UnpricedRequests: unknownOnly ? 2 : 1), new ReportModelKey("gpt-6.1-sol", SourceKind.Codex));
+            var sample = ReportSample.Empty with {
+                Live = new Rate(100, 100), LiveCost = new LiveCost(unknownOnly ? 0 : 1234, unknownOnly ? 0 : 50),
+                Facts = ReportLiveFacts.Empty with { Counters = counters }
+            };
+            var body = ReportBody.Data(new ReportEnvelope(ReportClientInfo.Windows("0.9.7"),
+                ReportCanonical.NewUuid(), "cost-test", ReportCanonical.NewUuid(), 1, 0, 500, ReportActivity.Active, 0),
+                new ReportWindow(ReportSample.Empty).Take(sample), sample,
+                new ReportOptions(new HashSet<ReportSection> { ReportSection.Cost, ReportSection.Models, ReportSection.Sources },
+                    PriceVersion: PriceBook.Bundled.Version));
+            if (!ReportPayloadWhitelist.IsAllowed(body)) throw new InvalidOperationException();
+            using var parsed = JsonDocument.Parse(body);
+            var cost = parsed.RootElement.GetProperty("cost");
+            if (cost.GetProperty("deltaMicroUsd").GetInt64() != (unknownOnly ? 0 : 1234)
+                || cost.GetProperty("unpricedRequests").GetInt64() != (unknownOnly ? 2 : 1)
+                || cost.GetProperty("knownShare").GetDouble() != (unknownOnly ? 0 : 0.5)
+                || cost.GetProperty("priceVersion").GetInt32() != PriceBook.Bundled.Version
+                || parsed.RootElement.TryGetProperty("traffic", out _)) throw new InvalidOperationException();
+            if (!RealtimeReportBody.TryAppendSourceTiming(body, null, Stopwatch.GetTimestamp(), 0, out var ws, out _)
+                || ws is null || !ReportPayloadWhitelist.IsAllowed(ws, allowRealtime: true)) throw new InvalidOperationException();
         }
     }
 

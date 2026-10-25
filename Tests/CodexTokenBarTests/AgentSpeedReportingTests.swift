@@ -112,7 +112,7 @@ final class AgentSpeedReportingTests: XCTestCase {
         try await waitFor { monitor.starts == 1 }
         var snapshot = SpeedSnapshot.empty
         snapshot.state = .starting(progress: 0.8)
-        snapshot.report.counters.add(.init(requests: 10, output: 1000, measuredOutput: 1000, measuredMs: 20_000),
+        snapshot.report.counters.add(.init(requests: 10, output: 1000, measuredOutput: 1000, measuredMs: 20_000, costMicroUsd: 99_000),
                                     to: .init(modelId: "gpt-6.1-sol", source: .codex))
         controller.receive(snapshot)
         snapshot.state = .running
@@ -121,7 +121,7 @@ final class AgentSpeedReportingTests: XCTestCase {
             clock = Int64(step * 500)
             if step == 10 {
                 snapshot.report.counters.add(.init(requests: 1, output: 250, input: 500, reasoning: 100,
-                                                  measuredOutput: 250, measuredMs: 5000),
+                                                  measuredOutput: 250, measuredMs: 5000, costMicroUsd: 1234, unpricedRequests: 1),
                                             to: .init(modelId: "gpt-6.1-sol", source: .codex))
             }
             snapshot.live = .init(output: 50, total: 150)
@@ -134,12 +134,19 @@ final class AgentSpeedReportingTests: XCTestCase {
         XCTAssertEqual(reports.count, 1)
         let request = try XCTUnwrap(reports.first)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
-        XCTAssertEqual(Set(body.keys), Set(["schema","client","deviceId","username","run","sentAt","windowMs","activity","live","peak","delta","title","sources","models"]))
+        XCTAssertEqual(Set(body.keys), Set(["schema","client","deviceId","username","run","sentAt","windowMs","activity","live","peak","delta","title","sources","models","cost"]))
         let delta = try XCTUnwrap(body["delta"] as? [String: Any])
         XCTAssertEqual(delta["requests"] as? Int, 1)
         XCTAssertEqual(delta["output"] as? Int, 250)
         XCTAssertEqual(delta["measuredMs"] as? Int, 5000)
-        XCTAssertNil(body["cost"]); XCTAssertNil(body["traffic"])
+        let cost = try XCTUnwrap(body["cost"] as? [String: Any])
+        XCTAssertEqual(cost["deltaMicroUsd"] as? Int, 1234)
+        XCTAssertEqual(cost["unpricedRequests"] as? Int, 1)
+        XCTAssertEqual(cost["priceVersion"] as? Int, PriceBook.bundled.version)
+        XCTAssertEqual(cost["knownShare"] as? Double, 0)
+        let models = try XCTUnwrap(body["models"] as? [[String: Any]])
+        XCTAssertEqual(models.first?["deltaMicroUsd"] as? Int, 1234)
+        XCTAssertNil(body["traffic"])
         XCTAssertEqual((body["client"] as? [String: Any])?["app"] as? String, "CodexTokenBar")
         XCTAssertNotNil(request.header("X-AgentSpeed-Signature"))
         XCTAssertNil(request.header("Authorization"))

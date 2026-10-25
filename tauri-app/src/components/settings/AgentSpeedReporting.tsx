@@ -18,7 +18,7 @@ export interface AgentSpeedReportingStatus {
 const website = "https://deng.codexradar.com/";
 const privacy = `${website}agent-speed/privacy/`;
 const terms = `${website}agent-speed/terms/`;
-const disclosure = "仅上报速度、Token、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止这条链路的采集和上报。";
+const disclosure = "仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止这条链路的采集和上报。";
 const duplicateNotice = "同一台电脑的同一数据源，请只在 Agent Speed 或 Token Bar 中开启一处上报，避免重复累计。";
 export const supportedHarnesses = "Codex、Claude Code、Claude Desktop（本地 Code／Agent 会话）、DSH、OpenCode、Gemini CLI、omp、Antigravity、WorkBuddy、WorkBuddy AI、ZCode、Kimi Code、Grok Build";
 const initial: AgentSpeedReportingStatus = {
@@ -183,7 +183,7 @@ export function AgentSpeedInvitationCard({ username, busy = false, error = "", o
           onChange={event => setJoining(event.target.checked)} />
       </label>
       <p className="speed-report-join-hint" id="speed-report-join-hint">{joining ? "已选择参加 → 下一步填写您的昵称" : "↑ 先打开上方开关，再点右下角“下一步”"}</p>
-      <p className="speed-report-note">仅上报 Token、速度、模型和软件统计，以及公开昵称、设备标识和客户端版本信息；不上传对话内容、文件路径或账号凭据。可随时在设置中关闭。</p>
+      <p className="speed-report-note">仅上报 Token、速度、估算费用、模型和软件统计，以及公开昵称、设备标识和客户端版本信息；不上传对话内容、文件路径或账号凭据。可随时在设置中关闭。</p>
       <p className="speed-report-note speed-report-public-name">下一步设置公开昵称。{duplicateNotice}</p>
     </> : <div className="speed-report-nickname-step">
       <span className="speed-report-step">② 设置排行榜昵称</span>

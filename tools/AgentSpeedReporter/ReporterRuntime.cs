@@ -7,6 +7,7 @@ using System.Net.WebSockets;
 using System.Threading.Channels;
 using AgentSpeed.Core;
 using AgentSpeed.Core.Reporting;
+using AgentSpeed.Core.Pricing;
 
 namespace CodexTokenBar.AgentSpeedReporter;
 
@@ -23,7 +24,7 @@ internal static class ReporterRuntime
     private const string ClientVersion = "0.9.7";
     private static readonly ReportServiceUrl Service = ReportServiceUrl.Parse(ServiceText)!;
     private static readonly ReportClientInfo Client = ReportClientInfo.Windows(ClientVersion);
-    private static readonly HashSet<ReportSection> AllowedSections = [ReportSection.Sources, ReportSection.Models];
+    private static readonly HashSet<ReportSection> AllowedSections = [ReportSection.Sources, ReportSection.Models, ReportSection.Cost];
 
     private sealed class WebSocketRunState(
         ReportSample sample,
@@ -78,7 +79,7 @@ internal static class ReporterRuntime
         var snapshots = new SnapshotMailbox();
         var hub = new SpeedHub(context: null);
         hub.LivePublished += (_, snapshot) => snapshots.Publish(snapshot);
-        using var monitor = new LiveMonitor(hub, realtimeEventMode: transportChoice == "websocket");
+        using var monitor = new LiveMonitor(hub, pricing: new PriceBook(), realtimeEventMode: transportChoice == "websocket");
         monitor.Start();
 
         await status.PublishAsync(Status(
@@ -182,10 +183,10 @@ internal static class ReporterRuntime
                 sections,
                 MaxModels: discovery.Limits.MaxModels,
                 BodyLimit: discovery.Limits.SendLimitBytes,
-                Metric: SpeedMetric.Output)
+                Metric: SpeedMetric.Output, PriceVersion: PriceBook.Bundled.Version)
             {
                 // Keep parity with the native client for negotiated model-level statistics only.
-                // Cost, traffic, profile, identity, and avatar extensions remain disabled.
+                // Traffic, profile, identity, and avatar extensions remain disabled.
                 Extensions = new ReportExtensions(
                     ModelHarnessRequests: discovery.Extensions.ModelHarnessRequests,
                     ExecutionModes: discovery.Extensions.ExecutionModes),
@@ -620,7 +621,7 @@ internal static class ReporterRuntime
             state.Discovery.Sections.Where(AllowedSections.Contains).ToHashSet(),
             MaxModels: state.Discovery.Limits.MaxModels,
             BodyLimit: state.Discovery.Limits.SendLimitBytes,
-            Metric: SpeedMetric.Output)
+            Metric: SpeedMetric.Output, PriceVersion: PriceBook.Bundled.Version)
         {
             Extensions = new ReportExtensions(
                 ModelHarnessRequests: state.Discovery.Extensions.ModelHarnessRequests,

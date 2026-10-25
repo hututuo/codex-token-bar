@@ -29,7 +29,7 @@ struct AgentSpeedReportingSettingsView: View {
                 TextField("排行榜昵称", text: $nickname).textFieldStyle(.roundedBorder)
                     .disabled(controller.enabled)
             }
-            Text("仅上报速度、Token、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止这条链路的采集和上报。")
+            Text("仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止这条链路的采集和上报。")
                 .font(.callout).foregroundStyle(.secondary)
             Text("同一台电脑的同一数据源，请只在 Agent Speed 或 Token Bar 中开启一处上报，避免重复累计。")
                 .font(.callout).foregroundStyle(.secondary)
@@ -80,7 +80,7 @@ struct AgentSpeedReportingSettingsView: View {
             Button("暂不参加", role: .cancel) {}
             Button("同意参加，下一步") { showNickname = true }
         } message: {
-            Text("开启后将以“\(nickname)”公开参与排行榜，发送各软件的速度、Token、模型和 Harness 等统计。请确认这台电脑没有另一客户端重复上报。你可以随时在这里关闭。")
+            Text("开启后将以“\(nickname)”公开参与排行榜，发送各软件的速度、Token、估算费用、模型和 Harness 等统计。请确认这台电脑没有另一客户端重复上报。你可以随时在这里关闭。")
         }
         .sheet(isPresented: $showNickname) {
             SpeedReportingNicknameStep(nickname: $nickname, onBack: { showNickname = false }) {
@@ -121,7 +121,7 @@ struct AgentSpeedReportingInvitation: View {
                     Text(joining ? "已选择参加 → 下一步填写您的昵称" : "↑ 先打开上方开关，再点右下角“下一步”")
                         .font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.blue)
                         .lineLimit(1).minimumScaleFactor(0.8).frame(height: 18, alignment: .leading)
-                    Text("仅上报 Token、速度、模型和软件统计，以及公开昵称、设备标识和客户端版本信息；不上传对话内容、文件路径或账号凭据。可随时在设置中关闭。")
+                    Text("仅上报 Token、速度、估算费用、模型和软件统计，以及公开昵称、设备标识和客户端版本信息；不上传对话内容、文件路径或账号凭据。可随时在设置中关闭。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Text("下一步设置公开昵称。同一数据源请勿与 Agent Speed 重复上报。")
                         .font(.caption).lineLimit(2).frame(height: 32, alignment: .topLeading)

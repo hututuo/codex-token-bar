@@ -16,3 +16,5 @@
 - Adds nullable source-read observations (matched wall/monotonic tuple) through readers/monitor snapshots, consumed once. Event notifications for log files are labelled `log`, never provider token events; unknown cadence remains null. WS event debounce is 50ms while existing HTTP monitor defaults and the 3-second TPS/usage/fee rules remain unchanged.
 - Swift JSON parsing adds an opt-in duplicate-key rejection for WS control messages; legacy log parsing retains its existing default. Upstream signed fixtures and report schema remain reference data, not an assertion of current receiver client-ID compatibility.
 - Protocol reference: https://speed-test.codexradar.com/integration.html and its `/protocol/REPORTING-WEBSOCKET.md`; production discovery at https://deng.codexradar.com/.well-known/agent-speed-report.
+
+- Token Bar now negotiates the upstream cost section for both HTTP and WebSocket, injects the bundled PriceBook on Windows, and reports the actual bundled price version. Unknown pricing retains known-share/unpriced-request indicators; no historical upload backfill or Token Bar accounting changes.

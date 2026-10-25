@@ -246,9 +246,9 @@ final class AgentSpeedReportingController: ObservableObject {
         return url
     }
     static func options(_ document: ReportDiscovery) -> ReportOptions {
-        .init(sections: Set([ReportSection.sources, .models]).intersection(document.sections),
+        .init(sections: Set([ReportSection.sources, .models, .cost]).intersection(document.sections),
               maxModels: document.limits.maxModels, bodyLimit: document.limits.sendLimitBytes,
-              extensions: .init(modelHarnessRequests: document.extensions?.modelHarnessRequests == true,
+              priceVersion: PriceBook.bundled.version, extensions: .init(modelHarnessRequests: document.extensions?.modelHarnessRequests == true,
                                 executionModes: document.extensions?.executionModes == true))
     }
 
