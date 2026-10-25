@@ -1,0 +1,288 @@
+{
+  "_comment": "Display currencies (DESIGN 9, NETWORK 4). `digits`: decimals for amounts; `symbol`: the prefix shown, `symbols` overrides it for a UI language; `common`: rank in the picker's common group (null = alphabetical group). Names are the strings `currency.<code>` in spec/strings.json. `fallbackRates`: units per 1 USD, used until the first successful rate fetch (public-domain data of the fawazahmed0 currency API; ExchangeRate-API data may not be redistributed). Validated by spec/tools/prices.py.",
+  "schema": 1,
+  "currencies": [
+    {
+      "code": "USD",
+      "digits": 2,
+      "symbol": "US$",
+      "symbols": {
+        "en": "$"
+      },
+      "common": 1
+    },
+    {
+      "code": "CNY",
+      "digits": 2,
+      "symbol": "CN¥",
+      "symbols": {
+        "zh-Hans": "¥"
+      },
+      "common": 2
+    },
+    {
+      "code": "TWD",
+      "digits": 0,
+      "symbol": "NT$",
+      "common": 3
+    },
+    {
+      "code": "HKD",
+      "digits": 2,
+      "symbol": "HK$",
+      "common": 4
+    },
+    {
+      "code": "JPY",
+      "digits": 0,
+      "symbol": "JP¥",
+      "symbols": {
+        "ja": "¥"
+      },
+      "common": 5
+    },
+    {
+      "code": "EUR",
+      "digits": 2,
+      "symbol": "€",
+      "common": 6
+    },
+    {
+      "code": "GBP",
+      "digits": 2,
+      "symbol": "£",
+      "common": 7
+    },
+    {
+      "code": "KRW",
+      "digits": 0,
+      "symbol": "₩",
+      "common": 8
+    },
+    {
+      "code": "SGD",
+      "digits": 2,
+      "symbol": "S$",
+      "common": 9
+    },
+    {
+      "code": "AUD",
+      "digits": 2,
+      "symbol": "A$",
+      "common": null
+    },
+    {
+      "code": "CAD",
+      "digits": 2,
+      "symbol": "CA$",
+      "common": null
+    },
+    {
+      "code": "CHF",
+      "digits": 2,
+      "symbol": "CHF",
+      "common": null
+    },
+    {
+      "code": "NZD",
+      "digits": 2,
+      "symbol": "NZ$",
+      "common": null
+    },
+    {
+      "code": "INR",
+      "digits": 2,
+      "symbol": "₹",
+      "common": null
+    },
+    {
+      "code": "MYR",
+      "digits": 2,
+      "symbol": "RM",
+      "common": null
+    },
+    {
+      "code": "THB",
+      "digits": 2,
+      "symbol": "฿",
+      "common": null
+    },
+    {
+      "code": "IDR",
+      "digits": 0,
+      "symbol": "Rp",
+      "common": null
+    },
+    {
+      "code": "PHP",
+      "digits": 2,
+      "symbol": "₱",
+      "common": null
+    },
+    {
+      "code": "VND",
+      "digits": 0,
+      "symbol": "₫",
+      "common": null
+    },
+    {
+      "code": "MOP",
+      "digits": 2,
+      "symbol": "MOP$",
+      "common": null
+    },
+    {
+      "code": "SEK",
+      "digits": 2,
+      "symbol": "SEK",
+      "common": null
+    },
+    {
+      "code": "NOK",
+      "digits": 2,
+      "symbol": "NOK",
+      "common": null
+    },
+    {
+      "code": "DKK",
+      "digits": 2,
+      "symbol": "DKK",
+      "common": null
+    },
+    {
+      "code": "PLN",
+      "digits": 2,
+      "symbol": "PLN",
+      "common": null
+    },
+    {
+      "code": "CZK",
+      "digits": 2,
+      "symbol": "CZK",
+      "common": null
+    },
+    {
+      "code": "HUF",
+      "digits": 0,
+      "symbol": "HUF",
+      "common": null
+    },
+    {
+      "code": "TRY",
+      "digits": 2,
+      "symbol": "₺",
+      "common": null
+    },
+    {
+      "code": "ILS",
+      "digits": 2,
+      "symbol": "₪",
+      "common": null
+    },
+    {
+      "code": "AED",
+      "digits": 2,
+      "symbol": "AED",
+      "common": null
+    },
+    {
+      "code": "SAR",
+      "digits": 2,
+      "symbol": "SAR",
+      "common": null
+    },
+    {
+      "code": "ZAR",
+      "digits": 2,
+      "symbol": "R",
+      "common": null
+    },
+    {
+      "code": "BRL",
+      "digits": 2,
+      "symbol": "R$",
+      "common": null
+    },
+    {
+      "code": "MXN",
+      "digits": 2,
+      "symbol": "MX$",
+      "common": null
+    },
+    {
+      "code": "CLP",
+      "digits": 0,
+      "symbol": "CLP$",
+      "common": null
+    },
+    {
+      "code": "COP",
+      "digits": 0,
+      "symbol": "COP$",
+      "common": null
+    },
+    {
+      "code": "ARS",
+      "digits": 2,
+      "symbol": "AR$",
+      "common": null
+    },
+    {
+      "code": "RUB",
+      "digits": 2,
+      "symbol": "₽",
+      "common": null
+    },
+    {
+      "code": "UAH",
+      "digits": 2,
+      "symbol": "₴",
+      "common": null
+    }
+  ],
+  "fallbackRates": {
+    "date": "2026-10-22",
+    "source": "https://latest.currency-api.pages.dev/v1/currencies/usd.min.json",
+    "base": "USD",
+    "rates": {
+      "USD": 1,
+      "CNY": 6.67476,
+      "TWD": 32.552,
+      "HKD": 7.84589,
+      "JPY": 157.728,
+      "EUR": 0.889437,
+      "GBP": 0.746397,
+      "KRW": 1323.05,
+      "SGD": 1.27715,
+      "AUD": 1.42544,
+      "CAD": 1.40352,
+      "CHF": 0.822866,
+      "NZD": 1.75893,
+      "INR": 94.3908,
+      "MYR": 4.08222,
+      "THB": 33.6577,
+      "IDR": 18040.7,
+      "PHP": 63.4279,
+      "VND": 25841.9,
+      "MOP": 8.08127,
+      "SEK": 9.89145,
+      "NOK": 9.36624,
+      "DKK": 6.6491,
+      "PLN": 3.87603,
+      "CZK": 21.5894,
+      "HUF": 325.122,
+      "TRY": 49.6233,
+      "ILS": 3.09572,
+      "AED": 3.6725,
+      "SAR": 3.75,
+      "ZAR": 16.4018,
+      "BRL": 5.02467,
+      "MXN": 18.7555,
+      "CLP": 978.893,
+      "COP": 3191.5,
+      "ARS": 1525.73,
+      "RUB": 81.4713,
+      "UAH": 45.0436
+    }
+  }
+}

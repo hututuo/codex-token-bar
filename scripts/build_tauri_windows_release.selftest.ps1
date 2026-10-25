@@ -8,6 +8,7 @@ $BuildScript = Join-Path $PSScriptRoot "build_tauri_windows_release.ps1"
 $FixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-token-bar-windows-selftest-{0}" -f [Guid]::NewGuid().ToString("N"))
 $global:ReleaseSelfTestRoot = $FixtureRoot
 $global:ReleaseSelfTestCalls = New-Object System.Collections.Generic.List[object]
+$global:ReleaseSelfTestDotnetCalls = New-Object System.Collections.Generic.List[object]
 $global:ReleaseSelfTestConfigPaths = New-Object System.Collections.Generic.List[string]
 $global:FailArm64 = $false
 $global:FailManifest = $false
@@ -39,6 +40,22 @@ function global:node {
     $global:LASTEXITCODE = 0
 }
 function global:cargo { $global:LASTEXITCODE = 0 }
+function global:dotnet {
+    $Arguments = @($args)
+    $global:ReleaseSelfTestDotnetCalls.Add($Arguments) | Out-Null
+    if ($Arguments.Count -gt 0 -and $Arguments[0] -eq "publish") {
+        Assert-True ($Arguments -contains "--self-contained" -and $Arguments -contains "true") "Agent Speed helper is not self-contained"
+        Assert-True ($Arguments -contains "-p:PublishSingleFile=true") "Agent Speed helper is not published as a single file"
+        $OutputIndex = [Array]::IndexOf($Arguments, "--output")
+        Assert-True ($OutputIndex -ge 0 -and $Arguments.Count -gt ($OutputIndex + 1)) "dotnet publish is missing output"
+        $OutputDir = $Arguments[$OutputIndex + 1]
+        New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $OutputDir "AgentSpeedReporter.exe"), [Text.Encoding]::UTF8.GetBytes("fixture-reporter"))
+        [IO.File]::WriteAllText((Join-Path $OutputDir "LICENSE.txt"), "fixture .NET runtime license")
+        [IO.File]::WriteAllText((Join-Path $OutputDir "THIRD-PARTY-NOTICES.txt"), "fixture .NET runtime notices")
+    }
+    $global:LASTEXITCODE = 0
+}
 function global:rustup { $global:LASTEXITCODE = 0 }
 function global:rustc {
     $global:LASTEXITCODE = 0
@@ -65,6 +82,20 @@ function global:npm {
         Assert-True (-not $Config.TrimStart().StartsWith("{")) "inline JSON was passed instead of a config path"
         $ParsedConfig = Get-Content -Raw -Path $Config | ConvertFrom-Json
         Assert-True ($ParsedConfig.bundle.createUpdaterArtifacts -eq $false) "updater artifacts were not disabled"
+        $ResourceMap = @{}
+        foreach ($Resource in $ParsedConfig.bundle.resources.PSObject.Properties) {
+            $ResourceMap[$Resource.Name] = $Resource.Value
+        }
+        foreach ($ReporterResource in @(
+            "AgentSpeedReporter/AgentSpeedReporter.exe",
+            "AgentSpeedReporter/AGENT-SPEED-LICENSE.txt",
+            "AgentSpeedReporter/NOTICE.txt",
+            "AgentSpeedReporter/VENDOR.md",
+            "AgentSpeedReporter/DOTNET-LICENSE.txt",
+            "AgentSpeedReporter/DOTNET-THIRD-PARTY-NOTICES.txt"
+        )) {
+            Assert-True ($ResourceMap.Values -contains $ReporterResource) "Agent Speed bundle resource missing: $ReporterResource"
+        }
         $global:ReleaseSelfTestConfigPaths.Add($Config) | Out-Null
 
         $BundleDir = Join-Path $global:ReleaseSelfTestRoot ("tauri-app\src-tauri\target\{0}\release\bundle\nsis" -f $Target)
@@ -86,6 +117,14 @@ function Initialize-FixtureProject {
     [IO.File]::WriteAllText($TauriConfig, '{"version":"0.7.2","bundle":{"createUpdaterArtifacts":true}}', (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $Root "tauri-app\package.json"), '{"version":"0.7.2"}')
     [IO.File]::WriteAllText((Join-Path $TauriConfigDir "Cargo.toml"), "[package]`nname = `"fixture`"`nversion = `"0.7.2`"`n")
+    $ReporterDir = Join-Path $Root "tools\AgentSpeedReporter"
+    $VendorDir = Join-Path $Root "Vendor\AgentSpeed"
+    New-Item -ItemType Directory -Force -Path $ReporterDir, $VendorDir | Out-Null
+    [IO.File]::WriteAllText((Join-Path $ReporterDir "AgentSpeedReporter.csproj"), '<Project><PropertyGroup><Version>0.7.2</Version></PropertyGroup></Project>')
+    [IO.File]::WriteAllText((Join-Path $ReporterDir "ReporterRuntime.cs"), 'private const string ClientVersion = "0.7.2";')
+    [IO.File]::WriteAllText((Join-Path $ReporterDir "NOTICE.txt"), "fixture notice")
+    [IO.File]::WriteAllText((Join-Path $VendorDir "LICENSE"), "MIT")
+    [IO.File]::WriteAllText((Join-Path $VendorDir "VENDOR.md"), "fixture vendor notice")
     foreach ($Target in @("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")) {
         New-Item -ItemType Directory -Force -Path (Join-Path $Root ("fake-sysroot\lib\rustlib\{0}" -f $Target)) | Out-Null
         $StaleBundle = Join-Path $Root ("tauri-app\src-tauri\target\{0}\release\bundle\nsis" -f $Target)
@@ -123,6 +162,11 @@ try {
         Assert-True ($Asset.sha256 -match "^[a-f0-9]{64}$") "build manifest hash is invalid"
     }
     Assert-True ($global:ReleaseSelfTestConfigPaths.Count -eq 2) "expected two tauri build config captures"
+    $ReporterPublishes = @($global:ReleaseSelfTestDotnetCalls | Where-Object { $_.Count -gt 0 -and $_[0] -eq "publish" })
+    Assert-True ($ReporterPublishes.Count -eq 2) "expected two self-contained Agent Speed helper publishes"
+    $ReporterRuntimes = @($ReporterPublishes | ForEach-Object { $_[[Array]::IndexOf($_, "--runtime") + 1] })
+    Assert-True (($ReporterRuntimes -join ",") -eq "win-x64,win-arm64") "Agent Speed helper targets are incomplete or unstable"
+    Assert-True (@($global:ReleaseSelfTestDotnetCalls | Where-Object { $_.Count -gt 0 -and $_[0] -eq "run" -and $_ -contains "--self-test" }).Count -ge 1) "Agent Speed privacy self-test was not invoked"
     foreach ($Config in $global:ReleaseSelfTestConfigPaths) {
         Assert-True (-not (Test-Path -LiteralPath $Config)) "temporary config was not deleted"
     }
@@ -200,8 +244,10 @@ try {
     Remove-Item Function:\rustc -ErrorAction SilentlyContinue
     Remove-Item Function:\rustup -ErrorAction SilentlyContinue
     Remove-Item Function:\cargo -ErrorAction SilentlyContinue
+    Remove-Item Function:\dotnet -ErrorAction SilentlyContinue
     Remove-Item Function:\node -ErrorAction SilentlyContinue
     Remove-Variable ReleaseSelfTestRoot -Scope Global -ErrorAction SilentlyContinue
     Remove-Variable ReleaseSelfTestCalls -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable ReleaseSelfTestDotnetCalls -Scope Global -ErrorAction SilentlyContinue
     Remove-Variable ReleaseSelfTestConfigPaths -Scope Global -ErrorAction SilentlyContinue
 }

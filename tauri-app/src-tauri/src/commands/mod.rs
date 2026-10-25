@@ -1,4 +1,5 @@
 pub(crate) mod auto_resume;
+pub(crate) mod agent_speed_reporting;
 pub(crate) mod codex_radar;
 pub(crate) mod codex_instances;
 pub(crate) mod dashboard;

@@ -9,6 +9,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
     case surfaces
     case statusBar
     case monitoring
+    case speedReporting
     case floatingPanel
     // Legacy route kept for requests created by older builds. It is omitted
     // from the sidebar and resolves to the unified floating-panel page.
@@ -24,6 +25,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         .surfaces,
         .statusBar,
         .monitoring,
+        .speedReporting,
         .floatingPanel,
         .alertsAndUpdates,
         .dataAndMaintenance,
@@ -44,6 +46,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .surfaces: return "显示面"
         case .statusBar: return "状态栏"
         case .monitoring: return "监控与额度"
+        case .speedReporting: return "速蹬排行榜"
         case .floatingPanel, .content: return "悬浮窗"
         case .alertsAndUpdates: return "提醒与更新"
         case .dataAndMaintenance: return "数据与维护"
@@ -59,6 +62,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .surfaces: return "主界面与辅助显示面"
         case .statusBar: return "顶部指标、顺序与紧凑显示"
         case .monitoring: return "实时速率、统计与刷新"
+        case .speedReporting: return "多软件测速与自愿上报"
         case .floatingPanel, .content: return "位置、外观、内容与翻页"
         case .alertsAndUpdates: return "未读反馈与版本检查"
         case .dataAndMaintenance: return "目录与修复工具"
@@ -74,6 +78,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .surfaces: return "rectangle.3.group"
         case .statusBar: return "menubar.rectangle"
         case .monitoring: return "speedometer"
+        case .speedReporting: return "chart.bar.xaxis"
         case .floatingPanel, .content: return "rectangle.on.rectangle"
         case .alertsAndUpdates: return "bell.badge"
         case .dataAndMaintenance: return "wrench.and.screwdriver"
@@ -346,6 +351,8 @@ struct AppSettingsView: View {
                 statusBarSettings
             case .monitoring:
                 monitoringSettings
+            case .speedReporting:
+                AgentSpeedReportingSettingsView()
             case .floatingPanel, .content:
                 floatingPanelSettings
             case .alertsAndUpdates:

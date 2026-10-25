@@ -13,12 +13,13 @@ const SETTINGS_CATEGORIES = [
   "显示面",
   "状态栏与托盘",
   "监控与额度",
+  "速蹬排行榜",
   "悬浮窗",
   "提醒与更新",
   "数据与维护",
 ];
 
-test("global settings exposes ten categorized tabs and defaults to general", async () => {
+test("global settings exposes categorized tabs and defaults to general", async () => {
   await withSsrModules(async (load) => {
     const { AppSettingsDialog } = await load("/src/components/settings/AppSettingsDialog.tsx");
     const { DEFAULT_FLOATING_SETTINGS } = await load("/src/floating/floatingSettings.ts");

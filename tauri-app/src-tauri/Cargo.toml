@@ -28,7 +28,7 @@ sha2 = "0.10"
 tiktoken-rs = "0.12.1"
 tauri = { version = "2.11.3", features = ["macos-private-api", "tray-icon"] }
 time = { version = "0.3.49", features = ["formatting", "local-offset", "macros", "parsing"] }
-tokio = { version = "1.52.3", features = ["rt", "sync", "time"] }
+tokio = { version = "1.52.3", features = ["rt", "sync", "time", "process", "io-util"] }
 toml = "1.1"
 tungstenite = "0.30"
 uuid = { version = "1.18", features = ["serde", "v4"] }

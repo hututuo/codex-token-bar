@@ -1,0 +1,12 @@
+Agent Speed Reporter includes the Windows AgentSpeed.Core library from Agent Speed.
+
+Upstream: https://github.com/zoefix/agent-speed
+Vendored commit: a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c
+License: MIT; see the bundled AGENT-SPEED-LICENSE.txt, sourced from Vendor/AgentSpeed/LICENSE.
+
+Local adaptation: the report client app identifier is CodexTokenBar. The reporter sends only
+live speed, source, and model metrics when the user enables reporting. It does not send cost
+or traffic sections.
+
+This reporter uses an independent Agent Speed device identity. Its records are not automatically
+deduplicated against another Agent Speed client installed on the same machine.

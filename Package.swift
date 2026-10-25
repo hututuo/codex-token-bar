@@ -20,15 +20,26 @@ let package = Package(
             path: "Sources/CZstd",
             publicHeadersPath: "include"
         ),
+        .target(
+            name: "AgentSpeedCore",
+            dependencies: ["CZstd"],
+            path: "Vendor/AgentSpeed/macos/Sources/AgentSpeedCore"
+        ),
         .executableTarget(
             name: "CodexTokenBar",
             dependencies: [
                 "TiktokenSwift",
                 "CZstd",
+                "AgentSpeedCore",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/CodexTokenBar",
-            resources: [.copy("Resources/o200k_base.tiktoken"), .copy("Resources/ModelTrace")]
+            resources: [.copy("Resources/o200k_base.tiktoken"), .copy("Resources/ModelTrace"), .copy("Resources/SpeedLeaderboard")]
+        ),
+        .testTarget(
+            name: "AgentSpeedCoreTests",
+            dependencies: ["AgentSpeedCore"],
+            path: "Vendor/AgentSpeed/macos/Tests/AgentSpeedCoreTests"
         ),
         .testTarget(
             name: "CodexTokenBarTests",

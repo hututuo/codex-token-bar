@@ -1,0 +1,328 @@
+{
+  "_comment": "DESIGN 9 Money formatting. `value` is a decimal string in the currency's units, or it is costMicroUsd x rate / 1 000 000 computed in decimal arithmetic. `number` = the digits, `text` = an amount with its symbol (U+00A0 after a symbol ending in a letter) or a rate followed by \" <symbol>/s\". Currencies and symbols: spec/assets/currencies.json.",
+  "cases": [
+    {
+      "form": "rate",
+      "value": "0",
+      "currency": "USD",
+      "language": "en",
+      "number": "0",
+      "text": "0 $/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.0000004",
+      "currency": "USD",
+      "language": "en",
+      "number": "<0.000001",
+      "text": "<0.000001 $/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.0000012",
+      "currency": "USD",
+      "language": "en",
+      "number": "0.000001",
+      "text": "0.000001 $/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.000081",
+      "currency": "USD",
+      "language": "en",
+      "number": "0.000081",
+      "text": "0.000081 $/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.0042",
+      "currency": "USD",
+      "language": "en",
+      "number": "0.0042",
+      "text": "0.0042 $/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.00419",
+      "currency": "USD",
+      "language": "zh-Hant",
+      "number": "0.0042",
+      "text": "0.0042 US$/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.0300",
+      "currency": "CNY",
+      "language": "zh-Hans",
+      "number": "0.03",
+      "text": "0.03 ¥/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.034",
+      "currency": "CNY",
+      "language": "zh-Hant",
+      "number": "0.034",
+      "text": "0.034 CN¥/s"
+    },
+    {
+      "form": "rate",
+      "value": "4.2",
+      "currency": "CNY",
+      "language": "zh-Hans",
+      "number": "4.20",
+      "text": "4.20 ¥/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.5",
+      "currency": "USD",
+      "language": "en",
+      "number": "0.50",
+      "text": "0.50 $/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.664",
+      "currency": "JPY",
+      "language": "ja",
+      "number": "0.66",
+      "text": "0.66 ¥/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.3",
+      "currency": "JPY",
+      "language": "ja",
+      "number": "0.3",
+      "text": "0.3 ¥/s"
+    },
+    {
+      "form": "rate",
+      "value": "4.2",
+      "currency": "JPY",
+      "language": "en",
+      "number": "4.2",
+      "text": "4.2 JP¥/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.1367184",
+      "currency": "TWD",
+      "language": "zh-Hant",
+      "number": "0.14",
+      "text": "0.14 NT$/s"
+    },
+    {
+      "form": "rate",
+      "value": "5.567",
+      "currency": "KRW",
+      "language": "en",
+      "number": "5.57",
+      "text": "5.57 ₩/s"
+    },
+    {
+      "form": "rate",
+      "value": "12.3",
+      "currency": "USD",
+      "language": "en",
+      "number": "12.30",
+      "text": "12.30 $/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.99996",
+      "currency": "USD",
+      "language": "en",
+      "number": "1.00",
+      "text": "1.00 $/s"
+    },
+    {
+      "form": "rate",
+      "value": "99.96",
+      "currency": "USD",
+      "language": "en",
+      "number": "100",
+      "text": "100 $/s"
+    },
+    {
+      "form": "rate",
+      "value": "1234.5",
+      "currency": "KRW",
+      "language": "en",
+      "number": "1,235",
+      "text": "1,235 ₩/s"
+    },
+    {
+      "form": "rate",
+      "value": "1280000",
+      "currency": "IDR",
+      "language": "en",
+      "number": "1.28M",
+      "text": "1.28M Rp/s"
+    },
+    {
+      "form": "rate",
+      "value": "0.42",
+      "currency": "CHF",
+      "language": "en",
+      "number": "0.42",
+      "text": "0.42 CHF/s"
+    },
+    {
+      "form": "amount",
+      "value": "0",
+      "currency": "USD",
+      "language": "en",
+      "number": "0.00",
+      "text": "$0.00"
+    },
+    {
+      "form": "amount",
+      "value": "0",
+      "currency": "JPY",
+      "language": "ja",
+      "number": "0",
+      "text": "¥0"
+    },
+    {
+      "form": "amount",
+      "value": "0.0000001",
+      "currency": "USD",
+      "language": "en",
+      "number": "<0.000001",
+      "text": "<$0.000001"
+    },
+    {
+      "form": "amount",
+      "value": "0.42",
+      "currency": "USD",
+      "language": "en",
+      "number": "0.42",
+      "text": "$0.42"
+    },
+    {
+      "form": "amount",
+      "value": "0.0042",
+      "currency": "USD",
+      "language": "zh-Hant",
+      "number": "0.0042",
+      "text": "US$0.0042"
+    },
+    {
+      "form": "amount",
+      "value": "0.030",
+      "currency": "USD",
+      "language": "en",
+      "number": "0.03",
+      "text": "$0.03"
+    },
+    {
+      "form": "amount",
+      "value": "0.42",
+      "currency": "JPY",
+      "language": "ja",
+      "number": "0.42",
+      "text": "¥0.42"
+    },
+    {
+      "form": "amount",
+      "value": "12.345",
+      "currency": "USD",
+      "language": "en",
+      "number": "12.35",
+      "text": "$12.35"
+    },
+    {
+      "form": "amount",
+      "value": "1234.564",
+      "currency": "USD",
+      "language": "en",
+      "number": "1,234.56",
+      "text": "$1,234.56"
+    },
+    {
+      "form": "amount",
+      "value": "1234.5",
+      "currency": "TWD",
+      "language": "zh-Hant",
+      "number": "1,235",
+      "text": "NT$1,235"
+    },
+    {
+      "form": "amount",
+      "value": "12345.4",
+      "currency": "KRW",
+      "language": "en",
+      "number": "12,345",
+      "text": "₩12,345"
+    },
+    {
+      "form": "amount",
+      "value": "999999.996",
+      "currency": "USD",
+      "language": "en",
+      "number": "1.00M",
+      "text": "$1.00M"
+    },
+    {
+      "form": "amount",
+      "value": "12800000",
+      "currency": "IDR",
+      "language": "en",
+      "number": "12.8M",
+      "text": "Rp 12.8M"
+    },
+    {
+      "form": "amount",
+      "value": "1280000000",
+      "currency": "USD",
+      "language": "en",
+      "number": "1.28B",
+      "text": "$1.28B"
+    },
+    {
+      "form": "amount",
+      "value": "0.42",
+      "currency": "CHF",
+      "language": "en",
+      "number": "0.42",
+      "text": "CHF 0.42"
+    },
+    {
+      "form": "amount",
+      "value": "1.2",
+      "currency": "MYR",
+      "language": "zh-Hant",
+      "number": "1.20",
+      "text": "RM 1.20"
+    },
+    {
+      "form": "amount",
+      "costMicroUsd": 4200,
+      "rate": "32.552",
+      "currency": "TWD",
+      "language": "zh-Hant",
+      "number": "0.14",
+      "text": "NT$0.14"
+    },
+    {
+      "form": "amount",
+      "costMicroUsd": 37940000,
+      "rate": "32.552",
+      "currency": "TWD",
+      "language": "zh-Hant",
+      "number": "1,235",
+      "text": "NT$1,235"
+    },
+    {
+      "form": "rate",
+      "costMicroUsd": 4200,
+      "rate": "6.67476",
+      "currency": "CNY",
+      "language": "zh-Hans",
+      "number": "0.028",
+      "text": "0.028 ¥/s"
+    }
+  ]
+}

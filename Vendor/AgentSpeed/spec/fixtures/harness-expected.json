@@ -1,0 +1,259 @@
+{
+  "version": 1,
+  "zcode": {
+    "database": "zcode/cli/db/db.sqlite",
+    "sessions": [
+      {
+        "id": "sess-z-main",
+        "project": "quasar",
+        "parentId": null,
+        "responses": [
+          {
+            "key": "zcode:z-r1",
+            "startMs": 1792497610000,
+            "endMs": 1792497614000,
+            "input": 1200,
+            "cachedInput": 500,
+            "cacheWriteInput": 100,
+            "cacheWrite1hInput": 0,
+            "output": 200,
+            "reasoning": 50,
+            "model": "glm-5.3",
+            "provider": "zai",
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          },
+          {
+            "key": "zcode:z-title",
+            "startMs": 1792497615000,
+            "endMs": 1792497616000,
+            "input": 80,
+            "cachedInput": 0,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 30,
+            "reasoning": 0,
+            "model": "glm-5.3",
+            "provider": "zai",
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          },
+          {
+            "key": "zcode:z-r2",
+            "startMs": 1792497617000,
+            "endMs": 1792497618500,
+            "input": 2000,
+            "cachedInput": 1000,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 150,
+            "reasoning": 0,
+            "model": "glm-5.3",
+            "provider": "zai",
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          }
+        ]
+      },
+      {
+        "id": "sess-z-sub",
+        "project": "quasar",
+        "parentId": "sess-z-main",
+        "responses": [
+          {
+            "key": "zcode:z-r3",
+            "startMs": 1792497612000,
+            "endMs": 1792497615000,
+            "input": 400,
+            "cachedInput": 100,
+            "cacheWriteInput": 20,
+            "cacheWrite1hInput": 0,
+            "output": 90,
+            "reasoning": 10,
+            "model": "glm-5.3",
+            "provider": "zai",
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          }
+        ]
+      },
+      {
+        "id": "sess-z-running",
+        "project": "quasar",
+        "parentId": null,
+        "responses": []
+      }
+    ]
+  },
+  "kimi": {
+    "root": "kimi/sessions",
+    "files": [
+      {
+        "path": "kimi/sessions/wd_nova_0123456789ab/sess-kimi/agents/main/wire.jsonl",
+        "project": "nova",
+        "isSubagent": false,
+        "parentFile": null,
+        "responses": [
+          {
+            "key": "kimi:k-m1",
+            "startMs": 1792497630000,
+            "endMs": 1792497634000,
+            "input": 130,
+            "cachedInput": 20,
+            "cacheWriteInput": 10,
+            "cacheWrite1hInput": 0,
+            "output": 80,
+            "reasoning": 0,
+            "model": "kimi-k2.5",
+            "provider": "moonshot",
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          },
+          {
+            "key": "kimi:k-m2",
+            "startMs": 1792497640000,
+            "endMs": 1792497643200,
+            "input": 300,
+            "cachedInput": 80,
+            "cacheWriteInput": 20,
+            "cacheWrite1hInput": 0,
+            "output": 120,
+            "reasoning": 0,
+            "model": "kimi-k2.5",
+            "provider": "moonshot",
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          },
+          {
+            "key": "kimi:k-m3",
+            "startMs": 1792497650000,
+            "endMs": 1792497652000,
+            "input": 60,
+            "cachedInput": 10,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 60,
+            "reasoning": 0,
+            "model": "kimi-k2.5",
+            "provider": "moonshot",
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          }
+        ]
+      },
+      {
+        "path": "kimi/sessions/wd_nova_0123456789ab/sess-kimi/agents/agent-0/wire.jsonl",
+        "project": "nova",
+        "isSubagent": true,
+        "parentFile": "kimi/sessions/wd_nova_0123456789ab/sess-kimi/agents/main/wire.jsonl",
+        "responses": [
+          {
+            "key": "kimi:k-child",
+            "startMs": 1792497632000,
+            "endMs": 1792497635000,
+            "input": 70,
+            "cachedInput": 0,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 45,
+            "reasoning": 0,
+            "model": "kimi-k2.5",
+            "provider": "moonshot",
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          }
+        ]
+      },
+      {
+        "path": "kimi/sessions/wd_nova_0123456789ab/sess-kimi-copy/agents/main/wire.jsonl",
+        "project": "nova",
+        "isSubagent": false,
+        "parentFile": null,
+        "responses": []
+      }
+    ]
+  },
+  "grok": {
+    "root": "grok/sessions",
+    "files": [
+      {
+        "path": "grok/sessions/%2Fprojects%2Fcomet/g-main/updates.jsonl",
+        "project": "comet",
+        "isSubagent": false,
+        "parentFile": null,
+        "responses": [
+          {
+            "key": "grok:g-p1:grok-4.5",
+            "startMs": 1792497659000,
+            "endMs": 1792497665000,
+            "input": 1500,
+            "cachedInput": 400,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 300,
+            "reasoning": 30,
+            "model": "grok-4.5",
+            "provider": null,
+            "final": true,
+            "fast": false,
+            "requestCount": 2
+          },
+          {
+            "key": "grok:g-p2:grok-4.5",
+            "startMs": 1792497672000,
+            "endMs": 1792497675000,
+            "input": 1200,
+            "cachedInput": 300,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 250,
+            "reasoning": 25,
+            "model": "grok-4.5",
+            "provider": null,
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          },
+          {
+            "key": "grok:g-p2:grok-4.6",
+            "startMs": 1792497673000,
+            "endMs": 1792497675000,
+            "input": 800,
+            "cachedInput": 0,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 150,
+            "reasoning": 15,
+            "model": "grok-4.6",
+            "provider": null,
+            "final": true,
+            "fast": false,
+            "requestCount": 1
+          }
+        ]
+      },
+      {
+        "path": "grok/sessions/%2Fprojects%2Fcomet/g-child/updates.jsonl",
+        "project": "comet",
+        "isSubagent": true,
+        "parentFile": "grok/sessions/%2Fprojects%2Fcomet/g-main/updates.jsonl",
+        "responses": []
+      },
+      {
+        "path": "grok/sessions/%2Fprojects%2Fcomet/g-copy/updates.jsonl",
+        "project": "comet",
+        "isSubagent": false,
+        "parentFile": "grok/sessions/%2Fprojects%2Fcomet/g-main/updates.jsonl",
+        "responses": []
+      }
+    ]
+  }
+}

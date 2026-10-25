@@ -42,3 +42,11 @@ __pycache__/
 /downloaded/
 /signed-packet/
 /hosted-diagnostics/
+
+# Vendored Agent Speed / local reporter build outputs
+/Vendor/AgentSpeed/windows/**/bin/
+/Vendor/AgentSpeed/windows/**/obj/
+/Vendor/AgentSpeed/spec/tools/__pycache__/
+/tools/AgentSpeedReporter/bin/
+/tools/AgentSpeedReporter/obj/
+/tauri-app/.speed-invitation-review.html

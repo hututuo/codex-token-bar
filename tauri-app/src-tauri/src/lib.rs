@@ -23,6 +23,7 @@ pub fn run() {
 
     let app_result = tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
+        .manage(core::agent_speed_reporting::AgentSpeedReportingRegistry::default())
         .manage(commands::surface::BodySpeedDetailsRequestState::default())
         .manage(commands::modeltrace::ModelTraceRegistry::default())
         .manage(commands::thread_activity::ThreadActivityRegistry::default())
@@ -78,6 +79,10 @@ pub fn run() {
                 .state::<commands::live::LiveRateMonitorRegistry>()
                 .inner()
                 .clone();
+            let deferred_speed_reporting = app
+                .state::<core::agent_speed_reporting::AgentSpeedReportingRegistry>()
+                .inner()
+                .clone();
             tauri::async_runtime::spawn(async move {
                 core::startup_trace::mark("deferred settings read scheduled");
                 let settings = tauri::async_runtime::spawn_blocking(platform::read_app_settings)
@@ -91,6 +96,14 @@ pub fn run() {
                         models::AppSettingsSnapshot::default()
                     });
                 core::startup_trace::mark("deferred settings read finished");
+                if settings.agent_speed_reporting.enabled {
+                    if let Err(error) = deferred_speed_reporting
+                        .start(&deferred_app, &settings.agent_speed_reporting)
+                        .await
+                    {
+                        eprintln!("Codex Token Bar: Agent Speed reporter startup failed: {error}");
+                    }
+                }
                 if launch_mode == platform::StartupLaunchMode::Autostart
                     && settings.display_surfaces.floating_window_enabled
                 {
@@ -138,6 +151,9 @@ pub fn run() {
             commands::settings::save_usage_refresh_settings,
             commands::settings::save_auto_resume_settings,
             commands::settings::save_session_enhancement_settings,
+            commands::agent_speed_reporting::read_agent_speed_reporting_status,
+            commands::agent_speed_reporting::set_agent_speed_reporting_enabled,
+            commands::agent_speed_reporting::dismiss_agent_speed_invitation,
             commands::settings::save_setup_guide_completed,
             commands::startup::record_performance_event,
             commands::dashboard::read_platform_capabilities,
@@ -246,6 +262,8 @@ pub fn run() {
         app.run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 core::quota::shutdown_quota_service();
+                app.state::<core::agent_speed_reporting::AgentSpeedReportingRegistry>()
+                    .shutdown_now();
             }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen {

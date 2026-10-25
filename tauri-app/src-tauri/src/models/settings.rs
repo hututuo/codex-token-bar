@@ -83,6 +83,8 @@ pub struct AppSettingsSnapshot {
     pub session_enhancements: SessionEnhancementSettingsSnapshot,
     #[serde(default)]
     pub auto_resume: AutoResumeSettingsSnapshot,
+    #[serde(default)]
+    pub agent_speed_reporting: AgentSpeedReportingSettingsSnapshot,
 }
 
 impl Default for AppSettingsSnapshot {
@@ -106,7 +108,47 @@ impl Default for AppSettingsSnapshot {
             setup_guide_completed: false,
             session_enhancements: SessionEnhancementSettingsSnapshot::default(),
             auto_resume: AutoResumeSettingsSnapshot::default(),
+            agent_speed_reporting: AgentSpeedReportingSettingsSnapshot::default(),
         }
+    }
+}
+
+/// The independent, opt-in Agent Speed reporter. The username starts empty in a newly
+/// decoded settings document so the settings migration can generate and persist one stable
+/// random pseudonym instead of changing it on every read.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSpeedReportingSettingsSnapshot {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub invitation_handled: bool,
+    #[serde(default)]
+    pub username: String,
+}
+
+impl Default for AgentSpeedReportingSettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            invitation_handled: false,
+            username: String::new(),
+        }
+    }
+}
+
+impl AgentSpeedReportingSettingsSnapshot {
+    /// Initialize the pseudonym once. It is deliberately unrelated to the Windows account,
+    /// hostname, Codex identity, or any local path.
+    pub fn ensure_random_username(&mut self) -> bool {
+        if !self.username.trim().is_empty() {
+            self.username = self.username.trim().to_owned();
+            return false;
+        }
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        self.username = format!("TokenBar-{}", &suffix[..8]);
+        true
     }
 }
 

@@ -1,0 +1,3503 @@
+{
+  "_comment": "Process files in `order` with one shared dedupe set, then the OpenCode database, then the Antigravity databases in `antigravity.order` (same dedupe set). Paths are relative to this folder. `mtimes` (Unix ms) give the modification times that produce both orders; apply them to a copy of this folder before computing daily history. `traces` (Gemini, omp) give the phase after feeding a file up to and including physical line `afterLine` (after the files before it in `order`). omp: the folder `omp` plays ~/.omp, so its automatic roots are omp/agent/sessions and omp/profiles/*/agent/sessions; `omp.discover` lists what discovery finds there. Antigravity: the folder `antigravity` plays ~/.gemini (stores antigravity-cli, antigravity, antigravity-ide); each database is one agent whose id is its path; `{\"unsupported\": true}` marks a database that contributes no agent; reading must not create any file (no -wal or -shm). WorkBuddy: the folder `workbuddy` plays the home folder (data folders .workbuddy and .workbuddy-ai); `workbuddy.discover` lists what discovery finds in both projects folders; its `traces` work like the omp ones.",
+  "order": [
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-00-modern.jsonl",
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-20-subagent.jsonl",
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-01-00-legacy.jsonl",
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-01-20-compressed.jsonl.zst",
+    "claude/projects/-Users-dev-projects-nova/s-cli.jsonl",
+    "claude/projects/-Users-dev-projects-nova/s-cli/subagents/agent-abc.jsonl",
+    "claude/projects/-Users-dev-projects-orbit/s-desk.jsonl",
+    "dsh/sessions/--Users-dev-projects-quasar--/session-dsh-main/session.v4.jsonl.zstd",
+    "dsh/sessions/--Users-dev-projects-quasar--/session-dsh-sub/session.v4.jsonl.zstd",
+    "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.json",
+    "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+    "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/0b8e6d2c-3f4a-4b5c-8d6e-7f8091a2b3c4.jsonl",
+    "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/5d4c3b2a-1f0e-4d9c-8b7a-695847362514.jsonl",
+    "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl",
+    "omp/agent/sessions/-projects-legacy-tool/2026-10-20T10-46-00-000Z_01a158eb-0640-72f1-81d3-00009e3779b1.jsonl",
+    "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl",
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites/VerifyImports.jsonl",
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl",
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites/VerifyImports.jsonl",
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl",
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-10-00-000Z_01a15900-ff40-7788-8e98-0004f1bbcd88.jsonl",
+    "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl",
+    "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl",
+    "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-21T00-10-00-000Z_01a15bcb-1bc0-734c-95e4-00076a99b44c.jsonl",
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/ef76e24d-06dd-4094-a4aa-63bd6f8faf05.jsonl",
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2/subagents/agent-66bc0cda-451f-4616-a37d-d44361673dd1.jsonl",
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/99aa739a-ed94-446a-a6e0-be45f96cc697.jsonl",
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/7321aebd-eedd-4d8c-a034-7b74b0ca1dd1.jsonl",
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/bec52a4b-a049-4377-a53e-fa03a3357f35.jsonl",
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl"
+  ],
+  "files": {
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-00-modern.jsonl": {
+      "source": "codex",
+      "project": "rocket",
+      "model": "gpt-6.1-sol",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792490410700,
+      "malformedLines": 1,
+      "responses": [
+        {
+          "key": "resp-1",
+          "startMs": 1792490401010,
+          "endMs": 1792490405010,
+          "input": 10000,
+          "cachedInput": 8000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 200,
+          "reasoning": 50,
+          "model": "gpt-6.1-sol",
+          "provider": "openai",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "resp-2",
+          "startMs": 1792490407500,
+          "endMs": 1792490410500,
+          "input": 10400,
+          "cachedInput": 10000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 330,
+          "reasoning": 0,
+          "model": "gpt-6.1-sol",
+          "provider": "openai",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-20-subagent.jsonl": {
+      "source": "codex",
+      "project": "rocket",
+      "model": "gpt-6.1-sol",
+      "isSubagent": true,
+      "parentFile": "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-00-modern.jsonl",
+      "phase": "tools",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792490447000,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "resp-3",
+          "startMs": 1792490421000,
+          "endMs": 1792490424000,
+          "input": 5000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 120,
+          "reasoning": 40,
+          "model": "gpt-6.1-sol",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "resp-4",
+          "startMs": 1792490440000,
+          "endMs": 1792490447000,
+          "input": 5200,
+          "cachedInput": 5000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 60,
+          "reasoning": 10,
+          "model": "gpt-6.1-sol",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-01-00-legacy.jsonl": {
+      "source": "codex",
+      "project": "legacy-app",
+      "model": "gpt-5.5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792490469100,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "codex-legacy:thread-legacy:20213",
+          "startMs": 1792490460500,
+          "endMs": 1792490464000,
+          "input": 19515,
+          "cachedInput": 7040,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 698,
+          "reasoning": 368,
+          "model": "gpt-5.5",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "codex-legacy:thread-legacy:41000",
+          "startMs": 1792490466000,
+          "endMs": 1792490469000,
+          "input": 20485,
+          "cachedInput": 11960,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 302,
+          "reasoning": 32,
+          "model": "gpt-5.5",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-01-20-compressed.jsonl.zst": {
+      "source": "codex",
+      "project": "comet",
+      "model": "gpt-6.1-sol-mini",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792490488700,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "resp-z1",
+          "startMs": 1792490481010,
+          "endMs": 1792490484010,
+          "input": 6000,
+          "cachedInput": 5000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 150,
+          "reasoning": 40,
+          "model": "gpt-6.1-sol-mini",
+          "provider": "custom",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "resp-z2",
+          "startMs": 1792490485500,
+          "endMs": 1792490488500,
+          "input": 6300,
+          "cachedInput": 6000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 210,
+          "reasoning": 0,
+          "model": "gpt-6.1-sol-mini",
+          "provider": "custom",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "claude/projects/-Users-dev-projects-nova/s-cli.jsonl": {
+      "source": "claudeCode",
+      "project": "nova",
+      "model": "claude-opus-5-5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792490545000,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "msg_A",
+          "startMs": 1792490520050,
+          "endMs": 1792490526050,
+          "input": 21002,
+          "cachedInput": 20000,
+          "cacheWriteInput": 1000,
+          "cacheWrite1hInput": 600,
+          "output": 300,
+          "reasoning": 60,
+          "model": "claude-opus-5-5",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "msg_B",
+          "startMs": 1792490529000,
+          "endMs": 1792490532000,
+          "input": 21205,
+          "cachedInput": 21000,
+          "cacheWriteInput": 200,
+          "cacheWrite1hInput": 0,
+          "output": 240,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "claude/projects/-Users-dev-projects-nova/s-cli/subagents/agent-abc.jsonl": {
+      "source": "claudeCode",
+      "project": "nova",
+      "model": "claude-opus-5-5",
+      "isSubagent": true,
+      "parentFile": "claude/projects/-Users-dev-projects-nova/s-cli.jsonl",
+      "phase": "generating",
+      "inFlightStartMs": 1792490536000,
+      "lastLineMs": 1792490536000,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "msg_D",
+          "startMs": 1792490527000,
+          "endMs": 1792490530000,
+          "input": 504,
+          "cachedInput": 0,
+          "cacheWriteInput": 500,
+          "cacheWrite1hInput": 500,
+          "output": 90,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "msg_E",
+          "startMs": 1792490531000,
+          "endMs": 1792490535000,
+          "input": 602,
+          "cachedInput": 600,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 8,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": null,
+          "fast": false,
+          "final": false
+        }
+      ]
+    },
+    "claude/projects/-Users-dev-projects-orbit/s-desk.jsonl": {
+      "source": "claudeDesktop",
+      "project": "orbit",
+      "model": "claude-opus-5-5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "tools",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792490585000,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "msg_C",
+          "startMs": 1792490580000,
+          "endMs": 1792490585000,
+          "input": 30003,
+          "cachedInput": 30000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 500,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": null,
+          "fast": true,
+          "final": true
+        }
+      ]
+    },
+    "dsh/sessions/--Users-dev-projects-quasar--/session-dsh-main/session.v4.jsonl.zstd": {
+      "source": "deepseek",
+      "project": "quasar",
+      "model": "deepseek-flash",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792490648030,
+      "malformedLines": 1,
+      "responses": [
+        {
+          "key": "dsm-1",
+          "startMs": 1792490641000,
+          "endMs": 1792490645000,
+          "input": 9000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 400,
+          "reasoning": 0,
+          "model": "deepseek-flash",
+          "provider": "deepseek-account",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "dsm-2",
+          "startMs": 1792490646010,
+          "endMs": 1792490648010,
+          "input": 9400,
+          "cachedInput": 9216,
+          "cacheWriteInput": 64,
+          "cacheWrite1hInput": 0,
+          "output": 300,
+          "reasoning": 0,
+          "model": "deepseek-flash",
+          "provider": "deepseek-account",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "dsh/sessions/--Users-dev-projects-quasar--/session-dsh-sub/session.v4.jsonl.zstd": {
+      "source": "deepseek",
+      "project": "quasar",
+      "model": "deepseek-pro",
+      "isSubagent": true,
+      "parentFile": "dsh/sessions/--Users-dev-projects-quasar--/session-dsh-main/session.v4.jsonl.zstd",
+      "phase": "generating",
+      "inFlightStartMs": 1792490655010,
+      "lastLineMs": 1792490655010,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "dss-1",
+          "startMs": 1792490651000,
+          "endMs": 1792490654000,
+          "input": 4500,
+          "cachedInput": 4000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 240,
+          "reasoning": 0,
+          "model": "deepseek-pro",
+          "provider": "deepseek-account",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.json": {
+      "source": "gemini",
+      "project": "nova",
+      "model": "gemini-2.5-pro",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792491663004,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "c0c0c0c0-0000-4000-8000-000000000002",
+          "startMs": null,
+          "endMs": 1792491609000,
+          "input": 8000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 260,
+          "reasoning": 200,
+          "model": "gemini-2.5-pro",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "c0c0c0c0-0000-4000-8000-000000000003",
+          "startMs": 1792491608998,
+          "endMs": 1792491614000,
+          "input": 8400,
+          "cachedInput": 4096,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 220,
+          "reasoning": 0,
+          "model": "gemini-2.5-pro",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl": {
+      "source": "gemini",
+      "project": "orbit",
+      "model": "gemini-3-pro-preview",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "tools",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792492327002,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "a0a0a0a0-0000-4000-8000-000000000002",
+          "startMs": 1792492205000,
+          "endMs": 1792492211000,
+          "input": 15000,
+          "cachedInput": 12288,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 500,
+          "reasoning": 410,
+          "model": "gemini-3-pro-preview",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "a0a0a0a0-0000-4000-8000-000000000004",
+          "startMs": 1792492212420,
+          "endMs": 1792492220000,
+          "input": 16296,
+          "cachedInput": 15000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 800,
+          "reasoning": 160,
+          "model": "gemini-3-pro-preview",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "a0a0a0a0-0000-4000-8000-000000000008",
+          "startMs": 1792492320000,
+          "endMs": 1792492327000,
+          "input": 17000,
+          "cachedInput": 16384,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 420,
+          "reasoning": 300,
+          "model": "gemini-3-pro-preview",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/0b8e6d2c-3f4a-4b5c-8d6e-7f8091a2b3c4.jsonl": {
+      "source": "gemini",
+      "project": "orbit",
+      "model": "gemini-3-flash-preview",
+      "isSubagent": true,
+      "parentFile": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+      "phase": "generating",
+      "inFlightStartMs": 1792492330810,
+      "lastLineMs": 1792492330811,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "b0b0b0b0-0000-4000-8000-000000000002",
+          "startMs": 1792492327200,
+          "endMs": 1792492330000,
+          "input": 6000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 220,
+          "reasoning": 150,
+          "model": "gemini-3-flash-preview",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/5d4c3b2a-1f0e-4d9c-8b7a-695847362514.jsonl": {
+      "source": "gemini",
+      "project": "orbit",
+      "model": "gemini-3-flash-preview",
+      "isSubagent": true,
+      "parentFile": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792492332300,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "e0e0e0e0-0000-4000-8000-000000000002",
+          "startMs": 1792492327250,
+          "endMs": 1792492332000,
+          "input": 5000,
+          "cachedInput": 4096,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 300,
+          "reasoning": 0,
+          "model": "gemini-3-flash-preview",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl": {
+      "source": "gemini",
+      "project": "nova",
+      "model": "gemini-2.5-flash",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792492862010,
+      "malformedLines": 1,
+      "responses": [
+        {
+          "key": "d0d0d0d0-0000-4000-8000-000000000004",
+          "startMs": 1792492800000,
+          "endMs": 1792492804000,
+          "input": 9000,
+          "cachedInput": 8192,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 120,
+          "reasoning": 40,
+          "model": "gemini-2.5-flash",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "d0d0d0d0-0000-4000-8000-000000000006",
+          "startMs": 1792492806520,
+          "endMs": 1792492809000,
+          "input": 9300,
+          "cachedInput": 9000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 150,
+          "reasoning": 0,
+          "model": "gemini-2.5-flash",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/agent/sessions/-projects-legacy-tool/2026-10-20T10-46-00-000Z_01a158eb-0640-72f1-81d3-00009e3779b1.jsonl": {
+      "source": "omp",
+      "project": "legacy-tool",
+      "model": "claude-sonnet-4-5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792493173000,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "omp:1e9a0004:1792493165006",
+          "startMs": 1792493165006,
+          "endMs": 1792493169400,
+          "input": 9812,
+          "cachedInput": 0,
+          "cacheWriteInput": 9800,
+          "cacheWrite1hInput": 0,
+          "output": 180,
+          "reasoning": 0,
+          "model": "claude-sonnet-4-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:1e9a0006:1792493170205",
+          "startMs": 1792493170205,
+          "endMs": 1792493173000,
+          "input": 9928,
+          "cachedInput": 9800,
+          "cacheWriteInput": 120,
+          "cacheWrite1hInput": 0,
+          "output": 95,
+          "reasoning": 0,
+          "model": "claude-sonnet-4-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl": {
+      "source": "omp",
+      "project": "comet",
+      "model": "gpt-5.5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "generating",
+      "inFlightStartMs": 1792493370000,
+      "lastLineMs": 1792493370000,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "omp:c0e70003:1792493282005",
+          "startMs": 1792493282005,
+          "endMs": 1792493288405,
+          "input": 5200,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 4096,
+          "reasoning": 3000,
+          "model": "gpt-5.5",
+          "provider": "openai",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0e70005:1792493288436",
+          "startMs": 1792493288436,
+          "endMs": 1792493291536,
+          "input": 5400,
+          "cachedInput": 5100,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 410,
+          "reasoning": 120,
+          "model": "gpt-5.5",
+          "provider": "openai",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites/VerifyImports.jsonl": {
+      "source": "omp",
+      "project": "pulsar",
+      "model": "claude-haiku-5",
+      "isSubagent": true,
+      "parentFile": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792493429800,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "omp:9e570003:1792493425604",
+          "startMs": 1792493425604,
+          "endMs": 1792493427104,
+          "input": 2503,
+          "cachedInput": 0,
+          "cacheWriteInput": 2500,
+          "cacheWrite1hInput": 0,
+          "output": 45,
+          "reasoning": 10,
+          "model": "claude-haiku-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:9e570005:1792493428004",
+          "startMs": 1792493428004,
+          "endMs": 1792493429704,
+          "input": 2502,
+          "cachedInput": 2500,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 30,
+          "reasoning": 0,
+          "model": "claude-haiku-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl": {
+      "source": "omp",
+      "project": "pulsar",
+      "model": "claude-sonnet-5-5",
+      "isSubagent": true,
+      "parentFile": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792493443100,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "omp:5ca10003:1792493416705",
+          "startMs": 1792493416705,
+          "endMs": 1792493419705,
+          "input": 7006,
+          "cachedInput": 0,
+          "cacheWriteInput": 7000,
+          "cacheWrite1hInput": 0,
+          "output": 140,
+          "reasoning": 0,
+          "model": "claude-sonnet-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:5ca10006:1792493420305",
+          "startMs": 1792493420305,
+          "endMs": 1792493423105,
+          "input": 7304,
+          "cachedInput": 7000,
+          "cacheWriteInput": 300,
+          "cacheWrite1hInput": 0,
+          "output": 60,
+          "reasoning": 0,
+          "model": "claude-sonnet-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:5ca10008:1792493423205",
+          "startMs": 1792493423205,
+          "endMs": 1792493425405,
+          "input": 7303,
+          "cachedInput": 7300,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 85,
+          "reasoning": 25,
+          "model": "claude-sonnet-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:5ca1000a:1792493441004",
+          "startMs": 1792493441004,
+          "endMs": 1792493443004,
+          "input": 7402,
+          "cachedInput": 7400,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 48,
+          "reasoning": 0,
+          "model": "claude-sonnet-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl": {
+      "source": "omp",
+      "project": "pulsar",
+      "model": "claude-opus-5-5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792493899520,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "omp:c0de0004:1792493405006",
+          "startMs": 1792493405006,
+          "endMs": 1792493411206,
+          "input": 18003,
+          "cachedInput": 0,
+          "cacheWriteInput": 18000,
+          "cacheWrite1hInput": 0,
+          "output": 420,
+          "reasoning": 150,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0de0005:1792493411300",
+          "startMs": null,
+          "endMs": 1792493411300,
+          "input": 900,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 40,
+          "reasoning": 0,
+          "model": "claude-haiku-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0de0009:1792493412405",
+          "startMs": 1792493412405,
+          "endMs": 1792493416505,
+          "input": 18605,
+          "cachedInput": 18000,
+          "cacheWriteInput": 600,
+          "cacheWrite1hInput": 0,
+          "output": 260,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0de000c:1792493444004",
+          "startMs": 1792493444004,
+          "endMs": 1792493446504,
+          "input": 18604,
+          "cachedInput": 18600,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 90,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0de000d:1792493446530",
+          "startMs": 1792493446530,
+          "endMs": 1792493449530,
+          "input": 18702,
+          "cachedInput": 18700,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 152,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0de0012:1792493520006",
+          "startMs": null,
+          "endMs": 1792493521806,
+          "input": 18803,
+          "cachedInput": 18800,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 12,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0de0015:1792493540005",
+          "startMs": null,
+          "endMs": 1792493542605,
+          "input": 18804,
+          "cachedInput": 18800,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 33,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0de0017:1792493580006",
+          "startMs": 1792493580006,
+          "endMs": 1792493584006,
+          "input": 19206,
+          "cachedInput": 18900,
+          "cacheWriteInput": 300,
+          "cacheWrite1hInput": 0,
+          "output": 75,
+          "reasoning": 20,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0de001c:1792493890006",
+          "startMs": 1792493890006,
+          "endMs": 1792493895006,
+          "input": 19403,
+          "cachedInput": 0,
+          "cacheWriteInput": 19400,
+          "cacheWrite1hInput": 0,
+          "output": 110,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:c0de001e:1792493896004",
+          "startMs": 1792493896004,
+          "endMs": 1792493899504,
+          "input": 19902,
+          "cachedInput": 19400,
+          "cacheWriteInput": 500,
+          "cacheWrite1hInput": 0,
+          "output": 340,
+          "reasoning": 90,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl": {
+      "source": "omp",
+      "project": "pulsar",
+      "model": null,
+      "isSubagent": true,
+      "parentFile": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl",
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792493443100,
+      "malformedLines": 0,
+      "responses": []
+    },
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites/VerifyImports.jsonl": {
+      "source": "omp",
+      "project": "pulsar",
+      "model": null,
+      "isSubagent": true,
+      "parentFile": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl",
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792493429800,
+      "malformedLines": 0,
+      "responses": []
+    },
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl": {
+      "source": "omp",
+      "project": "pulsar",
+      "model": "claude-opus-5-5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792494009420,
+      "malformedLines": 1,
+      "responses": [
+        {
+          "key": "omp:f04c0002:1792494005006",
+          "startMs": 1792494005006,
+          "endMs": 1792494009406,
+          "input": 19403,
+          "cachedInput": 19000,
+          "cacheWriteInput": 400,
+          "cacheWrite1hInput": 0,
+          "output": 310,
+          "reasoning": 80,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-10-00-000Z_01a15900-ff40-7788-8e98-0004f1bbcd88.jsonl": {
+      "source": "omp",
+      "project": "pulsar",
+      "model": "gpt-5.5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792494612310,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "omp:b4a70004:1792494612310",
+          "startMs": null,
+          "endMs": 1792494612300,
+          "input": 9002,
+          "cachedInput": 9000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 120,
+          "reasoning": 0,
+          "model": "gpt-5.5",
+          "provider": "openai",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl": {
+      "source": "omp",
+      "project": "nova",
+      "model": "claude-opus-5-5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792495260000,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "omp:1a900002:1792495230006",
+          "startMs": 1792495230006,
+          "endMs": 1792495235206,
+          "input": 22004,
+          "cachedInput": 0,
+          "cacheWriteInput": 22000,
+          "cacheWrite1hInput": 0,
+          "output": 380,
+          "reasoning": 0,
+          "model": "claude-opus-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:1a900003:1792495235400",
+          "startMs": null,
+          "endMs": 1792495235400,
+          "input": 1200,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 64,
+          "reasoning": 32,
+          "model": "gpt-5.5-mini",
+          "provider": "openai",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl": {
+      "source": "omp",
+      "project": "orbit",
+      "model": "claude-sonnet-5-5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792540814012,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "omp:0b170003:1792540790004",
+          "startMs": 1792540790004,
+          "endMs": 1792540798250,
+          "input": 1200,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 90,
+          "reasoning": 0,
+          "model": "duo-chat-sonnet-5-5",
+          "provider": "gitlab-duo",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:0b170005:1792540799905",
+          "startMs": null,
+          "endMs": 1792540805505,
+          "input": 1300,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 20,
+          "reasoning": 0,
+          "model": "duo-chat-sonnet-5-5",
+          "provider": "gitlab-duo",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:0b170008:1792540810100",
+          "startMs": null,
+          "endMs": 1792540810100,
+          "input": 400,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 12,
+          "reasoning": 8,
+          "model": "gpt-5.5-mini",
+          "provider": "openai",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "omp:0b170009:1792540810205",
+          "startMs": 1792540810205,
+          "endMs": 1792540814005,
+          "input": 2600,
+          "cachedInput": 1200,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 210,
+          "reasoning": 60,
+          "model": "claude-sonnet-5-5",
+          "provider": "anthropic",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-21T00-10-00-000Z_01a15bcb-1bc0-734c-95e4-00076a99b44c.jsonl": {
+      "source": "omp",
+      "project": "orbit",
+      "model": null,
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792541400000,
+      "malformedLines": 0,
+      "responses": []
+    },
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/ef76e24d-06dd-4094-a4aa-63bd6f8faf05.jsonl": {
+      "source": "workbuddy",
+      "project": "atlas",
+      "model": "deepseek-v3-2-volc",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "generating",
+      "inFlightStartMs": 1792576890000,
+      "lastLineMs": 1792576890000,
+      "malformedLines": 1,
+      "responses": [
+        {
+          "key": "edbab45572c72a5d9440b40bcc0500c0",
+          "startMs": 1792576865000,
+          "endMs": 1792576868000,
+          "input": 5000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 120,
+          "reasoning": 0,
+          "model": "auto",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "fbfba2e45c2045dc5cab22a5afe83d9d",
+          "startMs": 1792576880000,
+          "endMs": 1792576884000,
+          "input": 5400,
+          "cachedInput": 5000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 300,
+          "reasoning": 0,
+          "model": "minimax-m3-pay",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "7a6f150b83091ce20c89368641f9a137",
+          "startMs": 1792576886000,
+          "endMs": 1792576888000,
+          "input": 5800,
+          "cachedInput": 5300,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 90,
+          "reasoning": 0,
+          "model": "deepseek-v3-2-volc",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2/subagents/agent-66bc0cda-451f-4616-a37d-d44361673dd1.jsonl": {
+      "source": "workbuddy",
+      "project": "atlas",
+      "model": "glm-5.3-flash",
+      "isSubagent": true,
+      "parentFile": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792577109004,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "8ddf878039b70767c4a5bcf4f0c4f65e",
+          "startMs": 1792577102100,
+          "endMs": 1792577105000,
+          "input": 4000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 60,
+          "reasoning": 0,
+          "model": "glm-5.3-flash",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "fac989447cad2edbc89fbcba70003b36",
+          "startMs": 1792577106000,
+          "endMs": 1792577109004,
+          "input": 4300,
+          "cachedInput": 4000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 500,
+          "reasoning": 90,
+          "model": "glm-5.3-flash",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl": {
+      "source": "workbuddy",
+      "project": "atlas",
+      "model": "glm-5.3",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792577231020,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "8a8bb7cd343aa2ad99b7d762030857a2",
+          "startMs": 1792576800000,
+          "endMs": 1792576803905,
+          "input": 12000,
+          "cachedInput": 8000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 420,
+          "reasoning": 120,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "693a9fdd4c2fd0700968fba0d07ff3c0",
+          "startMs": 1792576860000,
+          "endMs": 1792576862506,
+          "input": 15000,
+          "cachedInput": 14000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 260,
+          "reasoning": 200,
+          "model": "deepseek-v4-pro",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "9d607a663f3e9b0a90c3c8d4426640dc",
+          "startMs": 1792576869004,
+          "endMs": 1792576872300,
+          "input": 15800,
+          "cachedInput": 15000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 90,
+          "reasoning": 0,
+          "model": "deepseek-v4-pro",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "894f782a148b33af1e39a0efed952d69",
+          "startMs": 1792576875000,
+          "endMs": 1792576879200,
+          "input": 16200,
+          "cachedInput": 15600,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 310,
+          "reasoning": 150,
+          "model": "deepseek-v4-pro",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "32cfe6c19200b67afb7c3d0e1c43eadb",
+          "startMs": 1792576920000,
+          "endMs": 1792576925010,
+          "input": 16500,
+          "cachedInput": 16000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 80,
+          "reasoning": 80,
+          "model": "deepseek-v4-pro",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "c692562238d8c12c32434c50b96d56ae",
+          "startMs": 1792577070050,
+          "endMs": 1792577073050,
+          "input": 17000,
+          "cachedInput": 16800,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 150,
+          "reasoning": 0,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "68c42382c8b93fc29c2fcb6a444aeda5",
+          "startMs": 1792577100000,
+          "endMs": 1792577102000,
+          "input": 17300,
+          "cachedInput": 17000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 70,
+          "reasoning": 0,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "3d1e97d18e692ca5484d1abfe617b6c1",
+          "startMs": 1792577140000,
+          "endMs": 1792577143500,
+          "input": 17600,
+          "cachedInput": 17300,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 240,
+          "reasoning": 30,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "48881d728a96516e0e886c09603e7eee",
+          "startMs": 1792577160000,
+          "endMs": 1792577161500,
+          "input": 17900,
+          "cachedInput": 17600,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 40,
+          "reasoning": 0,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "11340131feec68e7ca463f960f0f341c",
+          "startMs": 1792577220000,
+          "endMs": 1792577228000,
+          "input": 60000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 2000,
+          "reasoning": 0,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "ed20a959d410ccd843d9e1dfcee04228",
+          "startMs": 1792577228020,
+          "endMs": 1792577231020,
+          "input": 3000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 200,
+          "reasoning": 0,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/99aa739a-ed94-446a-a6e0-be45f96cc697.jsonl": {
+      "source": "workbuddy",
+      "project": "atlas",
+      "model": "glm-5.3",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792578004000,
+      "malformedLines": 1,
+      "responses": [
+        {
+          "key": "bd19836ddb62c11c55ab251ccaca5645",
+          "startMs": 1792578001000,
+          "endMs": 1792578004000,
+          "input": 9000,
+          "cachedInput": 8800,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 180,
+          "reasoning": 0,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/7321aebd-eedd-4d8c-a034-7b74b0ca1dd1.jsonl": {
+      "source": "workbuddyAi",
+      "project": "orbit",
+      "model": "gpt-5.5",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "idle",
+      "inFlightStartMs": null,
+      "lastLineMs": 1792580582000,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "9948c645c094247794f4c7acdbeb2bb6",
+          "startMs": 1792580400000,
+          "endMs": 1792580404000,
+          "input": 9000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 300,
+          "reasoning": 40,
+          "model": "gpt-5.5",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "b25b0651e4b6e887e5194135d3692631",
+          "startMs": 1792580460000,
+          "endMs": 1792580463000,
+          "input": 9400,
+          "cachedInput": 9000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 50,
+          "reasoning": 0,
+          "model": "deepseek-v4.1-flash-sg",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "e53125275854402400f74fd6ab3f7659",
+          "startMs": 1792580465000,
+          "endMs": 1792580469000,
+          "input": 12000,
+          "cachedInput": 9400,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 400,
+          "reasoning": 0,
+          "model": "deepseek-v4.1-flash-sg",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "ae11976937537e4c1206237dea035331",
+          "startMs": 1792580520000,
+          "endMs": 1792580526000,
+          "input": 20000,
+          "cachedInput": 15000,
+          "cacheWriteInput": 4000,
+          "cacheWrite1hInput": 0,
+          "output": 500,
+          "reasoning": 0,
+          "model": "claude-sonnet-5-5",
+          "provider": "custom",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "b9884d9c846186c2a5426d7f46393de8",
+          "startMs": 1792580580000,
+          "endMs": 1792580582000,
+          "input": 800,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 60,
+          "reasoning": 0,
+          "model": "gpt-5.5",
+          "provider": "custom",
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/bec52a4b-a049-4377-a53e-fa03a3357f35.jsonl": {
+      "source": "workbuddyAi",
+      "project": "orbit",
+      "model": "hy4-preview",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "generating",
+      "inFlightStartMs": 1792580700000,
+      "lastLineMs": 1792580700000,
+      "malformedLines": 0,
+      "responses": [
+        {
+          "key": "cd3dc8b6cffb41e4163dcbd857ca87da",
+          "startMs": 1792580462000,
+          "endMs": 1792580466000,
+          "input": 7000,
+          "cachedInput": 6000,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 260,
+          "reasoning": 100,
+          "model": "hy4-preview",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    },
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl": {
+      "source": "workbuddyAi",
+      "project": "orbit",
+      "model": null,
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "generating",
+      "inFlightStartMs": 1792581630000,
+      "lastLineMs": 9223372036854775807,
+      "malformedLines": 0,
+      "responses": []
+    },
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl": {
+      "source": "workbuddyAi",
+      "project": "orbit",
+      "model": "glm-5.3",
+      "isSubagent": false,
+      "parentFile": null,
+      "phase": "generating",
+      "inFlightStartMs": 1792582380000,
+      "lastLineMs": 253402387139999,
+      "malformedLines": 2,
+      "responses": [
+        {
+          "key": "6dbf9ac2da09ee1d3debf5a51873ec6d",
+          "startMs": 1792582200000,
+          "endMs": 1792582202000,
+          "input": 1000000000000,
+          "cachedInput": 200,
+          "cacheWriteInput": 70,
+          "cacheWrite1hInput": 0,
+          "output": 300,
+          "reasoning": 40,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "8e683187a00e5d462a4aeee69e9d3d9c",
+          "startMs": 1792582260000,
+          "endMs": 1792582263000,
+          "input": 1000000000000,
+          "cachedInput": 700,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 1000000000000,
+          "reasoning": 1000000000000,
+          "model": null,
+          "provider": "custom",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "1414c9756505ddfb8ba0a3b6fc9d691f",
+          "startMs": 1792582266000,
+          "endMs": 1792582269000,
+          "input": 1000,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 50,
+          "reasoning": 0,
+          "model": "Kimi-K3",
+          "provider": "custom",
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "bf947d200d7b021b18d38437f3bc1940",
+          "startMs": 1792582320000,
+          "endMs": 1792582324000,
+          "input": 2000,
+          "cachedInput": 1500,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 80,
+          "reasoning": 10,
+          "model": "hy4-preview",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "f4fe292eb01627a0219872d44a305ec5",
+          "startMs": -62167219200000,
+          "endMs": -62167219199000,
+          "input": 100,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 10,
+          "reasoning": 0,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        },
+        {
+          "key": "9d1c815ede9bca71c14a44593b1dcc53",
+          "startMs": 253402387138000,
+          "endMs": 253402387139999,
+          "input": 100,
+          "cachedInput": 0,
+          "cacheWriteInput": 0,
+          "cacheWrite1hInput": 0,
+          "output": 10,
+          "reasoning": 0,
+          "model": "glm-5.3",
+          "provider": null,
+          "fast": false,
+          "final": true
+        }
+      ]
+    }
+  },
+  "mtimes": {
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-00-modern.jsonl": 1792490412000,
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-20-subagent.jsonl": 1792490448000,
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-01-00-legacy.jsonl": 1792490471000,
+    "codex/sessions/2026/10/20/rollout-2026-10-20T10-01-20-compressed.jsonl.zst": 1792490490000,
+    "claude/projects/-Users-dev-projects-nova/s-cli.jsonl": 1792490546000,
+    "claude/projects/-Users-dev-projects-nova/s-cli/subagents/agent-abc.jsonl": 1792490547000,
+    "claude/projects/-Users-dev-projects-orbit/s-desk.jsonl": 1792490586000,
+    "dsh/sessions/--Users-dev-projects-quasar--/session-dsh-main/session.v4.jsonl.zstd": 1792490650000,
+    "dsh/sessions/--Users-dev-projects-quasar--/session-dsh-sub/session.v4.jsonl.zstd": 1792490657000,
+    "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.json": 1792491664000,
+    "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl": 1792492328000,
+    "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/0b8e6d2c-3f4a-4b5c-8d6e-7f8091a2b3c4.jsonl": 1792492331000,
+    "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/5d4c3b2a-1f0e-4d9c-8b7a-695847362514.jsonl": 1792492333000,
+    "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl": 1792492863000,
+    "omp/agent/sessions/-projects-legacy-tool/2026-10-20T10-46-00-000Z_01a158eb-0640-72f1-81d3-00009e3779b1.jsonl": 1792493221000,
+    "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl": 1792493371000,
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl": 1792493900000,
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl": 1792493444000,
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites/VerifyImports.jsonl": 1792493430000,
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl": 1792494010000,
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl": 1792494002000,
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites/VerifyImports.jsonl": 1792494003000,
+    "omp/agent/sessions/-projects-pulsar/2026-10-20T11-10-00-000Z_01a15900-ff40-7788-8e98-0004f1bbcd88.jsonl": 1792494613000,
+    "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl": 1792495261000,
+    "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl": 1792540815000,
+    "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-21T00-10-00-000Z_01a15bcb-1bc0-734c-95e4-00076a99b44c.jsonl": 1792541401000,
+    "antigravity/antigravity-cli/conversations/9b1e7d42-6c5a-4f3e-8d2b-1a0f9e8d7c6b.db": 1792573214000,
+    "antigravity/antigravity-cli/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db": 1792573301000,
+    "antigravity/antigravity-cli/conversations/0d4f6e8a-2b1c-4d3e-9f5a-6b7c8d9e0f1a.db": 1792573320000,
+    "antigravity/antigravity/conversations/5e2d1c0b-9a8f-4e7d-8c6b-5a4f3e2d1c0b.db": 1792573832000,
+    "antigravity/antigravity/conversations/c7a9e1f3-5b2d-4c6e-8a0b-2d4f6a8c0e1f.db": 1792574403000,
+    "antigravity/antigravity/conversations/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d.db": 1792575061000,
+    "antigravity/antigravity-ide/conversations/E4D3C2B1-A0F9-4E8D-B7C6-A5F4E3D2C1B0.db": 1792575601000,
+    "antigravity/antigravity-ide/conversations/7c8d9e0f-1a2b-4c3d-9e4f-5a6b7c8d9e0f.db": 1792576205000,
+    "antigravity/antigravity-ide/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db": 1792576500000,
+    "antigravity/antigravity-ide/conversations/2c4e6a8b-0d1f-4a3c-9e5b-7d9f1b3d5f7a.db": 1792576623000,
+    "antigravity/antigravity/conversations/6d8f0a2c-4e6b-4d8f-a0c2-e4f6a8b0c2d4.db": 1792576686000,
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl": 1792577232000,
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2/subagents/agent-66bc0cda-451f-4616-a37d-d44361673dd1.jsonl": 1792577110000,
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/ef76e24d-06dd-4094-a4aa-63bd6f8faf05.jsonl": 1792576891000,
+    "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/99aa739a-ed94-446a-a6e0-be45f96cc697.jsonl": 1792578031000,
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/7321aebd-eedd-4d8c-a034-7b74b0ca1dd1.jsonl": 1792580583000,
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/bec52a4b-a049-4377-a53e-fa03a3357f35.jsonl": 1792580701000,
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl": 1792581631000,
+    "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl": 1792582381000
+  },
+  "opencode": {
+    "database": "opencode/opencode.db",
+    "agents": {
+      "opencode:ses_main": {
+        "source": "opencode",
+        "project": "nebula",
+        "model": "claude-opus-5-5",
+        "isSubagent": false,
+        "parentId": null,
+        "phase": "idle",
+        "inFlightStartMs": null,
+        "lastLineMs": 1792490748000,
+        "responses": [
+          {
+            "key": "msg_oc1",
+            "startMs": 1792490701010,
+            "endMs": 1792490705010,
+            "input": 1204,
+            "cachedInput": 1000,
+            "cacheWriteInput": 200,
+            "cacheWrite1hInput": 0,
+            "output": 400,
+            "reasoning": 100,
+            "model": "claude-opus-5-5",
+            "provider": "anthropic",
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "msg_oc2",
+            "startMs": 1792490740000,
+            "endMs": 1792490742000,
+            "input": 1202,
+            "cachedInput": 1200,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 150,
+            "reasoning": 0,
+            "model": "claude-opus-5-5",
+            "provider": "anthropic",
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "cmp_1",
+            "startMs": 1792490743000,
+            "endMs": 1792490747000,
+            "input": 5000,
+            "cachedInput": 0,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 800,
+            "reasoning": 0,
+            "model": "claude-haiku-5",
+            "provider": null,
+            "fast": false,
+            "final": true
+          }
+        ]
+      },
+      "opencode:ses_sub": {
+        "source": "opencode",
+        "project": "nebula",
+        "model": "claude-sonnet-5-5",
+        "isSubagent": true,
+        "parentId": "opencode:ses_main",
+        "phase": "generating",
+        "inFlightStartMs": 1792490730000,
+        "lastLineMs": 1792490730000,
+        "responses": [
+          {
+            "key": "msg_oc3",
+            "startMs": 1792490721000,
+            "endMs": 1792490724000,
+            "input": 503,
+            "cachedInput": 0,
+            "cacheWriteInput": 500,
+            "cacheWrite1hInput": 0,
+            "output": 120,
+            "reasoning": 30,
+            "model": "claude-sonnet-5-5",
+            "provider": "anthropic",
+            "fast": false,
+            "final": true
+          }
+        ]
+      }
+    }
+  },
+  "gemini": {
+    "discover": [
+      "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.json",
+      "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl",
+      "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/0b8e6d2c-3f4a-4b5c-8d6e-7f8091a2b3c4.jsonl",
+      "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/5d4c3b2a-1f0e-4d9c-8b7a-695847362514.jsonl",
+      "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl"
+    ],
+    "traces": [
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 2,
+        "phase": "generating",
+        "inFlightStartMs": 1792492205000
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 4,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 6,
+        "phase": "generating",
+        "inFlightStartMs": 1792492212400
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 7,
+        "phase": "generating",
+        "inFlightStartMs": 1792492212420
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 9,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 11,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 12,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 14,
+        "phase": "generating",
+        "inFlightStartMs": 1792492260000
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 16,
+        "phase": "generating",
+        "inFlightStartMs": 1792492260000
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 17,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 19,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 20,
+        "phase": "generating",
+        "inFlightStartMs": 1792492290000
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 22,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 25,
+        "phase": "generating",
+        "inFlightStartMs": 1792492310000
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 26,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 27,
+        "phase": "generating",
+        "inFlightStartMs": 1792492320000
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/session-2026-10-20T10-30-7f3a2b10.jsonl",
+        "afterLine": 29,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/5d4c3b2a-1f0e-4d9c-8b7a-695847362514.jsonl",
+        "afterLine": 4,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/orbit/chats/7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b/5d4c3b2a-1f0e-4d9c-8b7a-695847362514.jsonl",
+        "afterLine": 6,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl",
+        "afterLine": 5,
+        "phase": "generating",
+        "inFlightStartMs": 1792491660000
+      },
+      {
+        "file": "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl",
+        "afterLine": 6,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl",
+        "afterLine": 10,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl",
+        "afterLine": 12,
+        "phase": "generating",
+        "inFlightStartMs": 1792492806500
+      },
+      {
+        "file": "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl",
+        "afterLine": 13,
+        "phase": "generating",
+        "inFlightStartMs": 1792492806520
+      },
+      {
+        "file": "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl",
+        "afterLine": 18,
+        "phase": "generating",
+        "inFlightStartMs": 1792492860000
+      },
+      {
+        "file": "gemini/tmp/nova/chats/session-2026-10-20T10-20-1e9c0a77.jsonl",
+        "afterLine": 20,
+        "phase": "idle",
+        "inFlightStartMs": null
+      }
+    ]
+  },
+  "omp": {
+    "discover": [
+      "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl",
+      "omp/agent/sessions/-projects-legacy-tool/2026-10-20T10-46-00-000Z_01a158eb-0640-72f1-81d3-00009e3779b1.jsonl",
+      "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl",
+      "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+      "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+      "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites/VerifyImports.jsonl",
+      "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl",
+      "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl",
+      "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites/VerifyImports.jsonl",
+      "omp/agent/sessions/-projects-pulsar/2026-10-20T11-10-00-000Z_01a15900-ff40-7788-8e98-0004f1bbcd88.jsonl",
+      "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl",
+      "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-21T00-10-00-000Z_01a15bcb-1bc0-734c-95e4-00076a99b44c.jsonl"
+    ],
+    "traces": [
+      {
+        "file": "omp/agent/sessions/-projects-legacy-tool/2026-10-20T10-46-00-000Z_01a158eb-0640-72f1-81d3-00009e3779b1.jsonl",
+        "afterLine": 4,
+        "phase": "generating",
+        "inFlightStartMs": 1792493165000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-legacy-tool/2026-10-20T10-46-00-000Z_01a158eb-0640-72f1-81d3-00009e3779b1.jsonl",
+        "afterLine": 5,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-legacy-tool/2026-10-20T10-46-00-000Z_01a158eb-0640-72f1-81d3-00009e3779b1.jsonl",
+        "afterLine": 6,
+        "phase": "generating",
+        "inFlightStartMs": 1792493170200
+      },
+      {
+        "file": "omp/agent/sessions/-projects-legacy-tool/2026-10-20T10-46-00-000Z_01a158eb-0640-72f1-81d3-00009e3779b1.jsonl",
+        "afterLine": 7,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-legacy-tool/2026-10-20T10-46-00-000Z_01a158eb-0640-72f1-81d3-00009e3779b1.jsonl",
+        "afterLine": 8,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl",
+        "afterLine": 3,
+        "phase": "generating",
+        "inFlightStartMs": 1792493282000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl",
+        "afterLine": 4,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl",
+        "afterLine": 5,
+        "phase": "generating",
+        "inFlightStartMs": 1792493288430
+      },
+      {
+        "file": "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl",
+        "afterLine": 6,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl",
+        "afterLine": 7,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-comet/2026-10-20T10-48-00-000Z_01a158ec-db00-75e2-83a6-00013c6ef362.jsonl",
+        "afterLine": 8,
+        "phase": "generating",
+        "inFlightStartMs": 1792493370000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 2,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 5,
+        "phase": "generating",
+        "inFlightStartMs": 1792493405000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 6,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 7,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 8,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792493412400
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 10,
+        "phase": "generating",
+        "inFlightStartMs": 1792493412400
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 11,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 12,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 13,
+        "phase": "generating",
+        "inFlightStartMs": 1792493444000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 14,
+        "phase": "generating",
+        "inFlightStartMs": 1792493446504
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 15,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 16,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 17,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 20,
+        "phase": "generating",
+        "inFlightStartMs": 1792493520000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 21,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 22,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 23,
+        "phase": "generating",
+        "inFlightStartMs": 1792493540000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 24,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 25,
+        "phase": "generating",
+        "inFlightStartMs": 1792493580000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 26,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 27,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 28,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 29,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 30,
+        "phase": "generating",
+        "inFlightStartMs": 1792493890000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 31,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 32,
+        "phase": "generating",
+        "inFlightStartMs": 1792493896000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4.jsonl",
+        "afterLine": 33,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 2,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 4,
+        "phase": "generating",
+        "inFlightStartMs": 1792493416700
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 5,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 6,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 7,
+        "phase": "generating",
+        "inFlightStartMs": 1792493420300
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 8,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792493423200
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 10,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 11,
+        "phase": "generating",
+        "inFlightStartMs": 1792493441000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 12,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T10-50-00-000Z_01a158ee-afc0-7bc4-874c-000278dde6c4/ScanCallSites.jsonl",
+        "afterLine": 13,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl",
+        "afterLine": 2,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl",
+        "afterLine": 33,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl",
+        "afterLine": 34,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl",
+        "afterLine": 35,
+        "phase": "generating",
+        "inFlightStartMs": 1792494005000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7.jsonl",
+        "afterLine": 36,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl",
+        "afterLine": 4,
+        "phase": "generating",
+        "inFlightStartMs": 1792493416700
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl",
+        "afterLine": 5,
+        "phase": "generating",
+        "inFlightStartMs": 1792493416700
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl",
+        "afterLine": 7,
+        "phase": "generating",
+        "inFlightStartMs": 1792493416700
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792493416700
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-00-00-000Z_01a158f7-d780-7497-8cc5-0004538453d7/ScanCallSites.jsonl",
+        "afterLine": 13,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-10-00-000Z_01a15900-ff40-7788-8e98-0004f1bbcd88.jsonl",
+        "afterLine": 6,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-10-00-000Z_01a15900-ff40-7788-8e98-0004f1bbcd88.jsonl",
+        "afterLine": 7,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-10-00-000Z_01a15900-ff40-7788-8e98-0004f1bbcd88.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792494605000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-10-00-000Z_01a15900-ff40-7788-8e98-0004f1bbcd88.jsonl",
+        "afterLine": 10,
+        "phase": "generating",
+        "inFlightStartMs": 1792494605000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-pulsar/2026-10-20T11-10-00-000Z_01a15900-ff40-7788-8e98-0004f1bbcd88.jsonl",
+        "afterLine": 11,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl",
+        "afterLine": 6,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl",
+        "afterLine": 7,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792495230000
+      },
+      {
+        "file": "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl",
+        "afterLine": 10,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl",
+        "afterLine": 11,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl",
+        "afterLine": 4,
+        "phase": "generating",
+        "inFlightStartMs": 1792540790000
+      },
+      {
+        "file": "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl",
+        "afterLine": 5,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl",
+        "afterLine": 6,
+        "phase": "generating",
+        "inFlightStartMs": 1792540799900
+      },
+      {
+        "file": "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl",
+        "afterLine": 7,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792540810000
+      },
+      {
+        "file": "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl",
+        "afterLine": 10,
+        "phase": "generating",
+        "inFlightStartMs": 1792540810000
+      },
+      {
+        "file": "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-20T23-58-00-000Z_01a15bc0-1f40-705b-9411-0006cc623a9b.jsonl",
+        "afterLine": 11,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "omp/profiles/work/agent/sessions/-projects-orbit/2026-10-21T00-10-00-000Z_01a15bcb-1bc0-734c-95e4-00076a99b44c.jsonl",
+        "afterLine": 2,
+        "phase": "idle",
+        "inFlightStartMs": null
+      }
+    ],
+    "tailReads": [
+      {
+        "file": "omp/agent/sessions/-projects-nova/2026-10-20T11-20-00-000Z_01a1590a-2700-7d6a-923e-00062e2ac0ea.jsonl",
+        "offset": 1403,
+        "project": "nova",
+        "phase": "idle",
+        "inFlightStartMs": null,
+        "lastLineMs": 1792495260000,
+        "responseKeys": [
+          "omp:1a900002:1792495230006",
+          "omp:1a900003:1792495235400"
+        ]
+      }
+    ]
+  },
+  "antigravity": {
+    "order": [
+      "antigravity/antigravity-cli/conversations/9b1e7d42-6c5a-4f3e-8d2b-1a0f9e8d7c6b.db",
+      "antigravity/antigravity-cli/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db",
+      "antigravity/antigravity-cli/conversations/0d4f6e8a-2b1c-4d3e-9f5a-6b7c8d9e0f1a.db",
+      "antigravity/antigravity/conversations/5e2d1c0b-9a8f-4e7d-8c6b-5a4f3e2d1c0b.db",
+      "antigravity/antigravity/conversations/c7a9e1f3-5b2d-4c6e-8a0b-2d4f6a8c0e1f.db",
+      "antigravity/antigravity/conversations/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d.db",
+      "antigravity/antigravity-ide/conversations/E4D3C2B1-A0F9-4E8D-B7C6-A5F4E3D2C1B0.db",
+      "antigravity/antigravity-ide/conversations/7c8d9e0f-1a2b-4c3d-9e4f-5a6b7c8d9e0f.db",
+      "antigravity/antigravity-ide/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db",
+      "antigravity/antigravity-ide/conversations/2c4e6a8b-0d1f-4a3c-9e5b-7d9f1b3d5f7a.db",
+      "antigravity/antigravity/conversations/6d8f0a2c-4e6b-4d8f-a0c2-e4f6a8b0c2d4.db"
+    ],
+    "discover": [
+      "antigravity/antigravity-cli/conversations/0d4f6e8a-2b1c-4d3e-9f5a-6b7c8d9e0f1a.db",
+      "antigravity/antigravity-cli/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db",
+      "antigravity/antigravity-cli/conversations/9b1e7d42-6c5a-4f3e-8d2b-1a0f9e8d7c6b.db",
+      "antigravity/antigravity-ide/conversations/2c4e6a8b-0d1f-4a3c-9e5b-7d9f1b3d5f7a.db",
+      "antigravity/antigravity-ide/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db",
+      "antigravity/antigravity-ide/conversations/7c8d9e0f-1a2b-4c3d-9e4f-5a6b7c8d9e0f.db",
+      "antigravity/antigravity-ide/conversations/E4D3C2B1-A0F9-4E8D-B7C6-A5F4E3D2C1B0.db",
+      "antigravity/antigravity/conversations/5e2d1c0b-9a8f-4e7d-8c6b-5a4f3e2d1c0b.db",
+      "antigravity/antigravity/conversations/6d8f0a2c-4e6b-4d8f-a0c2-e4f6a8b0c2d4.db",
+      "antigravity/antigravity/conversations/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d.db",
+      "antigravity/antigravity/conversations/c7a9e1f3-5b2d-4c6e-8a0b-2d4f6a8c0e1f.db"
+    ],
+    "databases": {
+      "antigravity/antigravity-cli/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db": {
+        "source": "antigravity",
+        "project": "star map",
+        "model": "gemini-3.1-pro",
+        "isSubagent": false,
+        "parentFile": null,
+        "phase": "idle",
+        "inFlightStartMs": null,
+        "lastLineMs": 1792573300000,
+        "malformedLines": 0,
+        "responses": [
+          {
+            "key": "resp-ag-main-1",
+            "startMs": 1792573201050,
+            "endMs": 1792573204250,
+            "input": 12000,
+            "cachedInput": 0,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 480,
+            "reasoning": 300,
+            "model": "gemini-3.1-pro-high",
+            "provider": null,
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "resp-ag-main-2",
+            "startMs": 1792573206020,
+            "endMs": 1792573208020,
+            "input": 13900,
+            "cachedInput": 12400,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 210,
+            "reasoning": 90,
+            "model": "gemini-3.1-pro-high-exp-b",
+            "provider": null,
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "resp-ag-main-3",
+            "startMs": 1792573208110,
+            "endMs": 1792573211110,
+            "input": 16000,
+            "cachedInput": 14000,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 350,
+            "reasoning": 200,
+            "model": "Gemini 3.1 Pro (High)",
+            "provider": null,
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "resp-ag-main-4",
+            "startMs": 1792573290050,
+            "endMs": 1792573299050,
+            "input": 16900,
+            "cachedInput": 16000,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 1200,
+            "reasoning": 400,
+            "model": "gemini-3.1-pro",
+            "provider": null,
+            "fast": false,
+            "final": true
+          }
+        ]
+      },
+      "antigravity/antigravity-cli/conversations/9b1e7d42-6c5a-4f3e-8d2b-1a0f9e8d7c6b.db": {
+        "source": "antigravity",
+        "project": "star map",
+        "model": "gemini-3.1-flash",
+        "isSubagent": true,
+        "parentFile": "antigravity/antigravity-cli/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db",
+        "phase": "tools",
+        "inFlightStartMs": null,
+        "lastLineMs": 1792573213520,
+        "malformedLines": 0,
+        "responses": [
+          {
+            "key": "resp-ag-sub-1",
+            "startMs": 1792573211450,
+            "endMs": 1792573213450,
+            "input": 5000,
+            "cachedInput": 0,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 150,
+            "reasoning": 100,
+            "model": "gemini-3.1-flash",
+            "provider": null,
+            "fast": false,
+            "final": true
+          }
+        ]
+      },
+      "antigravity/antigravity-cli/conversations/0d4f6e8a-2b1c-4d3e-9f5a-6b7c8d9e0f1a.db": {
+        "unsupported": true
+      },
+      "antigravity/antigravity/conversations/5e2d1c0b-9a8f-4e7d-8c6b-5a4f3e2d1c0b.db": {
+        "source": "antigravity",
+        "project": "orbit",
+        "model": "gemini-3.1-flash-b",
+        "isSubagent": false,
+        "parentFile": null,
+        "phase": "generating",
+        "inFlightStartMs": 1792573830050,
+        "lastLineMs": 1792573831500,
+        "malformedLines": 1,
+        "responses": [
+          {
+            "key": "msg-ag-orbit-1",
+            "startMs": 1792573801050,
+            "endMs": 1792573803050,
+            "input": 4000,
+            "cachedInput": 1000,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 200,
+            "reasoning": 64,
+            "model": "gemini-3.1-flash-lite",
+            "provider": null,
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "resp-ag-orbit-2",
+            "startMs": 1792573803300,
+            "endMs": 1792573805300,
+            "input": 4200,
+            "cachedInput": 4000,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 90,
+            "reasoning": 0,
+            "model": "gemini-3.1-flash",
+            "provider": null,
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "resp-ag-orbit-3",
+            "startMs": null,
+            "endMs": 1792573808050,
+            "input": 4500,
+            "cachedInput": 4200,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 12,
+            "reasoning": 12,
+            "model": "gemini-3.1-flash",
+            "provider": null,
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "antigravity:5e2d1c0b-9a8f-4e7d-8c6b-5a4f3e2d1c0b:6",
+            "startMs": null,
+            "endMs": 1792573809500,
+            "input": 4500,
+            "cachedInput": 4400,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 40,
+            "reasoning": 0,
+            "model": "gemini-3.1-flash",
+            "provider": null,
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "resp-ag-orbit-5",
+            "startMs": null,
+            "endMs": 1792573811000,
+            "input": 4550,
+            "cachedInput": 4500,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 20,
+            "reasoning": 0,
+            "model": "gemini-3.1-flash",
+            "provider": null,
+            "fast": false,
+            "final": true
+          },
+          {
+            "key": "resp-ag-orbit-6",
+            "startMs": null,
+            "endMs": 1792573821000,
+            "input": 4680,
+            "cachedInput": 4600,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 30,
+            "reasoning": 10,
+            "model": "gemini-3.1-flash-b",
+            "provider": null,
+            "fast": false,
+            "final": true
+          }
+        ]
+      },
+      "antigravity/antigravity/conversations/c7a9e1f3-5b2d-4c6e-8a0b-2d4f6a8c0e1f.db": {
+        "source": "antigravity",
+        "project": "orbit-web",
+        "model": "gemini-3.1-flash",
+        "isSubagent": true,
+        "parentFile": "antigravity/antigravity/conversations/5e2d1c0b-9a8f-4e7d-8c6b-5a4f3e2d1c0b.db",
+        "phase": "generating",
+        "inFlightStartMs": 1792574402250,
+        "lastLineMs": 1792574402260,
+        "malformedLines": 1,
+        "responses": [
+          {
+            "key": "resp-ag-browser-1",
+            "startMs": 1792574400150,
+            "endMs": 1792574402150,
+            "input": 2500,
+            "cachedInput": 0,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 60,
+            "reasoning": 0,
+            "model": "gemini-3.1-flash",
+            "provider": null,
+            "fast": false,
+            "final": true
+          }
+        ]
+      },
+      "antigravity/antigravity/conversations/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d.db": {
+        "source": "antigravity",
+        "project": "nebula",
+        "model": "gemini-3.1-pro-low",
+        "isSubagent": false,
+        "parentFile": null,
+        "phase": "idle",
+        "inFlightStartMs": null,
+        "lastLineMs": 1792575004210,
+        "malformedLines": 1,
+        "responses": [
+          {
+            "key": "resp-ag-fork-1",
+            "startMs": 1792575001050,
+            "endMs": 1792575004050,
+            "input": 8600,
+            "cachedInput": 8000,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 300,
+            "reasoning": 120,
+            "model": "gemini-3.1-pro-low",
+            "provider": null,
+            "fast": false,
+            "final": true
+          }
+        ]
+      },
+      "antigravity/antigravity-ide/conversations/E4D3C2B1-A0F9-4E8D-B7C6-A5F4E3D2C1B0.db": {
+        "source": "antigravity",
+        "project": "nova",
+        "model": null,
+        "isSubagent": true,
+        "parentFile": null,
+        "phase": "generating",
+        "inFlightStartMs": 1792575600100,
+        "lastLineMs": 1792575600500,
+        "malformedLines": 0,
+        "responses": []
+      },
+      "antigravity/antigravity-ide/conversations/7c8d9e0f-1a2b-4c3d-9e4f-5a6b7c8d9e0f.db": {
+        "source": "antigravity",
+        "project": "nova",
+        "model": null,
+        "isSubagent": true,
+        "parentFile": null,
+        "phase": "generating",
+        "inFlightStartMs": 1792576204000,
+        "lastLineMs": 1792576204030,
+        "malformedLines": 0,
+        "responses": [
+          {
+            "key": "resp-ag-image-1",
+            "startMs": 1792576200150,
+            "endMs": 1792576201650,
+            "input": 700,
+            "cachedInput": 0,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 45,
+            "reasoning": 30,
+            "model": null,
+            "provider": null,
+            "fast": false,
+            "final": true
+          }
+        ]
+      },
+      "antigravity/antigravity-ide/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db": {
+        "source": "antigravity",
+        "project": "star map",
+        "model": null,
+        "isSubagent": false,
+        "parentFile": null,
+        "phase": "idle",
+        "inFlightStartMs": null,
+        "lastLineMs": 1792573300000,
+        "malformedLines": 0,
+        "responses": []
+      },
+      "antigravity/antigravity-ide/conversations/2c4e6a8b-0d1f-4a3c-9e5b-7d9f1b3d5f7a.db": {
+        "source": "antigravity",
+        "project": "star map",
+        "model": "gemini-3.1-flash",
+        "isSubagent": true,
+        "parentFile": "antigravity/antigravity-ide/conversations/3f6c2a10-8b4d-4e5f-9a1b-2c3d4e5f6a7b.db",
+        "phase": "idle",
+        "inFlightStartMs": null,
+        "lastLineMs": 1792576622170,
+        "malformedLines": 0,
+        "responses": [
+          {
+            "key": "resp-ag-idesub-1",
+            "startMs": 1792576620150,
+            "endMs": 1792576622150,
+            "input": 4000,
+            "cachedInput": 1000,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 120,
+            "reasoning": 40,
+            "model": "gemini-3.1-flash",
+            "provider": null,
+            "fast": false,
+            "final": true
+          }
+        ]
+      },
+      "antigravity/antigravity/conversations/6d8f0a2c-4e6b-4d8f-a0c2-e4f6a8b0c2d4.db": {
+        "source": "antigravity",
+        "project": "nebula",
+        "model": "gemini-3.1-flash",
+        "isSubagent": false,
+        "parentFile": null,
+        "phase": "idle",
+        "inFlightStartMs": null,
+        "lastLineMs": 1792576685010,
+        "malformedLines": 0,
+        "responses": [
+          {
+            "key": "resp-ag-cancel-1",
+            "startMs": 1792576680150,
+            "endMs": 1792576681150,
+            "input": 800,
+            "cachedInput": 0,
+            "cacheWriteInput": 0,
+            "cacheWrite1hInput": 0,
+            "output": 50,
+            "reasoning": 0,
+            "model": "gemini-3.1-flash",
+            "provider": null,
+            "fast": false,
+            "final": true
+          }
+        ]
+      }
+    }
+  },
+  "workbuddy": {
+    "discover": [
+      "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+      "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/7321aebd-eedd-4d8c-a034-7b74b0ca1dd1.jsonl",
+      "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+      "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/bec52a4b-a049-4377-a53e-fa03a3357f35.jsonl",
+      "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/99aa739a-ed94-446a-a6e0-be45f96cc697.jsonl",
+      "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+      "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2/subagents/agent-66bc0cda-451f-4616-a37d-d44361673dd1.jsonl",
+      "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/ef76e24d-06dd-4094-a4aa-63bd6f8faf05.jsonl"
+    ],
+    "traces": [
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 1,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 2,
+        "phase": "generating",
+        "inFlightStartMs": 1792576800000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 3,
+        "phase": "generating",
+        "inFlightStartMs": 1792576800000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 4,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 6,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 7,
+        "phase": "generating",
+        "inFlightStartMs": 1792576860000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 8,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 9,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 10,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 11,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 12,
+        "phase": "generating",
+        "inFlightStartMs": 1792576869004
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 13,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 14,
+        "phase": "generating",
+        "inFlightStartMs": 1792576875000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 15,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 16,
+        "phase": "generating",
+        "inFlightStartMs": 1792576920000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 17,
+        "phase": "generating",
+        "inFlightStartMs": 1792576920000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 18,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 19,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 20,
+        "phase": "generating",
+        "inFlightStartMs": 1792576980000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 21,
+        "phase": "generating",
+        "inFlightStartMs": 1792576980000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 22,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 23,
+        "phase": "generating",
+        "inFlightStartMs": 1792577040000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 24,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 25,
+        "phase": "generating",
+        "inFlightStartMs": 1792577070050
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 26,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 27,
+        "phase": "generating",
+        "inFlightStartMs": 1792577100000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 28,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 29,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 30,
+        "phase": "generating",
+        "inFlightStartMs": 1792577140000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 31,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 32,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 33,
+        "phase": "generating",
+        "inFlightStartMs": 1792577160000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 34,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 35,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 36,
+        "phase": "generating",
+        "inFlightStartMs": 1792577220000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 37,
+        "phase": "generating",
+        "inFlightStartMs": 1792577228000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 38,
+        "phase": "generating",
+        "inFlightStartMs": 1792577228020
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+        "afterLine": 39,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/ef76e24d-06dd-4094-a4aa-63bd6f8faf05.jsonl",
+        "afterLine": 7,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/ef76e24d-06dd-4094-a4aa-63bd6f8faf05.jsonl",
+        "afterLine": 8,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/ef76e24d-06dd-4094-a4aa-63bd6f8faf05.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792576890000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/99aa739a-ed94-446a-a6e0-be45f96cc697.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792576860000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/99aa739a-ed94-446a-a6e0-be45f96cc697.jsonl",
+        "afterLine": 18,
+        "phase": "generating",
+        "inFlightStartMs": 1792576920000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/99aa739a-ed94-446a-a6e0-be45f96cc697.jsonl",
+        "afterLine": 21,
+        "phase": "generating",
+        "inFlightStartMs": 1792578001000
+      },
+      {
+        "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/99aa739a-ed94-446a-a6e0-be45f96cc697.jsonl",
+        "afterLine": 22,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/7321aebd-eedd-4d8c-a034-7b74b0ca1dd1.jsonl",
+        "afterLine": 4,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/7321aebd-eedd-4d8c-a034-7b74b0ca1dd1.jsonl",
+        "afterLine": 5,
+        "phase": "generating",
+        "inFlightStartMs": 1792580465000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/7321aebd-eedd-4d8c-a034-7b74b0ca1dd1.jsonl",
+        "afterLine": 6,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 1,
+        "phase": "generating",
+        "inFlightStartMs": 1792581600000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 2,
+        "phase": "generating",
+        "inFlightStartMs": 1792581601500
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 3,
+        "phase": "generating",
+        "inFlightStartMs": 1792581602000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 4,
+        "phase": "generating",
+        "inFlightStartMs": 1792581603123
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 5,
+        "phase": "generating",
+        "inFlightStartMs": 1792581604000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 6,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 7,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 8,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 10,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 11,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 12,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 13,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 14,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 15,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 16,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 17,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 18,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 19,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 20,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 21,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 22,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 23,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 24,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 25,
+        "phase": "generating",
+        "inFlightStartMs": 1792581605000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 26,
+        "phase": "generating",
+        "inFlightStartMs": -62167219200000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 27,
+        "phase": "generating",
+        "inFlightStartMs": -62162121540001
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 28,
+        "phase": "generating",
+        "inFlightStartMs": -62135683140000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 29,
+        "phase": "generating",
+        "inFlightStartMs": 0
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 30,
+        "phase": "generating",
+        "inFlightStartMs": 253402387139999
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 31,
+        "phase": "generating",
+        "inFlightStartMs": 9223372036854775807
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/2c8fcaaa-da17-4eb8-ae37-c3acb6e1f7e9.jsonl",
+        "afterLine": 32,
+        "phase": "generating",
+        "inFlightStartMs": 1792581630000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 2,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 4,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 5,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 6,
+        "phase": "tools",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 7,
+        "phase": "generating",
+        "inFlightStartMs": 1792582266000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 8,
+        "phase": "generating",
+        "inFlightStartMs": 1792582266000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 9,
+        "phase": "generating",
+        "inFlightStartMs": 1792582266000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 10,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 12,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 13,
+        "phase": "generating",
+        "inFlightStartMs": 1792582320000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 14,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 15,
+        "phase": "generating",
+        "inFlightStartMs": -62167219200000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 16,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 17,
+        "phase": "generating",
+        "inFlightStartMs": 253402387138000
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 18,
+        "phase": "idle",
+        "inFlightStartMs": null
+      },
+      {
+        "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/8debac5b-f3d2-49ef-aeac-395674228a83.jsonl",
+        "afterLine": 19,
+        "phase": "generating",
+        "inFlightStartMs": 1792582380000
+      }
+    ]
+  }
+}

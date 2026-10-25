@@ -1,0 +1,4971 @@
+{
+  "_comment": "Shared UI strings in zh-Hant, zh-Hans, en, ja. Keys are identical on both platforms. Platform-only strings live in each platform's own table and must provide all four languages. Format specifiers: %d integer, %@ string.",
+  "app.name": {
+    "zh-Hant": "Agent Speed",
+    "zh-Hans": "Agent Speed",
+    "en": "Agent Speed",
+    "ja": "Agent Speed"
+  },
+  "unit.tokS": {
+    "zh-Hant": "tok/s",
+    "zh-Hans": "tok/s",
+    "en": "tok/s",
+    "ja": "tok/s"
+  },
+  "tier.idle": {
+    "zh-Hant": "待機",
+    "zh-Hans": "待机",
+    "en": "IDLE",
+    "ja": "待機"
+  },
+  "tier.cruise": {
+    "zh-Hant": "巡航",
+    "zh-Hans": "巡航",
+    "en": "CRUISE",
+    "ja": "巡航"
+  },
+  "tier.boost": {
+    "zh-Hant": "加速",
+    "zh-Hans": "加速",
+    "en": "BOOST",
+    "ja": "加速"
+  },
+  "tier.overdrive": {
+    "zh-Hant": "狂飆",
+    "zh-Hans": "狂飙",
+    "en": "OVERDRIVE",
+    "ja": "爆速"
+  },
+  "tier.redline": {
+    "zh-Hant": "極限",
+    "zh-Hans": "极限",
+    "en": "REDLINE",
+    "ja": "限界"
+  },
+  "title.walk": {
+    "zh-Hant": "步行",
+    "zh-Hans": "步行",
+    "en": "WALKING",
+    "ja": "徒歩"
+  },
+  "title.bicycle": {
+    "zh-Hant": "自行車",
+    "zh-Hans": "自行车",
+    "en": "BICYCLE",
+    "ja": "自転車"
+  },
+  "title.ebike": {
+    "zh-Hant": "電動自行車",
+    "zh-Hans": "电动车",
+    "en": "E-BIKE",
+    "ja": "電動自転車"
+  },
+  "title.motorcycle": {
+    "zh-Hant": "摩托車",
+    "zh-Hans": "摩托车",
+    "en": "MOTORCYCLE",
+    "ja": "バイク"
+  },
+  "title.car": {
+    "zh-Hant": "汽車",
+    "zh-Hans": "汽车",
+    "en": "CAR",
+    "ja": "自動車"
+  },
+  "title.sportsCar": {
+    "zh-Hant": "跑車",
+    "zh-Hans": "跑车",
+    "en": "SPORTS CAR",
+    "ja": "スポーツカー"
+  },
+  "title.bulletTrain": {
+    "zh-Hant": "高鐵",
+    "zh-Hans": "高铁",
+    "en": "BULLET TRAIN",
+    "ja": "新幹線"
+  },
+  "title.raceCar": {
+    "zh-Hant": "賽車",
+    "zh-Hans": "赛车",
+    "en": "RACE CAR",
+    "ja": "レースカー"
+  },
+  "title.maglev": {
+    "zh-Hant": "磁浮列車",
+    "zh-Hans": "磁悬浮列车",
+    "en": "MAGLEV",
+    "ja": "リニア"
+  },
+  "title.jetliner": {
+    "zh-Hant": "噴射客機",
+    "zh-Hans": "喷气客机",
+    "en": "JETLINER",
+    "ja": "ジェット機"
+  },
+  "title.fighterJet": {
+    "zh-Hant": "戰鬥機",
+    "zh-Hans": "战斗机",
+    "en": "FIGHTER JET",
+    "ja": "戦闘機"
+  },
+  "title.hypersonic": {
+    "zh-Hant": "極音速飛機",
+    "zh-Hans": "高超音速飞机",
+    "en": "HYPERSONIC",
+    "ja": "極超音速機"
+  },
+  "title.rocket": {
+    "zh-Hant": "火箭",
+    "zh-Hans": "火箭",
+    "en": "ROCKET",
+    "ja": "ロケット"
+  },
+  "title.ladder": {
+    "zh-Hant": "速度稱號",
+    "zh-Hans": "速度称号",
+    "en": "Speed titles",
+    "ja": "スピード称号"
+  },
+  "titles.vehicles.name": {
+    "zh-Hant": "交通工具",
+    "zh-Hans": "交通工具",
+    "en": "Vehicles",
+    "ja": "乗り物"
+  },
+  "titles.animals.name": {
+    "zh-Hant": "動物",
+    "zh-Hans": "动物",
+    "en": "Animals",
+    "ja": "動物"
+  },
+  "titles.wind.name": {
+    "zh-Hant": "蒲福風級",
+    "zh-Hans": "蒲福风级",
+    "en": "Beaufort Scale",
+    "ja": "風力階級"
+  },
+  "titles.space.name": {
+    "zh-Hant": "宇宙",
+    "zh-Hans": "宇宙",
+    "en": "Cosmos",
+    "ja": "宇宙"
+  },
+  "titles.cultivation.name": {
+    "zh-Hant": "修真境界",
+    "zh-Hans": "修真境界",
+    "en": "Cultivation",
+    "ja": "仙道修行"
+  },
+  "titles.wuxia.name": {
+    "zh-Hant": "武學境界",
+    "zh-Hans": "武学境界",
+    "en": "Martial Arts",
+    "ja": "武芸の道"
+  },
+  "titles.mage.name": {
+    "zh-Hant": "魔法位階",
+    "zh-Hans": "魔法位阶",
+    "en": "Arcane Ranks",
+    "ja": "魔法の位階"
+  },
+  "titles.gameRank.name": {
+    "zh-Hant": "遊戲段位",
+    "zh-Hans": "游戏段位",
+    "en": "Game Ranks",
+    "ja": "ゲームランク"
+  },
+  "titles.engineer.name": {
+    "zh-Hant": "工程師職涯",
+    "zh-Hans": "工程师生涯",
+    "en": "Engineer Career",
+    "ja": "エンジニアの道"
+  },
+  "titles.animals.idle": {
+    "zh-Hant": "打盹",
+    "zh-Hans": "打盹",
+    "en": "NAPPING",
+    "ja": "うたた寝"
+  },
+  "titles.animals.1": {
+    "zh-Hant": "蝸牛",
+    "zh-Hans": "蜗牛",
+    "en": "SNAIL",
+    "ja": "カタツムリ"
+  },
+  "titles.animals.2": {
+    "zh-Hant": "烏龜",
+    "zh-Hans": "乌龟",
+    "en": "TORTOISE",
+    "ja": "カメ"
+  },
+  "titles.animals.3": {
+    "zh-Hant": "刺蝟",
+    "zh-Hans": "刺猬",
+    "en": "HEDGEHOG",
+    "ja": "ハリネズミ"
+  },
+  "titles.animals.4": {
+    "zh-Hant": "老鼠",
+    "zh-Hans": "老鼠",
+    "en": "MOUSE",
+    "ja": "ネズミ"
+  },
+  "titles.animals.5": {
+    "zh-Hant": "松鼠",
+    "zh-Hans": "松鼠",
+    "en": "SQUIRREL",
+    "ja": "リス"
+  },
+  "titles.animals.6": {
+    "zh-Hant": "貓",
+    "zh-Hans": "猫",
+    "en": "CAT",
+    "ja": "ネコ"
+  },
+  "titles.animals.7": {
+    "zh-Hant": "兔子",
+    "zh-Hans": "兔子",
+    "en": "RABBIT",
+    "ja": "ウサギ"
+  },
+  "titles.animals.8": {
+    "zh-Hant": "袋鼠",
+    "zh-Hans": "袋鼠",
+    "en": "KANGAROO",
+    "ja": "カンガルー"
+  },
+  "titles.animals.9": {
+    "zh-Hant": "馬",
+    "zh-Hans": "马",
+    "en": "HORSE",
+    "ja": "ウマ"
+  },
+  "titles.animals.10": {
+    "zh-Hant": "獵豹",
+    "zh-Hans": "猎豹",
+    "en": "CHEETAH",
+    "ja": "チーター"
+  },
+  "titles.animals.11": {
+    "zh-Hant": "蝙蝠",
+    "zh-Hans": "蝙蝠",
+    "en": "BAT",
+    "ja": "コウモリ"
+  },
+  "titles.animals.12": {
+    "zh-Hant": "金鵰",
+    "zh-Hans": "金雕",
+    "en": "EAGLE",
+    "ja": "イヌワシ"
+  },
+  "titles.animals.13": {
+    "zh-Hant": "遊隼",
+    "zh-Hans": "游隼",
+    "en": "FALCON",
+    "ja": "ハヤブサ"
+  },
+  "titles.wind.idle": {
+    "zh-Hant": "風平浪靜",
+    "zh-Hans": "风平浪静",
+    "en": "BECALMED",
+    "ja": "凪"
+  },
+  "titles.wind.1": {
+    "zh-Hant": "無風",
+    "zh-Hans": "无风",
+    "en": "FORCE 0",
+    "ja": "静穏"
+  },
+  "titles.wind.2": {
+    "zh-Hant": "軟風",
+    "zh-Hans": "软风",
+    "en": "FORCE 1",
+    "ja": "至軽風"
+  },
+  "titles.wind.3": {
+    "zh-Hant": "輕風",
+    "zh-Hans": "轻风",
+    "en": "FORCE 2",
+    "ja": "軽風"
+  },
+  "titles.wind.4": {
+    "zh-Hant": "微風",
+    "zh-Hans": "微风",
+    "en": "FORCE 3",
+    "ja": "軟風"
+  },
+  "titles.wind.5": {
+    "zh-Hant": "和風",
+    "zh-Hans": "和风",
+    "en": "FORCE 4",
+    "ja": "和風"
+  },
+  "titles.wind.6": {
+    "zh-Hant": "清風",
+    "zh-Hans": "清劲风",
+    "en": "FORCE 5",
+    "ja": "疾風"
+  },
+  "titles.wind.7": {
+    "zh-Hant": "強風",
+    "zh-Hans": "强风",
+    "en": "FORCE 6",
+    "ja": "雄風"
+  },
+  "titles.wind.8": {
+    "zh-Hant": "疾風",
+    "zh-Hans": "疾风",
+    "en": "FORCE 7",
+    "ja": "強風"
+  },
+  "titles.wind.9": {
+    "zh-Hant": "大風",
+    "zh-Hans": "大风",
+    "en": "FORCE 8",
+    "ja": "疾強風"
+  },
+  "titles.wind.10": {
+    "zh-Hant": "烈風",
+    "zh-Hans": "烈风",
+    "en": "FORCE 9",
+    "ja": "大強風"
+  },
+  "titles.wind.11": {
+    "zh-Hant": "狂風",
+    "zh-Hans": "狂风",
+    "en": "FORCE 10",
+    "ja": "全強風"
+  },
+  "titles.wind.12": {
+    "zh-Hant": "暴風",
+    "zh-Hans": "暴风",
+    "en": "FORCE 11",
+    "ja": "暴風"
+  },
+  "titles.wind.13": {
+    "zh-Hant": "颶風",
+    "zh-Hans": "飓风",
+    "en": "FORCE 12",
+    "ja": "颶風"
+  },
+  "titles.space.idle": {
+    "zh-Hant": "休眠",
+    "zh-Hans": "休眠",
+    "en": "DORMANT",
+    "ja": "休眠"
+  },
+  "titles.space.1": {
+    "zh-Hant": "星塵",
+    "zh-Hans": "星尘",
+    "en": "STARDUST",
+    "ja": "星くず"
+  },
+  "titles.space.2": {
+    "zh-Hant": "流星",
+    "zh-Hans": "流星",
+    "en": "METEOR",
+    "ja": "流れ星"
+  },
+  "titles.space.3": {
+    "zh-Hant": "彗星",
+    "zh-Hans": "彗星",
+    "en": "COMET",
+    "ja": "彗星"
+  },
+  "titles.space.4": {
+    "zh-Hant": "月球",
+    "zh-Hans": "月球",
+    "en": "MOON",
+    "ja": "月"
+  },
+  "titles.space.5": {
+    "zh-Hant": "行星",
+    "zh-Hans": "行星",
+    "en": "PLANET",
+    "ja": "惑星"
+  },
+  "titles.space.6": {
+    "zh-Hant": "恆星",
+    "zh-Hans": "恒星",
+    "en": "STAR",
+    "ja": "恒星"
+  },
+  "titles.space.7": {
+    "zh-Hant": "紅巨星",
+    "zh-Hans": "红巨星",
+    "en": "RED GIANT",
+    "ja": "赤色巨星"
+  },
+  "titles.space.8": {
+    "zh-Hant": "超新星",
+    "zh-Hans": "超新星",
+    "en": "SUPERNOVA",
+    "ja": "超新星"
+  },
+  "titles.space.9": {
+    "zh-Hant": "中子星",
+    "zh-Hans": "中子星",
+    "en": "PULSAR",
+    "ja": "中性子星"
+  },
+  "titles.space.10": {
+    "zh-Hant": "黑洞",
+    "zh-Hans": "黑洞",
+    "en": "BLACK HOLE",
+    "ja": "ブラックホール"
+  },
+  "titles.space.11": {
+    "zh-Hant": "星系",
+    "zh-Hans": "星系",
+    "en": "GALAXY",
+    "ja": "銀河"
+  },
+  "titles.space.12": {
+    "zh-Hant": "類星體",
+    "zh-Hans": "类星体",
+    "en": "QUASAR",
+    "ja": "クエーサー"
+  },
+  "titles.space.13": {
+    "zh-Hant": "大爆炸",
+    "zh-Hans": "大爆炸",
+    "en": "BIG BANG",
+    "ja": "ビッグバン"
+  },
+  "titles.cultivation.idle": {
+    "zh-Hant": "閉關",
+    "zh-Hans": "闭关",
+    "en": "SECLUSION",
+    "ja": "閉関中"
+  },
+  "titles.cultivation.1": {
+    "zh-Hant": "凡人",
+    "zh-Hans": "凡人",
+    "en": "MORTAL",
+    "ja": "凡人"
+  },
+  "titles.cultivation.2": {
+    "zh-Hant": "練氣",
+    "zh-Hans": "炼气",
+    "en": "QI REFINING",
+    "ja": "練気"
+  },
+  "titles.cultivation.3": {
+    "zh-Hant": "築基",
+    "zh-Hans": "筑基",
+    "en": "FOUNDATION",
+    "ja": "築基"
+  },
+  "titles.cultivation.4": {
+    "zh-Hant": "金丹",
+    "zh-Hans": "金丹",
+    "en": "GOLD CORE",
+    "ja": "金丹"
+  },
+  "titles.cultivation.5": {
+    "zh-Hant": "元嬰",
+    "zh-Hans": "元婴",
+    "en": "NASCENT",
+    "ja": "元嬰"
+  },
+  "titles.cultivation.6": {
+    "zh-Hant": "化神",
+    "zh-Hans": "化神",
+    "en": "SPIRIT",
+    "ja": "化神"
+  },
+  "titles.cultivation.7": {
+    "zh-Hant": "煉虛",
+    "zh-Hans": "炼虚",
+    "en": "VOID",
+    "ja": "煉虚"
+  },
+  "titles.cultivation.8": {
+    "zh-Hant": "合體",
+    "zh-Hans": "合体",
+    "en": "INTEGRATION",
+    "ja": "合体"
+  },
+  "titles.cultivation.9": {
+    "zh-Hant": "大乘",
+    "zh-Hans": "大乘",
+    "en": "MAHAYANA",
+    "ja": "大乗"
+  },
+  "titles.cultivation.10": {
+    "zh-Hant": "渡劫",
+    "zh-Hans": "渡劫",
+    "en": "TRIBULATION",
+    "ja": "渡劫"
+  },
+  "titles.cultivation.11": {
+    "zh-Hant": "真仙",
+    "zh-Hans": "真仙",
+    "en": "IMMORTAL",
+    "ja": "真仙"
+  },
+  "titles.cultivation.12": {
+    "zh-Hant": "金仙",
+    "zh-Hans": "金仙",
+    "en": "CELESTIAL",
+    "ja": "金仙"
+  },
+  "titles.cultivation.13": {
+    "zh-Hant": "道祖",
+    "zh-Hans": "道祖",
+    "en": "DAO LORD",
+    "ja": "道祖"
+  },
+  "titles.wuxia.idle": {
+    "zh-Hant": "打坐",
+    "zh-Hans": "打坐",
+    "en": "AT REST",
+    "ja": "黙想"
+  },
+  "titles.wuxia.1": {
+    "zh-Hant": "初學乍練",
+    "zh-Hans": "初学乍练",
+    "en": "NOVICE",
+    "ja": "入門"
+  },
+  "titles.wuxia.2": {
+    "zh-Hant": "粗通皮毛",
+    "zh-Hans": "粗通皮毛",
+    "en": "DABBLER",
+    "ja": "見習い"
+  },
+  "titles.wuxia.3": {
+    "zh-Hant": "略知一二",
+    "zh-Hans": "略知一二",
+    "en": "LEARNER",
+    "ja": "初伝"
+  },
+  "titles.wuxia.4": {
+    "zh-Hant": "漸入佳境",
+    "zh-Hans": "渐入佳境",
+    "en": "PROMISING",
+    "ja": "中伝"
+  },
+  "titles.wuxia.5": {
+    "zh-Hant": "略有小成",
+    "zh-Hans": "略有小成",
+    "en": "CAPABLE",
+    "ja": "奥伝"
+  },
+  "titles.wuxia.6": {
+    "zh-Hant": "駕輕就熟",
+    "zh-Hans": "驾轻就熟",
+    "en": "SKILLED",
+    "ja": "免許皆伝"
+  },
+  "titles.wuxia.7": {
+    "zh-Hant": "融會貫通",
+    "zh-Hans": "融会贯通",
+    "en": "ADEPT",
+    "ja": "師範代"
+  },
+  "titles.wuxia.8": {
+    "zh-Hant": "爐火純青",
+    "zh-Hans": "炉火纯青",
+    "en": "EXPERT",
+    "ja": "師範"
+  },
+  "titles.wuxia.9": {
+    "zh-Hant": "出類拔萃",
+    "zh-Hans": "出类拔萃",
+    "en": "ELITE",
+    "ja": "達人"
+  },
+  "titles.wuxia.10": {
+    "zh-Hant": "出神入化",
+    "zh-Hans": "出神入化",
+    "en": "VIRTUOSO",
+    "ja": "名人"
+  },
+  "titles.wuxia.11": {
+    "zh-Hant": "登峰造極",
+    "zh-Hans": "登峰造极",
+    "en": "PARAGON",
+    "ja": "宗師"
+  },
+  "titles.wuxia.12": {
+    "zh-Hant": "一代宗師",
+    "zh-Hans": "一代宗师",
+    "en": "LEGEND",
+    "ja": "武聖"
+  },
+  "titles.wuxia.13": {
+    "zh-Hant": "天下無雙",
+    "zh-Hans": "天下无双",
+    "en": "PEERLESS",
+    "ja": "天下無双"
+  },
+  "titles.mage.idle": {
+    "zh-Hant": "冥想",
+    "zh-Hans": "冥想",
+    "en": "MEDITATING",
+    "ja": "瞑想"
+  },
+  "titles.mage.1": {
+    "zh-Hant": "學徒",
+    "zh-Hans": "学徒",
+    "en": "NOVICE",
+    "ja": "見習い"
+  },
+  "titles.mage.2": {
+    "zh-Hant": "見習法師",
+    "zh-Hans": "见习法师",
+    "en": "APPRENTICE",
+    "ja": "魔法使い"
+  },
+  "titles.mage.3": {
+    "zh-Hant": "法師",
+    "zh-Hans": "法师",
+    "en": "MAGE",
+    "ja": "魔術師"
+  },
+  "titles.mage.4": {
+    "zh-Hant": "大法師",
+    "zh-Hans": "大法师",
+    "en": "HIGH MAGE",
+    "ja": "大魔術師"
+  },
+  "titles.mage.5": {
+    "zh-Hant": "魔導師",
+    "zh-Hans": "魔导师",
+    "en": "MAGUS",
+    "ja": "魔導士"
+  },
+  "titles.mage.6": {
+    "zh-Hant": "大魔導師",
+    "zh-Hans": "大魔导师",
+    "en": "ARCHMAGE",
+    "ja": "大魔導士"
+  },
+  "titles.mage.7": {
+    "zh-Hant": "賢者",
+    "zh-Hans": "贤者",
+    "en": "SAGE",
+    "ja": "賢者"
+  },
+  "titles.mage.8": {
+    "zh-Hant": "大賢者",
+    "zh-Hans": "大贤者",
+    "en": "GREAT SAGE",
+    "ja": "大賢者"
+  },
+  "titles.mage.9": {
+    "zh-Hant": "傳奇",
+    "zh-Hans": "传奇",
+    "en": "LEGEND",
+    "ja": "レジェンド"
+  },
+  "titles.mage.10": {
+    "zh-Hant": "半神",
+    "zh-Hans": "半神",
+    "en": "DEMIGOD",
+    "ja": "半神"
+  },
+  "titles.mage.11": {
+    "zh-Hant": "神",
+    "zh-Hans": "神",
+    "en": "DEITY",
+    "ja": "神"
+  },
+  "titles.mage.12": {
+    "zh-Hant": "主神",
+    "zh-Hans": "主神",
+    "en": "HIGH GOD",
+    "ja": "主神"
+  },
+  "titles.mage.13": {
+    "zh-Hant": "創世神",
+    "zh-Hans": "创世神",
+    "en": "CREATOR",
+    "ja": "創造神"
+  },
+  "titles.gameRank.idle": {
+    "zh-Hant": "掛機",
+    "zh-Hans": "挂机",
+    "en": "AFK",
+    "ja": "離席中"
+  },
+  "titles.gameRank.1": {
+    "zh-Hant": "菜鳥",
+    "zh-Hans": "菜鸟",
+    "en": "ROOKIE",
+    "ja": "ルーキー"
+  },
+  "titles.gameRank.2": {
+    "zh-Hant": "黑鐵",
+    "zh-Hans": "黑铁",
+    "en": "IRON",
+    "ja": "アイアン"
+  },
+  "titles.gameRank.3": {
+    "zh-Hant": "青銅",
+    "zh-Hans": "青铜",
+    "en": "BRONZE",
+    "ja": "ブロンズ"
+  },
+  "titles.gameRank.4": {
+    "zh-Hant": "白銀",
+    "zh-Hans": "白银",
+    "en": "SILVER",
+    "ja": "シルバー"
+  },
+  "titles.gameRank.5": {
+    "zh-Hant": "黃金",
+    "zh-Hans": "黄金",
+    "en": "GOLD",
+    "ja": "ゴールド"
+  },
+  "titles.gameRank.6": {
+    "zh-Hant": "白金",
+    "zh-Hans": "铂金",
+    "en": "PLATINUM",
+    "ja": "プラチナ"
+  },
+  "titles.gameRank.7": {
+    "zh-Hant": "翡翠",
+    "zh-Hans": "翡翠",
+    "en": "EMERALD",
+    "ja": "エメラルド"
+  },
+  "titles.gameRank.8": {
+    "zh-Hant": "鑽石",
+    "zh-Hans": "钻石",
+    "en": "DIAMOND",
+    "ja": "ダイヤ"
+  },
+  "titles.gameRank.9": {
+    "zh-Hant": "大師",
+    "zh-Hans": "大师",
+    "en": "MASTER",
+    "ja": "マスター"
+  },
+  "titles.gameRank.10": {
+    "zh-Hant": "宗師",
+    "zh-Hans": "宗师",
+    "en": "ELITE",
+    "ja": "エリート"
+  },
+  "titles.gameRank.11": {
+    "zh-Hant": "王者",
+    "zh-Hans": "王者",
+    "en": "CHAMPION",
+    "ja": "チャンピオン"
+  },
+  "titles.gameRank.12": {
+    "zh-Hant": "傳奇",
+    "zh-Hans": "传奇",
+    "en": "LEGEND",
+    "ja": "レジェンド"
+  },
+  "titles.gameRank.13": {
+    "zh-Hant": "榜首",
+    "zh-Hans": "榜首",
+    "en": "#1",
+    "ja": "1位"
+  },
+  "titles.engineer.idle": {
+    "zh-Hant": "下班",
+    "zh-Hans": "下班",
+    "en": "OFF DUTY",
+    "ja": "退勤"
+  },
+  "titles.engineer.1": {
+    "zh-Hant": "實習生",
+    "zh-Hans": "实习生",
+    "en": "INTERN",
+    "ja": "インターン"
+  },
+  "titles.engineer.2": {
+    "zh-Hant": "初級工程師",
+    "zh-Hans": "初级工程师",
+    "en": "JUNIOR",
+    "ja": "新人"
+  },
+  "titles.engineer.3": {
+    "zh-Hant": "工程師",
+    "zh-Hans": "工程师",
+    "en": "ENGINEER",
+    "ja": "エンジニア"
+  },
+  "titles.engineer.4": {
+    "zh-Hant": "資深工程師",
+    "zh-Hans": "资深工程师",
+    "en": "SENIOR",
+    "ja": "シニア"
+  },
+  "titles.engineer.5": {
+    "zh-Hant": "技術主管",
+    "zh-Hans": "技术主管",
+    "en": "TECH LEAD",
+    "ja": "主任"
+  },
+  "titles.engineer.6": {
+    "zh-Hant": "主任工程師",
+    "zh-Hans": "主任工程师",
+    "en": "STAFF",
+    "ja": "テックリード"
+  },
+  "titles.engineer.7": {
+    "zh-Hant": "架構師",
+    "zh-Hans": "架构师",
+    "en": "ARCHITECT",
+    "ja": "アーキテクト"
+  },
+  "titles.engineer.8": {
+    "zh-Hant": "首席工程師",
+    "zh-Hans": "首席工程师",
+    "en": "PRINCIPAL",
+    "ja": "プリンシパル"
+  },
+  "titles.engineer.9": {
+    "zh-Hant": "技術總監",
+    "zh-Hans": "技术总监",
+    "en": "DIRECTOR",
+    "ja": "技術部長"
+  },
+  "titles.engineer.10": {
+    "zh-Hant": "技術副總",
+    "zh-Hans": "技术副总",
+    "en": "VP ENG",
+    "ja": "VPoE"
+  },
+  "titles.engineer.11": {
+    "zh-Hant": "CTO",
+    "zh-Hans": "CTO",
+    "en": "CTO",
+    "ja": "CTO"
+  },
+  "titles.engineer.12": {
+    "zh-Hant": "傳奇工程師",
+    "zh-Hans": "传奇工程师",
+    "en": "LEGEND",
+    "ja": "レジェンド"
+  },
+  "titles.engineer.13": {
+    "zh-Hant": "10x 工程師",
+    "zh-Hans": "10x 工程师",
+    "en": "10X DEV",
+    "ja": "10xエンジニア"
+  },
+  "titles.theme": {
+    "zh-Hant": "稱號主題",
+    "zh-Hans": "称号主题",
+    "en": "Title Theme",
+    "ja": "称号テーマ"
+  },
+  "titles.theme.hint": {
+    "zh-Hant": "懸浮窗、面板與螢幕閱讀器都會使用這個主題的速度稱號。",
+    "zh-Hans": "悬浮窗、面板和屏幕阅读器都会使用这个主题的速度称号。",
+    "en": "The orbs, the dashboard and screen readers use this theme's speed titles.",
+    "ja": "オーブ、ダッシュボード、読み上げでこのテーマのスピード称号を使います。"
+  },
+  "titles.presets": {
+    "zh-Hant": "內建",
+    "zh-Hans": "内置",
+    "en": "Built-in",
+    "ja": "標準"
+  },
+  "titles.custom": {
+    "zh-Hant": "自訂",
+    "zh-Hans": "自定义",
+    "en": "Custom",
+    "ja": "カスタム"
+  },
+  "titles.custom.new": {
+    "zh-Hant": "新增自訂稱號",
+    "zh-Hans": "新建自定义称号",
+    "en": "New Custom Titles",
+    "ja": "カスタム称号を作成"
+  },
+  "titles.custom.copyName": {
+    "zh-Hant": "%@（自訂）",
+    "zh-Hans": "%@（自定义）",
+    "en": "%@ (Custom)",
+    "ja": "%@（カスタム）"
+  },
+  "titles.duplicateEdit": {
+    "zh-Hant": "複製並編輯",
+    "zh-Hans": "复制并编辑",
+    "en": "Duplicate and Edit",
+    "ja": "複製して編集"
+  },
+  "titles.custom.edit": {
+    "zh-Hant": "編輯",
+    "zh-Hans": "编辑",
+    "en": "Edit",
+    "ja": "編集"
+  },
+  "titles.custom.duplicate": {
+    "zh-Hant": "複製",
+    "zh-Hans": "复制",
+    "en": "Duplicate",
+    "ja": "複製"
+  },
+  "titles.custom.delete": {
+    "zh-Hant": "刪除",
+    "zh-Hans": "删除",
+    "en": "Delete",
+    "ja": "削除"
+  },
+  "titles.custom.didDelete": {
+    "zh-Hant": "已刪除「%@」",
+    "zh-Hans": "已删除“%@”",
+    "en": "Deleted “%@”",
+    "ja": "「%@」を削除しました"
+  },
+  "titles.custom.didReset": {
+    "zh-Hant": "已還原「%@」的所有稱號",
+    "zh-Hans": "已还原“%@”的所有称号",
+    "en": "Reset all titles of “%@”",
+    "ja": "「%@」の称号をすべて元に戻しました"
+  },
+  "titles.custom.limit": {
+    "zh-Hant": "最多可以有 %d 組自訂稱號",
+    "zh-Hans": "最多可以有 %d 组自定义称号",
+    "en": "You can have up to %d custom title sets",
+    "ja": "カスタム称号は最大 %d 個までです"
+  },
+  "titles.custom.editing": {
+    "zh-Hant": "編輯「%@」",
+    "zh-Hans": "编辑“%@”",
+    "en": "Editing “%@”",
+    "ja": "「%@」を編集"
+  },
+  "titles.custom.name": {
+    "zh-Hant": "名稱",
+    "zh-Hans": "名称",
+    "en": "Name",
+    "ja": "名前"
+  },
+  "titles.custom.base": {
+    "zh-Hant": "基於",
+    "zh-Hans": "基于",
+    "en": "Based On",
+    "ja": "ベース"
+  },
+  "titles.custom.baseHint": {
+    "zh-Hant": "留空的欄位會使用「%@」的稱號，並跟著語言切換。",
+    "zh-Hans": "留空的字段会使用“%@”的称号，并随语言切换。",
+    "en": "Empty fields use the %@ titles and follow the language.",
+    "ja": "空欄には「%@」の称号が表示され、言語に合わせて切り替わります。"
+  },
+  "titles.custom.idleRow": {
+    "zh-Hant": "待機時",
+    "zh-Hans": "待机时",
+    "en": "When Idle",
+    "ja": "待機中"
+  },
+  "titles.custom.speedColumn": {
+    "zh-Hant": "速度（%@）",
+    "zh-Hans": "速度（%@）",
+    "en": "Speed (%@)",
+    "ja": "速度（%@）"
+  },
+  "titles.custom.titleColumn": {
+    "zh-Hant": "稱號",
+    "zh-Hans": "称号",
+    "en": "Title",
+    "ja": "称号"
+  },
+  "titles.custom.reset": {
+    "zh-Hant": "還原為「%@」",
+    "zh-Hans": "还原为“%@”",
+    "en": "Reset to “%@”",
+    "ja": "「%@」に戻す"
+  },
+  "titles.custom.resetAll": {
+    "zh-Hant": "全部還原",
+    "zh-Hans": "全部还原",
+    "en": "Reset All",
+    "ja": "すべて元に戻す"
+  },
+  "titles.custom.lengthHint": {
+    "zh-Hant": "每個稱號最多約 7 個中文字或 10 個英文字母，才放得進懸浮窗。",
+    "zh-Hans": "每个称号最多约 7 个汉字或 10 个英文字母，才放得进悬浮窗。",
+    "en": "Each title fits about 7 Chinese characters or 10 Latin letters, so it stays readable on the orb.",
+    "ja": "称号はオーブに収まるよう、全角 7 文字・英字 10 文字程度までです。"
+  },
+  "titles.custom.tooLong": {
+    "zh-Hant": "稱號太長，已縮短到懸浮窗放得下的長度。",
+    "zh-Hans": "称号太长，已缩短到悬浮窗放得下的长度。",
+    "en": "That title was too long for the orb, so it was shortened.",
+    "ja": "称号が長すぎるため、オーブに収まる長さに短くしました。"
+  },
+  "titles.custom.noEmoji": {
+    "zh-Hant": "稱號以速度顏色顯示，無法使用彩色表情符號。",
+    "zh-Hans": "称号以速度颜色显示，无法使用彩色表情符号。",
+    "en": "Titles are drawn in the speed color, so color emoji can't be used.",
+    "ja": "称号はスピードの色で表示されるため、カラー絵文字は使えません。"
+  },
+  "titles.custom.vehicleArt": {
+    "zh-Hant": "面板會繼續顯示各級對應的交通工具動畫。",
+    "zh-Hans": "面板会继续显示各级对应的交通工具动画。",
+    "en": "The dashboard keeps showing the vehicle of each level.",
+    "ja": "ダッシュボードには各レベルの乗り物が引き続き表示されます。"
+  },
+  "titles.custom.preview": {
+    "zh-Hant": "預覽",
+    "zh-Hans": "预览",
+    "en": "Preview",
+    "ja": "プレビュー"
+  },
+  "titles.level": {
+    "zh-Hant": "第 %d 級",
+    "zh-Hans": "第 %d 级",
+    "en": "Level %d",
+    "ja": "レベル %d"
+  },
+  "titles.custom.row.a11y": {
+    "zh-Hant": "第 %d 級稱號，%@ 以上；留空時為「%@」",
+    "zh-Hans": "第 %d 级称号，%@ 以上；留空时为“%@”",
+    "en": "Level %d title, from %@; empty uses “%@”",
+    "ja": "レベル %d の称号（%@ 以上）。空欄なら「%@」"
+  },
+  "titles.custom.idle.a11y": {
+    "zh-Hant": "待機時的稱號；留空時為「%@」",
+    "zh-Hans": "待机时的称号；留空时为“%@”",
+    "en": "Idle title; empty uses “%@”",
+    "ja": "待機中の称号。空欄なら「%@」"
+  },
+  "titles.card.a11y": {
+    "zh-Hant": "%@，例如 %@",
+    "zh-Hans": "%@，例如 %@",
+    "en": "%@, such as %@",
+    "ja": "%@（例：%@）"
+  },
+  "titles.custom.more.a11y": {
+    "zh-Hant": "更多動作",
+    "zh-Hans": "更多操作",
+    "en": "More Actions",
+    "ja": "その他の操作"
+  },
+  "orbs.titleTheme.global": {
+    "zh-Hant": "跟隨一般設定（%@）",
+    "zh-Hans": "跟随通用设置（%@）",
+    "en": "Same as General (%@)",
+    "ja": "一般設定に合わせる（%@）"
+  },
+  "orbs.titleTheme.hint": {
+    "zh-Hant": "為不同來源的懸浮窗選不同的主題，一眼就能分辨。",
+    "zh-Hans": "为不同来源的悬浮窗选择不同的主题，一眼就能分辨。",
+    "en": "Give orbs for different sources different themes to tell them apart at a glance.",
+    "ja": "ソースごとのオーブに別のテーマを選ぶと、ひと目で見分けられます。"
+  },
+  "peak.new": {
+    "zh-Hant": "新紀錄",
+    "zh-Hans": "新纪录",
+    "en": "NEW PEAK",
+    "ja": "新記録"
+  },
+  "source.codex": {
+    "zh-Hant": "Codex",
+    "zh-Hans": "Codex",
+    "en": "Codex",
+    "ja": "Codex"
+  },
+  "source.claudeCode": {
+    "zh-Hant": "Claude Code",
+    "zh-Hans": "Claude Code",
+    "en": "Claude Code",
+    "ja": "Claude Code"
+  },
+  "source.claudeDesktop": {
+    "zh-Hant": "Claude Desktop",
+    "zh-Hans": "Claude Desktop",
+    "en": "Claude Desktop",
+    "ja": "Claude Desktop"
+  },
+  "source.notFound": {
+    "zh-Hant": "未偵測到",
+    "zh-Hans": "未检测到",
+    "en": "Not detected",
+    "ja": "未検出"
+  },
+  "source.disabled": {
+    "zh-Hant": "已停用",
+    "zh-Hans": "已停用",
+    "en": "Off",
+    "ja": "オフ"
+  },
+  "source.sessions": {
+    "zh-Hant": "找到 %d 個工作階段",
+    "zh-Hans": "找到 %d 个会话",
+    "en": "%d sessions found",
+    "ja": "%d 件のセッション"
+  },
+  "source.folderMissing": {
+    "zh-Hant": "未找到資料夾",
+    "zh-Hans": "未找到文件夹",
+    "en": "Folder not found",
+    "ja": "フォルダが見つかりません"
+  },
+  "phase.generating": {
+    "zh-Hant": "生成中",
+    "zh-Hans": "生成中",
+    "en": "Generating",
+    "ja": "生成中"
+  },
+  "phase.tools": {
+    "zh-Hant": "執行工具",
+    "zh-Hans": "运行工具",
+    "en": "Running tools",
+    "ja": "ツール実行中"
+  },
+  "phase.idle": {
+    "zh-Hant": "閒置",
+    "zh-Hans": "空闲",
+    "en": "Idle",
+    "ja": "待機中"
+  },
+  "agents.context": {
+    "zh-Hant": "生成中 %d · 工具 %d",
+    "zh-Hans": "生成中 %d · 工具 %d",
+    "en": "%d generating · %d in tools",
+    "ja": "生成中 %d · ツール %d"
+  },
+  "agents.count": {
+    "zh-Hant": "%d 個 agent",
+    "zh-Hans": "%d 个 agent",
+    "en": "%d agents",
+    "ja": "%d 個の agent"
+  },
+  "agents.empty": {
+    "zh-Hant": "目前沒有 agent 在工作",
+    "zh-Hans": "目前没有 agent 在工作",
+    "en": "No agents are working right now",
+    "ja": "現在作業中の agent はありません"
+  },
+  "agents.subagent": {
+    "zh-Hant": "子 agent",
+    "zh-Hans": "子 agent",
+    "en": "Sub-agent",
+    "ja": "サブ agent"
+  },
+  "dashboard.sources": {
+    "zh-Hant": "來源",
+    "zh-Hans": "来源",
+    "en": "Sources",
+    "ja": "ソース"
+  },
+  "dashboard.sources.empty": {
+    "zh-Hant": "今天還沒有來源產生 token",
+    "zh-Hans": "今天还没有来源产生 token",
+    "en": "No source has produced tokens today",
+    "ja": "今日はまだトークンを生成したソースがありません"
+  },
+  "dashboard.agents": {
+    "zh-Hant": "Agent",
+    "zh-Hans": "Agent",
+    "en": "Agents",
+    "ja": "Agent"
+  },
+  "dashboard.today": {
+    "zh-Hant": "今天",
+    "zh-Hans": "今天",
+    "en": "Today",
+    "ja": "今日"
+  },
+  "dashboard.live": {
+    "zh-Hant": "即時",
+    "zh-Hans": "实时",
+    "en": "Live",
+    "ja": "ライブ"
+  },
+  "today.output": {
+    "zh-Hant": "輸出",
+    "zh-Hans": "输出",
+    "en": "Output",
+    "ja": "出力"
+  },
+  "today.input": {
+    "zh-Hant": "輸入（含快取）",
+    "zh-Hans": "输入（含缓存）",
+    "en": "Input (incl. cache)",
+    "ja": "入力（キャッシュ含む）"
+  },
+  "today.requests": {
+    "zh-Hant": "請求",
+    "zh-Hans": "请求",
+    "en": "Requests",
+    "ja": "リクエスト"
+  },
+  "today.average": {
+    "zh-Hant": "平均速度",
+    "zh-Hans": "平均速度",
+    "en": "Average speed",
+    "ja": "平均速度"
+  },
+  "today.peak": {
+    "zh-Hant": "今日峰值",
+    "zh-Hans": "今日峰值",
+    "en": "Today's peak",
+    "ja": "今日のピーク"
+  },
+  "today.summary": {
+    "zh-Hant": "今日 %@ · %d 個 agent",
+    "zh-Hans": "今日 %@ · %d 个 agent",
+    "en": "Today %@ · %d agents",
+    "ja": "今日 %@ · %d 個の agent"
+  },
+  "chart.estimated": {
+    "zh-Hant": "估算中",
+    "zh-Hans": "估算中",
+    "en": "Estimating",
+    "ja": "推定中"
+  },
+  "state.loading": {
+    "zh-Hant": "正在讀取今日紀錄…",
+    "zh-Hans": "正在读取今日记录…",
+    "en": "Reading today's history…",
+    "ja": "今日の履歴を読み込み中…"
+  },
+  "state.noSources": {
+    "zh-Hant": "找不到任何 AI 工具的紀錄資料夾",
+    "zh-Hans": "找不到任何 AI 工具的记录文件夹",
+    "en": "No AI tool history folder found",
+    "ja": "AI ツールの履歴フォルダが見つかりません"
+  },
+  "warning.partialHistory": {
+    "zh-Hant": "部分歷史過大，已略過最早的內容",
+    "zh-Hans": "部分历史过大，已跳过最早的内容",
+    "en": "Some history was too large; the oldest part was skipped",
+    "ja": "一部の履歴が大きすぎるため、古い部分をスキップしました"
+  },
+  "warning.unreadable": {
+    "zh-Hant": "有 %d 個檔案無法讀取",
+    "zh-Hans": "有 %d 个文件无法读取",
+    "en": "%d files could not be read",
+    "ja": "%d 個のファイルを読み込めませんでした"
+  },
+  "warning.malformed": {
+    "zh-Hant": "略過 %d 行無法解析的紀錄",
+    "zh-Hans": "跳过 %d 行无法解析的记录",
+    "en": "Skipped %d unreadable lines",
+    "ja": "解析できない %d 行をスキップしました"
+  },
+  "metric.info": {
+    "zh-Hant": "速度＝輸出 token ÷ 實際生成時間（從送出請求到完成，含等待第一個字）。多個 agent 會加總。進行中的回應先以該 agent 近期的實測速度估算，回應完成後立即以實測值校正。資料只來自本機紀錄。",
+    "zh-Hans": "速度＝输出 token ÷ 实际生成时间（从发出请求到完成，含等待第一个字）。多个 agent 会加总。进行中的回应先以该 agent 近期的实测速度估算，回应完成后立即以实测值校正。数据只来自本机记录。",
+    "en": "Speed = output tokens ÷ actual generation time (from sending the request to completion, including time to first token). Parallel agents are summed. Responses still in flight are estimated from that agent's recent measured speed and corrected with the measured value the moment they finish. Data comes only from local transcripts.",
+    "ja": "速度＝出力トークン ÷ 実際の生成時間（リクエスト送信から完了まで、最初のトークンを待つ時間を含む）。複数の agent は合算されます。進行中の応答はその agent の最近の実測速度で推定し、完了した瞬間に実測値で補正します。データはローカルの記録のみから取得します。"
+  },
+  "metric.output": {
+    "zh-Hant": "輸出速度",
+    "zh-Hans": "输出速度",
+    "en": "Output speed",
+    "ja": "出力速度"
+  },
+  "metric.total": {
+    "zh-Hant": "總吞吐量（含輸入）",
+    "zh-Hans": "总吞吐量（含输入）",
+    "en": "Total throughput (incl. input)",
+    "ja": "総スループット（入力含む）"
+  },
+  "menu.dashboard": {
+    "zh-Hant": "打開面板",
+    "zh-Hans": "打开面板",
+    "en": "Open Dashboard",
+    "ja": "ダッシュボードを開く"
+  },
+  "menu.showOrb": {
+    "zh-Hant": "顯示懸浮窗",
+    "zh-Hans": "显示悬浮窗",
+    "en": "Show Floating Orb",
+    "ja": "フローティングオーブを表示"
+  },
+  "menu.hideOrb": {
+    "zh-Hant": "隱藏懸浮窗",
+    "zh-Hans": "隐藏悬浮窗",
+    "en": "Hide Floating Orb",
+    "ja": "フローティングオーブを隠す"
+  },
+  "menu.size": {
+    "zh-Hant": "大小",
+    "zh-Hans": "大小",
+    "en": "Size",
+    "ja": "サイズ"
+  },
+  "menu.size.small": {
+    "zh-Hant": "小",
+    "zh-Hans": "小",
+    "en": "Small",
+    "ja": "小"
+  },
+  "menu.size.medium": {
+    "zh-Hant": "中",
+    "zh-Hans": "中",
+    "en": "Medium",
+    "ja": "中"
+  },
+  "menu.size.large": {
+    "zh-Hant": "大",
+    "zh-Hans": "大",
+    "en": "Large",
+    "ja": "大"
+  },
+  "menu.effects": {
+    "zh-Hant": "特效",
+    "zh-Hans": "特效",
+    "en": "Effects",
+    "ja": "エフェクト"
+  },
+  "menu.alwaysOnTop": {
+    "zh-Hant": "永遠置頂",
+    "zh-Hans": "永远置顶",
+    "en": "Always on Top",
+    "ja": "常に手前に表示"
+  },
+  "menu.clickThrough": {
+    "zh-Hant": "滑鼠穿透",
+    "zh-Hans": "鼠标穿透",
+    "en": "Click-Through",
+    "ja": "クリックを透過"
+  },
+  "menu.settings": {
+    "zh-Hant": "設定…",
+    "zh-Hans": "设置…",
+    "en": "Settings…",
+    "ja": "設定…"
+  },
+  "menu.quit": {
+    "zh-Hant": "結束 Agent Speed",
+    "zh-Hans": "退出 Agent Speed",
+    "en": "Quit Agent Speed",
+    "ja": "Agent Speed を終了"
+  },
+  "menu.about": {
+    "zh-Hant": "關於 Agent Speed",
+    "zh-Hans": "关于 Agent Speed",
+    "en": "About Agent Speed",
+    "ja": "Agent Speed について"
+  },
+  "effects.off": {
+    "zh-Hant": "關閉",
+    "zh-Hans": "关闭",
+    "en": "Off",
+    "ja": "オフ"
+  },
+  "effects.soft": {
+    "zh-Hant": "柔和",
+    "zh-Hans": "柔和",
+    "en": "Soft",
+    "ja": "控えめ"
+  },
+  "effects.standard": {
+    "zh-Hant": "標準",
+    "zh-Hans": "标准",
+    "en": "Standard",
+    "ja": "標準"
+  },
+  "effects.max": {
+    "zh-Hant": "熱血全開",
+    "zh-Hans": "热血全开",
+    "en": "Max",
+    "ja": "全開"
+  },
+  "settings.title": {
+    "zh-Hant": "設定",
+    "zh-Hans": "设置",
+    "en": "Settings",
+    "ja": "設定"
+  },
+  "settings.general": {
+    "zh-Hant": "一般",
+    "zh-Hans": "通用",
+    "en": "General",
+    "ja": "一般"
+  },
+  "settings.language": {
+    "zh-Hant": "語言",
+    "zh-Hans": "语言",
+    "en": "Language",
+    "ja": "言語"
+  },
+  "settings.language.system": {
+    "zh-Hant": "跟隨系統",
+    "zh-Hans": "跟随系统",
+    "en": "System",
+    "ja": "システムに合わせる"
+  },
+  "settings.launchAtLogin": {
+    "zh-Hant": "登入時自動啟動",
+    "zh-Hans": "登录时自动启动",
+    "en": "Launch at login",
+    "ja": "ログイン時に起動"
+  },
+  "settings.metric": {
+    "zh-Hant": "速度指標",
+    "zh-Hans": "速度指标",
+    "en": "Speed metric",
+    "ja": "速度の指標"
+  },
+  "settings.redline": {
+    "zh-Hant": "紅線速度",
+    "zh-Hans": "红线速度",
+    "en": "Redline speed",
+    "ja": "レッドライン"
+  },
+  "settings.redline.hint": {
+    "zh-Hant": "達到紅線時特效全開；速度稱號會隨紅線等比例調整。",
+    "zh-Hans": "达到红线时特效全开；速度称号会随红线等比例调整。",
+    "en": "Effects peak at the redline; speed titles scale with it.",
+    "ja": "レッドラインでエフェクトが最大になり、スピード称号もそれに合わせて変わります。"
+  },
+  "settings.bar": {
+    "zh-Hant": "選單列",
+    "zh-Hans": "菜单栏",
+    "en": "Menu Bar",
+    "ja": "メニューバー"
+  },
+  "settings.taskbar": {
+    "zh-Hant": "工作列",
+    "zh-Hans": "任务栏",
+    "en": "Taskbar",
+    "ja": "タスクバー"
+  },
+  "settings.bar.mode": {
+    "zh-Hant": "顯示內容",
+    "zh-Hans": "显示内容",
+    "en": "Show",
+    "ja": "表示内容"
+  },
+  "settings.bar.mode.glyphValue": {
+    "zh-Hant": "圖示＋數字",
+    "zh-Hans": "图标＋数字",
+    "en": "Gauge and value",
+    "ja": "ゲージと数値"
+  },
+  "settings.bar.mode.value": {
+    "zh-Hant": "只有數字",
+    "zh-Hans": "只有数字",
+    "en": "Value only",
+    "ja": "数値のみ"
+  },
+  "settings.bar.mode.glyph": {
+    "zh-Hant": "只有圖示",
+    "zh-Hans": "只有图标",
+    "en": "Gauge only",
+    "ja": "ゲージのみ"
+  },
+  "settings.bar.colored": {
+    "zh-Hant": "彩色圖示",
+    "zh-Hans": "彩色图标",
+    "en": "Colored gauge",
+    "ja": "カラーゲージ"
+  },
+  "settings.bar.unit": {
+    "zh-Hant": "顯示單位",
+    "zh-Hans": "显示单位",
+    "en": "Show unit",
+    "ja": "単位を表示"
+  },
+  "settings.bar.show": {
+    "zh-Hant": "在工作列顯示",
+    "zh-Hans": "在任务栏显示",
+    "en": "Show on taskbar",
+    "ja": "タスクバーに表示"
+  },
+  "settings.orb": {
+    "zh-Hant": "懸浮窗",
+    "zh-Hans": "悬浮窗",
+    "en": "Floating Orb",
+    "ja": "フローティングオーブ"
+  },
+  "settings.orb.show": {
+    "zh-Hant": "顯示懸浮窗",
+    "zh-Hans": "显示悬浮窗",
+    "en": "Show floating orb",
+    "ja": "フローティングオーブを表示"
+  },
+  "settings.orb.size": {
+    "zh-Hant": "大小",
+    "zh-Hans": "大小",
+    "en": "Size",
+    "ja": "サイズ"
+  },
+  "settings.orb.opacity": {
+    "zh-Hant": "不透明度",
+    "zh-Hans": "不透明度",
+    "en": "Opacity",
+    "ja": "不透明度"
+  },
+  "settings.orb.fadeIdle": {
+    "zh-Hant": "閒置時淡出",
+    "zh-Hans": "空闲时淡出",
+    "en": "Fade when idle",
+    "ja": "待機中は薄くする"
+  },
+  "settings.orb.allSpaces": {
+    "zh-Hant": "在所有桌面顯示",
+    "zh-Hans": "在所有桌面显示",
+    "en": "Show on all Spaces",
+    "ja": "すべてのデスクトップに表示"
+  },
+  "settings.effects": {
+    "zh-Hant": "特效",
+    "zh-Hans": "特效",
+    "en": "Effects",
+    "ja": "エフェクト"
+  },
+  "settings.effects.intensity": {
+    "zh-Hant": "特效強度",
+    "zh-Hans": "特效强度",
+    "en": "Intensity",
+    "ja": "強さ"
+  },
+  "settings.effects.peaks": {
+    "zh-Hant": "破紀錄慶祝",
+    "zh-Hans": "破纪录庆祝",
+    "en": "Celebrate new peaks",
+    "ja": "新記録を祝う"
+  },
+  "settings.effects.pulses": {
+    "zh-Hant": "回應完成脈衝",
+    "zh-Hans": "回应完成脉冲",
+    "en": "Response pulses",
+    "ja": "応答完了パルス"
+  },
+  "settings.effects.preview": {
+    "zh-Hant": "預覽特效",
+    "zh-Hans": "预览特效",
+    "en": "Preview Effects",
+    "ja": "エフェクトをプレビュー"
+  },
+  "settings.effects.previewing": {
+    "zh-Hant": "預覽中…",
+    "zh-Hans": "预览中…",
+    "en": "Previewing…",
+    "ja": "プレビュー中…"
+  },
+  "settings.effects.reduceMotion": {
+    "zh-Hant": "系統已開啟「減少動態效果」，特效最高為柔和。",
+    "zh-Hans": "系统已开启“减弱动态效果”，特效最高为柔和。",
+    "en": "Reduce Motion is on, so effects are limited to Soft.",
+    "ja": "「視差効果を減らす」がオンのため、エフェクトは控えめまでに制限されます。"
+  },
+  "settings.sources": {
+    "zh-Hant": "資料來源",
+    "zh-Hans": "数据来源",
+    "en": "Data Sources",
+    "ja": "データソース"
+  },
+  "settings.sources.change": {
+    "zh-Hant": "變更…",
+    "zh-Hans": "更改…",
+    "en": "Change…",
+    "ja": "変更…"
+  },
+  "settings.sources.reset": {
+    "zh-Hant": "重設",
+    "zh-Hans": "重置",
+    "en": "Reset",
+    "ja": "リセット"
+  },
+  "settings.sources.sharedRoot": {
+    "zh-Hant": "Claude Code 與 Claude Desktop 共用這個資料夾，依紀錄自動區分。",
+    "zh-Hans": "Claude Code 与 Claude Desktop 共用这个文件夹，按记录自动区分。",
+    "en": "Claude Code and Claude Desktop share this folder and are told apart automatically.",
+    "ja": "Claude Code と Claude Desktop はこのフォルダを共有し、記録から自動で区別されます。"
+  },
+  "settings.about": {
+    "zh-Hant": "關於",
+    "zh-Hans": "关于",
+    "en": "About",
+    "ja": "情報"
+  },
+  "settings.about.version": {
+    "zh-Hant": "版本 %@",
+    "zh-Hans": "版本 %@",
+    "en": "Version %@",
+    "ja": "バージョン %@"
+  },
+  "settings.about.github": {
+    "zh-Hant": "在 GitHub 上查看",
+    "zh-Hans": "在 GitHub 上查看",
+    "en": "View on GitHub",
+    "ja": "GitHub で見る"
+  },
+  "settings.about.privacy": {
+    "zh-Hant": "Agent Speed 只讀取本機紀錄，不收集任何資料，也不會儲存或顯示對話內容。只有檢查更新時會連線到 GitHub，且不傳送任何個人資料。",
+    "zh-Hans": "Agent Speed 只读取本机记录，不收集任何数据，也不会保存或显示对话内容。只有检查更新时会连接 GitHub，且不发送任何个人数据。",
+    "en": "Agent Speed only reads local transcripts. It collects nothing and never stores or shows conversation content. It connects to GitHub only to check for updates, and sends no personal data.",
+    "ja": "Agent Speed はローカルの記録のみを読み取ります。データを収集せず、会話の内容を保存・表示することもありません。ネットワーク接続はアップデートの確認時に GitHub へ行うだけで、個人データは送信しません。"
+  },
+  "settings.about.update": {
+    "zh-Hant": "有新版本時會提醒你，一鍵即可更新。",
+    "zh-Hans": "有新版本时会提醒你，一键即可更新。",
+    "en": "You'll be told when a new version is out and can update with one click.",
+    "ja": "新しいバージョンが出るとお知らせし、ワンクリックで更新できます。"
+  },
+  "time.justNow": {
+    "zh-Hant": "剛剛",
+    "zh-Hans": "刚刚",
+    "en": "just now",
+    "ja": "たった今"
+  },
+  "time.secondsAgo": {
+    "zh-Hant": "%d 秒前",
+    "zh-Hans": "%d 秒前",
+    "en": "%ds ago",
+    "ja": "%d 秒前"
+  },
+  "time.minutesAgo": {
+    "zh-Hant": "%d 分鐘前",
+    "zh-Hans": "%d 分钟前",
+    "en": "%dm ago",
+    "ja": "%d 分前"
+  },
+  "time.minutes": {
+    "zh-Hant": "%d 分鐘",
+    "zh-Hans": "%d 分钟",
+    "en": "%d min",
+    "ja": "%d 分"
+  },
+  "time.hours": {
+    "zh-Hant": "%d 小時",
+    "zh-Hans": "%d 小时",
+    "en": "%d hr",
+    "ja": "%d 時間"
+  },
+  "time.hoursMinutes": {
+    "zh-Hant": "%d 小時 %d 分鐘",
+    "zh-Hans": "%d 小时 %d 分钟",
+    "en": "%d hr %d min",
+    "ja": "%d 時間 %d 分"
+  },
+  "a11y.orb": {
+    "zh-Hant": "每秒 %@ 個 token，%@",
+    "zh-Hans": "每秒 %@ 个 token，%@",
+    "en": "%@ tokens per second, %@",
+    "ja": "毎秒 %@ トークン、%@"
+  },
+  "settings.appearance": {
+    "zh-Hant": "外觀",
+    "zh-Hans": "外观",
+    "en": "Appearance",
+    "ja": "外観"
+  },
+  "appearance.auto": {
+    "zh-Hant": "自動",
+    "zh-Hans": "自动",
+    "en": "Auto",
+    "ja": "自動"
+  },
+  "appearance.light": {
+    "zh-Hant": "淺色",
+    "zh-Hans": "浅色",
+    "en": "Light",
+    "ja": "ライト"
+  },
+  "appearance.dark": {
+    "zh-Hant": "深色",
+    "zh-Hans": "深色",
+    "en": "Dark",
+    "ja": "ダーク"
+  },
+  "language.zhHant": {
+    "zh-Hant": "繁體中文",
+    "zh-Hans": "繁體中文",
+    "en": "繁體中文",
+    "ja": "繁體中文"
+  },
+  "language.zhHans": {
+    "zh-Hant": "简体中文",
+    "zh-Hans": "简体中文",
+    "en": "简体中文",
+    "ja": "简体中文"
+  },
+  "language.en": {
+    "zh-Hant": "English",
+    "zh-Hans": "English",
+    "en": "English",
+    "ja": "English"
+  },
+  "language.ja": {
+    "zh-Hant": "日本語",
+    "zh-Hans": "日本語",
+    "en": "日本語",
+    "ja": "日本語"
+  },
+  "warning.unfinalized": {
+    "zh-Hant": "%d 個 Claude 子 agent 回應沒有寫入最終用量：輸出量為下限，速度以同模型實測值估算",
+    "zh-Hans": "%d 个 Claude 子 agent 回应没有写入最终用量：输出量为下限，速度按同模型实测值估算",
+    "en": "%d Claude sub-agent responses have no final usage: output is a lower bound and speed is estimated from the same model",
+    "ja": "%d 件の Claude サブ agent の応答に最終使用量がありません：出力は下限値で、速度は同じモデルの実測値から推定しています"
+  },
+  "update.available.title": {
+    "zh-Hant": "Agent Speed %@ 已推出",
+    "zh-Hans": "Agent Speed %@ 已发布",
+    "en": "Agent Speed %@ is available",
+    "ja": "Agent Speed %@ が利用可能です"
+  },
+  "update.available.short": {
+    "zh-Hant": "有新版本 %@",
+    "zh-Hans": "有新版本 %@",
+    "en": "Update %@",
+    "ja": "新バージョン %@"
+  },
+  "update.menu": {
+    "zh-Hant": "更新至 %@…",
+    "zh-Hans": "更新至 %@…",
+    "en": "Update to %@…",
+    "ja": "%@ にアップデート…"
+  },
+  "update.current": {
+    "zh-Hant": "目前版本 %@",
+    "zh-Hans": "当前版本 %@",
+    "en": "Current version %@",
+    "ja": "現在のバージョン %@"
+  },
+  "update.upToDate": {
+    "zh-Hant": "已是最新版本",
+    "zh-Hans": "已是最新版本",
+    "en": "You're up to date",
+    "ja": "最新バージョンです"
+  },
+  "update.check": {
+    "zh-Hant": "檢查更新",
+    "zh-Hans": "检查更新",
+    "en": "Check for Updates",
+    "ja": "アップデートを確認"
+  },
+  "update.checking": {
+    "zh-Hant": "正在檢查更新…",
+    "zh-Hans": "正在检查更新…",
+    "en": "Checking for updates…",
+    "ja": "アップデートを確認中…"
+  },
+  "update.lastChecked": {
+    "zh-Hant": "上次檢查：%@",
+    "zh-Hans": "上次检查：%@",
+    "en": "Last checked %@",
+    "ja": "最終確認：%@"
+  },
+  "update.auto": {
+    "zh-Hant": "自動檢查更新",
+    "zh-Hans": "自动检查更新",
+    "en": "Check for updates automatically",
+    "ja": "アップデートを自動で確認"
+  },
+  "update.auto.hint": {
+    "zh-Hant": "啟動時與每 6 小時檢查一次 GitHub 上的新版本。",
+    "zh-Hans": "启动时与每 6 小时检查一次 GitHub 上的新版本。",
+    "en": "Checks GitHub for a new version at launch and every 6 hours.",
+    "ja": "起動時と 6 時間ごとに GitHub で新しいバージョンを確認します。"
+  },
+  "update.install": {
+    "zh-Hant": "更新並重新啟動",
+    "zh-Hans": "更新并重新启动",
+    "en": "Update and Relaunch",
+    "ja": "アップデートして再起動"
+  },
+  "update.later": {
+    "zh-Hant": "稍後",
+    "zh-Hans": "稍后",
+    "en": "Later",
+    "ja": "後で"
+  },
+  "update.skip": {
+    "zh-Hant": "略過此版本",
+    "zh-Hans": "跳过此版本",
+    "en": "Skip This Version",
+    "ja": "このバージョンをスキップ"
+  },
+  "update.downloading": {
+    "zh-Hant": "正在下載… %@",
+    "zh-Hans": "正在下载… %@",
+    "en": "Downloading… %@",
+    "ja": "ダウンロード中… %@"
+  },
+  "update.verifying": {
+    "zh-Hant": "正在驗證…",
+    "zh-Hans": "正在验证…",
+    "en": "Verifying…",
+    "ja": "検証中…"
+  },
+  "update.installing": {
+    "zh-Hant": "正在安裝…",
+    "zh-Hans": "正在安装…",
+    "en": "Installing…",
+    "ja": "インストール中…"
+  },
+  "update.failed": {
+    "zh-Hant": "更新失敗：%@",
+    "zh-Hans": "更新失败：%@",
+    "en": "Update failed: %@",
+    "ja": "アップデートに失敗しました：%@"
+  },
+  "update.failed.network": {
+    "zh-Hant": "無法連線到 GitHub",
+    "zh-Hans": "无法连接到 GitHub",
+    "en": "Couldn't reach GitHub",
+    "ja": "GitHub に接続できません"
+  },
+  "update.failed.checksum": {
+    "zh-Hant": "檔案校驗失敗，已取消更新",
+    "zh-Hans": "文件校验失败，已取消更新",
+    "en": "The download didn't pass verification, so nothing was changed",
+    "ja": "ファイルの検証に失敗したため、アップデートを中止しました"
+  },
+  "update.failed.permission": {
+    "zh-Hant": "沒有權限寫入安裝位置",
+    "zh-Hans": "没有权限写入安装位置",
+    "en": "No permission to write to the install location",
+    "ja": "インストール先に書き込む権限がありません"
+  },
+  "update.failed.invalid": {
+    "zh-Hant": "下載的安裝包內容不正確",
+    "zh-Hans": "下载的安装包内容不正确",
+    "en": "The downloaded package is not valid",
+    "ja": "ダウンロードしたパッケージが正しくありません"
+  },
+  "update.retry": {
+    "zh-Hant": "重試",
+    "zh-Hans": "重试",
+    "en": "Try Again",
+    "ja": "再試行"
+  },
+  "update.openRelease": {
+    "zh-Hant": "在 GitHub 上查看",
+    "zh-Hans": "在 GitHub 上查看",
+    "en": "View on GitHub",
+    "ja": "GitHub で見る"
+  },
+  "update.notes": {
+    "zh-Hant": "更新內容",
+    "zh-Hans": "更新内容",
+    "en": "What's New",
+    "ja": "新機能"
+  },
+  "update.done": {
+    "zh-Hant": "已更新到 %@",
+    "zh-Hans": "已更新到 %@",
+    "en": "Updated to %@",
+    "ja": "%@ にアップデートしました"
+  },
+  "update.notification.body": {
+    "zh-Hant": "點一下即可更新。",
+    "zh-Hans": "点一下即可更新。",
+    "en": "Click to update.",
+    "ja": "クリックしてアップデート。"
+  },
+  "source.deepseek": {
+    "zh-Hant": "DSH",
+    "zh-Hans": "DSH",
+    "en": "DSH",
+    "ja": "DSH"
+  },
+  "settings.sources.dshHint": {
+    "zh-Hant": "DeepSeek Harness（dsh）桌面版與命令列共用這個資料夾。",
+    "zh-Hans": "DeepSeek Harness（dsh）桌面版与命令行共用这个文件夹。",
+    "en": "The DeepSeek Harness (dsh) desktop app and CLI share this folder.",
+    "ja": "DeepSeek Harness（dsh）のデスクトップアプリと CLI はこのフォルダを共有します。"
+  },
+  "agents.expand": {
+    "zh-Hant": "+%d 個 agent",
+    "zh-Hans": "+%d 个 agent",
+    "en": "+%d more",
+    "ja": "ほか %d 個の agent"
+  },
+  "agents.collapse": {
+    "zh-Hant": "收合",
+    "zh-Hans": "收起",
+    "en": "Show less",
+    "ja": "閉じる"
+  },
+  "agents.expand.a11y": {
+    "zh-Hant": "顯示全部 %d 個 agent",
+    "zh-Hans": "显示全部 %d 个 agent",
+    "en": "Show all %d agents",
+    "ja": "%d 個の agent をすべて表示"
+  },
+  "source.opencode": {
+    "zh-Hant": "OpenCode",
+    "zh-Hans": "OpenCode",
+    "en": "OpenCode",
+    "ja": "OpenCode"
+  },
+  "source.gemini": {
+    "zh-Hant": "Gemini CLI",
+    "zh-Hans": "Gemini CLI",
+    "en": "Gemini CLI",
+    "ja": "Gemini CLI"
+  },
+  "settings.sources.opencodeHint": {
+    "zh-Hant": "OpenCode 命令列與桌面版共用這個資料庫，只會以唯讀方式讀取。",
+    "zh-Hans": "OpenCode 命令行与桌面版共用这个数据库，只会以只读方式读取。",
+    "en": "The OpenCode CLI and desktop app share this database; it is only ever read.",
+    "ja": "OpenCode の CLI とデスクトップ版はこのデータベースを共有します。読み取り専用で開きます。"
+  },
+  "settings.sources.geminiHint": {
+    "zh-Hant": "Gemini CLI 的對話紀錄資料夾。",
+    "zh-Hans": "Gemini CLI 的对话记录文件夹。",
+    "en": "The Gemini CLI conversation folder.",
+    "ja": "Gemini CLI の会話記録フォルダです。"
+  },
+  "source.omp": {
+    "zh-Hant": "omp",
+    "zh-Hans": "omp",
+    "en": "omp",
+    "ja": "omp"
+  },
+  "source.antigravity": {
+    "zh-Hant": "Antigravity",
+    "zh-Hans": "Antigravity",
+    "en": "Antigravity",
+    "ja": "Antigravity"
+  },
+  "settings.sources.ompHint": {
+    "zh-Hant": "omp（oh-my-pi）的 sessions 資料夾，通常是 ~/.omp/agent/sessions。未選擇資料夾時，也會自動讀取各個具名設定檔。",
+    "zh-Hans": "omp（oh-my-pi）的 sessions 文件夹，通常是 ~/.omp/agent/sessions。未选择文件夹时，也会自动读取各个命名配置文件。",
+    "en": "The sessions folder of omp (oh-my-pi), usually ~/.omp/agent/sessions. Unless you choose a folder, named profiles are included automatically.",
+    "ja": "omp（oh-my-pi）の sessions フォルダです。通常は ~/.omp/agent/sessions です。フォルダを選ばない場合は、名前付きプロファイルも自動で読み込みます。"
+  },
+  "settings.sources.antigravityHint": {
+    "zh-Hant": "內含 conversations 的 Antigravity 資料夾，例如 ~/.gemini/antigravity-cli。命令列、桌面版與 IDE 的資料夾會自動讀取，對話紀錄只會讀取、不會變更。",
+    "zh-Hans": "包含 conversations 的 Antigravity 文件夹，例如 ~/.gemini/antigravity-cli。命令行、桌面版与 IDE 的文件夹会自动读取，对话记录只会读取、不会更改。",
+    "en": "The Antigravity folder that contains conversations, e.g. ~/.gemini/antigravity-cli. The CLI, desktop app and IDE folders are read automatically; conversations are only read, never changed.",
+    "ja": "conversations を含む Antigravity のフォルダです（例：~/.gemini/antigravity-cli）。CLI、デスクトップアプリ、IDE のフォルダは自動で読み込みます。会話は読み取るだけで、変更しません。"
+  },
+  "source.workbuddy": {
+    "zh-Hant": "WorkBuddy",
+    "zh-Hans": "WorkBuddy",
+    "en": "WorkBuddy",
+    "ja": "WorkBuddy"
+  },
+  "source.workbuddyAi": {
+    "zh-Hant": "WorkBuddy AI",
+    "zh-Hans": "WorkBuddy AI",
+    "en": "WorkBuddy AI",
+    "ja": "WorkBuddy AI"
+  },
+  "settings.sources.workbuddyHint": {
+    "zh-Hant": "WorkBuddy 桌面版的資料夾，通常是 ~/.workbuddy。對話紀錄只會讀取、不會變更；在雲端執行的對話不會計入。",
+    "zh-Hans": "WorkBuddy 桌面版的文件夹，通常是 ~/.workbuddy。对话记录只会读取、不会更改；在云端运行的对话不计入。",
+    "en": "The WorkBuddy desktop app's folder, usually ~/.workbuddy. Conversations are only read, never changed; conversations that run in the cloud are not counted.",
+    "ja": "WorkBuddy デスクトップアプリのフォルダです。通常は ~/.workbuddy です。会話は読み取るだけで、変更しません。クラウドで実行された会話は集計されません。"
+  },
+  "settings.sources.workbuddyAiHint": {
+    "zh-Hant": "WorkBuddy AI 桌面版的資料夾，通常是 ~/.workbuddy-ai。對話紀錄只會讀取、不會變更；在雲端執行的對話不會計入。",
+    "zh-Hans": "WorkBuddy AI 桌面版的文件夹，通常是 ~/.workbuddy-ai。对话记录只会读取、不会更改；在云端运行的对话不计入。",
+    "en": "The WorkBuddy AI desktop app's folder, usually ~/.workbuddy-ai. Conversations are only read, never changed; conversations that run in the cloud are not counted.",
+    "ja": "WorkBuddy AI デスクトップアプリのフォルダです。通常は ~/.workbuddy-ai です。会話は読み取るだけで、変更しません。クラウドで実行された会話は集計されません。"
+  },
+  "warning.unsupportedFormat": {
+    "zh-Hant": "%@ 的紀錄格式太舊，請更新該工具",
+    "zh-Hans": "%@ 的记录格式太旧，请更新该工具",
+    "en": "%@ uses a log format that is too old; please update it",
+    "ja": "%@ の記録形式が古すぎます。ツールを更新してください"
+  },
+  "history.title": {
+    "zh-Hant": "用量歷史",
+    "zh-Hans": "用量历史",
+    "en": "Usage History",
+    "ja": "使用履歴"
+  },
+  "history.open": {
+    "zh-Hant": "用量歷史…",
+    "zh-Hans": "用量历史…",
+    "en": "Usage History…",
+    "ja": "使用履歴…"
+  },
+  "history.allSources": {
+    "zh-Hant": "全部來源",
+    "zh-Hans": "全部来源",
+    "en": "All Sources",
+    "ja": "すべてのソース"
+  },
+  "history.range.today": {
+    "zh-Hant": "今天",
+    "zh-Hans": "今天",
+    "en": "Today",
+    "ja": "今日"
+  },
+  "history.range.yesterday": {
+    "zh-Hant": "昨天",
+    "zh-Hans": "昨天",
+    "en": "Yesterday",
+    "ja": "昨日"
+  },
+  "history.range.7d": {
+    "zh-Hant": "7 天",
+    "zh-Hans": "7 天",
+    "en": "7 days",
+    "ja": "7 日"
+  },
+  "history.range.30d": {
+    "zh-Hant": "30 天",
+    "zh-Hans": "30 天",
+    "en": "30 days",
+    "ja": "30 日"
+  },
+  "history.range.90d": {
+    "zh-Hant": "90 天",
+    "zh-Hans": "90 天",
+    "en": "90 days",
+    "ja": "90 日"
+  },
+  "history.range.year": {
+    "zh-Hant": "今年",
+    "zh-Hans": "今年",
+    "en": "This year",
+    "ja": "今年"
+  },
+  "history.range.all": {
+    "zh-Hant": "全部",
+    "zh-Hans": "全部",
+    "en": "All",
+    "ja": "すべて"
+  },
+  "history.range.custom": {
+    "zh-Hant": "自訂…",
+    "zh-Hans": "自定义…",
+    "en": "Custom…",
+    "ja": "カスタム…"
+  },
+  "history.range.from": {
+    "zh-Hant": "從",
+    "zh-Hans": "从",
+    "en": "From",
+    "ja": "開始"
+  },
+  "history.range.to": {
+    "zh-Hant": "到",
+    "zh-Hans": "到",
+    "en": "To",
+    "ja": "終了"
+  },
+  "history.range.apply": {
+    "zh-Hant": "套用",
+    "zh-Hans": "应用",
+    "en": "Apply",
+    "ja": "適用"
+  },
+  "history.summary.output": {
+    "zh-Hant": "輸出 token",
+    "zh-Hans": "输出 token",
+    "en": "Output tokens",
+    "ja": "出力トークン"
+  },
+  "history.summary.input": {
+    "zh-Hant": "輸入 token（含快取）",
+    "zh-Hans": "输入 token（含缓存）",
+    "en": "Input tokens (incl. cache)",
+    "ja": "入力トークン（キャッシュ含む）"
+  },
+  "history.summary.input.short": {
+    "zh-Hant": "輸入 token",
+    "zh-Hans": "输入 token",
+    "en": "Input tokens",
+    "ja": "入力トークン"
+  },
+  "history.summary.requests": {
+    "zh-Hant": "請求",
+    "zh-Hans": "请求",
+    "en": "Requests",
+    "ja": "リクエスト"
+  },
+  "history.summary.speed": {
+    "zh-Hant": "平均速度",
+    "zh-Hans": "平均速度",
+    "en": "Average speed",
+    "ja": "平均速度"
+  },
+  "history.summary.activeDays": {
+    "zh-Hant": "活躍 %d 天",
+    "zh-Hans": "活跃 %d 天",
+    "en": "Active on %d days",
+    "ja": "%d 日間アクティブ"
+  },
+  "history.summary.bestDay": {
+    "zh-Hant": "單日最高 %@",
+    "zh-Hans": "单日最高 %@",
+    "en": "Busiest day %@",
+    "ja": "最多の日 %@"
+  },
+  "history.summary.vsPrevious": {
+    "zh-Hant": "比前一段期間 %@",
+    "zh-Hans": "比上一段期间 %@",
+    "en": "%@ vs previous period",
+    "ja": "前の期間比 %@"
+  },
+  "history.summary.vsPreviousDay": {
+    "zh-Hant": "比前一天 %@",
+    "zh-Hans": "比前一天 %@",
+    "en": "%@ vs the day before",
+    "ja": "前日比 %@"
+  },
+  "history.chart.output": {
+    "zh-Hant": "每日輸出",
+    "zh-Hans": "每日输出",
+    "en": "Daily output",
+    "ja": "日別の出力"
+  },
+  "history.chart.speed": {
+    "zh-Hant": "平均速度",
+    "zh-Hans": "平均速度",
+    "en": "Average speed",
+    "ja": "平均速度"
+  },
+  "history.chart.bySource": {
+    "zh-Hant": "來源分布",
+    "zh-Hans": "来源分布",
+    "en": "By source",
+    "ja": "ソース別"
+  },
+  "history.chart.byModel": {
+    "zh-Hant": "模型分布",
+    "zh-Hans": "模型分布",
+    "en": "By model",
+    "ja": "モデル別"
+  },
+  "history.table.date": {
+    "zh-Hant": "日期",
+    "zh-Hans": "日期",
+    "en": "Date",
+    "ja": "日付"
+  },
+  "history.table.requests": {
+    "zh-Hant": "請求",
+    "zh-Hans": "请求",
+    "en": "Requests",
+    "ja": "リクエスト"
+  },
+  "history.table.output": {
+    "zh-Hant": "輸出",
+    "zh-Hans": "输出",
+    "en": "Output",
+    "ja": "出力"
+  },
+  "history.table.input": {
+    "zh-Hant": "輸入（含快取）",
+    "zh-Hans": "输入（含缓存）",
+    "en": "Input (incl. cache)",
+    "ja": "入力（キャッシュ含む）"
+  },
+  "history.table.cacheHit": {
+    "zh-Hant": "快取命中",
+    "zh-Hans": "缓存命中",
+    "en": "Cache hit",
+    "ja": "キャッシュヒット"
+  },
+  "history.table.speed": {
+    "zh-Hant": "平均速度",
+    "zh-Hans": "平均速度",
+    "en": "Avg speed",
+    "ja": "平均速度"
+  },
+  "history.table.peak": {
+    "zh-Hant": "峰值",
+    "zh-Hans": "峰值",
+    "en": "Peak",
+    "ja": "ピーク"
+  },
+  "history.table.agents": {
+    "zh-Hant": "Agent",
+    "zh-Hans": "Agent",
+    "en": "Agents",
+    "ja": "Agent"
+  },
+  "history.table.models": {
+    "zh-Hant": "主要模型",
+    "zh-Hans": "主要模型",
+    "en": "Top models",
+    "ja": "主なモデル"
+  },
+  "history.today": {
+    "zh-Hant": "今天",
+    "zh-Hans": "今天",
+    "en": "Today",
+    "ja": "今日"
+  },
+  "history.yesterday": {
+    "zh-Hant": "昨天",
+    "zh-Hans": "昨天",
+    "en": "Yesterday",
+    "ja": "昨日"
+  },
+  "history.inProgress": {
+    "zh-Hant": "進行中",
+    "zh-Hans": "进行中",
+    "en": "In progress",
+    "ja": "進行中"
+  },
+  "history.analyzing": {
+    "zh-Hant": "正在分析歷史紀錄… %d%%",
+    "zh-Hans": "正在分析历史记录… %d%%",
+    "en": "Analyzing history… %d%%",
+    "ja": "履歴を分析中… %d%%"
+  },
+  "history.analyzingFiles": {
+    "zh-Hant": "%d / %d 個檔案",
+    "zh-Hans": "%d / %d 个文件",
+    "en": "%d of %d files",
+    "ja": "%d / %d ファイル"
+  },
+  "history.updated": {
+    "zh-Hant": "更新於 %@",
+    "zh-Hans": "更新于 %@",
+    "en": "Updated %@",
+    "ja": "%@ に更新"
+  },
+  "history.empty": {
+    "zh-Hant": "這段期間沒有用量",
+    "zh-Hans": "这段期间没有用量",
+    "en": "No usage in this period",
+    "ja": "この期間の使用はありません"
+  },
+  "history.empty.hint": {
+    "zh-Hant": "試試擴大日期範圍，或切換到其他來源。",
+    "zh-Hans": "试试扩大日期范围，或切换到其他来源。",
+    "en": "Try a wider date range or another source.",
+    "ja": "期間を広げるか、別のソースを選んでください。"
+  },
+  "history.export": {
+    "zh-Hant": "匯出 CSV…",
+    "zh-Hans": "导出 CSV…",
+    "en": "Export CSV…",
+    "ja": "CSV を書き出す…"
+  },
+  "history.privacy": {
+    "zh-Hant": "只保存每日彙總數字，不含任何請求或對話內容。",
+    "zh-Hans": "只保存每日汇总数字，不含任何请求或对话内容。",
+    "en": "Only daily totals are kept — never requests or conversation content.",
+    "ja": "保存するのは日別の集計だけで、リクエストや会話の内容は含みません。"
+  },
+  "history.privacy.short": {
+    "zh-Hant": "只保存每日彙總",
+    "zh-Hans": "只保存每日汇总",
+    "en": "Daily totals only",
+    "ja": "日別の集計のみ保存"
+  },
+  "history.clear": {
+    "zh-Hant": "清除歷史統計…",
+    "zh-Hans": "清除历史统计…",
+    "en": "Clear History…",
+    "ja": "履歴をクリア…"
+  },
+  "history.clear.confirm": {
+    "zh-Hant": "要清除所有歷史統計嗎？之後會依現有日誌重新計算，工具已刪除的舊日誌將無法恢復。",
+    "zh-Hans": "要清除所有历史统计吗？之后会按现有日志重新计算，工具已删除的旧日志将无法恢复。",
+    "en": "Clear all history? It will be recomputed from the logs that still exist; days whose logs were deleted cannot be recovered.",
+    "ja": "すべての履歴をクリアしますか？残っているログから再計算され、削除済みのログの日は復元できません。"
+  },
+  "history.clear.action": {
+    "zh-Hant": "清除",
+    "zh-Hans": "清除",
+    "en": "Clear",
+    "ja": "クリア"
+  },
+  "history.cancel": {
+    "zh-Hant": "取消",
+    "zh-Hans": "取消",
+    "en": "Cancel",
+    "ja": "キャンセル"
+  },
+  "history.noSpeed": {
+    "zh-Hant": "無實測",
+    "zh-Hans": "无实测",
+    "en": "No measurement",
+    "ja": "実測なし"
+  },
+  "history.unfinalized": {
+    "zh-Hant": "含 %d 筆未定案用量",
+    "zh-Hans": "含 %d 条未定案用量",
+    "en": "%d responses without final usage",
+    "ja": "最終使用量のない応答 %d 件"
+  },
+  "history.weekdayDate": {
+    "zh-Hant": "%@（%@）",
+    "zh-Hans": "%@（%@）",
+    "en": "%@, %@",
+    "ja": "%@（%@）"
+  },
+  "style.led": {
+    "zh-Hant": "LED 儀表",
+    "zh-Hans": "LED 仪表",
+    "en": "LED Gauge",
+    "ja": "LED ゲージ"
+  },
+  "style.led.desc": {
+    "zh-Hant": "36 顆 LED 隨速度依序點亮，原本的經典樣式。",
+    "zh-Hans": "36 颗 LED 随速度依次点亮，原来的经典样式。",
+    "en": "36 LEDs light up as the speed climbs. The original look.",
+    "ja": "36 個の LED が速度に合わせて点灯する、おなじみのスタイル。"
+  },
+  "style.needle": {
+    "zh-Hant": "指針轉速錶",
+    "zh-Hans": "指针转速表",
+    "en": "Needle Tachometer",
+    "ja": "針式タコメーター"
+  },
+  "style.needle.desc": {
+    "zh-Hant": "賽車轉速錶：指針掃進紅區，全速時頂住限位。",
+    "zh-Hans": "赛车转速表：指针扫进红区，全速时顶住限位。",
+    "en": "A racing tach: the needle sweeps into the red zone and pins at full speed.",
+    "ja": "レーシングタコメーター。針がレッドゾーンへ振れ、全開でストッパーに張り付きます。"
+  },
+  "style.liquid": {
+    "zh-Hant": "能量液球",
+    "zh-Hans": "能量液球",
+    "en": "Liquid Energy",
+    "ja": "リキッドエナジー"
+  },
+  "style.liquid.desc": {
+    "zh-Hant": "發光液體隨速度上漲翻騰，到紅線時沸騰。",
+    "zh-Hans": "发光液体随速度上涨翻腾，到红线时沸腾。",
+    "en": "Glowing liquid rises and churns with speed, and boils at the redline.",
+    "ja": "光る液体が速度とともに満ちて波立ち、レッドラインで沸騰します。"
+  },
+  "style.reactor": {
+    "zh-Hant": "反應爐",
+    "zh-Hans": "反应堆",
+    "en": "Reactor",
+    "ja": "リアクター"
+  },
+  "style.reactor.desc": {
+    "zh-Hant": "反向旋轉的能量環越轉越快，紅線時迸出電弧。",
+    "zh-Hans": "反向旋转的能量环越转越快，红线时迸出电弧。",
+    "en": "Counter-rotating energy rings spin up and throw arcs at the redline.",
+    "ja": "逆回転するエネルギーリングが加速し、レッドラインで放電します。"
+  },
+  "style.minimal": {
+    "zh-Hant": "極簡圓環",
+    "zh-Hans": "极简圆环",
+    "en": "Minimal Ring",
+    "ja": "ミニマルリング"
+  },
+  "style.minimal.desc": {
+    "zh-Hant": "只有數字、細圓環和稱號；最安靜，縮小也清楚。",
+    "zh-Hans": "只有数字、细圆环和称号；最安静，缩小也清楚。",
+    "en": "Just the number, a thin ring and the title. The calmest, and clear even when small.",
+    "ja": "数字と細いリング、称号だけ。いちばん静かで、小さくても読みやすい。"
+  },
+  "orbs.style": {
+    "zh-Hant": "樣式",
+    "zh-Hans": "样式",
+    "en": "Style",
+    "ja": "スタイル"
+  },
+  "orbs.sources": {
+    "zh-Hant": "來源",
+    "zh-Hans": "来源",
+    "en": "Sources",
+    "ja": "ソース"
+  },
+  "orbs.sources.all": {
+    "zh-Hant": "全部來源",
+    "zh-Hans": "全部来源",
+    "en": "All Sources",
+    "ja": "すべてのソース"
+  },
+  "orbs.sources.allHint": {
+    "zh-Hant": "包含之後新增或偵測到的來源。",
+    "zh-Hans": "包含之后新增或检测到的来源。",
+    "en": "Includes sources that are added or detected later.",
+    "ja": "あとから追加・検出されたソースも含みます。"
+  },
+  "orbs.sources.lastOne": {
+    "zh-Hant": "每個懸浮窗至少要追蹤一個來源。",
+    "zh-Hans": "每个悬浮窗至少要追踪一个来源。",
+    "en": "An orb tracks at least one source.",
+    "ja": "オーブには少なくとも 1 つのソースが必要です。"
+  },
+  "orbs.count": {
+    "zh-Hant": "%d / %d",
+    "zh-Hans": "%d / %d",
+    "en": "%d / %d",
+    "ja": "%d / %d"
+  },
+  "orbs.add": {
+    "zh-Hant": "新增懸浮窗",
+    "zh-Hans": "新增悬浮窗",
+    "en": "Add Orb",
+    "ja": "オーブを追加"
+  },
+  "orbs.remove": {
+    "zh-Hant": "移除懸浮窗",
+    "zh-Hans": "移除悬浮窗",
+    "en": "Remove Orb",
+    "ja": "オーブを削除"
+  },
+  "orbs.duplicate": {
+    "zh-Hant": "複製",
+    "zh-Hans": "复制",
+    "en": "Duplicate",
+    "ja": "複製"
+  },
+  "orbs.split": {
+    "zh-Hant": "依來源拆分",
+    "zh-Hans": "按来源拆分",
+    "en": "Split by Source",
+    "ja": "ソースごとに分割"
+  },
+  "orbs.split.hint": {
+    "zh-Hant": "為每個偵測到的來源各建立一個懸浮窗，排成整齊的一列。",
+    "zh-Hans": "为每个检测到的来源各建立一个悬浮窗，排成整齐的一行。",
+    "en": "Creates one orb for each detected source, lined up in a tidy row.",
+    "ja": "検出されたソースごとにオーブを 1 つずつ作り、きれいに並べます。"
+  },
+  "orbs.split.unavailable": {
+    "zh-Hant": "偵測到兩個以上的來源後才能拆分。",
+    "zh-Hans": "检测到两个以上的来源后才能拆分。",
+    "en": "Available once two or more sources are detected.",
+    "ja": "2 つ以上のソースが検出されると分割できます。"
+  },
+  "orbs.merge": {
+    "zh-Hant": "合併成一個",
+    "zh-Hans": "合并成一个",
+    "en": "Merge into One",
+    "ja": "1 つにまとめる"
+  },
+  "orbs.merge.hint": {
+    "zh-Hant": "把所有懸浮窗換成一個追蹤全部來源的懸浮窗。",
+    "zh-Hans": "把所有悬浮窗换成一个追踪全部来源的悬浮窗。",
+    "en": "Replaces all orbs with a single orb that tracks every source.",
+    "ja": "すべてのオーブを、全ソースを表示する 1 つのオーブにまとめます。"
+  },
+  "orbs.didSplit": {
+    "zh-Hant": "已拆分成 %d 個懸浮窗",
+    "zh-Hans": "已拆分成 %d 个悬浮窗",
+    "en": "Split into %d orbs",
+    "ja": "%d 個のオーブに分割しました"
+  },
+  "orbs.didSplitLimited": {
+    "zh-Hant": "已拆分成 %d 個懸浮窗，已達上限",
+    "zh-Hans": "已拆分成 %d 个悬浮窗，已达上限",
+    "en": "Split into %d orbs, the maximum",
+    "ja": "%d 個のオーブに分割しました（上限）"
+  },
+  "orbs.didMerge": {
+    "zh-Hant": "已合併成一個懸浮窗",
+    "zh-Hans": "已合并成一个悬浮窗",
+    "en": "Merged into one orb",
+    "ja": "1 つのオーブにまとめました"
+  },
+  "orbs.didRemove": {
+    "zh-Hant": "已移除「%@」",
+    "zh-Hans": "已移除“%@”",
+    "en": "Removed “%@”",
+    "ja": "「%@」を削除しました"
+  },
+  "orbs.undo": {
+    "zh-Hant": "復原",
+    "zh-Hans": "撤销",
+    "en": "Undo",
+    "ja": "取り消す"
+  },
+  "orbs.limit": {
+    "zh-Hant": "最多可以有 %d 個懸浮窗",
+    "zh-Hans": "最多可以有 %d 个悬浮窗",
+    "en": "You can have up to %d orbs",
+    "ja": "オーブは最大 %d 個までです"
+  },
+  "orbs.name": {
+    "zh-Hant": "名稱",
+    "zh-Hans": "名称",
+    "en": "Name",
+    "ja": "名前"
+  },
+  "orbs.name.auto": {
+    "zh-Hant": "自動（%@）",
+    "zh-Hans": "自动（%@）",
+    "en": "Automatic (%@)",
+    "ja": "自動（%@）"
+  },
+  "orbs.name.pair": {
+    "zh-Hant": "%@ + %@",
+    "zh-Hans": "%@ + %@",
+    "en": "%@ + %@",
+    "ja": "%@ + %@"
+  },
+  "orbs.name.more": {
+    "zh-Hant": "%@ +%d",
+    "zh-Hans": "%@ +%d",
+    "en": "%@ +%d",
+    "ja": "%@ +%d"
+  },
+  "orbs.visible": {
+    "zh-Hant": "顯示這個懸浮窗",
+    "zh-Hans": "显示这个悬浮窗",
+    "en": "Show This Orb",
+    "ja": "このオーブを表示"
+  },
+  "orbs.hidden": {
+    "zh-Hant": "已隱藏",
+    "zh-Hans": "已隐藏",
+    "en": "Hidden",
+    "ja": "非表示"
+  },
+  "orbs.advanced": {
+    "zh-Hant": "進階",
+    "zh-Hans": "高级",
+    "en": "Advanced",
+    "ja": "詳細設定"
+  },
+  "orbs.redline.global": {
+    "zh-Hant": "跟隨一般設定（%@）",
+    "zh-Hans": "跟随通用设置（%@）",
+    "en": "Same as General (%@)",
+    "ja": "一般設定に合わせる（%@）"
+  },
+  "orbs.redline.custom": {
+    "zh-Hant": "自訂",
+    "zh-Hans": "自定义",
+    "en": "Custom",
+    "ja": "カスタム"
+  },
+  "orbs.redline.hint": {
+    "zh-Hant": "只追蹤一個來源時速度通常較低，可以為這個懸浮窗設定較低的紅線。",
+    "zh-Hans": "只追踪一个来源时速度通常较低，可以为这个悬浮窗设置较低的红线。",
+    "en": "A single source is usually slower, so this orb can have a lower redline.",
+    "ja": "単一のソースは速度が低めなので、このオーブだけレッドラインを下げられます。"
+  },
+  "orbs.allNote": {
+    "zh-Hant": "面板與%@一律顯示全部來源。",
+    "zh-Hans": "面板与%@始终显示全部来源。",
+    "en": "The dashboard and the %@ always show every source.",
+    "ja": "ダッシュボードと%@には常にすべてのソースが表示されます。"
+  },
+  "orbs.row.detail": {
+    "zh-Hant": "%@ · %d pt",
+    "zh-Hans": "%@ · %d pt",
+    "en": "%@ · %d pt",
+    "ja": "%@ · %d pt"
+  },
+  "orbs.preview.a11y": {
+    "zh-Hant": "「%@」樣式預覽",
+    "zh-Hans": "“%@”样式预览",
+    "en": "%@ style preview",
+    "ja": "「%@」スタイルのプレビュー"
+  },
+  "orbs.remove.confirm": {
+    "zh-Hant": "要移除「%@」嗎？",
+    "zh-Hans": "要移除“%@”吗？",
+    "en": "Remove “%@”?",
+    "ja": "「%@」を削除しますか？"
+  },
+  "orbs.remove.detail": {
+    "zh-Hant": "其他懸浮窗不受影響，之後隨時可以再新增。",
+    "zh-Hans": "其他悬浮窗不受影响，之后随时可以再新增。",
+    "en": "Other orbs aren't affected, and you can add it again at any time.",
+    "ja": "ほかのオーブには影響しません。あとでいつでも追加できます。"
+  },
+  "orbs.remove.button": {
+    "zh-Hant": "移除",
+    "zh-Hans": "移除",
+    "en": "Remove",
+    "ja": "削除"
+  },
+  "menu.orb.duplicate": {
+    "zh-Hant": "複製這個懸浮窗",
+    "zh-Hans": "复制这个悬浮窗",
+    "en": "Duplicate This Orb",
+    "ja": "このオーブを複製"
+  },
+  "menu.orb.split": {
+    "zh-Hant": "依來源拆分這個懸浮窗",
+    "zh-Hans": "按来源拆分这个悬浮窗",
+    "en": "Split This Orb by Source",
+    "ja": "このオーブをソースごとに分割"
+  },
+  "menu.orb.mergeAll": {
+    "zh-Hant": "合併所有懸浮窗",
+    "zh-Hans": "合并所有悬浮窗",
+    "en": "Merge All Orbs",
+    "ja": "すべてのオーブをまとめる"
+  },
+  "menu.orb.hide": {
+    "zh-Hant": "隱藏這個懸浮窗",
+    "zh-Hans": "隐藏这个悬浮窗",
+    "en": "Hide This Orb",
+    "ja": "このオーブを隠す"
+  },
+  "menu.orb.remove": {
+    "zh-Hant": "移除這個懸浮窗…",
+    "zh-Hans": "移除这个悬浮窗…",
+    "en": "Remove This Orb…",
+    "ja": "このオーブを削除…"
+  },
+  "menu.orb.settings": {
+    "zh-Hant": "懸浮窗設定…",
+    "zh-Hans": "悬浮窗设置…",
+    "en": "Orb Settings…",
+    "ja": "オーブの設定…"
+  },
+  "menu.showOrbs": {
+    "zh-Hant": "顯示所有懸浮窗",
+    "zh-Hans": "显示所有悬浮窗",
+    "en": "Show All Orbs",
+    "ja": "すべてのオーブを表示"
+  },
+  "menu.hideOrbs": {
+    "zh-Hant": "隱藏所有懸浮窗",
+    "zh-Hans": "隐藏所有悬浮窗",
+    "en": "Hide All Orbs",
+    "ja": "すべてのオーブを隠す"
+  },
+  "a11y.orb.named": {
+    "zh-Hant": "%@：每秒 %@ 個 token，%@",
+    "zh-Hans": "%@：每秒 %@ 个 token，%@",
+    "en": "%@: %@ tokens per second, %@",
+    "ja": "%@：毎秒 %@ トークン、%@"
+  },
+  "a11y.orb.unavailable": {
+    "zh-Hant": "%@：沒有可用的來源",
+    "zh-Hans": "%@：没有可用的来源",
+    "en": "%@: no source available",
+    "ja": "%@：利用できるソースがありません"
+  },
+  "a11y.orb.sources": {
+    "zh-Hant": "追蹤 %@",
+    "zh-Hans": "追踪 %@",
+    "en": "Tracks %@",
+    "ja": "%@ を表示"
+  },
+  "a11y.orb.showMenu": {
+    "zh-Hant": "顯示選單",
+    "zh-Hans": "显示菜单",
+    "en": "Show Menu",
+    "ja": "メニューを表示"
+  },
+  "a11y.orb.moveCorner": {
+    "zh-Hant": "移到下一個角落",
+    "zh-Hans": "移到下一个角落",
+    "en": "Move to Next Corner",
+    "ja": "次の隅へ移動"
+  },
+  "list.separator": {
+    "zh-Hant": "、",
+    "zh-Hans": "、",
+    "en": ", ",
+    "ja": "、"
+  },
+  "cost.unitPerSecond": {
+    "zh-Hant": "%@/s",
+    "zh-Hans": "%@/s",
+    "en": "%@/s",
+    "ja": "%@/s"
+  },
+  "cost.apiEquivalent": {
+    "zh-Hant": "API 等值",
+    "zh-Hans": "API 等值",
+    "en": "API-equivalent",
+    "ja": "API 換算"
+  },
+  "cost.apiEquivalent.hint": {
+    "zh-Hant": "以各模型官方 API 牌價乘上 token 數估算，不是你的實際帳單；訂閱方案、免費額度與折扣都不計入。",
+    "zh-Hans": "按各模型官方 API 标价乘以 token 数估算，并非你的实际账单；订阅方案、免费额度和折扣均不计入。",
+    "en": "Estimated from each model's official API list prices × tokens. It is not your actual bill: subscriptions, free tiers and discounts are not included.",
+    "ja": "各モデルの公式 API 定価 × トークン数で見積もった金額で、実際の請求額ではありません。サブスクリプション、無料枠、割引は含みません。"
+  },
+  "cost.info": {
+    "zh-Hant": "費用＝各模型的 token 數 × 官方 API 牌價（API 等值），包含快取讀寫與長上下文加價，推理 token 以輸出計價；不是你的實際帳單。價格未知的模型不計入，免費與本機模型以 0 計。每秒費用和 tok/s 使用同一套即時估算；其他貨幣以每天更新的匯率換算。",
+    "zh-Hans": "费用＝各模型的 token 数 × 官方 API 标价（API 等值），包含缓存读写与长上下文加价，推理 token 按输出计价；并非你的实际账单。价格未知的模型不计入，免费与本地模型按 0 计。每秒费用与 tok/s 使用同一套实时估算；其他货币按每天更新的汇率换算。",
+    "en": "Cost = each model's tokens × its official API list price (API-equivalent), including cache reads and writes and long-context rates; reasoning tokens are billed as output. It is not your actual bill. Models without a known price are left out; free and local models count as 0. The cost per second uses the same live estimate as tok/s; other currencies use exchange rates updated daily.",
+    "ja": "費用＝各モデルのトークン数 × 公式 API 定価（API 換算）。キャッシュの読み書きと長文脈の割増を含み、推論トークンは出力として計算します。実際の請求額ではありません。価格不明のモデルは含めず、無料・ローカルモデルは 0 とします。毎秒の費用は tok/s と同じリアルタイム推定を使い、他の通貨へは毎日更新される為替レートで換算します。"
+  },
+  "cost.partial": {
+    "zh-Hant": "部分模型價格未知，未計入",
+    "zh-Hans": "部分模型价格未知，未计入",
+    "en": "Some models have no known price and are not included",
+    "ja": "価格不明のモデルは含まれていません"
+  },
+  "cost.unknownModels": {
+    "zh-Hant": "價格未知：%@",
+    "zh-Hans": "价格未知：%@",
+    "en": "No price for %@",
+    "ja": "価格不明：%@"
+  },
+  "cost.unknown": {
+    "zh-Hant": "價格未知",
+    "zh-Hans": "价格未知",
+    "en": "Price unknown",
+    "ja": "価格不明"
+  },
+  "cost.free": {
+    "zh-Hant": "免費",
+    "zh-Hans": "免费",
+    "en": "Free",
+    "ja": "無料"
+  },
+  "cost.subscriptionOnly": {
+    "zh-Hant": "這些來源標記為訂閱，不計入費用",
+    "zh-Hans": "这些来源已标记为订阅，不计入费用",
+    "en": "These sources are marked as subscriptions and not counted",
+    "ja": "これらのソースはサブスクリプションとして除外されています"
+  },
+  "cost.today.summary": {
+    "zh-Hant": "今日 %@ · %d 個 agent",
+    "zh-Hans": "今日 %@ · %d 个 agent",
+    "en": "Today %@ · %d agents",
+    "ja": "今日 %@ · %d 個の agent"
+  },
+  "cost.unpriced": {
+    "zh-Hant": "%d 筆請求的模型價格未知，未計入",
+    "zh-Hans": "%d 条请求的模型价格未知，未计入",
+    "en": "%d requests with unknown model prices are not included",
+    "ja": "モデル価格が不明なリクエスト %d 件は含まれていません"
+  },
+  "cost.subscriptionExcluded": {
+    "zh-Hant": "未計入訂閱來源：%@",
+    "zh-Hans": "未计入订阅来源：%@",
+    "en": "Subscriptions not included: %@",
+    "ja": "サブスクリプションを除外：%@"
+  },
+  "cost.subscription.tag": {
+    "zh-Hant": "訂閱",
+    "zh-Hans": "订阅",
+    "en": "Subscription",
+    "ja": "サブスク"
+  },
+  "today.cost": {
+    "zh-Hant": "今日費用",
+    "zh-Hans": "今日费用",
+    "en": "Today's Cost",
+    "ja": "今日の費用"
+  },
+  "settings.cost": {
+    "zh-Hant": "費用",
+    "zh-Hans": "费用",
+    "en": "Cost",
+    "ja": "費用"
+  },
+  "settings.currency": {
+    "zh-Hant": "貨幣",
+    "zh-Hans": "货币",
+    "en": "Currency",
+    "ja": "通貨"
+  },
+  "settings.currency.search": {
+    "zh-Hant": "搜尋貨幣",
+    "zh-Hans": "搜索货币",
+    "en": "Search currencies",
+    "ja": "通貨を検索"
+  },
+  "settings.currency.common": {
+    "zh-Hant": "常用",
+    "zh-Hans": "常用",
+    "en": "Common",
+    "ja": "よく使う通貨"
+  },
+  "settings.currency.all": {
+    "zh-Hant": "所有貨幣",
+    "zh-Hans": "所有货币",
+    "en": "All Currencies",
+    "ja": "すべての通貨"
+  },
+  "settings.currency.noResults": {
+    "zh-Hant": "找不到符合的貨幣",
+    "zh-Hans": "没有匹配的货币",
+    "en": "No matching currency",
+    "ja": "一致する通貨がありません"
+  },
+  "settings.liveUnit": {
+    "zh-Hant": "即時數值",
+    "zh-Hans": "实时数值",
+    "en": "Live Value",
+    "ja": "リアルタイム値"
+  },
+  "settings.liveUnit.tokens": {
+    "zh-Hant": "tok/s",
+    "zh-Hans": "tok/s",
+    "en": "tok/s",
+    "ja": "tok/s"
+  },
+  "settings.liveUnit.cost": {
+    "zh-Hant": "金額（%@/s）",
+    "zh-Hans": "金额（%@/s）",
+    "en": "Cost (%@/s)",
+    "ja": "金額（%@/s）"
+  },
+  "settings.liveUnit.both": {
+    "zh-Hant": "tok/s＋金額",
+    "zh-Hans": "tok/s＋金额",
+    "en": "tok/s + cost",
+    "ja": "tok/s＋金額"
+  },
+  "bar.money.now": {
+    "zh-Hant": "即時",
+    "zh-Hans": "实时",
+    "en": "now",
+    "ja": "現在"
+  },
+  "bar.money.today": {
+    "zh-Hant": "今日",
+    "zh-Hans": "今日",
+    "en": "today",
+    "ja": "今日"
+  },
+  "a11y.bar.money": {
+    "zh-Hant": "每秒 %@，今日 %@",
+    "zh-Hans": "每秒 %@，今日 %@",
+    "en": "%@ per second, %@ today",
+    "ja": "毎秒 %@、今日 %@"
+  },
+  "settings.liveUnit.hint": {
+    "zh-Hant": "用於選單列或工作列和面板；每個懸浮窗可各自選擇單位。",
+    "zh-Hans": "用于菜单栏或任务栏和面板；每个悬浮窗可以单独选择单位。",
+    "en": "Used by the menu bar or taskbar widget and the dashboard. Each floating orb has its own unit.",
+    "ja": "メニューバーまたはタスクバーとダッシュボードで使います。フローティングオーブはそれぞれ単位を選べます。"
+  },
+  "settings.cost.subscriptions": {
+    "zh-Hant": "訂閱方案",
+    "zh-Hans": "订阅方案",
+    "en": "Subscriptions",
+    "ja": "サブスクリプション"
+  },
+  "settings.cost.subscriptionsHint": {
+    "zh-Hant": "用月費方案（例如 Claude Max、ChatGPT Pro）使用的來源不按 token 計費。標記為訂閱後，預設不計入費用。",
+    "zh-Hans": "通过包月方案（如 Claude Max、ChatGPT Pro）使用的来源不按 token 计费。标记为订阅后，默认不计入费用。",
+    "en": "Sources you use through a flat-rate plan (such as Claude Max or ChatGPT Pro) aren't billed per token. Sources marked as subscriptions are left out of costs by default.",
+    "ja": "定額プラン（Claude Max、ChatGPT Pro など）で使うソースはトークン単位で課金されません。サブスクリプションに指定したソースは、既定で費用に含めません。"
+  },
+  "settings.cost.subscription": {
+    "zh-Hant": "訂閱",
+    "zh-Hans": "订阅",
+    "en": "Subscription",
+    "ja": "サブスク"
+  },
+  "settings.cost.includeSubscriptions": {
+    "zh-Hant": "以 API 等值計入訂閱來源",
+    "zh-Hans": "以 API 等值计入订阅来源",
+    "en": "Count Subscriptions at API-Equivalent Cost",
+    "ja": "サブスクも API 換算で計上"
+  },
+  "settings.cost.includeSubscriptionsHint": {
+    "zh-Hant": "開啟後，懸浮窗、面板與用量歷史的費用也會包含訂閱來源。",
+    "zh-Hans": "开启后，悬浮窗、面板和用量历史的费用也会包含订阅来源。",
+    "en": "When on, the orbs, the dashboard and the usage history include subscription sources in their costs.",
+    "ja": "オンにすると、オーブ、ダッシュボード、使用履歴の費用にサブスクのソースも含めます。"
+  },
+  "rates.status": {
+    "zh-Hant": "%@ = %@ · %@ · %@",
+    "zh-Hans": "%@ = %@ · %@ · %@",
+    "en": "%@ = %@ · %@ · %@",
+    "ja": "%@ = %@ · %@ · %@"
+  },
+  "rates.attribution": {
+    "zh-Hant": "Rates By Exchange Rate API",
+    "zh-Hans": "Rates By Exchange Rate API",
+    "en": "Rates By Exchange Rate API",
+    "ja": "Rates By Exchange Rate API"
+  },
+  "rates.fallback": {
+    "zh-Hant": "使用內建匯率（%@）",
+    "zh-Hans": "使用内置汇率（%@）",
+    "en": "Using built-in rates (%@)",
+    "ja": "内蔵レートを使用中（%@）"
+  },
+  "rates.stale": {
+    "zh-Hant": "匯率超過 7 天未更新",
+    "zh-Hans": "汇率已超过 7 天未更新",
+    "en": "Rates are more than 7 days old",
+    "ja": "レートが 7 日以上更新されていません"
+  },
+  "rates.refresh": {
+    "zh-Hant": "更新匯率",
+    "zh-Hans": "更新汇率",
+    "en": "Refresh Rates",
+    "ja": "レートを更新"
+  },
+  "rates.refreshing": {
+    "zh-Hant": "更新中…",
+    "zh-Hans": "更新中…",
+    "en": "Refreshing…",
+    "ja": "更新中…"
+  },
+  "rates.failed": {
+    "zh-Hant": "無法更新匯率：%@",
+    "zh-Hans": "无法更新汇率：%@",
+    "en": "Couldn't refresh rates: %@",
+    "ja": "レートを更新できません：%@"
+  },
+  "rates.historyNote": {
+    "zh-Hant": "以 %@ 的匯率換算",
+    "zh-Hans": "按 %@ 的汇率换算",
+    "en": "Converted at the rate of %@",
+    "ja": "%@ のレートで換算"
+  },
+  "prices.title": {
+    "zh-Hant": "價格表",
+    "zh-Hans": "价格表",
+    "en": "Price Table",
+    "ja": "価格表"
+  },
+  "prices.status": {
+    "zh-Hant": "版本 %d · %@ 更新 · %d 個模型",
+    "zh-Hans": "版本 %d · %@ 更新 · %d 个模型",
+    "en": "Version %d · updated %@ · %d models",
+    "ja": "バージョン %d · %@ 更新 · %d モデル"
+  },
+  "prices.bundled": {
+    "zh-Hant": "內建",
+    "zh-Hans": "内置",
+    "en": "Built-in",
+    "ja": "内蔵"
+  },
+  "prices.lastSync": {
+    "zh-Hant": "上次同步：%@",
+    "zh-Hans": "上次同步：%@",
+    "en": "Last synced %@",
+    "ja": "最終同期：%@"
+  },
+  "prices.never": {
+    "zh-Hant": "尚未同步，使用內建價格表",
+    "zh-Hans": "尚未同步，使用内置价格表",
+    "en": "Not synced yet — using the built-in table",
+    "ja": "未同期のため内蔵の価格表を使用中"
+  },
+  "prices.autoSync": {
+    "zh-Hant": "每天自動更新價格表",
+    "zh-Hans": "每天自动更新价格表",
+    "en": "Update Prices Daily",
+    "ja": "価格表を毎日更新"
+  },
+  "prices.autoSync.hint": {
+    "zh-Hant": "從 GitHub 上的 Agent Speed 專案下載公開價格表，不會傳送任何資料。",
+    "zh-Hans": "从 GitHub 上的 Agent Speed 项目下载公开价格表，不会发送任何数据。",
+    "en": "Downloads the public price table from the Agent Speed project on GitHub. Nothing is sent.",
+    "ja": "GitHub の Agent Speed プロジェクトから公開価格表をダウンロードします。データは送信しません。"
+  },
+  "prices.check": {
+    "zh-Hant": "立即檢查",
+    "zh-Hans": "立即检查",
+    "en": "Check Now",
+    "ja": "今すぐ確認"
+  },
+  "prices.checking": {
+    "zh-Hant": "檢查中…",
+    "zh-Hans": "检查中…",
+    "en": "Checking…",
+    "ja": "確認中…"
+  },
+  "prices.upToDate": {
+    "zh-Hant": "價格表已是最新",
+    "zh-Hans": "价格表已是最新",
+    "en": "The price table is up to date",
+    "ja": "価格表は最新です"
+  },
+  "prices.updatedTo": {
+    "zh-Hant": "已更新至版本 %d",
+    "zh-Hans": "已更新到版本 %d",
+    "en": "Updated to version %d",
+    "ja": "バージョン %d に更新しました"
+  },
+  "prices.failed": {
+    "zh-Hant": "無法取得價格表：%@",
+    "zh-Hans": "无法获取价格表：%@",
+    "en": "Couldn't get the price table: %@",
+    "ja": "価格表を取得できません：%@"
+  },
+  "prices.newerSchema": {
+    "zh-Hant": "有新格式的價格表，請更新 Agent Speed",
+    "zh-Hans": "有新格式的价格表，请更新 Agent Speed",
+    "en": "A newer price table format is available — update Agent Speed to use it",
+    "ja": "新しい形式の価格表があります。Agent Speed をアップデートしてください"
+  },
+  "prices.viewSource": {
+    "zh-Hant": "查看價格與來源",
+    "zh-Hans": "查看价格与来源",
+    "en": "View Prices and Sources",
+    "ja": "価格と出典を見る"
+  },
+  "prices.unknownToday": {
+    "zh-Hant": "今天價格未知的模型：%@",
+    "zh-Hans": "今天价格未知的模型：%@",
+    "en": "Models without a price today: %@",
+    "ja": "今日価格不明のモデル：%@"
+  },
+  "settings.network": {
+    "zh-Hant": "網路連線",
+    "zh-Hans": "网络连接",
+    "en": "Network Access",
+    "ja": "ネットワーク接続"
+  },
+  "settings.network.hint": {
+    "zh-Hant": "用於檢查更新，以及每天更新價格表和匯率；都不會傳送你的資料。關閉後完全不連網，費用改用內建資料。",
+    "zh-Hans": "用于检查更新，以及每天更新价格表和汇率；均不会发送你的数据。关闭后完全不联网，费用改用内置数据。",
+    "en": "Used to check for updates and to refresh the price table and exchange rates daily; none of it sends your data. When off, Agent Speed never connects and uses its built-in prices and rates.",
+    "ja": "アップデートの確認と、価格表・為替レートの毎日の更新に使います。どれもあなたのデータは送信しません。オフにすると一切通信せず、内蔵の価格とレートを使います。"
+  },
+  "settings.network.offHint": {
+    "zh-Hant": "網路連線已關閉",
+    "zh-Hans": "网络连接已关闭",
+    "en": "Network access is off",
+    "ja": "ネットワーク接続はオフです"
+  },
+  "privacy.statement": {
+    "zh-Hant": "Agent Speed 只讀取本機紀錄，不收集任何資料，也不會儲存或顯示對話內容。只有在檢查更新、每天更新公開的模型價格表，以及使用美元以外的貨幣時更新匯率才會連網，而且都不傳送任何個人資料；可在下方一次關閉所有網路連線。",
+    "zh-Hans": "Agent Speed 只读取本机记录，不收集任何数据，也不会保存或显示对话内容。只有在检查更新、每天更新公开的模型价格表，以及使用美元以外的货币时更新汇率才会联网，且均不发送任何个人数据；可在下方一键关闭所有网络连接。",
+    "en": "Agent Speed only reads local transcripts. It collects nothing and never stores or shows conversation content. It connects only to check for updates, to refresh the public model price table daily and, when you use a currency other than US dollars, to refresh exchange rates — and it sends no personal data. You can turn all network access off below.",
+    "ja": "Agent Speed はローカルの記録のみを読み取ります。データを収集せず、会話の内容を保存・表示することもありません。通信するのは、アップデートの確認、公開モデル価格表の毎日の更新、米ドル以外の通貨を使うときの為替レートの更新だけで、個人データは送信しません。下のスイッチですべての通信をオフにできます。"
+  },
+  "orbs.unit": {
+    "zh-Hant": "顯示單位",
+    "zh-Hans": "显示单位",
+    "en": "Unit",
+    "ja": "表示単位"
+  },
+  "orbs.unit.tokens": {
+    "zh-Hant": "Token 速度（tok/s）",
+    "zh-Hans": "Token 速度（tok/s）",
+    "en": "Token Speed (tok/s)",
+    "ja": "トークン速度（tok/s）"
+  },
+  "orbs.unit.cost": {
+    "zh-Hant": "花費速度（%@/s · API 等值）",
+    "zh-Hans": "花费速度（%@/s · API 等值）",
+    "en": "Spend Rate (%@/s · API-equivalent)",
+    "ja": "費用ペース（%@/s · API 換算）"
+  },
+  "orbs.unit.toggleHint": {
+    "zh-Hant": "按一下即可切換 tok/s 與金額",
+    "zh-Hans": "点按即可切换 tok/s 与金额",
+    "en": "Click to switch between tok/s and cost",
+    "ja": "クリックで tok/s と金額を切り替え"
+  },
+  "history.summary.cost": {
+    "zh-Hant": "費用（API 等值）",
+    "zh-Hans": "费用（API 等值）",
+    "en": "Cost (API-equivalent)",
+    "ja": "費用（API 換算）"
+  },
+  "history.summary.costApi": {
+    "zh-Hant": "API 等值費用",
+    "zh-Hans": "API 等值费用",
+    "en": "API-Equivalent Cost",
+    "ja": "API 換算の費用"
+  },
+  "history.summary.costPerDay": {
+    "zh-Hant": "日均 %@",
+    "zh-Hans": "日均 %@",
+    "en": "%@ per day",
+    "ja": "1 日平均 %@"
+  },
+  "history.chart.cost": {
+    "zh-Hant": "費用",
+    "zh-Hans": "费用",
+    "en": "Cost",
+    "ja": "費用"
+  },
+  "history.table.cost": {
+    "zh-Hant": "費用",
+    "zh-Hans": "费用",
+    "en": "Cost",
+    "ja": "費用"
+  },
+  "history.unpricedDay": {
+    "zh-Hant": "%d 筆請求價格未知",
+    "zh-Hans": "%d 条请求价格未知",
+    "en": "%d requests without a price",
+    "ja": "価格不明のリクエスト %d 件"
+  },
+  "history.costUnavailable": {
+    "zh-Hant": "這天的紀錄在加入費用功能前就已刪除，無法計算費用。",
+    "zh-Hans": "这天的记录在加入费用功能前就已删除，无法计算费用。",
+    "en": "This day's logs were deleted before costs were added, so its cost can't be calculated.",
+    "ja": "この日の記録は費用機能の追加前に削除されたため、費用を計算できません。"
+  },
+  "history.costFrozen": {
+    "zh-Hant": "每天的費用沿用當天適用的價格，之後調價不會改變；價格未知的請求會在價格表加入該模型後自動補上。",
+    "zh-Hans": "每天的费用沿用当天适用的价格，之后调价不会改变；价格未知的请求会在价格表加入该模型后自动补上。",
+    "en": "Each day keeps the prices that applied to it, so later price changes don't alter it. Requests without a price are filled in once the price table knows their model.",
+    "ja": "各日の費用はその日に適用された価格のままで、後の価格改定では変わりません。価格不明のリクエストは、価格表にそのモデルが加わると自動で反映されます。"
+  },
+  "history.includeSubscriptions": {
+    "zh-Hant": "含訂閱來源（API 等值）",
+    "zh-Hans": "含订阅来源（API 等值）",
+    "en": "Include subscriptions (API-equivalent)",
+    "ja": "サブスクを含める（API 換算）"
+  },
+  "history.unpricedNotice": {
+    "zh-Hant": "%d 筆請求的模型價格未知，未計入費用",
+    "zh-Hans": "%d 条请求的模型价格未知，未计入费用",
+    "en": "%d requests with unknown model prices aren't in the cost",
+    "ja": "モデル価格が不明な %d 件のリクエストは費用に含まれていません"
+  },
+  "history.unpricedNotice.show": {
+    "zh-Hant": "查看",
+    "zh-Hans": "查看",
+    "en": "Show",
+    "ja": "表示"
+  },
+  "history.unpricedModels.hint": {
+    "zh-Hant": "新模型通常會在幾天內加入價格表，屆時這些請求會自動補上費用。",
+    "zh-Hans": "新模型通常会在几天内加入价格表，届时这些请求会自动补上费用。",
+    "en": "New models usually join the price table within a few days; these requests are then priced automatically.",
+    "ja": "新しいモデルは通常数日で価格表に追加され、その時点でこれらのリクエストにも費用が反映されます。"
+  },
+  "a11y.orb.cost": {
+    "zh-Hant": "每秒 %@ %@（API 等值），%@",
+    "zh-Hans": "每秒 %@ %@（API 等值），%@",
+    "en": "%@ %@ per second (API-equivalent), %@",
+    "ja": "毎秒 %@ %@（API 換算）、%@"
+  },
+  "a11y.orb.costNamed": {
+    "zh-Hant": "%@：每秒 %@ %@（API 等值），%@",
+    "zh-Hans": "%@：每秒 %@ %@（API 等值），%@",
+    "en": "%@: %@ %@ per second (API-equivalent), %@",
+    "ja": "%@：毎秒 %@ %@（API 換算）、%@"
+  },
+  "a11y.orb.costAtLeast": {
+    "zh-Hant": "至少 %@",
+    "zh-Hans": "至少 %@",
+    "en": "at least %@",
+    "ja": "%@ 以上"
+  },
+  "a11y.orb.costUnknown": {
+    "zh-Hant": "價格未知，%@",
+    "zh-Hans": "价格未知，%@",
+    "en": "Price unknown, %@",
+    "ja": "価格不明、%@"
+  },
+  "a11y.orb.toggleUnit": {
+    "zh-Hant": "切換 tok/s 與金額",
+    "zh-Hans": "切换 tok/s 与金额",
+    "en": "Switch Between tok/s and Cost",
+    "ja": "tok/s と金額を切り替え"
+  },
+  "a11y.unitChanged": {
+    "zh-Hant": "單位：%@",
+    "zh-Hans": "单位：%@",
+    "en": "Unit: %@",
+    "ja": "単位：%@"
+  },
+  "currency.USD": {
+    "zh-Hant": "美元",
+    "zh-Hans": "美元",
+    "en": "US Dollar",
+    "ja": "米ドル"
+  },
+  "currency.CNY": {
+    "zh-Hant": "人民幣",
+    "zh-Hans": "人民币",
+    "en": "Chinese Yuan",
+    "ja": "人民元"
+  },
+  "currency.TWD": {
+    "zh-Hant": "新臺幣",
+    "zh-Hans": "新台币",
+    "en": "New Taiwan Dollar",
+    "ja": "新台湾ドル"
+  },
+  "currency.HKD": {
+    "zh-Hant": "港幣",
+    "zh-Hans": "港币",
+    "en": "Hong Kong Dollar",
+    "ja": "香港ドル"
+  },
+  "currency.JPY": {
+    "zh-Hant": "日圓",
+    "zh-Hans": "日元",
+    "en": "Japanese Yen",
+    "ja": "日本円"
+  },
+  "currency.EUR": {
+    "zh-Hant": "歐元",
+    "zh-Hans": "欧元",
+    "en": "Euro",
+    "ja": "ユーロ"
+  },
+  "currency.GBP": {
+    "zh-Hant": "英鎊",
+    "zh-Hans": "英镑",
+    "en": "British Pound",
+    "ja": "英ポンド"
+  },
+  "currency.KRW": {
+    "zh-Hant": "韓元",
+    "zh-Hans": "韩元",
+    "en": "South Korean Won",
+    "ja": "韓国ウォン"
+  },
+  "currency.SGD": {
+    "zh-Hant": "新加坡幣",
+    "zh-Hans": "新加坡元",
+    "en": "Singapore Dollar",
+    "ja": "シンガポールドル"
+  },
+  "currency.AUD": {
+    "zh-Hant": "澳幣",
+    "zh-Hans": "澳元",
+    "en": "Australian Dollar",
+    "ja": "豪ドル"
+  },
+  "currency.CAD": {
+    "zh-Hant": "加幣",
+    "zh-Hans": "加元",
+    "en": "Canadian Dollar",
+    "ja": "カナダドル"
+  },
+  "currency.CHF": {
+    "zh-Hant": "瑞士法郎",
+    "zh-Hans": "瑞士法郎",
+    "en": "Swiss Franc",
+    "ja": "スイスフラン"
+  },
+  "currency.NZD": {
+    "zh-Hant": "紐西蘭幣",
+    "zh-Hans": "新西兰元",
+    "en": "New Zealand Dollar",
+    "ja": "ニュージーランドドル"
+  },
+  "currency.INR": {
+    "zh-Hant": "印度盧比",
+    "zh-Hans": "印度卢比",
+    "en": "Indian Rupee",
+    "ja": "インドルピー"
+  },
+  "currency.MYR": {
+    "zh-Hant": "馬來西亞令吉",
+    "zh-Hans": "马来西亚林吉特",
+    "en": "Malaysian Ringgit",
+    "ja": "マレーシアリンギット"
+  },
+  "currency.THB": {
+    "zh-Hant": "泰銖",
+    "zh-Hans": "泰铢",
+    "en": "Thai Baht",
+    "ja": "タイバーツ"
+  },
+  "currency.IDR": {
+    "zh-Hant": "印尼盾",
+    "zh-Hans": "印尼盾",
+    "en": "Indonesian Rupiah",
+    "ja": "インドネシアルピア"
+  },
+  "currency.PHP": {
+    "zh-Hant": "菲律賓披索",
+    "zh-Hans": "菲律宾比索",
+    "en": "Philippine Peso",
+    "ja": "フィリピンペソ"
+  },
+  "currency.VND": {
+    "zh-Hant": "越南盾",
+    "zh-Hans": "越南盾",
+    "en": "Vietnamese Dong",
+    "ja": "ベトナムドン"
+  },
+  "currency.MOP": {
+    "zh-Hant": "澳門幣",
+    "zh-Hans": "澳门元",
+    "en": "Macanese Pataca",
+    "ja": "マカオパタカ"
+  },
+  "currency.SEK": {
+    "zh-Hant": "瑞典克朗",
+    "zh-Hans": "瑞典克朗",
+    "en": "Swedish Krona",
+    "ja": "スウェーデンクローナ"
+  },
+  "currency.NOK": {
+    "zh-Hant": "挪威克朗",
+    "zh-Hans": "挪威克朗",
+    "en": "Norwegian Krone",
+    "ja": "ノルウェークローネ"
+  },
+  "currency.DKK": {
+    "zh-Hant": "丹麥克朗",
+    "zh-Hans": "丹麦克朗",
+    "en": "Danish Krone",
+    "ja": "デンマーククローネ"
+  },
+  "currency.PLN": {
+    "zh-Hant": "波蘭茲羅提",
+    "zh-Hans": "波兰兹罗提",
+    "en": "Polish Złoty",
+    "ja": "ポーランドズウォティ"
+  },
+  "currency.CZK": {
+    "zh-Hant": "捷克克朗",
+    "zh-Hans": "捷克克朗",
+    "en": "Czech Koruna",
+    "ja": "チェココルナ"
+  },
+  "currency.HUF": {
+    "zh-Hant": "匈牙利福林",
+    "zh-Hans": "匈牙利福林",
+    "en": "Hungarian Forint",
+    "ja": "ハンガリーフォリント"
+  },
+  "currency.TRY": {
+    "zh-Hant": "土耳其里拉",
+    "zh-Hans": "土耳其里拉",
+    "en": "Turkish Lira",
+    "ja": "トルコリラ"
+  },
+  "currency.ILS": {
+    "zh-Hant": "以色列新謝克爾",
+    "zh-Hans": "以色列新谢克尔",
+    "en": "Israeli New Shekel",
+    "ja": "イスラエル新シェケル"
+  },
+  "currency.AED": {
+    "zh-Hant": "阿聯酋迪拉姆",
+    "zh-Hans": "阿联酋迪拉姆",
+    "en": "UAE Dirham",
+    "ja": "UAE ディルハム"
+  },
+  "currency.SAR": {
+    "zh-Hant": "沙烏地里亞爾",
+    "zh-Hans": "沙特里亚尔",
+    "en": "Saudi Riyal",
+    "ja": "サウジアラビア・リヤル"
+  },
+  "currency.ZAR": {
+    "zh-Hant": "南非蘭特",
+    "zh-Hans": "南非兰特",
+    "en": "South African Rand",
+    "ja": "南アフリカ・ランド"
+  },
+  "currency.BRL": {
+    "zh-Hant": "巴西雷亞爾",
+    "zh-Hans": "巴西雷亚尔",
+    "en": "Brazilian Real",
+    "ja": "ブラジル・レアル"
+  },
+  "currency.MXN": {
+    "zh-Hant": "墨西哥披索",
+    "zh-Hans": "墨西哥比索",
+    "en": "Mexican Peso",
+    "ja": "メキシコ・ペソ"
+  },
+  "currency.CLP": {
+    "zh-Hant": "智利披索",
+    "zh-Hans": "智利比索",
+    "en": "Chilean Peso",
+    "ja": "チリ・ペソ"
+  },
+  "currency.COP": {
+    "zh-Hant": "哥倫比亞披索",
+    "zh-Hans": "哥伦比亚比索",
+    "en": "Colombian Peso",
+    "ja": "コロンビア・ペソ"
+  },
+  "currency.ARS": {
+    "zh-Hant": "阿根廷披索",
+    "zh-Hans": "阿根廷比索",
+    "en": "Argentine Peso",
+    "ja": "アルゼンチン・ペソ"
+  },
+  "currency.RUB": {
+    "zh-Hant": "俄羅斯盧布",
+    "zh-Hans": "俄罗斯卢布",
+    "en": "Russian Ruble",
+    "ja": "ロシア・ルーブル"
+  },
+  "currency.UAH": {
+    "zh-Hant": "烏克蘭格里夫納",
+    "zh-Hans": "乌克兰格里夫纳",
+    "en": "Ukrainian Hryvnia",
+    "ja": "ウクライナ・フリヴニャ"
+  },
+  "traffic.title": {
+    "zh-Hant": "網路流量",
+    "zh-Hans": "网络流量",
+    "en": "Network Traffic",
+    "ja": "通信量"
+  },
+  "traffic.machine": {
+    "zh-Hant": "這台電腦",
+    "zh-Hans": "这台电脑",
+    "en": "This Computer",
+    "ja": "このコンピューター"
+  },
+  "traffic.machine.hint": {
+    "zh-Hant": "這台電腦所有網路卡的即時速度，包含所有程式；不含本機回送，VPN 流量只計算一次。",
+    "zh-Hans": "这台电脑所有网卡的实时速度，包含所有程序；不含本机回环，VPN 流量只计算一次。",
+    "en": "Live speed of all of this computer's network adapters, for every program (loopback excluded, VPN traffic counted once).",
+    "ja": "このコンピューターのすべてのネットワークアダプターのリアルタイム速度（全プログラム。ループバックは除外し、VPN の通信は一度だけ数えます）。"
+  },
+  "traffic.pair": {
+    "zh-Hant": "↓ %@ · ↑ %@",
+    "zh-Hans": "↓ %@ · ↑ %@",
+    "en": "↓ %@ · ↑ %@",
+    "ja": "↓ %@ · ↑ %@"
+  },
+  "traffic.includesTools": {
+    "zh-Hant": "含 agent 執行的工具（例如 git、npm）",
+    "zh-Hans": "含 agent 运行的工具（例如 git、npm）",
+    "en": "Includes tools the agents run (such as git and npm)",
+    "ja": "agent が実行するツール（git や npm など）を含みます"
+  },
+  "traffic.excludesTools": {
+    "zh-Hant": "不含 agent 執行的工具",
+    "zh-Hans": "不含 agent 运行的工具",
+    "en": "Excludes tools the agents run",
+    "ja": "agent が実行するツールは含みません"
+  },
+  "traffic.expand": {
+    "zh-Hant": "+%d 個來源",
+    "zh-Hans": "+%d 个来源",
+    "en": "+%d more",
+    "ja": "ほか %d 個のソース"
+  },
+  "traffic.empty": {
+    "zh-Hant": "今天還沒有 agent 的網路流量",
+    "zh-Hans": "今天还没有 agent 的网络流量",
+    "en": "No agent traffic yet today",
+    "ja": "今日はまだ agent の通信がありません"
+  },
+  "traffic.agent.tooltip": {
+    "zh-Hant": "今天的網路流量：%@",
+    "zh-Hans": "今天的网络流量：%@",
+    "en": "Network traffic today: %@",
+    "ja": "今日の通信量：%@"
+  },
+  "traffic.unavailable.short": {
+    "zh-Hant": "無法取得",
+    "zh-Hans": "无法获取",
+    "en": "Unavailable",
+    "ja": "取得できません"
+  },
+  "traffic.unavailable.helperMissing": {
+    "zh-Hant": "要顯示各 agent 的流量，需要先安裝流量輔助服務。",
+    "zh-Hans": "要显示各 agent 的流量，需要先安装流量辅助服务。",
+    "en": "Install the traffic helper to see each agent's traffic.",
+    "ja": "agent ごとの通信量を表示するには、通信量ヘルパーをインストールしてください。"
+  },
+  "traffic.unavailable.helperStopped": {
+    "zh-Hant": "流量輔助服務無法啟動，稍後會自動重試。",
+    "zh-Hans": "流量辅助服务无法启动，稍后会自动重试。",
+    "en": "The traffic helper couldn't start; Agent Speed will try again.",
+    "ja": "通信量ヘルパーを起動できません。自動で再試行します。"
+  },
+  "traffic.unavailable.helperOutdated": {
+    "zh-Hant": "流量輔助服務需要更新才能使用。",
+    "zh-Hans": "流量辅助服务需要更新才能使用。",
+    "en": "The traffic helper needs an update.",
+    "ja": "通信量ヘルパーの更新が必要です。"
+  },
+  "traffic.unavailable.denied": {
+    "zh-Hant": "無法安全連線到流量輔助服務，已停止讀取。",
+    "zh-Hans": "无法安全连接到流量辅助服务，已停止读取。",
+    "en": "Couldn't connect securely to the traffic helper, so it isn't used.",
+    "ja": "通信量ヘルパーに安全に接続できないため、使用を停止しました。"
+  },
+  "traffic.unavailable.sampler": {
+    "zh-Hant": "暫時無法讀取各程式的流量，稍後會自動重試。",
+    "zh-Hans": "暂时无法读取各程序的流量，稍后会自动重试。",
+    "en": "Per-app traffic can't be read right now; Agent Speed will try again.",
+    "ja": "アプリごとの通信量を読み取れません。自動で再試行します。"
+  },
+  "traffic.status": {
+    "zh-Hant": "各 agent 的流量",
+    "zh-Hans": "各 agent 的流量",
+    "en": "Per-Agent Traffic",
+    "ja": "agent ごとの通信量"
+  },
+  "traffic.status.ok": {
+    "zh-Hant": "運作中",
+    "zh-Hans": "运行中",
+    "en": "Working",
+    "ja": "動作中"
+  },
+  "traffic.status.macos": {
+    "zh-Hant": "使用 macOS 內建的 nettop 讀取，不需要額外權限。",
+    "zh-Hans": "使用 macOS 内置的 nettop 读取，无需额外权限。",
+    "en": "Read with macOS's built-in nettop; no extra permission needed.",
+    "ja": "macOS 内蔵の nettop で読み取ります。追加の権限は不要です。"
+  },
+  "traffic.retry": {
+    "zh-Hant": "重試",
+    "zh-Hans": "重试",
+    "en": "Try Again",
+    "ja": "再試行"
+  },
+  "traffic.helper": {
+    "zh-Hant": "流量輔助服務",
+    "zh-Hans": "流量辅助服务",
+    "en": "Traffic Helper",
+    "ja": "通信量ヘルパー"
+  },
+  "traffic.helper.explain": {
+    "zh-Hant": "Windows 只允許系統服務讀取各程式的網路流量。這個小型服務以權限受限的「本機服務」帳戶執行，只統計每個程式收發的位元組數，不讀取內容或連線對象，而且只在 Agent Speed 需要時執行。安裝和移除各需要一次系統管理員確認。",
+    "zh-Hans": "Windows 只允许系统服务读取各程序的网络流量。这个小型服务以权限受限的“本地服务”账户运行，只统计每个程序收发的字节数，不读取内容或连接对象，并且只在 Agent Speed 需要时运行。安装和卸载各需要一次管理员确认。",
+    "en": "Windows lets only system services see how much each program sends and receives. This small helper runs under the restricted Local Service account, counts bytes per program — never content or destinations — and runs only while Agent Speed needs it. Installing and removing it each ask for administrator approval once.",
+    "ja": "Windows では、プログラムごとの送受信量を読み取れるのはシステムサービスだけです。この小さなヘルパーは権限の少ない「ローカル サービス」アカウントで動作し、プログラムごとのバイト数だけを数えます（内容や接続先は読みません）。Agent Speed が必要なときだけ動作します。インストールと削除のときに、それぞれ一度だけ管理者の承認が必要です。"
+  },
+  "traffic.helper.details": {
+    "zh-Hant": "它做了什麼？",
+    "zh-Hans": "它做了什么？",
+    "en": "What does it do?",
+    "ja": "詳しい仕組み"
+  },
+  "traffic.helper.notInstalled": {
+    "zh-Hant": "未安裝",
+    "zh-Hans": "未安装",
+    "en": "Not installed",
+    "ja": "未インストール"
+  },
+  "traffic.helper.idle": {
+    "zh-Hant": "已安裝 · 待命中",
+    "zh-Hans": "已安装 · 待命中",
+    "en": "Installed · on standby",
+    "ja": "インストール済み · 待機中"
+  },
+  "traffic.helper.running": {
+    "zh-Hant": "執行中 · 版本 %@",
+    "zh-Hans": "运行中 · 版本 %@",
+    "en": "Running · version %@",
+    "ja": "実行中 · バージョン %@"
+  },
+  "traffic.helper.outdated": {
+    "zh-Hant": "需要更新（已安裝 %@，可更新至 %@）",
+    "zh-Hans": "需要更新（已安装 %@，可更新至 %@）",
+    "en": "Update needed (installed %@, available %@)",
+    "ja": "更新が必要です（インストール済み %@、最新 %@）"
+  },
+  "traffic.helper.error": {
+    "zh-Hant": "發生錯誤：%@",
+    "zh-Hans": "发生错误：%@",
+    "en": "Error: %@",
+    "ja": "エラー：%@"
+  },
+  "traffic.helper.install": {
+    "zh-Hant": "安裝輔助服務…",
+    "zh-Hans": "安装辅助服务…",
+    "en": "Install Helper…",
+    "ja": "ヘルパーをインストール…"
+  },
+  "traffic.helper.update": {
+    "zh-Hant": "更新輔助服務…",
+    "zh-Hans": "更新辅助服务…",
+    "en": "Update Helper…",
+    "ja": "ヘルパーを更新…"
+  },
+  "traffic.helper.remove": {
+    "zh-Hant": "移除輔助服務…",
+    "zh-Hans": "卸载辅助服务…",
+    "en": "Remove Helper…",
+    "ja": "ヘルパーを削除…"
+  },
+  "traffic.helper.removeConfirm": {
+    "zh-Hant": "要移除流量輔助服務嗎？",
+    "zh-Hans": "要卸载流量辅助服务吗？",
+    "en": "Remove the traffic helper?",
+    "ja": "通信量ヘルパーを削除しますか？"
+  },
+  "traffic.helper.removeDetail": {
+    "zh-Hant": "之後只會記錄整台電腦的流量，已記錄的歷史會保留。移除需要一次系統管理員確認。",
+    "zh-Hans": "之后只会记录整台电脑的流量，已记录的历史会保留。卸载需要一次管理员确认。",
+    "en": "Afterwards only the whole computer's traffic is measured; recorded history is kept. Removing asks for administrator approval once.",
+    "ja": "以降はコンピューター全体の通信量だけを計測します。記録済みの履歴は残ります。削除には管理者の承認が一度必要です。"
+  },
+  "traffic.helper.uacNote": {
+    "zh-Hant": "接下來 Windows 會詢問是否允許「Agent Speed Traffic Helper」變更這台電腦。發行者會顯示為「未知」，因為目前的版本沒有數位簽章。",
+    "zh-Hans": "接下来 Windows 会询问是否允许“Agent Speed Traffic Helper”更改这台电脑。发布者会显示为“未知”，因为当前版本没有数字签名。",
+    "en": "Windows will now ask whether to let “Agent Speed Traffic Helper” make changes. The publisher shows as unknown because releases aren't code-signed yet.",
+    "ja": "続いて Windows が「Agent Speed Traffic Helper」による変更を許可するか確認します。現在のリリースにはコード署名がないため、発行元は「不明」と表示されます。"
+  },
+  "traffic.helper.installing": {
+    "zh-Hant": "等待系統管理員確認…",
+    "zh-Hans": "等待管理员确认…",
+    "en": "Waiting for administrator approval…",
+    "ja": "管理者の承認を待っています…"
+  },
+  "traffic.helper.installed": {
+    "zh-Hant": "已安裝，開始記錄各 agent 的流量。",
+    "zh-Hans": "已安装，开始记录各 agent 的流量。",
+    "en": "Installed. Per-agent traffic is now measured.",
+    "ja": "インストールしました。agent ごとの通信量の計測を始めます。"
+  },
+  "traffic.helper.removed": {
+    "zh-Hant": "已移除流量輔助服務。",
+    "zh-Hans": "已卸载流量辅助服务。",
+    "en": "The traffic helper was removed.",
+    "ja": "通信量ヘルパーを削除しました。"
+  },
+  "traffic.helper.cancelled": {
+    "zh-Hant": "已取消，沒有變更任何設定。",
+    "zh-Hans": "已取消，没有更改任何设置。",
+    "en": "Cancelled. Nothing was changed.",
+    "ja": "キャンセルしました。何も変更されていません。"
+  },
+  "traffic.a11y.chart": {
+    "zh-Hant": "過去一分鐘的網路速度：下載最高每秒 %@，上傳最高每秒 %@",
+    "zh-Hans": "过去一分钟的网络速度：下载最高每秒 %@，上传最高每秒 %@",
+    "en": "Network speed over the last minute: download peaked at %@ per second, upload at %@ per second",
+    "ja": "過去 1 分間のネットワーク速度：ダウンロード最大 毎秒 %@、アップロード最大 毎秒 %@"
+  },
+  "traffic.a11y.totals": {
+    "zh-Hant": "今天下載 %@，上傳 %@",
+    "zh-Hans": "今天下载 %@，上传 %@",
+    "en": "%@ downloaded and %@ uploaded today",
+    "ja": "今日のダウンロード %@、アップロード %@"
+  },
+  "traffic.a11y.pair": {
+    "zh-Hant": "下載 %@，上傳 %@",
+    "zh-Hans": "下载 %@，上传 %@",
+    "en": "%@ downloaded and %@ uploaded",
+    "ja": "ダウンロード %@、アップロード %@"
+  },
+  "a11y.orb.traffic": {
+    "zh-Hant": "下載每秒 %@，上傳每秒 %@",
+    "zh-Hans": "下载每秒 %@，上传每秒 %@",
+    "en": "downloading %@ per second, uploading %@ per second",
+    "ja": "ダウンロード 毎秒 %@、アップロード 毎秒 %@"
+  },
+  "orbs.traffic": {
+    "zh-Hant": "網路速度",
+    "zh-Hans": "网络速度",
+    "en": "Network Speed",
+    "ja": "ネットワーク速度"
+  },
+  "orbs.traffic.sources": {
+    "zh-Hant": "這個懸浮窗的 agent",
+    "zh-Hans": "此悬浮窗的 agent",
+    "en": "This Orb's Agents",
+    "ja": "このオーブの agent"
+  },
+  "orbs.traffic.machine": {
+    "zh-Hant": "整台電腦",
+    "zh-Hans": "整台电脑",
+    "en": "Whole Computer",
+    "ja": "コンピューター全体"
+  },
+  "orbs.traffic.off": {
+    "zh-Hant": "不顯示",
+    "zh-Hans": "不显示",
+    "en": "Off",
+    "ja": "表示しない"
+  },
+  "orbs.traffic.hint": {
+    "zh-Hant": "有流量時才在懸浮窗上顯示下載與上傳速度。",
+    "zh-Hans": "有流量时才在悬浮窗上显示下载与上传速度。",
+    "en": "Shows download and upload speed on the orb while there is traffic.",
+    "ja": "通信があるときだけ、オーブにダウンロードとアップロードの速度を表示します。"
+  },
+  "orbs.names": {
+    "zh-Hant": "名稱標籤",
+    "zh-Hans": "名称标签",
+    "en": "Name Labels",
+    "ja": "名前ラベル"
+  },
+  "orbs.names.auto": {
+    "zh-Hant": "自動",
+    "zh-Hans": "自动",
+    "en": "Automatic",
+    "ja": "自動"
+  },
+  "orbs.names.always": {
+    "zh-Hant": "一律顯示",
+    "zh-Hans": "始终显示",
+    "en": "Always",
+    "ja": "常に表示"
+  },
+  "orbs.names.never": {
+    "zh-Hant": "不顯示",
+    "zh-Hans": "不显示",
+    "en": "Never",
+    "ja": "表示しない"
+  },
+  "orbs.names.hint": {
+    "zh-Hant": "自動：有兩個以上的懸浮窗，或懸浮窗只追蹤部分來源時，在它旁邊顯示名稱。每個懸浮窗也能個別設定。",
+    "zh-Hans": "自动：有两个以上的悬浮窗，或悬浮窗只追踪部分来源时，在它旁边显示名称。每个悬浮窗也能单独设置。",
+    "en": "Automatic shows an orb's name when two or more orbs are visible or when it tracks only some sources. Each orb can override this.",
+    "ja": "自動：オーブが 2 つ以上あるとき、または一部のソースだけを表示するオーブに、名前を表示します。オーブごとにも設定できます。"
+  },
+  "orbs.showName": {
+    "zh-Hant": "顯示名稱",
+    "zh-Hans": "显示名称",
+    "en": "Show Name",
+    "ja": "名前を表示"
+  },
+  "orbs.showName.auto": {
+    "zh-Hant": "自動（%@）",
+    "zh-Hans": "自动（%@）",
+    "en": "Automatic (%@)",
+    "ja": "自動（%@）"
+  },
+  "orbs.showName.on": {
+    "zh-Hant": "顯示",
+    "zh-Hans": "显示",
+    "en": "On",
+    "ja": "オン"
+  },
+  "orbs.showName.off": {
+    "zh-Hant": "不顯示",
+    "zh-Hans": "不显示",
+    "en": "Off",
+    "ja": "オフ"
+  },
+  "settings.traffic": {
+    "zh-Hant": "網路流量",
+    "zh-Hans": "网络流量",
+    "en": "Network Traffic",
+    "ja": "通信量"
+  },
+  "settings.traffic.enabled": {
+    "zh-Hant": "記錄網路流量",
+    "zh-Hans": "记录网络流量",
+    "en": "Measure network traffic",
+    "ja": "通信量を計測"
+  },
+  "settings.traffic.enabled.hint": {
+    "zh-Hant": "只計算位元組數，不檢查任何內容，也不記錄連線對象；資料只存在這台電腦。",
+    "zh-Hans": "只计算字节数，不检查任何内容，也不记录连接对象；数据只保存在这台电脑。",
+    "en": "Counts bytes only — never content or destinations — and keeps the numbers on this computer.",
+    "ja": "バイト数だけを数え、内容や接続先は一切記録しません。データはこのコンピューターにだけ保存されます。"
+  },
+  "settings.traffic.includeTools": {
+    "zh-Hant": "包含 agent 執行的工具",
+    "zh-Hans": "包含 agent 运行的工具",
+    "en": "Include tools the agents run",
+    "ja": "agent が実行するツールを含める"
+  },
+  "settings.traffic.includeTools.hint": {
+    "zh-Hant": "例如 agent 執行 npm install、git clone 或 curl 時的下載。只改變顯示方式，歷史兩種都會保存。",
+    "zh-Hans": "例如 agent 运行 npm install、git clone 或 curl 时的下载。只改变显示方式，历史两种都会保存。",
+    "en": "Such as downloads from npm install, git clone or curl run by an agent. This only changes what is shown; the history keeps both.",
+    "ja": "agent が実行した npm install、git clone、curl などのダウンロードです。表示だけが変わり、履歴には両方が保存されます。"
+  },
+  "settings.traffic.unit": {
+    "zh-Hant": "速度單位",
+    "zh-Hans": "速度单位",
+    "en": "Speed Unit",
+    "ja": "速度の単位"
+  },
+  "settings.traffic.unit.bytes": {
+    "zh-Hant": "位元組（MB/s）",
+    "zh-Hans": "字节（MB/s）",
+    "en": "Bytes (MB/s)",
+    "ja": "バイト（MB/s）"
+  },
+  "settings.traffic.unit.bits": {
+    "zh-Hant": "位元（Mb/s）",
+    "zh-Hans": "比特（Mb/s）",
+    "en": "Bits (Mb/s)",
+    "ja": "ビット（Mb/s）"
+  },
+  "settings.bar.traffic": {
+    "zh-Hant": "顯示網路速度",
+    "zh-Hans": "显示网络速度",
+    "en": "Show network speed",
+    "ja": "ネットワーク速度を表示"
+  },
+  "settings.bar.traffic.off": {
+    "zh-Hant": "不顯示",
+    "zh-Hans": "不显示",
+    "en": "Off",
+    "ja": "表示しない"
+  },
+  "settings.bar.traffic.machine": {
+    "zh-Hant": "整台電腦",
+    "zh-Hans": "整台电脑",
+    "en": "Whole computer",
+    "ja": "コンピューター全体"
+  },
+  "settings.bar.traffic.agents": {
+    "zh-Hant": "只看 agent",
+    "zh-Hans": "只看 agent",
+    "en": "Agents only",
+    "ja": "agent のみ"
+  },
+  "history.chart.traffic": {
+    "zh-Hant": "網路流量",
+    "zh-Hans": "网络流量",
+    "en": "Traffic",
+    "ja": "通信量"
+  },
+  "history.table.traffic": {
+    "zh-Hant": "網路",
+    "zh-Hans": "网络",
+    "en": "Network",
+    "ja": "通信量"
+  },
+  "history.traffic.notRecorded": {
+    "zh-Hant": "這天還沒有開始記錄網路流量。",
+    "zh-Hans": "这天还没有开始记录网络流量。",
+    "en": "Network traffic wasn't recorded yet on this day.",
+    "ja": "この日はまだ通信量を記録していませんでした。"
+  },
+  "history.traffic.since": {
+    "zh-Hant": "網路流量自 %@ 開始記錄",
+    "zh-Hans": "网络流量自 %@ 开始记录",
+    "en": "Network traffic recorded since %@",
+    "ja": "通信量は %@ から記録しています"
+  },
+  "history.traffic.partial": {
+    "zh-Hant": "只記錄了 %@（Agent Speed 執行期間）",
+    "zh-Hans": "只记录了 %@（Agent Speed 运行期间）",
+    "en": "Recorded for %@ only (while Agent Speed was running)",
+    "ja": "記録は %@ のみ（Agent Speed の実行中）"
+  },
+  "history.traffic.tools": {
+    "zh-Hant": "其中工具 %@",
+    "zh-Hans": "其中工具 %@",
+    "en": "Tools: %@",
+    "ja": "うちツール %@"
+  },
+  "history.traffic.machine": {
+    "zh-Hant": "這台電腦總計 %@",
+    "zh-Hans": "这台电脑总计 %@",
+    "en": "This computer: %@",
+    "ja": "このコンピューター合計 %@"
+  },
+  "history.clear.traffic": {
+    "zh-Hant": "網路流量的歷史也會一起清除，而且無法從日誌重建。",
+    "zh-Hans": "网络流量的历史也会一起清除，且无法从日志重建。",
+    "en": "Network traffic history is cleared too and can't be rebuilt from logs.",
+    "ja": "通信量の履歴も消去され、ログから再構築することはできません。"
+  },
+  "privacy.traffic": {
+    "zh-Hant": "網路流量：Agent Speed 只在本機計算各程式收發的位元組數，從不讀取內容、網址或連線對象，也不會傳送到任何地方。",
+    "zh-Hans": "网络流量：Agent Speed 只在本机计算各程序收发的字节数，从不读取内容、网址或连接对象，也不会发送到任何地方。",
+    "en": "Network traffic: Agent Speed counts how many bytes programs send and receive, on this computer only. It never reads content, addresses or destinations, and sends nothing anywhere.",
+    "ja": "通信量：Agent Speed はこのコンピューター上で、プログラムが送受信したバイト数だけを数えます。内容・アドレス・接続先は一切読まず、どこにも送信しません。"
+  },
+  "settings.report": {
+    "zh-Hant": "API",
+    "zh-Hans": "API",
+    "en": "API",
+    "ja": "API"
+  },
+  "report.enabled": {
+    "zh-Hant": "即時上報到 API",
+    "zh-Hans": "实时上报到 API",
+    "en": "Live reporting to an API",
+    "ja": "API へのライブ送信"
+  },
+  "report.enabled.hint": {
+    "zh-Hant": "開啟後，agent 工作時每隔幾秒，把即時速度和 token 用量等數字傳送到你選擇的 API（例如排行榜服務）。不會傳送對話內容、檔案或專案名稱，也不會傳送歷史紀錄。",
+    "zh-Hans": "开启后，agent 工作时每隔几秒，把实时速度和 token 用量等数字发送到你选择的 API（例如排行榜服务）。不会发送对话内容、文件或项目名称，也不会发送历史记录。",
+    "en": "While your agents work, sends live speed, token usage and similar numbers every few seconds to the API you choose (for example a leaderboard service). Never sends conversation content, file or project names, or history.",
+    "ja": "agent の作業中、現在の速度や token 使用量などの数値を数秒ごとに、選んだ API（ランキングサービスなど）へ送信します。会話の内容、ファイル名やプロジェクト名、履歴は送信しません。"
+  },
+  "report.service": {
+    "zh-Hant": "上報到",
+    "zh-Hans": "上报到",
+    "en": "Report To",
+    "ja": "送信先"
+  },
+  "report.service.custom": {
+    "zh-Hant": "自訂網址…",
+    "zh-Hans": "自定义网址…",
+    "en": "Custom URL…",
+    "ja": "カスタム URL…"
+  },
+  "report.url": {
+    "zh-Hant": "服務網址",
+    "zh-Hans": "服务网址",
+    "en": "Service URL",
+    "ja": "サービス URL"
+  },
+  "report.url.placeholder": {
+    "zh-Hant": "https://example.com",
+    "zh-Hans": "https://example.com",
+    "en": "https://example.com",
+    "ja": "https://example.com"
+  },
+  "report.url.invalid": {
+    "zh-Hant": "請輸入有效的網址",
+    "zh-Hans": "请输入有效的网址",
+    "en": "Enter a valid URL",
+    "ja": "有効な URL を入力してください"
+  },
+  "report.url.https": {
+    "zh-Hant": "只能使用 https:// 開頭的網址",
+    "zh-Hans": "只能使用以 https:// 开头的网址",
+    "en": "Only https:// URLs are allowed",
+    "ja": "https:// で始まる URL のみ使用できます"
+  },
+  "report.url.loopback": {
+    "zh-Hant": "未加密的本機測試連線，資料不會離開這台電腦",
+    "zh-Hans": "未加密的本机测试连接，数据不会离开这台电脑",
+    "en": "Unencrypted local test connection; data stays on this computer",
+    "ja": "暗号化されていないローカルテスト接続です。データはこのコンピューターから出ません"
+  },
+  "report.service.checking": {
+    "zh-Hant": "正在讀取服務資訊…",
+    "zh-Hans": "正在读取服务信息…",
+    "en": "Checking the service…",
+    "ja": "サービス情報を確認しています…"
+  },
+  "report.service.notSupported": {
+    "zh-Hant": "這個服務目前不支援 Agent Speed 即時上報",
+    "zh-Hans": "这个服务目前不支持 Agent Speed 实时上报",
+    "en": "This service doesn't support Agent Speed live reporting",
+    "ja": "このサービスは現在 Agent Speed のライブ送信に対応していません"
+  },
+  "report.service.invalid": {
+    "zh-Hant": "這個服務提供的設定資料有誤，暫時無法上報",
+    "zh-Hans": "这个服务提供的配置信息有误，暂时无法上报",
+    "en": "This service's setup information has errors, so reporting can't start for now",
+    "ja": "このサービスの設定情報に誤りがあるため、今は送信できません"
+  },
+  "report.service.unreachable": {
+    "zh-Hant": "無法連上這個服務，請確認網路連線後再試一次",
+    "zh-Hans": "无法连接这个服务，请检查网络连接后再试一次",
+    "en": "Can't reach this service. Check your internet connection and try again.",
+    "ja": "このサービスに接続できません。インターネット接続を確認して、もう一度お試しください"
+  },
+  "report.service.insecure": {
+    "zh-Hant": "無法和這個服務建立安全連線",
+    "zh-Hans": "无法与这个服务建立安全连接",
+    "en": "Couldn't connect to this service securely",
+    "ja": "このサービスと安全に接続できませんでした"
+  },
+  "report.service.unavailable": {
+    "zh-Hant": "這個服務暫時沒有回應，請稍後再試",
+    "zh-Hans": "这个服务暂时没有响应，请稍后再试",
+    "en": "This service isn't responding right now. Try again later.",
+    "ja": "このサービスは現在応答していません。しばらくしてからお試しください"
+  },
+  "report.service.retry": {
+    "zh-Hant": "再試一次",
+    "zh-Hans": "再试一次",
+    "en": "Try Again",
+    "ja": "再試行"
+  },
+  "report.service.host": {
+    "zh-Hant": "資料會傳送到 %@",
+    "zh-Hans": "数据会发送到 %@",
+    "en": "Data goes to %@",
+    "ja": "送信先：%@"
+  },
+  "report.service.terms": {
+    "zh-Hant": "服務條款",
+    "zh-Hans": "服务条款",
+    "en": "Terms",
+    "ja": "利用規約"
+  },
+  "report.service.privacy": {
+    "zh-Hant": "隱私權政策",
+    "zh-Hans": "隐私政策",
+    "en": "Privacy Policy",
+    "ja": "プライバシーポリシー"
+  },
+  "report.service.leaderboard": {
+    "zh-Hant": "開啟排行榜",
+    "zh-Hans": "打开排行榜",
+    "en": "Open Leaderboard",
+    "ja": "ランキングを開く"
+  },
+  "report.service.retention": {
+    "zh-Hant": "個別上報資料保留 %d 天",
+    "zh-Hans": "单条上报数据保留 %d 天",
+    "en": "Keeps individual reports for %d days",
+    "ja": "個々の送信データを %d 日間保存します"
+  },
+  "report.service.changed": {
+    "zh-Hant": "服務資訊已變更，確認後才會繼續上報",
+    "zh-Hans": "服务信息已变更，确认后才会继续上报",
+    "en": "The service changed its details. Reporting resumes after you review them.",
+    "ja": "サービス情報が変更されました。確認すると送信を再開します。"
+  },
+  "report.service.review": {
+    "zh-Hant": "檢視…",
+    "zh-Hans": "查看…",
+    "en": "Review…",
+    "ja": "確認…"
+  },
+  "report.username": {
+    "zh-Hant": "使用者名稱",
+    "zh-Hans": "用户名",
+    "en": "Username",
+    "ja": "ユーザー名"
+  },
+  "report.username.public": {
+    "zh-Hant": "服務可能會公開顯示這個名稱（例如在排行榜上）。預設是這台電腦的名稱，其中可能包含你的名字。",
+    "zh-Hans": "服务可能会公开显示这个名称（例如在排行榜上）。默认是这台电脑的名称，其中可能包含你的名字。",
+    "en": "The service may show it publicly, for example on a leaderboard. It starts as this computer's name, which may include your real name.",
+    "ja": "サービス上で公開されることがあります（ランキングなど）。初期値はこのコンピューターの名前で、本名が含まれることがあります。"
+  },
+  "report.username.random": {
+    "zh-Hant": "使用隨機名稱",
+    "zh-Hans": "使用随机名称",
+    "en": "Use a Random Name",
+    "ja": "ランダムな名前にする"
+  },
+  "report.username.updated": {
+    "zh-Hant": "已更新使用者名稱",
+    "zh-Hans": "已更新用户名",
+    "en": "Username updated",
+    "ja": "ユーザー名を更新しました"
+  },
+  "report.username.taken": {
+    "zh-Hant": "這個名稱已被其他裝置使用",
+    "zh-Hans": "该名称已被其他设备使用",
+    "en": "This name belongs to another device",
+    "ja": "この名前は別のデバイスが使用しています"
+  },
+  "report.username.invalid.length": {
+    "zh-Hant": "長度需為 %d–%d 個字元",
+    "zh-Hans": "长度需为 %d–%d 个字符",
+    "en": "Use %d–%d characters",
+    "ja": "%d〜%d 文字にしてください"
+  },
+  "report.username.invalid.characters": {
+    "zh-Hant": "只能使用文字、數字、空格與 - _ .",
+    "zh-Hans": "只能使用文字、数字、空格和 - _ .",
+    "en": "Use only letters, numbers, spaces and - _ .",
+    "ja": "文字・数字・スペースと - _ . のみ使用できます"
+  },
+  "report.username.invalid.ascii": {
+    "zh-Hant": "只能使用英文字母、數字與 - _ .",
+    "zh-Hans": "只能使用英文字母、数字和 - _ .",
+    "en": "Use only A–Z, 0–9 and - _ .",
+    "ja": "英字・数字と - _ . のみ使用できます"
+  },
+  "report.username.invalid.start": {
+    "zh-Hant": "第一個字需為文字或數字",
+    "zh-Hans": "第一个字需为文字或数字",
+    "en": "Start with a letter or number",
+    "ja": "最初の文字は文字か数字にしてください"
+  },
+  "report.username.invalid.spaces": {
+    "zh-Hant": "開頭和結尾不能有空格，也不能連續兩個空格",
+    "zh-Hans": "开头和结尾不能有空格，也不能连续两个空格",
+    "en": "No spaces at the start or end, and no double spaces",
+    "ja": "先頭・末尾のスペースや、連続したスペースは使えません"
+  },
+  "report.username.invalid.noSpaces": {
+    "zh-Hant": "這個服務不允許空格",
+    "zh-Hans": "该服务不允许空格",
+    "en": "This service doesn't allow spaces",
+    "ja": "このサービスではスペースを使えません"
+  },
+  "report.username.invalid.reserved": {
+    "zh-Hant": "這個名稱無法使用",
+    "zh-Hans": "该名称无法使用",
+    "en": "This name isn't available",
+    "ja": "この名前は使用できません"
+  },
+  "report.apiKey": {
+    "zh-Hant": "API 金鑰",
+    "zh-Hans": "API 密钥",
+    "en": "API Key",
+    "ja": "API キー"
+  },
+  "report.apiKey.optional": {
+    "zh-Hant": "選填",
+    "zh-Hans": "选填",
+    "en": "Optional",
+    "ja": "任意"
+  },
+  "report.apiKey.required": {
+    "zh-Hant": "這個服務需要 API 金鑰",
+    "zh-Hans": "该服务需要 API 密钥",
+    "en": "This service requires an API key",
+    "ja": "このサービスには API キーが必要です"
+  },
+  "report.apiKey.hint": {
+    "zh-Hant": "安全地存放在這台電腦上，只會傳送給這個服務。",
+    "zh-Hans": "安全地保存在这台电脑上，只会发送给该服务。",
+    "en": "Stored securely on this computer and sent only to this service.",
+    "ja": "このコンピューターに安全に保存され、このサービスにだけ送信されます。"
+  },
+  "report.apiKey.get": {
+    "zh-Hant": "取得 API 金鑰",
+    "zh-Hans": "获取 API 密钥",
+    "en": "Get an API Key",
+    "ja": "API キーを取得"
+  },
+  "report.apiKey.clear": {
+    "zh-Hant": "清除",
+    "zh-Hans": "清除",
+    "en": "Clear",
+    "ja": "消去"
+  },
+  "report.sections": {
+    "zh-Hant": "傳送的內容",
+    "zh-Hans": "发送的内容",
+    "en": "What's Sent",
+    "ja": "送信する内容"
+  },
+  "report.sections.hint": {
+    "zh-Hant": "一律傳送：即時速度、與上次上報之間的 token 用量、agent 數量和速度稱號等級。下列項目可以個別開啟或關閉。",
+    "zh-Hans": "始终发送：实时速度、与上次上报之间的 token 用量、agent 数量和速度称号等级。以下项目可分别开启或关闭。",
+    "en": "Always sent: live speed, token usage since the previous report, agent counts and the speed title level. Each item below can be turned on or off.",
+    "ja": "常に送信：現在の速度、前回の送信以降の token 使用量、agent の数、速度称号のレベル。下の項目は個別にオン・オフできます。"
+  },
+  "report.section.sources": {
+    "zh-Hant": "各來源明細",
+    "zh-Hans": "各来源明细",
+    "en": "Per-source breakdown",
+    "ja": "ソースごとの内訳"
+  },
+  "report.section.models": {
+    "zh-Hant": "使用中的模型",
+    "zh-Hans": "使用中的模型",
+    "en": "Models in use",
+    "ja": "使用中のモデル"
+  },
+  "report.section.cost": {
+    "zh-Hant": "費用（API 等值，以美元計）",
+    "zh-Hans": "费用（API 等值，以美元计）",
+    "en": "Cost (API-equivalent, in US$)",
+    "ja": "費用（API 換算、米ドル）"
+  },
+  "report.section.traffic": {
+    "zh-Hant": "agent 的網路流量",
+    "zh-Hans": "agent 的网络流量",
+    "en": "Agents' network traffic",
+    "ja": "agent の通信量"
+  },
+  "report.section.notAccepted": {
+    "zh-Hant": "這個服務不使用",
+    "zh-Hans": "该服务不使用",
+    "en": "Not used by this service",
+    "ja": "このサービスでは使われません"
+  },
+  "report.section.trafficOff": {
+    "zh-Hant": "網路流量記錄已關閉",
+    "zh-Hans": "网络流量记录已关闭",
+    "en": "Traffic measuring is off",
+    "ja": "通信量の計測はオフです"
+  },
+  "report.preview": {
+    "zh-Hant": "預覽傳送內容…",
+    "zh-Hans": "预览发送内容…",
+    "en": "Preview Report…",
+    "ja": "送信内容をプレビュー…"
+  },
+  "report.preview.title": {
+    "zh-Hant": "下一次上報的內容",
+    "zh-Hans": "下一次上报的内容",
+    "en": "Next Report",
+    "ja": "次の送信内容"
+  },
+  "report.preview.hint": {
+    "zh-Hant": "這就是實際傳送的完整內容，每秒更新。簽章在送出時才加上。",
+    "zh-Hans": "这就是实际发送的完整内容，每秒更新。签名在发送时才加上。",
+    "en": "This is exactly what is sent, updated every second. The signature is added when it's sent.",
+    "ja": "実際に送信される内容そのものです。毎秒更新されます。署名は送信時に付けられます。"
+  },
+  "report.preview.assumed": {
+    "zh-Hant": "開啟後會先向服務確認；服務不使用的項目不會傳送。每秒更新，簽章在送出時才加上。",
+    "zh-Hans": "开启后会先向服务确认；服务不使用的项目不会发送。每秒更新，签名在发送时才加上。",
+    "en": "Checked with the service once you turn it on; items it doesn't use are left out. Updated every second; the signature is added when it's sent.",
+    "ja": "オンにするとまずサービスに確認し、サービスが使わない項目は送信しません。毎秒更新され、署名は送信時に付けられます。"
+  },
+  "report.preview.copy": {
+    "zh-Hant": "複製 JSON",
+    "zh-Hans": "复制 JSON",
+    "en": "Copy JSON",
+    "ja": "JSON をコピー"
+  },
+  "report.preview.next": {
+    "zh-Hant": "%d 秒後送出",
+    "zh-Hans": "%d 秒后发送",
+    "en": "Sends in %d s",
+    "ja": "%d 秒後に送信"
+  },
+  "report.consent.title": {
+    "zh-Hant": "開始即時上報到 %@？",
+    "zh-Hans": "开始实时上报到 %@？",
+    "en": "Start reporting to %@?",
+    "ja": "%@ への送信を開始しますか？"
+  },
+  "report.consent.body": {
+    "zh-Hant": "agent 工作時，Agent Speed 每 %d 秒會把下方預覽的數字連同你的使用者名稱傳送給這個服務；閒置時偶爾回報在線狀態，安靜 10 分鐘後停止。隨時可以暫停或關閉。",
+    "zh-Hans": "agent 工作时，Agent Speed 每 %d 秒会把下方预览的数字连同你的用户名发送给该服务；空闲时偶尔上报在线状态，安静 10 分钟后停止。随时可以暂停或关闭。",
+    "en": "While your agents work, Agent Speed sends the numbers previewed below with your username to this service every %d seconds; while they are idle, only an occasional heartbeat; after 10 quiet minutes, nothing. You can pause or turn it off at any time.",
+    "ja": "agent の作業中、Agent Speed は下のプレビューの数値をユーザー名と一緒に %d 秒ごとにこのサービスへ送信します。待機中はときどき在線状態だけを送り、10 分間動きがなければ止まります。いつでも一時停止やオフにできます。"
+  },
+  "report.consent.never": {
+    "zh-Hant": "永遠不會傳送：對話內容、提示詞、檔案與資料夾名稱、專案名稱、用量歷史。",
+    "zh-Hans": "永远不会发送：对话内容、提示词、文件和文件夹名称、项目名称、用量历史。",
+    "en": "Never sent: conversation content, prompts, file and folder names, project names, usage history.",
+    "ja": "送信しないもの：会話の内容、プロンプト、ファイル名・フォルダー名、プロジェクト名、使用履歴。"
+  },
+  "report.consent.honesty": {
+    "zh-Hant": "服務會看到你的使用者名稱、你何時在使用 agent，以及你的 IP 位址。數字由你的電腦自行回報，服務無法驗證是否正確。",
+    "zh-Hans": "服务会看到你的用户名、你何时在使用 agent，以及你的 IP 地址。数字由你的电脑自行上报，服务无法验证是否准确。",
+    "en": "The service sees your username, when you use agents, and your IP address. The numbers are self-reported by your computer; the service can't verify them.",
+    "ja": "サービスにはユーザー名、agent を使っている時間帯、IP アドレスが見えます。数値はこのコンピューターの自己申告で、サービスは正しさを検証できません。"
+  },
+  "report.start": {
+    "zh-Hant": "開始上報",
+    "zh-Hans": "开始上报",
+    "en": "Start Reporting",
+    "ja": "送信を開始"
+  },
+  "report.status": {
+    "zh-Hant": "狀態",
+    "zh-Hans": "状态",
+    "en": "Status",
+    "ja": "状態"
+  },
+  "report.status.off": {
+    "zh-Hant": "已關閉",
+    "zh-Hans": "已关闭",
+    "en": "Off",
+    "ja": "オフ"
+  },
+  "report.status.never": {
+    "zh-Hant": "尚未上報",
+    "zh-Hans": "尚未上报",
+    "en": "Nothing reported yet",
+    "ja": "まだ送信していません"
+  },
+  "report.status.connecting": {
+    "zh-Hant": "正在連線…",
+    "zh-Hans": "正在连接…",
+    "en": "Connecting…",
+    "ja": "接続しています…"
+  },
+  "report.status.registering": {
+    "zh-Hant": "正在註冊這台裝置…",
+    "zh-Hans": "正在注册这台设备…",
+    "en": "Registering this device…",
+    "ja": "このデバイスを登録しています…"
+  },
+  "report.status.reporting": {
+    "zh-Hant": "上報中 · 上次 %@",
+    "zh-Hans": "上报中 · 上次 %@",
+    "en": "Reporting · last %@",
+    "ja": "送信中・前回 %@"
+  },
+  "report.status.idle": {
+    "zh-Hant": "agent 閒置中，只定時回報在線狀態",
+    "zh-Hans": "agent 空闲中，只定时上报在线状态",
+    "en": "Agents idle — sending occasional heartbeats",
+    "ja": "agent は待機中です。在線状態だけを定期的に送信しています"
+  },
+  "report.status.quiet": {
+    "zh-Hant": "目前沒有 agent 在工作，暫不上報",
+    "zh-Hans": "当前没有 agent 在工作，暂不上报",
+    "en": "No agent is working — nothing to report",
+    "ja": "作業中の agent はありません。送信を休止しています"
+  },
+  "report.status.paused": {
+    "zh-Hant": "已暫停，%@ 恢復",
+    "zh-Hans": "已暂停，%@ 恢复",
+    "en": "Paused until %@",
+    "ja": "%@ まで一時停止中"
+  },
+  "report.status.pausedIndefinitely": {
+    "zh-Hant": "已暫停",
+    "zh-Hans": "已暂停",
+    "en": "Paused",
+    "ja": "一時停止中"
+  },
+  "report.status.retrying": {
+    "zh-Hant": "上報失敗，稍後會自動重試",
+    "zh-Hans": "上报失败，稍后会自动重试",
+    "en": "Couldn't report — retrying shortly",
+    "ja": "送信に失敗しました。まもなく再試行します"
+  },
+  "report.status.registerFailed": {
+    "zh-Hant": "無法註冊這台裝置，稍後會再試",
+    "zh-Hans": "无法注册这台设备，稍后会再试",
+    "en": "Couldn't register this device — will try again later",
+    "ja": "このデバイスを登録できませんでした。あとで再試行します"
+  },
+  "report.status.review": {
+    "zh-Hant": "還需要你確認這個服務的資訊，才能開始上報",
+    "zh-Hans": "还需要你确认这个服务的信息，才能开始上报",
+    "en": "Review this service's details to start reporting",
+    "ja": "送信を始めるには、このサービスの情報を確認してください"
+  },
+  "report.status.usernameRejected": {
+    "zh-Hant": "這個服務不接受這個使用者名稱，請換一個",
+    "zh-Hans": "这个服务不接受这个用户名，请换一个",
+    "en": "This service doesn't accept this username — choose another",
+    "ja": "このサービスではこのユーザー名を使えません。別の名前にしてください"
+  },
+  "report.error.unreachable": {
+    "zh-Hant": "無法連上服務",
+    "zh-Hans": "无法连接服务",
+    "en": "Can't reach the service",
+    "ja": "サービスに接続できません"
+  },
+  "report.error.insecure": {
+    "zh-Hant": "無法建立安全連線",
+    "zh-Hans": "无法建立安全连接",
+    "en": "Couldn't connect securely",
+    "ja": "安全に接続できません"
+  },
+  "report.error.unavailable": {
+    "zh-Hant": "服務暫時沒有回應",
+    "zh-Hans": "服务暂时没有响应",
+    "en": "The service isn't responding",
+    "ja": "サービスが応答していません"
+  },
+  "report.error.response": {
+    "zh-Hant": "服務的回應無法辨識",
+    "zh-Hans": "服务的响应无法识别",
+    "en": "The service's response couldn't be read",
+    "ja": "サービスの応答を読み取れません"
+  },
+  "report.error.key": {
+    "zh-Hant": "無法使用這台電腦上的裝置金鑰",
+    "zh-Hans": "无法使用这台电脑上的设备密钥",
+    "en": "Couldn't use the device key on this computer",
+    "ja": "このコンピューターのデバイス鍵を使えません"
+  },
+  "report.status.rateLimited": {
+    "zh-Hant": "服務要求放慢，%@ 繼續",
+    "zh-Hans": "服务要求放慢，%@ 继续",
+    "en": "The service asked to slow down — resuming at %@",
+    "ja": "サービスから間隔を空けるよう求められました。%@ に再開します"
+  },
+  "report.status.apiKey": {
+    "zh-Hant": "需要有效的 API 金鑰",
+    "zh-Hans": "需要有效的 API 密钥",
+    "en": "A valid API key is needed",
+    "ja": "有効な API キーが必要です"
+  },
+  "report.status.usernameTaken": {
+    "zh-Hant": "這個使用者名稱已被其他裝置使用，請換一個",
+    "zh-Hans": "该用户名已被其他设备使用，请换一个",
+    "en": "This username belongs to another device — choose another",
+    "ja": "このユーザー名は別のデバイスが使用しています。別の名前にしてください"
+  },
+  "report.status.keyMismatch": {
+    "zh-Hant": "這台裝置的金鑰與服務的紀錄不符",
+    "zh-Hans": "这台设备的密钥与服务的记录不符",
+    "en": "This device's key doesn't match the service's records",
+    "ja": "このデバイスの鍵がサービスの記録と一致しません"
+  },
+  "report.status.rejected": {
+    "zh-Hant": "服務一再拒收上報的內容，已停止上報",
+    "zh-Hans": "服务一再拒收上报的内容，已停止上报",
+    "en": "The service keeps rejecting the reports — reporting stopped",
+    "ja": "サービスが送信内容を受け付けないため、送信を停止しました"
+  },
+  "report.status.forbidden": {
+    "zh-Hant": "服務拒絕了這台裝置，已停止上報",
+    "zh-Hans": "服务拒绝了这台设备，已停止上报",
+    "en": "The service refused this device — reporting stopped",
+    "ja": "サービスがこのデバイスを拒否したため、送信を停止しました"
+  },
+  "report.status.upgrade": {
+    "zh-Hant": "這個服務需要較新版本的 Agent Speed",
+    "zh-Hans": "该服务需要更新版本的 Agent Speed",
+    "en": "This service needs a newer Agent Speed",
+    "ja": "このサービスには新しいバージョンの Agent Speed が必要です"
+  },
+  "report.status.gone": {
+    "zh-Hant": "這個服務已停止接收上報，即時上報已關閉",
+    "zh-Hans": "该服务已停止接收上报，实时上报已关闭",
+    "en": "This service no longer accepts reports — live reporting is off",
+    "ja": "このサービスは送信の受け付けを終了しました。ライブ送信はオフになりました"
+  },
+  "report.status.rank": {
+    "zh-Hant": "目前排名第 %d",
+    "zh-Hans": "当前排名第 %d",
+    "en": "Currently #%d",
+    "ja": "現在 %d 位"
+  },
+  "report.pause": {
+    "zh-Hant": "暫停上報",
+    "zh-Hans": "暂停上报",
+    "en": "Pause Reporting",
+    "ja": "送信を一時停止"
+  },
+  "report.pause.hour": {
+    "zh-Hant": "暫停 1 小時",
+    "zh-Hans": "暂停 1 小时",
+    "en": "Pause for 1 Hour",
+    "ja": "1 時間停止"
+  },
+  "report.pause.indefinite": {
+    "zh-Hant": "暫停到我恢復為止",
+    "zh-Hans": "暂停到我恢复为止",
+    "en": "Pause Until I Resume",
+    "ja": "再開するまで停止"
+  },
+  "report.resume": {
+    "zh-Hant": "恢復上報",
+    "zh-Hans": "恢复上报",
+    "en": "Resume Reporting",
+    "ja": "送信を再開"
+  },
+  "report.device": {
+    "zh-Hant": "這台裝置",
+    "zh-Hans": "这台设备",
+    "en": "This Device",
+    "ja": "このデバイス"
+  },
+  "report.device.detail": {
+    "zh-Hant": "以「%@」註冊於 %@",
+    "zh-Hans": "以“%@”注册于 %@",
+    "en": "Registered as “%@” on %@",
+    "ja": "「%@」として %@ に登録済み"
+  },
+  "report.device.profile": {
+    "zh-Hant": "開啟我的公開頁面",
+    "zh-Hans": "打开我的公开页面",
+    "en": "Open My Public Page",
+    "ja": "自分の公開ページを開く"
+  },
+  "report.device.fingerprint": {
+    "zh-Hant": "裝置指紋",
+    "zh-Hans": "设备指纹",
+    "en": "Device fingerprint",
+    "ja": "デバイスのフィンガープリント"
+  },
+  "report.forget": {
+    "zh-Hant": "忘記這台裝置…",
+    "zh-Hans": "忘记这台设备…",
+    "en": "Forget This Device…",
+    "ja": "このデバイスを削除…"
+  },
+  "report.forget.confirm": {
+    "zh-Hant": "要讓 %@ 忘記這台裝置嗎？",
+    "zh-Hans": "要让 %@ 忘记这台设备吗？",
+    "en": "Ask %@ to forget this device?",
+    "ja": "%@ にこのデバイスを削除してもらいますか？"
+  },
+  "report.forget.detail": {
+    "zh-Hant": "服務會刪除這台裝置、它的使用者名稱和它收到的上報資料，這台電腦上的裝置金鑰也會刪除，即時上報會關閉。之後再開啟時會以新裝置註冊。",
+    "zh-Hans": "服务会删除这台设备、它的用户名和它收到的上报数据，这台电脑上的设备密钥也会删除，实时上报会关闭。之后再开启时会以新设备注册。",
+    "en": "The service deletes this device, its username and the reports it received; the device key on this computer is deleted too and live reporting turns off. Turning it on again registers a new device.",
+    "ja": "サービスはこのデバイス、そのユーザー名、受け取った送信データを削除します。このコンピューター上のデバイス鍵も削除され、ライブ送信はオフになります。再びオンにすると新しいデバイスとして登録されます。"
+  },
+  "report.forget.action": {
+    "zh-Hant": "忘記",
+    "zh-Hans": "忘记",
+    "en": "Forget",
+    "ja": "削除"
+  },
+  "report.forget.done": {
+    "zh-Hant": "服務已刪除這台裝置與它的資料",
+    "zh-Hans": "服务已删除这台设备及其数据",
+    "en": "The service deleted this device and its data",
+    "ja": "サービスがこのデバイスとそのデータを削除しました"
+  },
+  "report.forget.failed": {
+    "zh-Hant": "%@，尚未刪除任何資料。",
+    "zh-Hans": "%@，尚未删除任何数据。",
+    "en": "%@. Nothing was deleted yet.",
+    "ja": "%@。まだ何も削除されていません。"
+  },
+  "report.forget.localOnly": {
+    "zh-Hant": "只刪除本機金鑰",
+    "zh-Hans": "只删除本机密钥",
+    "en": "Delete the Local Key Only",
+    "ja": "ローカルの鍵だけ削除"
+  },
+  "report.forget.localOnly.detail": {
+    "zh-Hant": "服務上的使用者名稱和資料不會刪除；可以透過它的隱私權政策聯絡服務。",
+    "zh-Hans": "服务上的用户名和数据不会删除；可以通过其隐私政策联系服务。",
+    "en": "The username and data on the service stay; contact the service through its privacy policy.",
+    "ja": "サービス上のユーザー名とデータは残ります。サービスのプライバシーポリシーから問い合わせてください。"
+  },
+  "report.reset": {
+    "zh-Hant": "重設這台裝置…",
+    "zh-Hans": "重置这台设备…",
+    "en": "Reset This Device…",
+    "ja": "このデバイスをリセット…"
+  },
+  "report.reset.detail": {
+    "zh-Hant": "建立新的裝置金鑰並重新註冊；原本的使用者名稱可能已無法使用。",
+    "zh-Hans": "创建新的设备密钥并重新注册；原来的用户名可能已无法使用。",
+    "en": "Creates a new device key and registers again; the previous username may no longer be available.",
+    "ja": "新しいデバイス鍵を作成して登録し直します。以前のユーザー名は使えなくなることがあります。"
+  },
+  "report.others": {
+    "zh-Hant": "其他已註冊的服務",
+    "zh-Hans": "其他已注册的服务",
+    "en": "Other Registered Services",
+    "ja": "登録済みの他のサービス"
+  },
+  "report.menu.on": {
+    "zh-Hant": "即時上報：%@",
+    "zh-Hans": "实时上报：%@",
+    "en": "Live Reporting: %@",
+    "ja": "ライブ送信：%@"
+  },
+  "report.menu.paused": {
+    "zh-Hant": "即時上報已暫停",
+    "zh-Hans": "实时上报已暂停",
+    "en": "Live Reporting Paused",
+    "ja": "ライブ送信は一時停止中"
+  },
+  "report.menu.settings": {
+    "zh-Hant": "即時上報設定…",
+    "zh-Hans": "实时上报设置…",
+    "en": "Live Reporting Settings…",
+    "ja": "ライブ送信の設定…"
+  },
+  "report.indicator": {
+    "zh-Hant": "正在以「%@」即時上報到 %@",
+    "zh-Hans": "正在以“%@”实时上报到 %@",
+    "en": "Reporting live as “%@” to %@",
+    "ja": "「%@」として %@ にライブ送信中"
+  },
+  "report.indicator.attention": {
+    "zh-Hant": "即時上報需要你處理",
+    "zh-Hans": "实时上报需要你处理",
+    "en": "Live reporting needs your attention",
+    "ja": "ライブ送信の設定を確認してください"
+  },
+  "report.traffic.note": {
+    "zh-Hant": "即時上報會把流量數字傳送給 %@。",
+    "zh-Hans": "实时上报会把流量数字发送给 %@。",
+    "en": "Live reporting sends these traffic numbers to %@.",
+    "ja": "ライブ送信がこの通信量の数値を %@ に送信します。"
+  },
+  "privacy.report": {
+    "zh-Hant": "即時上報（選用，預設關閉）：開啟後，Agent Speed 會在 agent 工作時每隔幾秒，把即時速度、token 用量，以及你保留的費用、網路流量和模型等數字，連同你選擇的使用者名稱傳送到你指定的服務。不會傳送對話內容、檔案或專案名稱，也不會傳送歷史紀錄；每筆上報都以只存在這台電腦上的金鑰簽章。",
+    "zh-Hans": "实时上报（可选，默认关闭）：开启后，Agent Speed 会在 agent 工作时每隔几秒，把实时速度、token 用量，以及你保留的费用、网络流量和模型等数字，连同你选择的用户名发送到你指定的服务。不会发送对话内容、文件或项目名称，也不会发送历史记录；每条上报都用只保存在这台电脑上的密钥签名。",
+    "en": "Live reporting (optional, off by default): when you turn it on, Agent Speed sends live speed, token usage and — if you keep them — cost, network traffic and model numbers, with the username you choose, to the service you pick, every few seconds while your agents work. It never sends conversation content, file or project names, or history, and signs every report with a key that stays on this computer.",
+    "ja": "ライブ送信（任意・初期設定はオフ）：オンにすると、Agent Speed は agent の作業中に数秒ごと、現在の速度と token 使用量、そしてオンのままにした費用・通信量・モデルなどの数値を、選んだユーザー名と一緒に指定したサービスへ送信します。会話の内容、ファイル名やプロジェクト名、履歴は送信せず、各送信はこのコンピューターから出ない鍵で署名されます。"
+  },
+  "privacy.statement.report": {
+    "zh-Hant": "Agent Speed 只讀取本機紀錄，不會儲存或顯示對話內容。它只在檢查更新、每天更新公開的模型價格表、使用美元以外的貨幣時更新匯率，以及依你的設定把即時數字上報到 %@ 時連網；除了即時上報的內容，不傳送任何個人資料。可在下方一次關閉所有網路連線。",
+    "zh-Hans": "Agent Speed 只读取本机记录，不会保存或显示对话内容。它只在检查更新、每天更新公开的模型价格表、使用美元以外的货币时更新汇率，以及按你的设置把实时数字上报到 %@ 时联网；除实时上报的内容外，不发送任何个人数据。可在下方一键关闭所有网络连接。",
+    "en": "Agent Speed only reads local transcripts and never stores or shows conversation content. It connects only to check for updates, to refresh the public model price table daily, to refresh exchange rates when you use a currency other than US dollars, and — as you set it up — to report live numbers to %@. Apart from those live reports it sends no personal data. You can turn all network access off below.",
+    "ja": "Agent Speed はローカルの記録のみを読み取り、会話の内容を保存・表示することはありません。通信するのは、アップデートの確認、公開モデル価格表の毎日の更新、米ドル以外の通貨を使うときの為替レートの更新、そして設定に従った %@ へのライブ送信だけです。ライブ送信の内容以外に個人データは送信しません。下のスイッチですべての通信をオフにできます。"
+  },
+  "privacy.traffic.report": {
+    "zh-Hant": "網路流量：Agent Speed 只在本機計算各程式收發的位元組數，從不讀取內容、網址或連線對象；只有在即時上報保留流量項目時，才會把這些位元組數傳送給你選擇的服務。",
+    "zh-Hans": "网络流量：Agent Speed 只在本机计算各程序收发的字节数，从不读取内容、网址或连接对象；只有在实时上报保留流量项目时，才会把这些字节数发送给你选择的服务。",
+    "en": "Network traffic: Agent Speed counts how many bytes programs send and receive, on this computer only, and never reads content, addresses or destinations. Only live reporting, while its traffic items are on, sends these byte counts to the service you chose.",
+    "ja": "通信量：Agent Speed はこのコンピューター上で、プログラムが送受信したバイト数だけを数え、内容・アドレス・接続先は一切読みません。このバイト数を送信するのは、通信量の項目がオンのときのライブ送信だけで、送信先は選んだサービスです。"
+  },
+  "settings.network.hint.report": {
+    "zh-Hant": "用於檢查更新、每天更新價格表和匯率，以及你開啟的即時上報。關閉後完全不連網，即時上報也會停止，費用改用內建資料。",
+    "zh-Hans": "用于检查更新、每天更新价格表和汇率，以及你开启的实时上报。关闭后完全不联网，实时上报也会停止，费用改用内置数据。",
+    "en": "Used to check for updates, to refresh the price table and exchange rates daily, and for the live reporting you turned on. When off, Agent Speed never connects, live reporting stops, and costs use the built-in prices and rates.",
+    "ja": "アップデートの確認、価格表と為替レートの毎日の更新、そしてオンにしたライブ送信に使います。オフにすると一切通信せず、ライブ送信も止まり、費用は内蔵の価格とレートで計算します。"
+  },
+  "report.username.transfer": {
+    "zh-Hant": "把這個名稱移到這台電腦",
+    "zh-Hans": "把这个名称移到这台电脑",
+    "en": "Move This Name to This Computer",
+    "ja": "この名前をこのコンピューターに移す"
+  },
+  "report.username.transfer.hint": {
+    "zh-Hant": "這個名稱屬於你帳號下的另一台裝置。移過來後，那台裝置會被刪除，不能再用這個名稱上報。",
+    "zh-Hans": "这个名称属于你账号下的另一台设备。移过来后，那台设备会被删除，不能再用这个名称上报。",
+    "en": "This name belongs to another device of your account. After the move that device is removed and can no longer report under it.",
+    "ja": "この名前はあなたのアカウントの別のデバイスが使っています。移すとそのデバイスは削除され、この名前では送信できなくなります。"
+  },
+  "report.invite.title": {
+    "zh-Hant": "要參與速蹬天梯嗎？",
+    "zh-Hans": "要参与速蹬天梯吗？",
+    "en": "Join the Codex Radar speed ladder?",
+    "ja": "Codex Radar のスピードランキングに参加しますか？"
+  },
+  "report.invite.body": {
+    "zh-Hant": "agent 工作時，每隔幾秒把即時速度和 token 用量傳送到 %@（%@）。不會傳送對話內容或檔案名稱。",
+    "zh-Hans": "agent 工作时，每隔几秒把实时速度和 token 用量发送到 %@（%@）。不会发送对话内容或文件名称。",
+    "en": "While your agents work, sends live speed and token usage to %@ (%@) every few seconds — never conversation content or file names.",
+    "ja": "agent の作業中、現在の速度と token 使用量を数秒ごとに %@（%@）へ送信します。会話の内容やファイル名は送信しません。"
+  },
+  "report.invite.username": {
+    "zh-Hant": "公開顯示為「%@」，可在設定中修改",
+    "zh-Hans": "公开显示为“%@”，可在设置中修改",
+    "en": "Public name “%@” · change it in Settings",
+    "ja": "公開名「%@」・設定で変更できます"
+  },
+  "report.invite.preview": {
+    "zh-Hant": "預覽",
+    "zh-Hans": "预览",
+    "en": "Preview",
+    "ja": "プレビュー"
+  },
+  "report.invite.accept": {
+    "zh-Hant": "開啟",
+    "zh-Hans": "开启",
+    "en": "Turn On",
+    "ja": "オンにする"
+  },
+  "report.invite.decline": {
+    "zh-Hant": "不用了",
+    "zh-Hans": "不用了",
+    "en": "No Thanks",
+    "ja": "今はしない"
+  },
+  "report.invite.done": {
+    "zh-Hant": "已開啟即時上報，隨時可以在設定中關閉",
+    "zh-Hans": "已开启实时上报，随时可以在设置中关闭",
+    "en": "Live reporting is on — turn it off anytime in Settings",
+    "ja": "ライブ送信をオンにしました。設定からいつでもオフにできます"
+  },
+  "source.zcode": {
+    "zh-Hant": "ZCode",
+    "zh-Hans": "ZCode",
+    "en": "ZCode",
+    "ja": "ZCode"
+  },
+  "source.kimi": {
+    "zh-Hant": "Kimi Code CLI",
+    "zh-Hans": "Kimi Code CLI",
+    "en": "Kimi Code CLI",
+    "ja": "Kimi Code CLI"
+  },
+  "source.grokBuild": {
+    "zh-Hant": "Grok Build",
+    "zh-Hans": "Grok Build",
+    "en": "Grok Build",
+    "ja": "Grok Build"
+  },
+  "settings.sources.zcodeHint": {
+    "zh-Hant": "讀取 ZCode 的本機工作階段資料庫；可選擇資料目錄或包含 db.sqlite 的資料夾。",
+    "zh-Hans": "读取 ZCode 的本地会话数据库；可选择数据目录或包含 db.sqlite 的文件夹。",
+    "en": "Reads ZCode’s local session database. Choose its data directory or the folder containing db.sqlite.",
+    "ja": "ZCode のローカルセッションデータベースを読み取ります。データディレクトリまたは db.sqlite を含むフォルダを選択できます。"
+  },
+  "settings.sources.kimiHint": {
+    "zh-Hant": "讀取 Kimi Code CLI 的 sessions 資料夾，包含主 agent 與子 agent 的紀錄。",
+    "zh-Hans": "读取 Kimi Code CLI 的 sessions 文件夹，包括主 agent 和子 agent 的记录。",
+    "en": "Reads Kimi Code CLI’s sessions folder, including main agents and subagents.",
+    "ja": "Kimi Code CLI の sessions フォルダから、メインエージェントとサブエージェントの記録を読み取ります。"
+  },
+  "settings.sources.grokBuildHint": {
+    "zh-Hant": "讀取 Grok Build 的 sessions 資料夾，包含各工作階段的更新紀錄。",
+    "zh-Hans": "读取 Grok Build 的 sessions 文件夹，包括各会话的更新记录。",
+    "en": "Reads Grok Build’s sessions folder and its session update records.",
+    "ja": "Grok Build の sessions フォルダと各セッションの更新記録を読み取ります。"
+  },
+  "mode.label": {
+    "zh-Hant": "執行模式",
+    "zh-Hans": "执行模式",
+    "en": "Execution mode",
+    "ja": "実行モード"
+  },
+  "mode.unknown": {
+    "zh-Hant": "未提供",
+    "zh-Hans": "未提供",
+    "en": "Not provided",
+    "ja": "未提供"
+  },
+  "mode.mixed": {
+    "zh-Hant": "多種模式",
+    "zh-Hans": "多种模式",
+    "en": "Mixed modes",
+    "ja": "複数のモード"
+  },
+  "mode.evidence.configured": {
+    "zh-Hant": "設定預設",
+    "zh-Hans": "配置默认",
+    "en": "Configured default",
+    "ja": "設定上の既定"
+  },
+  "mode.evidence.selected": {
+    "zh-Hant": "任務選擇",
+    "zh-Hans": "任务选择",
+    "en": "Selected by task",
+    "ja": "タスクの選択"
+  },
+  "mode.evidence.recorded": {
+    "zh-Hant": "Agent 記錄",
+    "zh-Hans": "Agent 记录",
+    "en": "Recorded by agent",
+    "ja": "Agent の記録"
+  },
+  "mode.evidence.served": {
+    "zh-Hant": "實際回應",
+    "zh-Hans": "实际响应",
+    "en": "Served response",
+    "ja": "実際の応答"
+  },
+  "mode.kind.serviceTier": {
+    "zh-Hant": "服務加速",
+    "zh-Hans": "服务加速",
+    "en": "Service tier",
+    "ja": "サービス階層"
+  },
+  "mode.kind.accelerator": {
+    "zh-Hant": "加速卡",
+    "zh-Hans": "加速卡",
+    "en": "Accelerator",
+    "ja": "アクセラレーター"
+  },
+  "mode.kind.modelVariant": {
+    "zh-Hant": "模型變體",
+    "zh-Hans": "模型变体",
+    "en": "Model variant",
+    "ja": "モデルの種類"
+  },
+  "mode.kind.routing": {
+    "zh-Hant": "模型路由",
+    "zh-Hans": "模型路由",
+    "en": "Model routing",
+    "ja": "モデルのルーティング"
+  },
+  "mode.kind.workflow": {
+    "zh-Hant": "工作流程",
+    "zh-Hans": "工作流程",
+    "en": "Workflow",
+    "ja": "ワークフロー"
+  },
+  "mode.value.standard": {
+    "zh-Hant": "標準",
+    "zh-Hans": "标准",
+    "en": "Standard",
+    "ja": "標準"
+  },
+  "mode.value.fast": {
+    "zh-Hant": "Fast",
+    "zh-Hans": "Fast",
+    "en": "Fast",
+    "ja": "Fast"
+  },
+  "mode.value.ultrafast": {
+    "zh-Hant": "Ultrafast",
+    "zh-Hans": "Ultrafast",
+    "en": "Ultrafast",
+    "ja": "Ultrafast"
+  },
+  "mode.value.highspeed": {
+    "zh-Hant": "Highspeed",
+    "zh-Hans": "Highspeed",
+    "en": "Highspeed",
+    "ja": "Highspeed"
+  },
+  "mode.value.balanced": {
+    "zh-Hant": "均衡",
+    "zh-Hans": "均衡",
+    "en": "Balanced",
+    "ja": "バランス"
+  },
+  "mode.value.deep": {
+    "zh-Hant": "深度",
+    "zh-Hans": "深度",
+    "en": "Deep",
+    "ja": "深い分析"
+  },
+  "mode.value.planning": {
+    "zh-Hant": "規劃",
+    "zh-Hans": "规划",
+    "en": "Planning",
+    "ja": "計画"
+  },
+  "mode.value.auto": {
+    "zh-Hant": "自動",
+    "zh-Hans": "自动",
+    "en": "Auto",
+    "ja": "自動"
+  },
+  "mode.value.flex": {
+    "zh-Hant": "Flex",
+    "zh-Hans": "Flex",
+    "en": "Flex",
+    "ja": "Flex"
+  },
+  "mode.value.scale": {
+    "zh-Hant": "Scale",
+    "zh-Hans": "Scale",
+    "en": "Scale",
+    "ja": "Scale"
+  },
+  "mode.value.unknown": {
+    "zh-Hant": "未提供",
+    "zh-Hans": "未提供",
+    "en": "Not provided",
+    "ja": "未提供"
+  },
+  "mode.defaultNote": {
+    "zh-Hant": "設定檔的預設值；不代表每個任務實際使用的模式。",
+    "zh-Hans": "配置文件的默认值；不代表每个任务实际使用的模式。",
+    "en": "The configuration default; it does not confirm the mode used by each task.",
+    "ja": "設定ファイルの既定値です。各タスクで実際に使用されたモードを示すものではありません。"
+  },
+  "mode.history": {
+    "zh-Hant": "依執行模式",
+    "zh-Hans": "按执行模式",
+    "en": "By execution mode",
+    "ja": "実行モード別"
+  },
+  "mode.exportCsv": {
+    "zh-Hant": "匯出模式 CSV",
+    "zh-Hans": "导出模式 CSV",
+    "en": "Export modes CSV",
+    "ja": "モード CSV を書き出す"
+  },
+  "profile.title": {
+    "zh-Hant": "個人資料",
+    "zh-Hans": "个人资料",
+    "en": "Profile",
+    "ja": "プロフィール"
+  },
+  "profile.refresh": {
+    "zh-Hant": "重新整理",
+    "zh-Hans": "刷新",
+    "en": "Refresh",
+    "ja": "更新"
+  },
+  "profile.unavailable": {
+    "zh-Hant": "服務尚未支援此功能",
+    "zh-Hans": "服务尚未支持此功能",
+    "en": "This service does not support this feature yet.",
+    "ja": "このサービスはまだこの機能に対応していません。"
+  },
+  "profile.failed": {
+    "zh-Hant": "同步失敗，請稍後重試",
+    "zh-Hans": "同步失败，请稍后重试",
+    "en": "Sync failed. Please try again.",
+    "ja": "同期できませんでした。もう一度お試しください。"
+  },
+  "profile.avatar.choose": {
+    "zh-Hant": "選擇頭像…",
+    "zh-Hans": "选择头像…",
+    "en": "Choose avatar…",
+    "ja": "アバターを選択…"
+  },
+  "profile.avatar.change": {
+    "zh-Hant": "更換頭像…",
+    "zh-Hans": "更换头像…",
+    "en": "Change avatar…",
+    "ja": "アバターを変更…"
+  },
+  "profile.avatar.remove": {
+    "zh-Hant": "移除頭像",
+    "zh-Hans": "移除头像",
+    "en": "Remove avatar",
+    "ja": "アバターを削除"
+  },
+  "profile.avatar.save": {
+    "zh-Hant": "上傳頭像",
+    "zh-Hans": "上传头像",
+    "en": "Upload avatar",
+    "ja": "アバターをアップロード"
+  },
+  "profile.avatar.pending": {
+    "zh-Hant": "尚未同步",
+    "zh-Hans": "尚未同步",
+    "en": "Not synced yet",
+    "ja": "未同期"
+  },
+  "profile.avatar.invalid": {
+    "zh-Hant": "請選擇符合大小限制的 PNG 或 JPEG",
+    "zh-Hans": "请选择符合大小限制的 PNG 或 JPEG",
+    "en": "Choose a PNG or JPEG within the size limits.",
+    "ja": "サイズ制限内の PNG または JPEG を選択してください。"
+  },
+  "profile.avatar.note": {
+    "zh-Hant": "圖片會置中裁切並移除位置等中繼資料；按上傳後才傳送至這個服務。",
+    "zh-Hans": "图片会居中裁剪并移除位置等元数据；点击上传后才发送到此服务。",
+    "en": "The image is center-cropped and metadata is removed. It is sent to this service only when you upload it.",
+    "ja": "画像は中央で切り抜かれ、位置情報などのメタデータは削除されます。アップロード操作を行ったときだけ送信されます。"
+  },
+  "profile.identity.create": {
+    "zh-Hant": "建立共用身分",
+    "zh-Hans": "创建共享身份",
+    "en": "Create shared identity",
+    "ja": "共有 ID を作成"
+  },
+  "profile.identity.bound": {
+    "zh-Hant": "已綁定共用身分",
+    "zh-Hans": "已绑定共享身份",
+    "en": "Shared identity linked",
+    "ja": "共有 ID に連携済み"
+  },
+  "profile.identity.unbound": {
+    "zh-Hant": "僅此裝置",
+    "zh-Hans": "仅此设备",
+    "en": "This device only",
+    "ja": "このデバイスのみ"
+  },
+  "profile.identity.unlink": {
+    "zh-Hant": "解除本機綁定",
+    "zh-Hans": "解除本机绑定",
+    "en": "Unlink this device",
+    "ja": "このデバイスの連携を解除"
+  },
+  "profile.identity.unlinkNote": {
+    "zh-Hant": "已入帳歷史會保留，之後用量不再加入此身分。",
+    "zh-Hans": "已入账历史会保留，之后用量不再加入此身份。",
+    "en": "Recorded history is kept. Future usage from this device will no longer belong to this identity.",
+    "ja": "記録済みの履歴は保持されます。以後、このデバイスの使用量はこの ID に追加されません。"
+  },
+  "profile.displayName": {
+    "zh-Hant": "共用顯示名稱",
+    "zh-Hans": "共享显示名称",
+    "en": "Shared display name",
+    "ja": "共有表示名"
+  },
+  "profile.save": {
+    "zh-Hant": "儲存",
+    "zh-Hans": "保存",
+    "en": "Save",
+    "ja": "保存"
+  },
+  "profile.pairing.invite": {
+    "zh-Hant": "邀請另一台裝置",
+    "zh-Hans": "邀请另一台设备",
+    "en": "Invite another device",
+    "ja": "別のデバイスを招待"
+  },
+  "profile.pairing.join": {
+    "zh-Hant": "使用配對碼加入",
+    "zh-Hans": "使用配对码加入",
+    "en": "Join with pairing code",
+    "ja": "ペアリングコードで参加"
+  },
+  "profile.pairing.code": {
+    "zh-Hant": "一次性配對碼",
+    "zh-Hans": "一次性配对码",
+    "en": "One-time pairing code",
+    "ja": "ワンタイムペアリングコード"
+  },
+  "profile.pairing.approve": {
+    "zh-Hant": "核准此裝置",
+    "zh-Hans": "批准此设备",
+    "en": "Approve this device",
+    "ja": "このデバイスを承認"
+  },
+  "profile.pairing.cancel": {
+    "zh-Hant": "取消配對",
+    "zh-Hans": "取消配对",
+    "en": "Cancel pairing",
+    "ja": "ペアリングをキャンセル"
+  },
+  "profile.pairing.waiting": {
+    "zh-Hant": "等待另一台裝置申請",
+    "zh-Hans": "等待另一台设备申请",
+    "en": "Waiting for another device",
+    "ja": "別のデバイスからの申請を待機中"
+  },
+  "profile.pairing.pending": {
+    "zh-Hant": "等待邀請裝置核准",
+    "zh-Hans": "等待邀请设备批准",
+    "en": "Waiting for the inviting device to approve",
+    "ja": "招待したデバイスの承認待ち"
+  },
+  "profile.pairing.approved": {
+    "zh-Hant": "配對完成",
+    "zh-Hans": "配对完成",
+    "en": "Pairing complete",
+    "ja": "ペアリング完了"
+  },
+  "profile.pairing.expired": {
+    "zh-Hant": "配對已過期或取消",
+    "zh-Hans": "配对已过期或取消",
+    "en": "Pairing expired or cancelled",
+    "ja": "ペアリングは期限切れかキャンセル済みです"
+  },
+  "profile.pairing.check": {
+    "zh-Hant": "檢查配對狀態",
+    "zh-Hans": "检查配对状态",
+    "en": "Check pairing status",
+    "ja": "ペアリング状況を確認"
+  },
+  "profile.pairing.note": {
+    "zh-Hant": "只輸入配對碼不會完成綁定；仍須由邀請裝置核准。",
+    "zh-Hans": "仅输入配对码不会完成绑定；仍须由邀请设备批准。",
+    "en": "Entering a code does not link the device until the inviting device approves it.",
+    "ja": "コードを入力するだけでは連携されません。招待したデバイスの承認が必要です。"
+  },
+  "profile.devices": {
+    "zh-Hant": "已綁定裝置",
+    "zh-Hans": "已绑定设备",
+    "en": "Linked devices",
+    "ja": "連携済みデバイス"
+  },
+  "profile.manageDevices": {
+    "en": "Manage devices…",
+    "zh-Hant": "管理裝置…",
+    "zh-Hans": "管理设备…",
+    "ja": "デバイスを管理…"
+  },
+  "profile.deviceManagement": {
+    "en": "Device management",
+    "zh-Hant": "裝置管理",
+    "zh-Hans": "设备管理",
+    "ja": "デバイス管理"
+  }
+}

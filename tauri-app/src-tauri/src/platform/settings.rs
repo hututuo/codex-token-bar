@@ -323,6 +323,12 @@ pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot
     })
 }
 
+pub fn save_agent_speed_reporting_settings(
+    reporting: crate::models::AgentSpeedReportingSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    mutate_app_settings(|settings| settings.agent_speed_reporting = reporting)
+}
+
 pub(super) fn normalize_user_path(path: &str) -> PathBuf {
     let trimmed = path.trim();
     if trimmed == "~" {
@@ -1424,6 +1430,9 @@ fn read_app_settings_at(path: &Path) -> Result<AppSettingsSnapshot, String> {
         outcome.settings.floating_window.token_rate_full_scale =
             crate::models::DEFAULT_TOKEN_RATE_FULL_SCALE;
         outcome.settings.token_rate_scale_initialized_v092 = true;
+        migrated = true;
+    }
+    if outcome.settings.agent_speed_reporting.ensure_random_username() {
         migrated = true;
     }
     if normalize_sidebar_module_order(&mut outcome.settings) {
@@ -2531,6 +2540,7 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
     settings.session_enhancements =
         sanitize_session_enhancement_settings(settings.session_enhancements);
     settings.auto_resume = sanitize_auto_resume_settings(settings.auto_resume);
+    settings.agent_speed_reporting.ensure_random_username();
     settings
 }
 

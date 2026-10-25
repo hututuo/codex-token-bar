@@ -1,3 +1,4 @@
+@import "../components/settings/agentSpeedReporting.css";
 @import "../components/liveRate/activityRate.css";
 @import "../components/cacheHitRanking/cacheRequests.css";
 
