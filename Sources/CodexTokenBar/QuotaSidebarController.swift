@@ -38,6 +38,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private(set) var detailScrollTarget = "top"
     private(set) var railPanel: QuotaSidebarPanel?
     private(set) var detailPanel: QuotaSidebarPanel?
+    private(set) var settingsPreviewPanel: QuotaSidebarPanel?
     @Published private(set) var edge = QuotaSidebarEdge.right
     @Published private(set) var expandedContentHeight: CGFloat = QuotaSidebarLayout.weeklyExpandedHeight
     private(set) var hasFiveHour = false
@@ -48,7 +49,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     func updateCompactHeight(_ height: CGFloat) {
         guard height.isFinite, height > 0, compactContentHeight != height else { return }
         compactContentHeight = height
-        if !interaction.expanded && !isCollapsing { updateFrames() }
+        if (!interaction.expanded && !isCollapsing) || interaction.detail == .settings { updateFrames() }
     }
 
     // Keep the expanded layout fixed until the native collapse has settled.
@@ -169,6 +170,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var dashboardOpenAction: (() -> Void)?
     private var makeRail: (() -> AnyView)?
     private var makeDetail: (() -> AnyView)?
+    private var makeCompactPreview: (() -> AnyView)?
     private var detailContentMounted = false
     private var cacheAdviceID: String?
     private var lastPresentedCacheAdviceID: String?
@@ -211,6 +213,10 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                 guard let self else { return AnyView(EmptyView()) }
                 return AnyView(QuotaSidebarDetailView(controller: self, store: store, monitor: monitor, quota: quota, tasks: tasks, radar: radar, history: history))
             }
+            makeCompactPreview = { [weak self] in
+                guard let self else { return AnyView(EmptyView()) }
+                return AnyView(QuotaSidebarSettingsRailPreview(controller: self, store: store, quota: quota, tasks: tasks, monitor: monitor).defaultAppStorage(self.settings))
+            }
             railPanel = makePanel(identifier: "CodexTokenBarQuotaSidebar")
             railPanel?.trackPrimaryPress = { [weak self] event in self?.trackPress(event) ?? false }
             detailPanel = makePanel(identifier: "CodexTokenBarQuotaSidebarDetail")
@@ -250,10 +256,11 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         localMonitor = nil; globalMonitor = nil; screenObserver = nil; activationObserver = nil
-        railPanel?.orderOut(nil); detailPanel?.orderOut(nil)
+        railPanel?.orderOut(nil); detailPanel?.orderOut(nil); settingsPreviewPanel?.orderOut(nil)
         railPanel = nil; detailPanel = nil
+        settingsPreviewPanel = nil
         detailContentMounted = false
-        makeRail = nil; makeDetail = nil; frames = nil; screen = nil
+        makeRail = nil; makeDetail = nil; makeCompactPreview = nil; frames = nil; screen = nil
         cacheAdviceID = nil; lastPresentedCacheAdviceID = nil
         interaction.dismiss()
     }
@@ -296,13 +303,14 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     func select(_ detail: QuotaSidebarDetail, section: String = "top") {
         guard !isTrackingPress, !isDragging else { return }
+        let settingsChanged = (interaction.detail == .settings) != (detail == .settings)
         collapseTask?.cancel(); collapseTask = nil
         detailScrollTarget = section
         isCollapsing = false
         interaction.select(detail)
         if detail != .settings { highlightSidebarItem(nil) }
         detailScrollRevision += 1
-        updateFrames()
+        updateFrames(animateDocking: settingsChanged)
     }
 
     func openDashboard() { dashboardOpenAction?() }
@@ -535,10 +543,16 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     private func hideDetail() {
+        hideSettingsPreview()
         if detailPanel?.isVisible == true { detailPanel?.orderOut(nil) }
         // A hidden hosting tree still receives ObservableObject publications.
         // Drop it while closed; opening builds a fresh view from current stores.
         if detailContentMounted { detailPanel?.contentView = nil; detailContentMounted = false }
+    }
+
+    private func hideSettingsPreview() {
+        settingsPreviewPanel?.orderOut(nil)
+        settingsPreviewPanel?.contentView = nil
     }
 
     private func updateFrames(animateDocking: Bool = false) {
@@ -566,10 +580,10 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         heightBudget.update(expanded: interaction.expanded || isCollapsing)
         let expandedTarget = QuotaSidebarFrames.make(usableFrame: screen.visibleFrame, edge: edge,
             expanded: true, scale: screen.backingScaleFactor, hasFiveHour: hasFiveHour,
-            normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight, compactHeight: compactContentHeight)
+            normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight, compactHeight: compactContentHeight, settingsPreview: interaction.detail == .settings)
         let next = QuotaSidebarFrames.make(usableFrame: screen.visibleFrame, edge: edge,
                                           expanded: interaction.expanded, scale: screen.backingScaleFactor,
-                                          hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight, compactHeight: compactContentHeight)
+                                          hasFiveHour: hasFiveHour, normalizedY: placement?.normalizedY ?? 0.5, expandedHeight: heightBudget.targetHeight, compactHeight: compactContentHeight, settingsPreview: interaction.detail == .settings)
         let previous = frames
         // The host keeps a stable canvas for reveal animation, but a weekly-only
         // or short-screen rail clips that canvas. Fit full-panel notices to
@@ -595,7 +609,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             let snap = animateDocking && abs(current.minX - next.rail.minX) <= 160
                 && screen.visibleFrame.intersects(current) && current != next.rail
             let resize = previous != nil
-                && sameEdge && screen.visibleFrame.contains(current)
+                && (sameEdge || previous?.compactPreview != nil || next.compactPreview != nil) && screen.visibleFrame.contains(current)
                 && current.size != next.rail.size
             let canAnimate = railPanel.isVisible && !reducedMotion && (snap || resize)
             if canAnimate {
@@ -674,6 +688,15 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             }
         }
         if !railPanel.isVisible { railPanel.orderFrontRegardless() }
+        if let previewFrame = next.compactPreview, interaction.detail == .settings {
+            if settingsPreviewPanel == nil { settingsPreviewPanel = makePanel(identifier: "CodexTokenBarSettingsCompactPreview") }
+            if settingsPreviewPanel?.contentView == nil {
+                let host = QuotaSidebarHostingView(rootView: makeCompactPreview?()); host.sizingOptions = []
+                settingsPreviewPanel?.contentView = host
+            }
+            if settingsPreviewPanel?.frame != previewFrame { settingsPreviewPanel?.setFrame(previewFrame, display: true, animate: false) }
+            if settingsPreviewPanel?.isVisible != true { settingsPreviewPanel?.orderFrontRegardless() }
+        } else { hideSettingsPreview() }
         if interaction.detail != nil && next.detail.width > 0 {
             if !detailContentMounted {
                 let host = QuotaSidebarHostingView(rootView: makeDetail?())

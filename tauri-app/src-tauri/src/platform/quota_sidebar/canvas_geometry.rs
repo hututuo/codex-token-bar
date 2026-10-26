@@ -1,5 +1,8 @@
-//! Pixel geometry for the 88px Windows sidebar canvas, with a 680px minimum height.
+//! Pixel geometry for the fixed sidebar canvas, with a 680px minimum height.
 use super::{SidebarFrame, SIDEBAR_CANVAS_HEIGHT};
+
+pub(super) const BASE_CANVAS_WIDTH: f64 = 88.0;
+pub(super) const PREVIEW_CANVAS_WIDTH: f64 = 112.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CanvasFrame {
@@ -17,13 +20,18 @@ pub(super) struct CanvasFrame {
 }
 
 pub(super) fn layout(frame: SidebarFrame, left: bool, scale: f64) -> Result<CanvasFrame, String> {
-    layout_with_canvas_height(frame, left, scale, super::canvas_metrics::canvas_height())
+    layout_with_canvas_width_and_height(frame, left, scale, BASE_CANVAS_WIDTH, super::canvas_metrics::canvas_height())
 }
 
 pub(super) fn layout_with_canvas_height(frame: SidebarFrame, left: bool, scale: f64, logical_canvas_height: f64) -> Result<CanvasFrame, String> {
+    layout_with_canvas_width_and_height(frame, left, scale, BASE_CANVAS_WIDTH, logical_canvas_height)
+}
+
+pub(super) fn layout_with_canvas_width_and_height(frame: SidebarFrame, left: bool, scale: f64, logical_canvas_width: f64, logical_canvas_height: f64) -> Result<CanvasFrame, String> {
     if !scale.is_finite() || scale <= 0.0 || scale > 16.0
         || [frame.x, frame.y, frame.width, frame.height].iter()
             .any(|v| !v.is_finite() || v.abs() > (i32::MAX / 2) as f64)
+        || !logical_canvas_width.is_finite() || !(BASE_CANVAS_WIDTH..=PREVIEW_CANVAS_WIDTH).contains(&logical_canvas_width)
         || !logical_canvas_height.is_finite() || !(SIDEBAR_CANVAS_HEIGHT..=4096.0).contains(&logical_canvas_height)
         || frame.width < 1.0 || frame.height < 1.0
     {
@@ -31,7 +39,7 @@ pub(super) fn layout_with_canvas_height(frame: SidebarFrame, left: bool, scale: 
     }
     let width = frame.width.round() as i32;
     let height = frame.height.round() as i32;
-    let canvas_width = (88.0 * scale).round() as i32;
+    let canvas_width = (logical_canvas_width * scale).round() as i32;
     let canvas_height = (logical_canvas_height * scale).round() as i32;
     if height > canvas_height { return Err("Sidebar clip exceeds its fixed canvas".into()); }
     let x = if left { frame.x.round() as i32 } else { (frame.x + frame.width).round() as i32 - width };
@@ -108,6 +116,48 @@ mod tests {
             assert!(f.clip_y >= 0);
             assert!(f.clip_y + f.height <= f.canvas_height);
             assert!((f.clip_y + f.height / 2 - f.canvas_height / 2).abs() <= 1);
+        }
+    }
+
+    #[test]
+    fn settings_preview_canvas_keeps_a_stable_112_point_envelope_and_edge_input_clip() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for left in [true, false] {
+                let width = 112.0 * scale;
+                let edge = -1920.0;
+                let f = layout_with_canvas_width_and_height(SidebarFrame {
+                    x: if left { edge } else { edge - width }, y: 100.0, width, height: 420.0 * scale,
+                }, left, scale, 112.0, SIDEBAR_CANVAS_HEIGHT).unwrap();
+                assert_eq!(f.canvas_width, (112.0 * scale).round() as i32);
+                let canvas_edge = f.canvas_x + if left { 0 } else { f.canvas_width };
+                assert_eq!(canvas_edge, edge as i32);
+                assert_eq!(f.clip_x, 0);
+                assert_eq!((f.canvas_x + f.clip_x, f.canvas_y + f.clip_y), (f.x, f.y));
+
+                // At the end of preview dismissal, the viewport returns to
+                // 88pt while the larger envelope remains available until the
+                // animation reaches its exact terminal frame.
+                let normal_width = 88.0 * scale;
+                let normal = layout_with_canvas_width_and_height(SidebarFrame {
+                    x: if left { edge } else { edge - normal_width }, y: 100.0,
+                    width: normal_width, height: 420.0 * scale,
+                }, left, scale, 112.0, SIDEBAR_CANVAS_HEIGHT).unwrap();
+                assert_eq!(normal.canvas_width, f.canvas_width);
+                assert_eq!(normal.width, (88.0 * scale).round() as i32);
+                assert_eq!(normal.clip_x, if left { 0 } else { (24.0 * scale).round() as i32 });
+            }
+        }
+    }
+
+    #[test]
+    fn preview_canvas_keeps_narrow_input_regions_inside_its_edge_anchored_envelope() {
+        let frame = SidebarFrame { x: 10.0, y: 20.0, width: 80.0, height: 192.0 };
+        for left in [true, false] {
+            let f = layout_with_canvas_width_and_height(frame, left, 1.0, 112.0, SIDEBAR_CANVAS_HEIGHT).unwrap();
+            assert_eq!(f.canvas_width, 112);
+            assert_eq!(f.clip_x, if left { 0 } else { 32 });
+            assert_eq!(f.clip_x + f.width, if left { 80 } else { 112 });
+            assert_eq!(f.canvas_x + f.clip_x, f.x);
         }
     }
 }

@@ -115,7 +115,7 @@ final class ClientQuotaMorphTests: XCTestCase {
             QuotaSidebarMotion.collapseFrame(from: from, to: to, time: seconds / total,
                 edge: .left, area: area, scale: 2).height
         }
-        XCTAssertEqual(total, 0.18)
+        XCTAssertEqual(total, ClientQuotaMorphGeometry.openingDuration)
         XCTAssertEqual(height(total / 2), from.height + (to.height - from.height) * MatchedStrokeMorphTiming.progress(0.5, expanding: false), accuracy: 0.5)
         XCTAssertLessThan(height(total - 0.001) - height(total), 1)
         XCTAssertEqual(height(0), from.height)
@@ -149,7 +149,24 @@ final class ClientQuotaMorphTests: XCTestCase {
         view.update(expanded: true, enabled: true, routes: [route])
         view.update(expanded: false, enabled: true, routes: [route])
         XCTAssertEqual(view.morphLayerCount, 2, "Unknown quota has two unfilled outline halves only")
+        XCTAssertEqual(view.compositingGroupCount, 1, "Both translucent halves must compose once, without doubled seam opacity")
         view.clear()
+        XCTAssertEqual(view.compositingGroupCount, 0)
+    }
+
+    @MainActor func testWholeRingJoinHasNoDoubleOpacity() throws {
+        let view = MatchedStrokeMorphView(frame: CGRect(x: 0, y: 0, width: 88, height: 380))
+        let route = ClientQuotaMorphRoute(id: "outline", ring: ring, track: track, half: 0, fraction: nil, color: .green)
+        view.update(expanded: true, enabled: true, routes: [route])
+        view.update(expanded: false, enabled: true, routes: [route])
+        let bitmap = try XCTUnwrap(CGContext(data: nil, width: 88, height: 380, bitsPerComponent: 8, bytesPerRow: 88 * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        try XCTUnwrap(view.layer).render(in: bitmap)
+        let pixels = try XCTUnwrap(bitmap.data).assumingMemoryBound(to: UInt8.self)
+        let maxAlpha = stride(from: 3, to: 88 * 380 * 4, by: 4).map { pixels[$0] }.max() ?? 0
+        XCTAssertGreaterThan(maxAlpha, 20, "The geometry must actually render")
+        XCTAssertLessThanOrEqual(maxAlpha, 33, "12% outline opacity must not double at the join")
+        view.clear()
+        XCTAssertEqual(view.compositingGroupCount, 0)
     }
 
     @MainActor func testAnimationCompletionReleasesLayersAndPreparationCost() {
@@ -227,7 +244,7 @@ final class ClientQuotaMorphTests: XCTestCase {
             HStack(spacing: 12) {
                 ForEach([0.0, 0.15, 0.35, 0.65, 1.0], id: \.self) { t in
                     VStack(spacing: 6) {
-                        Text("\(Int(t * 180)) ms").font(.system(size: 11)).foregroundStyle(.gray)
+                        Text("\(Int(t * ClientQuotaMorphGeometry.closingDuration * 1000)) ms").font(.system(size: 11)).foregroundStyle(.gray)
                         Canvas { context, _ in
                             let progress = QuotaSidebarMotion.progress(t, expanding: false)
                             for stroke in ClientQuotaMorphGeometry.strokes(routes) {

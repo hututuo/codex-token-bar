@@ -9,7 +9,7 @@ export function sidebarLayoutItems(layout: SidebarLayoutConfig, quotas: readonly
   const clients = new Set(quotas.map(q => q.client));
   return arrangedSidebarItems(layout, [...clients]).filter(id =>
     (id.startsWith("quota:") ? clients.has(id.slice(6)) : true) &&
-    (hasCodex || (id !== "speed" && id !== "models")));
+    (hasCodex || (id !== "speed" && id !== "models" && id !== "tasks")));
 }
 export function visibleSidebarItems(
   layout: SidebarLayoutConfig,

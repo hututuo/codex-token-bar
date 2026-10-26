@@ -3,6 +3,26 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaSidebarItemLayoutTests: XCTestCase {
+    func testSettingsCompareLayoutShowsBothLevelsAndMirrorsWithoutLeavingTheScreen() throws {
+        for area in [CGRect(x: 0, y: 23, width: 1440, height: 877), CGRect(x: -1920, y: -200, width: 1920, height: 1080)] {
+            for edge in [QuotaSidebarEdge.left, .right] {
+                let normal = QuotaSidebarFrames.make(usableFrame: area, edge: edge, expanded: true)
+                let editing = QuotaSidebarFrames.make(usableFrame: area, edge: edge, expanded: true, compactHeight: 366, settingsPreview: true)
+                let compact = try XCTUnwrap(editing.compactPreview)
+                for rect in [compact, editing.rail, editing.detail] { XCTAssertTrue(area.contains(rect)) }
+                XCTAssertEqual(compact.width, 16)
+                XCTAssertEqual(abs(normal.rail.minX - editing.rail.minX), 24)
+                XCTAssertEqual(edge == .left ? compact.maxX + 8 : editing.rail.maxX + 8, edge == .left ? editing.rail.minX : compact.minX)
+                XCTAssertTrue(editing.contains(CGPoint(x: compact.midX, y: compact.midY), detailVisible: true))
+                XCTAssertNil(normal.compactPreview)
+                XCTAssertNil(QuotaSidebarFrames.make(usableFrame: area, edge: edge, expanded: false, settingsPreview: true).compactPreview)
+            }
+        }
+        let tiny = CGRect(x: 0, y: 0, width: 90, height: 180)
+        let narrow = QuotaSidebarFrames.make(usableFrame: tiny, edge: .left, expanded: true, settingsPreview: true)
+        XCTAssertNil(narrow.compactPreview)
+        XCTAssertTrue(tiny.contains(narrow.rail))
+    }
     func testLegacyHiddenItemCanEnableOneLevelWithoutEnablingTheOther() throws {
         let raw = Data(##"{"version":1,"order":["quota:codex"],"hidden":["quota:codex","clientUsage"]}"##.utf8)
         var value = try XCTUnwrap(QuotaSidebarItemLayout.decode(raw))

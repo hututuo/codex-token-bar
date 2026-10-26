@@ -4,7 +4,8 @@ use objc2_app_kit::{NSAutoresizingMaskOptions, NSColor, NSView, NSWindow, NSUser
 use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSEdgeInsets, NSPoint, NSRect, NSSize, NSString};
 
 const CANVAS_ID: &str = "quota-sidebar-canvas";
-const WIDTH: f64 = 88.0;
+const MIN_CANVAS_WIDTH: f64 = 88.0;
+const MAX_CANVAS_WIDTH: f64 = 112.0;
 
 fn webview(view: &NSView) -> Option<Retained<NSView>> {
     for child in view.subviews().iter() {
@@ -30,7 +31,10 @@ fn configure_insets(web: &NSView) {
     }
 }
 
-pub(super) fn set_frame(native: &NSWindow, rect: NSRect) -> Result<(), String> {
+pub(super) fn set_frame(native: &NSWindow, rect: NSRect, canvas_width: f64) -> Result<(), String> {
+    if !canvas_width.is_finite() || !(MIN_CANVAS_WIDTH..=MAX_CANVAS_WIDTH).contains(&canvas_width) {
+        return Err("Invalid sidebar canvas width".into());
+    }
     let height = super::canvas_metrics::canvas_height();
     let content = native.contentView().ok_or("Sidebar has no content view")?;
     let canvas = if let Some(canvas) = content.subviews().iter()
@@ -39,13 +43,13 @@ pub(super) fn set_frame(native: &NSWindow, rect: NSRect) -> Result<(), String> {
     } else {
         let web = webview(&content).ok_or("Sidebar webview unavailable")?;
         let mtm = MainThreadMarker::new().ok_or("Sidebar layout requires the main thread")?;
-        let canvas = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, height)));
+        let canvas = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::ZERO, NSSize::new(canvas_width, height)));
         canvas.setIdentifier(Some(&NSString::from_str(CANVAS_ID)));
         canvas.setAutoresizingMask(NSAutoresizingMaskOptions::empty());
         canvas.setWantsLayer(true);
         web.removeFromSuperview();
         web.setAutoresizingMask(NSAutoresizingMaskOptions::empty());
-        web.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, height)));
+        web.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(canvas_width, height)));
         configure_insets(&web);
         canvas.addSubview(&web);
         content.addSubview(&canvas);
@@ -54,10 +58,10 @@ pub(super) fn set_frame(native: &NSWindow, rect: NSRect) -> Result<(), String> {
     // Canvas height changes only when a new requested target exceeds its
     // current allocation. Keep it stable for all samples in that animation.
     let canvas_size = canvas.frame().size;
-    if canvas_size.width != WIDTH || canvas_size.height != height {
-        canvas.setFrameSize(NSSize::new(WIDTH, height));
+    if canvas_size.width != canvas_width || canvas_size.height != height {
+        canvas.setFrameSize(NSSize::new(canvas_width, height));
         if let Some(web) = webview(&canvas) {
-            web.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, height)));
+            web.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(canvas_width, height)));
         }
     }
     let left = native.screen().is_some_and(|screen| (rect.origin.x - screen.visibleFrame().origin.x).abs() < 1.0);
@@ -72,7 +76,7 @@ pub(super) fn set_frame(native: &NSWindow, rect: NSRect) -> Result<(), String> {
     // AppKit rounds native frames to display pixels. Anchor the canvas to the
     // accepted content bounds, not the unrounded requested animation sample.
     let size = content.bounds().size;
-    canvas.setFrameOrigin(NSPoint::new(if left { 0.0 } else { size.width - WIDTH }, (size.height - height) / 2.0));
+    canvas.setFrameOrigin(NSPoint::new(if left { 0.0 } else { size.width - canvas_width }, (size.height - height) / 2.0));
     unsafe {
         let layer: *mut objc2::runtime::AnyObject = objc2::msg_send![&*content, layer];
         let color = NSColor::colorWithSRGBRed_green_blue_alpha(0.031, 0.039, 0.035, 1.0);

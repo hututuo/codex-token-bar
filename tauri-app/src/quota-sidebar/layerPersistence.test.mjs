@@ -25,3 +25,18 @@ test('both positioning layers persist; an initially hidden summary has no mounte
     } finally {dom.close();}
   });
 });
+
+test('only sidebar settings expose compact and expanded content at once',async()=>{
+ await withSsrModules(async load=>{
+  const{SidebarRailContent}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
+  const data={snapshot:{fiveHourAvailability:'absent',fiveHourRemainingPercent:null,sevenDayAvailability:'measured',sevenDayRemainingPercent:.72},runningThreads:{total:3,status:'ready'}};
+  const dom=new Window();
+  try{
+   for(const tab of ['settings','quota']){
+    dom.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data,state:{mode:'detail',tab},onOpen(){}}));
+    assert.equal(dom.document.querySelector('.qs-bars').dataset.visible,String(tab==='settings'));
+    assert.equal(dom.document.querySelector('.qs-summary').dataset.visible,'true');
+   }
+  }finally{dom.close();}
+ });
+});

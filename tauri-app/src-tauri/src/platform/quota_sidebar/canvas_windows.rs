@@ -1,7 +1,7 @@
 //! Keep the HWND and WebView2 canvas stable while the window region animates.
 //! The canvas grows once before a larger target, never once per frame.
 //! Called on Tauri's UI thread, including during drag and reduced-motion jumps.
-use super::{canvas_geometry::{layout, CanvasFrame}, SidebarFrame};
+use super::{canvas_geometry::CanvasFrame, SidebarFrame};
 use tauri::{Emitter, WebviewWindow};
 use windows_sys::Win32::{
     Foundation::{HWND, RECT},
@@ -67,8 +67,9 @@ pub(super) fn window_frame(window: &WebviewWindow) -> Result<SidebarFrame, Strin
         width: (region.right - region.left) as f64, height: (region.bottom - region.top) as f64 })
 }
 
-pub(super) fn set_frame(window: &WebviewWindow, frame: SidebarFrame, left: bool, scale: f64) -> Result<(), String> {
-    let f = layout(frame, left, scale)?;
+pub(super) fn set_frame(window: &WebviewWindow, frame: SidebarFrame, left: bool, scale: f64, canvas_width: f64) -> Result<(), String> {
+    let f = super::canvas_geometry::layout_with_canvas_width_and_height(
+        frame, left, scale, canvas_width, super::canvas_metrics::canvas_height())?;
     let outer = window.hwnd().map_err(|e| e.to_string())?;
     if unsafe { GetWindowThreadProcessId(outer.0, std::ptr::null_mut()) } != unsafe { GetCurrentThreadId() } {
         return Err("Sidebar canvas requires the UI thread".into());

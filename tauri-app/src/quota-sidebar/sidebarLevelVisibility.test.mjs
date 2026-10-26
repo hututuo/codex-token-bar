@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
+test("Claude-only scope never borrows Codex task counts or live speed",async()=>{
+ await withSsrModules(async load=>{
+  const{normalizeSidebarLayout}=await load('/src/quota-sidebar/sidebarLayoutModel.ts');
+  const{sidebarLayoutItems}=await load('/src/quota-sidebar/sidebarLayoutPresentation.ts');
+  const quota={id:'claudeCode:5h',client:'claudeCode',window:'5h',remaining:62};
+  const config=normalizeSidebarLayout(null);
+  const claude=sidebarLayoutItems(config,[quota],false);
+  for(const id of ['tasks','speed','models'])assert.equal(claude.includes(id),false,id);
+  assert.equal(claude.includes('quota:claudeCode'),true);
+  const combined=sidebarLayoutItems(config,[quota],true);
+  assert.equal(combined.includes('tasks'),true);
+ });
+});
+
 test("compact and expanded projections apply their own hidden lists plus master hidden", async () => {
   await withSsrModules(async load => {
     const { normalizeSidebarLayout } = await load("/src/quota-sidebar/sidebarLayoutModel.ts");

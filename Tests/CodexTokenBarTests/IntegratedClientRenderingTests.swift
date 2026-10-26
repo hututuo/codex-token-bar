@@ -130,18 +130,22 @@ final class IntegratedClientRenderingTests: XCTestCase {
         controller.select(.settings)
         controller.highlightSidebarItem(.quota("claudeCode"))
         let root = VStack(alignment: .leading, spacing: 14) {
-            Text("候选原生组件渲染 · 模拟额度 · 二级菜单与三级设置").font(.system(size: 11)).foregroundStyle(.secondary)
+            Text("候选原生组件渲染 · 模拟额度 · 设置时一二级同时对照").font(.system(size: 11)).foregroundStyle(.secondary)
             HStack(alignment: .center, spacing: 12) {
-                QuotaSidebarRail(controller: controller, store: store, quota: quota, tasks: tasks, radar: radar, monitor: monitor, quotaItemsOverride: fixtures)
-                    .frame(width: 88, height: 640)
+                HStack(spacing: 8) {
+                    QuotaSidebarSettingsRailPreview(controller: controller, store: store, quota: quota, tasks: tasks, monitor: monitor, quotaItemsOverride: fixtures)
+                        .frame(width: 16, height: 366)
+                    QuotaSidebarRail(controller: controller, store: store, quota: quota, tasks: tasks, radar: radar, monitor: monitor, quotaItemsOverride: fixtures)
+                        .frame(width: 88, height: 640)
+                }
                 QuotaSidebarDetailView(controller: controller, store: store, monitor: monitor, quota: quota, tasks: tasks, radar: radar, history: history, quotaItemsOverride: fixtures)
                     .frame(width: 420, height: 620)
             }
-        }.padding(20).frame(width: 560, height: 710, alignment: .topLeading)
+        }.padding(20).frame(width: 584, height: 710, alignment: .topLeading)
             .background(Color(white: 0.08)).foregroundStyle(.white)
             .environment(\.colorScheme, .dark).defaultAppStorage(defaults)
         let host = NSHostingView(rootView: root)
-        host.frame = CGRect(x: 0, y: 0, width: 560, height: 710)
+        host.frame = CGRect(x: 0, y: 0, width: 584, height: 710)
         host.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: bitmap)

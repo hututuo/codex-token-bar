@@ -82,11 +82,13 @@ enum QuotaSidebarLayout {
 struct QuotaSidebarFrames: Equatable {
     let rail: CGRect
     let detail: CGRect
+    var compactPreview: CGRect? = nil
 
     // Cocoa points already account for display scaling; round to physical pixels.
     static func make(usableFrame: CGRect, edge: QuotaSidebarEdge,
                      expanded: Bool, scale: CGFloat = 1, hasFiveHour: Bool = true,
-                     normalizedY: Double = 0.5, expandedHeight: CGFloat? = nil, compactHeight: CGFloat? = nil) -> Self {
+                     normalizedY: Double = 0.5, expandedHeight: CGFloat? = nil, compactHeight: CGFloat? = nil,
+                     settingsPreview: Bool = false) -> Self {
         let safeScale = scale.isFinite && scale > 0 ? scale : 1
         let source = usableFrame.standardized
         // Stay inside the usable display even when its origin is fractional.
@@ -101,7 +103,8 @@ struct QuotaSidebarFrames: Equatable {
         let compact = compactHeight.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? contentHeight
         let railHeight = min(expanded ? (measuredHeight ?? contentHeight) : compact, area.height)
         let gap = min(12.0, max(0, area.width - railWidth))
-        let detailWidth = min(420.0, max(0, area.width - railWidth - gap))
+        let previewInset = expanded && settingsPreview ? min(24.0, max(0, area.width - railWidth - gap)) : 0
+        let detailWidth = min(420.0, max(0, area.width - railWidth - gap - previewInset))
         let detailHeight = min(600.0, area.height)
         func snap(_ n: CGFloat) -> CGFloat { (n * safeScale).rounded() / safeScale }
         let fraction = normalizedY.isFinite ? min(1, max(0, normalizedY)) : 0.5
@@ -112,14 +115,19 @@ struct QuotaSidebarFrames: Equatable {
                    width: max(0, floor(width * safeScale) / safeScale),
                    height: max(0, floor(height * safeScale) / safeScale))
         }
-        let railX = edge == .left ? area.minX : area.maxX - railWidth
+        let railX = edge == .left ? area.minX + previewInset : area.maxX - railWidth - previewInset
         let detailX = edge == .left ? railX + railWidth + gap : railX - gap - detailWidth
         return Self(rail: rect(x: railX, width: railWidth, height: railHeight),
-                    detail: rect(x: detailX, width: detailWidth, height: detailHeight))
+                    detail: rect(x: detailX, width: detailWidth, height: detailHeight),
+                    compactPreview: previewInset >= 16 ? rect(x: edge == .left ? area.minX : area.maxX - 16, width: 16, height: min(compactHeight ?? 192, area.height)) : nil)
     }
 
     func contains(_ point: CGPoint, detailVisible: Bool) -> Bool {
         if rail.contains(point) { return true }
+        if detailVisible, let compactPreview {
+            if compactPreview.contains(point) { return true }
+            if compactPreview.union(rail).contains(point), point.y >= max(compactPreview.minY, rail.minY), point.y <= min(compactPreview.maxY, rail.maxY) { return true }
+        }
         guard detailVisible else { return false }
         if detail.contains(point) { return true }
         // Only bridge the physical gap alongside both surfaces; no giant
@@ -243,7 +251,7 @@ enum QuotaSidebarMotion {
         MatchedStrokeMorphTiming.progress(time, expanding: expanding)
     }
 
-    /// Width, height and matched strokes share one 180ms ease-out.
+    /// Width, height and matched strokes share the same closing duration.
     static func collapseFrame(from: CGRect, to: CGRect, time: Double,
                               edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
         frame(from: from, to: to, time: time, expanding: false, edge: edge, area: area, scale: scale)
@@ -274,7 +282,8 @@ enum QuotaSidebarMotion {
         let height = size(from.height, to.height, limit: top - bottom)
         let center = from.midY + (to.midY - from.midY) * p
         let y = min(max(bottom, ((center - height / 2) * safeScale).rounded() / safeScale), top - height)
-        return CGRect(x: edge == .left ? left : right - width,
+        let movingEdge = edge == .left ? from.minX + (to.minX - from.minX) * p : from.maxX + (to.maxX - from.maxX) * p - width
+        return CGRect(x: min(max(left, movingEdge), right - width),
                       y: (y * safeScale).rounded() / safeScale, width: width, height: height)
     }
 }

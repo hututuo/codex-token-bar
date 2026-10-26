@@ -7,7 +7,7 @@ use std::{path::PathBuf, sync::Mutex};
 struct Position { screen: String, center_y: f64 }
 struct Placement { loaded: bool, position: Option<Position> }
 static PLACEMENT: Mutex<Placement> = Mutex::new(Placement { loaded: false, position: None });
-struct Drag { size: (f64, f64), press: (f64, f64), anchor: (f64, f64), started: bool, mode: SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>, prior_side: String }
+struct Drag { size: (f64, f64), press: (f64, f64), anchor: (f64, f64), started: bool, mode: SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>, canvas_width: f64, prior_side: String }
 static DRAG: Mutex<Option<Drag>> = Mutex::new(None);
 #[derive(Clone)]
 struct Screen { id: String, work: SidebarFrame, scale: f64 }
@@ -58,13 +58,13 @@ fn passed_threshold(press: (f64, f64), pointer: (f64, f64), scale: f64) -> bool 
     (pointer.0 - press.0).hypot(pointer.1 - press.1) >= 4.0 * scale
 }
 fn screen_frames(screen: &Screen, side: &str, mode: SidebarMode, five: bool, expanded_height: f64, center: f64) -> (SidebarFrame, SidebarFrame) {
-    screen_frames_with_compact(screen, side, mode, five, expanded_height, None, center)
+    screen_frames_with_compact(screen, side, mode, five, expanded_height, None, false, center)
 }
-fn screen_frames_with_compact(screen: &Screen, side: &str, mode: SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>, center: f64) -> (SidebarFrame, SidebarFrame) {
+fn screen_frames_with_compact(screen: &Screen, side: &str, mode: SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>, settings_preview: bool, center: f64) -> (SidebarFrame, SidebarFrame) {
     let scale = screen.scale;
     let work = SidebarFrame { x: screen.work.x / scale, y: screen.work.y / scale,
         width: screen.work.width / scale, height: screen.work.height / scale };
-    let (rail, detail) = super::frames_for_at_height_with_compact(work, side, mode, five, expanded_height, compact_height, center);
+    let (rail, detail) = super::frames_for_at_height_with_preview(work, side, mode, five, expanded_height, compact_height, settings_preview, center);
     let physical = |f: SidebarFrame| SidebarFrame { x: f.x * scale, y: f.y * scale, width: f.width * scale, height: f.height * scale };
     (physical(rail), physical(detail))
 }
@@ -79,9 +79,9 @@ fn clamp_expanded_height(screen: &Screen, requested: f64) -> Result<f64, String>
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Geometry {
     pub screen_id: String, pub work: SidebarFrame, pub scale: f64, pub center: f64, pub expanded_height: f64, pub compact_height: f64,
-    pub side: String, pub rail: SidebarFrame, pub card: SidebarFrame,
+    pub canvas_width: f64, pub side: String, pub rail: SidebarFrame, pub card: SidebarFrame,
 }
-pub(super) fn geometry(rail: &WebviewWindow, side: &str, mode: SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>) -> Result<Geometry, String> {
+pub(super) fn geometry(rail: &WebviewWindow, side: &str, mode: SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>, settings_preview: bool) -> Result<Geometry, String> {
     let saved = position(rail.app_handle())?;
     let screens = screens(rail)?;
     let current = window_frame(rail)?;
@@ -92,24 +92,27 @@ pub(super) fn geometry(rail: &WebviewWindow, side: &str, mode: SidebarMode, five
     let expanded_height = clamp_expanded_height(screen, expanded_height)?;
     let requested_compact_height = compact_height.unwrap_or_else(|| super::default_compact_height(five));
     let compact_height = requested_compact_height.min(screen.work.height / screen.scale);
-    let (frame, card) = screen_frames_with_compact(screen, side, mode, five, expanded_height, Some(compact_height), center);
+    let (frame, card) = screen_frames_with_compact(screen, side, mode, five, expanded_height, Some(compact_height), settings_preview, center);
     super::canvas_metrics::ensure_canvas_height(expanded_height.max(compact_height))?;
     // Send canvas sizing first so the WebView's logical content can grow before
     // the native clip starts revealing the expanded frame. Replaying this pair
     // on every intent/refresh also covers listeners attached after setup.
     super::canvas_metrics::publish_canvas_height(rail)?;
     rail.emit("quota-sidebar-expanded-height-changed", expanded_height).map_err(|error| error.to_string())?;
+    let canvas_width = if mode == SidebarMode::Detail && settings_preview {
+        super::canvas_geometry::PREVIEW_CANVAS_WIDTH
+    } else { super::canvas_geometry::BASE_CANVAS_WIDTH };
     Ok(Geometry { screen_id: screen.id.clone(), work: screen.work, scale: screen.scale,
-        center: screen.work.y + screen.work.height * center, expanded_height, compact_height, side: side.into(), rail: frame, card })
+        center: screen.work.y + screen.work.height * center, expanded_height, compact_height, canvas_width, side: side.into(), rail: frame, card })
 }
-pub(super) fn apply_frames(rail: &WebviewWindow, detail: &WebviewWindow, side: &str, mode: SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>) -> Result<SidebarFrame, String> {
+pub(super) fn apply_frames(rail: &WebviewWindow, detail: &WebviewWindow, side: &str, mode: SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>, settings_preview: bool) -> Result<SidebarFrame, String> {
     if is_dragging() {
-        let _ = geometry(rail, side, mode, five, expanded_height, compact_height)?;
+        let _ = geometry(rail, side, mode, five, expanded_height, compact_height, settings_preview)?;
         return window_frame(rail);
     }
     super::motion::cancel();
-    let target = geometry(rail, side, mode, five, expanded_height, compact_height)?;
-    set_rail_frame(rail, target.rail, &target.side, target.scale)?; set_frame(detail, target.card)?;
+    let target = geometry(rail, side, mode, five, expanded_height, compact_height, settings_preview)?;
+    set_rail_frame(rail, target.rail, &target.side, target.scale, target.canvas_width)?; set_frame(detail, target.card)?;
     Ok(target.rail)
 }
 
@@ -117,15 +120,21 @@ fn begin(rail: &WebviewWindow) -> Result<(), String> {
     let mut active = DRAG.lock().map_err(|e| e.to_string())?;
     if active.is_some() { return Err("Quota sidebar drag already active".into()); }
     let state = STATE.lock().map_err(|e| e.to_string())?;
-    let (display, mode, five, expanded_height, compact_height) = state.as_ref().ok_or("Quota sidebar not configured")?;
+    let (display, mode, five, expanded_height, compact_height, settings_preview) = state.as_ref().ok_or("Quota sidebar not configured")?;
     if !display.quota_sidebar_enabled { return Err("Quota sidebar is disabled".into()); }
     let (x, y, pressed) = pointer(rail)?;
     if !pressed { return Ok(()); }
     super::motion::cancel(); // Freeze the actual in-between native frame before arming.
-    let _ = window_frame(rail)?;
+    let current_frame = window_frame(rail)?;
+    let current_scale = nearest_screen(&screens(rail)?, (current_frame.x + current_frame.width / 2.0, current_frame.y + current_frame.height / 2.0))
+        .map(|screen| screen.scale).unwrap_or(1.0);
+    let target_canvas_width = if *mode == SidebarMode::Detail && *settings_preview {
+        super::canvas_geometry::PREVIEW_CANVAS_WIDTH
+    } else { super::canvas_geometry::BASE_CANVAS_WIDTH };
+    let canvas_width = target_canvas_width.max(current_frame.width / current_scale).min(super::canvas_geometry::PREVIEW_CANVAS_WIDTH);
     *active = Some(Drag { size: (0.0, 0.0), press: (x, y), anchor: (0.0, 0.0), started: false,
         mode: if *mode == SidebarMode::Detail { SidebarMode::Hover } else { *mode }, five: *five, expanded_height: *expanded_height, compact_height: *compact_height,
-        prior_side: display.quota_sidebar_side.clone() });
+        canvas_width, prior_side: display.quota_sidebar_side.clone() });
     Ok(())
 }
 struct Finished { position: Position, side: String, prior_side: String }
@@ -133,10 +142,14 @@ fn step(rail: &WebviewWindow) -> Result<(bool, Option<Finished>), String> {
     let mut active = DRAG.lock().map_err(|e| e.to_string())?;
     let Some(drag) = active.as_mut() else { return Ok((true, None)); };
     let mut state = STATE.lock().map_err(|e| e.to_string())?;
-    let Some((display, mode, five, expanded_height, compact_height)) = state.as_mut() else { *active = None; return Ok((true, None)); };
+    let Some((display, mode, five, expanded_height, compact_height, settings_preview)) = state.as_mut() else { *active = None; return Ok((true, None)); };
     drag.five = *five;
     drag.expanded_height = *expanded_height;
     drag.compact_height = *compact_height;
+    let target_canvas_width = if *mode == SidebarMode::Detail && *settings_preview {
+        super::canvas_geometry::PREVIEW_CANVAS_WIDTH
+    } else { super::canvas_geometry::BASE_CANVAS_WIDTH };
+    drag.canvas_width = target_canvas_width.max(drag.size.0).min(super::canvas_geometry::PREVIEW_CANVAS_WIDTH);
     if !display.quota_sidebar_enabled || !rail.is_visible().map_err(|e| e.to_string())? { *active = None; return Ok((true, None)); }
     let (x, y, pressed) = pointer(rail)?;
     let screens = screens(rail)?;
@@ -148,23 +161,24 @@ fn step(rail: &WebviewWindow) -> Result<(bool, Option<Finished>), String> {
         let frame = window_frame(rail)?;
         let original_scale = nearest_screen(&screens, (frame.x + frame.width / 2.0, frame.y + frame.height / 2.0)).map(|s| s.scale).unwrap_or(screen.scale);
         drag.size = (frame.width / original_scale, frame.height / original_scale);
+        drag.canvas_width = target_canvas_width.max(drag.size.0).min(super::canvas_geometry::PREVIEW_CANVAS_WIDTH);
         drag.anchor = ((x - frame.x) / frame.width.max(1.0), (y - frame.y) / frame.height.max(1.0));
         drag.started = true; *mode = drag.mode;
         if let Some(detail) = rail.app_handle().get_webview_window(DETAIL) { detail.hide().map_err(|e| e.to_string())?; }
         rail.emit("quota-sidebar-drag-started", ()).map_err(|e| e.to_string())?;
     }
-    let (mut frame, _) = screen_frames_with_compact(screen, &display.quota_sidebar_side, drag.mode, drag.five, drag.expanded_height, drag.compact_height, 0.5);
+    let (mut frame, _) = screen_frames_with_compact(screen, &display.quota_sidebar_side, drag.mode, drag.five, drag.expanded_height, drag.compact_height, false, 0.5);
     frame.width = (drag.size.0 * screen.scale).clamp(1.0, screen.work.width.max(1.0));
     frame.height = (drag.size.1 * screen.scale).clamp(1.0, screen.work.height.max(1.0));
     frame.x = x - drag.anchor.0 * frame.width; frame.y = y - drag.anchor.1 * frame.height;
-    set_rail_frame(rail, frame, &display.quota_sidebar_side, screen.scale)?;
+    set_rail_frame(rail, frame, &display.quota_sidebar_side, screen.scale, drag.canvas_width)?;
     if pressed { return Ok((false, None)); }
     let side = snap_side(screen.work, x).to_string();
     let saved = Position { screen: screen.id.clone(), center_y: normalized_center(frame, screen.work) };
     let expanded_height = clamp_expanded_height(screen, drag.expanded_height)?;
     let requested_compact_height = drag.compact_height.unwrap_or_else(|| super::default_compact_height(drag.five));
     let compact_height = requested_compact_height.min(screen.work.height / screen.scale);
-    let (snapped, detail_frame) = screen_frames_with_compact(screen, &side, drag.mode, drag.five, expanded_height, Some(compact_height), saved.center_y);
+    let (snapped, detail_frame) = screen_frames_with_compact(screen, &side, drag.mode, drag.five, expanded_height, Some(compact_height), false, saved.center_y);
     super::canvas_metrics::ensure_canvas_height(expanded_height.max(compact_height))?;
     super::canvas_metrics::publish_canvas_height(rail)?;
     rail.emit("quota-sidebar-expanded-height-changed", expanded_height).map_err(|error| error.to_string())?;
@@ -176,6 +190,7 @@ fn step(rail: &WebviewWindow) -> Result<(bool, Option<Finished>), String> {
     *active = None;
     super::motion::snap(rail, Geometry { screen_id: screen.id.clone(), work: screen.work,
         scale: screen.scale, center: screen.work.y + screen.work.height * finished.position.center_y, expanded_height, compact_height,
+        canvas_width: super::canvas_geometry::BASE_CANVAS_WIDTH,
         side: finished.side.clone(), rail: snapped, card: detail_frame })?;
     Ok((true, Some(finished)))
 }
@@ -204,7 +219,7 @@ pub(super) async fn drag(rail: WebviewWindow) -> Result<bool, String> {
             // Broadcast the current native configuration without showing or resizing.
             let native = rail.clone();
             on_main(&rail, move || {
-                if let Some((current, _, _, _, _)) = STATE.lock().map_err(|e| e.to_string())?.as_ref() {
+                if let Some((current, _, _, _, _, _)) = STATE.lock().map_err(|e| e.to_string())?.as_ref() {
                     native.app_handle().emit("display-surfaces-changed", current).map_err(|e| e.to_string())?;
                     native.emit("quota-sidebar-settings-changed", current).map_err(|e| e.to_string())?;
                 }
@@ -272,19 +287,25 @@ pub(super) fn window_frame(window: &WebviewWindow) -> Result<SidebarFrame, Strin
 }
 #[cfg(target_os = "macos")]
 pub(super) fn set_frame(window: &WebviewWindow, frame: SidebarFrame) -> Result<(), String> {
+    set_frame_with_canvas_width(window, frame, super::canvas_geometry::BASE_CANVAS_WIDTH)
+}
+#[cfg(target_os = "macos")]
+fn set_frame_with_canvas_width(window: &WebviewWindow, frame: SidebarFrame, canvas_width: f64) -> Result<(), String> {
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     let native = unsafe { &*window.ns_window().map_err(|e| e.to_string())?.cast::<objc2_app_kit::NSWindow>() };
     let rect = NSRect::new(NSPoint::new(frame.x, frame.y), NSSize::new(frame.width, frame.height));
     if window.label() == super::LABEL {
-        super::canvas_macos::set_frame(native, rect)?;
+        super::canvas_macos::set_frame(native, rect, canvas_width)?;
     } else if native.frame() != rect { native.setFrame_display(rect, true); }
     Ok(())
 }
-pub(super) fn set_rail_frame(window: &WebviewWindow, frame: SidebarFrame, side: &str, scale: f64) -> Result<(), String> {
+pub(super) fn set_rail_frame(window: &WebviewWindow, frame: SidebarFrame, side: &str, scale: f64, canvas_width: f64) -> Result<(), String> {
     #[cfg(windows)]
-    { super::canvas_windows::set_frame(window, frame, side == "left", scale) }
-    #[cfg(not(windows))]
-    { let _ = (side, scale); set_frame(window, frame) }
+    { super::canvas_windows::set_frame(window, frame, side == "left", scale, canvas_width) }
+    #[cfg(target_os = "macos")]
+    { let _ = (side, scale); set_frame_with_canvas_width(window, frame, canvas_width) }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    { let _ = (side, scale, canvas_width); set_frame(window, frame) }
 }
 #[cfg(windows)]
 pub(super) fn set_frame(window: &WebviewWindow, frame: SidebarFrame) -> Result<(), String> {
@@ -385,11 +406,11 @@ mod tests {
         let short = screen("short", 0.0, 0.0, 1440.0, 400.0, 1.0);
 
         let (on_retina, _) = screen_frames_with_compact(&retina, "right", SidebarMode::Rest, true,
-            super::default_expanded_height(true), requested, 0.5);
+            super::default_expanded_height(true), requested, false, 0.5);
         let (on_short, _) = screen_frames_with_compact(&short, "right", SidebarMode::Rest, true,
-            super::default_expanded_height(true), requested, 0.5);
+            super::default_expanded_height(true), requested, false, 0.5);
         let (back_on_retina, _) = screen_frames_with_compact(&retina, "right", SidebarMode::Rest, true,
-            super::default_expanded_height(true), requested, 0.5);
+            super::default_expanded_height(true), requested, false, 0.5);
 
         assert_eq!(on_retina.height, 1040.0);
         assert_eq!(on_short.height, 400.0);

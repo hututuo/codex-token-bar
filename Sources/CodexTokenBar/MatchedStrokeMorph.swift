@@ -18,11 +18,12 @@ struct MatchedStrokeMorphRoute {
     let expanded: MatchedStrokeMorphEndpoint
     let collapsed: MatchedStrokeMorphEndpoint
     let color: NSColor
+    var opacityGroup: String? = nil
 }
 
 struct MatchedStrokeMorphTiming {
     var openingDuration = 0.44
-    var closingDuration = 0.18
+    var closingDuration = 0.44
     static let standard = Self()
     static func progress(_ t: Double, expanding: Bool) -> Double {
         guard t > 0 else { return 0 }
@@ -157,13 +158,16 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
     private let owner = UUID()
     private weak var registry: MatchedStrokeMorphRegistry?
     private var shapes: [String: CAShapeLayer] = [:]
+    private var opacityGroups: [String: CALayer] = [:]
+    private var shapeGroups: [String: String] = [:]
     private var startingStates: [String: MatchedStrokeMorphEndpoint] = [:]
     private var completion: MatchedStrokeMorphCompletion?
     private var cleanupTask: Task<Void, Never>?
     private(set) var availableRouteCount = 0
     private(set) var animationsStarted = 0
     private(set) var lastPreparationMilliseconds = 0.0
-    var morphLayerCount: Int { layer?.sublayers?.count ?? 0 }
+    var morphLayerCount: Int { shapes.count }
+    var compositingGroupCount: Int { opacityGroups.count }
     var isAnimating: Bool { layer?.animation(forKey: "morph-completion") != nil }
     var coveredParticipantViewCount: Int { registry?.coveredViewCount ?? 0 }
     override init(frame: NSRect) { super.init(frame: frame); wantsLayer = true; layer?.isGeometryFlipped = true }
@@ -177,6 +181,8 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
         registry?.cover([], owner: owner)
         layer?.removeAllAnimations()
         shapes.values.forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
+        opacityGroups.values.forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
+        opacityGroups.removeAll(); shapeGroups.removeAll()
         shapes.removeAll(); startingStates.removeAll(); completion = nil
         CATransaction.commit()
     }
@@ -194,7 +200,8 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
         let snapshots = shapes.reduce(into: [String: MatchedStrokeMorphEndpoint]()) { result, entry in
             let (id, shape) = entry
             if let p = shape.presentation(), let points = MatchedStrokeMorphGeometry.vertices(p.path) {
-                result[id] = MatchedStrokeMorphEndpoint(points: points, start: p.strokeStart, end: p.strokeEnd, width: p.lineWidth, opacity: p.opacity)
+                let groupOpacity = shapeGroups[id].flatMap { opacityGroups[$0]?.presentation()?.opacity ?? startingStates[id]?.opacity } ?? 1
+                result[id] = MatchedStrokeMorphEndpoint(points: points, start: p.strokeStart, end: p.strokeEnd, width: p.lineWidth, opacity: p.opacity * groupOpacity)
             } else if shape.animation(forKey: "matched-stroke") != nil, let source = startingStates[id] {
                 result[id] = source
             } else if let points = MatchedStrokeMorphGeometry.vertices(shape.path) {
@@ -256,9 +263,22 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
             }
             let group = CAAnimationGroup()
             group.animations = [path, values("strokeStart", style.0, to.start), values("strokeEnd", style.1, to.end),
-                                values("lineWidth", style.2, to.width), values("opacity", Double(style.3), Double(to.opacity))]
+                                values("lineWidth", style.2, to.width)]
             group.duration = duration
-            layer.addSublayer(shape); shapes[route.id] = shape
+            if let key = route.opacityGroup {
+                let container: CALayer
+                if let existing = opacityGroups[key] { container = existing }
+                else {
+                    container = CALayer(); container.frame = layer.bounds; container.opacity = to.opacity; container.allowsGroupOpacity = true
+                    layer.addSublayer(container); opacityGroups[key] = container
+                    container.add(values("opacity", Double(style.3), Double(to.opacity)), forKey: "matched-opacity")
+                }
+                shape.opacity = 1; container.addSublayer(shape); shapeGroups[route.id] = key
+            } else {
+                group.animations?.append(values("opacity", Double(style.3), Double(to.opacity)))
+                layer.addSublayer(shape)
+            }
+            shapes[route.id] = shape
             shape.add(group, forKey: "matched-stroke")
         }
         let completion = MatchedStrokeMorphCompletion { [weak self] in

@@ -76,7 +76,8 @@ enum ClientQuotaMorphGeometry {
                 if route.expandedTrackOpacity > 0 || route.collapsedTrackOpacity > 0 {
                     strokes.append(MatchedStrokeMorphRoute(id: prefix + ":track", participantID: route.id,
                         expanded: .init(points: expandedPoints, width: 3, opacity: route.expandedTrackOpacity),
-                        collapsed: .init(points: collapsedPoints, width: 4, opacity: route.collapsedTrackOpacity), color: .white))
+                        collapsed: .init(points: collapsedPoints, width: 4, opacity: route.collapsedTrackOpacity), color: .white,
+                        opacityGroup: route.half == 0 ? route.id + ":track" : nil))
                 }
                 let q = min(1, max(0, route.fraction ?? 0))
                 guard q > 0 else { return strokes }
@@ -89,7 +90,8 @@ enum ClientQuotaMorphGeometry {
                     if !route.segments.isEmpty && expanded.0 == expanded.1 && collapsed.0 == collapsed.1 { continue }
                     strokes.append(MatchedStrokeMorphRoute(id: prefix + ":" + segment.id, participantID: route.id,
                         expanded: .init(points: expandedPoints, start: expanded.0, end: expanded.1, width: 3, opacity: route.fillOpacity),
-                        collapsed: .init(points: collapsedPoints, start: collapsed.0, end: collapsed.1, width: 4, opacity: route.fillOpacity), color: segment.color))
+                        collapsed: .init(points: collapsedPoints, start: collapsed.0, end: collapsed.1, width: 4, opacity: route.fillOpacity), color: segment.color,
+                        opacityGroup: route.half == 0 && route.fillOpacity < 1 ? route.id + ":" + segment.id : nil))
                 }
                 return strokes
             }

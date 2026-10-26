@@ -29,7 +29,7 @@ struct QuotaSidebarModuleSettingsView: View {
     private var supportsCodex: Bool { quotaItemsOverride?.contains { $0.client == "codex" } ?? allowedClients.contains("codex") }
     private var items: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: quotas.map(\.client))
-            .filter { supportsCodex || ($0 != .speed && $0 != .models) }
+            .filter { supportsCodex || !$0.requiresCodexLiveData }
     }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var previewItems: [QuotaSidebarItem] {
@@ -139,6 +139,51 @@ struct QuotaSidebarModuleSettingsView: View {
     private func finishDrag() {
         draggedItem = nil; dropTarget = nil; dragSessionID = nil
         controller.setSettingsReordering(false)
+    }
+}
+
+/// Read-only companion of the real expanded sidebar, mounted only while its
+/// settings are open. It reuses the compact renderer and the same preferences.
+struct QuotaSidebarSettingsRailPreview: View {
+    @ObservedObject var controller: QuotaSidebarController
+    @ObservedObject var store: CodexUsageStore
+    @ObservedObject var quota: AccountQuotaStore
+    @ObservedObject var tasks: TaskCompletionMonitor
+    @ObservedObject var monitor: LiveRateMonitor
+    var quotaItemsOverride: [ClientQuotaItem]? = nil
+    @ObservedObject private var clients = MultiClientUsageStore.shared
+    @AppStorage(ClientDisplayScope.key) private var scope = "codex"
+    @AppStorage(ClientQuotaSelection.key) private var selectionRaw = ""
+    @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
+    @State private var shares: [FloatingTodayModelUsageItem] = []
+    private var selection: ClientQuotaSelection { .decode(selectionRaw) }
+    private var quotas: [ClientQuotaItem] {
+        if let quotaItemsOverride { return quotaItemsOverride.filter(selection.includes) }
+        let allowed = ClientDisplayScope.clients(scope, available: clients.displayClientIDs)
+        return ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode),
+            includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
+            includeFiveHour: selection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated)
+            .filter { (allowed.contains($0.client) || ($0.client == "claudeCode" && allowed.contains("claudeDesktop"))) && selection.includes($0) }
+    }
+    private var items: [QuotaSidebarItem] {
+        controller.sidebarLayout.arranged(availableQuotaClients: quotas.map(\.client)).filter {
+            controller.sidebarLayout.isVisible($0, in: .compact) && ((scope == "all" || scope == "codex") || !$0.requiresCodexLiveData)
+        }
+    }
+    var body: some View {
+        let layout = ClientRailLayout.fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas).count, availableHeight: controller.availableRailHeight)
+        ScrollView(.vertical) {
+            QuotaSidebarCompactBars(items: items, quotas: quotas, layout: layout,
+                rateFraction: QuotaSidebarRatePresentation.fraction(rate: monitor.totalSnapshot.rollingTokensPerSecond, fullScale: fullScale, available: monitor.monitoringEnabled && monitor.dataSource != nil),
+                modelRates: monitor.totalSnapshot.modelRates, shares: shares,
+                taskStateLabel: "任务状态：\(tasks.runningThreadSummary.total) 个运行任务，非进度百分比", highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
+                .frame(minHeight: layout.height)
+        }.scrollIndicators(.hidden).frame(width: 16)
+            .background(Color(red: 0.035, green: 0.045, blue: 0.038), in: Capsule())
+            .help("一级菜单实时预览；修改显示与顺序可立即查看")
+            .onChange(of: store.todayModelBreakdowns, initial: true) { _, rows in
+                shares = FloatingTodayModelUsagePresentation.items(from: rows, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
+            }
     }
 }
 

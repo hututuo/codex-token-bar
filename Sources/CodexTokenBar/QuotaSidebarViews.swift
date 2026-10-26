@@ -110,6 +110,7 @@ struct QuotaSidebarCompactBars: View {
     var modelRates: [ModelRateContribution]? = nil
     var shares: [FloatingTodayModelUsageItem] = []
     var taskStateLabel = "任务状态，非进度百分比"
+    var highlightedItem: QuotaSidebarItem? = nil
     var colors: [String: String] = [:]
     var usesMorphAnchors = false
 
@@ -137,6 +138,8 @@ struct QuotaSidebarCompactBars: View {
                         SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: layout.barHeight)
                     default: EmptyView()
                     }
+                }.overlay {
+                    Capsule().stroke(SidebarPalette.green.opacity(highlightedItem == item ? 0.85 : 0), lineWidth: 1).padding(.horizontal, -3)
                 }
             }
         }.frame(width: 16).padding(.vertical, 15)
@@ -179,7 +182,7 @@ struct QuotaSidebarRail: View {
     }
     private var sidebarItems: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: availableQuotaItems.map(\.client))
-            .filter { supportsCodex || ($0 != .speed && $0 != .models) }
+            .filter { supportsCodex || !$0.requiresCodexLiveData }
     }
     private var compactItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .compact) } }
     private var expandedItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .expanded) } }
@@ -438,6 +441,7 @@ struct QuotaSidebarRail: View {
                 .contentShape(Rectangle())
             }.buttonStyle(SidebarPulseButtonStyle())
                 .accessibilityLabel("查看任务，\(runningText)")
+                .help("Codex 主任务与子 Agent；其他客户端尚未接入任务计数")
                 .accessibilityIdentifier("quota-sidebar-tasks")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { controller.select(.tasks) }

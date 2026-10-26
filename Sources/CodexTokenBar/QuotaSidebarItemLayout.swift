@@ -67,6 +67,9 @@ enum QuotaSidebarItem: Hashable, Identifiable, Sendable {
     var hasCompactRepresentation: Bool {
         switch self { case .speed, .quota, .models, .tasks: true; default: false }
     }
+    var requiresCodexLiveData: Bool {
+        switch self { case .speed, .models, .tasks: true; default: false }
+    }
 
     static let defaults: [Self] = [.modeltrace, .speed, .tps, .quota("codex"), .quota("claudeCode"), .models, .tasks, .radar, .credits, .clientUsage]
 }

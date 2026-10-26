@@ -128,6 +128,7 @@ function RailSurface() {
   const heightBudget = useRef(createSidebarHeightBudget());
   const [expandedHeight, setExpandedHeight] = useState<number>();
   const currentMode = useRef(state.mode); currentMode.current = state.mode;
+  const currentSettingsPreview = useRef(false); currentSettingsPreview.current = state.mode === "detail" && state.tab === "settings";
   const previousLayout = useRef(sidebar.layout);
   const rebaseHeight = useRef(false);
   if (previousLayout.current !== sidebar.layout) {
@@ -156,7 +157,7 @@ function RailSurface() {
   }, [state.mode]);
   const coordinator = useRef<ReturnType<typeof createSidebarNativeCoordinator> | null>(null);
   if (coordinator.current === null) coordinator.current = createSidebarNativeCoordinator(
-    (mode, showsFiveHour, refreshGeometry, requestId, expandedHeight, compactHeight) => invoke("set_quota_sidebar_mode", { mode, showsFiveHour, refreshGeometry, requestId, expandedHeight, compactHeight, reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches }),
+    (mode, showsFiveHour, refreshGeometry, requestId, expandedHeight, compactHeight, settingsPreview) => invoke("set_quota_sidebar_mode", { mode, showsFiveHour, refreshGeometry, requestId, expandedHeight, compactHeight, settingsPreview, reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches }),
     reason => setError(reason === null ? null : `窗口更新失败：${String(reason)}`),
   );
   const dragSession = useRef<ReturnType<typeof createSidebarDragSession> | null>(null);
@@ -251,6 +252,9 @@ function RailSurface() {
     add(listen("quota-sidebar-environment-changed", () => coordinator.current?.refresh()));
     add(listen<{ requestId: number; error: string | null }>("quota-sidebar-motion-result", e => {
       coordinator.current?.complete(e.payload.requestId, e.payload.error);
+      if (!currentSettingsPreview.current && coordinator.current?.isSettled()) {
+        document.documentElement.style.setProperty("--qs-canvas-width", "88px");
+      }
       if (currentMode.current === "rest" && coordinator.current?.isSettled("rest")) {
         const next = heightBudget.current.update(undefined, false);
         setExpandedHeight(value => value === next ? value : next);
@@ -286,9 +290,16 @@ function RailSurface() {
   useEffect(() => {
     if (!display.quotaSidebarEnabled) { cancelLeave(); dispatch({ type: "disable" }); }
   }, [display.quotaSidebarEnabled, cancelLeave]);
-  useEffect(() => {
-    coordinator.current?.update(state.mode, showsFiveHour, expandedHeight, compactHeight);
-  }, [state.mode, showsFiveHour, expandedHeight, compactHeight]);
+  useLayoutEffect(() => {
+    coordinator.current?.update(state.mode, showsFiveHour, expandedHeight, compactHeight, state.tab === "settings");
+  }, [state.mode, state.tab, showsFiveHour, expandedHeight, compactHeight]);
+  useLayoutEffect(() => {
+    // Keep the wide backing canvas through the native collapse/reversal.
+    // The matching settled receipt restores 88px after native rearming.
+    if (!display.quotaSidebarEnabled) document.documentElement.style.setProperty("--qs-canvas-width", "88px");
+    else if (state.mode === "detail" && state.tab === "settings") document.documentElement.style.setProperty("--qs-canvas-width", "112px");
+  }, [state.mode, state.tab, display.quotaSidebarEnabled]);
+  useEffect(() => () => { document.documentElement.style.removeProperty("--qs-canvas-width"); }, []);
   useEffect(() => {
     coordinator.current?.setEnabled(display.quotaSidebarEnabled);
     return () => coordinator.current?.setEnabled(false);
@@ -304,7 +315,7 @@ function RailSurface() {
   }, [display.quotaSidebarEnabled, display.quotaSidebarSide]);
   useEffect(() => { publisher.current?.update(presentation, display.quotaSidebarEnabled && state.mode === "detail"); }, [presentation, display.quotaSidebarEnabled, state.mode]);
   if (!display.quotaSidebarEnabled) return null;
-  return <main className={sidebarRailClassName(display.quotaSidebarSide, state.mode)} onPointerDown={startDrag} onPointerEnter={enter} onPointerLeave={leave} data-dragging={dragging} aria-label="额度侧栏">
+  return <main className={sidebarRailClassName(display.quotaSidebarSide, state.mode) + (state.mode === "detail" && state.tab === "settings" ? " qs-settings-compare" : "")} style={{"--qs-compare-height": `${compactHeight}px`} as CSSProperties} onPointerDown={startDrag} onPointerEnter={enter} onPointerLeave={leave} data-dragging={dragging} aria-label="额度侧栏">
     <SidebarRailContent layout={sidebar.layout} highlightedItem={state.tab === "settings" ? highlightedItem : null} data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error ?? sidebar.error} onDismissReminder={dismissReminder} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })}  onContentMeasurement={measureContent} />
   </main>;
 }
@@ -363,7 +374,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
       rateLabel={rateLabel} modelRates={data.snapshot.modelRates} models={models}
       taskStatus={data.runningThreads.status}
       taskLabel={sidebarTaskStateLabel(data.runningThreads.total, data.runningThreads.status)}
-      expected={{"codex:5h":expectedFive,"codex:7d":expectedSeven}} visible={state.mode === "rest"}
+      expected={{"codex:5h":expectedFive,"codex:7d":expectedSeven}} visible={state.mode === "rest" || (state.mode === "detail" && state.tab === "settings")}
       indicator={cacheWarning ? <span className="qs-cache-indicator" role="status" aria-label={"缓存命中偏低：" + cacheAdviceTitle(cacheWarning)} title={"缓存命中偏低 · " + cacheAdviceTitle(cacheWarning)}/> : undefined}/>
     <SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning} onMeasure={onContentMeasurement}>{() => {
       if (cacheWarning) return <section className="qs-cache-notice" aria-label="缓存命中提醒">

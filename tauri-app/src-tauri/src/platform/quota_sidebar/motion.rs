@@ -6,7 +6,7 @@ use std::time::Instant;
 use tauri::{Emitter, Manager};
 
 #[derive(Clone)]
-struct Animation { from: SidebarFrame, target: Geometry, started_ms: f64, duration_ms: f64, snapping: bool }
+struct Animation { from: SidebarFrame, target: Geometry, started_ms: f64, duration_ms: f64, expanding: bool, canvas_width: f64, snapping: bool }
 #[derive(Default)]
 struct Controller { revision: u64, active: Option<Animation>, request_id: Option<u64> }
 static REDUCED: AtomicBool = AtomicBool::new(false);
@@ -18,6 +18,10 @@ fn environment_matches(a: &Geometry, b: &Geometry) -> bool {
 }
 fn frames_near(a: SidebarFrame, b: SidebarFrame) -> bool {
     [(a.x - b.x), (a.y - b.y), (a.width - b.width), (a.height - b.height)].iter().all(|d| d.abs() <= 0.75)
+}
+fn canvas_envelope_width(target: &Geometry, current: SidebarFrame) -> f64 {
+    target.canvas_width.max(current.width / target.scale)
+        .clamp(super::canvas_geometry::BASE_CANVAS_WIDTH, super::canvas_geometry::PREVIEW_CANVAS_WIDTH)
 }
 fn easing(t: f64, expanding: bool) -> f64 {
     if t <= 0.0 { return 0.0; }
@@ -35,7 +39,7 @@ fn animated_frame(animation: &Animation, now_ms: f64) -> SidebarFrame {
         return SidebarFrame { x: mix(animation.from.x, target.rail.x), y: mix(animation.from.y, target.rail.y),
             width: mix(animation.from.width, target.rail.width), height: mix(animation.from.height, target.rail.height) };
     }
-    let p = easing(t, animation.duration_ms > 300.0);
+    let p = easing(t, animation.expanding);
     let width = (animation.from.width + (target.rail.width - animation.from.width) * p).clamp(1.0, target.work.width.max(1.0));
     let height = (animation.from.height + (target.rail.height - animation.from.height) * p).clamp(1.0, target.work.height.max(1.0));
     SidebarFrame { x: if target.side == "left" { target.work.x } else { target.work.x + target.work.width - width },
@@ -54,7 +58,8 @@ impl Controller {
         self.cancel();
         if reduced || frames_near(current, target.rail) { return None; }
         let expanding = target.rail.height > current.height || target.rail.width > current.width;
-        self.active = Some(Animation { from: current, target, started_ms: now_ms, duration_ms: if expanding { 440.0 } else { 240.0 }, snapping: false });
+        let canvas_width = canvas_envelope_width(&target, current);
+        self.active = Some(Animation { from: current, target, started_ms: now_ms, duration_ms: 440.0, expanding, canvas_width, snapping: false });
         Some(self.revision)
     }
     fn sample(&mut self, revision: u64, now_ms: f64, current_target: &Geometry) -> Option<SidebarFrame> {
@@ -68,11 +73,11 @@ impl Controller {
 }
 pub(super) fn cancel() { if let Ok(mut motion) = MOTION.lock() { motion.cancel(); } }
 
-pub(super) fn start(rail: &WebviewWindow, detail: &WebviewWindow, side: &str, mode: super::SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>, reduced: bool, refresh_geometry: bool, request_id: u64) -> Result<SidebarFrame, String> {
+pub(super) fn start(rail: &WebviewWindow, detail: &WebviewWindow, side: &str, mode: super::SidebarMode, five: bool, expanded_height: f64, compact_height: Option<f64>, settings_preview: bool, reduced: bool, refresh_geometry: bool, request_id: u64) -> Result<SidebarFrame, String> {
     REDUCED.store(reduced, Ordering::Relaxed);
     // Capture monitor/workarea once per intent or explicit environment refresh.
     // No disk reads or monitor enumeration occur in the frame loop.
-    let target = placement::geometry(rail, side, mode, five, expanded_height, compact_height)?;
+    let target = placement::geometry(rail, side, mode, five, expanded_height, compact_height, settings_preview)?;
     if mode == super::SidebarMode::Detail { placement::set_frame(detail, target.card)?; }
     begin(rail, target, reduced, refresh_geometry, false, Some(request_id))
 }
@@ -118,24 +123,32 @@ fn begin(rail: &WebviewWindow, target: Geometry, reduced: bool, refresh: bool, s
             }
         });
     } else if motion.active.is_none() {
-        placement::set_rail_frame(rail, target.rail, &target.side, target.scale)?;
+        placement::set_rail_frame(rail, target.rail, &target.side, target.scale, target.canvas_width)?;
         acknowledge(rail, request_id, None);
     }
     Ok(target.rail)
 }
 
 fn tick(rail: &WebviewWindow, revision: u64) -> Result<bool, String> {
-    let enabled = STATE.lock().map_err(|e| e.to_string())?.as_ref().is_some_and(|(display, _, _, _, _)| display.quota_sidebar_enabled);
+    let enabled = STATE.lock().map_err(|e| e.to_string())?.as_ref().is_some_and(|(display, _, _, _, _, _)| display.quota_sidebar_enabled);
     if !enabled || placement::is_dragging() || !rail.is_visible().map_err(|e| e.to_string())? { cancel(); return Ok(false); }
     let mut motion = MOTION.lock().map_err(|e| e.to_string())?;
     if motion.revision != revision { return Ok(false); }
-    let Some(target) = motion.active.as_ref().map(|a| a.target.clone()) else { return Ok(false); };
+    let Some((target, canvas_width)) = motion.active.as_ref().map(|a| (a.target.clone(), a.canvas_width)) else { return Ok(false); };
     if let Some(frame) = motion.sample(revision, clock_ms(), &target) {
         let current = placement::window_frame(rail)?;
         // Quantization avoids subpixel tail writes; the last frame is exact.
         let changed = [frame.x-current.x, frame.y-current.y, frame.width-current.width, frame.height-current.height]
             .iter().any(|d| d.abs() >= 0.25);
-        if changed || motion.active.is_none() { placement::set_rail_frame(rail, frame, &target.side, target.scale)?; }
+        let finished = motion.active.is_none();
+        if changed || finished {
+            placement::set_rail_frame(rail, frame, &target.side, target.scale, canvas_width)?;
+            if finished && canvas_width > target.canvas_width {
+                // Keep the larger backing canvas through the full reveal, then
+                // shrink it only after the input frame reaches its exact target.
+                placement::set_rail_frame(rail, frame, &target.side, target.scale, target.canvas_width)?;
+            }
+        }
     }
     let active = motion.active.is_some();
     let request_id = motion.request_id;
@@ -158,13 +171,13 @@ fn recover_failed_motion(rail: &WebviewWindow, revision: u64, target: &Geometry,
     // Runs on the same UI queue as disable and new intents. A late failure may
     // never restore an older animation over a newer window configuration.
     let enabled = STATE.lock().map_err(|e| e.to_string())?.as_ref()
-        .is_some_and(|(display, _, _, _, _)| display.quota_sidebar_enabled);
+        .is_some_and(|(display, _, _, _, _, _)| display.quota_sidebar_enabled);
     if !enabled || placement::is_dragging() { return Ok(()); }
     let mut motion = MOTION.lock().map_err(|e| e.to_string())?;
     let Some(request_id) = motion.fail(revision) else { return Ok(()); };
     drop(motion);
     let message = settle_failed_frame(error,
-        || placement::set_rail_frame(rail, target.rail, &target.side, target.scale),
+        || placement::set_rail_frame(rail, target.rail, &target.side, target.scale, target.canvas_width),
         || {
             let rail_hide = rail.hide();
             let detail_hide = rail.app_handle().get_webview_window(super::DETAIL).map(|detail| detail.hide());
@@ -188,17 +201,32 @@ mod tests {
     use super::*;
     fn target(side: &str, mode: super::super::SidebarMode, work: SidebarFrame, center: f64) -> Geometry {
         let (rail, card) = super::super::frames_for_at(work, side, mode, false, center);
-        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: super::super::default_expanded_height(false), compact_height: super::super::default_compact_height(false), side: side.into(), rail, card }
+        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: super::super::default_expanded_height(false), compact_height: super::super::default_compact_height(false), canvas_width: super::super::canvas_geometry::BASE_CANVAS_WIDTH, side: side.into(), rail, card }
     }
     fn target_with_height(side: &str, mode: super::super::SidebarMode, work: SidebarFrame, center: f64, height: f64) -> Geometry {
         let (rail, card) = super::super::frames_for_at_height(work, side, mode, false, height, center);
-        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: height, compact_height: super::super::default_compact_height(false), side: side.into(), rail, card }
+        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: height, compact_height: super::super::default_compact_height(false), canvas_width: super::super::canvas_geometry::BASE_CANVAS_WIDTH, side: side.into(), rail, card }
     }
     fn target_with_compact_height(side: &str, mode: super::super::SidebarMode, work: SidebarFrame, center: f64, height: f64) -> Geometry {
         let (rail, card) = super::super::frames_for_at_height_with_compact(work, side, mode, false, super::super::default_expanded_height(false), Some(height), center);
-        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: super::super::default_expanded_height(false), compact_height: height, side: side.into(), rail, card }
+        Geometry { screen_id: "main".into(), work, scale: 1.0, center: work.y + work.height * center, expanded_height: super::super::default_expanded_height(false), compact_height: height, canvas_width: super::super::canvas_geometry::BASE_CANVAS_WIDTH, side: side.into(), rail, card }
     }
     fn work() -> SidebarFrame { SidebarFrame { x: -1440.0, y: 24.0, width: 1440.0, height: 1000.0 } }
+    #[test]
+    fn canvas_envelope_tracks_target_and_visible_width_without_shrinking_during_close() {
+        for scale in [1.0, 1.25, 2.0] {
+            let mut target = target("right", super::super::SidebarMode::Detail, work(), 0.5);
+            target.scale = scale;
+            target.canvas_width = super::super::canvas_geometry::PREVIEW_CANVAS_WIDTH;
+            let preview_width = 112.0 * scale;
+            assert_eq!(canvas_envelope_width(&target, SidebarFrame { width: 88.0 * scale, ..target.rail }), 112.0);
+
+            target.canvas_width = super::super::canvas_geometry::BASE_CANVAS_WIDTH;
+            let closing_envelope = canvas_envelope_width(&target, SidebarFrame { width: preview_width, ..target.rail });
+            assert_eq!(closing_envelope, 112.0);
+            assert_eq!(canvas_envelope_width(&target, SidebarFrame { width: 16.0 * scale, ..target.rail }), 88.0);
+        }
+    }
     #[test]
     fn mid_animation_failure_cancels_samples_and_restores_once_or_hides() {
         let end = target("right", super::super::SidebarMode::Hover, work(), 0.5);
@@ -226,7 +254,7 @@ mod tests {
     fn snap_preserves_partly_offscreen_release_and_finishes_exactly() {
         let end = target("right", super::super::SidebarMode::Rest, work(), 0.5);
         let mut from = end.rail; from.x += 40.0;
-        let animation = Animation { from, target: end.clone(), started_ms: 0.0, duration_ms: 220.0, snapping: true };
+        let animation = Animation { from, target: end.clone(), started_ms: 0.0, duration_ms: 220.0, expanding: false, canvas_width: 88.0, snapping: true };
         assert_eq!(animated_frame(&animation, 0.0), from);
         let early = animated_frame(&animation, 2.2);
         assert!(early.x > end.rail.x && (early.x - from.x).abs() < 2.0);
@@ -282,7 +310,7 @@ mod tests {
                 for work in [work(), SidebarFrame { x: 10.5, y: -200.0, width: 82.0, height: 210.5 }] {
                     let end = target(side, super::super::SidebarMode::Hover, work, center);
                     let start = target(side, super::super::SidebarMode::Rest, work, center).rail;
-                    let animation = Animation { from: start, target: end, started_ms: 0.0, duration_ms: 440.0, snapping: false };
+                    let animation = Animation { from: start, target: end, started_ms: 0.0, duration_ms: 440.0, expanding: true, canvas_width: 88.0, snapping: false };
                     for ms in (0..=440).step_by(8) {
                         let frame = animated_frame(&animation, ms as f64);
                         assert!(frame.x >= work.x); assert!(frame.x + frame.width <= work.x + work.width + 1e-8);
@@ -296,18 +324,19 @@ mod tests {
         }
     }
     #[test]
-    fn collapse_is_faster_monotonic_and_retarget_starts_at_the_actual_frame() {
+    fn collapse_uses_opening_duration_and_retarget_starts_at_the_actual_frame() {
         let hover = target("left", super::super::SidebarMode::Hover, work(), 0.5);
         let rest = target("left", super::super::SidebarMode::Rest, work(), 0.5);
         let mut controller = Controller::default();
         let old = controller.request(rest.rail, hover.clone(), false, 0.0).unwrap();
         let current = controller.sample(old, 100.0, &hover).unwrap();
         let next = controller.request(current, rest.clone(), false, 100.0).unwrap();
+        assert_eq!(controller.active.as_ref().unwrap().duration_ms, 440.0);
         assert_eq!(controller.sample(old, 110.0, &hover), None);
         assert_eq!(controller.sample(next, 100.0, &rest), Some(current));
-        let middle = controller.sample(next, 200.0, &rest).unwrap();
+        let middle = controller.sample(next, 300.0, &rest).unwrap();
         assert!(middle.width < current.width && middle.width > rest.rail.width);
-        assert_eq!(controller.sample(next, 340.0, &rest), Some(rest.rail));
+        assert_eq!(controller.sample(next, 540.0, &rest), Some(rest.rail));
     }
     #[test]
     fn detail_and_repeated_reconcile_preserve_the_current_timeline() {

@@ -70,9 +70,9 @@ final class MatchedStrokeMorphTests: XCTestCase {
         XCTAssertEqual(view.morphLayerCount, 0); XCTAssertEqual(source.alphaValue, 1)
     }
 
-    func testClosingPathIsStraightAt180Milliseconds() {
-        XCTAssertEqual(ClientQuotaMorphGeometry.closingDuration, 0.18)
-        XCTAssertEqual(MatchedStrokeMorphTiming.progress(0.18 / ClientQuotaMorphGeometry.closingDuration, expanding: false), 1)
+    func testClosingAndOpeningUseTheSameDuration() {
+        XCTAssertEqual(ClientQuotaMorphGeometry.closingDuration, ClientQuotaMorphGeometry.openingDuration)
+        XCTAssertEqual(MatchedStrokeMorphTiming.progress(1, expanding: false), 1)
     }
 }
 

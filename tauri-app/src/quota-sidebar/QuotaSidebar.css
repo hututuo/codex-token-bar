@@ -105,8 +105,8 @@ html.quota-sidebar-document,html.quota-sidebar-document body,html.quota-sidebar-
 
 /* Match the native macOS canvas exactly. WebKit's visible viewport may be
    smaller than its NSView during clipping; vh/vw must not drive content. */
-html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-sidebar-fixed-canvas #root{width:88px!important;height:var(--qs-canvas-height,680px)!important;min-width:88px!important;min-height:var(--qs-canvas-height,680px)!important}
-.quota-sidebar-fixed-canvas .qs-rail{width:88px;height:var(--qs-canvas-height,680px);border-radius:0;background:transparent}
+html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-sidebar-fixed-canvas #root{width:var(--qs-canvas-width,88px)!important;height:var(--qs-canvas-height,680px)!important;min-width:var(--qs-canvas-width,88px)!important;min-height:var(--qs-canvas-height,680px)!important}
+.quota-sidebar-fixed-canvas .qs-rail{width:var(--qs-canvas-width,88px);height:var(--qs-canvas-height,680px);border-radius:0;background:transparent}
 /* Windows clips the painted canvas with the native rounded window region. */
 .quota-sidebar-windows-canvas .qs-rail{background:#080a09}
 .quota-sidebar-fixed-canvas .qs-summary{top:calc(var(--qs-canvas-height,680px)/2)}
@@ -116,7 +116,7 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 /* Both layers keep their layout across mode changes; only opacity is animated.
    Inert removes hidden summary buttons from pointer and keyboard hit testing. */
 .qs-bars,.qs-summary{transition:opacity .22s cubic-bezier(.2,.8,.2,1);animation:none}
-.qs-summary{transition:opacity .18s cubic-bezier(.333333,1,.666667,1)}
+.qs-summary{translate:0 0;transition:opacity .44s cubic-bezier(.333333,1,.666667,1),translate .44s cubic-bezier(.333333,1,.666667,1)}
 .qs-summary[data-visible=true]{transition-duration:.44s;transition-timing-function:cubic-bezier(.35,0,.2,1)}
 .qs-bars[data-visible=false],.qs-summary[data-visible=false]{opacity:0;pointer-events:none}
 .qs-bars[data-visible=true],.qs-summary[data-visible=true]{opacity:1}
@@ -277,4 +277,11 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .qs-level-toggles{display:flex;align-items:center;gap:10px;font-size:10px;flex:none}
 .qs-level-toggles>label{display:flex;align-items:center;gap:3px;white-space:nowrap}
 .qs-level-toggles>span{width:38px;text-align:center;color:#829078}
+.quota-sidebar-document .qs-settings-compare{background:transparent;width:112px}
+.qs-settings-compare.qs-left .qs-summary{left:0;right:auto;translate:24px 0}
+.qs-settings-compare.qs-right .qs-summary{right:0;left:auto;translate:-24px 0}
+.qs-settings-compare .qs-summary{background:#080a09;border-radius:20px}
+.quota-sidebar-fixed-canvas .qs-settings-compare .qs-bars{position:absolute;top:50%;transform:translateY(-50%);height:min(var(--qs-compare-height,366px),var(--qs-native-height,680px));background:#080a09;border-radius:9px}
+.qs-settings-compare.qs-left .qs-bars{left:0}.qs-settings-compare.qs-right .qs-bars{right:0}
+.qs-settings-compare.qs-left .qs-drag-handle{left:24px;width:88px}.qs-settings-compare.qs-right .qs-drag-handle{right:24px;width:88px}
 @media(prefers-reduced-motion:reduce){.qs-linked-item,.qs-linked-settings *{transition:none!important}}
