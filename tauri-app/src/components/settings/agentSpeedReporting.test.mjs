@@ -5,14 +5,14 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {withSsrModules} from '../../test/ssrHarness.mjs';
 import {Window} from 'happy-dom';
 
-test('invitation offers an unchecked opt-in and local, silent, non-looping recording', async () => {
+test('invitation offers an unchecked opt-in and local, silent, looping recording', async () => {
  await withSsrModules(async load => {
   const {AgentSpeedInvitationCard} = await load('/src/components/settings/AgentSpeedReporting.tsx');
   const html = renderToStaticMarkup(React.createElement(AgentSpeedInvitationCard,{username:'TokenBar-test',onJoin(){},onDismiss(){},onOpenSettings(){}}));
   const w = new Window(); w.document.body.innerHTML=html;
   const video=w.document.querySelector('video');
   assert.equal(video.getAttribute('src'),'/speed-leaderboard/leaderboard.mp4');
-  assert.equal(video.hasAttribute('loop'),false);
+  assert.equal(video.hasAttribute('loop'),true);
   assert.equal(video.hasAttribute('muted'),true);
   assert.equal(w.document.querySelector('[role=switch]').checked,false);
   assert.equal([...w.document.querySelectorAll('button')].find(b=>b.textContent==='同意参加，下一步').disabled,true);
@@ -52,6 +52,36 @@ test('consent keeps layout stable and opens nickname page before final opt-in',a
    await React.act(async()=>checkbox.click());await React.act(async()=>button.click());assert.equal(joined.length,0);
    assert.equal(w.document.querySelector('video'),null);assert.equal(w.document.querySelector('input[placeholder="请输入您的昵称"]').value,'测试昵称');
    await React.act(async()=>w.document.querySelector('.speed-report-primary').click());assert.deepEqual(joined,['测试昵称']);
+  });
+ }finally{if(root)await React.act(async()=>root.unmount());for(const[k,v]of saved)v?Object.defineProperty(globalThis,k,v):delete globalThis[k];w.close();}
+});
+
+test('movie autoplays, resumes after hiding, and preserves manual pause and reduced motion',async()=>{
+ const w=new Window();const keys=['window','document','navigator','HTMLElement','IS_REACT_ACT_ENVIRONMENT'];
+ const saved=keys.map(k=>[k,Object.getOwnPropertyDescriptor(globalThis,k)]);
+ for(const k of keys)Object.defineProperty(globalThis,k,{configurable:true,writable:true,value:k==='IS_REACT_ACT_ENVIRONMENT'?true:w[k]});
+ let root,plays=0,hidden=false;
+ const motion=new w.EventTarget();motion.matches=false;w.matchMedia=()=>motion;
+ Object.defineProperty(w.document,'hidden',{configurable:true,get:()=>hidden});
+ w.HTMLMediaElement.prototype.play=function(){plays++;this.dispatchEvent(new w.Event('play'));return Promise.resolve();};
+ w.HTMLMediaElement.prototype.pause=function(){this.dispatchEvent(new w.Event('pause'));};
+ const visibility=async value=>{hidden=value;await React.act(async()=>w.document.dispatchEvent(new w.Event('visibilitychange')));};
+ try{
+  const {createRoot}=await import('react-dom/client');root=createRoot(w.document.body);
+  await withSsrModules(async load=>{
+   const {SpeedLeaderboardMovie}=await load('/src/components/settings/AgentSpeedReporting.tsx');
+   await React.act(async()=>root.render(React.createElement(SpeedLeaderboardMovie)));
+   assert.equal(plays,1);assert.equal(w.document.querySelector('video').loop,true);
+   await visibility(true);assert.match(w.document.querySelector('button').getAttribute('aria-label'),/播放/);
+   await visibility(false);assert.equal(plays,2);
+   await React.act(async()=>w.document.querySelector('button').click());
+   await visibility(true);await visibility(false);assert.equal(plays,2,'manual pause must survive visibility changes');
+   await React.act(async()=>w.document.querySelector('button').click());assert.equal(plays,3);
+   await React.act(async()=>root.unmount());root=null;
+   await visibility(true);await visibility(false);assert.equal(plays,3,'unmounted movie removes its listeners');
+   motion.matches=true;root=createRoot(w.document.body);
+   await React.act(async()=>root.render(React.createElement(SpeedLeaderboardMovie)));assert.equal(plays,3);
+   motion.matches=false;await React.act(async()=>motion.dispatchEvent(new w.Event('change')));assert.equal(plays,4);
   });
  }finally{if(root)await React.act(async()=>root.unmount());for(const[k,v]of saved)v?Object.defineProperty(globalThis,k,v):delete globalThis[k];w.close();}
 });

@@ -1,5 +1,7 @@
 # Agent Speed independent reporting route — 2026-10-25
 
+> 2026-10-26 状态核对：本文保留当时证据；当前完成项与剩余验收请见 [2026-10-26-speed-follow-up-status.md](2026-10-26-speed-follow-up-status.md)。早期服务端 422、Windows 尚未安装和图表尚未产品化不代表当前状态；真实整页 FPS、睡眠/切网及延迟目标仍未验收。
+
 ## Scope and baseline
 
 Source: `runs/20261022-cache-advice-isolation/release-source`, baseline `c63b8b3e` on `codex/dashboard-scroll-quota-20261023`. Existing installed macOS 0.9.7/build954 is preserved. This change does not change body TPS, its confidence filters, the animated speed bar, cache alerts, quota cycles, or the usage/cost index.

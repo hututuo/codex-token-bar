@@ -199,6 +199,8 @@ private struct SpeedLeaderboardMovie: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var player = AVPlayer(url: Bundle.module.url(forResource: "leaderboard", withExtension: "mp4", subdirectory: "SpeedLeaderboard")!)
     @State private var playing = false
+    @State private var playback = LeaderboardMoviePlayback()
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     var body: some View {
         ZStack(alignment: .bottom) {
             if let url = Bundle.module.url(forResource: "poster", withExtension: "jpg", subdirectory: "SpeedLeaderboard"),
@@ -210,28 +212,36 @@ private struct SpeedLeaderboardMovie: View {
                 Text("排行榜实录 · 非当前实时数据").font(.caption2)
                 Spacer()
                 Button {
-                    if playing { player.pause(); playing = false }
-                    else {
-                        if let item = player.currentItem, player.currentTime() >= item.duration { player.seek(to: .zero) }
-                        player.play(); playing = true
-                    }
+                    playback.intent = playing ? .pause : .play
+                    updatePlayback()
                 } label: { Image(systemName: playing ? "pause.fill" : "play.fill") }
                     .buttonStyle(.plain).accessibilityLabel(playing ? "暂停排行榜演示" : "播放排行榜演示")
             }.foregroundStyle(.white).padding(10).background(.black.opacity(0.8))
         }
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .background(AnimationVisibilityProbe { visible in
+            playback.visible = visible
+            updatePlayback()
+        })
         .onAppear {
             player.isMuted = true
-            if !reduceMotion && !ProcessInfo.processInfo.isLowPowerModeEnabled { player.play(); playing = true }
         }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { event in
             guard let item = event.object as? AVPlayerItem, item === player.currentItem else { return }
-            playing = false
+            player.seek(to: .zero)
+            updatePlayback()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
-            player.pause(); playing = false
+        .onChange(of: reduceMotion) { _, _ in updatePlayback() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+            updatePlayback()
         }
-        .onDisappear { player.pause() }
+        .onDisappear { playback.visible = false; updatePlayback() }
+    }
+    private func updatePlayback() {
+        playing = playback.shouldPlay(reducedMotion: reduceMotion, lowPower: lowPower)
+        if playing { player.isMuted = true; player.play() }
+        else { player.pause() }
     }
 }
 

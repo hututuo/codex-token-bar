@@ -1,5 +1,7 @@
 # Agent Speed 可选 WebSocket 与昵称流程
 
+> 2026-10-26 状态核对：本文保留当时证据；当前完成项与剩余验收请见 [2026-10-26-speed-follow-up-status.md](2026-10-26-speed-follow-up-status.md)。早期服务端 422、Windows 尚未安装和图表尚未产品化不代表当前状态；真实整页 FPS、睡眠/切网及延迟目标仍未验收。
+
 本线程独立测速线路，未合入 `codex/multi-client-tokens`。HTTP 继续保留，新安装、旧配置和未知传输值都默认 HTTP。只有用户选择 WebSocket 才启用该通道；断线不会回退 HTTP。上报仍默认关闭，旧用户的开关与身份不变。
 
 ## 产品与边界
