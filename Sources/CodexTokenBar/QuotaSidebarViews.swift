@@ -102,6 +102,7 @@ struct QuotaSidebarRail: View {
     @ObservedObject var tasks: TaskCompletionMonitor
     @ObservedObject var radar: CodexRadarStore
     @ObservedObject var monitor: LiveRateMonitor
+    var quotaItemsOverride: [ClientQuotaItem]? = nil
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
     @AppStorage("cacheHitAdviceEnabled") private var cacheRemindersEnabled = true
     @AppStorage("cacheHitAdviceDismissed") private var dismissedCacheAdviceID = ""
@@ -111,6 +112,7 @@ struct QuotaSidebarRail: View {
     @AppStorage("multiClient.railLength.v1") private var railLength = "auto"
     private var quotaSelection: ClientQuotaSelection { .decode(quotaSelectionRaw) }
     private var quotaItems: [ClientQuotaItem] {
+        if let quotaItemsOverride { return quotaItemsOverride }
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
         let items = ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode),
             includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
@@ -124,6 +126,25 @@ struct QuotaSidebarRail: View {
     }
     @State private var shares: [FloatingTodayModelUsageItem] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var morphEnabled: Bool {
+        !reduceMotion && !controller.isDragging && cacheWarning == nil && controller.isModuleVisible(.overview) && !quotaItems.isEmpty
+    }
+
+    private func morphRoutes(_ anchors: [String: Anchor<CGRect>], in proxy: GeometryProxy) -> [ClientQuotaMorphRoute] {
+        let viewport = anchors["quota-viewport"].map { proxy[$0] }
+        return ClientQuotaRingGroup.make(quotaItems, acrossClients: quotaSelection.pairAcrossClients).flatMap { group -> [ClientQuotaMorphRoute] in
+            let members = [(group.left, group.right == nil ? 0 : -1)] + (group.right.map { [($0, 1)] } ?? [])
+            return members.compactMap { entry -> ClientQuotaMorphRoute? in
+                let (item, half) = entry
+                guard let source = anchors["ring:" + item.id], let target = anchors["track:" + item.id] else { return nil }
+                let ring = proxy[source], track = proxy[target]
+                guard viewport?.contains(ring) != false else { return nil }
+                return ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: half,
+                    fraction: item.remaining.map { $0 / 100 }, color: NSColor(clientHex: quotaSelection.colors[item.id] ?? item.fill))
+            }
+        }
+    }
 
     private var cacheWarning: CacheUsageAdvice? {
         guard CacheMissReminderFeature.isEnabled, monitor.monitoringEnabled, monitor.dataSource != nil,
@@ -172,6 +193,7 @@ struct QuotaSidebarRail: View {
                                     value: QuotaSidebarContentMeasurement(contentHeight: proxy.size.height + 66))
                             })
                     }.scrollIndicators(.hidden).frame(maxHeight: .infinity)
+                        .transformAnchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { values, anchor in values["quota-viewport"] = anchor }
                     Button { controller.select(.settings) } label: {
                         Label("侧栏设置", systemImage: "slider.horizontal.3")
                             .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
@@ -195,6 +217,7 @@ struct QuotaSidebarRail: View {
                 }
             }
             .opacity(controller.interaction.expanded ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.06), value: controller.interaction.expanded)
             .allowsHitTesting(controller.interaction.expanded)
             .accessibilityHidden(!controller.interaction.expanded)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: monitor.latestModelSpeeds30m.count)
@@ -210,6 +233,9 @@ struct QuotaSidebarRail: View {
                             ForEach(quotaItems) { item in
                                 ClientQuotaRailTrack(item: item, height: layout.barHeight,
                                     fillHex: quotaSelection.colors[item.id] ?? item.fill)
+                                    .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["track:" + item.id: $0] }
+                                    .opacity(controller.interaction.expanded ? 0 : 1)
+                                    .animation(!morphEnabled ? nil : controller.interaction.expanded ? .easeOut(duration: 0.04) : .easeOut(duration: 0.05).delay(0.19), value: controller.interaction.expanded)
                                     .help(item.title + " · " + item.value + " " + item.status)
                             }
                             SidebarModelShareStrip(items: clientScope == "codex" || clientScope == "all" ? shares : [], vertical: true).frame(width: 4, height: layout.barHeight)
@@ -236,6 +262,12 @@ struct QuotaSidebarRail: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: controller.edge == .right ? .trailing : .leading)
         .background(SidebarPalette.background)
+        .overlayPreferenceValue(ClientQuotaMorphAnchors.self) { anchors in
+            GeometryReader { proxy in
+                ClientQuotaMorphSurface(expanded: controller.interaction.expanded, enabled: morphEnabled,
+                    routes: morphRoutes(anchors, in: proxy))
+            }.allowsHitTesting(false).accessibilityHidden(true)
+        }
         .onChange(of: store.todayModelBreakdowns, initial: true) { _, rows in
             shares = FloatingTodayModelUsagePresentation.items(from: rows,
                 fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
@@ -276,6 +308,8 @@ struct QuotaSidebarRail: View {
             ForEach(ClientQuotaRingGroup.make(quotaItems, acrossClients: quotaSelection.pairAcrossClients)) { group in
                 Button { controller.select(.overview) } label: {
                     ClientPairedQuotaRing(left: group.left, right: group.right)
+                        .opacity(!morphEnabled || controller.interaction.expanded ? 1 : 0)
+                        .animation(!morphEnabled ? nil : controller.interaction.expanded ? .easeOut(duration: 0.06).delay(0.38) : .easeOut(duration: 0.04), value: controller.interaction.expanded)
                 }.buttonStyle(SidebarPulseButtonStyle())
             }
             if clientScope == "codex" || clientScope == "all" {

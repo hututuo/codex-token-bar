@@ -516,7 +516,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             let canAnimate = railPanel.isVisible && !reducedMotion && (snap || resize)
             if canAnimate {
                 let expanding = next.rail.width > current.width || next.rail.height > current.height
-                let duration = snap ? 0.22 : (expanding ? 0.44 : 0.24)
+                let collapsingWidth = !snap && next.rail.width < current.width
+                let duration = snap ? 0.22 : collapsingWidth ? ClientQuotaMorphGeometry.closingDuration + ClientQuotaMorphGeometry.settlingDuration : (expanding ? 0.44 : 0.24)
                 let started = CACurrentMediaTime()
                 let animationEdge = edge
                 let area = screen.visibleFrame
@@ -547,6 +548,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                     let reduceNow = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
                     let frame = reduceNow ? next.rail
                         : snap ? QuotaSidebarMotion.snapFrame(from: current, to: next.rail, time: time, area: area, scale: scale)
+                        : collapsingWidth ? QuotaSidebarMotion.collapseFrame(from: current, to: next.rail, time: time, edge: animationEdge, area: area, scale: scale)
                         : QuotaSidebarMotion.frame(from: current, to: next.rail, time: time,
                             expanding: expanding, edge: animationEdge, area: area, scale: scale)
                     self.presentedRailFrame = frame

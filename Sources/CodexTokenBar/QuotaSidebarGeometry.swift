@@ -245,6 +245,19 @@ enum QuotaSidebarMotion {
             : 1 - pow(1 - time, 3)
     }
 
+    /// Finish width/morph first, then tighten height. Each stage eases out;
+    /// the SwiftUI layout canvas remains frozen by the controller until settled.
+    static func collapseFrame(from: CGRect, to: CGRect, time: Double,
+                              edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
+        let split = ClientQuotaMorphGeometry.closingDuration / (ClientQuotaMorphGeometry.closingDuration + ClientQuotaMorphGeometry.settlingDuration)
+        let middle = CGRect(x: edge == .left ? from.minX : from.maxX - to.width,
+                            y: from.minY, width: to.width, height: from.height)
+        if time < split {
+            return frame(from: from, to: middle, time: time / split, expanding: false, edge: edge, area: area, scale: scale)
+        }
+        return frame(from: middle, to: to, time: (time - split) / (1 - split), expanding: false, edge: edge, area: area, scale: scale)
+    }
+
     static func frame(from: CGRect, to: CGRect, time: Double, expanding: Bool,
                       edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
         if time >= 1 { return to }

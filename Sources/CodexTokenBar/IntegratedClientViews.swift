@@ -167,6 +167,11 @@ struct ClientPairedQuotaRing: View {
                     Text(left.value).font(.system(size: 14, weight: .medium, design: .rounded)).monospacedDigit()
                 }
             }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
+                .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { anchor in
+                    var values = ["ring:" + left.id: anchor]
+                    if let right { values["ring:" + right.id] = anchor }
+                    return values
+                }
             VStack(spacing: 3) {
                 HStack(spacing: 0) {
                     windowLabel(left)
