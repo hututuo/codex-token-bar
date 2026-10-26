@@ -50,6 +50,7 @@ struct DashboardView: View {
         ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
     }
     @State private var clientProjectionCache = ClientDashboardProjectionCache()
+    @State private var clientCostCache = ClientModelCostPeriodsCache()
     private var codexOnly: Bool { allowedClients == ["codex"] }
 
     @Environment(\.openWindow) private var openWindow
@@ -1055,9 +1056,9 @@ struct DashboardView: View {
         // sections retain their own state; ScrollViewReader still targets the
         // chart's stable ID when jumping from the radar card.
         let display = clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: allowedClients)
-        let costs = codexOnly ? nil : ClientModelCostPeriods.make(codex: store.snapshot,
+        let costs = codexOnly ? nil : clientCostCache.value(codex: store.snapshot,
             todayCodex: store.todayModelBreakdowns, rows: clients.summaries, today: clients.todaySummaries,
-            sevenDay: clients.sevenDaySummaries, allowed: allowedClients)
+            sevenDay: clients.sevenDaySummaries, clientsUpdatedAt: clients.updatedAt, allowed: allowedClients)
         LazyVStack(spacing: 18) {
             ClientScopePicker()
             HeaderView(

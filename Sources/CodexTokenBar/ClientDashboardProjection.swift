@@ -154,3 +154,33 @@ final class ClientDashboardProjectionCache {
         return result
     }
 }
+
+/// One presentation result, invalidated by source generations and rolling time.
+/// Hover/radar/progress publications must not reprice every historical request.
+@MainActor
+final class ClientModelCostPeriodsCache {
+    private struct Key: Equatable {
+        let source: String?
+        let generation: Int64?
+        let generatedAt: Date
+        let clientsUpdatedAt: Date?
+        let minute: Int64
+        let allowed: Set<String>
+        let todayCodex: [ModelTokenBreakdown]
+    }
+    private var key: Key?
+    private var cached: ClientModelCostPeriods?
+    private(set) var computationCount = 0
+    func value(codex: DashboardSnapshot, todayCodex: [ModelTokenBreakdown],
+               rows: [ClientUsageSummary], today: [ClientUsageSummary], sevenDay: [ClientUsageSummary],
+               clientsUpdatedAt: Date?, allowed: Set<String>, now: Date = Date()) -> ClientModelCostPeriods {
+        let next = Key(source: codex.homeIdentity, generation: codex.exactGeneration,
+            generatedAt: codex.generatedAt, clientsUpdatedAt: clientsUpdatedAt,
+            minute: Int64(floor(now.timeIntervalSince1970 / 60)), allowed: allowed, todayCodex: todayCodex)
+        if next == key, let cached { return cached }
+        let result = ClientModelCostPeriods.make(codex: codex, todayCodex: todayCodex,
+            rows: rows, today: today, sevenDay: sevenDay, allowed: allowed, now: now)
+        key = next; cached = result; computationCount += 1
+        return result
+    }
+}

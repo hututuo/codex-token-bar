@@ -90,6 +90,12 @@ struct CodexTokenBarApp: App {
             DashboardWindowCommands()
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesMenuItem(updater: updaterController.updater)
+#if DEBUG
+                if ClientPreviewMode.simulated {
+                    Button("诊断侧栏动效（5次）") { dashboardRuntime.replaySidebarForDiagnostics() }
+                    Button("诊断侧栏快速反向（5次）") { dashboardRuntime.replaySidebarForDiagnostics(rapid: true) }
+                }
+#endif
 
                 Divider()
 

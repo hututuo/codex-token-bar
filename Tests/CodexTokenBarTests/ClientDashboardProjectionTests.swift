@@ -63,6 +63,34 @@ final class ClientDashboardProjectionTests: XCTestCase {
         XCTAssertEqual(RecentChartViewportGeometry.offset(originX: 0, viewportWidth: 980, contentWidth: 980, positioned: false), 0)
     }
 
+    @MainActor
+    func testCostProjectionReusesResultsButInvalidatesScopeSourceAndRollingWindow() {
+        let cache = ClientModelCostPeriodsCache()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = DashboardSnapshot.empty
+        let row = ClientUsageSummary(client: .claudeCode, model: "claude-sonnet-4-6", inputTokens: 1000, outputTokens: 20,
+            cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: nil, requests: 1, lastSeen: now, incompleteFields: false, apiCostUSD: 0.05, cacheReadComplete: true)
+        func value(_ allowed: Set<String> = ["codex", "claudeCode"], time: Date? = nil, updated: Date? = nil,
+                   todayCodex: [ModelTokenBreakdown] = []) -> ClientModelCostPeriods {
+            cache.value(codex: snapshot, todayCodex: todayCodex, rows: [row], today: [row], sevenDay: [row],
+                clientsUpdatedAt: updated ?? now, allowed: allowed, now: time ?? now)
+        }
+        let first = value()
+        for _ in 0..<120 { XCTAssertEqual(value(), first) }
+        XCTAssertEqual(cache.computationCount, 1)
+        XCTAssertTrue(value(["codex"]).lifetime.isEmpty)
+        XCTAssertEqual(cache.computationCount, 2)
+        _ = value(time: now.addingTimeInterval(61))
+        XCTAssertEqual(cache.computationCount, 3)
+        _ = value(time: now.addingTimeInterval(61), updated: now.addingTimeInterval(1))
+        XCTAssertEqual(cache.computationCount, 4)
+        let todayRow = ModelTokenBreakdown(model: "gpt-6-luna", breakdown: .init(inputTokens: 100, cachedInputTokens: 0,
+            outputTokens: 10, reasoningOutputTokens: 0, totalTokens: 110, calls: 1))
+        let refreshed = value(time: now.addingTimeInterval(61), updated: now.addingTimeInterval(1), todayCodex: [todayRow])
+        XCTAssertEqual(cache.computationCount, 5)
+        XCTAssertTrue(refreshed.today.contains { $0.id.hasPrefix("codex|") })
+    }
+
     func testModelCostPeriodsAreSeparateAndRetainClientIdentity() {
         let now = Date()
         let row = ClientUsageSummary(client: .claudeCode, model: "claude-sonnet-4-6", inputTokens: 1000, outputTokens: 20,

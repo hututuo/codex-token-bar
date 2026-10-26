@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
@@ -38,6 +39,50 @@ final class QuotaSidebarRevealTests: XCTestCase {
     }
 
     @MainActor
+    func testRadarGateKeepsFixedHostingSizeThroughoutReveal() {
+        let surface = QuotaSidebarSignalSurface { _ in Color.clear }
+        surface.glow.isHidden = false
+        let canvas = QuotaSidebarCanvasView(host: NSView(), edge: .left, signal: surface)
+        let gateSize = surface.stateHost.frame.size
+        for index in 0...60 {
+            let amount = Double(index) / 60
+            canvas.setFrameSize(CGSize(width: 16 + 72 * amount, height: 182 + 398 * amount))
+            surface.layout()
+            XCTAssertEqual(surface.stateHost.frame.size, gateSize,
+                           "Only the native stroke may resize, never its SwiftUI state gate")
+            XCTAssertEqual(surface.glow.frame, surface.bounds)
+        }
+        surface.glow.stopObserving()
+    }
+
+    @MainActor
+    func testCompositorRevealDoesNotRelayoutViewsDuringDisplayTicks() {
+        for edge in [QuotaSidebarEdge.left, .right] {
+            let host = NSView(); host.wantsLayer = true
+            let canvas = QuotaSidebarCanvasView(host: host, edge: edge)
+            let reveal = QuotaSidebarRevealView(canvas: canvas)
+            reveal.frame = CGRect(x: 0, y: 0, width: 88, height: 580)
+            let start = reveal.bounds
+            let end = CGRect(x: edge == .left ? 0 : 72, y: 199, width: 16, height: 182)
+            reveal.animate(frames: [start, end], keyTimes: [0, 1], duration: 0.3)
+            XCTAssertTrue(reveal.isAnimatingPresentation)
+            XCTAssertNotNil(canvas.layer?.animation(forKey: "sidebarRevealBounds"))
+            XCTAssertNotNil(host.layer?.animation(forKey: "sidebarRevealPosition"))
+            let nativeFrame = canvas.frame, hostFrame = host.frame
+            for index in 0...60 {
+                reveal.updateInputBounds(CGRect(x: 0, y: 0, width: 16 + Double(index), height: 300))
+                reveal.layout()
+                XCTAssertEqual(canvas.frame, nativeFrame)
+                XCTAssertEqual(host.frame, hostFrame)
+            }
+            reveal.present(nil)
+            XCTAssertFalse(reveal.isAnimatingPresentation)
+            XCTAssertNil(canvas.layer?.animation(forKey: "sidebarRevealBounds"))
+            XCTAssertNil(host.layer?.animation(forKey: "sidebarRevealPosition"))
+        }
+    }
+
+    @MainActor
     func testNativeRevealDoesNotResizeTheWindowOnEachVisualFrameAndReversesContinuously() throws {
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             throw XCTSkip("Animated transition contract; system Reduce Motion is enabled")
@@ -64,7 +109,7 @@ final class QuotaSidebarRevealTests: XCTestCase {
             monitor: LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false),
             quota: AccountQuotaStore(userDefaults: defaults, observesUserDefaults: false),
             tasks: TaskCompletionMonitor(defaults: defaults), radar: CodexRadarStore(detailRefreshDefaults: defaults),
-            history: QuotaHistoryStore(), edge: .right)
+            history: QuotaHistoryStore(), edge: .left)
         defer { controller.close() }
         let panel = try XCTUnwrap(controller.railPanel)
         let reveal = try XCTUnwrap(panel.contentView as? QuotaSidebarRevealView)
@@ -79,10 +124,13 @@ final class QuotaSidebarRevealTests: XCTestCase {
         controller.togglePin() // Real pointer movement must not cancel this controlled transition.
         wait(until: { (controller.presentedRailFrame?.width ?? 0) > 28 })
         let visual = try XCTUnwrap(controller.presentedRailFrame)
-        XCTAssertEqual(reveal.canvas.frame, visual.offsetBy(dx: -panel.frame.minX, dy: -panel.frame.minY))
+        XCTAssertTrue(reveal.isAnimatingPresentation)
+        XCTAssertNotNil(reveal.animatedVisualFrame)
+        let fixedCanvas = reveal.canvas.frame
         let envelope = panel.frame
         wait(until: { (controller.presentedRailFrame?.width ?? 0) > visual.width + 8 })
         XCTAssertEqual(panel.frame, envelope, "Visual ticks must not call NSWindow.setFrame")
+        XCTAssertEqual(reveal.canvas.frame, fixedCanvas, "Visual ticks must not call NSView.setFrame either")
 
         // Invoke only this test panel's handler, with no system mouse injection
         // and no mouse-up. Its bounded polling must resume the frozen reveal.
@@ -100,9 +148,11 @@ final class QuotaSidebarRevealTests: XCTestCase {
         wait(until: { (controller.presentedRailFrame ?? panel.frame).width > beforePress.width })
         XCTAssertGreaterThan((controller.presentedRailFrame ?? panel.frame).width, beforePress.width,
                              "A missing mouse-up must not leave the reveal frozen")
-        let beforeReverse = try XCTUnwrap(controller.presentedRailFrame)
+        let beforeReverse = try XCTUnwrap(reveal.animatedVisualFrame).offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
         controller.dismiss()
-        XCTAssertEqual(controller.presentedRailFrame, beforeReverse, "Reverse from the visible frame, not the envelope")
+        let reversed = try XCTUnwrap(controller.presentedRailFrame)
+        XCTAssertEqual(reversed.width, beforeReverse.width, accuracy: 4, "Reverse from the compositor pose, not the model endpoint")
+        XCTAssertEqual(reversed.midY, beforeReverse.midY, accuracy: 4)
         wait(until: { controller.presentedRailFrame == nil && panel.frame.width == 16 })
         XCTAssertNil(controller.presentedRailFrame)
         XCTAssertEqual(panel.frame.width, 16)

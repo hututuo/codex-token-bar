@@ -110,6 +110,37 @@ final class QuotaSidebarRadarGlowView: NSView {
         gradient.position = CGPoint(x: bounds.midX, y: bounds.midY)
         for item in [pulse, stroke, gradient, strokeMask, clip, halo] { item.contentsScale = scale }
     }
+    // The state gate remains 1pt; only these existing compositor layers follow
+    // the clip. No SwiftUI or NSView resize is needed on display ticks.
+    func animateReveal(sizes: [CGSize], keyTimes: [Double], duration: Double) {
+        guard sizes.count > 1, sizes.count == keyTimes.count else { return }
+        func add(_ layer: CALayer?, _ path: String, _ values: [Any]) {
+            guard let layer else { return }
+            let animation = CAKeyframeAnimation(keyPath: path)
+            animation.values = values; animation.keyTimes = keyTimes.map { NSNumber(value: $0) }
+            animation.duration = duration; animation.calculationMode = .linear
+            animation.fillMode = .forwards; animation.isRemovedOnCompletion = false
+            layer.add(animation, forKey: "sidebarReveal." + path)
+        }
+        let rects = sizes.map { CGRect(origin: .zero, size: $0) }
+        add(layer, "bounds", rects.map { NSValue(rect: $0) })
+        let anchor = layer?.anchorPoint ?? .zero
+        add(layer, "position", rects.map { NSValue(point: CGPoint(x: $0.width * anchor.x, y: $0.height * anchor.y)) })
+        let side = sizes.map { hypot($0.width, $0.height) }.max() ?? 0
+        gradient.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        add(clip, "path", rects.map { Self.path(in: $0, radius: min(22, max(8, 8 + ($0.width - 16) * 14 / 72)), edge: edge) })
+        let paths = rects.map { Self.path(in: $0.insetBy(dx: 0.75, dy: 0.75),
+            radius: min(22, max(8, 8 + ($0.width - 16) * 14 / 72)) - 0.75, edge: edge) }
+        add(strokeMask, "path", paths); add(halo, "path", paths)
+        add(gradient, "position", rects.map { NSValue(point: CGPoint(x: $0.midX, y: $0.midY)) })
+    }
+    func stopReveal() {
+        for item in [layer, clip, strokeMask, halo, gradient] {
+            for path in ["bounds", "position", "path"] { item?.removeAnimation(forKey: "sidebarReveal." + path) }
+        }
+        geometry = nil; updateGeometry()
+    }
+
     static func path(in rect: CGRect, radius: CGFloat, edge: QuotaSidebarEdge) -> CGPath {
         let r = max(0, min(radius, rect.width / 2, rect.height / 2))
         let left = edge == .right ? r : 0, right = edge == .left ? r : 0

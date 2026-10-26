@@ -118,8 +118,8 @@ enum ClientQuotaProjection {
 enum ClientSidebarMetrics {
     static let ringSize = 46.0
     static let ringStroke = 3.0
-    static let capWidth = 4.0
-    static let capHeight = 2.0
+    static let trackWidth = 4.0
+    static let markerDiameter = 5.0
     static let capGap = 0.0
     static func trackHeight(_ total: Double) -> Double { max(2, total) }
 }

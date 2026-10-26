@@ -241,24 +241,32 @@ enum QuotaSidebarMotion {
         MatchedStrokeMorphTiming.progress(time, expanding: expanding)
     }
 
-    /// Finish width/morph first, then tighten height. Each stage eases out;
-    /// the SwiftUI layout canvas remains frozen by the controller until settled.
+    /// Width and height start together. The stroke/width reaches its compact
+    /// pose at 180ms; height eases continuously across the whole reveal.
     static func collapseFrame(from: CGRect, to: CGRect, time: Double,
                               edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
         let split = ClientQuotaMorphGeometry.closingDuration / (ClientQuotaMorphGeometry.closingDuration + ClientQuotaMorphGeometry.settlingDuration)
-        let middle = CGRect(x: edge == .left ? from.minX : from.maxX - to.width,
-                            y: from.minY, width: to.width, height: from.height)
-        if time < split {
-            return frame(from: from, to: middle, time: time / split, expanding: false, edge: edge, area: area, scale: scale)
-        }
-        return frame(from: middle, to: to, time: (time - split) / (1 - split), expanding: false, edge: edge, area: area, scale: scale)
+        let phase = min(1, max(0, time))
+        let vertical = interpolatedFrame(from: from, to: to, progress: phase * phase * (3 - 2 * phase),
+                                         edge: edge, area: area, scale: scale)
+        let horizontal = frame(from: from, to: to, time: time / split, expanding: false,
+                               edge: edge, area: area, scale: scale)
+        return CGRect(x: horizontal.minX, y: vertical.minY, width: horizontal.width, height: vertical.height)
     }
 
     static func frame(from: CGRect, to: CGRect, time: Double, expanding: Bool,
                       edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
         if time >= 1 { return to }
         if time <= 0 { return from }
-        let p = CGFloat(progress(time, expanding: expanding))
+        return interpolatedFrame(from: from, to: to, progress: progress(time, expanding: expanding),
+                                 edge: edge, area: area, scale: scale)
+    }
+
+    private static func interpolatedFrame(from: CGRect, to: CGRect, progress: Double,
+                                          edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
+        if progress >= 1 { return to }
+        if progress <= 0 { return from }
+        let p = CGFloat(progress)
         let safeScale = scale.isFinite && scale > 0 ? scale : 1
         let left = ceil(area.minX * safeScale) / safeScale
         let right = floor(area.maxX * safeScale) / safeScale

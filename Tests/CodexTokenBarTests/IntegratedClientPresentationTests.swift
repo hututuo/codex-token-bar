@@ -24,7 +24,8 @@ final class IntegratedClientPresentationTests: XCTestCase {
         for total in [8.0, 24, 46] {
             XCTAssertEqual(ClientSidebarMetrics.trackHeight(total), total)
         }
-        XCTAssertEqual(ClientSidebarMetrics.capWidth, ClientSidebarMetrics.capHeight * 2)
+        XCTAssertEqual(ClientSidebarMetrics.trackWidth, 4)
+        XCTAssertGreaterThan(ClientSidebarMetrics.markerDiameter, ClientSidebarMetrics.trackWidth)
         XCTAssertEqual(ClientSidebarMetrics.capGap, 0)
         XCTAssertEqual(ClientSidebarMetrics.ringSize, 46)
     }

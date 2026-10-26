@@ -99,6 +99,11 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var frameAnimationGeneration = 0
     // Screen-space visual bounds while a fixed native window contains the reveal.
     private(set) var presentedRailFrame: CGRect?
+    private var currentPresentationFrame: CGRect? {
+        guard let panel = railPanel,
+              let rect = (panel.contentView as? QuotaSidebarRevealView)?.animatedVisualFrame else { return presentedRailFrame }
+        return rect.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
+    }
     private var dashboardOpenAction: (() -> Void)?
     private var makeRail: (() -> AnyView)?
     private var makeDetail: (() -> AnyView)?
@@ -142,8 +147,9 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             // Explicit native geometry owns these windows, including 16 pt
             // collapse; SwiftUI's intrinsic minimum must not resize them.
             railHost.sizingOptions = []
-            let signal = QuotaSidebarSignalHost(rootView: QuotaSidebarNativeSignal(controller: self, radar: radar))
-            signal.sizingOptions = []
+            let signal = QuotaSidebarSignalSurface { glow in
+                QuotaSidebarNativeSignal(controller: self, radar: radar, glow: glow)
+            }
             railPanel?.contentView = QuotaSidebarRevealView(canvas: QuotaSidebarCanvasView(host: railHost, edge: edge, signal: signal))
             quotaObservation = quota.$snapshot.sink { [weak self] snapshot in
                 self?.updateQuotaSnapshot(snapshot)
@@ -240,6 +246,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     private func finishCollapse() {
+        let probe = SidebarMotionProbe.stamp(); defer { SidebarMotionProbe.elapsed(probe, "collapseRebase") }
         guard isCollapsing, !interaction.expanded else { return }
         isCollapsing = false
         // Rearm the next opening only after reaching the compact frame. This
@@ -256,7 +263,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         guard let panel = railPanel, !isTrackingPress else { return false }
         // Expanded controls must receive AppKit's original down/up sequence.
         // Replaying it after a nested drag loop can lose SwiftUI button tracking.
-        let visualFrame = presentedRailFrame ?? panel.frame
+        let visualFrame = currentPresentationFrame ?? panel.frame
         let visualPoint = CGPoint(x: down.locationInWindow.x + panel.frame.minX - visualFrame.minX,
                                   y: down.locationInWindow.y + panel.frame.minY - visualFrame.minY)
         guard QuotaSidebarPressRouting.shouldTrackDrag(expanded: interaction.expanded,
@@ -434,8 +441,9 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         if settle { settleRailPresentation() }
     }
 
-    private func settleRailPresentation() {
-        guard let panel = railPanel, let visual = presentedRailFrame else { return }
+    private func settleRailPresentation(target: CGRect? = nil) {
+        let probe = SidebarMotionProbe.stamp(); defer { SidebarMotionProbe.elapsed(probe, "nativeSettle") }
+        guard let panel = railPanel, let visual = target ?? currentPresentationFrame else { return }
         presentedRailFrame = nil
         if panel.frame != visual { panel.setFrame(visual, display: false, animate: false) }
         (panel.contentView as? QuotaSidebarRevealView)?.present(nil)
@@ -446,7 +454,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         guard let panel = railPanel else { return }
         // Transparent envelope pixels must not intercept another application's
         // click. The compact endpoint returns to an actual 16pt native window.
-        let ignore = presentedRailFrame.map { !$0.contains(NSEvent.mouseLocation) } ?? false
+        let ignore = currentPresentationFrame.map { !$0.contains(NSEvent.mouseLocation) } ?? false
         if panel.ignoresMouseEvents != ignore { panel.ignoresMouseEvents = ignore }
     }
 
@@ -502,7 +510,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if reducedMotion { cancelFrameAnimation() }
         if previous?.rail != next.rail || (frameAnimationTask == nil && (railPanel.frame != next.rail || presentedRailFrame != nil)) {
-            let current = presentedRailFrame ?? railPanel.frame
+            let current = currentPresentationFrame ?? railPanel.frame
             // Reversals keep the exact subpixel visual position. Shrinking the
             // native envelope first would round it and cause a visible jump.
             cancelFrameAnimation(settle: false)
@@ -518,7 +526,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                 let expanding = next.rail.width > current.width || next.rail.height > current.height
                 let collapsingWidth = !snap && next.rail.width < current.width
                 let duration = snap ? 0.22 : collapsingWidth ? ClientQuotaMorphGeometry.closingDuration + ClientQuotaMorphGeometry.settlingDuration : (expanding ? 0.44 : 0.24)
-                let started = CACurrentMediaTime()
+                SidebarMotionProbe.begin(snap ? "snap" : collapsingWidth ? "close" : "open", duration: duration)
                 let animationEdge = edge
                 let area = screen.visibleFrame
                 let scale = screen.backingScaleFactor
@@ -534,6 +542,20 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                 let envelope = railPanel.frame
                 (railPanel.contentView as? QuotaSidebarRevealView)?.present(current.offsetBy(dx: -envelope.minX, dy: -envelope.minY))
                 updateRevealInputRegion()
+                // Submit the entire reveal once. A busy main thread must not
+                // freeze the clip while the independently animated quota moves.
+                func visualFrame(_ time: Double) -> CGRect {
+                    let rect = snap ? QuotaSidebarMotion.snapFrame(from: current, to: next.rail, time: time, area: area, scale: scale)
+                        : collapsingWidth ? QuotaSidebarMotion.collapseFrame(from: current, to: next.rail, time: time, edge: animationEdge, area: area, scale: scale)
+                        : QuotaSidebarMotion.frame(from: current, to: next.rail, time: time,
+                            expanding: expanding, edge: animationEdge, area: area, scale: scale)
+                    return rect.offsetBy(dx: -envelope.minX, dy: -envelope.minY)
+                }
+                let keyTimes = Array(Set((0...60).map { Double($0) / 60 }
+                    + (collapsingWidth ? [ClientQuotaMorphGeometry.closingDuration / duration] : []))).sorted()
+                (railPanel.contentView as? QuotaSidebarRevealView)?.animate(
+                    frames: keyTimes.map(visualFrame), keyTimes: keyTimes, duration: duration)
+                let started = CACurrentMediaTime()
                 frameAnimationTask = clock
                 clock.start(screen: screen) { [weak self, weak railPanel] in
                     guard let self, let railPanel, self.frameAnimationGeneration == generation,
@@ -552,10 +574,10 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                         : QuotaSidebarMotion.frame(from: current, to: next.rail, time: time,
                             expanding: expanding, edge: animationEdge, area: area, scale: scale)
                     self.presentedRailFrame = frame
-                    (railPanel.contentView as? QuotaSidebarRevealView)?.present(frame.offsetBy(dx: -envelope.minX, dy: -envelope.minY))
+                    (railPanel.contentView as? QuotaSidebarRevealView)?.updateInputBounds(frame.offsetBy(dx: -envelope.minX, dy: -envelope.minY))
                     self.updateRevealInputRegion()
                     if time >= 1 || reduceNow {
-                        self.settleRailPresentation()
+                        self.settleRailPresentation(target: next.rail)
                         // Allow the final compact frame to be presented before
                         // the next display tick applies the hidden content size.
                         if self.isCollapsing && !reduceNow {
@@ -604,8 +626,17 @@ private final class QuotaSidebarFrameClock: NSObject {
         self.link = link
         link.add(to: .main, forMode: .common)
     }
-    @objc private func tick() { if step?() != true { cancel() } }
-    func cancel() { link?.invalidate(); link = nil; step = nil }
+    @objc private func tick() {
+#if DEBUG
+        let started = CACurrentMediaTime(), budget = (link?.targetTimestamp ?? 0) - (link?.timestamp ?? 0)
+#endif
+        let keep = step?() == true
+#if DEBUG
+        SidebarMotionProbe.tick(started, work: (CACurrentMediaTime() - started) * 1000, budget: budget)
+#endif
+        if !keep { cancel() }
+    }
+    func cancel() { link?.invalidate(); link = nil; step = nil; SidebarMotionProbe.finish() }
 }
 
 
@@ -615,6 +646,10 @@ private final class QuotaSidebarFrameClock: NSObject {
 final class QuotaSidebarRevealView: NSView {
     let canvas: QuotaSidebarCanvasView
     private var visualBounds: CGRect?
+    private var compositorActive = false
+    var animatedVisualFrame: CGRect? {
+        compositorActive ? canvas.layer?.presentation()?.frame : nil
+    }
     init(canvas: QuotaSidebarCanvasView) {
         self.canvas = canvas
         super.init(frame: .zero)
@@ -624,17 +659,66 @@ final class QuotaSidebarRevealView: NSView {
     }
     required init?(coder: NSCoder) { nil }
     func present(_ rect: CGRect?) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        compositorActive = false
+        for view in [canvas, canvas.host, canvas.dragHandle] {
+            view.layer?.removeAnimation(forKey: "sidebarRevealBounds")
+            view.layer?.removeAnimation(forKey: "sidebarRevealPosition")
+            view.layer?.removeAnimation(forKey: "sidebarRevealRadius")
+        }
+        (canvas.signal as? QuotaSidebarRevealSignal)?.stopReveal()
         visualBounds = rect
         layoutCanvas()
+    }
+    func updateInputBounds(_ rect: CGRect) { visualBounds = rect }
+    var isAnimatingPresentation: Bool { compositorActive }
+    func animate(frames: [CGRect], keyTimes: [Double], duration: Double) {
+        guard frames.count > 1, frames.count == keyTimes.count, let last = frames.last else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        present(last)
+        canvas.layoutSubtreeIfNeeded()
+        compositorActive = true
+        visualBounds = frames.first
+        func add(_ layer: CALayer?, _ path: String, _ values: [Any], _ key: String) {
+            guard let layer else { return }
+            let animation = CAKeyframeAnimation(keyPath: path)
+            animation.values = values; animation.keyTimes = keyTimes.map { NSNumber(value: $0) }
+            animation.duration = duration; animation.calculationMode = .linear
+            // Keep the final pose if the main thread is late to do native cleanup.
+            animation.fillMode = .forwards; animation.isRemovedOnCompletion = false
+            layer.add(animation, forKey: key)
+        }
+        func position(_ rect: CGRect, _ layer: CALayer?) -> NSValue {
+            let anchor = layer?.anchorPoint ?? .zero
+            return NSValue(point: CGPoint(x: rect.minX + rect.width * anchor.x,
+                                          y: rect.minY + rect.height * anchor.y))
+        }
+        add(canvas.layer, "bounds", frames.map { NSValue(rect: CGRect(origin: .zero, size: $0.size)) }, "sidebarRevealBounds")
+        add(canvas.layer, "position", frames.map { position($0, canvas.layer) }, "sidebarRevealPosition")
+        add(canvas.layer, "cornerRadius", frames.map { NSNumber(value: Double(min(22, max(8, 8 + ($0.width - 16) * 14 / 72)))) }, "sidebarRevealRadius")
+        add(canvas.host.layer, "position", frames.map {
+            position(CGRect(x: canvas.edge == .right ? $0.width - 88 : 0,
+                            y: ($0.height - canvas.canvasHeight) / 2, width: 88, height: canvas.canvasHeight), canvas.host.layer)
+        }, "sidebarRevealPosition")
+        let grips = frames.map { QuotaSidebarPressRouting.dragHandleFrame(in: CGRect(origin: .zero, size: $0.size)) }
+        add(canvas.dragHandle.layer, "position", grips.map { position($0, canvas.dragHandle.layer) }, "sidebarRevealPosition")
+        add(canvas.dragHandle.layer, "bounds", grips.map { NSValue(rect: CGRect(origin: .zero, size: $0.size)) }, "sidebarRevealBounds")
+        (canvas.signal as? QuotaSidebarRevealSignal)?.animateReveal(sizes: frames.map(\.size), keyTimes: keyTimes, duration: duration)
     }
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); layoutCanvas() }
     override func layout() { super.layout(); layoutCanvas() }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        guard (visualBounds ?? bounds).contains(local) else { return nil }
+        guard (animatedVisualFrame ?? visualBounds ?? bounds).contains(local) else { return nil }
+        if compositorActive {
+            return canvas.host.hitTest(canvas.convert(local, from: self))
+        }
         return super.hitTest(point)
     }
     private func layoutCanvas() {
+        guard !compositorActive else { return }
         let rect = visualBounds ?? bounds
         CATransaction.begin(); CATransaction.setDisableActions(true)
         if canvas.frame.size != rect.size { canvas.setFrameSize(rect.size) }
@@ -666,6 +750,7 @@ final class QuotaSidebarCanvasView: NSView {
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); layoutCanvas() }
     override func layout() { super.layout(); layoutCanvas() }
     private func layoutCanvas() {
+        let probe = SidebarMotionProbe.stamp(); defer { SidebarMotionProbe.elapsed(probe, "canvasLayout") }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let hostFrame = CGRect(x: edge == .right ? bounds.width - 88 : 0,
                                y: (bounds.height - canvasHeight) / 2, width: 88, height: canvasHeight)
@@ -704,16 +789,67 @@ final class QuotaSidebarDragHandleView: NSView {
 }
 
 
+/// Keep the clock/data gate at a fixed size. Resizing an NSHostingView here
+/// invalidated SwiftUI layout on every reveal frame, even when radar was off.
 @MainActor
-private final class QuotaSidebarSignalHost<Content: View>: NSHostingView<Content> {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+protocol QuotaSidebarRevealSignal {
+    func animateReveal(sizes: [CGSize], keyTimes: [Double], duration: Double)
+    func stopReveal()
 }
+
+@MainActor
+final class QuotaSidebarSignalSurface<Content: View>: NSView, QuotaSidebarRevealSignal {
+    let glow = QuotaSidebarRadarGlowView()
+    let stateHost: NSHostingView<Content>
+    init(@ViewBuilder content: (QuotaSidebarRadarGlowView) -> Content) {
+        stateHost = NSHostingView(rootView: content(glow))
+        super.init(frame: .zero)
+        wantsLayer = true
+        autoresizesSubviews = false
+        glow.isHidden = true
+        stateHost.sizingOptions = []
+        stateHost.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        addSubview(stateHost); addSubview(glow)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func layout() { super.layout(); layoutGlow() }
+    override func setFrameSize(_ size: NSSize) { super.setFrameSize(size); layoutGlow() }
+    private func layoutGlow() {
+        if !glow.isHidden, glow.frame != bounds { glow.frame = bounds }
+    }
+    func animateReveal(sizes: [CGSize], keyTimes: [Double], duration: Double) {
+        guard !glow.isHidden else { return }
+        glow.animateReveal(sizes: sizes, keyTimes: keyTimes, duration: duration)
+    }
+    func stopReveal() { glow.stopReveal() }
+}
+
+private struct QuotaSidebarSignalGate: NSViewRepresentable {
+    let glow: QuotaSidebarRadarGlowView
+    let active: Bool
+    let edge: QuotaSidebarEdge
+    let expanded: Bool
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ view: NSView, context: Context) {
+        glow.isHidden = !active
+        if active {
+            if let bounds = glow.superview?.bounds, glow.frame != bounds { glow.frame = bounds }
+            glow.configure(edge: edge, expanded: expanded)
+        } else { glow.setMotionActive(false) }
+    }
+}
+
 private struct QuotaSidebarNativeSignal: View {
     @ObservedObject var controller: QuotaSidebarController
     @ObservedObject var radar: CodexRadarStore
+    let glow: QuotaSidebarRadarGlowView
     var body: some View {
-        QuotaSidebarRadarOutline(edge: controller.edge, expanded: controller.interaction.expanded,
-            snapshot: radar.snapshot, stale: radar.staleDataDisplayed, updatedAt: radar.lastSuccessfulRefreshAt)
-            .allowsHitTesting(false).accessibilityHidden(true)
+        TimelineView(QuotaSidebarRadarPresentation.schedule(radar.snapshot, updatedAt: radar.lastSuccessfulRefreshAt)) { tick in
+            QuotaSidebarSignalGate(glow: glow,
+                active: QuotaSidebarRadarPresentation.windowState(radar.snapshot, stale: radar.staleDataDisplayed,
+                    updatedAt: radar.lastSuccessfulRefreshAt, now: tick.date).active,
+                edge: controller.edge, expanded: controller.interaction.expanded)
+        }.allowsHitTesting(false).accessibilityHidden(true)
     }
 }

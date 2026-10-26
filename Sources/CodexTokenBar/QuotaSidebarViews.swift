@@ -48,22 +48,22 @@ private struct SidebarValueBar: View {
     }
 }
 
-/// Color only the existing capsule's top semicircle; no added cap, gap or slot.
+/// A brighter client dot overlaps the top of the original continuous track.
 struct ClientQuotaRailTrack: View {
     let item: ClientQuotaItem
     let height: Double
     let fillHex: String
     var body: some View {
-        MatchedStrokeMorphParticipant(ids: [item.id], size: CGSize(width: ClientSidebarMetrics.capWidth, height: height)) {
+        MatchedStrokeMorphParticipant(ids: [item.id], size: CGSize(width: ClientSidebarMetrics.markerDiameter, height: height)) {
         SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
             color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true, expected: item.expected)
-            .frame(width: ClientSidebarMetrics.capWidth, height: height)
+            .frame(width: ClientSidebarMetrics.trackWidth, height: height)
             .overlay(alignment: .top) {
-                Circle().fill(Color(nsColor: NSColor(clientHex: item.brand)))
-                    .frame(width: ClientSidebarMetrics.capWidth, height: ClientSidebarMetrics.capWidth)
-                    .mask(alignment: .top) { Rectangle().frame(height: ClientSidebarMetrics.capHeight) }
+                Circle().fill(Color(nsColor: NSColor(clientHex: item.brand).blended(withFraction: 0.2, of: .white) ?? NSColor(clientHex: item.brand)))
+                    .frame(width: ClientSidebarMetrics.markerDiameter, height: ClientSidebarMetrics.markerDiameter)
                     .allowsHitTesting(false)
             }
+            .frame(width: ClientSidebarMetrics.markerDiameter, height: height)
         }
     }
 }

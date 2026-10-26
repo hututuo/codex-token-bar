@@ -122,6 +122,7 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
         MatchedStrokeMorphHostView(content: content)
     }
     func updateNSView(_ view: MatchedStrokeMorphHostView, context: Context) {
+        let probe = SidebarMotionProbe.stamp(); defer { SidebarMotionProbe.elapsed(probe, "nativeHostUpdate") }
         view.host.rootView = content
         if view.host.frame.size != size { view.host.setFrameSize(size) }
         if view.registry !== registry { view.registry?.unregister(view.key) }
