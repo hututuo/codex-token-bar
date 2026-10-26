@@ -51,3 +51,7 @@ Evidence: `2026-10-25-agent-speed-websocket.md` (especially final installed Wind
 ## Subsequent local display extension
 
 Source-only algorithm selection, Claude Code/DSH local colored bars, display-only stop/staleness filtering and persistent custom colors are documented in [the display receipt](2026-10-26-speed-display-modes.md). Raw Agent Speed reports remain independent of local filtering. Formal applications were not replaced or restarted; this does not close installed Windows acceptance.
+
+## Subsequent installed Mac acceptance
+
+After explicit user authorization, Mac build960 was installed and exercised with real local readings. See [the installation receipt](2026-10-26-speed-display-build960.md). Reporting preferences, immutable data, and the independent multi-client preview were preserved. Windows installation and public release remain separate gates.

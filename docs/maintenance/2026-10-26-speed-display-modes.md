@@ -1,6 +1,6 @@
 # 本地速度切换与多客户端彩条（2026-10-26）
 
-当前为源码和组件验证，未替换或重启正式应用，未发布；未合入 `codex/multi-client-tokens`。
+本文为源码和组件验证记录。用户随后授权替换，Mac已安装[build960](2026-10-26-speed-display-build960.md)；Windows安装版未替换。未发布，未合入 `codex/multi-client-tokens`。
 
 ## 产品行为
 
