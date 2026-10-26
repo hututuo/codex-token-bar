@@ -1,0 +1,86 @@
+{
+  "acceptedReports" : 2,
+  "attemptedReports" : 3,
+  "cleanupHTTPStatus" : 200,
+  "clientApp" : "CodexTokenBar",
+  "connectionReady" : true,
+  "error" : "ACK missing for sequence 3",
+  "lastStatus" : "WebSocket 重新连接中 · 未确认数据已丢弃",
+  "limits" : {
+    "browserNotMeasured" : true,
+    "crossMachineClocksNotCalibrated" : true,
+    "formalTenMinuteBenchmark" : false,
+    "smallSample" : true,
+    "sourceObservationNotMeasured" : true
+  },
+  "measuredAt" : "2026-10-26T05:22:39Z",
+  "pingRoundTrip" : {
+    "count" : 1,
+    "maxMs" : 474,
+    "minMs" : 474,
+    "p50Ms" : 474,
+    "p95Ms" : 474
+  },
+  "pingSamplesMs" : [
+    474
+  ],
+  "platform" : "macOS",
+  "productionDeviceReused" : false,
+  "productionPreferencesChanged" : false,
+  "registration" : true,
+  "samples" : [
+    {
+      "buildToAckMs" : 665,
+      "packingMs" : 0,
+      "sendToAckMs" : 655,
+      "sequence" : 1,
+      "serverProcessingMs" : 8,
+      "signingAndSchedulingMs" : 10
+    },
+    {
+      "buildToAckMs" : 1282,
+      "packingMs" : 0,
+      "sendToAckMs" : 1272,
+      "sequence" : 2,
+      "serverProcessingMs" : 4,
+      "signingAndSchedulingMs" : 10
+    }
+  ],
+  "terminal" : "",
+  "warmBuildToAck" : {
+    "count" : 1,
+    "maxMs" : 1282,
+    "minMs" : 1282,
+    "p50Ms" : 1282,
+    "p95Ms" : 1282
+  },
+  "warmPacking" : {
+    "count" : 1,
+    "maxMs" : 0,
+    "minMs" : 0,
+    "p50Ms" : 0,
+    "p95Ms" : 0
+  },
+  "warmSendToAck" : {
+    "count" : 1,
+    "maxMs" : 1272,
+    "minMs" : 1272,
+    "p50Ms" : 1272,
+    "p95Ms" : 1272
+  },
+  "warmServerProcessing" : {
+    "count" : 1,
+    "maxMs" : 4,
+    "minMs" : 4,
+    "p50Ms" : 4,
+    "p95Ms" : 4
+  },
+  "warmSigningAndScheduling" : {
+    "count" : 1,
+    "maxMs" : 10,
+    "minMs" : 10,
+    "p50Ms" : 10,
+    "p95Ms" : 10
+  },
+  "zeroUsage" : true
+}

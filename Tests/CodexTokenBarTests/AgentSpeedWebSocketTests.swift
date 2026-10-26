@@ -30,14 +30,20 @@ final class AgentSpeedWebSocketTests: XCTestCase {
     func testACKRequiresRunSequenceHashAndIsConsumedOnce() throws {
         let run = ReportCanonical.newUUID(), body = Data("{}".utf8)
         var ledger = SpeedSocketLedger(runID: run)
-        XCTAssertTrue(ledger.reserve(seq: 1, body: body, at: 0, limit: 8)); ledger.pending[1]?.sentAt = 1
+        XCTAssertTrue(ledger.reserve(seq: 1, body: body, at: 0, limit: 8))
+        ledger.pending[1]?.signedAt = 2; ledger.pending[1]?.sentAt = 3
         let ack = #"{"type":"ack","run":{"id":"RUN","seq":1},"status":"accepted","bodySha256":"HASH","receivedAt":"2026-10-25T10:00:00.000Z","acceptedAt":"2026-10-25T10:00:00.001Z","processingMs":1}"#
             .replacingOccurrences(of: "RUN", with: run).replacingOccurrences(of: "HASH", with: SpeedSocketLedger.hash(body))
         for wrong in [ack.replacingOccurrences(of: run, with: ReportCanonical.newUUID()), ack.replacingOccurrences(of: "\"seq\":1", with: "\"seq\":2"), ack.replacingOccurrences(of: SpeedSocketLedger.hash(body), with: String(repeating: "0", count: 64)), ack.replacingOccurrences(of: "accepted\"", with: "queued\"")] {
             XCTAssertFalse(ledger.acknowledge(try XCTUnwrap(JSONParser.parse(wrong).object)))
             XCTAssertEqual(ledger.pending.count, 1)
         }
-        XCTAssertTrue(ledger.acknowledge(try XCTUnwrap(JSONParser.parse(ack).object)))
+        XCTAssertTrue(ledger.acknowledge(try XCTUnwrap(JSONParser.parse(ack).object), at: 13))
+        XCTAssertEqual(ledger.lastTiming?.signingAndSchedulingMs, 2)
+        XCTAssertEqual(ledger.lastTiming?.packingMs, 1)
+        XCTAssertEqual(ledger.lastTiming?.sendToAckMs, 10)
+        XCTAssertEqual(ledger.lastTiming?.serverProcessingMs, 1)
+        XCTAssertEqual(ledger.lastTiming?.buildToAckMs, 13)
         XCTAssertFalse(ledger.acknowledge(try XCTUnwrap(JSONParser.parse(ack).object)))
         XCTAssertEqual(ledger.counters.accepted, 1)
     }

@@ -34,6 +34,10 @@ Current status reconciles earlier source-only and blocked snapshots; the histori
 - PASS: Swift 13 XCTest cases plus 15 Swift Testing cases; 3 explicit-public-network tests skipped. React invitation tests: 4 passed; TypeScript / Vite build passed. These are local simulations/regressions, not fresh installed-app or public leaderboard acceptance. Windows backend local self-tests also pass, including nonzero signed HTTP body after fallback, known/unknown cost deltas, status/error preservation, transport/security/rate-limit exclusions, and the long-normal-connection versus sleep-gap distinction. The exact Rust status parsing regression passed and verifies both waiting state and preserved WS preference during HTTP fallback.
 - Existing performance source fixes remain in place; this change does not claim new whole-page FPS or physical sleep/network-switch acceptance. Formal applications were not replaced/restarted; no release.
 
+## Latency retest update
+
+A subsequent native zero-usage test now records signing/scheduling, socket-to-ACK and server processing separately. Warm retry: 31/31 ACKs, build-to-ACK p50 441ms / p95 896ms; signing p50 11ms; server-reported processing p50 6ms; Ping p50 410ms. One earlier instrumented attempt missed its third ACK and is retained. Current path RTT does not meet the <=50ms prerequisite; formal source-read-to-commit 100ms acceptance remains unproven. See [the complete retest](2026-10-26-websocket-latency-retest.md).
+
 ## Original audit list (historical snapshot, superseded above)
 
 1. At audit time, Windows idle WS state retained “registering” after registration while waiting for source activity (now fixed in source). Correct the state message, keeping idle waiting and power behavior intact. This is a display bug, not evidence of registration failure.

@@ -13,7 +13,16 @@ struct SpeedSocketPending {
     let hash: String
     let builtAt: Int64
     let observedAt: Int64?
+    var signedAt: Int64?
     var sentAt: Int64?
+}
+struct SpeedSocketTiming {
+    let sequence: Int
+    let buildToAckMs: Int64
+    let signingAndSchedulingMs: Int64
+    let packingMs: Int64
+    let sendToAckMs: Int64
+    let serverProcessingMs: Int64
 }
 /// Bounded ACK ledger contains hashes/times only. A socket generation never adopts another's ACKs.
 struct SpeedSocketLedger {
@@ -21,13 +30,14 @@ struct SpeedSocketLedger {
     let runID: String
     var pending: [Int: SpeedSocketPending] = [:]
     var counters = SpeedSocketCounters()
+    private(set) var lastTiming: SpeedSocketTiming?
     mutating func reserve(seq: Int, body: Data, at now: Int64, limit: Int, observedAt: Int64? = nil) -> Bool {
         counters.built += 1
         guard pending.count < limit else { counters.dropped += 1; return false }
         pending[seq] = .init(hash: Self.hash(body), builtAt: now, observedAt: observedAt)
         return true
     }
-    mutating func acknowledge(_ object: [String: JSONValue]) -> Bool {
+    mutating func acknowledge(_ object: [String: JSONValue], at now: Int64? = nil) -> Bool {
         guard object["type"]?.string == "ack", let run = object["run"]?.object,
               run["id"]?.string == runID, let literal = run["seq"]?.literal, literal.isInteger,
               let seq = literal.int64, seq > 0, let pending = pending[Int(seq)], pending.sentAt != nil,
@@ -37,6 +47,12 @@ struct SpeedSocketLedger {
               let accepted = object["acceptedAt"]?.string, ReportWebSocketConfiguration.isTimestamp(accepted),
               let processing = object["processingMs"]?.literal, processing.isInteger,
               let ms = processing.int64, (0...900000).contains(ms) else { return false }
+        if let now, let signedAt = pending.signedAt, let sentAt = pending.sentAt,
+           pending.builtAt <= signedAt, signedAt <= sentAt, sentAt <= now {
+            lastTiming = .init(sequence: Int(seq), buildToAckMs: now - pending.builtAt,
+                signingAndSchedulingMs: signedAt - pending.builtAt, packingMs: sentAt - signedAt,
+                sendToAckMs: now - sentAt, serverProcessingMs: ms)
+        }
         self.pending[Int(seq)] = nil
         if status == "accepted" { counters.accepted += 1 } else { counters.duplicate += 1 }
         return true
@@ -249,7 +265,7 @@ final class AgentSpeedWebSocket {
             guard case .string(let text) = message, text.utf8.count <= config.maxMessageBytes,
                   let object = try JSONParser.parse(Data(text.utf8), maxDepth: 32, rejectDuplicateKeys: true).object else { throw Failure.protocolError }
             if object["type"]?.string == "ack" {
-                if ledger.acknowledge(object) {
+                if ledger.acknowledge(object, at: Self.tick) {
                     let now = Self.tick
                     if ackStableSince == nil { ackStableSince = now }
                     if now - (ackStableSince ?? now) >= 60000 { failures = 0 }
@@ -282,6 +298,22 @@ final class AgentSpeedWebSocket {
     }
     /// No application queue. A built window consumes its sequence even if it is dropped here.
     func dropBuiltWindow() { ledger.counters.built += 1; ledger.counters.dropped += 1 }
+    /// Explicit diagnostics only; ordinary reporting does not issue extra Pings.
+    func pingRoundTripMs() async throws -> Int64 {
+        guard ready, let receiver else { throw Failure.retry }
+        let id = connectionID, start = Self.tick
+        let elapsed: Int64 = try await withCheckedThrowingContinuation { continuation in
+            receiver.sendPing { error in
+                if let error { continuation.resume(throwing: error) }
+                else {
+                    let end = Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000)
+                    continuation.resume(returning: end - start)
+                }
+            }
+        }
+        guard ready, id == connectionID else { throw Failure.retry }
+        return elapsed
+    }
     func submit(body: Data, seq: Int, observedAt: Int64? = nil) {
         guard ready, let socket = receiver else { ledger.counters.dropped += 1; return }
         let id = connectionID, now = Self.tick
@@ -291,6 +323,7 @@ final class AgentSpeedWebSocket {
             do {
                 let signed = try await makeRequest("POST", api.appending(endpoint: ReportEndpoint.reports), body)
                 guard ready, id == connectionID, Self.tick - min(now, observedAt ?? now) <= 1000 else { ledger.pending[seq] = nil; ledger.counters.dropped += 1; return }
+                ledger.pending[seq]?.signedAt = Self.tick
                 let headers = signed.headers.filter { [ReportCanonical.deviceHeader,ReportCanonical.timestampHeader,ReportCanonical.nonceHeader,ReportCanonical.signatureHeader].contains($0.name) }
                 let outer = ReportJSON.object(["type": .string("report"), "headers": .object(headers.map { .init($0.name,.string($0.value)) }), "body": .string(String(decoding: body, as: UTF8.self))]).compactData
                 guard body.count <= 16384, outer.count <= config.maxMessageBytes else { ledger.pending[seq] = nil; ledger.counters.dropped += 1; return }
