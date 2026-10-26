@@ -7,6 +7,7 @@ import {
   migrateSidebarLayout,
   moveSidebarItem,
   normalizeSidebarLayout,
+  setSidebarItemLevelVisible,
 } from './sidebarLayoutModel.ts';
 
 test('default layout has the shared canonical order and hides client usage', () => {
@@ -19,6 +20,8 @@ test('default layout has the shared canonical order and hides client usage', () 
     version: 1,
     order: [...DEFAULT_SIDEBAR_LAYOUT.order],
     hidden: ['clientUsage'],
+    hiddenCompact: [],
+    hiddenExpanded: [],
   });
 });
 
@@ -27,12 +30,16 @@ test('normalization deduplicates, rejects invalid IDs, appends defaults, and pre
     version: 1,
     order: ['quota:later', 'tasks', 'quota:later', 'quota:bad/name', 'bad', 'models'],
     hidden: ['quota:future', 'quota:future', 'quota:', 'models'],
+    hiddenCompact: ['tasks', 'tasks', 'quota:future', 'quota:bad/name'],
+    hiddenExpanded: ['models', 'models'],
   });
   assert.deepEqual(layout.order, [
     'quota:later', 'tasks', 'models', 'modeltrace', 'speed', 'tps',
     'quota:codex', 'quota:claudeCode', 'radar', 'credits', 'clientUsage',
   ]);
   assert.deepEqual(layout.hidden, ['quota:future', 'models']);
+  assert.deepEqual(layout.hiddenCompact, ['tasks', 'quota:future']);
+  assert.deepEqual(layout.hiddenExpanded, ['models']);
   assert.deepEqual(normalizeSidebarLayout({ version: 1, hidden: [] }).hidden, []);
 });
 
@@ -88,6 +95,30 @@ test('visibility and drag moves preserve hidden state and use before/after targe
     'speed', 'modeltrace', 'tps',
   ]);
   assert.deepEqual(moveSidebarItem(config, 'missing', 'models', false), config);
+});
+
+test('level visibility preserves legacy master-hidden state on the other level', () => {
+  const legacyHidden = normalizeSidebarLayout({ version: 1, hidden: ['tasks'] });
+  assert.equal(isSidebarItemVisible(legacyHidden, 'tasks'), false);
+  assert.equal(isSidebarItemVisible(legacyHidden, 'tasks', 'compact'), false);
+  assert.equal(isSidebarItemVisible(legacyHidden, 'tasks', 'expanded'), false);
+
+  const showCompact = setSidebarItemLevelVisible(legacyHidden, 'tasks', 'compact', true);
+  assert.deepEqual(showCompact.hidden, []);
+  assert.deepEqual(showCompact.hiddenCompact, []);
+  assert.deepEqual(showCompact.hiddenExpanded, ['tasks']);
+  assert.equal(isSidebarItemVisible(showCompact, 'tasks'), true);
+  assert.equal(isSidebarItemVisible(showCompact, 'tasks', 'compact'), true);
+  assert.equal(isSidebarItemVisible(showCompact, 'tasks', 'expanded'), false);
+
+  const showExpanded = setSidebarItemLevelVisible(showCompact, 'tasks', 'expanded', true);
+  assert.equal(isSidebarItemVisible(showExpanded, 'tasks', 'compact'), true);
+  assert.equal(isSidebarItemVisible(showExpanded, 'tasks', 'expanded'), true);
+
+  const hideOnlyCompact = setSidebarItemLevelVisible(showExpanded, 'tasks', 'compact', false);
+  assert.equal(isSidebarItemVisible(hideOnlyCompact, 'tasks'), true);
+  assert.equal(isSidebarItemVisible(hideOnlyCompact, 'tasks', 'compact'), false);
+  assert.equal(isSidebarItemVisible(hideOnlyCompact, 'tasks', 'expanded'), true);
 });
 
 test('a newly detected client can be moved before its first persisted placement',()=>{

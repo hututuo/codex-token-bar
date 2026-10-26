@@ -1,5 +1,5 @@
 import type { QuotaItem } from "../multiClient/integratedClientModel";
-import { arrangedSidebarItems, isSidebarItemVisible, type SidebarLayoutConfig } from "./sidebarLayoutModel";
+import { arrangedSidebarItems, isSidebarItemVisible, type SidebarLayoutConfig, type SidebarVisibilityLevel } from "./sidebarLayoutModel";
 
 export function quotaWindowsForClient(quotas: readonly QuotaItem[], client: string): QuotaItem[] {
   const rank = (q: QuotaItem) => q.window === "5h" ? 0 : q.window === "7d" ? 1 : 2;
@@ -11,13 +11,27 @@ export function sidebarLayoutItems(layout: SidebarLayoutConfig, quotas: readonly
     (id.startsWith("quota:") ? clients.has(id.slice(6)) : true) &&
     (hasCodex || (id !== "speed" && id !== "models")));
 }
-export function visibleSidebarItems(layout: SidebarLayoutConfig, quotas: readonly QuotaItem[], hasCodex = true): string[] {
-  return sidebarLayoutItems(layout, quotas, hasCodex).filter(id => isSidebarItemVisible(layout, id));
+export function visibleSidebarItems(
+  layout: SidebarLayoutConfig,
+  quotas: readonly QuotaItem[],
+  hasCodex = true,
+  level: SidebarVisibilityLevel = "expanded",
+): string[] {
+  return sidebarLayoutItems(layout, quotas, hasCodex).filter(id => isSidebarItemVisible(layout, id, level));
 }
 export function compactSidebarIDs(items: readonly string[], quotas: readonly QuotaItem[]): string[] {
   return items.flatMap(id => id.startsWith("quota:")
     ? quotaWindowsForClient(quotas, id.slice(6)).map(q => q.id)
-    : id === "speed" || id === "models" ? [id] : []);
+    : id === "speed" || id === "models" || id === "tasks" ? [id] : []);
+}
+export function sidebarTaskStateLabel(total: number | null | undefined, status: string): string {
+  const count = typeof total === "number" && Number.isFinite(total)
+    ? `${Math.max(0, Math.floor(total))} 个`
+    : "数量未知";
+  if (status === "ready") return `运行任务：${count}，数据最新`;
+  if (status === "stale") return `运行任务：最近数据显示 ${count}，数据已过期`;
+  if (status === "scanning") return `运行任务：正在更新，${count}`;
+  return `运行任务：${count}，状态未知`;
 }
 export function fixedSidebarRailLayout(trackCount: number, availableHeight = 900) {
   const count = Math.max(0, Math.floor(trackCount));

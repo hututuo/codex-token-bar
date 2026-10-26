@@ -3,6 +3,27 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaSidebarItemLayoutTests: XCTestCase {
+    func testLegacyHiddenItemCanEnableOneLevelWithoutEnablingTheOther() throws {
+        let raw = Data(##"{"version":1,"order":["quota:codex"],"hidden":["quota:codex","clientUsage"]}"##.utf8)
+        var value = try XCTUnwrap(QuotaSidebarItemLayout.decode(raw))
+        XCTAssertFalse(value.isVisible(.quota("codex"), in: .compact))
+        XCTAssertFalse(value.isVisible(.quota("codex"), in: .expanded))
+        value.setVisible(.quota("codex"), in: .compact, visible: true)
+        XCTAssertTrue(value.isVisible(.quota("codex"), in: .compact))
+        XCTAssertFalse(value.isVisible(.quota("codex"), in: .expanded))
+        value.setVisible(.quota("codex"), in: .expanded, visible: true)
+        value.setVisible(.quota("codex"), in: .compact, visible: false)
+        XCTAssertFalse(value.isVisible(.quota("codex"), in: .compact))
+        XCTAssertTrue(value.isVisible(.quota("codex"), in: .expanded))
+        value.setVisible(.clientUsage, in: .expanded, visible: true)
+        XCTAssertFalse(value.isVisible(.clientUsage, in: .compact), "No invented first-level representation")
+        XCTAssertTrue(value.isVisible(.clientUsage, in: .expanded))
+        let restored = try XCTUnwrap(QuotaSidebarItemLayout.decode(JSONEncoder().encode(value)))
+        XCTAssertEqual(restored, value)
+        value.move(.quota("codex"), relativeTo: .tasks, after: true)
+        XCTAssertEqual(value.hiddenCompact, restored.hiddenCompact)
+        XCTAssertEqual(value.hiddenExpanded, restored.hiddenExpanded)
+    }
     func testMigrationSplitsOldBlocksAndPreservesClientOrderAndVisibility() {
         let value = QuotaSidebarItemLayout.migrate(
             moduleOrder: [.tasks, .overview, .speeds, .modeltrace, .radar, .credits, .clientUsage],
@@ -20,13 +41,13 @@ final class QuotaSidebarItemLayoutTests: XCTestCase {
         var value = QuotaSidebarItemLayout()
         value.move(.quota("claudeCode"), relativeTo: .speed, after: false)
         var items = value.arranged(availableQuotaClients: ["codex", "claudeCode"]).filter(value.isVisible)
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["claudeCode:5h", "claudeCode:7d", "speed", "codex:7d", "models"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["claudeCode:5h", "claudeCode:7d", "speed", "codex:7d", "models", "tasks"])
         value.hidden.insert(QuotaSidebarItem.quota("claudeCode").id)
         items = value.arranged(availableQuotaClients: ["codex", "claudeCode"]).filter(value.isVisible)
         XCTAssertFalse(items.contains(.quota("claudeCode")))
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["speed", "codex:7d", "models"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["speed", "codex:7d", "models", "tasks"])
         value.hidden.insert(QuotaSidebarItem.tps.id)
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items.filter(value.isVisible), quotas: quotas), ["speed", "codex:7d", "models"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items.filter(value.isVisible), quotas: quotas), ["speed", "codex:7d", "models", "tasks"])
     }
 
     func testTemporaryMissingClientDoesNotEraseItsPlacementOrHiddenChoice() throws {
@@ -70,20 +91,25 @@ final class QuotaSidebarItemLayoutTests: XCTestCase {
         oldQuota.colors = ["codex:7d": "#123456"]
         defaults.set(oldOrder, forKey: "quotaSidebarModuleOrder")
         defaults.set(oldHidden, forKey: "quotaSidebarHiddenModules")
-        defaults.set(oldQuota.encoded, forKey: ClientQuotaSelection.key)
+        let oldQuotaRaw = oldQuota.encoded
+        defaults.set(oldQuotaRaw, forKey: ClientQuotaSelection.key)
         let controller = QuotaSidebarController(settings: defaults)
         XCTAssertNotNil(defaults.data(forKey: QuotaSidebarItemLayout.key))
         XCTAssertEqual(Array(controller.sidebarLayout.order.prefix(3)), ["tasks", "quota:claudeCode", "quota:codex"])
         controller.moveSidebarItem(.quota("codex"), relativeTo: .tasks, after: false)
         controller.setSidebarItemVisible(.speed, visible: false)
+        controller.setSidebarItemVisible(.speed, in: .compact, visible: true)
+        XCTAssertTrue(controller.sidebarLayout.isVisible(.speed, in: .compact))
+        XCTAssertFalse(controller.sidebarLayout.isVisible(.speed, in: .expanded))
         XCTAssertTrue(controller.sidebarLayout.isVisible(.tps), "Live speed and body TPS are independently visible")
         let restored = QuotaSidebarController(settings: defaults)
         XCTAssertEqual(restored.sidebarLayout, controller.sidebarLayout)
         XCTAssertEqual(defaults.stringArray(forKey: "quotaSidebarModuleOrder"), oldOrder)
         XCTAssertEqual(defaults.stringArray(forKey: "quotaSidebarHiddenModules"), oldHidden)
-        XCTAssertEqual(defaults.string(forKey: ClientQuotaSelection.key), oldQuota.encoded)
+        XCTAssertEqual(defaults.string(forKey: ClientQuotaSelection.key), oldQuotaRaw)
         restored.resetSidebarItemOrder()
-        XCTAssertFalse(restored.sidebarLayout.isVisible(.speed))
+        XCTAssertTrue(restored.sidebarLayout.isVisible(.speed, in: .compact))
+        XCTAssertFalse(restored.sidebarLayout.isVisible(.speed, in: .expanded))
     }
 
     @MainActor func testReusableDragHandleAcceptsFirstMouseInNonactivatingPanel() {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import { Window } from 'happy-dom';
 import { withSsrModules } from '../test/ssrHarness.mjs';
-import { normalizeSidebarLayout, DEFAULT_SIDEBAR_LAYOUT } from './sidebarLayoutModel.ts';
+import { normalizeSidebarLayout, DEFAULT_SIDEBAR_LAYOUT, isSidebarItemVisible } from './sidebarLayoutModel.ts';
 
 test('unified settings sort on drop, keep visibility, and mount compact preview only when opened',async()=>{
  const dom=new Window(),keys=['window','document','navigator','HTMLElement','Element','IS_REACT_ACT_ENVIRONMENT'];
@@ -19,7 +19,9 @@ test('unified settings sort on drop, keep visibility, and mount compact preview 
    const render=()=>root.render(React.createElement(SidebarModuleSettings,{layout,catalog,selection,onLayout:next=>{writes++;layout=next;render();},onSelection:next=>{selection=next;render();},compactPreview:React.createElement('b',{'data-preview':'compact'},'compact')}));
    await React.act(async()=>render());
    assert.equal(dom.document.querySelectorAll('[data-layout-item]').length,10);
-   assert.equal(dom.document.querySelectorAll('input[type=checkbox]').length,13);
+   assert.ok(dom.document.querySelector('[aria-label="一级显示运行任务"]'));
+   assert.equal(dom.document.querySelectorAll('input[type=checkbox]').length,18);
+   assert.equal(dom.document.querySelector('[aria-label="一级显示正文 TPS"]'),null);
    assert.equal(dom.document.querySelector('[data-preview]'),null);
    assert.doesNotMatch(dom.document.body.textContent,/长条|短条|点箭头/);
    const speed=()=>dom.document.querySelector('[aria-label="拖动排序：实时速度"]');
@@ -30,12 +32,19 @@ test('unified settings sort on drop, keep visibility, and mount compact preview 
    await React.act(async()=>speed().dispatchEvent(new dom.KeyboardEvent('keydown',{key:' ',bubbles:true})));
    assert.equal(writes,1);
    assert.deepEqual(layout.order.slice(0,3),['modeltrace','tps','speed']);
-   await React.act(async()=>dom.document.querySelector('[aria-label="显示正文 TPS"]').click());
-   assert.ok(layout.hidden.includes('tps'));
+   await React.act(async()=>dom.document.querySelector('[aria-label="二级显示正文 TPS"]').click());
+   assert.equal(isSidebarItemVisible(layout,'tps','expanded'),false);
    assert.ok(!layout.hidden.includes('speed'),'body TPS does not hide live speed');
+   await React.act(async()=>dom.document.querySelector('[aria-label="一级显示实时速度"]').click());
+   assert.equal(isSidebarItemVisible(layout,'speed','compact'),false);
+   assert.equal(isSidebarItemVisible(layout,'speed','expanded'),true);
+   await React.act(async()=>dom.document.querySelector('[aria-label="二级显示Codex 额度"]').click());
+   assert.equal(isSidebarItemVisible(layout,'quota:codex','compact'),true);
+   assert.equal(isSidebarItemVisible(layout,'quota:codex','expanded'),false);
    await React.act(async()=>[...dom.document.querySelectorAll('button')].find(x=>x.textContent==='恢复默认顺序').click());
    assert.deepEqual(layout.order,DEFAULT_SIDEBAR_LAYOUT.order);
-   assert.ok(layout.hidden.includes('tps'),'reset order preserves hidden choices');
+   assert.equal(isSidebarItemVisible(layout,'tps','expanded'),false,'reset order preserves hidden choices');
+   assert.equal(isSidebarItemVisible(layout,'speed','compact'),false);
    const atWrites=writes;
    await React.act(async()=>speed().dispatchEvent(new dom.KeyboardEvent('keydown',{key:' ',bubbles:true})));
    await React.act(async()=>speed().dispatchEvent(new dom.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true})));

@@ -109,6 +109,7 @@ struct QuotaSidebarCompactBars: View {
     var rateFraction: Double? = nil
     var modelRates: [ModelRateContribution]? = nil
     var shares: [FloatingTodayModelUsageItem] = []
+    var taskStateLabel = "任务状态，非进度百分比"
     var colors: [String: String] = [:]
     var usesMorphAnchors = false
 
@@ -118,8 +119,14 @@ struct QuotaSidebarCompactBars: View {
                 Group {
                     switch item {
                     case .speed:
-                        SidebarValueBar(fraction: rateFraction, color: SidebarPalette.blue, vertical: true, modelRates: modelRates)
-                            .frame(width: 4, height: layout.barHeight).help("全会话实时速率（估算）")
+                        compactStroke(id: "speed") {
+                            SidebarValueBar(fraction: rateFraction, color: SidebarPalette.blue, vertical: true, modelRates: modelRates)
+                                .frame(width: 4, height: layout.barHeight)
+                        }.help("全会话实时速率（估算）")
+                    case .tasks:
+                        compactStroke(id: "tasks") {
+                            Capsule().fill(SidebarPalette.amber.opacity(0.5)).frame(width: 4, height: layout.barHeight)
+                        }.help(taskStateLabel).accessibilityLabel(taskStateLabel)
                     case let .quota(client):
                         ForEach(QuotaSidebarContentOrder.quotaWindows(quotas, client: client)) { quota in
                             if usesMorphAnchors {
@@ -133,6 +140,11 @@ struct QuotaSidebarCompactBars: View {
                 }
             }
         }.frame(width: 16).padding(.vertical, 15)
+    }
+
+    private func compactStroke<Content: View>(id: String, @ViewBuilder content: @escaping () -> Content) -> some View {
+        MatchedStrokeMorphParticipant(ids: [id], size: CGSize(width: 4, height: layout.barHeight), content: content)
+            .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { usesMorphAnchors ? ["track:" + id: $0] : [:] }
     }
 
     private func quotaTrack(_ item: ClientQuotaItem) -> some View {
@@ -167,8 +179,10 @@ struct QuotaSidebarRail: View {
     }
     private var sidebarItems: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: availableQuotaItems.map(\.client))
-            .filter { controller.sidebarLayout.isVisible($0) && (supportsCodex || ($0 != .speed && $0 != .models)) }
+            .filter { supportsCodex || ($0 != .speed && $0 != .models) }
     }
+    private var compactItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .compact) } }
+    private var expandedItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .expanded) } }
     private var quotaItems: [ClientQuotaItem] {
         sidebarItems.flatMap { item -> [ClientQuotaItem] in
             guard case let .quota(client) = item else { return [] }
@@ -176,7 +190,7 @@ struct QuotaSidebarRail: View {
         }
     }
     private func railLayout(_ height: CGFloat) -> ClientRailLayout {
-        .fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: sidebarItems, quotas: quotaItems).count,
+        .fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: compactItems, quotas: quotaItems).count,
                availableHeight: Double(height))
     }
     @StateObject private var morphRegistry = MatchedStrokeMorphRegistry()
@@ -184,12 +198,14 @@ struct QuotaSidebarRail: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var morphEnabled: Bool {
-        !reduceMotion && !controller.isDragging && cacheWarning == nil && !quotaItems.isEmpty
+        !reduceMotion && !controller.isDragging && cacheWarning == nil && sidebarItems.contains {
+            switch $0 { case .speed, .tasks, .quota: true; default: false }
+        }
     }
 
     private func morphRoutes(_ anchors: [String: Anchor<CGRect>], in proxy: GeometryProxy) -> [ClientQuotaMorphRoute] {
         let viewport = anchors["quota-viewport"].map { proxy[$0] }
-        return ClientQuotaRingGroup.make(quotaItems).flatMap { group -> [ClientQuotaMorphRoute] in
+        var routes = ClientQuotaRingGroup.make(quotaItems).flatMap { group -> [ClientQuotaMorphRoute] in
             let members = [(group.left, group.right == nil ? 0 : -1)] + (group.right.map { [($0, 1)] } ?? [])
             return members.compactMap { entry -> ClientQuotaMorphRoute? in
                 let (item, half) = entry
@@ -200,6 +216,24 @@ struct QuotaSidebarRail: View {
                     fraction: item.remaining.map { $0 / 100 }, color: NSColor(clientHex: quotaSelection.colors[item.id] ?? item.fill))
             }
         }
+        for item in [QuotaSidebarItem.speed, .tasks] where sidebarItems.contains(item) {
+            guard let source = anchors["ring:" + item.id], let target = anchors["track:" + item.id] else { continue }
+            let ring = proxy[source], track = proxy[target]
+            guard viewport?.contains(ring) != false else { continue }
+            if item == .speed {
+                var edge = 0.0
+                let segments = ModelRatePresentation.slices(monitor.totalSnapshot.modelRates).map { slice in
+                    let start = edge; edge += slice.share
+                    return ClientQuotaMorphColorSegment(id: "model:" + slice.model, start: start, end: edge, color: NSColor(slice.color))
+                }
+                routes.append(ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: 0,
+                    fraction: rateFraction, color: NSColor(ModelUsagePresentation.color(for: "unknown")), segments: segments))
+            } else {
+                routes.append(ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: 0, fraction: 1,
+                    color: NSColor(SidebarPalette.amber), expandedTrackOpacity: 0, collapsedTrackOpacity: 0, fillOpacity: 0.5))
+            }
+        }
+        return routes
     }
 
     private var cacheWarning: CacheUsageAdvice? {
@@ -239,7 +273,7 @@ struct QuotaSidebarRail: View {
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
                     ScrollView(.vertical) {
                         VStack(spacing: 7) {
-                            ForEach(sidebarItems) { item in
+                            ForEach(expandedItems) { item in
                                 moduleContent(item, shares: shares)
                                     .background {
                                         RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(controller.settingsHighlightedItem == item && controller.interaction.detail == .settings ? 0.055 : 0))
@@ -285,9 +319,9 @@ struct QuotaSidebarRail: View {
                 GeometryReader { geometry in
                     let layout = railLayout(geometry.size.height)
                     ScrollView(.vertical) {
-                        QuotaSidebarCompactBars(items: sidebarItems, quotas: quotaItems, layout: layout,
+                        QuotaSidebarCompactBars(items: compactItems, quotas: quotaItems, layout: layout,
                             rateFraction: clientScope == "codex" || clientScope == "all" ? Double(rateFraction) : nil,
-                            modelRates: monitor.totalSnapshot.modelRates, shares: shares, colors: quotaSelection.colors,
+                            modelRates: monitor.totalSnapshot.modelRates, shares: shares, taskStateLabel: "任务状态：" + runningText + "，非进度百分比", colors: quotaSelection.colors,
                             usesMorphAnchors: true)
                             .frame(minHeight: geometry.size.height)
                     }.scrollIndicators(.hidden)
@@ -351,7 +385,7 @@ struct QuotaSidebarRail: View {
             }
         case .clientUsage:
             VStack(spacing: 5) {
-                Text("客户端用量").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+                Text("累计 Token").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
                 MultiClientUsageSidebarRows(codexTokens: Int64(store.snapshot.stats.totalTokens),
                     onOpen: { controller.select(.overview, section: "usage") })
             }
@@ -379,7 +413,9 @@ struct QuotaSidebarRail: View {
             Button { controller.select(.tasks) } label: {
                 VStack(spacing: 5) {
                     ZStack {
-                        Circle().stroke(SidebarPalette.amber.opacity(0.5), lineWidth: 3)
+                        MatchedStrokeMorphParticipant(ids: ["tasks"], size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
+                            Circle().stroke(SidebarPalette.amber.opacity(0.5), lineWidth: 3)
+                        }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["ring:tasks": $0] }
                         Text(tasks.runningThreadSummary.freshness == .fresh ? "\(tasks.runningThreadSummary.total)" : "—").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(SidebarPalette.amber)
                     }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                     Text(runningText).font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
@@ -493,7 +529,9 @@ struct QuotaSidebarRail: View {
         Button { controller.select(.overview, section: "usage") } label: {
             VStack(spacing: 5) {
                 ZStack {
-                    SidebarValueRing(fraction: Double(rateFraction), color: SidebarPalette.blue, modelRates: monitor.totalSnapshot.modelRates)
+                    MatchedStrokeMorphParticipant(ids: ["speed"], size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
+                        SidebarValueRing(fraction: rateFraction, color: SidebarPalette.blue, modelRates: monitor.totalSnapshot.modelRates)
+                    }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["ring:speed": $0] }
                     Text("速率").font(.system(size: 11))
                 }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                 Text(rateText).font(.system(size: 11, weight: .medium, design: .rounded))

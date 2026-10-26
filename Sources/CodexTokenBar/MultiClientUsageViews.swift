@@ -120,7 +120,7 @@ struct MultiClientUsageSidebarRows: View {
     @AppStorage("multiClient.overviewSidebar") private var showOverview = false
     @ObservedObject private var store = MultiClientUsageStore.shared
     var body: some View {
-        if clientScope == "codex" {
+        if ClientDisplayScope.clients(clientScope, available: store.displayClientIDs).contains("codex") {
             Button { onOpen?() } label: {
                 VStack(spacing: 3) {
                     Text("Codex").font(.system(size: 9))

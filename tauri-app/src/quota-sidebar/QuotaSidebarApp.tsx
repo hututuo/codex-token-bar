@@ -4,8 +4,8 @@ import { LiveActivityRateHistory } from "../components/liveRate/LiveActivityRate
 import { modelUsageColor } from "../components/modelUsagePresentation";
 import { useSidebarLayout } from "./useSidebarLayout";
 import { SidebarCompactBars } from "./SidebarCompactBars";
-import { compactSidebarIDs, fixedSidebarRailLayout, quotaWindowsForClient, visibleSidebarItems } from "./sidebarLayoutPresentation";
-import { isSidebarLayoutItemId, migrateSidebarLayout, type SidebarLayoutConfig } from "./sidebarLayoutModel";
+import { compactSidebarIDs, fixedSidebarRailLayout, quotaWindowsForClient, sidebarTaskStateLabel, visibleSidebarItems } from "./sidebarLayoutPresentation";
+import { isSidebarItemVisible, isSidebarLayoutItemId, migrateSidebarLayout, type SidebarLayoutConfig } from "./sidebarLayoutModel";
 import { SidebarModuleSettings } from "./SidebarModuleSettings";
 import { ModelTraceContent } from "../modelTrace/ModelTracePanel";
 import { DEFAULT_MODULE_VISIBILITY, DEFAULT_MODULE_ORDER, type SidebarModuleVisibility, type SidebarModule } from "./moduleVisibility";
@@ -124,7 +124,7 @@ function RailSurface() {
   const compactData = useMemo(() => ({ ...sidebarData(data), trend, sourceToken }), [data.snapshot, data.runningThreads, data.quota.updatedAt, data.quota.account, data.quota.quota, trend, sourceToken]);
   const showsFiveHour = hasFiveHourQuota(data.snapshot.fiveHourAvailability, data.snapshot.fiveHourRemainingPercent);
   const { items: selectedQuotaItems, catalog: selectedQuotaCatalog } = useClientQuotaItems(data.quota.quota);
-  const compactHeight = fixedSidebarRailLayout(compactSidebarIDs(visibleSidebarItems(sidebar.layout, selectedQuotaItems, selectedQuotaCatalog.some(q => q.client === "codex")), selectedQuotaItems).length, 4096).height;
+  const compactHeight = fixedSidebarRailLayout(compactSidebarIDs(visibleSidebarItems(sidebar.layout, selectedQuotaItems, selectedQuotaCatalog.some(q => q.client === "codex"), "compact"), selectedQuotaItems).length, 4096).height;
   const heightBudget = useRef(createSidebarHeightBudget());
   const [expandedHeight, setExpandedHeight] = useState<number>();
   const currentMode = useRef(state.mode); currentMode.current = state.mode;
@@ -144,7 +144,7 @@ function RailSurface() {
   const measureContent = useCallback((measurement: SidebarContentMeasurement) => {
     // Ignore a queued measurement from the outgoing layer during collapse.
     if (currentMode.current === "rest") return;
-    const next = heightBudget.current.update({ ...measurement, speedRowHeight: !sidebar.layout.hidden.includes("tps") ? measurement.speedRowHeight : 0 }, true, rebaseHeight.current);
+    const next = heightBudget.current.update({ ...measurement, speedRowHeight: isSidebarItemVisible(sidebar.layout, "tps", "expanded") ? measurement.speedRowHeight : 0 }, true, rebaseHeight.current);
     rebaseHeight.current = false;
     setExpandedHeight(value => value === next ? value : next);
   }, [sidebar.layout]);
@@ -341,6 +341,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   }, [modelSpeeds]);
   const scopeHasCodex = allowedClients.includes("codex");
   const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex);
+  const compactItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex, "compact");
   const ratePercent = scopeHasCodex ? sidebarRatePercent(data.snapshot, liveRateEnabled, rateFullScale) : null;
   const { warning: cacheWarning, dismiss: dismissCacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice, liveRateEnabled && data.snapshot.liveRateAvailable === true);
   const rateLabel = !liveRateEnabled ? "实时速率已关闭" : ratePercent === null ? "实时速率不可用" : `实时速率 ${formatLiveRateValue(data.snapshot.tokensPerSecond)} t/s · 量程 ${sanitizeRateFullScale(rateFullScale)} t/s`;
@@ -358,8 +359,10 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   return <>
     <span className="qs-radar-edge" data-active={sidebarRadarIsActive(radar)} aria-hidden="true" />
     {state.mode !== "rest" && <div className="qs-drag-handle" role="img" aria-label="拖动侧栏，可移到其他屏幕" title="按住拖动侧栏，可移到其他屏幕"><span /></div>}
-    <SidebarCompactBars items={layoutItems} quotas={quotaItems} selection={quotaSelection} ratePercent={ratePercent}
+    <SidebarCompactBars items={compactItems} quotas={quotaItems} selection={quotaSelection} ratePercent={ratePercent}
       rateLabel={rateLabel} modelRates={data.snapshot.modelRates} models={models}
+      taskStatus={data.runningThreads.status}
+      taskLabel={sidebarTaskStateLabel(data.runningThreads.total, data.runningThreads.status)}
       expected={{"codex:5h":expectedFive,"codex:7d":expectedSeven}} visible={state.mode === "rest"}
       indicator={cacheWarning ? <span className="qs-cache-indicator" role="status" aria-label={"缓存命中偏低：" + cacheAdviceTitle(cacheWarning)} title={"缓存命中偏低 · " + cacheAdviceTitle(cacheWarning)}/> : undefined}/>
     <SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning} onMeasure={onContentMeasurement}>{() => {
@@ -485,7 +488,7 @@ function DetailSurface() {
   const { save: saveQuotaSelection } = useClientQuotaSelection();
   const highlightSetting = useCallback((id: string | null) => { void emitTo(railLabel, "sidebar-settings-highlight", id).catch(() => {}); }, []);
   const settingsDrag = useCallback((active: boolean) => { void emitTo(railLabel, "sidebar-settings-dragging", active).catch(() => {}); }, []);
-  const settingsItems = visibleSidebarItems(sidebar.layout, settingsQuotas, clientScope.allowed.includes("codex"));
+  const settingsItems = visibleSidebarItems(sidebar.layout, settingsQuotas, clientScope.allowed.includes("codex"), "compact");
   const action = (action: SidebarAction) => void emitTo(railLabel, "quota-sidebar-action", action.type === "open" ? { ...action, section: action.section || "top" } : action);
   return <main key={value?.state.mode === "detail" ? "open" : "closed"} className={`qs-detail qs-${value?.side ?? "right"}`} onPointerEnter={() => void emitTo(railLabel, "quota-sidebar-union-hover", true)} onPointerLeave={() => void emitTo(railLabel, "quota-sidebar-union-hover", false)}>
     {value === null ? <p className="qs-muted">正在读取侧栏快照…</p> : <>
@@ -497,7 +500,9 @@ function DetailSurface() {
         onLayout={next => void sidebar.save(next)} onSelection={saveQuotaSelection} onHighlight={highlightSetting} onDragState={settingsDrag}
         compactPreview={<SidebarCompactBars items={settingsItems} quotas={settingsQuotas} selection={settingsSelection}
           ratePercent={sidebarRatePercent(value.data.snapshot, true, DEFAULT_TOKEN_RATE_FULL_SCALE)}
-          modelRates={value.data.snapshot.modelRates} models={floatingTodayModelUsageItems(value.data.snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false }).filter(item => item.share > 0)} preview/>}
+          modelRates={value.data.snapshot.modelRates} models={floatingTodayModelUsageItems(value.data.snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false }).filter(item => item.share > 0)}
+          taskStatus={value.data.runningThreads.status}
+          taskLabel={sidebarTaskStateLabel(value.data.runningThreads.total, value.data.runningThreads.status)} preview/>}
         colorSettings={<ClientQuotaSettings codex={value.data.quota.quota} colorsOnly/>}/> : value.state.tab === "modeltrace" ? value.state.mode !== "detail" ? null : value.data.sourceToken ? <ModelTraceContent key={JSON.stringify(value.data.sourceToken)} sourceToken={value.data.sourceToken} compact/> : <p className="qs-muted">正在读取数据源…</p> : value.state.tab === "quota" && value.state.section === "speeds" ? clientScope.allowed.includes("codex") ? <><LiveActivityRateHistory snapshot={value.data.snapshot} sourceToken={value.data.sourceToken}/><ObservedSpeedDetails data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /></> : <p className="qs-muted">正文 TPS · 暂无该客户端的可用样本</p> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} /> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
       <footer><span>额度 · 用量 · 会话</span><span>{value.state.pinned ? "已固定 · 点击 × 收起" : "移出后收起 · 点击固定"}</span></footer>
       {value.error && <details className="qs-diagnostic"><summary>窗口状态说明</summary><p>{value.error}</p></details>}

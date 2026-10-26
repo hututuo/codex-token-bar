@@ -34,7 +34,7 @@ struct QuotaSidebarModuleSettingsView: View {
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var previewItems: [QuotaSidebarItem] {
         items.filter { item in
-            guard controller.sidebarLayout.isVisible(item) else { return false }
+            guard controller.sidebarLayout.isVisible(item, in: .compact) else { return false }
             return true
         }
     }
@@ -52,7 +52,7 @@ struct QuotaSidebarModuleSettingsView: View {
                 Spacer()
                 Button("恢复默认顺序") { controller.resetSidebarItemOrder() }.font(.system(size: 10))
             }
-            Text("拖动把手排序，勾选控制显示。指向一行，侧栏对应模块高亮。")
+            Text("拖动排序；一级、二级分别勾选。指向一行，侧栏对应模块高亮。")
                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.75))
             DisclosureGroup("查看收起后的一级外观", isExpanded: $compactPreviewOpen) {
                 if compactPreviewOpen { compactPreview }
@@ -61,11 +61,12 @@ struct QuotaSidebarModuleSettingsView: View {
             VStack(spacing: 7) {
                 ForEach(items) { item in
                     SidebarSettingsRow(item: item,
-                        visible: controller.sidebarLayout.isVisible(item),
+                        compactVisible: controller.sidebarLayout.isVisible(item, in: .compact),
+                        expandedVisible: controller.sidebarLayout.isVisible(item, in: .expanded),
                         highlighted: controller.settingsHighlightedItem == item,
                         dragging: draggedItem == item, placement: dropTarget?.item == item ? dropTarget?.after : nil,
                         windows: quotaWindows(for: item), selection: selection,
-                        onVisibility: { controller.setSidebarItemVisible(item, visible: $0) },
+                        onVisibility: { level, visible in controller.setSidebarItemVisible(item, in: level, visible: visible) },
                         onWindow: { id, visible in
                             var next = selection
                             if visible { next.hidden.remove(id); next.enabled.insert(id) }
@@ -148,13 +149,14 @@ private struct SidebarSettingsDropTarget: Equatable {
 
 private struct SidebarSettingsRow: View {
     let item: QuotaSidebarItem
-    let visible: Bool
+    let compactVisible: Bool
+    let expandedVisible: Bool
     let highlighted: Bool
     let dragging: Bool
     let placement: Bool?
     let windows: [ClientQuotaItem]
     let selection: ClientQuotaSelection
-    let onVisibility: (Bool) -> Void
+    let onVisibility: (QuotaSidebarLevel, Bool) -> Void
     let onWindow: (String, Bool) -> Void
     let onHover: () -> Void
     let onDragBegin: (UUID) -> Void
@@ -166,20 +168,21 @@ private struct SidebarSettingsRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 dragHandle
-                Toggle(isOn: Binding(get: { visible }, set: { onVisibility($0) })) {
-                    HStack(spacing: 5) {
+                HStack(spacing: 5) {
                         if case let .quota(client) = item {
                             Circle().fill(Color(nsColor: NSColor(clientHex: ClientBrand.hex(client)))).frame(width: 6, height: 6)
                         }
                         Text(item.title).font(.system(size: 11, weight: .medium))
-                    }
-                }.toggleStyle(.checkbox).tint(green)
-                    .accessibilityIdentifier("sidebar-item-visible-" + item.id)
+                }
                 Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(item.hasCompactRepresentation ? "收起也显示" : "展开时显示").foregroundStyle(.white.opacity(0.55))
-                    if highlighted { Text("侧栏高亮").foregroundStyle(green) }
-                }.font(.system(size: 9))
+                if item.hasCompactRepresentation {
+                    Toggle("一级", isOn: Binding(get: { compactVisible }, set: { onVisibility(.compact, $0) }))
+                        .toggleStyle(.checkbox).tint(green).font(.system(size: 10))
+                        .accessibilityLabel("一级显示" + item.title)
+                } else { Text("—").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4)).frame(width: 42).help("此模块只在二级菜单显示") }
+                Toggle("二级", isOn: Binding(get: { expandedVisible }, set: { onVisibility(.expanded, $0) }))
+                    .toggleStyle(.checkbox).tint(green).font(.system(size: 10))
+                    .accessibilityLabel("二级显示" + item.title)
             }
             if !windows.isEmpty {
                 HStack(spacing: 12) {
@@ -188,7 +191,7 @@ private struct SidebarSettingsRow: View {
                             .toggleStyle(.checkbox).tint(green).font(.system(size: 10))
                             .accessibilityIdentifier("sidebar-window-visible-" + window.id)
                     }
-                }.padding(.leading, 39).disabled(!visible)
+                }.padding(.leading, 24).disabled(!compactVisible && !expandedVisible)
             }
         }.padding(.horizontal, 9).padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)

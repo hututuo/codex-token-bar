@@ -271,4 +271,8 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .quota-sidebar-document .integrated-client-cap{width:5px;height:5px;border-radius:50%;top:0}
 .quota-sidebar-document .integrated-client-cap[data-window="5h"]{height:2.5px;border-radius:5px 5px 0 0}
 .qs-bars .qs-cache-indicator{left:1px;top:8px}
+.qs-layout-name{display:flex;align-items:center;gap:5px;flex:1;min-width:0;font-size:11px}
+.qs-level-toggles{display:flex;align-items:center;gap:10px;font-size:10px;flex:none}
+.qs-level-toggles>label{display:flex;align-items:center;gap:3px;white-space:nowrap}
+.qs-level-toggles>span{width:38px;text-align:center;color:#829078}
 @media(prefers-reduced-motion:reduce){.qs-linked-item,.qs-linked-settings *{transition:none!important}}

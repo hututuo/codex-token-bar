@@ -2,12 +2,18 @@ export interface SidebarLayoutConfig {
   version: 1;
   order: readonly string[];
   hidden: readonly string[];
+  hiddenCompact?: readonly string[];
+  hiddenExpanded?: readonly string[];
 }
 
 export interface SidebarLayout extends SidebarLayoutConfig {
   order: string[];
   hidden: string[];
+  hiddenCompact: string[];
+  hiddenExpanded: string[];
 }
+
+export type SidebarVisibilityLevel = "compact" | "expanded";
 
 export const DEFAULT_SIDEBAR_LAYOUT = Object.freeze({
   version: 1 as const,
@@ -24,6 +30,8 @@ export const DEFAULT_SIDEBAR_LAYOUT = Object.freeze({
     "clientUsage",
   ]),
   hidden: Object.freeze(["clientUsage"]),
+  hiddenCompact: Object.freeze([]),
+  hiddenExpanded: Object.freeze([]),
 });
 
 const LEGACY_MODULE_ORDER = ["modeltrace", "speeds", "overview", "tasks", "radar", "credits"] as const;
@@ -60,6 +68,8 @@ export function normalizeSidebarLayout(value: unknown): SidebarLayout {
     version: 1,
     order: [...DEFAULT_SIDEBAR_LAYOUT.order],
     hidden: [...DEFAULT_SIDEBAR_LAYOUT.hidden],
+    hiddenCompact: [],
+    hiddenExpanded: [],
   };
 
   const order = uniqueValidIds(value.order, [], MAX_LAYOUT_ITEMS - DEFAULT_SIDEBAR_LAYOUT.order.length);
@@ -72,6 +82,8 @@ export function normalizeSidebarLayout(value: unknown): SidebarLayout {
     // Missing hidden state gets the new-item default. An explicit empty list means
     // the user chose to show every item.
     hidden: uniqueValidIds(value.hidden, DEFAULT_SIDEBAR_LAYOUT.hidden),
+    hiddenCompact: uniqueValidIds(value.hiddenCompact),
+    hiddenExpanded: uniqueValidIds(value.hiddenExpanded),
   };
 }
 
@@ -181,8 +193,42 @@ export function arrangedSidebarItems(
   return order;
 }
 
-export function isSidebarItemVisible(config: SidebarLayoutConfig, id: string): boolean {
-  return isSidebarLayoutItemId(id) && !normalizeSidebarLayout(config).hidden.includes(id);
+export function isSidebarItemVisible(
+  config: SidebarLayoutConfig,
+  id: string,
+  level?: SidebarVisibilityLevel,
+): boolean {
+  if (!isSidebarLayoutItemId(id)) return false;
+  const normalized = normalizeSidebarLayout(config);
+  if (normalized.hidden.includes(id)) return false;
+  if (level === "compact") return !normalized.hiddenCompact.includes(id);
+  if (level === "expanded") return !normalized.hiddenExpanded.includes(id);
+  return true;
+}
+
+export function setSidebarItemLevelVisible(
+  config: SidebarLayoutConfig,
+  id: string,
+  level: SidebarVisibilityLevel,
+  visible: boolean,
+): SidebarLayout {
+  const next = normalizeSidebarLayout(config);
+  if (!isSidebarLayoutItemId(id)) return next;
+
+  const wasMasterHidden = next.hidden.includes(id);
+  next.hidden = next.hidden.filter(item => item !== id);
+  if (wasMasterHidden) {
+    if (!next.hiddenCompact.includes(id)) next.hiddenCompact.push(id);
+    if (!next.hiddenExpanded.includes(id)) next.hiddenExpanded.push(id);
+  }
+
+  const hiddenAtLevel = level === "compact" ? next.hiddenCompact : next.hiddenExpanded;
+  if (visible) {
+    next[level === "compact" ? "hiddenCompact" : "hiddenExpanded"] = hiddenAtLevel.filter(item => item !== id);
+  } else if (!hiddenAtLevel.includes(id)) {
+    hiddenAtLevel.push(id);
+  }
+  return next;
 }
 
 export function moveSidebarItem(

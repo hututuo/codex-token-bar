@@ -65,17 +65,32 @@ enum QuotaSidebarItem: Hashable, Identifiable, Sendable {
     }
 
     var hasCompactRepresentation: Bool {
-        switch self { case .speed, .quota, .models: true; default: false }
+        switch self { case .speed, .quota, .models, .tasks: true; default: false }
     }
 
     static let defaults: [Self] = [.modeltrace, .speed, .tps, .quota("codex"), .quota("claudeCode"), .models, .tasks, .radar, .credits, .clientUsage]
 }
+
+enum QuotaSidebarLevel { case compact, expanded }
 
 struct QuotaSidebarItemLayout: Codable, Equatable, Sendable {
     static let key = "quotaSidebarLayout.v1"
     var version = 1
     var order = QuotaSidebarItem.defaults.map(\.id)
     var hidden: Set<String> = [QuotaSidebarItem.clientUsage.id]
+    var hiddenCompact: Set<String> = []
+    var hiddenExpanded: Set<String> = []
+
+    init() {}
+    private enum CodingKeys: String, CodingKey { case version, order, hidden, hiddenCompact, hiddenExpanded }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        order = try values.decode([String].self, forKey: .order)
+        hidden = try values.decodeIfPresent(Set<String>.self, forKey: .hidden) ?? [QuotaSidebarItem.clientUsage.id]
+        hiddenCompact = try values.decodeIfPresent(Set<String>.self, forKey: .hiddenCompact) ?? []
+        hiddenExpanded = try values.decodeIfPresent(Set<String>.self, forKey: .hiddenExpanded) ?? []
+    }
 
     static func decode(_ data: Data?) -> Self? {
         guard let data, var value = try? JSONDecoder().decode(Self.self, from: data), value.version == 1 else { return nil }
@@ -88,6 +103,8 @@ struct QuotaSidebarItemLayout: Codable, Equatable, Sendable {
         order = order.filter { QuotaSidebarItem(id: $0) != nil && seen.insert($0).inserted }
         order += QuotaSidebarItem.defaults.map(\.id).filter { !seen.contains($0) }
         hidden = hidden.filter { QuotaSidebarItem(id: $0) != nil }
+        hiddenCompact = hiddenCompact.filter { QuotaSidebarItem(id: $0) != nil }
+        hiddenExpanded = hiddenExpanded.filter { QuotaSidebarItem(id: $0) != nil }
     }
 
     /// Unavailable clients stay persisted so temporary source/scope changes never
@@ -106,7 +123,23 @@ struct QuotaSidebarItemLayout: Codable, Equatable, Sendable {
         return items
     }
 
-    func isVisible(_ item: QuotaSidebarItem) -> Bool { !hidden.contains(item.id) }
+    func isVisible(_ item: QuotaSidebarItem) -> Bool { isVisible(item, in: .compact) || isVisible(item, in: .expanded) }
+    func isVisible(_ item: QuotaSidebarItem, in level: QuotaSidebarLevel) -> Bool {
+        guard !hidden.contains(item.id) else { return false }
+        return level == .compact ? item.hasCompactRepresentation && !hiddenCompact.contains(item.id) : !hiddenExpanded.contains(item.id)
+    }
+
+    mutating func setVisible(_ item: QuotaSidebarItem, in level: QuotaSidebarLevel, visible: Bool) {
+        guard level != .compact || item.hasCompactRepresentation else { return }
+        if hidden.remove(item.id) != nil {
+            hiddenCompact.insert(item.id); hiddenExpanded.insert(item.id)
+        }
+        if level == .compact {
+            if visible { hiddenCompact.remove(item.id) } else { hiddenCompact.insert(item.id) }
+        } else {
+            if visible { hiddenExpanded.remove(item.id) } else { hiddenExpanded.insert(item.id) }
+        }
+    }
 
     mutating func move(_ item: QuotaSidebarItem, relativeTo target: QuotaSidebarItem, after: Bool) {
         guard item != target else { return }
@@ -152,7 +185,7 @@ enum QuotaSidebarContentOrder {
         items.flatMap { item -> [String] in
             switch item {
             case let .quota(client): quotaWindows(quotas, client: client).map(\.id)
-            case .speed, .models: [item.id]
+            case .speed, .models, .tasks: [item.id]
             default: []
             }
         }

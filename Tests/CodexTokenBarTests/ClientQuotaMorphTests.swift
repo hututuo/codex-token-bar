@@ -20,13 +20,67 @@ final class ClientQuotaMorphTests: XCTestCase {
                 for pair in zip(start, start.dropFirst()) { XCTAssertGreaterThanOrEqual(pair.0.y + 0.001, pair.1.y, "Convex halves must flatten without curling back") }
             }
             XCTAssertTrue(end.allSatisfy { abs($0.x - track.midX) < 0.001 })
-            XCTAssertEqual(try XCTUnwrap(end.first).y, track.maxY - 2, accuracy: 0.001)
-            XCTAssertEqual(try XCTUnwrap(end.last).y, track.minY + 2, accuracy: 0.001)
+            XCTAssertEqual(try XCTUnwrap(end.first).y, abs(half) == 2 ? track.midY : track.maxY - 2, accuracy: 0.001)
+            XCTAssertEqual(try XCTUnwrap(end.last).y, half == 2 ? track.maxY - 2 : track.minY + 2, accuracy: 0.001)
             for step in 0...20 {
                 let points = ClientQuotaMorphGeometry.points(ring: ring, track: track, half: half, progress: Double(step) / 20)
                 XCTAssertTrue(points.allSatisfy { $0.x.isFinite && $0.y.isFinite })
                 XCTAssertEqual(ClientQuotaMorphGeometry.vertices(ClientQuotaMorphGeometry.path(points))?.count, 33)
             }
+        }
+    }
+
+    func testWholeRingKeepsBothHalvesAndExactlyOneContinuousBarAtEveryQuota() throws {
+        let outline = ClientQuotaMorphGeometry.strokes([ClientQuotaMorphRoute(id: "whole", ring: ring, track: track, half: 0, fraction: 1, color: .green)]).filter { $0.id.hasSuffix(":track") }
+        XCTAssertEqual(outline.count, 2)
+        let ranges = try outline.map { stroke -> ClosedRange<Double> in
+            XCTAssertGreaterThan(stroke.collapsed.opacity, 0)
+            let ys = stroke.collapsed.points.map(\.y)
+            return try XCTUnwrap(ys.min())...XCTUnwrap(ys.max())
+        }.sorted { $0.lowerBound < $1.lowerBound }
+        XCTAssertEqual(ranges[0].lowerBound, track.minY + 2, accuracy: 0.001)
+        XCTAssertEqual(ranges[0].upperBound, ranges[1].lowerBound, accuracy: 0.001)
+        XCTAssertEqual(ranges[1].upperBound, track.maxY - 2, accuracy: 0.001)
+        for quota in [0.1, 0.49, 0.5, 0.51, 0.72, 1.0] {
+            let fills = ClientQuotaMorphGeometry.strokes([ClientQuotaMorphRoute(id: "whole", ring: ring, track: track, half: 0, fraction: quota, color: .green)]).filter { $0.id.hasSuffix(":fill") }
+            XCTAssertEqual(fills.count, 2)
+            let barFraction = max(0, min(1, (quota * track.height - 4) / (track.height - 4)))
+            var lengths = 0.0
+            for stroke in fills {
+                XCTAssertEqual(stroke.collapsed.opacity, 1, "Neither half may fade away")
+                let points = stroke.collapsed.points
+                lengths += abs(try XCTUnwrap(points.last).y - XCTUnwrap(points.first).y) * (stroke.collapsed.end - stroke.collapsed.start)
+            }
+            XCTAssertEqual(lengths, (track.height - 4) * barFraction, accuracy: 0.001, "Both halves together must retain the real quota fraction")
+        }
+    }
+
+    func testPairedHalfStillMapsItsOwnEntireBarFromBottomToTop() {
+        for half in [-1, 1] {
+            let fills = ClientQuotaMorphGeometry.strokes([ClientQuotaMorphRoute(id: "paired", ring: ring, track: track, half: half, fraction: 0.62, color: .green)]).filter { $0.id.hasSuffix(":fill") }
+            XCTAssertEqual(fills.count, 1)
+            XCTAssertEqual(fills[0].collapsed.start, 0)
+            XCTAssertEqual(fills[0].collapsed.end, (0.62 * track.height - 4) / (track.height - 4), accuracy: 0.001)
+            XCTAssertEqual(fills[0].collapsed.points.first?.y, track.maxY - 2)
+            XCTAssertEqual(fills[0].collapsed.points.last?.y, track.minY + 2)
+        }
+    }
+
+    func testSharedSpeedMorphPreservesEachModelColorAndItsShare() throws {
+        let route = ClientQuotaMorphRoute(id: "speed", ring: ring, track: track, half: 0, fraction: 0.9, color: .gray,
+            segments: [.init(id: "astra", start: 0, end: 0.4, color: .green), .init(id: "sol", start: 0.4, end: 1, color: .orange)])
+        let strokes = ClientQuotaMorphGeometry.strokes([route])
+        let totalLength = 0.9 * track.height - 4
+        for (id, share, color) in [("astra", 0.4, NSColor.green), ("sol", 0.6, NSColor.orange)] {
+            let colored = strokes.filter { $0.id.hasSuffix(":" + id) }
+            XCTAssertFalse(colored.isEmpty)
+            var length = 0.0
+            for stroke in colored {
+                XCTAssertEqual(stroke.color, color)
+                XCTAssertEqual(stroke.collapsed.opacity, 1)
+                length += abs(try XCTUnwrap(stroke.collapsed.points.last).y - XCTUnwrap(stroke.collapsed.points.first).y) * (stroke.collapsed.end - stroke.collapsed.start)
+            }
+            XCTAssertEqual(length, totalLength * share, accuracy: 0.001)
         }
     }
 
@@ -122,7 +176,7 @@ final class ClientQuotaMorphTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("all", forKey: ClientDisplayScope.key)
         defaults.set(["overview", "speeds", "modeltrace", "tasks", "radar", "credits"], forKey: "quotaSidebarModuleOrder")
-        defaults.set(["speeds", "modeltrace", "tasks", "radar", "credits"], forKey: "quotaSidebarHiddenModules")
+        defaults.set(["modeltrace", "radar", "credits"], forKey: "quotaSidebarHiddenModules")
         let controller = QuotaSidebarController(settings: defaults)
         let root = QuotaSidebarRail(controller: controller,
             store: CodexUsageStore(autoStart: false, continuityDefaults: defaults),
@@ -143,11 +197,11 @@ final class ClientQuotaMorphTests: XCTestCase {
         }
         settle(0.1)
         let overlay = try XCTUnwrap(morph(host))
-        XCTAssertEqual(overlay.availableRouteCount, 3)
+        XCTAssertEqual(overlay.availableRouteCount, 5, "Quota, speed and task rings share the same morph surface")
         controller.enter(); settle(0.08)
         XCTAssertEqual(overlay.animationsStarted, 1)
-        XCTAssertEqual(overlay.morphLayerCount, 8)
-        XCTAssertEqual(overlay.coveredParticipantViewCount, 5, "Both original rings and all three original bars are covered until handoff")
+        XCTAssertEqual(overlay.morphLayerCount, 12)
+        XCTAssertEqual(overlay.coveredParticipantViewCount, 9, "Quota, speed and task source/target views are covered until handoff")
         controller.dismiss(); settle(0.08)
         XCTAssertEqual(overlay.animationsStarted, 2)
         settle(0.5)
@@ -176,13 +230,12 @@ final class ClientQuotaMorphTests: XCTestCase {
                         Text("\(Int(t * 180)) ms").font(.system(size: 11)).foregroundStyle(.gray)
                         Canvas { context, _ in
                             let progress = QuotaSidebarMotion.progress(t, expanding: false)
-                            for route in routes {
-                                for part in ClientQuotaMorphGeometry.parts(half: route.half, fraction: route.fraction) {
-                                let points = ClientQuotaMorphGeometry.points(ring: route.ring, track: route.track, half: part.half, progress: progress)
-                                let path = Path(ClientQuotaMorphGeometry.path(points))
-                                context.stroke(path, with: .color(.white.opacity(0.13)), style: StrokeStyle(lineWidth: 3 + progress, lineCap: .round, lineJoin: .round))
-                                context.stroke(path.trimmedPath(from: part.start * (1 - progress), to: part.end + ((route.fraction ?? 0) - part.end) * progress), with: .color(Color(nsColor: route.color)), style: StrokeStyle(lineWidth: 3 + progress, lineCap: .round, lineJoin: .round))
-                                }
+                            for stroke in ClientQuotaMorphGeometry.strokes(routes) {
+                                let path = Path(MatchedStrokeMorphGeometry.interpolate(stroke.expanded.points, stroke.collapsed.points, progress: progress))
+                                let start = stroke.expanded.start + (stroke.collapsed.start - stroke.expanded.start) * progress
+                                let end = stroke.expanded.end + (stroke.collapsed.end - stroke.expanded.end) * progress
+                                let opacity = Double(stroke.expanded.opacity + (stroke.collapsed.opacity - stroke.expanded.opacity) * Float(progress))
+                                context.stroke(path.trimmedPath(from: start, to: end), with: .color(Color(nsColor: stroke.color).opacity(opacity)), style: StrokeStyle(lineWidth: 3 + progress, lineCap: .round, lineJoin: .round))
                             }
                         }.frame(width: 88, height: 380).background(.black, in: RoundedRectangle(cornerRadius: 16))
                     }

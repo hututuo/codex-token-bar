@@ -78,7 +78,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         guard module != .settings else { return }
         var next = sidebarLayout
         for item in next.order.compactMap(QuotaSidebarItem.init(id:)).filter({ $0.detail == module }) {
-            if visible { next.hidden.remove(item.id) } else { next.hidden.insert(item.id) }
+            if visible { next.hidden.remove(item.id); next.hiddenCompact.remove(item.id); next.hiddenExpanded.remove(item.id) }
+            else { next.hidden.insert(item.id) }
         }
         setSidebarLayout(next)
     }
@@ -101,7 +102,14 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     func setSidebarItemVisible(_ item: QuotaSidebarItem, visible: Bool) {
         var next = sidebarLayout
-        if visible { next.hidden.remove(item.id) } else { next.hidden.insert(item.id) }
+        if visible { next.hidden.remove(item.id); next.hiddenCompact.remove(item.id); next.hiddenExpanded.remove(item.id) }
+        else { next.hidden.insert(item.id) }
+        setSidebarLayout(next)
+    }
+
+    func setSidebarItemVisible(_ item: QuotaSidebarItem, in level: QuotaSidebarLevel, visible: Bool) {
+        var next = sidebarLayout
+        next.setVisible(item, in: level, visible: visible)
         setSidebarLayout(next)
     }
 
@@ -260,7 +268,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     func updateContentMeasurement(_ measurement: QuotaSidebarContentMeasurement) {
         let previous = heightBudget.targetHeight
         heightBudget.update(contentHeight: measurement.contentHeight,
-                            rowHeight: sidebarLayout.isVisible(.tps) ? measurement.speedRowHeight : 0,
+                            rowHeight: sidebarLayout.isVisible(.tps, in: .expanded) ? measurement.speedRowHeight : 0,
                             expanded: interaction.expanded || isCollapsing, rebase: rebaseOnMeasurement)
         rebaseOnMeasurement = false
         if previous != heightBudget.targetHeight { updateFrames() }

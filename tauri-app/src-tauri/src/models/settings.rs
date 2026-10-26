@@ -33,6 +33,10 @@ pub struct SidebarLayoutSnapshot {
     pub order: Vec<String>,
     #[serde(default = "default_sidebar_layout_hidden")]
     pub hidden: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_compact: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_expanded: Vec<String>,
 }
 
 impl Default for SidebarLayoutSnapshot {
@@ -44,6 +48,8 @@ impl Default for SidebarLayoutSnapshot {
                 .map(|item| (*item).to_owned())
                 .collect(),
             hidden: default_sidebar_layout_hidden(),
+            hidden_compact: Vec::new(),
+            hidden_expanded: Vec::new(),
         }
     }
 }

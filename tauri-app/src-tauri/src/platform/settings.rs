@@ -166,6 +166,8 @@ fn validate_sidebar_layout(layout: &SidebarLayoutSnapshot) -> Result<(), String>
     }
     if layout.order.len() > MAX_SIDEBAR_LAYOUT_ITEMS
         || layout.hidden.len() > MAX_SIDEBAR_LAYOUT_ITEMS
+        || layout.hidden_compact.len() > MAX_SIDEBAR_LAYOUT_ITEMS
+        || layout.hidden_expanded.len() > MAX_SIDEBAR_LAYOUT_ITEMS
     {
         return Err("侧栏布局项目数量超出上限。".into());
     }
@@ -192,6 +194,20 @@ fn validate_sidebar_layout(layout: &SidebarLayoutSnapshot) -> Result<(), String>
         }
         if !hidden_seen.insert(item.as_str()) {
             return Err(format!("侧栏布局隐藏列表包含重复项目：{item}"));
+        }
+    }
+    for (label, items) in [
+        ("收起状态", &layout.hidden_compact),
+        ("展开状态", &layout.hidden_expanded),
+    ] {
+        let mut seen = std::collections::HashSet::with_capacity(items.len());
+        for item in items {
+            if !valid_sidebar_layout_item_id(item) {
+                return Err(format!("侧栏布局包含无效{label}隐藏项目 ID：{item}"));
+            }
+            if !seen.insert(item.as_str()) {
+                return Err(format!("侧栏布局{label}隐藏列表包含重复项目：{item}"));
+            }
         }
     }
     Ok(())
@@ -5399,6 +5415,8 @@ mod tests {
         let missing_hidden: SidebarLayoutSnapshot =
             serde_json::from_str(r#"{"version":1,"order":[]}"#).unwrap();
         assert_eq!(missing_hidden.hidden, vec!["clientUsage".to_owned()]);
+        assert!(missing_hidden.hidden_compact.is_empty());
+        assert!(missing_hidden.hidden_expanded.is_empty());
 
         write_fixture(&path, &AppSettingsSnapshot::default());
         let mut order = vec!["quota:thirdParty".to_owned()];
@@ -5411,6 +5429,8 @@ mod tests {
             version: 1,
             order,
             hidden: vec!["clientUsage".into(), "quota:offlineClient".into()],
+            hidden_compact: vec!["tasks".into(), "quota:compactOnly".into()],
+            hidden_expanded: vec!["models".into()],
         };
         assert_eq!(save_sidebar_layout_at(&path, layout.clone()).unwrap(), layout);
 
@@ -5428,8 +5448,15 @@ mod tests {
                 "version": 1,
                 "order": layout.order,
                 "hidden": layout.hidden,
+                "hiddenCompact": layout.hidden_compact,
+                "hiddenExpanded": layout.hidden_expanded,
             })
         );
+
+        let empty_levels = SidebarLayoutSnapshot::default();
+        let serialized = serde_json::to_value(empty_levels).unwrap();
+        assert!(serialized.get("hiddenCompact").is_none());
+        assert!(serialized.get("hiddenExpanded").is_none());
     }
 
     #[test]
@@ -5446,6 +5473,8 @@ mod tests {
 
         let mut edited = SidebarLayoutSnapshot::default();
         edited.order.swap(0, 1);
+        edited.hidden_compact.push("tasks".into());
+        edited.hidden_expanded.push("models".into());
         assert_eq!(save_sidebar_layout_at(&path, edited.clone()).unwrap(), edited);
 
         assert_eq!(
@@ -5490,6 +5519,12 @@ mod tests {
         let mut bad_hidden = SidebarLayoutSnapshot::default();
         bad_hidden.hidden.push("unknown".into());
         invalid.push(bad_hidden);
+        let mut bad_compact_hidden = SidebarLayoutSnapshot::default();
+        bad_compact_hidden.hidden_compact.push("unknown".into());
+        invalid.push(bad_compact_hidden);
+        let mut duplicate_expanded_hidden = SidebarLayoutSnapshot::default();
+        duplicate_expanded_hidden.hidden_expanded.extend(["tasks".into(), "tasks".into()]);
+        invalid.push(duplicate_expanded_hidden);
 
         for layout in invalid {
             let before = std::fs::read(&path).unwrap();

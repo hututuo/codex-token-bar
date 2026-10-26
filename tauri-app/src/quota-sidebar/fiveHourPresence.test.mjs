@@ -34,7 +34,7 @@ test("Reserve rings and detail preserve ordinary navigation and remain reachable
     for (const id of ["five", "seven", "Reserve-5h", "Reserve-7d"]) assert.ok(detail.includes(`id="qs-section-${id}"`));
     for (const label of ["Luna 储备 · 5小时", "Luna 储备 · 7天", "75%", "40%"]) assert.ok(detail.includes(label));
     const rest = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "rest", tab: "quota", pinned: false }, onOpen() {} }));
-    assert.equal((rest.match(/class="qs-bar(?: |")/g) || []).length, 5);
+    assert.equal((rest.match(/class="qs-bar(?: |")/g) || []).length, 6, "speed, four quota windows and task state");
     assert.doesNotMatch(rest, /class="qs-ring"/);
   });
 });
@@ -59,7 +59,7 @@ test("missing 5h is absent in bars, rings and detail; measured zero remains pres
       assert.equal(hasFiveHourQuota(availability, percent), present);
       const windowPresent = present;
       const rest = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "rest", tab: "quota", pinned: false }, onOpen() {} }));
-      assert.equal((rest.match(/class="qs-bar(?: |")/g) || []).length, windowPresent ? 3 : 2);
+      assert.equal((rest.match(/class="qs-bar(?: |")/g) || []).length, windowPresent ? 4 : 3, "speed and task state remain independent of quota presence");
       assert.equal((rest.match(/class="qs-radar-mark"/g) || []).length, 0);
       const hover = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover", tab: "quota", pinned: false }, onOpen() {} }));
       assert.equal(hover.includes("Codex 5h"), windowPresent); assert.ok(hover.includes("Codex 7d"));
