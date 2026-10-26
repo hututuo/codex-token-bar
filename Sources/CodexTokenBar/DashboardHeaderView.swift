@@ -1193,6 +1193,7 @@ struct DashboardSevenDayModelData: Equatable {
 }
 
 struct DashboardModelCostRow: View {
+    @ObservedObject private var colorPreferences = SpeedDisplayPreferences.shared
     @Binding var scope: DashboardModelCostScope
     let todayRows: [ModelTokenBreakdown]
     let lifetimeRows: [ModelTokenBreakdown]
@@ -1412,12 +1413,21 @@ struct DashboardModelCostRow: View {
                             .frame(width: 58, alignment: .leading)
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 108), spacing: 7), count: 4), alignment: .leading, spacing: 7) {
                             ForEach(group.items) { item in
-                                if group.id == "6" { DashboardPrimaryModelCostCard(item: item) }
-                                else { DashboardSecondaryModelCostChip(item: item) }
+                                Group {
+                                    if group.id == "6" { DashboardPrimaryModelCostCard(item: item) }
+                                    else { DashboardSecondaryModelCostChip(item: item) }
+                                }.modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id) ?? item.id, enabled: scope == .lifetime))
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+            }
+            if scope == .lifetime {
+                HStack {
+                    Text("在累计界面双击模型，即可修改该模型颜色")
+                    Spacer()
+                    ClientColorSettings()
+                }.font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

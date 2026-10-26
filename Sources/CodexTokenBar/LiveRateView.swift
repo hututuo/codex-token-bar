@@ -45,7 +45,6 @@ struct LiveRateView: View {
             }
             .frame(height: LiveRatePanelLayout.contentHeight)
             HStack { SpeedDisplayControls(); Spacer() }
-            SpeedColorSettings(models: monitor.displaySnapshot.modelRates.map(\.model) + monitor.latestModelSpeeds30m.map(\.model))
             ObservedSpeedView(monitor: monitor, quotaHistory: quotaHistory)
         }
         .padding(.horizontal, 12)

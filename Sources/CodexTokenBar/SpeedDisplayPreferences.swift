@@ -93,36 +93,7 @@ struct SpeedDisplayControls: View {
     }
 }
 
-struct SpeedColorSettings: View {
-    @ObservedObject private var preferences: SpeedDisplayPreferences
-    var models: [String]
-    @State private var expanded: Bool
-    init(models: [String], preferences: SpeedDisplayPreferences = .shared, expanded: Bool = false) {
-        self.models = models; self.preferences = preferences; _expanded = State(initialValue: expanded)
-    }
-    private var keys: [String] {
-        let clients = ["client:codex", "client:claudeCode", "client:deepseek"]
-        let known = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "claude-opus-5", "claude-sonnet-4-5", "deepseek-v4-flash"]
-        return clients + Set((known + models).map { ModelUsagePresentation.key(for: $0) }).sorted()
-    }
-    var body: some View {
-        DisclosureGroup("彩条颜色", isExpanded: $expanded) {
-            LazyVGrid(columns: [.init(.adaptive(minimum: 205), alignment: .leading)], alignment: .leading, spacing: 8) {
-                ForEach(keys, id: \.self) { key in
-                    HStack {
-                        SpeedColorSwatch(key: key, preferences: preferences)
-                        if preferences.colors[key] != nil {
-                            Button { preferences.setColor(nil, for: key) } label: { Image(systemName: "arrow.counterclockwise") }
-                                .buttonStyle(.plain).help("恢复默认颜色")
-                        }
-                    }
-                }
-            }.padding(.top, 8)
-        }.font(.system(size: 11)).padding(.vertical, 4)
-    }
-}
-
-private struct SpeedColorSwatch: View {
+struct SpeedColorSwatch: View {
     let key: String
     @ObservedObject var preferences: SpeedDisplayPreferences
     @State private var showingPicker = false
@@ -135,10 +106,7 @@ private struct SpeedColorSwatch: View {
             }
         }.buttonStyle(.plain).accessibilityLabel("修改" + ModelUsagePresentation.label(for: key) + "颜色")
             .popover(isPresented: $showingPicker) {
-                ColorPicker("颜色", selection: Binding(get: { ModelUsagePresentation.color(for: key) }, set: { value in
-                    guard let rgb = NSColor(value).usingColorSpace(.sRGB) else { return }
-                    preferences.setColor(String(format: "#%02x%02x%02x", Int((rgb.redComponent * 255).rounded()), Int((rgb.greenComponent * 255).rounded()), Int((rgb.blueComponent * 255).rounded())), for: key)
-                }), supportsOpacity: false).padding(16)
+                ModelColorEditor(model: key) { showingPicker = false }
             }
     }
 }

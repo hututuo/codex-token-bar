@@ -4,8 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { callCommandStrict } from "../../api/command";
 import { isTauriRuntimeAvailable } from "../../platform/runtime";
 import type { ModelRateContribution } from "../../types/live";
-import { modelUsageColor, modelUsageKey, modelUsageLabel } from "../modelUsagePresentation";
-import { EMPTY_AGENT_SPEED_DISPLAY, SPEED_PREFERENCES_EVENT, invalidateSpeedColors, projectSpeedDisplay, readSpeedColors, writeSpeedColor,
+import { EMPTY_AGENT_SPEED_DISPLAY, SPEED_PREFERENCES_EVENT, invalidateSpeedColors, projectSpeedDisplay, readSpeedColors,
   type AgentSpeedDisplaySnapshot, type SpeedColorGrouping, type SpeedDisplayMode, type SpeedDisplayPreferences } from "./speedDisplay";
 
 let current: SpeedDisplayPreferences = { mode: "activity", grouping: "model" };
@@ -82,16 +81,4 @@ export function SpeedDisplayControls() {
     </select></label>
     {error && <span role="status">{error}</span>}
   </div>;
-}
-
-export function SpeedColorSettings({ models }: { models: string[] }) {
-  const preferences = useSpeedDisplayPreferences();
-  const keys = ["client:codex", "client:claudeCode", "client:deepseek", ...new Set([
-    "gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "claude-opus-5", "claude-sonnet-4-5", "deepseek-v4-flash", ...models,
-  ].map(value => modelUsageKey(value)))];
-  return <details className="speed-color-settings"><summary>彩条颜色</summary><div className="speed-color-grid">
-    {keys.map(key => <label key={key}><input type="color" aria-label={`${modelUsageLabel(key)}颜色`} value={modelUsageColor(key)} onChange={e => writeSpeedColor(key, e.target.value)}/>
-      <span>{modelUsageLabel(key)}</span>{preferences.colors[key] && <button type="button" aria-label={`恢复${modelUsageLabel(key)}默认颜色`} onClick={e => { e.preventDefault(); writeSpeedColor(key, null); }}>恢复</button>}
-    </label>)}
-  </div></details>;
 }

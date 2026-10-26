@@ -32,7 +32,7 @@ interface LiveRateCardProps {
   usageCacheInitializing?: boolean;
 }
 
-import { SpeedDisplayControls, SpeedColorSettings, useSpeedDisplaySnapshot } from "./liveRate/SpeedDisplayControls";
+import { SpeedDisplayControls, useSpeedDisplaySnapshot } from "./liveRate/SpeedDisplayControls";
 
 export function LiveRateCard({
   sourceToken = null,
@@ -127,7 +127,6 @@ export function LiveRateCard({
       ) : null}
 
       <SpeedDisplayControls/>
-      <SpeedColorSettings models={[...(snapshot.modelRates ?? []).map(r => r.model), ...(snapshot.latestModelSpeeds30m ?? []).map(r => r.model)]}/>
       {liveRateEnabled && <CacheUsageNotice advice={snapshot.cacheAdvice} />}
       <div className="live-grid">
         <div className={liveRateEnabled ? "live-left" : "live-left is-live-disabled"}>
