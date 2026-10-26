@@ -76,9 +76,9 @@ internal static class ReporterRuntime
         PersistedIdentity Identity,
         long ClockCorrection);
 
-    public static async Task RunAsync(string username, string transportChoice, StatusEmitter status, CancellationToken cancellationToken)
+    public static async Task RunAsync(StartCommand start, StatusEmitter status, CancellationToken cancellationToken)
     {
-        if (ReporterTransportChoice.StartFailure(transportChoice, supportsWebSocket: true) is { } selectionFailure)
+        if (start.Enabled && ReporterTransportChoice.StartFailure(start.Transport, supportsWebSocket: true) is { } selectionFailure)
         {
             throw new ReporterFailure(selectionFailure);
         }
@@ -86,9 +86,78 @@ internal static class ReporterRuntime
         var snapshots = new SnapshotMailbox();
         var hub = new SpeedHub(context: null);
         hub.LivePublished += (_, snapshot) => snapshots.Publish(snapshot);
-        using var monitor = new LiveMonitor(hub, pricing: new PriceBook(), realtimeEventMode: transportChoice == "websocket");
+        using var monitor = new LiveMonitor(hub, pricing: start.Enabled ? new PriceBook() : null,
+            realtimeEventMode: start.Enabled && start.Transport == "websocket");
         monitor.Start();
 
+        using var displayLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var displayTask = start.LocalDisplay
+            ? PublishLocalDisplayAsync(hub, status, displayLifetime.Token)
+            : Task.CompletedTask;
+        if (!start.Enabled)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                displayLifetime.Cancel();
+                await IgnoreDisplayCancellationAsync(displayTask).ConfigureAwait(false);
+            }
+            return;
+        }
+
+        try
+        {
+            await RunReportingAsync(start.Username, start.Transport, snapshots, status, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ReporterFailure failure) when (start.LocalDisplay && !cancellationToken.IsCancellationRequested)
+        {
+            await status.PublishErrorAsync(failure.Code, CancellationToken.None).ConfigureAwait(false);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception) when (start.LocalDisplay && !cancellationToken.IsCancellationRequested)
+        {
+            await status.PublishErrorAsync("reporting_failed", CancellationToken.None).ConfigureAwait(false);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            displayLifetime.Cancel();
+            await IgnoreDisplayCancellationAsync(displayTask).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task PublishLocalDisplayAsync(SpeedHub hub, StatusEmitter status, CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
+        do
+        {
+            var snapshot = LocalDisplaySnapshotBuilder.Build(hub.Snapshot, DateTimeOffset.UtcNow);
+            await status.PublishDisplayAsync(snapshot, cancellationToken).ConfigureAwait(false);
+        }
+        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false));
+    }
+
+    private static async Task IgnoreDisplayCancellationAsync(Task displayTask)
+    {
+        try
+        {
+            await displayTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static async Task RunReportingAsync(
+        string username,
+        string transportChoice,
+        SnapshotMailbox snapshots,
+        StatusEmitter status,
+        CancellationToken cancellationToken)
+    {
         await status.PublishAsync(Status(
             "waiting_for_snapshot", "waiting_for_snapshot", ReportSample.Empty, null, null), cancellationToken).ConfigureAwait(false);
         var readySnapshot = await WaitForReadySnapshotAsync(snapshots, cancellationToken).ConfigureAwait(false);

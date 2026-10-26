@@ -47,3 +47,7 @@ A subsequent native zero-usage test now records signing/scheduling, socket-to-AC
 5. WS 100/250ms p95 / browser visibility target: NOT_RUN. Prior isolated ACKs around 414–439ms and website delays are different metrics. Define clock alignment, source observation, construction, ACK and browser-paint timestamps before measuring; a 10-minute / 10k-event benchmark must not be represented as already complete.
 
 Evidence: `2026-10-25-agent-speed-websocket.md` (especially final installed Windows section), `2026-10-25-tps-distribution-build955.md`, `2026-10-25-dashboard-scroll-probe.md`; outer run `runs/20261025-windows-reporting-install/STATUS.md` and `install-receipt.json`, and `runs/20261025-ws-acceptance/install-receipt959.json`.
+
+## Subsequent local display extension
+
+Source-only algorithm selection, Claude Code/DSH local colored bars, display-only stop/staleness filtering and persistent custom colors are documented in [the display receipt](2026-10-26-speed-display-modes.md). Raw Agent Speed reports remain independent of local filtering. Formal applications were not replaced or restarted; this does not close installed Windows acceptance.

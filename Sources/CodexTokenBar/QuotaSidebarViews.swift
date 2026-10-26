@@ -91,7 +91,7 @@ struct QuotaSidebarRail: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var cacheWarning: CacheUsageAdvice? {
-        guard CacheMissReminderFeature.isEnabled, monitor.monitoringEnabled, monitor.dataSource != nil,
+        guard CacheMissReminderFeature.isEnabled, monitor.monitoringEnabled, monitor.displayRateAvailable,
               let advice = monitor.totalSnapshot.cacheAdvice,
               advice.shouldRemind(enabled: cacheRemindersEnabled, dismissedID: dismissedCacheAdviceID) else { return nil }
         return advice
@@ -166,7 +166,7 @@ struct QuotaSidebarRail: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.moduleOrder)
             Group {
                 VStack(spacing: 12) {
-                    SidebarValueBar(fraction: Double(rateFraction), color: SidebarPalette.blue, vertical: true, modelRates: monitor.totalSnapshot.modelRates)
+                    SidebarValueBar(fraction: Double(rateFraction), color: SidebarPalette.blue, vertical: true, modelRates: monitor.displaySnapshot.barRates)
                         .frame(width: 4, height: 46)
                         .help("全会话实时速率（估算）\(rateText)")
                     if let fiveHour = quota.snapshot.fiveHour {
@@ -352,7 +352,7 @@ struct QuotaSidebarRail: View {
         Button { controller.select(.overview, section: "usage") } label: {
             VStack(spacing: 5) {
                 ZStack {
-                    SidebarValueRing(fraction: Double(rateFraction), color: SidebarPalette.blue, modelRates: monitor.totalSnapshot.modelRates)
+                    SidebarValueRing(fraction: Double(rateFraction), color: SidebarPalette.blue, modelRates: monitor.displaySnapshot.barRates)
                     Text("速率").font(.system(size: 11))
                 }.frame(width: 46, height: 46)
                 Text(rateText).font(.system(size: 11, weight: .medium, design: .rounded))
@@ -370,14 +370,14 @@ struct QuotaSidebarRail: View {
     }
 
     private var rateFraction: CGFloat {
-        CGFloat(QuotaSidebarRatePresentation.fraction(rate: monitor.totalSnapshot.rollingTokensPerSecond,
-            fullScale: fullScale, available: monitor.monitoringEnabled && monitor.dataSource != nil))
+        CGFloat(QuotaSidebarRatePresentation.fraction(rate: monitor.displaySnapshot.rollingTokensPerSecond,
+            fullScale: fullScale, available: monitor.monitoringEnabled && monitor.displayRateAvailable))
     }
 
     private var rateText: String {
         guard monitor.monitoringEnabled else { return "已关闭" }
-        guard monitor.dataSource != nil, monitor.totalSnapshot.rollingTokensPerSecond.isFinite else { return "待读取" }
-        return "\(monitor.totalSnapshot.rollingTokensPerSecondText) tok/s"
+        guard monitor.displayRateAvailable, monitor.displaySnapshot.rollingTokensPerSecond.isFinite else { return "待读取" }
+        return "\(monitor.displaySnapshot.rollingTokensPerSecondText) tok/s"
     }
 
     private var runningText: String {

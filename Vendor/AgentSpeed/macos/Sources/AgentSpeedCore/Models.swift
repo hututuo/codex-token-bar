@@ -110,6 +110,8 @@ public struct AgentStatus: Identifiable, Equatable, Sendable {
     public var liveCost: LiveCost
     /// The full working directory the transcript names (METRICS 10.6); nil when it names none.
     public var cwdPath: String?
+    /// Presentation-only stop; never affects the report metric or ledger.
+    public var localDisplayStopped: Bool = false
 
     public init(
         id: String,

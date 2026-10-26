@@ -14,6 +14,7 @@ internal enum DshEventKind : byte
     StepStart,
     AssistantMessage,
     TurnEnd,
+    Error,
 }
 
 /// <summary>The facts of one DeepSeek Harness event that the state machine needs (METRICS 4.3).</summary>
@@ -192,6 +193,7 @@ internal static class DshLineReader
             TypeKind.StepStart => DshEventKind.StepStart,
             TypeKind.AssistantMessage => DshEventKind.AssistantMessage,
             TypeKind.TurnEnd => DshEventKind.TurnEnd,
+            TypeKind.Error => DshEventKind.Error,
             _ => DshEventKind.Other,
         };
         switch (type)
@@ -535,6 +537,7 @@ internal static class DshLineReader
         : reader.ValueTextEquals("assistant/message"u8) ? TypeKind.AssistantMessage
         : reader.ValueTextEquals("step/start"u8) ? TypeKind.StepStart
         : reader.ValueTextEquals("turn/end"u8) ? TypeKind.TurnEnd
+        : reader.ValueTextEquals("request/error"u8) || reader.ValueTextEquals("turn/error"u8) || reader.ValueTextEquals("turn/aborted"u8) ? TypeKind.Error
         : reader.ValueTextEquals("request/header"u8) ? TypeKind.RequestHeader
         : reader.ValueTextEquals("event"u8) ? TypeKind.Event
         : reader.ValueTextEquals("snapshot"u8) ? TypeKind.Snapshot
@@ -552,5 +555,6 @@ internal static class DshLineReader
         StepStart,
         AssistantMessage,
         TurnEnd,
+        Error,
     }
 }

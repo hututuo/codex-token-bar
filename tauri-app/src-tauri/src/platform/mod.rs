@@ -64,6 +64,7 @@ pub use settings::{
     save_quota_history_filter,
     save_session_enhancement_settings, save_setup_guide_completed,
     save_agent_speed_reporting_settings,
+    save_speed_display_preferences,
     save_sidebar_module_visibility, save_sidebar_module_order, save_usage_refresh_settings,
 };
 pub(crate) use surfaces::StatusTrayColumn;

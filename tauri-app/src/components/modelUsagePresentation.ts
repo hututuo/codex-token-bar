@@ -1,3 +1,4 @@
+import { readSpeedColors, CLIENT_COLORS, CLIENT_TITLES } from "./liveRate/speedDisplay.ts";
 import { detectedOfficialAPIPriceModel } from "../settings/quotaPriceModel.ts";
 
 export interface ModelUsageRowLike {
@@ -123,6 +124,7 @@ export function floatingModelUsageKey(model: string | null | undefined, eventSta
 }
 
 export function modelUsageLabel(model: string | null | undefined): string {
+  if (model?.startsWith("client:")) return CLIENT_TITLES[model] ?? model.slice(7);
   switch (modelUsageKey(model)) {
     case "gpt-6-astra": return "Astra";
     case "gpt-6.1-sol": return "GPT-6.1 Sol";
@@ -147,6 +149,9 @@ export function modelUsageLabel(model: string | null | undefined): string {
 
 export function modelUsageColor(keyOrModel: string | null | undefined): string {
   const key = floatingModelUsageKey(keyOrModel);
+  const custom = readSpeedColors()[key];
+  if (custom) return custom;
+  if (key.startsWith("client:")) return CLIENT_COLORS[key] ?? "#a694e8";
   const fixed = FIXED_COLORS[key];
   if (fixed) return fixed;
   let hash = 0x811c9dc5;

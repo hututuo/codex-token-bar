@@ -140,6 +140,7 @@ pub async fn save_display_surfaces(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     live_rate: tauri::State<'_, crate::commands::live::LiveRateMonitorRegistry>,
+    speed_reporting: tauri::State<'_, crate::core::agent_speed_reporting::AgentSpeedReportingRegistry>,
     display: DisplaySurfaceSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_display_surfaces")?;
@@ -151,6 +152,16 @@ pub async fn save_display_surfaces(
         |saved| live_rate.sync_status_tray_interest(&app, &saved.display_surfaces),
         |error| eprintln!("Codex Token Bar: saved display settings but native tray sync failed: {error}"),
     );
+    let local_display = saved.speed_display_mode == crate::models::SpeedDisplayMode::AgentSpeed
+        && saved.display_surfaces.live_rate_enabled;
+    if let Err(error) = speed_reporting
+        .inner()
+        .clone()
+        .start(&app, &saved.agent_speed_reporting, local_display)
+        .await
+    {
+        eprintln!("Codex Token Bar: Agent Speed display collector could not synchronize: {error}");
+    }
     platform::sync_quota_sidebar(&app, &saved.display_surfaces).await
         .map_err(|error| format!("显示设置已保存，但额度侧栏窗口更新失败：{error}"))?;
     Ok(saved)

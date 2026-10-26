@@ -29,7 +29,7 @@ struct AgentSpeedReportingSettingsView: View {
                 TextField("排行榜昵称", text: $nickname).textFieldStyle(.roundedBorder)
                     .disabled(controller.enabled)
             }
-            Text("仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止这条链路的采集和上报。")
+            Text("仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止榜单上报；本地速度显示由速度算法设置独立控制。")
                 .font(.callout).foregroundStyle(.secondary)
             Text("同一台电脑的同一数据源，请只在 Agent Speed 或 Token Bar 中开启一处上报，避免重复累计。")
                 .font(.callout).foregroundStyle(.secondary)

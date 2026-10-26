@@ -18,3 +18,8 @@
 - Protocol reference: https://speed-test.codexradar.com/integration.html and its `/protocol/REPORTING-WEBSOCKET.md`; production discovery at https://deng.codexradar.com/.well-known/agent-speed-report.
 
 - Token Bar now negotiates the upstream cost section for both HTTP and WebSocket, injects the bundled PriceBook on Windows, and reports the actual bundled price version. Unknown pricing retains known-share/unpriced-request indicators; no historical upload backfill or Token Bar accounting changes.
+
+## Local display-only metadata (2026-10-26)
+
+- Swift/C# parser and agent snapshots carry a `localDisplayStopped` flag for explicit failure markers. A genuine generation/tool phase clears it. This metadata does not change upstream phases, response timing, counters, report sections or signed body construction.
+- Token Bar projects local colored speed bars from fresh per-agent rates (20-second source silence cutoff; stopped/idle agents excluded). Raw snapshots continue into Agent Speed reporting. The local display and reporting share one collector per process; local-only collection performs no discovery, registration or signing-key creation.

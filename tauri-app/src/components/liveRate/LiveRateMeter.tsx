@@ -24,7 +24,7 @@ export function LiveRateMeter({ fullScale, liveRateEnabled, onFullScaleChange, s
         <div className="rate-readout">
           <strong>{rateLabel}</strong>
           <span>{unit === "CN 元/s" ? "估算 CN 元/s" : unit}</span>
-          <em>{liveRateEnabled ? "全会话活动估算" : "实时速率已关闭"}</em>
+          <em>{liveRateEnabled ? snapshot.speedDisplayMode === "agentSpeed" ? "榜单口径 · 本地截止" : "全会话活动估算" : "实时速率已关闭"}</em>
         </div>
         <div className="rate-bar-block">
           <div className="rate-bar-label">
@@ -32,7 +32,7 @@ export function LiveRateMeter({ fullScale, liveRateEnabled, onFullScaleChange, s
             <span>量程 {scaleLimit} tok/s</span>
           </div>
           <div className="rate-track" aria-hidden="true">
-            <i className="rate-fill" style={rateFillStyle(liveRateEnabled ? snapshot.tokensPerSecond : 0, scaleLimit, snapshot.modelRates)} />
+            <i className="rate-fill" style={rateFillStyle(liveRateEnabled ? snapshot.tokensPerSecond : 0, scaleLimit, snapshot.colorRates ?? snapshot.modelRates)} />
           </div>
         </div>
       </div>

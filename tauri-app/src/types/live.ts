@@ -16,6 +16,9 @@ export interface ModelRateContribution { model: string; tokensPerSecond: number 
 
 export interface LiveRateSnapshot {
   modelRates?: ModelRateContribution[];
+  colorRates?: ModelRateContribution[];
+  speedDisplayMode?: "activity" | "agentSpeed";
+  speedDisplayStatus?: string;
   speedSamples?: SpeedSample[];
   modelSpeeds?: ModelSpeedSummary[];
   modelSpeeds5m?: ModelSpeedSummary[];
@@ -54,6 +57,9 @@ export interface LiveRateStreamLease {
 
 export interface FloatingPanelSnapshot {
   modelRates?: ModelRateContribution[];
+  colorRates?: ModelRateContribution[];
+  speedDisplayMode?: "activity" | "agentSpeed";
+  speedDisplayStatus?: string;
   speedSamples?: SpeedSample[];
   modelSpeeds?: ModelSpeedSummary[];
   modelSpeeds5m?: ModelSpeedSummary[];

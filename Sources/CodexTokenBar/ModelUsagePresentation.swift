@@ -173,6 +173,7 @@ enum ModelUsagePresentation {
     }
 
     static func label(for model: String?) -> String {
+        if let model, model.hasPrefix("client:") { return SpeedColorOverrides.clientTitle(model) }
         switch key(for: model) {
         case "gpt-6-astra": return "Astra"
         case "gpt-6.1-sol": return "GPT-6.1 Sol"
@@ -304,6 +305,9 @@ enum ModelUsagePresentation {
     }
 
     static func colorHex(for model: String?) -> String {
+        let overrideKey = key(for: model)
+        if let custom = SpeedColorOverrides.shared.color(for: overrideKey) { return custom }
+        if overrideKey.hasPrefix("client:") { return SpeedColorOverrides.clientColor(overrideKey) }
         let key = self.key(for: model)
         if key == "codex-auto-review" { return colorHex(for: "gpt-5.6-luna") }
         if key.hasPrefix(autoReviewDisplayPrefix) {

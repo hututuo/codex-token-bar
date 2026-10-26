@@ -44,6 +44,8 @@ struct LiveRateView: View {
                 }
             }
             .frame(height: LiveRatePanelLayout.contentHeight)
+            HStack { SpeedDisplayControls(); Spacer() }
+            SpeedColorSettings(models: monitor.displaySnapshot.modelRates.map(\.model) + monitor.latestModelSpeeds30m.map(\.model))
             ObservedSpeedView(monitor: monitor, quotaHistory: quotaHistory)
         }
         .padding(.horizontal, 12)
@@ -81,7 +83,7 @@ private struct LiveRateHeader: View {
                 .font(.system(size: 15, weight: .semibold))
                 .lineLimit(1)
 
-            Text(monitor.totalSnapshot.status)
+            Text(monitor.displaySnapshot.status)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -102,7 +104,7 @@ private struct LiveRateInstrumentReader: View {
 
     var body: some View {
         LiveRateInstrument(
-            snapshot: monitor.totalSnapshot,
+            snapshot: monitor.displaySnapshot,
             fullScale: $fullScale,
             isMonitoringEnabled: $isMonitoringEnabled,
             floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar
@@ -174,7 +176,7 @@ struct LiveRateInstrument: View {
 
                         VStack(alignment: .leading, spacing: 7) {
                             HStack(spacing: 8) {
-                                Text("全会话活动估算")
+                                Text(snapshot.sourceLabel.hasPrefix("Agent Speed") ? "Agent Speed · 本地截止" : "全会话活动估算")
                                     .font(.system(size: 8, weight: .semibold))
                                     .foregroundStyle(.secondary.opacity(0.72))
                                     .lineLimit(1)
@@ -194,7 +196,7 @@ struct LiveRateInstrument: View {
                                     SmoothRateFillBar(
                                         fraction: Double(fillFraction),
                                         minimumFraction: Double(minimumFillFraction),
-                                        modelRates: snapshot.modelRates
+                                        modelRates: snapshot.barRates
                                     )
                                 }
                             }
@@ -202,7 +204,7 @@ struct LiveRateInstrument: View {
                         }
                     }
 
-                    Text("活动曲线 · 中断即停，结束最多收尾 5 秒。")
+                    Text(snapshot.sourceLabel.hasPrefix("Agent Speed") ? "仅本地显示：停止或错误即归零；日志 20 秒未更新则归零。上报保持标准口径。" : "活动曲线 · 中断即停，结束最多收尾 5 秒。")
                         .font(.system(size: 8.4, weight: .medium))
                         .foregroundStyle(.secondary.opacity(0.78))
                         .lineLimit(2)

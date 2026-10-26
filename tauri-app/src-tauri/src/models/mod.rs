@@ -56,6 +56,7 @@ pub use settings::{
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
     SidebarModuleVisibilitySnapshot,
+    SpeedColorGrouping, SpeedDisplayMode, SpeedDisplayPreferencesSnapshot,
     UsageRefreshSettingsSnapshot,
     AUTO_RESUME_TASK_COLLECTION_VERSION, DEFAULT_SIDEBAR_MODULE_ORDER, STATUS_METRIC_IDS,
     STATUS_SUMMARY_SECTION_IDS,

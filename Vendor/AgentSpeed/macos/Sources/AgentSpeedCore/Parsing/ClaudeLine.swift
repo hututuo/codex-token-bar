@@ -35,6 +35,7 @@ struct ClaudeLine: Equatable, Sendable {
     var isInterrupt = false
     /// `message.content` contains a block of type `tool_use`.
     var hasToolUse = false
+    var localDisplayStop = false
 }
 
 /// Decodes the fields of a Claude transcript line that METRICS 4.1 needs. Conversation text is never captured.
@@ -57,6 +58,11 @@ enum ClaudeLineExtractor {
                     case 2: line.type = .apiRequest
                     default: line.type = .other
                     }
+                } else if scanner.key(key, is: "isApiErrorMessage") {
+                    line.localDisplayStop = (try scanner.readBool() ?? false) || line.localDisplayStop
+                } else if scanner.key(key, is: "subtype") {
+                    let subtype = try scanner.readNonEmptyString()
+                    line.localDisplayStop = ["api_error", "stream_error"].contains(subtype ?? "") || line.localDisplayStop
                 } else if scanner.key(key, is: "timestamp") {
                     line.timestampMs = try scanner.readTimestamp()
                 } else if scanner.key(key, is: "entrypoint") {

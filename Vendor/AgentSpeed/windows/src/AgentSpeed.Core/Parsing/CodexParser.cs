@@ -60,12 +60,22 @@ internal sealed class CodexParser : TranscriptParser<CodexLine>
             return;
         }
 
-        if (line.Status != LineStatus.Valid || !line.HasTimestamp)
+        if (line.Status != LineStatus.Valid)
+        {
+            return;
+        }
+
+        if (line.PayloadKind is CodexPayloadKind.Error or CodexPayloadKind.TurnAborted)
+        {
+            MarkConfirmedStopped();
+        }
+        if (!line.HasTimestamp)
         {
             return;
         }
 
         var ts = line.TimestampMs;
+
         if (line.Kind == CodexLineKind.SessionMeta)
         {
             ApplySessionMeta(in line, ts);

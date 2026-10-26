@@ -66,7 +66,7 @@ enum SnapshotBuilder {
         readObservation: SourceReadObservation? = nil
     ) -> SpeedSnapshot {
         let agents = output.agents.map { row in
-            AgentStatus(
+            var status = AgentStatus(
                 id: row.agent.id,
                 source: row.agent.source,
                 project: row.agent.project,
@@ -81,6 +81,8 @@ enum SnapshotBuilder {
                 cwdPath: row.agent.cwdPath,
                 modes: row.agent.modes
             )
+            status.localDisplayStopped = row.agent.localDisplayStopped
+            return status
         }
         let sources = SourceKind.allCases.map { kind in
             let info = context.sources[kind]

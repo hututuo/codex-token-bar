@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-26",
+  "scope": "source-only; no install/restart/release; no multi-client branch merge",
+  "native": {
+    "xctest": 117,
+    "skipped": 4,
+    "swiftTesting": 11,
+    "failed": 0
+  },
+  "web": {
+    "tests": 20,
+    "failed": 0,
+    "typescriptVite": "pass"
+  },
+  "windowsHelper": {
+    "sdk": "10.0.303",
+    "buildWarnings": 0,
+    "buildErrors": 0,
+    "selfTest": "pass",
+    "sdkSource": "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.303/dotnet-sdk-10.0.303-osx-arm64.tar.gz",
+    "sdkSHA512": "9b1f05664654f339090bde1b64e0edc12e814012dc3898a1d01876c65754ef18d59ec7dd98405d9c6ba6ce735696dfa96add89cd7f4c51636e2200e8cd691d10",
+    "isolatedSDKRemovedAfterVerification": true
+  },
+  "rust": {
+    "reportingTests": 9,
+    "displayTests": 2,
+    "failed": 0
+  },
+  "runtime": {
+    "macInstalled": "NOT_RUN",
+    "windowsInstalled": "NOT_RUN; localhost:2222 refused",
+    "windowsTargetRust": "BLOCKED: MSVC headers missing in ring cross-build"
+  },
+  "localPolicy": {
+    "sourceSilenceSeconds": 20,
+    "collectorSilenceSeconds": 3,
+    "reportMetricFiltered": false
+  },
+  "preview": "simulated numeric data rendered with product controls; no usage uploaded"
+}

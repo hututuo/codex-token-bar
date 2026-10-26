@@ -85,6 +85,10 @@ pub struct AppSettingsSnapshot {
     pub auto_resume: AutoResumeSettingsSnapshot,
     #[serde(default)]
     pub agent_speed_reporting: AgentSpeedReportingSettingsSnapshot,
+    #[serde(default, deserialize_with = "deserialize_speed_display_mode")]
+    pub speed_display_mode: SpeedDisplayMode,
+    #[serde(default, deserialize_with = "deserialize_speed_color_grouping")]
+    pub speed_color_grouping: SpeedColorGrouping,
 }
 
 impl Default for AppSettingsSnapshot {
@@ -109,7 +113,94 @@ impl Default for AppSettingsSnapshot {
             session_enhancements: SessionEnhancementSettingsSnapshot::default(),
             auto_resume: AutoResumeSettingsSnapshot::default(),
             agent_speed_reporting: AgentSpeedReportingSettingsSnapshot::default(),
+            speed_display_mode: SpeedDisplayMode::default(),
+            speed_color_grouping: SpeedColorGrouping::default(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SpeedDisplayMode {
+    #[default]
+    Activity,
+    AgentSpeed,
+}
+
+impl SpeedDisplayMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "activity" => Some(Self::Activity),
+            "agentSpeed" => Some(Self::AgentSpeed),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpeedColorGrouping {
+    #[default]
+    Model,
+    Client,
+}
+
+impl SpeedColorGrouping {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "model" => Some(Self::Model),
+            "client" => Some(Self::Client),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedDisplayPreferencesSnapshot {
+    pub mode: SpeedDisplayMode,
+    pub grouping: SpeedColorGrouping,
+}
+
+fn deserialize_speed_display_mode<'de, D>(deserializer: D) -> Result<SpeedDisplayMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(SpeedDisplayMode::parse(value.as_str().unwrap_or_default()).unwrap_or_default())
+}
+
+fn deserialize_speed_color_grouping<'de, D>(deserializer: D) -> Result<SpeedColorGrouping, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(SpeedColorGrouping::parse(value.as_str().unwrap_or_default()).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod speed_display_settings_tests {
+    use super::*;
+
+    #[test]
+    fn speed_display_preferences_default_and_recover_unknown_values() {
+        let defaults: AppSettingsSnapshot = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.speed_display_mode, SpeedDisplayMode::Activity);
+        assert_eq!(defaults.speed_color_grouping, SpeedColorGrouping::Model);
+
+        let saved: AppSettingsSnapshot = serde_json::from_str(
+            r#"{"speedDisplayMode":"agentSpeed","speedColorGrouping":"client"}"#,
+        )
+        .unwrap();
+        assert_eq!(saved.speed_display_mode, SpeedDisplayMode::AgentSpeed);
+        assert_eq!(saved.speed_color_grouping, SpeedColorGrouping::Client);
+
+        let unknown: AppSettingsSnapshot = serde_json::from_str(
+            r#"{"speedDisplayMode":"future-mode","speedColorGrouping":"future-group"}"#,
+        )
+        .unwrap();
+        assert_eq!(unknown.speed_display_mode, SpeedDisplayMode::Activity);
+        assert_eq!(unknown.speed_color_grouping, SpeedColorGrouping::Model);
     }
 }
 

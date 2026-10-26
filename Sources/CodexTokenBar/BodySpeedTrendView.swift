@@ -19,6 +19,7 @@ struct BodySpeedResetMarker: Equatable, Identifiable, Sendable {
 
 struct BodySpeedTrendView: View {
     @ObservedObject var monitor: LiveRateMonitor
+    @ObservedObject private var palette = SpeedDisplayPreferences.shared
     var compact = false
     var resetMarkers: [BodySpeedResetMarker] = []
     @State private var consumer = UUID()
@@ -28,7 +29,7 @@ struct BodySpeedTrendView: View {
             days: monitor.speedTrendDays, windowSeconds: monitor.speedTrendWindowSeconds,
             preferredModels: monitor.modelSpeeds15m.sorted { $0.sampleCount > $1.sampleCount }.map(\.model),
             minute: Int64(Date().timeIntervalSince1970 / 60), error: monitor.speedTrendError,
-            resetMarkers: resetMarkers), compact: compact, source: ObjectIdentifier(monitor),
+            resetMarkers: resetMarkers, palette: palette.colors), compact: compact, source: ObjectIdentifier(monitor),
             selectWindow: { monitor.setSpeedTrendWindow($0) })
             .equatable()
             .onAppear { monitor.showSpeedTrend(true, consumer: consumer) }
@@ -44,6 +45,7 @@ struct BodySpeedTrendInput: Equatable, Sendable {
     var minute: Int64
     var error: String?
     var resetMarkers: [BodySpeedResetMarker] = []
+    var palette: [String: String] = [:]
     var now: Date { Date(timeIntervalSince1970: Double(minute * 60)) }
 }
 

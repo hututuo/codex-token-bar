@@ -8,6 +8,7 @@ struct EngineAgent: Equatable, Sendable {
     /// The transcript's full working directory (METRICS 10.6); nil when it names none.
     var cwdPath: String?
     var model: String?
+    var localDisplayStopped = false
     var modes: ExecutionModes = .empty
     var isSubagent: Bool
     var phase: AgentPhase
@@ -56,6 +57,7 @@ struct EngineAgent: Equatable, Sendable {
             cwdPath: state.cwdPath,
             modes: state.modes
         )
+        self.localDisplayStopped = state.localDisplayStopped
     }
 
     /// Project name from the transcript location when the transcript never named a working directory. Gemini CLI

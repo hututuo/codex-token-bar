@@ -1,3 +1,4 @@
+import { useSpeedPalette } from "./useSpeedPalette";
 import { useDocumentVisible } from "../useDocumentVisible";
 import { invoke } from "@tauri-apps/api/core";
 import { modelUsageColor } from "../modelUsagePresentation";
@@ -39,6 +40,7 @@ interface TrendProps {
     quotaIdentity?: QuotaAttributionIdentity | null; quotaUpdatedAt?: string | null;
 }
 function BodySpeedTrendView({ sourceToken, revision, compact, preferredModel, quotaIdentity, quotaUpdatedAt }: TrendProps) {
+    useSpeedPalette();
     const visible = useDocumentVisible();
     const [windowSeconds, setWindowSeconds] = useState(86400);
     const days = windowSeconds === 86400 ? 1 : windowSeconds === 604800 ? 7 : 30;

@@ -329,6 +329,16 @@ pub fn save_agent_speed_reporting_settings(
     mutate_app_settings(|settings| settings.agent_speed_reporting = reporting)
 }
 
+pub fn save_speed_display_preferences(
+    mode: crate::models::SpeedDisplayMode,
+    grouping: crate::models::SpeedColorGrouping,
+) -> Result<AppSettingsSnapshot, String> {
+    mutate_app_settings(|settings| {
+        settings.speed_display_mode = mode;
+        settings.speed_color_grouping = grouping;
+    })
+}
+
 pub(super) fn normalize_user_path(path: &str) -> PathBuf {
     let trimmed = path.trim();
     if trimmed == "~" {

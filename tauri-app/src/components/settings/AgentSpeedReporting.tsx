@@ -18,12 +18,12 @@ export interface AgentSpeedReportingStatus {
 const website = "https://deng.codexradar.com/";
 const privacy = `${website}agent-speed/privacy/`;
 const terms = `${website}agent-speed/terms/`;
-const disclosure = "仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止这条链路的采集和上报。";
+const disclosure = "仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止榜单上报；本地速度显示由速度算法设置独立控制。";
 const duplicateNotice = "同一台电脑的同一数据源，请只在 Agent Speed 或 Token Bar 中开启一处上报，避免重复累计。";
 export const supportedHarnesses = "Codex、Claude Code、Claude Desktop（本地 Code／Agent 会话）、DSH、OpenCode、Gemini CLI、omp、Antigravity、WorkBuddy、WorkBuddy AI、ZCode、Kimi Code、Grok Build";
 const initial: AgentSpeedReportingStatus = {
   enabled: false, transport: "http", invitationHandled: true, username: "", phase: "off",
-  message: "未参加 · 采集与上报已关闭", liveOutputTps: 0, estimatedShare: 0,
+  message: "未参加 · 榜单上报已关闭", liveOutputTps: 0, estimatedShare: 0,
   lastReportAt: null, profileUrl: null, sources: [],
 };
 function read() { return callCommandStrict<AgentSpeedReportingStatus>("read_agent_speed_reporting_status"); }
@@ -102,7 +102,7 @@ export function AgentSpeedReportingSettings() {
       <strong>{nameStep ? "设置您的排行榜昵称" : "参加速蹬排行榜？"}</strong>
       {nameStep ? <label className="speed-report-name">公开昵称<input autoFocus value={nickname} maxLength={32}
         placeholder="请输入您的昵称" onChange={event => setNickname(event.target.value)} /></label>
-        : <p>请确认以上数据范围和重复上报说明；下一步填写公开昵称，完成后才开始采集与上报。</p>}
+        : <p>请确认以上数据范围和重复上报说明；下一步填写公开昵称，完成后才开始榜单上报。</p>}
       <div className="speed-report-actions">
         <button type="button" disabled={busy} onClick={() => nameStep ? setNameStep(false) : setConfirming(false)}>{nameStep ? "上一步" : "暂不参加"}</button>
         <button type="button" className="speed-report-primary" disabled={busy || (nameStep && Array.from(nickname.trim()).length < 2)}

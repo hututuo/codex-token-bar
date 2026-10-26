@@ -79,7 +79,7 @@ function RailSurface() {
   const [state, dispatch] = useReducer(sidebarReducer, initialSidebarState);
   const [error, setError] = useState<string | null>(null);
   const { sourceReady, sourceToken } = useCompactPanelSource(display.quotaSidebarEnabled);
-  const data = useCompactPanelData({ active: display.quotaSidebarEnabled && sourceReady,
+  const data = useCompactPanelData({ active: display.quotaSidebarEnabled,
     liveRateEnabled: display.liveRateEnabled, liveRateOwnerToken: "quota-sidebar-live-rate",
     quotaSource: "direct", quotaInitialDelayMs: 0, quotaIntervalMs: cadence,
     backgroundAggregateEnabled: true, sourceToken, quotaRefreshRevision });
@@ -323,7 +323,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
     {state.mode !== "rest" && <div className="qs-drag-handle" role="img" aria-label="拖动侧栏，可移到其他屏幕" title="按住拖动侧栏，可移到其他屏幕"><span /></div>}
     <div className="qs-bars" data-visible={state.mode === "rest"} aria-hidden={state.mode !== "rest"} aria-label="悬停查看额度">
       {cacheWarning && <span className="qs-cache-indicator" style={{ top: `calc(50% - ${showsFiveHour ? 114 : 87}px)` }} role="status" aria-label={`缓存命中偏低：${cacheAdviceTitle(cacheWarning)}`} title={`缓存命中偏低 · ${cacheAdviceTitle(cacheWarning)}`} />}
-      <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ height: `${ratePercent ?? 0}%`, background: modelRateGradient(data.snapshot.modelRates, "0deg") }} /></span>
+      <span className="qs-bar qs-rate-bar" data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ height: `${ratePercent ?? 0}%`, background: modelRateGradient(data.snapshot.colorRates ?? data.snapshot.modelRates, "0deg") }} /></span>
       {showsFiveHour && <Bar percent={five} color="#b6ef75" expected={expectedFive} />}<Bar percent={seven} color="#b4acff" expected={expectedSeven} />{modelStrip(true)}
     </div><SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning} onMeasure={onContentMeasurement}>{() => {
       if (cacheWarning) return <section className="qs-cache-notice" aria-label="缓存命中提醒">
@@ -350,7 +350,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
       const nearestCredit = prepareResetCreditsForDisplay(data.quota?.quota?.resetCredit?.credits ?? []).find(item => item.isCountdownEligible)?.credit;
       const moduleContent: Record<SidebarModule, ReactNode> = {
         speeds: <>
-      {visibility.speeds && <><button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" modelRates={data.snapshot.modelRates} /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
+      {visibility.speeds && <><button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" modelRates={data.snapshot.colorRates ?? data.snapshot.modelRates} /><Value value={ratePercent === null ? "—" : formatLiveRateValue(data.snapshot.tokensPerSecond)} /></button>
       <SidebarBodySpeeds models={modelSpeeds} data={data.snapshot} onOpen={() => onOpen("quota", "speeds")} /></>}
         </>,
         modeltrace: <>

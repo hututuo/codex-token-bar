@@ -559,7 +559,7 @@ internal sealed partial class MonitorCore : IDisposable
                 a.Live,
                 a.RecentSpeed,
                 UnixTime.FromMs(a.Info.LastLineMs ?? nowMs),
-                a.ParentId) { LiveCost = a.LiveCost, Modes = a.Info.Modes })
+                a.ParentId) { LiveCost = a.LiveCost, Modes = a.Info.Modes, ConfirmedStopped = a.Info.ConfirmedStopped })
             .ToList();
 
         var sources = Enum.GetValues<SourceKind>()
@@ -1005,7 +1005,8 @@ internal sealed partial class MonitorCore : IDisposable
             parser.Phase,
             parser.InFlightStartMs,
             parser.LastLineMs,
-            _parents.GetValueOrDefault(parser.AgentId)) { Modes = parser.Modes });
+            _parents.GetValueOrDefault(parser.AgentId),
+            parser.ConfirmedStopped) { Modes = parser.Modes });
     }
 
     /// <summary>Applies one read of the OpenCode database; true when anything changed.</summary>

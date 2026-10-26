@@ -40,7 +40,7 @@ internal static class Program
         var parentWatch = StatusProtocol.WatchParentExitAsync(input, lifetime);
         try
         {
-            await ReporterRuntime.RunAsync(start.Username, start.Transport, status, lifetime.Token).ConfigureAwait(false);
+            await ReporterRuntime.RunAsync(start, status, lifetime.Token).ConfigureAwait(false);
             return 0;
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
@@ -81,6 +81,9 @@ internal static class SelfTests
             await InvalidShortUsernameDoesNotStartAsync().ConfigureAwait(false);
             await ParentEofCancelsAsync().ConfigureAwait(false);
             await TransportChoiceIsExplicitAsync().ConfigureAwait(false);
+            await LocalDisplayStartupDoesNotRequireReportingIdentityAsync().ConfigureAwait(false);
+            LocalDisplayUsesOnlyFreshActiveAgentContributions();
+            LocalDisplayWireContractIsExact();
             RealtimeModeOnlyTightensEventDrivenPublication();
             PayloadIsWhitelisted();
             CostReportingPreservesKnownAndUnknownParts();
@@ -138,6 +141,128 @@ internal static class SelfTests
         await using var websocketInput = new MemoryStream(Encoding.UTF8.GetBytes("{\"enabled\":true,\"username\":\"TokenBar-1234\",\"transport\":\"websocket\"}\n"));
         var websocket = await StatusProtocol.ReadStartCommandAsync(websocketInput).ConfigureAwait(false);
         if (websocket?.Transport != "websocket")
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static async Task LocalDisplayStartupDoesNotRequireReportingIdentityAsync()
+    {
+        await using var input = new MemoryStream(Encoding.UTF8.GetBytes("{\"enabled\":false,\"localDisplay\":true}\n"));
+        var start = await StatusProtocol.ReadStartCommandAsync(input).ConfigureAwait(false);
+        if (start is not { Enabled: false, LocalDisplay: true, Username: "", Transport: "http" })
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static void LocalDisplayUsesOnlyFreshActiveAgentContributions()
+    {
+        var now = DateTimeOffset.Parse("2026-10-26T00:00:00Z", CultureInfo.InvariantCulture);
+        AgentStatus Agent(SourceKind source, string? model, AgentPhase phase, double rate, bool stopped = false,
+            int secondsOld = 0) => new(
+                Id: source + model + secondsOld,
+                Source: source,
+                Project: "project",
+                Model: model,
+                Phase: phase,
+                IsSubagent: false,
+                Live: new Rate(rate, rate),
+                RecentSpeed: null,
+                LastActivity: now.AddSeconds(-secondsOld)) { ConfirmedStopped = stopped };
+
+        var snapshot = SpeedSnapshot.Empty with
+        {
+            Timestamp = now,
+            State = MonitorState.Running,
+            Agents =
+            [
+                Agent(SourceKind.Codex, "gpt-6", AgentPhase.Generating, 10),
+                Agent(SourceKind.ClaudeCode, "gpt-6", AgentPhase.Tools, 2),
+                Agent(SourceKind.DeepSeek, "idle", AgentPhase.Idle, 99),
+                Agent(SourceKind.DeepSeek, "stopped", AgentPhase.Generating, 8, stopped: true),
+                Agent(SourceKind.DeepSeek, "stale", AgentPhase.Tools, 7, secondsOld: 21),
+                Agent(SourceKind.DeepSeek, "invalid", AgentPhase.Generating, double.NaN),
+            ],
+        };
+        var local = LocalDisplaySnapshotBuilder.Build(snapshot, now);
+        var modelTotal = local.ModelRates.Sum(rate => rate.TokensPerSecond);
+        var clientTotal = local.ClientRates.Sum(rate => rate.TokensPerSecond);
+        if (!local.Available || local.Status != "running"
+            || Math.Abs(local.TokensPerSecond - 12) > 0.000001
+            || Math.Abs(modelTotal - local.TokensPerSecond) > 0.000001
+            || Math.Abs(clientTotal - local.TokensPerSecond) > 0.000001
+            || local.ModelRates.Count != 1 || local.ModelRates[0].Model != "gpt-6"
+            || local.ClientRates.Count != 2
+            || !local.ClientRates.Any(rate => rate.Model == "client:claudeCode" && Math.Abs(rate.TokensPerSecond - 2) < 0.000001)
+            || !local.ClientRates.Any(rate => rate.Model == "client:codex" && Math.Abs(rate.TokensPerSecond - 10) < 0.000001))
+        {
+            throw new InvalidOperationException();
+        }
+
+        var idle = LocalDisplaySnapshotBuilder.Build(snapshot with
+        {
+            Timestamp = now.AddSeconds(21),
+            Agents = snapshot.Agents.Select(agent => agent with { LastActivity = now }).ToArray(),
+        }, now.AddSeconds(21));
+        if (!idle.Available || idle.Status != "idle" || idle.TokensPerSecond != 0
+            || idle.ModelRates.Count != 0 || idle.ClientRates.Count != 0)
+        {
+            throw new InvalidOperationException();
+        }
+
+        var noSources = LocalDisplaySnapshotBuilder.Build(snapshot with { State = MonitorState.NoSources }, now);
+        if (noSources.Available || noSources.Status != "noSources" || noSources.TokensPerSecond != 0)
+        {
+            throw new InvalidOperationException();
+        }
+
+        var exactlyStaleAgent = LocalDisplaySnapshotBuilder.Build(snapshot with
+        {
+            Agents = [Agent(SourceKind.Codex, "gpt-6", AgentPhase.Generating, 10, secondsOld: 20)],
+        }, now);
+        if (exactlyStaleAgent.Status != "idle" || exactlyStaleAgent.TokensPerSecond != 0)
+        {
+            throw new InvalidOperationException();
+        }
+
+        var futureAgent = LocalDisplaySnapshotBuilder.Build(snapshot with
+        {
+            Agents = [Agent(SourceKind.Codex, "gpt-6", AgentPhase.Generating, 10, secondsOld: -3)],
+        }, now);
+        if (futureAgent.Status != "idle" || futureAgent.TokensPerSecond != 0)
+        {
+            throw new InvalidOperationException();
+        }
+
+        var staleSnapshot = LocalDisplaySnapshotBuilder.Build(snapshot with { Timestamp = now.AddSeconds(-4) }, now);
+        var futureSnapshot = LocalDisplaySnapshotBuilder.Build(snapshot with { Timestamp = now.AddSeconds(3) }, now);
+        if (staleSnapshot.Status != "stale" || staleSnapshot.Available || futureSnapshot.Status != "stale")
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static void LocalDisplayWireContractIsExact()
+    {
+        var display = new AgentSpeedDisplaySnapshot(
+            true,
+            12.5,
+            [new AgentSpeedDisplayRate("gpt-6", 12.5)],
+            [new AgentSpeedDisplayRate("client:codex", 12.5)],
+            "running",
+            1_798_000_000_000);
+        var status = new HelperStatus(1, "waiting_for_snapshot", "waiting_for_snapshot", 0, 0, null, [], null, display);
+        using var parsed = JsonDocument.Parse(StatusProtocol.Serialize(status));
+        var local = parsed.RootElement.GetProperty("localDisplay");
+        var fields = local.EnumerateObject().Select(property => property.Name).ToArray();
+        if (!fields.SequenceEqual(["available", "tokensPerSecond", "modelRates", "clientRates", "status", "updatedAtMs"]))
+        {
+            throw new InvalidOperationException();
+        }
+        var rateFields = local.GetProperty("modelRates")[0].EnumerateObject().Select(property => property.Name).ToArray();
+        if (!rateFields.SequenceEqual(["model", "tokensPerSecond"])
+            || local.GetProperty("clientRates")[0].GetProperty("model").GetString() != "client:codex")
         {
             throw new InvalidOperationException();
         }

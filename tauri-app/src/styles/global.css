@@ -12926,3 +12926,17 @@ details.session-management-banner {
 
 @keyframes rig-press{0%,19%,24%,76%,81%,100%{transform:scale(1)}21%,78%{transform:scale(.78)}}
 .recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}
+
+.speed-display-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; padding:6px 0; font-size:12px; }
+.speed-display-controls label { display:flex; align-items:center; gap:6px; color:inherit; }
+.speed-display-controls select { color:inherit; background:var(--control); border:1px solid var(--line-strong); border-radius:7px; padding:4px 7px; font:inherit; }
+.speed-display-controls [role=status] { color:#ffb68b; }
+.speed-color-settings { padding:6px 0; font-size:12px; }
+.speed-color-settings summary { cursor:pointer; width:max-content; padding:3px 0; }
+.speed-color-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(205px,1fr)); gap:8px 14px; padding:10px 0; }
+.speed-color-grid label { display:flex; align-items:center; gap:8px; min-width:0; }
+.speed-color-grid label span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.speed-color-grid input[type=color] { width:28px; height:24px; border:0; padding:0; background:transparent; cursor:pointer; flex-shrink:0; }
+.speed-color-grid button { font-size:11px; color:inherit; border:1px solid #526074; border-radius:5px; background:transparent; padding:2px 5px; cursor:pointer; }
+
+.qs-detail .speed-display-controls select { background:#1b222c; color:#f4f7fb; border-color:#526074; }

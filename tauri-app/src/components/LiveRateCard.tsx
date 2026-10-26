@@ -32,6 +32,8 @@ interface LiveRateCardProps {
   usageCacheInitializing?: boolean;
 }
 
+import { SpeedDisplayControls, SpeedColorSettings, useSpeedDisplaySnapshot } from "./liveRate/SpeedDisplayControls";
+
 export function LiveRateCard({
   sourceToken = null,
   quotaIdentity, quotaUpdatedAt,
@@ -51,11 +53,12 @@ export function LiveRateCard({
   liveRateEnabled,
   platform,
   refreshing = false,
-  snapshot,
+  snapshot: rawSpeedSnapshot,
   statusTrayLiveTextEnabled,
   usageCacheInitializing = false,
 }: LiveRateCardProps) {
-  const notice = liveRateNotice(snapshot, {
+  const snapshot = useSpeedDisplaySnapshot(rawSpeedSnapshot, liveRateEnabled);
+  const notice = snapshot.speedDisplayMode === "agentSpeed" ? null : liveRateNotice(snapshot, {
     liveRateEnabled,
     refreshing,
     usageCacheInitializing,
@@ -70,7 +73,7 @@ export function LiveRateCard({
   const subtitle = pendingNotice
     ? `${pendingNotice.title} · ${pendingNotice.message}`
     : liveRateEnabled
-      ? "全会话活动估算"
+      ? snapshot.speedDisplayMode === "agentSpeed" ? snapshot.speedDisplayStatus : "全会话活动估算"
       : "实时速率已关闭";
 
   return (
@@ -123,6 +126,8 @@ export function LiveRateCard({
         </div>
       ) : null}
 
+      <SpeedDisplayControls/>
+      <SpeedColorSettings models={[...(snapshot.modelRates ?? []).map(r => r.model), ...(snapshot.latestModelSpeeds30m ?? []).map(r => r.model)]}/>
       {liveRateEnabled && <CacheUsageNotice advice={snapshot.cacheAdvice} />}
       <div className="live-grid">
         <div className={liveRateEnabled ? "live-left" : "live-left is-live-disabled"}>
@@ -133,7 +138,7 @@ export function LiveRateCard({
             onFullScaleChange={onTokenRateFullScaleChange}
           />
           <p className="live-rate-note">
-            活动曲线 · 中断即停，结束最多收尾 5 秒。
+            {snapshot.speedDisplayMode === "agentSpeed" ? "仅本地显示：结束或错误即归零；日志20秒未更新归零。上报保持标准口径。" : "活动曲线 · 中断即停，结束最多收尾 5 秒。"}
           </p>
         </div>
 

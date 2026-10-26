@@ -80,6 +80,8 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "read_agent_speed_reporting_status",
+    "read_agent_speed_display_snapshot",
+    "read_speed_display_preferences",
     "read_sidebar_trend",
     "get_codex_home",
     "read_app_settings",
@@ -120,6 +122,10 @@ const SIDEBAR_MODULE_SETTINGS_COMMANDS: &[&str] = &[
     "save_sidebar_module_order",
 ];
 
+const SPEED_DISPLAY_SETTINGS_COMMANDS: &[&str] = &[
+    "set_speed_display_preferences",
+];
+
 const MODELTRACE_DETAIL_COMMANDS: &[&str] = &[
     "read_modeltrace_snapshot",
     "start_modeltrace",
@@ -152,6 +158,12 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
     if command == "read_quota_cycles" && label == "quota-sidebar-detail" { return true; }
     if SIDEBAR_MODULE_SETTINGS_COMMANDS.contains(&command) {
         return matches!(label, "quota-sidebar" | "quota-sidebar-detail");
+    }
+    if SPEED_DISPLAY_SETTINGS_COMMANDS.contains(&command) {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar" | "quota-sidebar-detail");
+    }
+    if matches!(command, "read_speed_display_preferences" | "read_agent_speed_display_snapshot") {
+        return matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL | STATUS_WINDOW_LABEL | "quota-sidebar" | "quota-sidebar-detail");
     }
     if MODELTRACE_DETAIL_COMMANDS.contains(&command) {
         return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
@@ -510,6 +522,7 @@ mod tests {
             .chain(SURFACE_SAFE_COMMANDS.iter())
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
             .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
+            .chain(SPEED_DISPLAY_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(
@@ -533,6 +546,7 @@ mod tests {
             .chain(SURFACE_SAFE_COMMANDS.iter())
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
             .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
+            .chain(SPEED_DISPLAY_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(
@@ -565,6 +579,20 @@ mod tests {
             assert!(allows_window_label(command, "main"), "{command}");
             assert!(!allows_window_label(command, "floating"), "{command}");
             assert!(!allows_window_label(command, "status"), "{command}");
+        }
+    }
+
+    #[test]
+    fn speed_display_reads_are_surface_safe_but_preferences_mutation_is_scoped() {
+        for window in ["main", "floating", "status", "quota-sidebar", "quota-sidebar-detail"] {
+            assert!(allows_window_label("read_speed_display_preferences", window));
+            assert!(allows_window_label("read_agent_speed_display_snapshot", window));
+        }
+        for window in ["main", "quota-sidebar", "quota-sidebar-detail"] {
+            assert!(allows_window_label("set_speed_display_preferences", window));
+        }
+        for window in ["floating", "status"] {
+            assert!(!allows_window_label("set_speed_display_preferences", window));
         }
     }
 

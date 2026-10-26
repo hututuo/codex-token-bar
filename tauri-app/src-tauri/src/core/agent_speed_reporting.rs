@@ -1,6 +1,7 @@
 use crate::models::{AgentSpeedReportingSettingsSnapshot, AgentSpeedReportingTransport};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
 use tauri::Manager as _;
 
@@ -15,6 +16,39 @@ use tokio::{
 
 const STATUS_LINE_LIMIT: usize = 4096;
 const MAX_TPS: f64 = 1_000_000_000.0;
+const DISPLAY_STATUS_LINE_LIMIT: usize = 65_536;
+const DISPLAY_STALE_AFTER_MS: i64 = 2_000;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentSpeedDisplayRate {
+    pub model: String,
+    pub tokens_per_second: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentSpeedDisplaySnapshot {
+    pub available: bool,
+    pub tokens_per_second: f64,
+    pub model_rates: Vec<AgentSpeedDisplayRate>,
+    pub client_rates: Vec<AgentSpeedDisplayRate>,
+    pub status: String,
+    pub updated_at_ms: i64,
+}
+
+impl AgentSpeedDisplaySnapshot {
+    fn empty(status: &str, available: bool) -> Self {
+        Self {
+            available,
+            tokens_per_second: 0.0,
+            model_rates: Vec::new(),
+            client_rates: Vec::new(),
+            status: status.into(),
+            updated_at_ms: current_time_ms(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -69,6 +103,9 @@ struct RegistryData {
     active_username: Option<String>,
     #[cfg(windows)]
     active_transport: Option<AgentSpeedReportingTransport>,
+    active_local_display: bool,
+    active_reporting: bool,
+    display_snapshot: Option<AgentSpeedDisplaySnapshot>,
     #[cfg(any(windows, test))]
     generation: u64,
 }
@@ -114,6 +151,22 @@ impl AgentSpeedReportingRegistry {
         status
     }
 
+    pub fn read_display_snapshot(&self) -> AgentSpeedDisplaySnapshot {
+        let data = self.data.lock().unwrap_or_else(|error| error.into_inner());
+        if !data.active_local_display {
+            return AgentSpeedDisplaySnapshot::empty("stale", false);
+        }
+
+        let Some(snapshot) = data.display_snapshot.clone() else {
+            return AgentSpeedDisplaySnapshot::empty("starting", false);
+        };
+        let age = current_time_ms().saturating_sub(snapshot.updated_at_ms);
+        if age > DISPLAY_STALE_AFTER_MS && snapshot.available {
+            return AgentSpeedDisplaySnapshot::empty("stale", false);
+        }
+        snapshot
+    }
+
     pub fn initialize_error(&self, settings: &AgentSpeedReportingSettingsSnapshot, code: &str) {
         self.set_error_status(settings, code);
     }
@@ -141,37 +194,72 @@ impl AgentSpeedReportingRegistry {
         &self,
         app: &tauri::AppHandle,
         settings: &AgentSpeedReportingSettingsSnapshot,
+        local_display: bool,
     ) -> Result<(), String> {
-        if !settings.enabled {
-            return self.stop().await;
+        if !settings.enabled && !local_display {
+            #[cfg(windows)]
+            {
+                let _transition = self.transition.lock().await;
+                self.invalidate_generation();
+                self.stop_process().await;
+            }
+            let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
+            data.active_username = None;
+            data.active_reporting = false;
+            data.active_local_display = false;
+            data.display_snapshot = Some(AgentSpeedDisplaySnapshot::empty("disabled", false));
+            data.status = Some(AgentSpeedReportingStatus::from_settings(settings));
+            #[cfg(windows)]
+            {
+                data.active_transport = None;
+            }
+            return Ok(());
         }
 
         #[cfg(not(windows))]
         {
             let _ = app;
-            self.set_error_status(settings, "windows_only");
-            Err("Agent Speed reporting is available on Windows only.".into())
+            if settings.enabled {
+                self.set_error_status(settings, "windows_only");
+                Err("Agent Speed reporting is available on Windows only.".into())
+            } else {
+                let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
+                data.active_local_display = false;
+                data.display_snapshot = Some(AgentSpeedDisplaySnapshot::empty("unsupported", false));
+                Ok(())
+            }
         }
 
         #[cfg(windows)]
         {
             let _transition = self.transition.lock().await;
-            let username = match safe_username(&settings.username) {
-                Ok(username) => username,
-                Err(error) => {
-                    self.set_error_status(settings, "username_invalid");
-                    return Err(error);
+            let username = if settings.enabled {
+                match safe_username(&settings.username) {
+                    Ok(username) => username,
+                    Err(error) => {
+                        self.set_error_status(settings, "username_invalid");
+                        return Err(error);
+                    }
                 }
+            } else {
+                String::new()
             };
-            if self.child_is_running_for(&username, settings.transport) {
+            if self.child_is_running_for(&username, settings.transport, settings.enabled, local_display) {
                 return Ok(());
             }
 
             self.invalidate_generation();
             self.stop_process().await;
-            self.set_phase(settings, "starting", "正在启动实时速度上报");
+            if settings.enabled {
+                self.set_phase(settings, "starting", "正在启动实时速度上报");
+            }
             let helper = helper_path(app).map_err(|_| {
-                self.set_error_status(settings, "helper_unavailable");
+                if settings.enabled {
+                    self.set_error_status(settings, "helper_unavailable");
+                }
+                if local_display {
+                    self.set_display_snapshot(AgentSpeedDisplaySnapshot::empty("error", false));
+                }
                 "Agent Speed reporter helper is unavailable.".to_owned()
             })?;
 
@@ -201,11 +289,16 @@ impl AgentSpeedReportingRegistry {
                 "Agent Speed reporter helper could not start.".to_owned()
             })?;
 
-            let startup = serde_json::json!({
-                "enabled": true,
-                "username": username.clone(),
-                "transport": settings.transport.as_str(),
-            });
+            let startup = if settings.enabled {
+                serde_json::json!({
+                    "enabled": true,
+                    "localDisplay": local_display,
+                    "username": username.clone(),
+                    "transport": settings.transport.as_str(),
+                })
+            } else {
+                serde_json::json!({"enabled": false, "localDisplay": true})
+            };
             let mut line = serde_json::to_vec(&startup)
                 .map_err(|_| "Agent Speed reporter helper could not start.".to_owned())?;
             line.push(b'\n');
@@ -222,7 +315,16 @@ impl AgentSpeedReportingRegistry {
                 let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
                 data.active_username = Some(username.clone());
                 data.active_transport = Some(settings.transport);
-                data.status = Some(AgentSpeedReportingStatus::from_settings(settings));
+                data.active_reporting = settings.enabled;
+                data.active_local_display = local_display;
+                data.display_snapshot = Some(if local_display {
+                    AgentSpeedDisplaySnapshot::empty("starting", false)
+                } else {
+                    AgentSpeedDisplaySnapshot::empty("disabled", false)
+                });
+                if settings.enabled {
+                    data.status = Some(AgentSpeedReportingStatus::from_settings(settings));
+                }
             }
             *self.stdin.lock().await = Some(child_stdin);
             *self.child.lock().unwrap_or_else(|error| error.into_inner()) = Some(child);
@@ -230,6 +332,8 @@ impl AgentSpeedReportingRegistry {
             let data = Arc::clone(&self.data);
             let status_username = username.clone();
             let status_transport = settings.transport;
+            let reporting_enabled = settings.enabled;
+            let display_enabled = local_display;
             let generation = self
                 .data
                 .lock()
@@ -241,6 +345,8 @@ impl AgentSpeedReportingRegistry {
                     data,
                     status_username,
                     status_transport,
+                    reporting_enabled,
+                    display_enabled,
                     generation,
                 )
                 .await;
@@ -259,6 +365,9 @@ impl AgentSpeedReportingRegistry {
 
         let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
         data.active_username = None;
+        data.active_reporting = false;
+        data.active_local_display = false;
+        data.display_snapshot = Some(AgentSpeedDisplaySnapshot::empty("disabled", false));
         #[cfg(windows)]
         {
             data.active_transport = None;
@@ -301,6 +410,7 @@ impl AgentSpeedReportingRegistry {
                 }
             }
         }
+        self.set_display_snapshot(AgentSpeedDisplaySnapshot::empty("helperExit", false));
     }
 
     fn set_error_status(&self, settings: &AgentSpeedReportingSettingsSnapshot, code: &str) {
@@ -324,12 +434,19 @@ impl AgentSpeedReportingRegistry {
         data.status = Some(status);
     }
 
+    fn set_display_snapshot(&self, snapshot: AgentSpeedDisplaySnapshot) {
+        let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
+        data.display_snapshot = Some(snapshot);
+    }
+
     #[cfg(windows)]
     fn invalidate_generation(&self) {
         let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
         data.generation = data.generation.wrapping_add(1).max(1);
         data.active_username = None;
         data.active_transport = None;
+        data.active_reporting = false;
+        data.active_local_display = false;
     }
 
     #[cfg(windows)]
@@ -337,6 +454,8 @@ impl AgentSpeedReportingRegistry {
         &self,
         username: &str,
         transport: AgentSpeedReportingTransport,
+        reporting_enabled: bool,
+        display_enabled: bool,
     ) -> bool {
         let mut child = self.child.lock().unwrap_or_else(|error| error.into_inner());
         let running = match child.as_mut() {
@@ -346,7 +465,9 @@ impl AgentSpeedReportingRegistry {
         if running {
             let data = self.data.lock().unwrap_or_else(|error| error.into_inner());
             return data.active_username.as_deref() == Some(username)
-                && data.active_transport == Some(transport);
+                && data.active_transport == Some(transport)
+                && data.active_reporting == reporting_enabled
+                && data.active_local_display == display_enabled;
         }
 
         child.take();
@@ -368,6 +489,9 @@ impl AgentSpeedReportingRegistry {
                 }
                 data.active_username = None;
                 data.active_transport = None;
+                data.active_reporting = false;
+                data.active_local_display = false;
+                data.display_snapshot = Some(AgentSpeedDisplaySnapshot::empty("helperExit", false));
             }
         }
     }
@@ -403,6 +527,8 @@ struct RawStatusLine {
     last_report_at: Option<String>,
     sources: Vec<RawSourceLine>,
     profile_url: Option<String>,
+    #[serde(default)]
+    local_display: Option<RawDisplaySnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -413,19 +539,39 @@ struct RawSourceLine {
     tps: f64,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawDisplaySnapshot {
+    available: bool,
+    tokens_per_second: f64,
+    model_rates: Vec<RawDisplayRate>,
+    client_rates: Vec<RawDisplayRate>,
+    status: String,
+    updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawDisplayRate {
+    model: String,
+    tokens_per_second: f64,
+}
+
 #[cfg(windows)]
 async fn read_helper_status(
     stdout: tokio::process::ChildStdout,
     data: Arc<Mutex<RegistryData>>,
     username: String,
     transport: AgentSpeedReportingTransport,
+    reporting_enabled: bool,
+    display_enabled: bool,
     generation: u64,
 ) {
     use tokio::io::AsyncBufReadExt as _;
 
     let mut reader = BufReader::new(stdout);
     loop {
-        let line = match read_bounded_line(&mut reader, STATUS_LINE_LIMIT).await {
+        let line = match read_bounded_line(&mut reader, DISPLAY_STATUS_LINE_LIMIT.max(STATUS_LINE_LIMIT)).await {
             Ok(Some(line)) => line,
             Ok(None) => break,
             Err(_) => continue,
@@ -433,25 +579,40 @@ async fn read_helper_status(
         let Ok(raw) = serde_json::from_slice::<RawStatusLine>(&line) else {
             continue;
         };
-        let Some(status) = sanitize_status(raw, &username, transport) else {
-            continue;
-        };
+        let display = raw.local_display.clone().and_then(sanitize_display_snapshot);
+        let status = reporting_enabled
+            .then(|| sanitize_status(raw, &username, transport))
+            .flatten();
         let mut state = data.lock().unwrap_or_else(|error| error.into_inner());
         if status_writer_is_current(&state, generation, &username) {
-            state.status = Some(status);
+            if let Some(status) = status {
+                state.status = Some(status);
+            }
+            if display_enabled {
+                if let Some(display) = display {
+                    state.display_snapshot = Some(display);
+                }
+            }
         }
     }
 
     let mut state = data.lock().unwrap_or_else(|error| error.into_inner());
     if status_writer_is_current(&state, generation, &username) {
-        if let Some(status) = state.status.as_mut() {
-            if status.enabled && status.phase != "error" {
-                status.phase = "error".into();
-                status.status_message = "上报程序意外停止".into();
+        if reporting_enabled {
+            if let Some(status) = state.status.as_mut() {
+                if status.enabled && status.phase != "error" {
+                    status.phase = "error".into();
+                    status.status_message = "上报程序意外停止".into();
+                }
             }
         }
         state.active_username = None;
         state.active_transport = None;
+        state.active_reporting = false;
+        state.active_local_display = false;
+        if display_enabled {
+            state.display_snapshot = Some(AgentSpeedDisplaySnapshot::empty("helperExit", false));
+        }
     }
 }
 
@@ -567,6 +728,101 @@ fn sanitize_status(
         sources,
         profile_url,
     })
+}
+
+fn sanitize_display_snapshot(raw: RawDisplaySnapshot) -> Option<AgentSpeedDisplaySnapshot> {
+    let now = current_time_ms();
+    if !matches!(
+        raw.status.as_str(),
+        "starting" | "running" | "idle" | "noSources" | "stale" | "error" | "unsupported" | "helperExit" | "disabled" | "unavailable"
+    ) || raw.status.len() > 32
+        || !raw.tokens_per_second.is_finite()
+        || !(0.0..=MAX_TPS).contains(&raw.tokens_per_second)
+        || raw.updated_at_ms < 0
+        || raw.updated_at_ms > now.saturating_add(2_000)
+    {
+        return None;
+    }
+
+    let model_rates = sanitize_display_rates(raw.model_rates, false)?;
+    let client_rates = sanitize_display_rates(raw.client_rates, true)?;
+    let model_total = model_rates.iter().map(|rate| rate.tokens_per_second).sum::<f64>();
+    let client_total = client_rates.iter().map(|rate| rate.tokens_per_second).sum::<f64>();
+    let tolerance = (raw.tokens_per_second.max(1.0)) * 1e-6;
+    if !model_total.is_finite()
+        || !client_total.is_finite()
+        || (model_total - raw.tokens_per_second).abs() > tolerance
+        || (client_total - raw.tokens_per_second).abs() > tolerance
+        || (!raw.available
+            && (raw.tokens_per_second != 0.0 || !model_rates.is_empty() || !client_rates.is_empty()))
+    {
+        return None;
+    }
+
+    Some(AgentSpeedDisplaySnapshot {
+        available: raw.available,
+        tokens_per_second: raw.tokens_per_second,
+        model_rates,
+        client_rates,
+        status: raw.status,
+        updated_at_ms: raw.updated_at_ms,
+    })
+}
+
+fn sanitize_display_rates(raw: Vec<RawDisplayRate>, clients: bool) -> Option<Vec<AgentSpeedDisplayRate>> {
+    if raw.len() > 512 {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    raw.into_iter()
+        .map(|rate| {
+            if rate.model.len() > 1024
+                || rate.model.chars().any(char::is_control)
+                || rate.model.is_empty() && clients
+                || !seen.insert(rate.model.clone())
+                || !rate.tokens_per_second.is_finite()
+                || rate.tokens_per_second <= 0.0
+                || rate.tokens_per_second > MAX_TPS
+                || clients && !is_display_client_key(&rate.model)
+            {
+                return None;
+            }
+            Some(AgentSpeedDisplayRate {
+                model: rate.model,
+                tokens_per_second: rate.tokens_per_second,
+            })
+        })
+        .collect()
+}
+
+fn is_display_client_key(value: &str) -> bool {
+    let Some(source) = value.strip_prefix("client:") else {
+        return false;
+    };
+    matches!(
+        source,
+        "codex"
+            | "claudeCode"
+            | "claudeDesktop"
+            | "deepseek"
+            | "opencode"
+            | "gemini"
+            | "omp"
+            | "antigravity"
+            | "workbuddy"
+            | "workbuddyAi"
+            | "zcode"
+            | "kimi"
+            | "grokBuild"
+    )
+}
+
+fn current_time_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or_default()
 }
 
 fn canonical_source_name(id: &str) -> Option<&'static str> {
@@ -760,6 +1016,7 @@ mod tests {
                 },
             ],
             profile_url: Some("https://evil.example/profile".into()),
+            local_display: None,
         };
         let status =
             sanitize_status(raw, "TokenBar-a1b2", AgentSpeedReportingTransport::Http).unwrap();
@@ -787,6 +1044,7 @@ mod tests {
                 last_report_at: Some("2026-10-26T00:00:00Z".into()),
                 sources: Vec::new(),
                 profile_url: None,
+                local_display: None,
             },
             "TokenBar-a1b2",
             AgentSpeedReportingTransport::Websocket,
@@ -808,6 +1066,7 @@ mod tests {
                 last_report_at: None,
                 sources: Vec::new(),
                 profile_url: None,
+                local_display: None,
             },
             "TokenBar-a1b2",
             AgentSpeedReportingTransport::Websocket,
@@ -860,5 +1119,60 @@ mod tests {
         let status = registry.read_status(&settings);
         assert!(!status.enabled);
         assert_eq!(status.phase, "off");
+    }
+
+    #[test]
+    fn local_display_snapshot_requires_consistent_model_and_client_sums() {
+        let now = current_time_ms();
+        let raw = RawDisplaySnapshot {
+            available: true,
+            tokens_per_second: 12.0,
+            model_rates: vec![RawDisplayRate {
+                model: "gpt-6".into(),
+                tokens_per_second: 12.0,
+            }],
+            client_rates: vec![
+                RawDisplayRate {
+                    model: "client:codex".into(),
+                    tokens_per_second: 10.0,
+                },
+                RawDisplayRate {
+                    model: "client:claudeCode".into(),
+                    tokens_per_second: 2.0,
+                },
+            ],
+            status: "running".into(),
+            updated_at_ms: now,
+        };
+        let snapshot = sanitize_display_snapshot(raw.clone()).unwrap();
+        let json = serde_json::to_value(snapshot).unwrap();
+        let fields = json.as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            fields,
+            ["available", "tokensPerSecond", "modelRates", "clientRates", "status", "updatedAtMs"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        );
+        assert_eq!(json["tokensPerSecond"], 12.0);
+        assert_eq!(json["clientRates"][0]["model"], "client:codex");
+        assert!(json.get("updatedAtMs").is_some());
+
+        let mismatch = RawDisplaySnapshot {
+            client_rates: vec![RawDisplayRate {
+                model: "client:codex".into(),
+                tokens_per_second: 11.0,
+            }],
+            ..raw.clone()
+        };
+        assert!(sanitize_display_snapshot(mismatch).is_none());
+        let private_source_key = RawDisplaySnapshot {
+            client_rates: vec![RawDisplayRate {
+                model: "client:C:\\Users\\name\\transcript.jsonl".into(),
+                tokens_per_second: 12.0,
+            }],
+            ..raw
+        };
+        assert!(sanitize_display_snapshot(private_source_key).is_none());
     }
 }

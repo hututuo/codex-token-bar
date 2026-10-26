@@ -54,6 +54,9 @@ internal abstract class TranscriptParser
 
     public AgentPhase Phase => _phase;
 
+    /// <summary>True after an explicit source error or user interrupt; reset on a resumed turn.</summary>
+    public bool ConfirmedStopped { get; private set; }
+
     public long? PhaseSinceMs { get; private set; }
 
     public long? InFlightStartMs { get; private set; }
@@ -89,6 +92,7 @@ internal abstract class TranscriptParser
         Modes = ExecutionModes.Empty;
         IsSubagent = false;
         _phase = AgentPhase.Idle;
+        ConfirmedStopped = false;
         PhaseSinceMs = null;
         InFlightStartMs = null;
         LastLineMs = null;
@@ -153,6 +157,12 @@ internal abstract class TranscriptParser
 
     protected void SetPhase(AgentPhase phase, long timestampMs, long? inFlightStartMs)
     {
+        if (phase != AgentPhase.Idle && ConfirmedStopped)
+        {
+            ConfirmedStopped = false;
+            Version++;
+        }
+
         if (_phase != phase)
         {
             _phase = phase;
@@ -164,6 +174,15 @@ internal abstract class TranscriptParser
         if (InFlightStartMs != inFlight)
         {
             InFlightStartMs = inFlight;
+            Version++;
+        }
+    }
+
+    protected void MarkConfirmedStopped()
+    {
+        if (!ConfirmedStopped)
+        {
+            ConfirmedStopped = true;
             Version++;
         }
     }

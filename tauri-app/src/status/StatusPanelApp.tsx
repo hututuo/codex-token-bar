@@ -89,7 +89,7 @@ export function StatusPanelApp() {
   const lastPublishedReadoutRef = useRef("");
   const [publishRetryNonce, setPublishRetryNonce] = useState(0);
   const { quota, runningThreads, snapshot } = useCompactPanelData({
-    active: active && sourceReady,
+    active,
     backgroundAggregateEnabled: true,
     liveRateEnabled: dataInterests.liveRate,
     liveRateOwnerToken: "status-live-rate",
@@ -320,7 +320,7 @@ export function StatusPanelApp() {
             <div className="status-panel-meter" aria-hidden="true">
               <i
                 className="rate-fill"
-                style={rateFillStyle(measuredRate, settings.tokenRateFullScale, displaySnapshot.modelRates)}
+                style={rateFillStyle(measuredRate, settings.tokenRateFullScale, displaySnapshot.colorRates ?? displaySnapshot.modelRates)}
               />
             </div>
           </article>

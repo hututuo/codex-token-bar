@@ -86,6 +86,7 @@ struct AgentState: Equatable, Sendable {
     var inFlightStartMs: Int64?
     var lastLineMs: Int64?
     var malformedLines = 0
+    var localDisplayStopped = false
 
     init(source: SourceKind, isSubagent: Bool = false) {
         self.source = source
@@ -93,6 +94,7 @@ struct AgentState: Equatable, Sendable {
     }
 
     mutating func setPhase(_ newPhase: AgentPhase, at timestampMs: Int64, inFlightStartMs start: Int64? = nil) {
+        if newPhase != .idle { localDisplayStopped = false }
         if phase != newPhase {
             phase = newPhase
             phaseSinceMs = timestampMs

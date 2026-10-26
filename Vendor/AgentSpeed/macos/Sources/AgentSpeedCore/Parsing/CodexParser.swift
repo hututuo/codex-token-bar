@@ -43,7 +43,10 @@ struct CodexParser: Sendable {
     }
 
     private mutating func consume(_ line: CodexLine, deduper: inout Deduper, emit: (ResponseUpsert) -> Void) {
-        guard let timestamp = line.timestampMs else { return }
+        guard let timestamp = line.timestampMs else {
+            if line.localDisplayStop { state.localDisplayStopped = true }
+            return
+        }
         if case .sessionMeta(let meta) = line.kind {
             // Only the first session_meta applies; sub-agent files copy their parent's right after their own.
             guard state.thread == nil else { return }
@@ -59,6 +62,7 @@ struct CodexParser: Sendable {
             return
         }
         state.noteLine(at: timestamp)
+        if line.localDisplayStop { state.localDisplayStopped = true }
         if line.hasModeSelection { state.modes = line.modes }
         else if !line.modes.facts.isEmpty { state.modes = state.modes.merging(line.modes) }
 

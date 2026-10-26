@@ -81,6 +81,9 @@ public sealed record AgentStatus(
 {
     public ExecutionModes Modes { get; init; } = ExecutionModes.Empty;
 
+    /// <summary>Parser metadata that this response was explicitly interrupted or failed.</summary>
+    public bool ConfirmedStopped { get; init; }
+
     /// <summary>The agent's live cost rate (METRICS 9.5).</summary>
     public LiveCost LiveCost { get; init; }
 }

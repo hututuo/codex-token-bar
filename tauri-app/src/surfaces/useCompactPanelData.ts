@@ -1,3 +1,4 @@
+import { useSpeedDisplaySnapshot } from "../components/liveRate/SpeedDisplayControls";
 import { useMemo } from "react";
 import type {
   AccountQuotaBundle,
@@ -121,8 +122,9 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
     [quota, quotaLabels, rawSnapshot],
   );
 
+  const displaySnapshot = useSpeedDisplaySnapshot(snapshot, active && liveRateEnabled);
   return {
-    snapshot,
+    snapshot: displaySnapshot,
     rawSnapshot,
     quota,
     quotaLabels,

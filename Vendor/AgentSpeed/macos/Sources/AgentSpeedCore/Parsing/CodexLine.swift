@@ -65,6 +65,7 @@ struct CodexLine: Equatable, Sendable {
     var kind: CodexLineKind
     var modes: ExecutionModes = .empty
     var hasModeSelection = false
+    var localDisplayStop = false
 }
 
 /// Decodes the fields of a Codex envelope line that METRICS 4.2 needs. Conversation text is never captured.
@@ -116,6 +117,7 @@ enum CodexLineExtractor {
             }
             try scanner.finish()
             var line = CodexLine(timestampMs: timestamp, kind: classify(envelope: envelope, payload: payload))
+            line.localDisplayStop = envelope == 3 && ["error", "stream_error", "request_failed", "task_aborted"].contains(payload?.type ?? "")
             if envelope == 1 {
                 line.hasModeSelection = payload?.serviceTierPresent ?? false
                 line.modes = ExecutionModeAdapters.openAI(payload?.serviceTier, evidence: .selected, scope: .turn)

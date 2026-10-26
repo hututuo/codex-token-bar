@@ -29,7 +29,7 @@ final class AgentSpeedReportingController: ObservableObject {
     @Published private(set) var transport: AgentSpeedReportingMode
     @Published private(set) var enabled: Bool
     @Published private(set) var username: String
-    @Published private(set) var message = "未参加 · 采集与上报已关闭"
+    @Published private(set) var message = "未参加 · 榜单上报已关闭"
     @Published private(set) var phase = "off"
     @Published private(set) var liveOutputTps = 0.0
     @Published private(set) var estimatedShare = 0.0
@@ -102,11 +102,11 @@ final class AgentSpeedReportingController: ObservableObject {
          startWebSocket: @escaping (AgentSpeedWebSocket) -> Void = { $0.start() },
          makeRealtimeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)? = nil,
          makeMonitor: @escaping (SpeedStore) -> any AgentSpeedReportingMonitor = {
-             AgentSpeedCore.LiveMonitor(store: $0, pricing: PriceBook())
+             SharedAgentSpeedCollection.shared.lease(for: $0)
          }) {
         self.serviceAddress = serviceURLOverride ?? Self.serviceURL
         self.permittedAPI = apiURLOverride ?? Self.apiURL
-        self.makeRealtimeMonitor = makeRealtimeMonitor ?? { AgentSpeedCore.LiveMonitor(store: $0, pricing: PriceBook(), realtimeEventMode: true) }
+        self.makeRealtimeMonitor = makeRealtimeMonitor ?? { SharedAgentSpeedCollection.shared.lease(for: $0) }
         self.startWebSocket = startWebSocket
         self.transport = AgentSpeedReportingMode(rawValue: defaults.string(forKey: Self.transportKey) ?? "") ?? .http
         self.defaults = defaults
@@ -171,7 +171,7 @@ final class AgentSpeedReportingController: ObservableObject {
         usingHTTPFallback = false
         lastSample = ReportSample()
         liveOutputTps = 0; estimatedShare = 0; sources = []
-        phase = "off"; message = "未参加 · 采集与上报已关闭"
+        phase = "off"; message = "未参加 · 榜单上报已关闭"
         // An opt-out cancels in-flight work immediately; no final telemetry packet after consent withdrawal.
     }
 
