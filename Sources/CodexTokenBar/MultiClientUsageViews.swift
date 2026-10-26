@@ -120,6 +120,15 @@ struct MultiClientUsageSidebarRows: View {
     @AppStorage("multiClient.overviewSidebar") private var showOverview = false
     @ObservedObject private var store = MultiClientUsageStore.shared
     var body: some View {
+        if clientScope == "codex" {
+            Button { onOpen?() } label: {
+                VStack(spacing: 3) {
+                    Text("Codex").font(.system(size: 9))
+                    Text(codexTokens.map(MultiClientUsageStore.compact) ?? "—").font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                    Text("累计 Token").font(.system(size: 8)).foregroundStyle(.secondary)
+                }.frame(width: 74).padding(.vertical, 5)
+            }.buttonStyle(SidebarPulseButtonStyle())
+        }
         if showOverview && clientScope == "all" {
             VStack(spacing: 3) {
                 Text("合计 · 已记录").font(.system(size: 9))
@@ -133,7 +142,7 @@ struct MultiClientUsageSidebarRows: View {
                 VStack(spacing: 3) {
                     Text(preference.client.displayName).font(.system(size: 9)).lineLimit(1).minimumScaleFactor(0.7)
                     Text(store.summaries.contains { $0.client == preference.client } ? MultiClientUsageStore.compact(store.total(preference.client)) : "—").font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                    if preference.style == "detailed" { Text("累计 Token").font(.system(size: 8)) }
+                    Text("累计 Token").font(.system(size: 8)).foregroundStyle(.secondary)
 
                 }.foregroundStyle(Color(nsColor: NSColor(clientHex: preference.color))).frame(width: 74).padding(.vertical, 5)
             }.buttonStyle(SidebarPulseButtonStyle())

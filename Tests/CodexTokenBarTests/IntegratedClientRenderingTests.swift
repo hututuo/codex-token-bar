@@ -4,6 +4,46 @@ import XCTest
 @testable import CodexTokenBar
 
 final class IntegratedClientRenderingTests: XCTestCase {
+    @MainActor func testQuotaValuesRemainVisibleWhileMorphOwnsTheStrokes() throws {
+        let fixtures = ClientQuotaProjection.previewItems(includeClaude: true)
+        let suite = "QuotaValueHandoff-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        for paired in [false, true] {
+            let registry = MatchedStrokeMorphRegistry(), owner = UUID()
+            let left = fixtures[paired ? 1 : 0], right = paired ? fixtures[2] : nil
+            let root = ClientPairedQuotaRing(left: left, right: right)
+                .frame(width: 74, height: 100, alignment: .top)
+                .background(.black).foregroundStyle(.white)
+                .environment(\.colorScheme, .dark)
+                .environment(\.matchedStrokeMorphRegistry, registry)
+                .defaultAppStorage(defaults)
+            let host = NSHostingView(rootView: root)
+            host.frame = CGRect(x: 0, y: 0, width: 74, height: 100)
+            host.layoutSubtreeIfNeeded()
+            func whitePixels() throws -> Int {
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                var count = 0
+                for y in 0..<bitmap.pixelsHigh {
+                    for x in 0..<bitmap.pixelsWide {
+                        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                        if color.redComponent > 0.9 && color.greenComponent > 0.9 && color.blueComponent > 0.9 { count += 1 }
+                    }
+                }
+                return count
+            }
+            let original = try whitePixels()
+            XCTAssertGreaterThan(original, 10, "The fixture must contain rendered percentage text")
+            XCTAssertEqual(registry.registeredViewCount, 1)
+            registry.cover(Set([left.id] + (right.map { [$0.id] } ?? [])), owner: owner)
+            XCTAssertEqual(registry.coveredViewCount, 1)
+            XCTAssertGreaterThanOrEqual(try whitePixels(), original * 9 / 10,
+                "Morph handoff may hide ring strokes, but must keep percentage text visible")
+            registry.cover([], owner: owner)
+        }
+    }
+
     @MainActor func testQuotaComponentsRenderWithMatchedSidebarMetricsAndDisplayOnlyMockQuota() throws {
         let fixtures = ClientQuotaProjection.previewItems(includeClaude: true)
         let codex = fixtures[0], claude = fixtures[1], claudeSeven = fixtures[2]

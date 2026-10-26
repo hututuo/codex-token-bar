@@ -58,6 +58,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var rebaseOnMeasurement = false
     private static let hiddenModulesKey = "quotaSidebarHiddenModules"
     private static let moduleOrderKey = "quotaSidebarModuleOrder"
+    private static let knownModulesKey = "quotaSidebarKnownModules.v1"
 
     func isModuleVisible(_ module: QuotaSidebarDetail) -> Bool { !hiddenModules.contains(module) }
     func setModuleVisible(_ module: QuotaSidebarDetail, visible: Bool) {
@@ -113,7 +114,14 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     init(settings: UserDefaults = .standard) {
         self.settings = settings
-        self.hiddenModules = Set((settings.stringArray(forKey: Self.hiddenModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)).filter { $0 != .settings })
+        var hidden = Set((settings.stringArray(forKey: Self.hiddenModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)).filter { $0 != .settings })
+        // Newly introduced optional modules start hidden without changing any
+        // existing module choice. Remember discovery, so later user choices win.
+        let known = Set((settings.stringArray(forKey: Self.knownModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)))
+        hidden.formUnion(QuotaSidebarDetail.defaultHiddenModules.subtracting(known))
+        self.hiddenModules = hidden
+        settings.set(hidden.map(\.rawValue).sorted(), forKey: Self.hiddenModulesKey)
+        settings.set(QuotaSidebarDetail.defaultModuleOrder.map(\.rawValue), forKey: Self.knownModulesKey)
         self.moduleOrder = QuotaSidebarDetail.normalizedModuleOrder(settings.stringArray(forKey: Self.moduleOrderKey) ?? [])
         self.placement = QuotaSidebarPlacement.load(defaults: settings)
         super.init()
@@ -525,7 +533,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             if canAnimate {
                 let expanding = next.rail.width > current.width || next.rail.height > current.height
                 let collapsingWidth = !snap && next.rail.width < current.width
-                let duration = snap ? 0.22 : collapsingWidth ? ClientQuotaMorphGeometry.closingDuration + ClientQuotaMorphGeometry.settlingDuration : (expanding ? 0.44 : 0.24)
+                let duration = snap ? 0.22 : collapsingWidth ? ClientQuotaMorphGeometry.closingDuration : (expanding ? 0.44 : 0.24)
                 SidebarMotionProbe.begin(snap ? "snap" : collapsingWidth ? "close" : "open", duration: duration)
                 let animationEdge = edge
                 let area = screen.visibleFrame
@@ -551,8 +559,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                             expanding: expanding, edge: animationEdge, area: area, scale: scale)
                     return rect.offsetBy(dx: -envelope.minX, dy: -envelope.minY)
                 }
-                let keyTimes = Array(Set((0...60).map { Double($0) / 60 }
-                    + (collapsingWidth ? [ClientQuotaMorphGeometry.closingDuration / duration] : []))).sorted()
+                let keyTimes = (0...60).map { Double($0) / 60 }
                 (railPanel.contentView as? QuotaSidebarRevealView)?.animate(
                     frames: keyTimes.map(visualFrame), keyTimes: keyTimes, duration: duration)
                 let started = CACurrentMediaTime()

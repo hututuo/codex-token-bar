@@ -138,25 +138,30 @@ struct ClientPairedQuotaRing: View {
     let right: ClientQuotaItem?
     var body: some View {
         VStack(spacing: 5) {
-            MatchedStrokeMorphParticipant(ids: Set([left.id] + (right.map { [$0.id] } ?? [])), size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
             ZStack {
-                if let right {
-                    Circle().trim(from: 0.006, to: 0.494).stroke(.white.opacity(0.15), lineWidth: 3).rotationEffect(.degrees(90))
-                    half(left, rotation: 90)
-                    Circle().trim(from: 0.006, to: 0.494).stroke(.white.opacity(0.15), lineWidth: 3).rotationEffect(.degrees(-90))
-                    half(right, rotation: -90)
-                } else {
-                    Circle().stroke(.white.opacity(0.15), lineWidth: 3)
-                    Circle().trim(from: 0, to: (left.remaining ?? 0) / 100)
-                        .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[left.id] ?? left.fill)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                        .rotationEffect(.degrees(-90)).opacity(left.remaining == nil ? 0 : 1)
+                MatchedStrokeMorphParticipant(ids: Set([left.id] + (right.map { [$0.id] } ?? [])), size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
+                    ZStack {
+                        if let right {
+                            Circle().trim(from: 0.006, to: 0.494).stroke(.white.opacity(0.15), lineWidth: 3).rotationEffect(.degrees(90))
+                            half(left, rotation: 90)
+                            Circle().trim(from: 0.006, to: 0.494).stroke(.white.opacity(0.15), lineWidth: 3).rotationEffect(.degrees(-90))
+                            half(right, rotation: -90)
+                        } else {
+                            Circle().stroke(.white.opacity(0.15), lineWidth: 3)
+                            Circle().trim(from: 0, to: (left.remaining ?? 0) / 100)
+                                .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[left.id] ?? left.fill)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                                .rotationEffect(.degrees(-90)).opacity(left.remaining == nil ? 0 : 1)
+                        }
+                        if let expected = left.expected {
+                            Rectangle().fill(.white).frame(width: 1.5, height: 7).offset(y: -ClientSidebarMetrics.ringSize / 2).rotationEffect(.degrees(right == nil ? expected * 360 : 180 + expected * 180))
+                        }
+                        if let expected = right?.expected {
+                            Rectangle().fill(.white).frame(width: 1.5, height: 7).offset(y: -ClientSidebarMetrics.ringSize / 2).rotationEffect(.degrees(expected * 180))
+                        }
+                    }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                 }
-                if let expected = left.expected {
-                    Rectangle().fill(.white).frame(width: 1.5, height: 7).offset(y: -ClientSidebarMetrics.ringSize / 2).rotationEffect(.degrees(right == nil ? expected * 360 : 180 + expected * 180))
-                }
-                if let expected = right?.expected {
-                    Rectangle().fill(.white).frame(width: 1.5, height: 7).offset(y: -ClientSidebarMetrics.ringSize / 2).rotationEffect(.degrees(expected * 180))
-                }
+                // Only strokes participate in path replacement. Values stay in
+                // the normal disclosure fade instead of waiting for handoff.
                 if let right {
                     HStack(spacing: 1) {
                         Text(left.compactValue).frame(width: 14)
@@ -168,7 +173,6 @@ struct ClientPairedQuotaRing: View {
                     Text(left.value).font(.system(size: 14, weight: .medium, design: .rounded)).monospacedDigit()
                 }
             }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
-            }
                 .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { anchor in
                     var values = ["ring:" + left.id: anchor]
                     if let right { values["ring:" + right.id] = anchor }

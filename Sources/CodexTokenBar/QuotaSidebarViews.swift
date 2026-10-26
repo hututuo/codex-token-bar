@@ -61,6 +61,9 @@ struct ClientQuotaRailTrack: View {
             .overlay(alignment: .top) {
                 Circle().fill(Color(nsColor: NSColor(clientHex: item.brand).blended(withFraction: 0.2, of: .white) ?? NSColor(clientHex: item.brand)))
                     .frame(width: ClientSidebarMetrics.markerDiameter, height: ClientSidebarMetrics.markerDiameter)
+                    .mask(alignment: .top) {
+                        Rectangle().frame(height: item.window == "5h" ? ClientSidebarMetrics.markerDiameter / 2 : ClientSidebarMetrics.markerDiameter)
+                    }
                     .allowsHitTesting(false)
             }
             .frame(width: ClientSidebarMetrics.markerDiameter, height: height)
@@ -189,7 +192,6 @@ struct QuotaSidebarRail: View {
                             ForEach(controller.moduleOrder.filter(controller.isModuleVisible), id: \.self) { module in
                                 moduleContent(module, shares: shares)
                             }
-                            MultiClientUsageSidebarRows(codexTokens: Int64(store.snapshot.stats.totalTokens), onOpen: { controller.select(.overview, section: "usage") })
                         }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
                             .background(GeometryReader { proxy in
                                 Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
@@ -298,6 +300,12 @@ struct QuotaSidebarRail: View {
                 QuotaSidebarBodySpeedReadings(monitor: monitor, onOpen: { controller.select(.speeds) })
             } else {
                 Button { controller.select(.speeds) } label: { Text("正文 TPS\n暂无样本").font(.system(size: 10)).foregroundStyle(.gray).frame(width: 74, height: 48) }.buttonStyle(.plain)
+            }
+        case .clientUsage:
+            VStack(spacing: 5) {
+                Text("客户端用量").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+                MultiClientUsageSidebarRows(codexTokens: Int64(store.snapshot.stats.totalTokens),
+                    onOpen: { controller.select(.overview, section: "usage") })
             }
         case .modeltrace:
             Button { controller.select(.modeltrace) } label: {

@@ -14,7 +14,6 @@ enum ClientQuotaMorphGeometry {
     static let segments = 32
     static let closingDuration = MatchedStrokeMorphTiming.standard.closingDuration
     static let openingDuration = MatchedStrokeMorphTiming.standard.openingDuration
-    static let settlingDuration = 0.12
 
     // Same point count/order at both ends lets Core Animation interpolate paths.
     // A line runs bottom-to-top, preserving the quota fraction as strokeEnd.

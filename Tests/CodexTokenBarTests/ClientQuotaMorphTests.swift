@@ -39,34 +39,34 @@ final class ClientQuotaMorphTests: XCTestCase {
             XCTAssertLessThan(half.height, from.height)
             XCTAssertGreaterThan(half.height, to.height)
             XCTAssertLessThan(half.width, 30)
-            let split = QuotaSidebarMotion.collapseFrame(from: from, to: to, time: ClientQuotaMorphGeometry.closingDuration / (ClientQuotaMorphGeometry.closingDuration + ClientQuotaMorphGeometry.settlingDuration), edge: edge, area: area, scale: 2)
-            XCTAssertEqual(split.width, 16)
-            XCTAssertLessThan(split.height, from.height)
-            XCTAssertGreaterThan(split.height, to.height)
             for step in 0...100 {
                 let frame = QuotaSidebarMotion.collapseFrame(from: from, to: to, time: Double(step) / 100, edge: edge, area: area, scale: 2)
                 XCTAssertTrue(area.contains(frame))
                 XCTAssertEqual(edge == .left ? frame.minX : frame.maxX, edge == .left ? area.minX : area.maxX)
+                let horizontal = (from.width - frame.width) / (from.width - to.width)
+                let vertical = (from.height - frame.height) / (from.height - to.height)
+                XCTAssertEqual(horizontal, vertical, accuracy: 0.01, "Both dimensions must use the same progress, allowing pixel rounding")
             }
             XCTAssertEqual(QuotaSidebarMotion.collapseFrame(from: from, to: to, time: 1, edge: edge, area: area, scale: 2), to)
         }
         XCTAssertGreaterThan(QuotaSidebarMotion.progress(0.5, expanding: false), 0.8)
     }
 
-    func testHeightSettlingStartsAndEndsWithoutVelocityJump() {
+    func testHeightAndStrokeFinishTogetherWithoutAnExtraTail() {
         let area = CGRect(x: 0, y: 0, width: 1440, height: 900)
         let from = CGRect(x: 0, y: 160, width: 88, height: 580)
         let to = CGRect(x: 0, y: 359, width: 16, height: 182)
-        let total = ClientQuotaMorphGeometry.closingDuration + ClientQuotaMorphGeometry.settlingDuration
+        let total = ClientQuotaMorphGeometry.closingDuration
         func height(_ seconds: Double) -> Double {
             QuotaSidebarMotion.collapseFrame(from: from, to: to, time: seconds / total,
                 edge: .left, area: area, scale: 2).height
         }
-        let start = 0.0
-        XCTAssertLessThan(height(start) - height(start + 0.001), 1)
+        XCTAssertEqual(total, 0.18)
+        XCTAssertEqual(height(total / 2), from.height + (to.height - from.height) * MatchedStrokeMorphTiming.progress(0.5, expanding: false), accuracy: 0.5)
         XCTAssertLessThan(height(total - 0.001) - height(total), 1)
-        XCTAssertEqual(height(start), from.height)
+        XCTAssertEqual(height(0), from.height)
         XCTAssertEqual(height(total), to.height)
+        XCTAssertEqual(height(total + 0.12), to.height)
     }
 
     @MainActor func testTransientLayersAreBoundedCancelOnReversalAndDoNoWorkAtRest() {

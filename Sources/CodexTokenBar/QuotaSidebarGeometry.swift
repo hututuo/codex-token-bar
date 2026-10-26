@@ -19,9 +19,10 @@ struct QuotaSidebarSettings: Equatable {
 }
 
 enum QuotaSidebarDetail: String, CaseIterable {
-    case overview, tasks, radar, credits, speeds, modeltrace, settings
+    case overview, tasks, radar, credits, speeds, modeltrace, clientUsage, settings
 
-    static let defaultModuleOrder: [Self] = [.modeltrace, .speeds, .overview, .tasks, .radar, .credits]
+    static let defaultModuleOrder: [Self] = [.modeltrace, .speeds, .overview, .tasks, .radar, .credits, .clientUsage]
+    static let defaultHiddenModules: Set<Self> = [.clientUsage]
     static func normalizedModuleOrder(_ values: [String]) -> [Self] {
         var result: [Self] = []
         for value in values {
@@ -39,6 +40,7 @@ enum QuotaSidebarDetail: String, CaseIterable {
         case .tasks: "运行任务"
         case .radar: "雷达"
         case .credits: "重置卡"
+        case .clientUsage: "客户端用量"
         case .settings: "侧栏设置"
         }
     }
@@ -241,17 +243,10 @@ enum QuotaSidebarMotion {
         MatchedStrokeMorphTiming.progress(time, expanding: expanding)
     }
 
-    /// Width and height start together. The stroke/width reaches its compact
-    /// pose at 180ms; height eases continuously across the whole reveal.
+    /// Width, height and matched strokes share one 180ms ease-out.
     static func collapseFrame(from: CGRect, to: CGRect, time: Double,
                               edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
-        let split = ClientQuotaMorphGeometry.closingDuration / (ClientQuotaMorphGeometry.closingDuration + ClientQuotaMorphGeometry.settlingDuration)
-        let phase = min(1, max(0, time))
-        let vertical = interpolatedFrame(from: from, to: to, progress: phase * phase * (3 - 2 * phase),
-                                         edge: edge, area: area, scale: scale)
-        let horizontal = frame(from: from, to: to, time: time / split, expanding: false,
-                               edge: edge, area: area, scale: scale)
-        return CGRect(x: horizontal.minX, y: vertical.minY, width: horizontal.width, height: vertical.height)
+        frame(from: from, to: to, time: time, expanding: false, edge: edge, area: area, scale: scale)
     }
 
     static func frame(from: CGRect, to: CGRect, time: Double, expanding: Bool,
