@@ -117,6 +117,8 @@ const SIDEBAR_MODULE_SETTINGS_COMMANDS: &[&str] = &[
     "save_sidebar_module_visibility",
     "read_sidebar_module_order",
     "save_sidebar_module_order",
+    "read_sidebar_layout",
+    "save_sidebar_layout",
 ];
 
 const MODELTRACE_DETAIL_COMMANDS: &[&str] = &[

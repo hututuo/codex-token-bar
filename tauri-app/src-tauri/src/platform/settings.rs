@@ -2,9 +2,9 @@ use crate::core::{app_paths, app_paths::home_dir};
 use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
-    FloatingWindowSettingsSnapshot, SidebarModuleVisibilitySnapshot,
+    FloatingWindowSettingsSnapshot, SidebarLayoutSnapshot, SidebarModuleVisibilitySnapshot,
     UsageRefreshSettingsSnapshot, AUTO_RESUME_TASK_COLLECTION_VERSION,
-    DEFAULT_SIDEBAR_MODULE_ORDER,
+    DEFAULT_SIDEBAR_LAYOUT_ORDER, DEFAULT_SIDEBAR_MODULE_ORDER,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -24,6 +24,7 @@ const RECOVERY_DIRECTORY_ENTRY_LIMIT: usize = 1024;
 const RECOVERY_TOTAL_BYTES_LIMIT: u64 = 2 * 1024 * 1024;
 const COMMIT_MARKER_MAX_BYTES: u64 = 4096;
 const TEMP_CREATE_ATTEMPT_LIMIT: usize = 16;
+const MAX_SIDEBAR_LAYOUT_ITEMS: usize = 128;
 static SETTINGS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -105,6 +106,109 @@ pub fn read_sidebar_module_visibility() -> Result<SidebarModuleVisibilitySnapsho
 
 pub fn read_sidebar_module_order() -> Result<Vec<String>, String> {
     read_app_settings().map(|settings| settings.sidebar_module_order)
+}
+
+pub fn read_sidebar_layout() -> Result<Option<SidebarLayoutSnapshot>, String> {
+    read_app_settings().map(|settings| settings.sidebar_layout)
+}
+
+pub fn save_sidebar_layout(layout: SidebarLayoutSnapshot) -> Result<SidebarLayoutSnapshot, String> {
+    save_sidebar_layout_at(&settings_path()?, layout)
+}
+
+pub fn initialize_sidebar_layout(
+    layout: SidebarLayoutSnapshot,
+) -> Result<SidebarLayoutSnapshot, String> {
+    initialize_sidebar_layout_at(&settings_path()?, layout)
+}
+
+fn initialize_sidebar_layout_at(
+    path: &Path,
+    layout: SidebarLayoutSnapshot,
+) -> Result<SidebarLayoutSnapshot, String> {
+    validate_sidebar_layout(&layout)?;
+    let _guard = settings_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut settings = read_app_settings_at(path)?;
+    if let Some(existing) = settings.sidebar_layout {
+        return Ok(existing);
+    }
+
+    settings.sidebar_layout = Some(layout);
+    let saved = sanitize_app_settings(settings);
+    if let Some(diagnostic) =
+        write_app_settings_at_with_hooks(path, &saved, |_, _| {}, sync_parent_directory)?
+    {
+        eprintln!("{diagnostic}");
+    }
+    saved
+        .sidebar_layout
+        .ok_or_else(|| "侧栏布局初始化后未能读取已保存配置。".to_owned())
+}
+
+fn save_sidebar_layout_at(
+    path: &Path,
+    layout: SidebarLayoutSnapshot,
+) -> Result<SidebarLayoutSnapshot, String> {
+    validate_sidebar_layout(&layout)?;
+    let saved = layout.clone();
+    mutate_app_settings_at_checked(path, move |settings| {
+        settings.sidebar_layout = Some(layout);
+        Ok(())
+    })?;
+    Ok(saved)
+}
+
+fn validate_sidebar_layout(layout: &SidebarLayoutSnapshot) -> Result<(), String> {
+    if layout.version != 1 {
+        return Err(format!("不支持的侧栏布局版本：{}", layout.version));
+    }
+    if layout.order.len() > MAX_SIDEBAR_LAYOUT_ITEMS
+        || layout.hidden.len() > MAX_SIDEBAR_LAYOUT_ITEMS
+    {
+        return Err("侧栏布局项目数量超出上限。".into());
+    }
+
+    let mut order_seen = std::collections::HashSet::with_capacity(layout.order.len());
+    for item in &layout.order {
+        if !valid_sidebar_layout_item_id(item) {
+            return Err(format!("侧栏布局包含无效项目 ID：{item}"));
+        }
+        if !order_seen.insert(item.as_str()) {
+            return Err(format!("侧栏布局顺序包含重复项目：{item}"));
+        }
+    }
+    for required in DEFAULT_SIDEBAR_LAYOUT_ORDER {
+        if !order_seen.contains(required) {
+            return Err(format!("侧栏布局缺少默认项目：{required}"));
+        }
+    }
+
+    let mut hidden_seen = std::collections::HashSet::with_capacity(layout.hidden.len());
+    for item in &layout.hidden {
+        if !valid_sidebar_layout_item_id(item) {
+            return Err(format!("侧栏布局包含无效隐藏项目 ID：{item}"));
+        }
+        if !hidden_seen.insert(item.as_str()) {
+            return Err(format!("侧栏布局隐藏列表包含重复项目：{item}"));
+        }
+    }
+    Ok(())
+}
+
+fn valid_sidebar_layout_item_id(item: &str) -> bool {
+    if DEFAULT_SIDEBAR_LAYOUT_ORDER.contains(&item) {
+        return true;
+    }
+    let Some(client) = item.strip_prefix("quota:") else {
+        return false;
+    };
+    !client.is_empty()
+        && client.len() <= 64
+        && client
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
 pub fn save_sidebar_module_order(order: Vec<String>) -> Result<Vec<String>, String> {
@@ -5266,6 +5370,132 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted.sidebar_module_order, expected);
         assert_eq!(persisted.sidebar_module_visibility, settings.sidebar_module_visibility);
+    }
+
+    #[test]
+    fn sidebar_layout_is_optional_and_saves_versioned_dynamic_quota_groups() {
+        let root = TestSettingsRoot::new("sidebar-layout-round-trip");
+        let path = root.settings_path();
+
+        let legacy: AppSettingsSnapshot =
+            serde_json::from_str(r#"{"sidebarModuleOrder":["speeds","overview"]}"#)
+                .unwrap();
+        assert!(legacy.sidebar_layout.is_none());
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("sidebarLayout")
+            .is_none());
+        assert_eq!(
+            SidebarLayoutSnapshot::default().order,
+            DEFAULT_SIDEBAR_LAYOUT_ORDER
+                .iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            SidebarLayoutSnapshot::default().hidden,
+            vec!["clientUsage".to_owned()]
+        );
+        let missing_hidden: SidebarLayoutSnapshot =
+            serde_json::from_str(r#"{"version":1,"order":[]}"#).unwrap();
+        assert_eq!(missing_hidden.hidden, vec!["clientUsage".to_owned()]);
+
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let mut order = vec!["quota:thirdParty".to_owned()];
+        order.extend(
+            DEFAULT_SIDEBAR_LAYOUT_ORDER
+                .iter()
+                .map(|item| (*item).to_owned()),
+        );
+        let layout = SidebarLayoutSnapshot {
+            version: 1,
+            order,
+            hidden: vec!["clientUsage".into(), "quota:offlineClient".into()],
+        };
+        assert_eq!(save_sidebar_layout_at(&path, layout.clone()).unwrap(), layout);
+
+        let loaded = read_app_settings_at(&path).unwrap();
+        assert_eq!(loaded.sidebar_layout, Some(layout.clone()));
+        assert_eq!(
+            loaded.sidebar_module_order,
+            AppSettingsSnapshot::default().sidebar_module_order
+        );
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            persisted["sidebarLayout"],
+            serde_json::json!({
+                "version": 1,
+                "order": layout.order,
+                "hidden": layout.hidden,
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_sidebar_layout_initialization_preserves_user_edit() {
+        let root = TestSettingsRoot::new("sidebar-layout-initialize-cas");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+
+        let migration = SidebarLayoutSnapshot::default();
+        assert_eq!(
+            initialize_sidebar_layout_at(&path, migration.clone()).unwrap(),
+            migration
+        );
+
+        let mut edited = SidebarLayoutSnapshot::default();
+        edited.order.swap(0, 1);
+        assert_eq!(save_sidebar_layout_at(&path, edited.clone()).unwrap(), edited);
+
+        assert_eq!(
+            initialize_sidebar_layout_at(&path, migration).unwrap(),
+            edited
+        );
+        let loaded = read_app_settings_at(&path).unwrap();
+        assert_eq!(loaded.sidebar_layout, Some(edited));
+    }
+
+    #[test]
+    fn sidebar_layout_rejects_invalid_version_ids_duplicates_and_missing_defaults_without_writing(
+    ) {
+        let root = TestSettingsRoot::new("sidebar-layout-invalid");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+
+        let mut invalid = vec![SidebarLayoutSnapshot {
+            version: 2,
+            ..SidebarLayoutSnapshot::default()
+        }];
+        let mut unknown = SidebarLayoutSnapshot::default();
+        unknown.order.push("unknown".into());
+        invalid.push(unknown);
+        let mut duplicate = SidebarLayoutSnapshot::default();
+        duplicate.order.push("quota:codex".into());
+        invalid.push(duplicate);
+        let mut missing = SidebarLayoutSnapshot::default();
+        missing.order.retain(|item| item != "models");
+        invalid.push(missing);
+        let mut bad_quota = SidebarLayoutSnapshot::default();
+        bad_quota.order.push("quota:has/slash".into());
+        invalid.push(bad_quota);
+        let mut bad_quota_length = SidebarLayoutSnapshot::default();
+        bad_quota_length.order.push(format!("quota:{}", "x".repeat(65)));
+        invalid.push(bad_quota_length);
+        let mut too_many = SidebarLayoutSnapshot::default();
+        too_many
+            .order
+            .extend((0..129).map(|index| format!("quota:extra_{index}")));
+        invalid.push(too_many);
+        let mut bad_hidden = SidebarLayoutSnapshot::default();
+        bad_hidden.hidden.push("unknown".into());
+        invalid.push(bad_hidden);
+
+        for layout in invalid {
+            let before = std::fs::read(&path).unwrap();
+            assert!(save_sidebar_layout_at(&path, layout).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
     }
 
     #[test]

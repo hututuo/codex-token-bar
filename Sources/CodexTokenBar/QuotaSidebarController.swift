@@ -53,8 +53,21 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     // Keep the expanded layout fixed until the native collapse has settled.
     private var isCollapsing = false
-    @Published private(set) var hiddenModules: Set<QuotaSidebarDetail> = []
-    @Published private(set) var moduleOrder = QuotaSidebarDetail.defaultModuleOrder
+    @Published private(set) var sidebarLayout = QuotaSidebarItemLayout()
+    @Published private(set) var settingsHighlightedItem: QuotaSidebarItem?
+    private var settingsReordering = false
+    // Compatibility for detail-page shortcuts and old callers. There is only
+    // one persisted layout; page-level actions are projections of its items.
+    var moduleOrder: [QuotaSidebarDetail] {
+        sidebarLayout.order.compactMap(QuotaSidebarItem.init(id:)).map(\.detail)
+            .reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
+    }
+    var hiddenModules: Set<QuotaSidebarDetail> {
+        Set(QuotaSidebarDetail.defaultModuleOrder.filter { module in
+            let children = sidebarLayout.order.compactMap(QuotaSidebarItem.init(id:)).filter { $0.detail == module }
+            return !children.isEmpty && children.allSatisfy { !sidebarLayout.isVisible($0) }
+        })
+    }
     private var rebaseOnMeasurement = false
     private static let hiddenModulesKey = "quotaSidebarHiddenModules"
     private static let moduleOrderKey = "quotaSidebarModuleOrder"
@@ -63,10 +76,11 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     func isModuleVisible(_ module: QuotaSidebarDetail) -> Bool { !hiddenModules.contains(module) }
     func setModuleVisible(_ module: QuotaSidebarDetail, visible: Bool) {
         guard module != .settings else { return }
-        guard visible != isModuleVisible(module) else { return }
-        rebaseOnMeasurement = true
-        if visible { hiddenModules.remove(module) } else { hiddenModules.insert(module) }
-        settings.set(hiddenModules.map(\.rawValue).sorted(), forKey: Self.hiddenModulesKey)
+        var next = sidebarLayout
+        for item in next.order.compactMap(QuotaSidebarItem.init(id:)).filter({ $0.detail == module }) {
+            if visible { next.hidden.remove(item.id) } else { next.hidden.insert(item.id) }
+        }
+        setSidebarLayout(next)
     }
 
     func moveModule(_ module: QuotaSidebarDetail, by offset: Int) {
@@ -80,9 +94,48 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     private func setModuleOrder(_ order: [QuotaSidebarDetail]) {
         guard order != moduleOrder else { return }
-        moduleOrder = order
+        var next = sidebarLayout
+        next.order = order.flatMap { module in sidebarLayout.order.filter { QuotaSidebarItem(id: $0)?.detail == module } }
+        setSidebarLayout(next)
+    }
+
+    func setSidebarItemVisible(_ item: QuotaSidebarItem, visible: Bool) {
+        var next = sidebarLayout
+        if visible { next.hidden.remove(item.id) } else { next.hidden.insert(item.id) }
+        setSidebarLayout(next)
+    }
+
+    func moveSidebarItem(_ item: QuotaSidebarItem, relativeTo target: QuotaSidebarItem, after: Bool) {
+        var next = sidebarLayout
+        next.move(item, relativeTo: target, after: after)
+        setSidebarLayout(next)
+    }
+
+    func resetSidebarItemOrder() {
+        var next = sidebarLayout
+        let extras = next.order.filter { !QuotaSidebarItem.defaults.map(\.id).contains($0) }
+        next.order = QuotaSidebarItem.defaults.map(\.id)
+        next.order.insert(contentsOf: extras, at: 5)
+        setSidebarLayout(next)
+    }
+
+    func highlightSidebarItem(_ item: QuotaSidebarItem?) {
+        let next = interaction.detail == .settings ? item : nil
+        if settingsHighlightedItem != next { settingsHighlightedItem = next }
+    }
+
+    func setSettingsReordering(_ active: Bool) {
+        guard settingsReordering != active else { return }
+        settingsReordering = active
+        if active { collapseTask?.cancel(); collapseTask = nil }
+        else { pointerMoved() }
+    }
+
+    private func setSidebarLayout(_ next: QuotaSidebarItemLayout) {
+        guard next != sidebarLayout else { return }
+        sidebarLayout = next
         rebaseOnMeasurement = true
-        settings.set(order.map(\.rawValue), forKey: Self.moduleOrderKey)
+        if let encoded = try? JSONEncoder().encode(next) { settings.set(encoded, forKey: QuotaSidebarItemLayout.key) }
     }
     private let settings: UserDefaults
     private(set) var placement: QuotaSidebarPlacement?
@@ -119,12 +172,16 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         // existing module choice. Remember discovery, so later user choices win.
         let known = Set((settings.stringArray(forKey: Self.knownModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)))
         hidden.formUnion(QuotaSidebarDetail.defaultHiddenModules.subtracting(known))
-        self.hiddenModules = hidden
-        settings.set(hidden.map(\.rawValue).sorted(), forKey: Self.hiddenModulesKey)
-        settings.set(QuotaSidebarDetail.defaultModuleOrder.map(\.rawValue), forKey: Self.knownModulesKey)
-        self.moduleOrder = QuotaSidebarDetail.normalizedModuleOrder(settings.stringArray(forKey: Self.moduleOrderKey) ?? [])
+        let oldOrder = QuotaSidebarDetail.normalizedModuleOrder(settings.stringArray(forKey: Self.moduleOrderKey) ?? [])
+        let oldQuota = ClientQuotaSelection.decode(settings.string(forKey: ClientQuotaSelection.key) ?? "")
+        self.sidebarLayout = QuotaSidebarItemLayout.decode(settings.data(forKey: QuotaSidebarItemLayout.key))
+            ?? .migrate(moduleOrder: oldOrder, hiddenModules: hidden, quotaWindowOrder: oldQuota.order)
         self.placement = QuotaSidebarPlacement.load(defaults: settings)
         super.init()
+        if settings.object(forKey: QuotaSidebarItemLayout.key) == nil,
+           let encoded = try? JSONEncoder().encode(sidebarLayout) {
+            settings.set(encoded, forKey: QuotaSidebarItemLayout.key)
+        }
     }
 
     func show(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore,
@@ -169,6 +226,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     func close() {
+        settingsReordering = false
         isCollapsing = false
         cancelFrameAnimation()
         trackingGeneration &+= 1
@@ -202,7 +260,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     func updateContentMeasurement(_ measurement: QuotaSidebarContentMeasurement) {
         let previous = heightBudget.targetHeight
         heightBudget.update(contentHeight: measurement.contentHeight,
-                            rowHeight: isModuleVisible(.speeds) ? measurement.speedRowHeight : 0,
+                            rowHeight: sidebarLayout.isVisible(.tps) ? measurement.speedRowHeight : 0,
                             expanded: interaction.expanded || isCollapsing, rebase: rebaseOnMeasurement)
         rebaseOnMeasurement = false
         if previous != heightBudget.targetHeight { updateFrames() }
@@ -234,6 +292,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         detailScrollTarget = section
         isCollapsing = false
         interaction.select(detail)
+        if detail != .settings { highlightSidebarItem(nil) }
         detailScrollRevision += 1
         updateFrames()
     }
@@ -250,6 +309,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         }
         isCollapsing = interaction.expanded && railPanel?.isVisible == true
         interaction.dismiss()
+        highlightSidebarItem(nil)
         updateFrames()
     }
 
@@ -425,7 +485,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     private func pointerMoved() {
         updateRevealInputRegion()
-        guard !isTrackingPress, !isDragging else { return }
+        guard !isTrackingPress, !isDragging, !settingsReordering else { return }
         guard let frames else { return }
         if frames.contains(NSEvent.mouseLocation, detailVisible: interaction.detail != nil) {
             enter()
@@ -436,7 +496,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                 self.collapseTask = nil
                 guard let frames = self.frames,
                       !frames.contains(NSEvent.mouseLocation, detailVisible: self.interaction.detail != nil) else { return }
-                guard self.interaction.allowsAutomaticCollapse else { return }
+                guard !self.settingsReordering, self.interaction.allowsAutomaticCollapse else { return }
                 self.dismiss()
             }
         }

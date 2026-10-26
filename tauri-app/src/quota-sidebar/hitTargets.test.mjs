@@ -24,10 +24,10 @@ test("primary rows retain large targets while the centered summary scrolls withi
       assert.equal(edgeStyle.position, "absolute"); assert.match(css, /\.qs-radar-edge\{[^}]*inset:0[;}]/);
       assert.equal(edgeStyle.pointerEvents, "none"); assert.equal(edgeStyle.display, "none");
       assert.ok(css.includes("@media(prefers-reduced-motion:reduce){.qs-radar-edge[data-active=true]{animation:none;opacity:1}}"));
-      const buttons = [...window.document.querySelectorAll(".qs-module-stack>button,.qs-summary>.qs-settings-trigger")];
+      const buttons = [...window.document.querySelectorAll(".qs-module-stack>.qs-linked-item>button,.qs-summary>.qs-settings-trigger")];
       assert.equal(buttons.length, 8);
       assert.ok(window.document.querySelector(".qs-summary").firstElementChild.matches(".qs-rail-actions"));
-      const first = window.document.querySelector(".qs-module-stack").firstElementChild;
+      const first = window.document.querySelector(".qs-module-stack").firstElementChild.firstElementChild;
       assert.ok(first.matches(".qs-modeltrace-trigger"));
       assert.equal(window.getComputedStyle(first).marginTop, "0px");
       assert.equal(window.document.querySelector(".qs-menu-trigger"), null);

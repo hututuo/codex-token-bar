@@ -33,7 +33,8 @@ test("paired quota labels retain reset tooltips and absent 5h stays absent", asy
     const render = () => { dom.document.body.innerHTML = renderToStaticMarkup(React.createElement(SidebarRailContent, { data, state: { mode: "hover" }, onOpen() {} })); };
     try {
       render();
-      assert.deepEqual([...dom.document.querySelectorAll(".integrated-ring-legend")].map(el => el.title), [`Codex 5h · 重置 ${five.toLocaleString()}`, `Codex 7d · 重置 ${seven.toLocaleString()}`]);
+      assert.deepEqual([...dom.document.querySelectorAll(".integrated-ring-windows>span")].map(el => el.title), [`Codex 5h · 重置 ${five.toLocaleString()}`, `Codex 7d · 重置 ${seven.toLocaleString()}`]);
+      assert.equal(dom.document.querySelectorAll(".integrated-ring-legend").length, 1, "one client caption beneath its two window labels");
       assert.equal(dom.document.querySelector(".qs-rate-trigger time"), null);
       data.snapshot.fiveHourAvailability = "absent";
       render();
@@ -41,7 +42,7 @@ test("paired quota labels retain reset tooltips and absent 5h stays absent", asy
       data.quota.quota.sevenDay = { resetsAt: "unknown" };
       render();
       assert.equal(dom.document.querySelector(".qs-ring time"), null);
-      assert.match(dom.document.querySelector(".integrated-ring-legend").title, /重置时间未知/);
+      assert.match(dom.document.querySelector(".integrated-ring-windows>span").title, /重置时间未知/);
     } finally { dom.close(); }
   });
 });

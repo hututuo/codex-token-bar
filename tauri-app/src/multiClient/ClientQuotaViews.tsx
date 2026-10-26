@@ -8,111 +8,32 @@ import {
   clientBrand,
   quotaFill,
   quotaWindowTitle,
-  defaultQuotaSelection,
   clientSidebarMetrics,
   type QuotaItem,
   type QuotaSelection,
 } from "./integratedClientModel";
 import { claudeQuotaSetup } from "./multiClientProduct";
 import type { QuotaSnapshot } from "../types/dashboard";
-export function ClientQuotaSettings({ codex }: { codex?: QuotaSnapshot }) {
-  const { catalog } = useClientQuotaItems(codex),
-    { selection, save } = useClientQuotaSelection();
-  function move(index: number, by: number) {
-    const order = catalog.map((i) => i.id);
-    [order[index], order[index + by]] = [order[index + by], order[index]];
-    save({ ...selection, order });
-  }
-  return (
-    <section className="integrated-quota-settings">
-      <div className="integrated-quota-heading"><h4>额度显示与外观</h4><button onClick={() => save({ ...defaultQuotaSelection })}>恢复默认</button></div>
-      <label>
-        竖条长度{" "}
-        <select
-          value={selection.length}
-          onChange={(e) =>
-            save({
-              ...selection,
-              length: e.target.value as QuotaSelection["length"],
-            })
-          }
-        >
-          <option value="auto">自动</option>
-          <option value="long">长条</option>
-          <option value="short">短条</option>
-        </select>
+export function ClientQuotaSettings({ codex, colorsOnly = false }: { codex?: QuotaSnapshot; colorsOnly?: boolean }) {
+  const { catalog } = useClientQuotaItems(codex), { selection, save } = useClientQuotaSelection();
+  return <section className="integrated-quota-settings">
+    <div className="integrated-quota-heading"><h4>额度填充颜色</h4><button onClick={() => save({ ...selection, colors: {} })}>恢复默认颜色</button></div>
+    {catalog.map(i => <div className="integrated-quota-option" key={i.id}>
+      <i style={{ background: clientBrand[i.client] }}/>
+      <label>{!colorsOnly && <input type="checkbox"
+        checked={!selection.hidden.includes(i.id) && (i.client === "codex" || i.client === "claudeCode" || selection.enabled.includes(i.id))}
+        onChange={event => save({ ...selection,
+          hidden: event.target.checked ? selection.hidden.filter(id => id !== i.id) : [...new Set([...selection.hidden, i.id])],
+          enabled: event.target.checked ? [...new Set([...selection.enabled, i.id])] : selection.enabled.filter(id => id !== i.id),
+        })}/>}
+        {clientTitle(i.client)} · {i.window}
       </label>
-      <p>自动：超出原推荐高度 25% 时用短条，保留全部项目。</p>
-      <label>
-        <input
-          type="checkbox"
-          checked={selection.pairAcrossClients}
-          onChange={(e) =>
-            save({ ...selection, pairAcrossClients: e.target.checked })
-          }
-        />
-        将不同客户端的额度合在一个环内
-      </label>
-      <p>默认按客户端配对：一项用整环，两项用左右半环。</p>
-      <div className="integrated-quota-columns"><span>显示的额度</span><span>填充颜色</span><span>顺序</span></div>
-      {catalog.map((i, index) => {
-        const checked =
-          !selection.hidden.includes(i.id) &&
-          (i.client === "codex" ||
-            i.client === "claudeCode" ||
-            selection.enabled.includes(i.id));
-        return (
-          <div className="integrated-quota-option" key={i.id}>
-            <i style={{ background: clientBrand[i.client] }} />
-            <label>
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={(e) =>
-                  save({
-                    ...selection,
-                    hidden: e.target.checked
-                      ? selection.hidden.filter((id) => id !== i.id)
-                      : [...new Set([...selection.hidden, i.id])],
-                    enabled: e.target.checked
-                      ? [...new Set([...selection.enabled, i.id])]
-                      : selection.enabled.filter((id) => id !== i.id),
-                  })
-                }
-              />
-              {clientTitle(i.client)} · {i.window}
-            </label>
-            <input
-              type="color"
-              aria-label={`${clientTitle(i.client)} ${i.window}填充颜色`}
-              value={selection.colors[i.id] ?? quotaFill(i)}
-              onChange={(e) =>
-                save({
-                  ...selection,
-                  colors: { ...selection.colors, [i.id]: e.target.value },
-                })
-              }
-            />
-            <button
-              disabled={!index}
-              onClick={() => move(index, -1)}
-              aria-label={`上移 ${i.window}`}
-            >
-              ↑
-            </button>
-            <button
-              disabled={index === catalog.length - 1}
-              onClick={() => move(index, 1)}
-              aria-label={`下移 ${i.window}`}
-            >
-              ↓
-            </button>
-          </div>
-        );
-      })}
-      <p>范围跟随主页面；各窗口独立。Claude 联网额度关闭。</p>
-    </section>
-  );
+      <input type="color" aria-label={clientTitle(i.client) + " " + i.window + "填充颜色"}
+        value={selection.colors[i.id] ?? quotaFill(i)}
+        onChange={event => save({ ...selection, colors: { ...selection.colors, [i.id]: event.target.value } })}/>
+    </div>)}
+    <p>各额度窗口独立。显示与顺序在侧栏设置中调整。</p>
+  </section>;
 }
 
 export function PairedQuotaRing({

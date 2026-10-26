@@ -3,7 +3,7 @@ use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, AutostartStatus,
     DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
-    SidebarModuleVisibilitySnapshot, UsageRefreshSettingsSnapshot,
+    SidebarLayoutSnapshot, SidebarModuleVisibilitySnapshot, UsageRefreshSettingsSnapshot,
 };
 use super::run_blocking_command;
 use super::window_auth::require_window_label;
@@ -72,6 +72,36 @@ pub async fn save_sidebar_module_order(
         eprintln!(
             "Codex Token Bar: saved sidebar module order but event delivery failed: {error}"
         );
+    }
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn read_sidebar_layout(
+    window: tauri::WebviewWindow,
+) -> Result<Option<SidebarLayoutSnapshot>, String> {
+    require_window_label(&window, "read_sidebar_layout")?;
+    run_blocking_command(platform::read_sidebar_layout).await
+}
+
+#[tauri::command]
+pub async fn save_sidebar_layout(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    layout: SidebarLayoutSnapshot,
+    initialize_only: Option<bool>,
+) -> Result<SidebarLayoutSnapshot, String> {
+    require_window_label(&window, "save_sidebar_layout")?;
+    let saved = run_blocking_command(move || {
+        if initialize_only.unwrap_or(false) {
+            platform::initialize_sidebar_layout(layout)
+        } else {
+            platform::save_sidebar_layout(layout)
+        }
+    })
+    .await?;
+    if let Err(error) = app.emit("sidebar-layout-changed", &saved) {
+        eprintln!("Codex Token Bar: saved sidebar layout but event delivery failed: {error}");
     }
     Ok(saved)
 }
@@ -180,6 +210,8 @@ mod tests {
             "save_sidebar_module_visibility",
             "read_sidebar_module_order",
             "save_sidebar_module_order",
+            "read_sidebar_layout",
+            "save_sidebar_layout",
             "read_autostart_status",
             "set_autostart_enabled",
             "complete_floating_paging_guide",

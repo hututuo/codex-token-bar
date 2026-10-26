@@ -93,7 +93,7 @@ final class IntegratedClientRenderingTests: XCTestCase {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
         }
     }
-    @MainActor func testQuotaSettingsExposeSelectionColorOrderAndLength() throws {
+    @MainActor func testQuotaColorSettingsRenderWithoutSeparateOrderingOrLengthControls() throws {
         let suite = "QuotaSettingsRender-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -110,6 +110,44 @@ final class IntegratedClientRenderingTests: XCTestCase {
         host.cacheDisplay(in: host.bounds, to: bitmap)
         XCTAssertGreaterThan(bitmap.pixelsWide, 0)
         if let output = ProcessInfo.processInfo.environment["TOKENBAR_QUOTA_SETTINGS_RENDER_OUTPUT"] {
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+        }
+    }
+
+    @MainActor func testUnifiedSettingsRenderInsideActualDetailWithActualExpandedRail() throws {
+        let suite = "LinkedSidebarNativeRender-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("all", forKey: ClientDisplayScope.key)
+        let controller = QuotaSidebarController(settings: defaults)
+        let monitor = LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false)
+        let store = CodexUsageStore(autoStart: false, continuityDefaults: defaults)
+        let quota = AccountQuotaStore(userDefaults: defaults, observesUserDefaults: false)
+        let tasks = TaskCompletionMonitor(defaults: defaults)
+        let radar = CodexRadarStore(detailRefreshDefaults: defaults)
+        let history = QuotaHistoryStore()
+        let fixtures = ClientQuotaProjection.previewItems(includeClaude: true)
+        controller.select(.settings)
+        controller.highlightSidebarItem(.quota("claudeCode"))
+        let root = VStack(alignment: .leading, spacing: 14) {
+            Text("候选原生组件渲染 · 模拟额度 · 二级菜单与三级设置").font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack(alignment: .center, spacing: 12) {
+                QuotaSidebarRail(controller: controller, store: store, quota: quota, tasks: tasks, radar: radar, monitor: monitor, quotaItemsOverride: fixtures)
+                    .frame(width: 88, height: 640)
+                QuotaSidebarDetailView(controller: controller, store: store, monitor: monitor, quota: quota, tasks: tasks, radar: radar, history: history, quotaItemsOverride: fixtures)
+                    .frame(width: 420, height: 620)
+            }
+        }.padding(20).frame(width: 560, height: 710, alignment: .topLeading)
+            .background(Color(white: 0.08)).foregroundStyle(.white)
+            .environment(\.colorScheme, .dark).defaultAppStorage(defaults)
+        let host = NSHostingView(rootView: root)
+        host.frame = CGRect(x: 0, y: 0, width: 560, height: 710)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        XCTAssertEqual(controller.interaction.detail, .settings)
+        XCTAssertEqual(controller.settingsHighlightedItem, .quota("claudeCode"))
+        if let output = ProcessInfo.processInfo.environment["TOKENBAR_LINKED_SETTINGS_RENDER_OUTPUT"] {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
         }
     }

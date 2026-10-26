@@ -104,18 +104,13 @@ final class IntegratedClientPresentationTests: XCTestCase {
     }
 
     func testRailFitsWorkingAreaAndHasNoItemCountLimit() {
-        XCTAssertEqual(ClientRailLayout.make(quotaCount: 0, mode: "auto", hasFiveHour: false, availableHeight: 900).height, 134)
-        XCTAssertFalse(ClientRailLayout.make(quotaCount: 2, mode: "auto", hasFiveHour: false, availableHeight: 900).short, "Claude two-window rail uses the original dual-window recommendation")
+        XCTAssertEqual(ClientRailLayout.fixed(trackCount: 2, availableHeight: 900).height, 134)
         for count in [0, 1, 2, 4, 6, 10, 50, 500] {
-            for mode in ["auto", "long", "short"] {
-                let layout = ClientRailLayout.make(quotaCount: count, mode: mode, hasFiveHour: true, availableHeight: 620)
-                XCTAssertLessThanOrEqual(layout.height, 620)
-                XCTAssertGreaterThanOrEqual(layout.barHeight, 8)
-            }
+            let layout = ClientRailLayout.fixed(trackCount: count, availableHeight: 620)
+            XCTAssertLessThanOrEqual(layout.height, 620)
+            XCTAssertEqual(layout.barHeight, 46, "The current track length stays fixed; overflow scrolls")
         }
-        XCTAssertFalse(ClientRailLayout.make(quotaCount: 2, mode: "auto", hasFiveHour: true, availableHeight: 900).short)
-        XCTAssertTrue(ClientRailLayout.make(quotaCount: 4, mode: "auto", hasFiveHour: true, availableHeight: 900).short)
-        XCTAssertFalse(ClientRailLayout.make(quotaCount: 10, mode: "long", hasFiveHour: true, availableHeight: 900).short)
+        XCTAssertEqual(ClientRailLayout.fixed(trackCount: 0, availableHeight: 900).height, 30)
     }
     func testNativeCompactHeightClampsToEachMonitorWithoutMovingTheDockedEdge() {
         let area = CGRect(x: -1440, y: -240, width: 1440, height: 720)

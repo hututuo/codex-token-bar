@@ -128,19 +128,13 @@ struct ClientRailLayout: Equatable {
     let barHeight: Double
     let gap: Double
     let height: Double
-    let short: Bool
-    static func make(quotaCount: Int, mode: String, hasFiveHour: Bool, availableHeight: Double) -> Self {
-        let count = max(0, quotaCount) + 2 // existing speed and model-share tracks
-        let baseline = quotaCount >= 2 ? 250.0 : 192.0
-        let longHeight = Double(count) * 46 + Double(max(0, count - 1)) * 12 + 30
-        let short = mode == "short" || (mode != "long" && longHeight > baseline * 1.25)
-        let preferredBar = short ? 24.0 : 46.0, preferredGap = short ? 8.0 : 12.0
-        let preferred = Double(count) * preferredBar + Double(max(0, count - 1)) * preferredGap + 30
-        let maxHeight = max(30, availableHeight.isFinite ? availableHeight : baseline)
-        let ratio = min(1, max(0, (maxHeight - 30) / max(1, preferred - 30)))
-        let bar = max(8, preferredBar * ratio), gap = max(3, preferredGap * ratio)
-        let actual = Double(count) * bar + Double(max(0, count - 1)) * gap + 30
-        return Self(barHeight: bar, gap: gap, height: min(maxHeight, actual), short: short)
+    /// Keep the current 46pt tracks; overflowing content scrolls instead of
+    /// silently switching styles or imposing an item-count limit.
+    static func fixed(trackCount: Int, availableHeight: Double) -> Self {
+        let count = max(0, trackCount)
+        let preferred = Double(count) * 46 + Double(max(0, count - 1)) * 12 + 30
+        let maxHeight = max(30, availableHeight.isFinite ? availableHeight : 900)
+        return Self(barHeight: 46, gap: 12, height: min(maxHeight, preferred))
     }
 }
 

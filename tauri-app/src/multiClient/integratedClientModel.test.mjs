@@ -242,5 +242,6 @@ test("paired quota captions map windows left/right then name the client once", a
     assert.match(html, /左侧 Claude Code 5h 62%/);
     assert.match(html, /右侧 Claude Code 7d 84%/);
     const settings = renderToStaticMarkup(React.createElement(ClientQuotaSettings, {}));
-    for (const title of ["额度显示与外观", "长条", "短条", "自动", "填充颜色", "顺序", "恢复默认"]) assert.ok(settings.includes(title));
+    for (const title of ["额度填充颜色", "恢复默认颜色"]) assert.ok(settings.includes(title));
+    assert.doesNotMatch(settings, /竖条长度|长条|短条|将不同客户端/);
   }));

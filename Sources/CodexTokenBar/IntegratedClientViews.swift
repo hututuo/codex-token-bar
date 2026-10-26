@@ -41,9 +41,9 @@ struct ClientScopePicker: View {
 struct ClientQuotaSettingsView: View {
     let codex: AccountQuotaSnapshot
     var quotaItems: [ClientQuotaItem]? = nil
+    var showVisibility = true
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @AppStorage(ClientQuotaSelection.key) private var selectionRaw = ""
-    @AppStorage("multiClient.railLength.v1") private var length = "auto"
     private var selection: ClientQuotaSelection { .decode(selectionRaw) }
     private var items: [ClientQuotaItem] {
         selection.arranged(quotaItems ?? ClientQuotaProjection.items(codex: codex,
@@ -52,27 +52,20 @@ struct ClientQuotaSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("额度显示与外观").font(.headline)
+                Text("额度填充颜色").font(.headline)
                 Spacer()
-                Button("恢复默认") { selectionRaw = ClientQuotaSelection().encoded; length = "auto" }.font(.caption)
+                Button("恢复默认颜色") { var next = selection; next.colors = [:]; selectionRaw = next.encoded }.font(.caption)
             }
-            Picker("竖条长度", selection: $length) { Text("长条").tag("long"); Text("短条").tag("short"); Text("自动").tag("auto") }.pickerStyle(.segmented)
-            Text("自动：超出原推荐高度 25% 时使用短条，保留全部项目。").font(.caption).foregroundStyle(.secondary)
-            Toggle("将不同客户端的额度合在一个环内", isOn: Binding(get: { selection.pairAcrossClients }, set: { value in
-                var next = selection; next.pairAcrossClients = value; selectionRaw = next.encoded
-            })).toggleStyle(.checkbox).font(.caption)
-            Text("默认按客户端配对：一项用整环，两项用左右半环。").font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Text("显示的额度"); Spacer(); Text("填充颜色"); Text("顺序").frame(width: 50)
-            }.font(.system(size: 10)).foregroundStyle(.secondary)
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            ForEach(items) { item in
                 HStack(spacing: 8) {
                     Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 7, height: 7)
+                    if showVisibility {
                     Toggle(item.title, isOn: Binding(get: { selection.includes(item) }, set: { show in
                         var next = selection
                         if show { next.hidden.remove(item.id); next.enabled.insert(item.id) } else { next.hidden.insert(item.id); next.enabled.remove(item.id) }
                         selectionRaw = next.encoded
                     })).toggleStyle(.checkbox).font(.system(size: 11))
+                    } else { Text(item.title).font(.system(size: 11)) }
                     Spacer(minLength: 0)
                     ColorPicker("填充", selection: Binding(get: { Color(nsColor: NSColor(clientHex: selection.colors[item.id] ?? item.fill)) }, set: { color in
                         guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
@@ -80,17 +73,13 @@ struct ClientQuotaSettingsView: View {
                         next.colors[item.id] = String(format: "#%02X%02X%02X", Int(rgb.redComponent * 255), Int(rgb.greenComponent * 255), Int(rgb.blueComponent * 255))
                         selectionRaw = next.encoded
                     }), supportsOpacity: false).labelsHidden().help(item.title + "：自定义额度填充颜色")
-                    Button { move(index, by: -1) } label: { Image(systemName: "arrow.up") }.disabled(index == 0).help("上移 " + item.title).accessibilityLabel("上移 " + item.title)
-                    Button { move(index, by: 1) } label: { Image(systemName: "arrow.down") }.disabled(index == items.count - 1).help("下移 " + item.title).accessibilityLabel("下移 " + item.title)
+
                 }
             }
             Text("范围跟随主页面；窗口百分比不相加。Claude 只读本地缓存，联网额度关闭。").font(.caption).foregroundStyle(.secondary)
         }
     }
-    private func move(_ index: Int, by offset: Int) {
-        var ids = items.map(\.id); ids.swapAt(index, index + offset)
-        var next = selection; next.order = ids; selectionRaw = next.encoded
-    }
+
 }
 
 struct ClientQuotaRings: View {

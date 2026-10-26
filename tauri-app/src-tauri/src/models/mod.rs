@@ -54,9 +54,10 @@ pub use settings::{
     AutoResumeTaskSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
-    SidebarModuleVisibilitySnapshot,
+    SidebarLayoutSnapshot, SidebarModuleVisibilitySnapshot,
     UsageRefreshSettingsSnapshot,
-    AUTO_RESUME_TASK_COLLECTION_VERSION, DEFAULT_SIDEBAR_MODULE_ORDER, STATUS_METRIC_IDS,
+    AUTO_RESUME_TASK_COLLECTION_VERSION, DEFAULT_SIDEBAR_LAYOUT_ORDER,
+    DEFAULT_SIDEBAR_MODULE_ORDER, STATUS_METRIC_IDS,
     STATUS_SUMMARY_SECTION_IDS,
 };
 pub use thread_activity::{

@@ -57,14 +57,16 @@ pub(crate) use provider_app::{
     ManagedCodexLaunch, ProcessCodexHomeEnvironment,
 };
 pub use settings::{
-    complete_floating_paging_guide, read_app_settings, read_sidebar_module_visibility,
+    complete_floating_paging_guide, initialize_sidebar_layout, read_app_settings, read_sidebar_layout,
+    read_sidebar_module_visibility,
     read_sidebar_module_order,
     save_display_surfaces, save_floating_position, save_floating_settings,
     save_auto_resume_settings, save_custom_account_display_name, save_quota_refresh_interval_ms,
     save_quota_history_filter,
     save_session_enhancement_settings, save_setup_guide_completed,
     save_agent_speed_reporting_settings,
-    save_sidebar_module_visibility, save_sidebar_module_order, save_usage_refresh_settings,
+    save_sidebar_layout, save_sidebar_module_visibility, save_sidebar_module_order,
+    save_usage_refresh_settings,
 };
 pub(crate) use surfaces::StatusTrayColumn;
 pub(crate) use surfaces::set_multi_client_usage_tray_lines;

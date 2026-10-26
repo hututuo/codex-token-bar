@@ -100,6 +100,47 @@ private struct SidebarValueRing: View {
     }
 }
 
+/// Both the real compact rail and the optional settings preview render this
+/// same lightweight stack. The preview never creates another menu/controller.
+struct QuotaSidebarCompactBars: View {
+    let items: [QuotaSidebarItem]
+    let quotas: [ClientQuotaItem]
+    let layout: ClientRailLayout
+    var rateFraction: Double? = nil
+    var modelRates: [ModelRateContribution]? = nil
+    var shares: [FloatingTodayModelUsageItem] = []
+    var colors: [String: String] = [:]
+    var usesMorphAnchors = false
+
+    var body: some View {
+        VStack(spacing: layout.gap) {
+            ForEach(items) { item in
+                Group {
+                    switch item {
+                    case .speed:
+                        SidebarValueBar(fraction: rateFraction, color: SidebarPalette.blue, vertical: true, modelRates: modelRates)
+                            .frame(width: 4, height: layout.barHeight).help("全会话实时速率（估算）")
+                    case let .quota(client):
+                        ForEach(QuotaSidebarContentOrder.quotaWindows(quotas, client: client)) { quota in
+                            if usesMorphAnchors {
+                                quotaTrack(quota).anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["track:" + quota.id: $0] }
+                            } else { quotaTrack(quota) }
+                        }
+                    case .models:
+                        SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: layout.barHeight)
+                    default: EmptyView()
+                    }
+                }
+            }
+        }.frame(width: 16).padding(.vertical, 15)
+    }
+
+    private func quotaTrack(_ item: ClientQuotaItem) -> some View {
+        ClientQuotaRailTrack(item: item, height: layout.barHeight, fillHex: colors[item.id] ?? item.fill)
+            .help(item.title + " · " + item.value + " " + item.status)
+    }
+}
+
 struct QuotaSidebarRail: View {
     @ObservedObject var controller: QuotaSidebarController
     @ObservedObject var store: CodexUsageStore
@@ -114,32 +155,41 @@ struct QuotaSidebarRail: View {
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
     @AppStorage(ClientQuotaSelection.key) private var quotaSelectionRaw = ""
-    @AppStorage("multiClient.railLength.v1") private var railLength = "auto"
     private var quotaSelection: ClientQuotaSelection { .decode(quotaSelectionRaw) }
-    private var quotaItems: [ClientQuotaItem] {
+    private var supportsCodex: Bool { clientScope == "codex" || clientScope == "all" }
+    private var availableQuotaItems: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride }
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
-        let items = ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode),
+        return ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode),
             includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
             includeFiveHour: quotaSelection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated)
-        return quotaSelection.arranged(items).filter { quotaSelection.includes($0) &&
-            (allowed.contains($0.client) || ($0.client == "claudeCode" && allowed.contains("claudeDesktop"))) }
+            .filter { allowed.contains($0.client) || ($0.client == "claudeCode" && allowed.contains("claudeDesktop")) }
+    }
+    private var sidebarItems: [QuotaSidebarItem] {
+        controller.sidebarLayout.arranged(availableQuotaClients: availableQuotaItems.map(\.client))
+            .filter { controller.sidebarLayout.isVisible($0) && (supportsCodex || ($0 != .speed && $0 != .models)) }
+    }
+    private var quotaItems: [ClientQuotaItem] {
+        sidebarItems.flatMap { item -> [ClientQuotaItem] in
+            guard case let .quota(client) = item else { return [] }
+            return QuotaSidebarContentOrder.quotaWindows(availableQuotaItems, client: client).filter(quotaSelection.includes)
+        }
     }
     private func railLayout(_ height: CGFloat) -> ClientRailLayout {
-        ClientRailLayout.make(quotaCount: quotaItems.count, mode: railLength,
-            hasFiveHour: quota.snapshot.fiveHour != nil, availableHeight: Double(height))
+        .fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: sidebarItems, quotas: quotaItems).count,
+               availableHeight: Double(height))
     }
     @StateObject private var morphRegistry = MatchedStrokeMorphRegistry()
     @State private var shares: [FloatingTodayModelUsageItem] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var morphEnabled: Bool {
-        !reduceMotion && !controller.isDragging && cacheWarning == nil && controller.isModuleVisible(.overview) && !quotaItems.isEmpty
+        !reduceMotion && !controller.isDragging && cacheWarning == nil && !quotaItems.isEmpty
     }
 
     private func morphRoutes(_ anchors: [String: Anchor<CGRect>], in proxy: GeometryProxy) -> [ClientQuotaMorphRoute] {
         let viewport = anchors["quota-viewport"].map { proxy[$0] }
-        return ClientQuotaRingGroup.make(quotaItems, acrossClients: quotaSelection.pairAcrossClients).flatMap { group -> [ClientQuotaMorphRoute] in
+        return ClientQuotaRingGroup.make(quotaItems).flatMap { group -> [ClientQuotaMorphRoute] in
             let members = [(group.left, group.right == nil ? 0 : -1)] + (group.right.map { [($0, 1)] } ?? [])
             return members.compactMap { entry -> ClientQuotaMorphRoute? in
                 let (item, half) = entry
@@ -189,8 +239,12 @@ struct QuotaSidebarRail: View {
                     }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
                     ScrollView(.vertical) {
                         VStack(spacing: 7) {
-                            ForEach(controller.moduleOrder.filter(controller.isModuleVisible), id: \.self) { module in
-                                moduleContent(module, shares: shares)
+                            ForEach(sidebarItems) { item in
+                                moduleContent(item, shares: shares)
+                                    .background {
+                                        RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(controller.settingsHighlightedItem == item && controller.interaction.detail == .settings ? 0.055 : 0))
+                                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(SidebarPalette.green.opacity(controller.settingsHighlightedItem == item && controller.interaction.detail == .settings ? 0.55 : 0), lineWidth: 1))
+                                    }
                             }
                         }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
                             .background(GeometryReader { proxy in
@@ -226,23 +280,16 @@ struct QuotaSidebarRail: View {
             .allowsHitTesting(controller.interaction.expanded)
             .accessibilityHidden(!controller.interaction.expanded)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: monitor.latestModelSpeeds30m.count)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: controller.hiddenModules)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.moduleOrder)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.sidebarLayout)
             Group {
                 GeometryReader { geometry in
                     let layout = railLayout(geometry.size.height)
                     ScrollView(.vertical) {
-                        VStack(spacing: layout.gap) {
-                            SidebarValueBar(fraction: clientScope == "codex" || clientScope == "all" ? Double(rateFraction) : nil, color: SidebarPalette.blue, vertical: true, modelRates: monitor.totalSnapshot.modelRates)
-                                .frame(width: 4, height: layout.barHeight).help("Codex 全会话实时速率（估算）\(rateText)")
-                            ForEach(quotaItems) { item in
-                                ClientQuotaRailTrack(item: item, height: layout.barHeight,
-                                    fillHex: quotaSelection.colors[item.id] ?? item.fill)
-                                    .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["track:" + item.id: $0] }
-                                    .help(item.title + " · " + item.value + " " + item.status)
-                            }
-                            SidebarModelShareStrip(items: clientScope == "codex" || clientScope == "all" ? shares : [], vertical: true).frame(width: 4, height: layout.barHeight)
-                        }.frame(width: 16).padding(.vertical, 15).frame(minHeight: geometry.size.height)
+                        QuotaSidebarCompactBars(items: sidebarItems, quotas: quotaItems, layout: layout,
+                            rateFraction: clientScope == "codex" || clientScope == "all" ? Double(rateFraction) : nil,
+                            modelRates: monitor.totalSnapshot.modelRates, shares: shares, colors: quotaSelection.colors,
+                            usesMorphAnchors: true)
+                            .frame(minHeight: geometry.size.height)
                     }.scrollIndicators(.hidden)
                 }.frame(width: 16).frame(maxHeight: .infinity)
                     .overlay(alignment: .center) {
@@ -276,7 +323,7 @@ struct QuotaSidebarRail: View {
                 fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         }
         .onChange(of: quotaItems, initial: true) { _, _ in updateCompactLayout() }
-        .onChange(of: railLength) { _, _ in updateCompactLayout() }
+        .onChange(of: controller.sidebarLayout) { _, _ in updateCompactLayout() }
         .onChange(of: controller.availableRailHeight) { _, _ in updateCompactLayout() }
         .onPreferenceChange(QuotaSidebarContentMeasurementKey.self) { controller.updateContentMeasurement($0) }
         .clipShape(QuotaSidebarEdgeShape(edge: controller.edge))
@@ -292,11 +339,12 @@ struct QuotaSidebarRail: View {
     }
 
     @ViewBuilder
-    private func moduleContent(_ module: QuotaSidebarDetail, shares: [FloatingTodayModelUsageItem]) -> some View {
-        switch module {
-        case .speeds:
-            if clientScope == "codex" || clientScope == "all" {
-                rateRing
+    private func moduleContent(_ item: QuotaSidebarItem, shares: [FloatingTodayModelUsageItem]) -> some View {
+        switch item {
+        case .speed:
+            rateRing
+        case .tps:
+            if supportsCodex {
                 QuotaSidebarBodySpeedReadings(monitor: monitor, onOpen: { controller.select(.speeds) })
             } else {
                 Button { controller.select(.speeds) } label: { Text("正文 TPS\n暂无样本").font(.system(size: 10)).foregroundStyle(.gray).frame(width: 74, height: 48) }.buttonStyle(.plain)
@@ -314,20 +362,19 @@ struct QuotaSidebarRail: View {
                     .frame(width: 74, height: 28).contentShape(Rectangle())
             }.buttonStyle(SidebarPulseButtonStyle()).help("打开 ModelTrace，手动检测模型")
                 .accessibilityIdentifier("quota-sidebar-modeltrace")
-        case .overview:
-            ForEach(ClientQuotaRingGroup.make(quotaItems, acrossClients: quotaSelection.pairAcrossClients)) { group in
+        case let .quota(client):
+            ForEach(ClientQuotaRingGroup.make(quotaItems.filter { $0.client == client })) { group in
                 Button { controller.select(.overview) } label: {
                     ClientPairedQuotaRing(left: group.left, right: group.right)
                 }.buttonStyle(SidebarPulseButtonStyle())
             }
-            if clientScope == "codex" || clientScope == "all" {
+        case .models:
             Button { controller.select(.overview, section: "models") } label: {
                 VStack(spacing: 6) {
                     SidebarModelShareStrip(items: shares).frame(width: 52, height: 4)
                     Text("模型占比").font(.system(size: 9)).foregroundStyle(.gray)
                 }.frame(maxWidth: .infinity, minHeight: 30).contentShape(Rectangle())
             }.buttonStyle(SidebarPulseButtonStyle())
-            }
         case .tasks:
             Button { controller.select(.tasks) } label: {
                 VStack(spacing: 5) {
@@ -379,7 +426,6 @@ struct QuotaSidebarRail: View {
                     }.font(.system(size: 9)).frame(maxWidth: .infinity).contentShape(Rectangle())
                 }.buttonStyle(SidebarPulseButtonStyle())
             }
-        case .settings: EmptyView()
         }
     }
 
@@ -572,6 +618,7 @@ struct QuotaSidebarDetailView: View {
     @ObservedObject var tasks: TaskCompletionMonitor
     @ObservedObject var radar: CodexRadarStore
     @ObservedObject var history: QuotaHistoryStore
+    var quotaItemsOverride: [ClientQuotaItem]? = nil
 
     var body: some View {
         // Capture one projection for every quota, usage and running field in
@@ -597,23 +644,10 @@ struct QuotaSidebarDetailView: View {
                 }.buttonStyle(SidebarPulseButtonStyle()).help("侧栏设置").accessibilityLabel("侧栏设置")
             }
             Divider().overlay(.white.opacity(0.12))
-            if controller.interaction.detail != .settings {
-            HStack {
-                Spacer()
-                let module = controller.interaction.detail ?? .overview
-                Toggle("显示在二级菜单", isOn: Binding(
-                    get: { controller.isModuleVisible(module) },
-                    set: { controller.setModuleVisible(module, visible: $0) }))
-                    .toggleStyle(.checkbox).font(.system(size: 11))
-                    .tint(SidebarPalette.green)
-                    .help("设置二级菜单中显示的模块")
-                    .accessibilityIdentifier("quota-sidebar-module-visibility")
-            }.padding(.vertical, 2)
-            }
             ScrollViewReader { proxy in
             ScrollView {
                 if controller.interaction.detail == .settings {
-                    QuotaSidebarModuleSettingsView(controller: controller, quotaSnapshot: quota.snapshot).id("top")
+                    QuotaSidebarModuleSettingsView(controller: controller, quotaSnapshot: quota.snapshot, monitor: monitor, modelShares: snapshot.todayModelBreakdowns, quotaItemsOverride: quotaItemsOverride).id("top")
                 }
                 else if controller.interaction.detail == .speeds {
                     if clientScope == "codex" || clientScope == "all" {

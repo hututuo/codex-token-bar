@@ -9,6 +9,52 @@ pub const DEFAULT_SIDEBAR_MODULE_ORDER: [&str; 6] = [
     "credits",
 ];
 
+pub const DEFAULT_SIDEBAR_LAYOUT_ORDER: [&str; 10] = [
+    "modeltrace",
+    "speed",
+    "tps",
+    "quota:codex",
+    "quota:claudeCode",
+    "models",
+    "tasks",
+    "radar",
+    "credits",
+    "clientUsage",
+];
+
+pub const DEFAULT_SIDEBAR_LAYOUT_HIDDEN: [&str; 1] = ["clientUsage"];
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarLayoutSnapshot {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub order: Vec<String>,
+    #[serde(default = "default_sidebar_layout_hidden")]
+    pub hidden: Vec<String>,
+}
+
+impl Default for SidebarLayoutSnapshot {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            order: DEFAULT_SIDEBAR_LAYOUT_ORDER
+                .iter()
+                .map(|item| (*item).to_owned())
+                .collect(),
+            hidden: default_sidebar_layout_hidden(),
+        }
+    }
+}
+
+fn default_sidebar_layout_hidden() -> Vec<String> {
+    DEFAULT_SIDEBAR_LAYOUT_HIDDEN
+        .iter()
+        .map(|item| (*item).to_owned())
+        .collect()
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SidebarModuleVisibilitySnapshot {
@@ -77,6 +123,8 @@ pub struct AppSettingsSnapshot {
     pub sidebar_module_visibility: SidebarModuleVisibilitySnapshot,
     #[serde(default = "default_sidebar_module_order")]
     pub sidebar_module_order: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_layout: Option<SidebarLayoutSnapshot>,
     #[serde(default)]
     pub setup_guide_completed: bool,
     #[serde(default)]
@@ -105,6 +153,7 @@ impl Default for AppSettingsSnapshot {
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
             sidebar_module_visibility: SidebarModuleVisibilitySnapshot::default(),
             sidebar_module_order: default_sidebar_module_order(),
+            sidebar_layout: None,
             setup_guide_completed: false,
             session_enhancements: SessionEnhancementSettingsSnapshot::default(),
             auto_resume: AutoResumeSettingsSnapshot::default(),
