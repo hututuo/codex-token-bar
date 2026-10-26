@@ -138,6 +138,7 @@ struct ClientPairedQuotaRing: View {
     let right: ClientQuotaItem?
     var body: some View {
         VStack(spacing: 5) {
+            MatchedStrokeMorphParticipant(ids: Set([left.id] + (right.map { [$0.id] } ?? [])), size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
             ZStack {
                 if let right {
                     Circle().trim(from: 0.006, to: 0.494).stroke(.white.opacity(0.15), lineWidth: 3).rotationEffect(.degrees(90))
@@ -167,6 +168,7 @@ struct ClientPairedQuotaRing: View {
                     Text(left.value).font(.system(size: 14, weight: .medium, design: .rounded)).monospacedDigit()
                 }
             }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
+            }
                 .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { anchor in
                     var values = ["ring:" + left.id: anchor]
                     if let right { values["ring:" + right.id] = anchor }
@@ -181,7 +183,7 @@ struct ClientPairedQuotaRing: View {
                     HStack(spacing: 2) { legend(left); legend(right) }
                 } else { legend(left) }
             }
-        }.frame(width: 74).padding(.vertical, 3)
+        }.frame(width: 74).padding(.vertical, 3).contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(right.map { "左侧 \(left.title) \(left.value)，右侧 \($0.title) \($0.value)" } ?? "\(left.title) 剩余 \(left.value)，完整圆环")
     }

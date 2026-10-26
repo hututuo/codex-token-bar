@@ -42,6 +42,7 @@ final class IntegratedClientRenderingTests: XCTestCase {
         }.padding(24).frame(width: 620, height: 580, alignment: .topLeading)
             .background(Color(white: 0.07)).foregroundStyle(.white)
             .environment(\.colorScheme, .dark).defaultAppStorage(defaults)
+            .environment(\.matchedStrokeMorphRegistry, ProcessInfo.processInfo.environment["TOKENBAR_USE_NATIVE_MORPH_HOST"] == "1" ? MatchedStrokeMorphRegistry() : nil)
         let host = NSHostingView(rootView: candidate)
         host.frame = CGRect(x: 0, y: 0, width: 620, height: 580)
         host.layoutSubtreeIfNeeded()

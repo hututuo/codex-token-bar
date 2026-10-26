@@ -54,6 +54,7 @@ struct ClientQuotaRailTrack: View {
     let height: Double
     let fillHex: String
     var body: some View {
+        MatchedStrokeMorphParticipant(ids: [item.id], size: CGSize(width: ClientSidebarMetrics.capWidth, height: height)) {
         SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
             color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true, expected: item.expected)
             .frame(width: ClientSidebarMetrics.capWidth, height: height)
@@ -63,6 +64,7 @@ struct ClientQuotaRailTrack: View {
                     .mask(alignment: .top) { Rectangle().frame(height: ClientSidebarMetrics.capHeight) }
                     .allowsHitTesting(false)
             }
+        }
     }
 }
 
@@ -124,6 +126,7 @@ struct QuotaSidebarRail: View {
         ClientRailLayout.make(quotaCount: quotaItems.count, mode: railLength,
             hasFiveHour: quota.snapshot.fiveHour != nil, availableHeight: Double(height))
     }
+    @StateObject private var morphRegistry = MatchedStrokeMorphRegistry()
     @State private var shares: [FloatingTodayModelUsageItem] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -234,8 +237,6 @@ struct QuotaSidebarRail: View {
                                 ClientQuotaRailTrack(item: item, height: layout.barHeight,
                                     fillHex: quotaSelection.colors[item.id] ?? item.fill)
                                     .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["track:" + item.id: $0] }
-                                    .opacity(controller.interaction.expanded ? 0 : 1)
-                                    .animation(!morphEnabled ? nil : controller.interaction.expanded ? .easeOut(duration: 0.04) : .easeOut(duration: 0.05).delay(0.19), value: controller.interaction.expanded)
                                     .help(item.title + " · " + item.value + " " + item.status)
                             }
                             SidebarModelShareStrip(items: clientScope == "codex" || clientScope == "all" ? shares : [], vertical: true).frame(width: 4, height: layout.barHeight)
@@ -256,7 +257,7 @@ struct QuotaSidebarRail: View {
                     .onTapGesture { controller.enter() }
             }
             .opacity(controller.interaction.expanded ? 0 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: controller.interaction.expanded)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: controller.interaction.expanded)
             .allowsHitTesting(!controller.interaction.expanded)
             .accessibilityHidden(controller.interaction.expanded)
         }
@@ -279,6 +280,7 @@ struct QuotaSidebarRail: View {
         .clipShape(QuotaSidebarEdgeShape(edge: controller.edge))
         .foregroundStyle(.white)
         .onHover { if $0 { controller.enter() } }
+        .environment(\.matchedStrokeMorphRegistry, morphEnabled ? morphRegistry : nil)
         .onChange(of: cacheWarning?.presentationID, initial: true) { _, id in controller.updateCacheAdvice(id) }
     }
 
@@ -308,8 +310,6 @@ struct QuotaSidebarRail: View {
             ForEach(ClientQuotaRingGroup.make(quotaItems, acrossClients: quotaSelection.pairAcrossClients)) { group in
                 Button { controller.select(.overview) } label: {
                     ClientPairedQuotaRing(left: group.left, right: group.right)
-                        .opacity(!morphEnabled || controller.interaction.expanded ? 1 : 0)
-                        .animation(!morphEnabled ? nil : controller.interaction.expanded ? .easeOut(duration: 0.06).delay(0.38) : .easeOut(duration: 0.04), value: controller.interaction.expanded)
                 }.buttonStyle(SidebarPulseButtonStyle())
             }
             if clientScope == "codex" || clientScope == "all" {

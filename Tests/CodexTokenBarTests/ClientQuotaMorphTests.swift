@@ -38,7 +38,7 @@ final class ClientQuotaMorphTests: XCTestCase {
             let half = QuotaSidebarMotion.collapseFrame(from: from, to: to, time: 0.5, edge: edge, area: area, scale: 2)
             XCTAssertEqual(half.height, from.height)
             XCTAssertLessThan(half.width, 30)
-            let split = QuotaSidebarMotion.collapseFrame(from: from, to: to, time: 2.0 / 3, edge: edge, area: area, scale: 2)
+            let split = QuotaSidebarMotion.collapseFrame(from: from, to: to, time: ClientQuotaMorphGeometry.closingDuration / (ClientQuotaMorphGeometry.closingDuration + ClientQuotaMorphGeometry.settlingDuration), edge: edge, area: area, scale: 2)
             XCTAssertEqual(split.width, 16)
             XCTAssertEqual(split.height, from.height)
             for step in 0...100 {
@@ -52,7 +52,7 @@ final class ClientQuotaMorphTests: XCTestCase {
     }
 
     @MainActor func testTransientLayersAreBoundedCancelOnReversalAndDoNoWorkAtRest() {
-        let view = ClientQuotaMorphView(frame: CGRect(x: 0, y: 0, width: 88, height: 640))
+        let view = MatchedStrokeMorphView(frame: CGRect(x: 0, y: 0, width: 88, height: 640))
         let routes = fixtures()
         view.update(expanded: false, enabled: true, routes: routes)
         XCTAssertEqual(view.morphLayerCount, 0)
@@ -72,7 +72,7 @@ final class ClientQuotaMorphTests: XCTestCase {
     }
 
     @MainActor func testUnknownQuotaMorphsOnlyItsTrackWithoutInventingColoredUsage() {
-        let view = ClientQuotaMorphView(frame: CGRect(x: 0, y: 0, width: 88, height: 640))
+        let view = MatchedStrokeMorphView(frame: CGRect(x: 0, y: 0, width: 88, height: 640))
         let route = ClientQuotaMorphRoute(id: "unknown", ring: ring, track: track, half: 0, fraction: nil, color: .green)
         view.update(expanded: true, enabled: true, routes: [route])
         view.update(expanded: false, enabled: true, routes: [route])
@@ -81,14 +81,16 @@ final class ClientQuotaMorphTests: XCTestCase {
     }
 
     @MainActor func testAnimationCompletionReleasesLayersAndPreparationCost() {
-        let view = ClientQuotaMorphView(frame: CGRect(x: 0, y: 0, width: 88, height: 640)), routes = fixtures()
+        let view = MatchedStrokeMorphView(frame: CGRect(x: 0, y: 0, width: 88, height: 640)), routes = fixtures()
         view.update(expanded: true, enabled: true, routes: routes)
-        var measurements: [Double] = []
+        var measurements: [Double] = [], opening: [Double] = [], closing: [Double] = []
         for index in 0..<100 {
             view.update(expanded: index % 2 == 1, enabled: true, routes: routes)
             measurements.append(view.lastPreparationMilliseconds)
+            if index % 2 == 1 { opening.append(view.lastPreparationMilliseconds) } else { closing.append(view.lastPreparationMilliseconds) }
         }
-        measurements.sort()
+        measurements.sort(); opening.sort(); closing.sort()
+        print("QUOTA_MORPH_PHASE_PREP_MS openingMedian=\(opening[25]) closingMedian=\(closing[25]) closingP95=\(closing[47])")
         print("QUOTA_MORPH_PREPARE_MS median=\(measurements[50]) p95=\(measurements[95]) layers=\(view.morphLayerCount)")
         let deadline = Date().addingTimeInterval(0.7)
         while Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
@@ -117,8 +119,8 @@ final class ClientQuotaMorphTests: XCTestCase {
             let deadline = Date().addingTimeInterval(seconds)
             while Date() < deadline { host.layoutSubtreeIfNeeded(); RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
         }
-        func morph(_ view: NSView) -> ClientQuotaMorphView? {
-            if let value = view as? ClientQuotaMorphView { return value }
+        func morph(_ view: NSView) -> MatchedStrokeMorphView? {
+            if let value = view as? MatchedStrokeMorphView { return value }
             return view.subviews.lazy.compactMap(morph).first
         }
         settle(0.1)
@@ -127,11 +129,14 @@ final class ClientQuotaMorphTests: XCTestCase {
         controller.enter(); settle(0.08)
         XCTAssertEqual(overlay.animationsStarted, 1)
         XCTAssertEqual(overlay.morphLayerCount, 8)
+        XCTAssertEqual(overlay.coveredParticipantViewCount, 5, "Both original rings and all three original bars are covered until handoff")
         controller.dismiss(); settle(0.08)
         XCTAssertEqual(overlay.animationsStarted, 2)
         settle(0.5)
         XCTAssertEqual(overlay.morphLayerCount, 0)
         XCTAssertFalse(overlay.isAnimating)
+        XCTAssertEqual(overlay.coveredParticipantViewCount, 0)
+
     }
 
     @MainActor private func fixtures() -> [ClientQuotaMorphRoute] {
@@ -150,7 +155,7 @@ final class ClientQuotaMorphTests: XCTestCase {
             HStack(spacing: 12) {
                 ForEach([0.0, 0.15, 0.35, 0.65, 1.0], id: \.self) { t in
                     VStack(spacing: 6) {
-                        Text("\(Int(t * 240)) ms").font(.system(size: 11)).foregroundStyle(.gray)
+                        Text("\(Int(t * 180)) ms").font(.system(size: 11)).foregroundStyle(.gray)
                         Canvas { context, _ in
                             let progress = QuotaSidebarMotion.progress(t, expanding: false)
                             for route in routes {
@@ -172,5 +177,11 @@ final class ClientQuotaMorphTests: XCTestCase {
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: bitmap)
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+    }
+}
+
+@MainActor private extension MatchedStrokeMorphView {
+    func update(expanded: Bool, enabled: Bool, routes: [ClientQuotaMorphRoute]) {
+        update(expanded: expanded, enabled: enabled, participantCount: routes.count) { ClientQuotaMorphGeometry.strokes(routes) }
     }
 }

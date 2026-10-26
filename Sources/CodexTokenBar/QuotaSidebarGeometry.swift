@@ -238,11 +238,7 @@ enum QuotaSidebarMotion {
     }
 
     static func progress(_ time: Double, expanding: Bool) -> Double {
-        guard time > 0 else { return 0 }
-        guard time < 1 else { return 1 }
-        return expanding
-            ? (1 - (1 + 8 * time) * exp(-8 * time)) / (1 - 9 * exp(-8))
-            : 1 - pow(1 - time, 3)
+        MatchedStrokeMorphTiming.progress(time, expanding: expanding)
     }
 
     /// Finish width/morph first, then tighten height. Each stage eases out;
