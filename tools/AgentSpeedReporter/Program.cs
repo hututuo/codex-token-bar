@@ -89,9 +89,12 @@ internal static class SelfTests
             SourceReadObservationTracksOnlyNewTranscriptResponses();
             SourceReadObservationBufferMergesEarliestWindowMetadata();
             await SnapshotMailboxKeepsTimingAlignedWithUnconsumedLatestSnapshotAsync().ConfigureAwait(false);
-            ExplicitTransportDoesNotFallBackToHttp();
+            ExplicitTransportChoiceIsHonoredAtStartup();
+            WebSocketFallbackIsLimitedToTransientNetworkFailures();
+            WebSocketIdleStatusIsAvailableBeforeActivity();
             WebSocketAcknowledgementsRequireTheExactPendingTupleAndConnection();
             WebSocketDropsBackpressureAndSleepWindows();
+            FallbackRebasesLatestSampleWithoutReplayingUsage();
             WebSocketRetryAfterRemainsAMinimumDeadline();
             WebSocketRequestsSignTheExactV1BytesAndKeepTheApiBasePath();
             InitialSnapshotIsOnlyABaseline();
@@ -457,12 +460,59 @@ internal static class SelfTests
         }
     }
 
-    private static void ExplicitTransportDoesNotFallBackToHttp()
+    private static void ExplicitTransportChoiceIsHonoredAtStartup()
     {
         if (ReporterTransportChoice.StartFailure("http", supportsWebSocket: false) is not null
             || ReporterTransportChoice.UsesWebSocket("http")
             || ReporterTransportChoice.StartFailure("websocket", supportsWebSocket: false) != "websocket_not_supported"
             || !ReporterTransportChoice.UsesWebSocket("websocket"))
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static void WebSocketFallbackIsLimitedToTransientNetworkFailures()
+    {
+        if (!WebSocketFallbackPolicy.ShouldFallbackToHttp(new TimeoutException(), false, null)
+            || !WebSocketFallbackPolicy.ShouldFallbackToHttp(new System.Net.WebSockets.WebSocketException(), false, null)
+            || !WebSocketFallbackPolicy.ShouldFallbackToHttp(new System.Net.Http.HttpRequestException(), false, null)
+            || !WebSocketFallbackPolicy.ShouldFallbackToHttp(new System.Net.Http.HttpRequestException(
+                "request timeout", null, System.Net.HttpStatusCode.RequestTimeout), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new System.Net.Http.HttpRequestException(
+                "rate limited", null, System.Net.HttpStatusCode.TooManyRequests), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new System.Net.Http.HttpRequestException(
+                "service unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable), false, null)
+            || !WebSocketFallbackPolicy.ShouldFallbackToHttp(new WebSocketHandshakeException(System.Net.HttpStatusCode.BadGateway, null), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new OperationCanceledException(), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new OperationCanceledException(), true, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new TimeoutException(), false, null, sleepResumeDetected: true)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new System.Security.Authentication.AuthenticationException(), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new InvalidDataException(), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new WebSocketHandshakeException(System.Net.HttpStatusCode.TooManyRequests, 60), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new WebSocketHandshakeException(System.Net.HttpStatusCode.ServiceUnavailable, 60), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new WebSocketHandshakeException(System.Net.HttpStatusCode.ServiceUnavailable, null), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new ReportWebSocketCloseException(
+                (System.Net.WebSockets.WebSocketCloseStatus)4004, "unknown device"), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new ReportWebSocketCloseException(
+                (System.Net.WebSockets.WebSocketCloseStatus)4009, "device replaced"), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new ReportWebSocketCloseException(
+                System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "idle pause"), false, null)
+            || WebSocketFallbackPolicy.ShouldFallbackToHttp(new System.Net.WebSockets.WebSocketException(), false, 60)
+            || WebSocketSleepResume.IsDetected(TimeSpan.FromHours(2), TimeSpan.FromHours(2), TimeSpan.FromSeconds(60))
+            || !WebSocketSleepResume.IsDetected(TimeSpan.FromHours(2), TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(60))
+            || HttpFallbackStatus.MessageCode(true, "reporting") != "http_fallback"
+            || HttpFallbackStatus.MessageCode(true, "registering") != "http_fallback"
+            || HttpFallbackStatus.MessageCode(true, "rate_limited") != "rate_limited"
+            || HttpFallbackStatus.MessageCode(false, "reporting") != "reporting")
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static void WebSocketIdleStatusIsAvailableBeforeActivity()
+    {
+        if (StatusProtocol.MessageFor("websocket_waiting_for_activity") != "Device registered; waiting for activity"
+            || StatusProtocol.MessageFor("http_fallback") != "WebSocket disconnected; using HTTP for this run")
         {
             throw new InvalidOperationException();
         }
@@ -506,6 +556,81 @@ internal static class SelfTests
         window.ResetForReconnectOrResume(UsageSample(17));
         var afterResume = window.Take(UsageSample(18));
         if (afterResume.Usage.Total.Output != 1)
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static void FallbackRebasesLatestSampleWithoutReplayingUsage()
+    {
+        var baseline = CostUsageSample(output: 0, knownCost: 0, knownRequests: 0, unknownRequests: 0);
+        var beforeDisconnect = CostUsageSample(output: 5, knownCost: 100, knownRequests: 1, unknownRequests: 1);
+        var latest = CostUsageSample(output: 8, knownCost: 250, knownRequests: 2, unknownRequests: 2);
+        var next = CostUsageSample(output: 10, knownCost: 350, knownRequests: 3, unknownRequests: 3);
+
+        var pendingWindow = new WebSocketReportWindow(baseline);
+        pendingWindow.Observe(beforeDisconnect);
+        var staged = new ReportWindow(baseline);
+        if (staged.Content(beforeDisconnect).Usage.Total.Output != 5
+            || staged.Content(beforeDisconnect).Usage.Total.CostMicroUsd != 100
+            || staged.Content(beforeDisconnect).Usage.Total.UnpricedRequests != 1)
+        {
+            throw new InvalidOperationException();
+        }
+
+        pendingWindow.DropAndRebase(latest);
+        var dropped = pendingWindow.Take(latest).Usage.Total;
+        var httpWindow = new ReportWindow(latest);
+        var httpBaseline = httpWindow.Take(latest).Usage.Total;
+        var afterFallbackContent = httpWindow.Take(next);
+        var afterFallback = afterFallbackContent.Usage.Total;
+        if (dropped != ReportUsage.Zero
+            || httpBaseline != ReportUsage.Zero
+            || afterFallback.Output != 2
+            || afterFallback.CostMicroUsd != 100
+            || afterFallback.UnpricedRequests != 1)
+        {
+            throw new InvalidOperationException();
+        }
+
+        var options = new ReportOptions(
+            new HashSet<ReportSection> { ReportSection.Cost, ReportSection.Models, ReportSection.Sources },
+            PriceVersion: PriceBook.Bundled.Version);
+        const string deviceId = "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b";
+        const string runId = "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f";
+        const long timestamp = 1_792_872_000;
+        const string nonce = "AAECAwQFBgcICQoLDA0ODw";
+        using var signer = new SoftwareReportSigner();
+        var api = ReportServiceUrl.ParseApi("https://api.example.com/agent-speed", discoveryIsLoopbackHttp: false)!;
+        var body = ReportBody.Data(
+            new ReportEnvelope(ReportClientInfo.Windows("0.9.7"), deviceId, "fallback-test", runId,
+                Seq: 1, SentAtMs: timestamp * 1_000, WindowMs: 500, Activity: ReportActivity.Active, TitleLevel: 0),
+            afterFallbackContent,
+            next,
+            options);
+        if (!ReportPayloadWhitelist.IsAllowed(body))
+        {
+            throw new InvalidOperationException();
+        }
+
+        using (var document = JsonDocument.Parse(body))
+        {
+            var root = document.RootElement;
+            if (root.GetProperty("delta").GetProperty("output").GetInt64() != 2
+                || root.GetProperty("cost").GetProperty("deltaMicroUsd").GetInt64() != 100
+                || root.GetProperty("cost").GetProperty("unpricedRequests").GetInt64() != 1)
+            {
+                throw new InvalidOperationException();
+            }
+        }
+
+        var request = new ReportRequestBuilder("AgentSpeed/0.9.7 (Windows)", deviceId, ApiKey: null)
+            .Make("POST", api.Endpoint(ReportEndpoint.Reports), body, signer, timestamp, nonce);
+        var canonical = ReportCanonical.Build("POST", "api.example.com", "/agent-speed/v1/reports",
+            timestamp.ToString(CultureInfo.InvariantCulture), nonce, deviceId, body);
+        var signature = request.Header(ReportCanonical.SignatureHeader);
+        if (signature is null
+            || !signer.PublicKey.Verify(Encoding.UTF8.GetBytes(canonical), Base64Url.Decode(signature) ?? []))
         {
             throw new InvalidOperationException();
         }
@@ -568,6 +693,27 @@ internal static class SelfTests
             counters,
             Epoch: 1);
         return ReportSample.Empty with { Facts = facts };
+    }
+
+    private static ReportSample CostUsageSample(long output, long knownCost, long knownRequests, long unknownRequests)
+    {
+        var counters = new ReportCounters();
+        if (output > 0 || knownCost > 0 || knownRequests > 0)
+        {
+            counters.Add(new ReportUsage(Requests: knownRequests, Output: output, CostMicroUsd: knownCost),
+                new ReportModelKey("gpt-priced", SourceKind.Codex));
+        }
+
+        if (unknownRequests > 0)
+        {
+            counters.Add(new ReportUsage(Requests: unknownRequests, UnpricedRequests: unknownRequests),
+                new ReportModelKey("model-without-price", SourceKind.ClaudeCode));
+        }
+
+        return ReportSample.Empty with
+        {
+            Facts = ReportLiveFacts.Empty with { Counters = counters, Epoch = 1 },
+        };
     }
 
     private static void InitialSnapshotIsOnlyABaseline()

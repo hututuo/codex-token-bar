@@ -63,6 +63,27 @@ final class AgentSpeedWebSocketTests: XCTestCase {
         controller.shutdown()
     }
 
+    func testOnlyTransientTransportFailurePermitsHTTPFallback() {
+        for code in [URLError.timedOut, .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet] {
+            XCTAssertTrue(AgentSpeedWebSocket.canFallBack(error: URLError(code), closeCode: 0, httpStatus: 0, suspended: false, rateLimited: false))
+        }
+        for code in [URLError.secureConnectionFailed, .serverCertificateUntrusted, .clientCertificateRejected] {
+            XCTAssertFalse(AgentSpeedWebSocket.canFallBack(error: URLError(code), closeCode: 0, httpStatus: 0, suspended: false, rateLimited: false))
+        }
+        for status in [301,401,403,404,410,422,429,503] {
+            XCTAssertFalse(AgentSpeedWebSocket.canFallBack(error: URLError(.networkConnectionLost), closeCode: 0, httpStatus: status, suspended: false, rateLimited: false))
+        }
+        for code in [1000,1002,1003,1007,1008,1009,1013,4000,4001,4003,4004,4009,4410,4429,4503] {
+            XCTAssertFalse(AgentSpeedWebSocket.canFallBack(error: URLError(.networkConnectionLost), closeCode: code, httpStatus: 0, suspended: false, rateLimited: false))
+        }
+        XCTAssertFalse(AgentSpeedWebSocket.canFallBack(error: URLError(.cancelled), closeCode: 0, httpStatus: 0, suspended: true, rateLimited: false))
+        XCTAssertFalse(AgentSpeedWebSocket.canFallBack(error: AgentSpeedWebSocket.Failure.retry, closeCode: 0, httpStatus: 0, suspended: false, rateLimited: true))
+        XCTAssertFalse(AgentSpeedWebSocket.canFallBack(error: AgentSpeedWebSocket.Failure.retry, closeCode: 0, httpStatus: 101, suspended: false, rateLimited: false)) // explicit server retry is not a network break
+        XCTAssertFalse(AgentSpeedWebSocket.canFallBack(error: AgentSpeedWebSocket.Failure.protocolError, closeCode: 0, httpStatus: 0, suspended: false, rateLimited: false))
+        XCTAssertTrue(AgentSpeedWebSocket.canFallBack(error: URLError(.badServerResponse), closeCode: 0, httpStatus: 502, suspended: false, rateLimited: false))
+        XCTAssertFalse(AgentSpeedWebSocket.canFallBack(error: URLError(.badServerResponse), closeCode: 0, httpStatus: 502, suspended: false, rateLimited: true))
+    }
+
     /// Actual native signing and URLSession transport; isolated service + new device key + synthetic metrics only.
     func testExplicitTestServiceRegistrationAndWebSocketACK() async throws {
         guard let output = ProcessInfo.processInfo.environment["CODEX_SPEED_WS_LIVE_OUTPUT"] else {

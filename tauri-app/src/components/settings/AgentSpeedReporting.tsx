@@ -91,7 +91,7 @@ export function AgentSpeedReportingSettings() {
         catch (e) { setError(String(e)); } finally { setBusy(false); }
       }}><option value="http">HTTP（默认）</option><option value="websocket">WebSocket 即时</option></select>
     </label>
-    <p className="speed-report-note">WebSocket 需服务支持；断线后自动重连，不会自动切回 HTTP。日志写入仍可能延迟。</p>
+    <p className="speed-report-note">WebSocket 网络连接失败时自动回退 HTTP；手动重试可再尝试 WebSocket。日志写入仍可能延迟。</p>
     <label className="speed-report-name">公开昵称
       <input value={nickname} maxLength={32} disabled={status.enabled || busy || !runtime}
         onChange={(event) => setNickname(event.target.value)} placeholder="排行榜昵称" />

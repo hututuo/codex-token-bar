@@ -22,7 +22,7 @@ struct AgentSpeedReportingSettingsView: View {
                 Text("HTTP（默认）").tag(AgentSpeedReportingMode.http)
                 Text("WebSocket 即时").tag(AgentSpeedReportingMode.websocket)
             }.pickerStyle(.segmented)
-            Text("WebSocket 需服务支持；断线后自动重连，不会自动切回 HTTP。日志写入仍可能延迟。")
+            Text("WebSocket 网络连接失败时自动回退 HTTP；手动重试可再尝试 WebSocket。日志写入仍可能延迟。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Text("公开昵称")

@@ -8,6 +8,8 @@ private actor SpeedReportTestTransport: ReportTransport {
     var sent: [ReportRequest] = []
     var held = false
     var alteredAPI = false
+    var websocket = false
+    func offerWebSocket() { websocket = true }
     func holdDiscovery() { held = true }
     func alterAPI() { alteredAPI = true }
     func requests() -> [ReportRequest] { sent }
@@ -20,8 +22,9 @@ private actor SpeedReportTestTransport: ReportTransport {
             catch { throw .other(-999) }
         }
         let api = alteredAPI ? "https://other.example/api" : "https://speed-api.codexradar.com/api/agent-speed"
+        let socketFields = websocket ? #","websocket":{"path":"/v1/reports/ws","subprotocol":"agent-speed-report.v1"}"# : ""
         return .init(status: 200, body: Data("""
-        {"protocol":"agent-speed-report","versions":[1],"service":{"name":"test","terms":"https://deng.codexradar.com/agent-speed/terms/","privacy":"https://deng.codexradar.com/agent-speed/privacy/"},"api":"\(api)","apiKey":{"mode":"none"},"sections":["sources","models","cost","traffic"],"extensions":{"modelHarnessRequests":1,"executionModes":1,"profileAvatar":1,"sharedIdentity":1}}
+        {"protocol":"agent-speed-report","versions":[1],"service":{"name":"test","terms":"https://deng.codexradar.com/agent-speed/terms/","privacy":"https://deng.codexradar.com/agent-speed/privacy/"},"api":"\(api)","apiKey":{"mode":"none"},"sections":["sources","models","cost","traffic"],"extensions":{"modelHarnessRequests":1,"executionModes":1,"profileAvatar":1,"sharedIdentity":1,"reportWebSocket":\(websocket ? 1 : 0)}\(socketFields)}
         """.utf8))
     }
     func send(_ request: ReportRequest, maxBytes: Int, timeout: TimeInterval)
@@ -163,6 +166,64 @@ final class AgentSpeedReportingTests: XCTestCase {
         controller.setEnabled(true, username: "!")
         XCTAssertFalse(controller.enabled)
         XCTAssertFalse(prefs.bool(forKey: AgentSpeedReportingController.enabledKey))
+    }
+
+    func testSocketFailureFallsBackWithoutReplayingAndRetainsDeviceAndPreference() async throws {
+        let prefs = defaults(), transport = SpeedReportTestTransport(), monitor = SpeedReportTestMonitor()
+        await transport.offerWebSocket()
+        prefs.set("websocket", forKey: AgentSpeedReportingController.transportKey)
+        var clock: Int64 = 0
+        var socket: AgentSpeedWebSocket?
+        let controller = AgentSpeedReportingController(defaults: prefs, transport: transport,
+            makeSigner: { _ in SoftwareReportSigner() }, monotonic: { clock },
+            startWebSocket: { socket = $0 }, makeRealtimeMonitor: { _ in monitor }, makeMonitor: { _ in monitor })
+        controller.setEnabled(true, username: "fallback-test")
+        try await waitFor { monitor.starts == 1 }
+        let initialSocket = try XCTUnwrap(socket)
+        var snapshot = SpeedSnapshot.empty
+        snapshot.state = .running
+        let model = ReportModelKey(modelId: "gpt-6.1-sol", source: .codex)
+        snapshot.report.counters.add(.init(requests: 10, output: 1000, costMicroUsd: 90_000), to: model)
+        controller.receive(snapshot)
+        // Switching channels must not carry the existing WS-side counters into HTTP.
+        XCTAssertTrue(initialSocket.ledger.pending.isEmpty)
+        initialSocket.onTransportUnavailable?()
+        XCTAssertTrue(controller.usingHTTPFallback)
+        XCTAssertTrue(controller.message.contains("HTTP"))
+        controller.receive(snapshot) // fresh HTTP baseline
+        snapshot.live = .init(output: 50, total: 100)
+        controller.receive(snapshot)
+        snapshot.report.counters.add(.init(requests: 1, output: 250, measuredOutput: 250,
+                                          measuredMs: 5000, costMicroUsd: 1234, unpricedRequests: 1), to: model)
+        clock = 5000
+        controller.receive(snapshot)
+        try await waitFor { controller.lastReportAt != nil }
+        let requests = await transport.requests()
+        let registration = try XCTUnwrap(requests.first { $0.url.path.hasSuffix("/devices") })
+        let registered = try XCTUnwrap(JSONSerialization.jsonObject(with: registration.body) as? [String: Any])
+        let reports = requests.filter { $0.url.path.hasSuffix("/reports") }
+        XCTAssertEqual(reports.count, 1)
+        let report = try XCTUnwrap(reports.first)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: report.body) as? [String: Any])
+        XCTAssertEqual(body["deviceId"] as? String, registered["deviceId"] as? String)
+        XCTAssertNotEqual((body["run"] as? [String: Any])?["id"] as? String, initialSocket.runID)
+        XCTAssertEqual((body["delta"] as? [String: Any])?["output"] as? Int, 250)
+        XCTAssertEqual((body["cost"] as? [String: Any])?["deltaMicroUsd"] as? Int, 1234)
+        XCTAssertEqual((body["cost"] as? [String: Any])?["unpricedRequests"] as? Int, 1)
+        XCTAssertNotNil(report.header("X-AgentSpeed-Signature"))
+        XCTAssertEqual(controller.transport, .websocket)
+        XCTAssertEqual(prefs.string(forKey: AgentSpeedReportingController.transportKey), "websocket")
+        XCTAssertTrue(controller.message.contains("已回退 HTTP"))
+        controller.retry()
+        XCTAssertFalse(controller.usingHTTPFallback)
+        try await waitFor { monitor.starts == 2 }
+        XCTAssertEqual(controller.transport, .websocket)
+        controller.setEnabled(false)
+        let count = await transport.requests().count
+        initialSocket.onTransportUnavailable?()
+        controller.receive(snapshot)
+        let finalCount = await transport.requests().count
+        XCTAssertEqual(finalCount, count)
     }
 
     func testProfileLinksArePinnedAndAllUpstreamHarnessesIncluded() {

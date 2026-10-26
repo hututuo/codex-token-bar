@@ -67,6 +67,7 @@ final class AgentSpeedWebSocket {
     var onTerminal: (String) -> Void = { _ in }
     var onRecovery: (String, Int64?) -> Void = { _, _ in }
     var onConfigurationChanged: () -> Void = {}
+    var onTransportUnavailable: (() -> Void)?
     private let api: ReportServiceURL
     private let makeRequest: @Sendable (String, URL, Data) async throws -> ReportRequest
     private var task: Task<Void, Never>?
@@ -85,6 +86,7 @@ final class AgentSpeedWebSocket {
     private var strikes = 0
     private var network: NWPathMonitor?
     private var lastPath: String?
+    private var sendFailure: Error?
     static var tick: Int64 { Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000) }
 
     init(api: ReportServiceURL, config: ReportWebSocketConfiguration, runID: String = ReportCanonical.newUUID(),
@@ -109,7 +111,7 @@ final class AgentSpeedWebSocket {
     func stop() {
         stopped = true; task?.cancel(); task = nil; network?.cancel(); network = nil
         disconnect()
-        onReady = {}; onDisconnected = {}; onAccepted = {}
+        onReady = {}; onDisconnected = {}; onAccepted = {}; onTransportUnavailable = nil
     }
     func suspend() { suspended = true; disconnect(); onStatus("已暂停 · 等待唤醒") }
     func pauseUntilActivity() { suspended = true; disconnect(); onStatus("暂时无活动 · 等待新数据") }
@@ -129,6 +131,8 @@ final class AgentSpeedWebSocket {
             catch Failure.protocolError { disconnect(); onTerminal("WebSocket 协议不兼容，请手动重试"); return }
             catch Failure.terminal(let text) { disconnect(); onTerminal(text); return }
             catch {
+                let transportError = sendFailure ?? error
+                sendFailure = nil
                 let code = receiver?.closeCode.rawValue ?? 0
                 let status = (receiver?.response as? HTTPURLResponse)?.statusCode ?? 0
                 let retryHeader = (receiver?.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
@@ -145,8 +149,13 @@ final class AgentSpeedWebSocket {
                 if [1002,1003,1007,4000,4001,4003,4004,4009,4410].contains(code) || [401,403,404,410,422].contains(status) {
                     onTerminal(code == 4009 ? "设备已在另一处连接，请确认没有重复上报" : "服务拒绝连接，请手动重试或检查设置"); return
                 }
-                if [4429,4503].contains(code) || [429,503].contains(status) {
+                if [4429,4503].contains(code) || [429,503].contains(status) || retryHeader != nil {
                     retryAfter = max(retryAfter, Self.tick + Int64(min(max(retry ?? 60, 5), 3600)) * 1000)
+                }
+                if let fallback = onTransportUnavailable,
+                   Self.canFallBack(error: transportError, closeCode: code, httpStatus: status,
+                                    suspended: suspended, rateLimited: Self.tick < retryAfter) {
+                    fallback(); return
                 }
             }
             if stopped || Task.isCancelled { return }
@@ -160,6 +169,24 @@ final class AgentSpeedWebSocket {
                 try? await Task.sleep(for: .milliseconds(min(250, max(1, deadline - Self.tick))))
             }
         }
+    }
+    /// A transport failure may change channel; service rejection and backoff may not.
+    static func canFallBack(error: Error, closeCode: Int, httpStatus: Int,
+                            suspended: Bool, rateLimited: Bool) -> Bool {
+        guard !suspended, !rateLimited,
+              ![1000,1002,1003,1007,1008,1009,1013,4000,4001,4003,4004,4009,4410,4429,4503].contains(closeCode),
+              (!(300...499).contains(httpStatus) || httpStatus == 408), httpStatus != 503 else { return false }
+        if [408,502,504].contains(httpStatus) { return true }
+        if let failure = error as? Failure {
+            switch failure {
+            case .timedOut: return true
+            case .stale, .retry, .protocolError, .configurationChanged, .terminal: return false
+            }
+        }
+        let value = error as NSError
+        guard value.domain == NSURLErrorDomain else { return false }
+        return [URLError.timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+                .dnsLookupFailed, .notConnectedToInternet, .cancelled].contains(URLError.Code(rawValue: value.code))
     }
     private func connect() async throws {
         onStatus("正在连接 WebSocket…")
@@ -269,7 +296,9 @@ final class AgentSpeedWebSocket {
                 guard body.count <= 16384, outer.count <= config.maxMessageBytes else { ledger.pending[seq] = nil; ledger.counters.dropped += 1; return }
                 ledger.pending[seq]?.sentAt = Self.tick
                 try await socket.send(.string(String(decoding: outer, as: UTF8.self)))
-            } catch { if id == connectionID { socket.cancel() } }
+            } catch {
+                if id == connectionID { sendFailure = error; socket.cancel() }
+            }
         }
     }
 }

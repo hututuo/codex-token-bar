@@ -510,6 +510,7 @@ fn sanitize_status(
         || !matches!(
             raw.phase.as_str(),
             "waiting_for_snapshot"
+                | "waiting_for_activity"
                 | "discovering"
                 | "registering"
                 | "connected"
@@ -592,8 +593,10 @@ fn message_for(code: &str) -> &'static str {
         "waiting_for_snapshot" => "正在等待实时快照",
         "discovering" => "正在检查上报服务",
         "registering" => "正在注册此设备",
+        "websocket_waiting_for_activity" => "设备已注册，正在等待活动",
         "websocket_connected" => "WebSocket 已连接，等待有效上报确认",
         "reporting" => "正在上报实时速度",
+        "http_fallback" => "WebSocket 连接中断，本次运行改用 HTTP",
         "websocket_reconnecting" => "WebSocket 正在重新连接",
         "websocket_not_supported" => "此上报服务尚未支持 WebSocket",
         "websocket_configuration_mismatch" => "服务连接设置不一致，请手动重试",
@@ -770,6 +773,48 @@ mod tests {
         let json = serde_json::to_value(status).unwrap();
         assert!(json.get("message").is_some());
         assert!(json.get("statusMessage").is_none());
+    }
+
+    #[test]
+    fn http_fallback_status_keeps_the_saved_websocket_choice() {
+        let status = sanitize_status(
+            RawStatusLine {
+                version: 1,
+                phase: "reporting".into(),
+                message_code: "http_fallback".into(),
+                live_output_tps: 0.0,
+                estimated_share: 0.5,
+                last_report_at: Some("2026-10-26T00:00:00Z".into()),
+                sources: Vec::new(),
+                profile_url: None,
+            },
+            "TokenBar-a1b2",
+            AgentSpeedReportingTransport::Websocket,
+        )
+        .unwrap();
+
+        assert_eq!(status.transport, AgentSpeedReportingTransport::Websocket);
+        assert_eq!(status.phase, "running");
+        assert_eq!(status.status_message, "WebSocket 连接中断，本次运行改用 HTTP");
+        assert_eq!(status.last_report_at.as_deref(), Some("2026-10-26T00:00:00Z"));
+
+        let waiting = sanitize_status(
+            RawStatusLine {
+                version: 1,
+                phase: "waiting_for_activity".into(),
+                message_code: "websocket_waiting_for_activity".into(),
+                live_output_tps: 0.0,
+                estimated_share: 0.0,
+                last_report_at: None,
+                sources: Vec::new(),
+                profile_url: None,
+            },
+            "TokenBar-a1b2",
+            AgentSpeedReportingTransport::Websocket,
+        )
+        .unwrap();
+        assert_eq!(waiting.phase, "waiting_for_activity");
+        assert_eq!(waiting.status_message, "设备已注册，正在等待活动");
     }
 
     #[test]

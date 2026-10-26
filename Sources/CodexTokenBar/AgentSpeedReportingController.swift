@@ -41,6 +41,8 @@ final class AgentSpeedReportingController: ObservableObject {
     private let serviceAddress: String
     private let permittedAPI: String
     private let makeRealtimeMonitor: (SpeedStore) -> any AgentSpeedReportingMonitor
+    private let startWebSocket: (AgentSpeedWebSocket) -> Void
+    private(set) var usingHTTPFallback = false
     private var socket: AgentSpeedWebSocket?
     private var socketWindow: ReportWindow?
     private var socketSeq = 0
@@ -97,6 +99,7 @@ final class AgentSpeedReportingController: ObservableObject {
          monotonic: @escaping () -> Int64 = { Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000) },
          serviceURLOverride: String? = nil,
          apiURLOverride: String? = nil,
+         startWebSocket: @escaping (AgentSpeedWebSocket) -> Void = { $0.start() },
          makeRealtimeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)? = nil,
          makeMonitor: @escaping (SpeedStore) -> any AgentSpeedReportingMonitor = {
              AgentSpeedCore.LiveMonitor(store: $0, pricing: PriceBook())
@@ -104,6 +107,7 @@ final class AgentSpeedReportingController: ObservableObject {
         self.serviceAddress = serviceURLOverride ?? Self.serviceURL
         self.permittedAPI = apiURLOverride ?? Self.apiURL
         self.makeRealtimeMonitor = makeRealtimeMonitor ?? { AgentSpeedCore.LiveMonitor(store: $0, pricing: PriceBook(), realtimeEventMode: true) }
+        self.startWebSocket = startWebSocket
         self.transport = AgentSpeedReportingMode(rawValue: defaults.string(forKey: Self.transportKey) ?? "") ?? .http
         self.defaults = defaults
         self.api = ReportAPI(transport: transport, userAgent: Self.userAgent)
@@ -164,6 +168,7 @@ final class AgentSpeedReportingController: ObservableObject {
         if let listener { store.removeLiveListener(listener) }
         listener = nil
         run = nil; document = nil; signer = nil
+        usingHTTPFallback = false
         lastSample = ReportSample()
         liveOutputTps = 0; estimatedShare = 0; sources = []
         phase = "off"; message = "未参加 · 采集与上报已关闭"
@@ -254,9 +259,9 @@ final class AgentSpeedReportingController: ObservableObject {
 
     func receive(_ snapshot: SpeedSnapshot) {
         guard enabled, document != nil, signer != nil else { return }
-        if snapshot.state == .noSources { phase = "waiting"; message = "已参加 · 等待本地软件产生日志"; return }
+        if snapshot.state == .noSources { phase = "waiting"; message = usingHTTPFallback ? "已回退 HTTP · 等待本地软件产生日志" : "已参加 · 等待本地软件产生日志"; return }
         guard snapshot.state == .running else { return }
-        if phase == "waiting" { phase = "running"; message = "已参加 · 等待新的请求统计" }
+        if phase == "waiting" { phase = "running"; message = usingHTTPFallback ? "已回退 HTTP · 等待新的请求统计" : "已参加 · 等待新的请求统计" }
         // Refresh discovery daily; a fresh monitor/run baselines all prior counters.
         if Date().timeIntervalSince(discoveryAt) >= 86400 { retry(); return }
         let sample = ReportSample(snapshot: snapshot, traffic: .off)
@@ -268,13 +273,13 @@ final class AgentSpeedReportingController: ObservableObject {
                 Source(id: $0.kind.rawValue, name: Self.sourceName($0.kind), tps: $0.live.output)
             }
         }
-        if transport == .websocket {
+        if transport == .websocket && !usingHTTPFallback {
             receiveSocket(sample, observation: snapshot.readObservation)
             return
         }
         if run == nil, let document {
             run = Run(scheduler: ReportScheduler(limits: document.limits), window: ReportWindow(sample))
-            phase = "running"; message = "已参加 · 等待新的请求统计"
+            phase = "running"; message = usingHTTPFallback ? "已回退 HTTP · 等待新的请求统计" : "已参加 · 等待新的请求统计"
         }
         guard var run else { return }
         let now = monotonic()
@@ -290,7 +295,7 @@ final class AgentSpeedReportingController: ObservableObject {
         guard enabled else { return }
         socketFlush?.cancel(); socketFlush = nil
         socketWindow = nil; socketObservation = nil; socketLastSample = nil
-        if transport == .websocket { socket?.suspend(); monitor?.stop(); phase = "paused"; message = "已暂停 · 等待唤醒" }
+        if transport == .websocket && !usingHTTPFallback { socket?.suspend(); monitor?.stop(); phase = "paused"; message = "已暂停 · 等待唤醒" }
         else { delivery?.cancel(); delivery = nil; monitor?.stop(); run = nil }
     }
     private func resumeReporting() {
@@ -350,7 +355,18 @@ final class AgentSpeedReportingController: ObservableObject {
             if socketDiscoveryRefreshes >= 1 { fail("服务连接设置不一致，请手动重试"); return }
             socketDiscoveryRefreshes += 1; stopRuntime(); begin()
         }
-        socket.start()
+        socket.onTransportUnavailable = { [weak self, weak socket] in
+            guard let self, valid(token), !usingHTTPFallback else { return }
+            socket?.stop(); self.socket = nil
+            socketFlush?.cancel(); socketFlush = nil
+            socketWindow = nil; socketObservation = nil; socketLastSample = nil
+            // Start a fresh HTTP window on the next complete snapshot. Never replay
+            // WS windows whose acceptance is unknown, or seed historical counters.
+            run = nil
+            usingHTTPFallback = true
+            phase = "waiting"; message = "WebSocket 连接中断 · 已回退 HTTP，等待新数据"
+        }
+        startWebSocket(socket)
     }
     private func receiveSocket(_ sample: ReportSample, observation: SourceReadObservation?) {
         guard let socket else { return }
@@ -454,8 +470,8 @@ final class AgentSpeedReportingController: ObservableObject {
             let result = await request(endpoint: ReportEndpoint.reports, body: body, signer: signer)
             guard valid(token), self.run?.id == runID else { return }
             let (outcome, reaction) = ReportOutcome.classify(result, hasPendingKey: false)
-            if case .delivered = outcome { lastReportAt = Date(); message = "已参加 · 统计已上报" }
-            else if case .transient = outcome { message = "连接暂不可用 · 将自动重试" }
+            if case .delivered = outcome { lastReportAt = Date(); message = usingHTTPFallback ? "已回退 HTTP · 统计已上报" : "已参加 · 统计已上报" }
+            else if case .transient = outcome { message = usingHTTPFallback ? "已回退 HTTP · 网络暂不可用，将自动重试" : "连接暂不可用 · 将自动重试" }
             else if case .rateLimited = outcome { message = "服务限流 · 已暂停并等待重试" }
             let actions = self.run?.scheduler.finish(ticket, outcome, at: monotonic()) ?? []
             apply(actions, sample: lastSample)

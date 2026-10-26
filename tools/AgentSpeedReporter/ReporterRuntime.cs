@@ -69,6 +69,13 @@ internal static class ReporterRuntime
 
     private sealed record WebSocketExit(int? RetryAfterSeconds = null, bool Quiet = false);
 
+    private sealed record WebSocketRunResult(
+        bool FallbackToHttp,
+        ReportSample Sample,
+        ReportDiscovery Discovery,
+        PersistedIdentity Identity,
+        long ClockCorrection);
+
     public static async Task RunAsync(string username, string transportChoice, StatusEmitter status, CancellationToken cancellationToken)
     {
         if (ReporterTransportChoice.StartFailure(transportChoice, supportsWebSocket: true) is { } selectionFailure)
@@ -86,7 +93,6 @@ internal static class ReporterRuntime
             "waiting_for_snapshot", "waiting_for_snapshot", ReportSample.Empty, null, null), cancellationToken).ConfigureAwait(false);
         var readySnapshot = await WaitForReadySnapshotAsync(snapshots, cancellationToken).ConfigureAwait(false);
         var sample = ReportSample.From(readySnapshot, ReportTrafficSample.Off);
-        var window = new ReportWindow(sample); // The first complete monitor snapshot is a baseline, never an upload seed.
 
         using var transport = new HttpReportTransport();
         var api = new ReportApi(transport, Client.UserAgent);
@@ -156,7 +162,7 @@ internal static class ReporterRuntime
 
             if (ReporterTransportChoice.UsesWebSocket(transportChoice))
             {
-                await RunWebSocketAsync(
+                var websocketResult = await RunWebSocketAsync(
                     snapshots,
                     sample,
                     status,
@@ -168,224 +174,264 @@ internal static class ReporterRuntime
                     username,
                     clockCorrection,
                     cancellationToken).ConfigureAwait(false);
+                if (!websocketResult.FallbackToHttp)
+                {
+                    return;
+                }
+
+                sample = websocketResult.Sample;
+                discovery = websocketResult.Discovery;
+                identity = websocketResult.Identity;
+                clockCorrection = websocketResult.ClockCorrection;
+                sections = discovery.Sections.Where(AllowedSections.Contains).ToHashSet();
+                await RunHttpAsync(snapshots, sample, sections, status, api, discovery, identity, signer,
+                    keyStore, username, clockCorrection, fallbackOccurred: true, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
-            var lastReportAt = (DateTimeOffset?)null;
-            var strikes = 0;
-            var scheduler = new ReportScheduler(discovery.Limits);
-            var titleTracker = new ReportTitleTracker();
-            var runId = ReportCanonical.NewUuid();
-            var bodies = new Dictionary<int, byte[]>();
-            Task<ReportCallResult>? pendingCall = null;
-            ReportTicket? pendingTicket = null;
-            var reportOptions = new ReportOptions(
-                sections,
-                MaxModels: discovery.Limits.MaxModels,
-                BodyLimit: discovery.Limits.SendLimitBytes,
-                Metric: SpeedMetric.Output, PriceVersion: PriceBook.Bundled.Version)
-            {
-                // Keep parity with the native client for negotiated model-level statistics only.
-                // Traffic, profile, identity, and avatar extensions remain disabled.
-                Extensions = new ReportExtensions(
-                    ModelHarnessRequests: discovery.Extensions.ModelHarnessRequests,
-                    ExecutionModes: discovery.Extensions.ExecutionModes),
-            };
-            var reportUrl = discovery.Api.Endpoint(ReportEndpoint.Reports);
-
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                using (var shortWait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-                {
-                    shortWait.CancelAfter(TimeSpan.FromMilliseconds(250));
-                    try
-                    {
-                        _ = await snapshots.WaitToReadAsync(shortWait.Token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                    {
-                    }
-                }
-
-                var sampleChanged = false;
-                while (snapshots.TryRead(out var latest))
-                {
-                    if (latest.State.Kind == MonitorStateKind.Starting)
-                    {
-                        continue;
-                    }
-
-                    sample = ReportSample.From(latest, ReportTrafficSample.Off);
-                    sampleChanged = true;
-                }
-
-                if (pendingCall is { IsCompleted: true } completed && pendingTicket is { } ticket)
-                {
-                    ReportCallResult result;
-                    try
-                    {
-                        result = await completed.ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-
-                    pendingCall = null;
-                    pendingTicket = null;
-                    var (outcome, reaction) = ReportOutcome.Classify(result.Reply, hasPendingKey: false);
-                    Apply(scheduler.Finish(ticket, outcome, MonotonicMs()), sample);
-                    if (result.Reply?.IsSuccess == true)
-                    {
-                        lastReportAt = DateTimeOffset.UtcNow;
-                        strikes = 0;
-                        var profile = SafeProfileUrl(result.Reply.ProfileUrl);
-                        if (profile is not null && profile != identity.ProfileUrl)
-                        {
-                            identity = identity with { ProfileUrl = profile };
-                            keyStore.WriteIdentity(identity);
-                        }
-                    }
-
-                    switch (reaction)
-                    {
-                        case ReportReaction.CorrectClock correction:
-                            if (correction.ServerTime is { } serverTime)
-                            {
-                                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                                if (serverTime >= now - 86_400 && serverTime <= now + 86_400)
-                                {
-                                    clockCorrection = serverTime - now;
-                                }
-                            }
-
-                            break;
-                        case ReportReaction.ReRegister:
-                        case ReportReaction.RecheckRegistration:
-                            await status.PublishAsync(Status("registering", "registering", sample, lastReportAt, identity.ProfileUrl), cancellationToken)
-                                .ConfigureAwait(false);
-                            var registration = await RegisterAsync(api, discovery, identity, signer, keyStore, username,
-                                clockCorrection, cancellationToken).ConfigureAwait(false);
-                            identity = registration.Identity;
-                            clockCorrection = registration.ClockCorrection;
-                            runId = ReportCanonical.NewUuid();
-                            scheduler = new ReportScheduler(discovery.Limits);
-                            window = new ReportWindow(sample);
-                            titleTracker = new ReportTitleTracker();
-                            bodies.Clear();
-                            break;
-                        case ReportReaction.Rename:
-                            identity = await RenameAsync(api, discovery, identity, signer, keyStore, username, cancellationToken)
-                                .ConfigureAwait(false);
-                            break;
-                        case ReportReaction.RefreshDiscovery refresh:
-                            if (refresh.Upgrade)
-                            {
-                                throw new ReporterFailure("service_unsupported");
-                            }
-
-                            discovery = await DiscoverAsync(api, cancellationToken).ConfigureAwait(false);
-                            scheduler.Update(discovery.Limits);
-                            break;
-                        case ReportReaction.NewRun:
-                            runId = ReportCanonical.NewUuid();
-                            scheduler = new ReportScheduler(discovery.Limits);
-                            window = new ReportWindow(sample);
-                            titleTracker = new ReportTitleTracker();
-                            bodies.Clear();
-                            break;
-                        case ReportReaction.NeedsUser user:
-                            throw new ReporterFailure(user.Problem switch
-                            {
-                                ReportProblem.ApiKey => "api_key_required",
-                                ReportProblem.UsernameTaken => "username_taken",
-                                ReportProblem.UsernameRejected => "username_invalid",
-                                ReportProblem.Forbidden => "forbidden",
-                                _ => "reporting_failed",
-                            });
-                        case ReportReaction.Strike:
-                            if (++strikes >= 3)
-                            {
-                                throw new ReporterFailure("reporting_failed");
-                            }
-
-                            break;
-                    }
-
-                }
-
-                var active = sample.IsWorking || sample.Live.Output > 0 || window.HasTokenIncrement(sample);
-                var nowMs = MonotonicMs();
-                titleTracker.Update(sample.Live.Output, reportOptions.Redline, nowMs / 1000.0);
-                Apply(scheduler.Tick(nowMs, active, blocked: false), sample);
-
-                if (sampleChanged || DateTimeOffset.UtcNow.Second % 2 == 0)
-                {
-                    await status.PublishAsync(Status("reporting", "reporting", sample, lastReportAt, identity.ProfileUrl), cancellationToken)
-                        .ConfigureAwait(false);
-                }
-            }
-
-            void Apply(IReadOnlyList<ReportAction> actions, ReportSample current)
-            {
-                var windowChanged = false;
-                foreach (var action in actions)
-                {
-                    switch (action)
-                    {
-                        case ReportAction.Discard discard:
-                            window.Discard(current, discard.KeepingTick);
-                            windowChanged = true;
-                            break;
-                        case ReportAction.Build build:
-                            var content = window.Take(current);
-                            windowChanged = true;
-                            var envelope = new ReportEnvelope(
-                                Client,
-                                identity.DeviceId,
-                                identity.RegisteredUsername ?? username,
-                                runId,
-                                build.Ticket.Seq,
-                                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + clockCorrection * 1000,
-                                build.Ticket.WindowMs,
-                                build.Ticket.Activity,
-                                TitleLevel: titleTracker.Level);
-                            var body = ReportBody.Data(envelope, content, current, reportOptions);
-                            if (!ReportPayloadWhitelist.IsAllowed(body))
-                            {
-                                throw new ReporterFailure("reporting_failed");
-                            }
-
-                            bodies[build.Ticket.Seq] = body;
-                            break;
-                        case ReportAction.Send send:
-                            if (pendingCall is not null || !bodies.TryGetValue(send.Ticket.Seq, out var queuedBody))
-                            {
-                                throw new ReporterFailure("reporting_failed");
-                            }
-
-                            var builder = new ReportRequestBuilder(Client.UserAgent, identity.DeviceId, ApiKey: null);
-                            var request = builder.Make(
-                                "POST", reportUrl, queuedBody, signer,
-                                DateTimeOffset.UtcNow.ToUnixTimeSeconds() + clockCorrection);
-                            pendingTicket = send.Ticket;
-                            pendingCall = api.CallAsync(request, cancellationToken);
-                            break;
-                        case ReportAction.Delivered delivered:
-                            bodies.Remove(delivered.Ticket.Seq);
-                            break;
-                        case ReportAction.Lost lost:
-                            bodies.Remove(lost.Ticket.Seq);
-                            break;
-                    }
-                }
-
-                window.Observe(current, peaks: !windowChanged);
-            }
+            await RunHttpAsync(snapshots, sample, sections, status, api, discovery, identity, signer,
+                keyStore, username, clockCorrection, fallbackOccurred: false, cancellationToken).ConfigureAwait(false);
+            return;
         }
     }
 
-    private static async Task RunWebSocketAsync(
+    private static async Task RunHttpAsync(
+        ChannelReader<SpeedSnapshot> snapshots,
+        ReportSample sample,
+        HashSet<ReportSection> sections,
+        StatusEmitter status,
+        ReportApi api,
+        ReportDiscovery discovery,
+        PersistedIdentity identity,
+        SoftwareReportSigner signer,
+        DpapiReportKeyStore keyStore,
+        string username,
+        long initialClockCorrection,
+        bool fallbackOccurred,
+        CancellationToken cancellationToken)
+    {
+        var window = new ReportWindow(sample);
+        var clockCorrection = initialClockCorrection;
+        var lastReportAt = (DateTimeOffset?)null;
+        var strikes = 0;
+        var scheduler = new ReportScheduler(discovery.Limits);
+        var titleTracker = new ReportTitleTracker();
+        var runId = ReportCanonical.NewUuid();
+        var bodies = new Dictionary<int, byte[]>();
+        Task<ReportCallResult>? pendingCall = null;
+        ReportTicket? pendingTicket = null;
+        var reportOptions = new ReportOptions(
+            sections,
+            MaxModels: discovery.Limits.MaxModels,
+            BodyLimit: discovery.Limits.SendLimitBytes,
+            Metric: SpeedMetric.Output, PriceVersion: PriceBook.Bundled.Version)
+        {
+            // Keep parity with the native client for negotiated model-level statistics only.
+            // Traffic, profile, identity, and avatar extensions remain disabled.
+            Extensions = new ReportExtensions(
+                ModelHarnessRequests: discovery.Extensions.ModelHarnessRequests,
+                ExecutionModes: discovery.Extensions.ExecutionModes),
+        };
+        var reportUrl = discovery.Api.Endpoint(ReportEndpoint.Reports);
+
+        if (fallbackOccurred)
+        {
+            await PublishStatusAsync("reporting", "http_fallback").ConfigureAwait(false);
+        }
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            using (var shortWait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                shortWait.CancelAfter(TimeSpan.FromMilliseconds(250));
+                try
+                {
+                    _ = await snapshots.WaitToReadAsync(shortWait.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                }
+            }
+
+            var sampleChanged = false;
+            while (snapshots.TryRead(out var latest))
+            {
+                if (latest.State.Kind == MonitorStateKind.Starting)
+                {
+                    continue;
+                }
+
+                sample = ReportSample.From(latest, ReportTrafficSample.Off);
+                sampleChanged = true;
+            }
+
+            if (pendingCall is { IsCompleted: true } completed && pendingTicket is { } ticket)
+            {
+                ReportCallResult result;
+                try
+                {
+                    result = await completed.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                pendingCall = null;
+                pendingTicket = null;
+                var (outcome, reaction) = ReportOutcome.Classify(result.Reply, hasPendingKey: false);
+                Apply(scheduler.Finish(ticket, outcome, MonotonicMs()), sample);
+                if (result.Reply?.IsSuccess == true)
+                {
+                    lastReportAt = DateTimeOffset.UtcNow;
+                    strikes = 0;
+                    var profile = SafeProfileUrl(result.Reply.ProfileUrl);
+                    if (profile is not null && profile != identity.ProfileUrl)
+                    {
+                        identity = identity with { ProfileUrl = profile };
+                        keyStore.WriteIdentity(identity);
+                    }
+                }
+
+                switch (reaction)
+                {
+                    case ReportReaction.CorrectClock correction:
+                        if (correction.ServerTime is { } serverTime)
+                        {
+                            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                            if (serverTime >= now - 86_400 && serverTime <= now + 86_400)
+                            {
+                                clockCorrection = serverTime - now;
+                            }
+                        }
+
+                        break;
+                    case ReportReaction.ReRegister:
+                    case ReportReaction.RecheckRegistration:
+                        await PublishStatusAsync("registering", "registering").ConfigureAwait(false);
+                        var registration = await RegisterAsync(api, discovery, identity, signer, keyStore, username,
+                            clockCorrection, cancellationToken).ConfigureAwait(false);
+                        identity = registration.Identity;
+                        clockCorrection = registration.ClockCorrection;
+                        runId = ReportCanonical.NewUuid();
+                        scheduler = new ReportScheduler(discovery.Limits);
+                        window = new ReportWindow(sample);
+                        titleTracker = new ReportTitleTracker();
+                        bodies.Clear();
+                        break;
+                    case ReportReaction.Rename:
+                        identity = await RenameAsync(api, discovery, identity, signer, keyStore, username, cancellationToken)
+                            .ConfigureAwait(false);
+                        break;
+                    case ReportReaction.RefreshDiscovery refresh:
+                        if (refresh.Upgrade)
+                        {
+                            throw new ReporterFailure("service_unsupported");
+                        }
+
+                        discovery = await DiscoverAsync(api, cancellationToken).ConfigureAwait(false);
+                        scheduler.Update(discovery.Limits);
+                        break;
+                    case ReportReaction.NewRun:
+                        runId = ReportCanonical.NewUuid();
+                        scheduler = new ReportScheduler(discovery.Limits);
+                        window = new ReportWindow(sample);
+                        titleTracker = new ReportTitleTracker();
+                        bodies.Clear();
+                        break;
+                    case ReportReaction.NeedsUser user:
+                        throw new ReporterFailure(user.Problem switch
+                        {
+                            ReportProblem.ApiKey => "api_key_required",
+                            ReportProblem.UsernameTaken => "username_taken",
+                            ReportProblem.UsernameRejected => "username_invalid",
+                            ReportProblem.Forbidden => "forbidden",
+                            _ => "reporting_failed",
+                        });
+                    case ReportReaction.Strike:
+                        if (++strikes >= 3)
+                        {
+                            throw new ReporterFailure("reporting_failed");
+                        }
+
+                        break;
+                }
+
+            }
+
+            var active = sample.IsWorking || sample.Live.Output > 0 || window.HasTokenIncrement(sample);
+            var nowMs = MonotonicMs();
+            titleTracker.Update(sample.Live.Output, reportOptions.Redline, nowMs / 1000.0);
+            Apply(scheduler.Tick(nowMs, active, blocked: false), sample);
+
+            if (sampleChanged || DateTimeOffset.UtcNow.Second % 2 == 0)
+            {
+                await PublishStatusAsync("reporting", "reporting").ConfigureAwait(false);
+            }
+        }
+
+        void Apply(IReadOnlyList<ReportAction> actions, ReportSample current)
+        {
+            var windowChanged = false;
+            foreach (var action in actions)
+            {
+                switch (action)
+                {
+                    case ReportAction.Discard discard:
+                        window.Discard(current, discard.KeepingTick);
+                        windowChanged = true;
+                        break;
+                    case ReportAction.Build build:
+                        var content = window.Take(current);
+                        windowChanged = true;
+                        var envelope = new ReportEnvelope(
+                            Client,
+                            identity.DeviceId,
+                            identity.RegisteredUsername ?? username,
+                            runId,
+                            build.Ticket.Seq,
+                            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + clockCorrection * 1000,
+                            build.Ticket.WindowMs,
+                            build.Ticket.Activity,
+                            TitleLevel: titleTracker.Level);
+                        var body = ReportBody.Data(envelope, content, current, reportOptions);
+                        if (!ReportPayloadWhitelist.IsAllowed(body))
+                        {
+                            throw new ReporterFailure("reporting_failed");
+                        }
+
+                        bodies[build.Ticket.Seq] = body;
+                        break;
+                    case ReportAction.Send send:
+                        if (pendingCall is not null || !bodies.TryGetValue(send.Ticket.Seq, out var queuedBody))
+                        {
+                            throw new ReporterFailure("reporting_failed");
+                        }
+
+                        var builder = new ReportRequestBuilder(Client.UserAgent, identity.DeviceId, ApiKey: null);
+                        var request = builder.Make(
+                            "POST", reportUrl, queuedBody, signer,
+                            DateTimeOffset.UtcNow.ToUnixTimeSeconds() + clockCorrection);
+                        pendingTicket = send.Ticket;
+                        pendingCall = api.CallAsync(request, cancellationToken);
+                        break;
+                    case ReportAction.Delivered delivered:
+                        bodies.Remove(delivered.Ticket.Seq);
+                        break;
+                    case ReportAction.Lost lost:
+                        bodies.Remove(lost.Ticket.Seq);
+                        break;
+                }
+            }
+
+            window.Observe(current, peaks: !windowChanged);
+        }
+        Task PublishStatusAsync(string phase, string code) =>
+            status.PublishAsync(Status(phase, HttpFallbackStatus.MessageCode(fallbackOccurred, code),
+                sample, lastReportAt, identity.ProfileUrl), cancellationToken);
+    }
+
+    private static async Task<WebSocketRunResult> RunWebSocketAsync(
         ChannelReader<SpeedSnapshot> snapshots,
         ReportSample initialSample,
         StatusEmitter status,
@@ -412,9 +458,14 @@ internal static class ReporterRuntime
         while (!cancellationToken.IsCancellationRequested)
         {
             DrainSnapshotsAndRebaseline(snapshots, state);
+            await status.PublishAsync(Status(
+                "waiting_for_activity", "websocket_waiting_for_activity", state.Sample, state.LastReportAt, state.Identity.ProfileUrl),
+                cancellationToken).ConfigureAwait(false);
             await WaitForWebSocketActivityAsync(snapshots, state, cancellationToken).ConfigureAwait(false);
             DrainSnapshotsAndRebaseline(snapshots, state);
             ReportWebSocketSession? session = null;
+            var connectStartedAt = DateTimeOffset.UtcNow;
+            var connectStartedTimestamp = Stopwatch.GetTimestamp();
             try
             {
                 var negotiationAttempts = 0;
@@ -581,6 +632,21 @@ internal static class ReporterRuntime
                     }
                 }
 
+                var sleepResumeDetected = WebSocketSleepResume.IsDetected(
+                    DateTimeOffset.UtcNow - connectStartedAt,
+                    Stopwatch.GetElapsedTime(connectStartedTimestamp),
+                    TimeSpan.FromSeconds((state.Discovery.WebSocket?.PingIntervalSeconds ?? 30) * 2));
+                if (WebSocketFallbackPolicy.ShouldFallbackToHttp(
+                    error, cancellationToken.IsCancellationRequested, retryAfterSeconds, sleepResumeDetected))
+                {
+                    DrainSnapshotsAndRebaseline(snapshots, state);
+                    state.ResetWindow();
+                    await status.PublishAsync(Status(
+                        "reporting", "http_fallback", state.Sample, state.LastReportAt, state.Identity.ProfileUrl), cancellationToken)
+                        .ConfigureAwait(false);
+                    return new WebSocketRunResult(true, state.Sample, state.Discovery, state.Identity, state.ClockCorrection);
+                }
+
                 state.ResetWindow(); // Drop unacknowledged work and source timing on reconnect.
                 failures = Math.Min(failures + 1, 6);
                 await status.PublishAsync(Status(
@@ -601,6 +667,8 @@ internal static class ReporterRuntime
             await Task.Delay(TimeSpan.FromMilliseconds(delayMs), cancellationToken).ConfigureAwait(false);
             state.ResetWindow();
         }
+
+        return new WebSocketRunResult(false, state.Sample, state.Discovery, state.Identity, state.ClockCorrection);
     }
 
     private static async Task<WebSocketExit> RunConnectedWebSocketAsync(
