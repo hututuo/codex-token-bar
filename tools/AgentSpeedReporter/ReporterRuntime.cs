@@ -21,8 +21,14 @@ internal static class ReporterRuntime
     private static readonly ReportClientInfo Client = ReportClientInfo.Windows(ClientVersion);
     private static readonly HashSet<ReportSection> AllowedSections = [ReportSection.Sources, ReportSection.Models];
 
-    public static async Task RunAsync(string username, StatusEmitter status, CancellationToken cancellationToken)
+    public static async Task RunAsync(StartCommand start, StatusEmitter status, CancellationToken cancellationToken)
     {
+        if (!AgentSpeedReportSourcePolicy.HasRequiredDenyList(start.DeniedSourceIds))
+        {
+            throw new ReporterFailure("service_unsupported");
+        }
+
+        var username = start.Username;
         var snapshots = Channel.CreateBounded<SpeedSnapshot>(new BoundedChannelOptions(1)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
@@ -32,7 +38,7 @@ internal static class ReporterRuntime
         });
         var hub = new SpeedHub(context: null);
         hub.LivePublished += (_, snapshot) => snapshots.Writer.TryWrite(snapshot);
-        using var monitor = new LiveMonitor(hub);
+        using var monitor = new LiveMonitor(hub, new MonitorConfiguration(AgentSpeedReportSourcePolicy.ReportableSources));
         monitor.Start();
 
         await status.PublishAsync(Status(
@@ -295,10 +301,19 @@ internal static class ReporterRuntime
                                 throw new ReporterFailure("reporting_failed");
                             }
 
+                            if (!ReportPayloadWhitelist.IsAllowed(queuedBody))
+                            {
+                                throw new ReporterFailure("reporting_failed");
+                            }
+
                             var builder = new ReportRequestBuilder(Client.UserAgent, identity.DeviceId, ApiKey: null);
                             var request = builder.Make(
                                 "POST", reportUrl, queuedBody, signer,
                                 DateTimeOffset.UtcNow.ToUnixTimeSeconds() + clockCorrection);
+                            if (!ReportPayloadWhitelist.IsAllowed(request.Body))
+                            {
+                                throw new ReporterFailure("reporting_failed");
+                            }
                             pendingTicket = send.Ticket;
                             pendingCall = api.CallAsync(request, cancellationToken);
                             break;

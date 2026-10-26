@@ -64,11 +64,12 @@ enum QuotaSidebarItem: Hashable, Identifiable, Sendable {
         }
     }
 
-    var hasCompactRepresentation: Bool {
-        switch self { case .speed, .quota, .models, .tasks: true; default: false }
+    var hasCompactRepresentation: Bool { true }
+    var usesCompactDot: Bool {
+        switch self { case .speed, .quota, .models, .tasks: false; default: true }
     }
     var requiresCodexLiveData: Bool {
-        switch self { case .speed, .models, .tasks: true; default: false }
+        switch self { case .speed, .tasks: true; default: false }
     }
 
     static let defaults: [Self] = [.modeltrace, .speed, .tps, .quota("codex"), .quota("claudeCode"), .models, .tasks, .radar, .credits, .clientUsage]
@@ -188,8 +189,7 @@ enum QuotaSidebarContentOrder {
         items.flatMap { item -> [String] in
             switch item {
             case let .quota(client): quotaWindows(quotas, client: client).map(\.id)
-            case .speed, .models, .tasks: [item.id]
-            default: []
+            default: [item.id]
             }
         }
     }

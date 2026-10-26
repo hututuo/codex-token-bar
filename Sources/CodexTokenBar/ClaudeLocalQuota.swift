@@ -1,6 +1,6 @@
 import Foundation
 
-/// Reads an already-installed Claude-Code-Usage-Monitor statusline capture.
+/// Reads app-owned statusline capture first, then a pre-existing monitor cache.
 /// Does not install a hook, launch Claude, read credentials or perform network requests.
 struct ClaudeLocalQuota: Equatable, Sendable {
     struct Window: Equatable, Sendable {
@@ -13,13 +13,20 @@ struct ClaudeLocalQuota: Equatable, Sendable {
     let sevenDay: Window?
     static let missing = Self(state: "missing", capturedAt: nil, fiveHour: nil, sevenDay: nil)
     static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> Self {
-        let url = home.appendingPathComponent(".claude-monitor/statusline/latest.json")
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return .missing }
-        guard attributes[.type] as? FileAttributeType == .typeRegular,
-              let size = attributes[.size] as? NSNumber, size.intValue <= 65_536,
-              let data = try? Data(contentsOf: url) else { return Self(state: "invalid", capturedAt: nil, fiveHour: nil, sevenDay: nil) }
-        return decode(data, now: now)
+        let candidates = [home.appendingPathComponent("Library/Application Support/CodexTokenBar/claude-local-statusline/latest.json"),
+                          home.appendingPathComponent(".claude-monitor/statusline/latest.json")]
+        for url in candidates {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { continue }
+            guard attributes[.type] as? FileAttributeType == .typeRegular,
+                  let size = attributes[.size] as? NSNumber, size.intValue <= 65_536,
+                  let data = try? Data(contentsOf: url) else { return Self(state: "invalid", capturedAt: nil, fiveHour: nil, sevenDay: nil) }
+            // A stale/invalid app capture must not silently display an older
+            // account's legacy cache as if it were current.
+            return decode(data, now: now)
+        }
+        return .missing
     }
+
     static func decode(_ data: Data, now: Date) -> Self {
         func empty(_ state: String, captured: Date? = nil) -> Self { Self(state: state, capturedAt: captured, fiveHour: nil, sevenDay: nil) }
         guard data.count <= 65_536, let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

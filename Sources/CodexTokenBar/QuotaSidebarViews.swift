@@ -136,7 +136,10 @@ struct QuotaSidebarCompactBars: View {
                         }
                     case .models:
                         SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: layout.barHeight)
-                    default: EmptyView()
+                    default:
+                        Circle().fill(SidebarPalette.green.opacity(0.8)).frame(width: 6, height: 6)
+                            .help(item.title).accessibilityLabel(item.title)
+                            .accessibilityIdentifier("sidebar-dot-" + item.id)
                     }
                 }.overlay {
                     Capsule().stroke(SidebarPalette.green.opacity(highlightedItem == item ? 0.85 : 0), lineWidth: 1).padding(.horizontal, -3)
@@ -168,10 +171,17 @@ struct QuotaSidebarRail: View {
     @AppStorage("cacheHitAdviceEnabled") private var cacheRemindersEnabled = true
     @AppStorage("cacheHitAdviceDismissed") private var dismissedCacheAdviceID = ""
     @ObservedObject private var clients = MultiClientUsageStore.shared
+    @ObservedObject private var claudeRuntime = ClaudeLocalRuntime.shared
     @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
     @AppStorage(ClientQuotaSelection.key) private var quotaSelectionRaw = ""
     private var quotaSelection: ClientQuotaSelection { .decode(quotaSelectionRaw) }
     private var supportsCodex: Bool { clientScope == "codex" || clientScope == "all" }
+    private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
+    private var localLive: ClaudeLocalRuntimeSnapshot { claudeRuntime.projection(allowed: allowedClients) }
+    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: localLive.modelRates, allowed: allowedClients) }
+    private var liveRate: Double { liveRates.reduce(0) { $0 + $1.tokensPerSecond } }
+    private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: allowedClients) }
+    private var selectedModelRows: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
     private var availableQuotaItems: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride }
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
@@ -182,7 +192,7 @@ struct QuotaSidebarRail: View {
     }
     private var sidebarItems: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: availableQuotaItems.map(\.client))
-            .filter { supportsCodex || !$0.requiresCodexLiveData }
+            .filter { supportsCodex || localLive.enabled || !$0.requiresCodexLiveData }
     }
     private var compactItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .compact) } }
     private var expandedItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .expanded) } }
@@ -194,7 +204,7 @@ struct QuotaSidebarRail: View {
     }
     private func railLayout(_ height: CGFloat) -> ClientRailLayout {
         .fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: compactItems, quotas: quotaItems).count,
-               availableHeight: Double(height))
+               dotCount: compactItems.filter(\.usesCompactDot).count, availableHeight: Double(height))
     }
     @StateObject private var morphRegistry = MatchedStrokeMorphRegistry()
     @State private var shares: [FloatingTodayModelUsageItem] = []
@@ -235,7 +245,7 @@ struct QuotaSidebarRail: View {
             guard viewport?.contains(ring) != false else { continue }
             if item == .speed {
                 var edge = 0.0
-                let segments = ModelRatePresentation.slices(monitor.totalSnapshot.modelRates).map { slice in
+                let segments = ModelRatePresentation.slices(liveRates).map { slice in
                     let start = edge; edge += slice.share
                     return ClientQuotaMorphColorSegment(id: "model:" + slice.model, start: start, end: edge, color: NSColor(slice.color))
                 }
@@ -333,8 +343,8 @@ struct QuotaSidebarRail: View {
                     let layout = railLayout(geometry.size.height)
                     ScrollView(.vertical) {
                         QuotaSidebarCompactBars(items: compactItems, quotas: quotaItems, layout: layout,
-                            rateFraction: clientScope == "codex" || clientScope == "all" ? Double(rateFraction) : nil,
-                            modelRates: monitor.totalSnapshot.modelRates, shares: shares, taskStateLabel: "任务状态：" + runningText + "，非进度百分比", colors: quotaSelection.colors,
+                            rateFraction: Double(rateFraction),
+                            modelRates: liveRates, shares: shares, taskStateLabel: "任务状态：" + runningText + "，非进度百分比", colors: quotaSelection.colors,
                             usesMorphAnchors: true)
                             .frame(minHeight: geometry.size.height)
                     }.scrollIndicators(.hidden)
@@ -365,7 +375,7 @@ struct QuotaSidebarRail: View {
                     routes: morphRoutes(anchors, in: proxy))
             }.allowsHitTesting(false).accessibilityHidden(true)
         }
-        .onChange(of: store.todayModelBreakdowns, initial: true) { _, rows in
+        .onChange(of: selectedModelRows, initial: true) { _, rows in
             shares = FloatingTodayModelUsagePresentation.items(from: rows,
                 fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         }
@@ -393,8 +403,9 @@ struct QuotaSidebarRail: View {
         case .tps:
             if supportsCodex {
                 QuotaSidebarBodySpeedReadings(monitor: monitor, onOpen: { controller.select(.speeds) })
-            } else {
-                Button { controller.select(.speeds) } label: { Text("正文 TPS\n暂无样本").font(.system(size: 10)).foregroundStyle(.gray).frame(width: 74, height: 48) }.buttonStyle(.plain)
+            }
+            if !allowedClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) {
+                Button { controller.select(.speeds) } label: { ClaudeLocalSpeedCompact(allowed: allowedClients).frame(width: 74, height: 48) }.buttonStyle(.plain)
             }
         case .clientUsage:
             VStack(spacing: 5) {
@@ -429,7 +440,7 @@ struct QuotaSidebarRail: View {
                         MatchedStrokeMorphParticipant(ids: ["tasks"], size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
                             Circle().stroke(SidebarPalette.amber.opacity(0.5), lineWidth: 3)
                         }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["ring:tasks": $0] }
-                        Text(tasks.runningThreadSummary.freshness == .fresh ? "\(tasks.runningThreadSummary.total)" : "—").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(SidebarPalette.amber)
+                        Text(runningSummary.freshness == .fresh ? "\(runningSummary.total)" : "—").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(SidebarPalette.amber)
                     }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                     Text(runningText).font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
                         .contentTransition(.numericText())
@@ -441,7 +452,7 @@ struct QuotaSidebarRail: View {
                 .contentShape(Rectangle())
             }.buttonStyle(SidebarPulseButtonStyle())
                 .accessibilityLabel("查看任务，\(runningText)")
-                .help("Codex 主任务与子 Agent；其他客户端尚未接入任务计数")
+                .help("所选客户端的本地主任务与子 Agent；过期活动标记为未知")
                 .accessibilityIdentifier("quota-sidebar-tasks")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { controller.select(.tasks) }
@@ -544,7 +555,7 @@ struct QuotaSidebarRail: View {
             VStack(spacing: 5) {
                 ZStack {
                     MatchedStrokeMorphParticipant(ids: ["speed"], size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
-                        SidebarValueRing(fraction: rateFraction, color: SidebarPalette.blue, modelRates: monitor.totalSnapshot.modelRates)
+                        SidebarValueRing(fraction: rateFraction, color: SidebarPalette.blue, modelRates: liveRates)
                     }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["ring:speed": $0] }
                     Text("速率").font(.system(size: 11))
                 }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
@@ -563,18 +574,18 @@ struct QuotaSidebarRail: View {
     }
 
     private var rateFraction: CGFloat {
-        CGFloat(QuotaSidebarRatePresentation.fraction(rate: monitor.totalSnapshot.rollingTokensPerSecond,
-            fullScale: fullScale, available: monitor.monitoringEnabled && monitor.dataSource != nil))
+        CGFloat(QuotaSidebarRatePresentation.fraction(rate: liveRate,
+            fullScale: fullScale, available: (supportsCodex && monitor.monitoringEnabled && monitor.dataSource != nil) || localLive.sourceAvailable))
     }
 
     private var rateText: String {
-        guard monitor.monitoringEnabled else { return "已关闭" }
-        guard monitor.dataSource != nil, monitor.totalSnapshot.rollingTokensPerSecond.isFinite else { return "待读取" }
-        return "\(monitor.totalSnapshot.rollingTokensPerSecondText) tok/s"
+        guard monitor.monitoringEnabled || localLive.enabled else { return "已关闭" }
+        guard (supportsCodex && monitor.dataSource != nil) || localLive.sourceAvailable else { return "待读取" }
+        return "\(LiveRateSnapshot.rateDisplayText(liveRate)) tok/s"
     }
 
     private var runningText: String {
-        let summary = tasks.runningThreadSummary
+        let summary = runningSummary
         switch summary.freshness {
         case .fresh: return "\(summary.main) 主 · \(summary.subagents) 子"
         case .stale: return "\(summary.total) 运行 · 待刷新"
@@ -660,6 +671,7 @@ private struct SidebarModelShareStrip: View {
 
 struct QuotaSidebarDetailView: View {
     @ObservedObject private var clients = MultiClientUsageStore.shared
+    @ObservedObject private var claudeRuntime = ClaudeLocalRuntime.shared
     @State private var clientProjectionCache = ClientDashboardProjectionCache()
     @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
 
@@ -672,11 +684,16 @@ struct QuotaSidebarDetailView: View {
     @ObservedObject var history: QuotaHistoryStore
     var quotaItemsOverride: [ClientQuotaItem]? = nil
 
+    private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
+    private var selectedRunning: RunningThreadSummary {
+        ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary,
+            claude: claudeRuntime.projection(allowed: allowedClients).running, allowed: allowedClients)
+    }
     var body: some View {
         // Capture one projection for every quota, usage and running field in
         // this render, so the cards and the model denominator agree.
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota,
-                                                  runningThreads: tasks.runningThreadSummary)
+                                                  runningThreads: selectedRunning)
         VStack(alignment: .leading, spacing: 6) {
             header(snapshot.quota)
             if monitor.monitoringEnabled {
@@ -710,8 +727,9 @@ struct QuotaSidebarDetailView: View {
                         BodySpeedHistoryWindowController.shared.present(monitor: monitor,
                             screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)
                     })
-                    } else {
-                        Text("正文 TPS · 暂无可用样本").font(.callout).foregroundStyle(.secondary)
+                    }
+                    if allowedClients.contains("claudeCode") || allowedClients.contains("claudeDesktop") {
+                        ClaudeLocalSpeedView(allowed: allowedClients)
                     }
                 }
                 else if controller.interaction.detail == .modeltrace {

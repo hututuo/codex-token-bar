@@ -294,6 +294,8 @@ final class MultiClientUsageStore: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var generation = 0
     private var menuItem: NSStatusItem?
+    private var quotaUpdates: AnyCancellable?
+    private var monitoringUpdates: AnyCancellable?
 
     init(defaults: UserDefaults = .standard, databaseURL: URL = MultiClientUsageStore.defaultDatabaseURL) {
         self.defaults = defaults
@@ -304,6 +306,14 @@ final class MultiClientUsageStore: ObservableObject {
     }
     func start() {
         guard loop == nil else { return }
+        monitoringUpdates = NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.syncLocalRuntime() }
+        quotaUpdates = ClaudeStatuslineStore.shared.$quota.removeDuplicates().sink { [weak self] reading in
+            guard let self, self.preferences.contains(where: { $0.enabled && $0.client == .claudeCode }) else { return }
+            self.claudeQuota = reading
+            self.syncMenuItems()
+        }
+        syncLocalRuntime()
         refresh()
         loop = Task { [weak self] in
             while !Task.isCancelled {
@@ -319,7 +329,7 @@ final class MultiClientUsageStore: ObservableObject {
         if let index = next.firstIndex(where: { $0.client == value.client }) { next[index] = value }
         preferences = MultiClientUsagePreference.normalized(next)
         persist()
-        if prior?.enabled != value.enabled || prior?.path != value.path { refresh() }
+        if prior?.enabled != value.enabled || prior?.path != value.path { syncLocalRuntime(); refresh() }
     }
     func move(_ client: UsageClient, by offset: Int) {
         guard let index = preferences.firstIndex(where: { $0.client == client }), preferences.indices.contains(index + offset) else { return }
@@ -331,6 +341,11 @@ final class MultiClientUsageStore: ObservableObject {
         defaults.set(try? JSONEncoder().encode(preferences), forKey: Self.preferencesKey)
         generation += 1; syncMenuItems()
     }
+    func syncLocalRuntime(monitoringEnabled: Bool? = nil) {
+        let enabled = monitoringEnabled ?? (defaults.object(forKey: "liveRateMonitoringEnabled") == nil || defaults.bool(forKey: "liveRateMonitoringEnabled"))
+        ClaudeLocalRuntime.shared.configure(preferences: preferences, monitoringEnabled: enabled)
+        ClaudeStatuslineStore.shared.setEnabled(enabled && preferences.contains { $0.enabled && $0.client == .claudeCode })
+    }
     func refresh() {
         guard !refreshing else { return }
         refreshing = true
@@ -340,7 +355,8 @@ final class MultiClientUsageStore: ObservableObject {
                 let detected = await Task.detached(priority: .utility) { UsageClientDetection.detect() }.value
                 self?.detections = detected
                 let result = try await scanner.scan(preferences)
-                let quota = await Task.detached(priority: .utility) { ClaudeLocalQuota.read() }.value
+                let quota = preferences.contains { $0.enabled && $0.client == .claudeCode }
+                    ? await Task.detached(priority: .utility) { ClaudeLocalQuota.read() }.value : .missing
                 guard let self else { return }
                 if self.generation == generation {
                     self.summaries = result.summaries

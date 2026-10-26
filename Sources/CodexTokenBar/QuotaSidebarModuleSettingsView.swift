@@ -9,6 +9,7 @@ struct QuotaSidebarModuleSettingsView: View {
     var modelShares: [ModelTokenBreakdown] = []
     var quotaItemsOverride: [ClientQuotaItem]? = nil
     @ObservedObject private var clients = MultiClientUsageStore.shared
+    @ObservedObject private var runtime = ClaudeLocalRuntime.shared
     @AppStorage(ClientQuotaSelection.key) private var selectionRaw = ""
     @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
@@ -29,9 +30,10 @@ struct QuotaSidebarModuleSettingsView: View {
     private var supportsCodex: Bool { quotaItemsOverride?.contains { $0.client == "codex" } ?? allowedClients.contains("codex") }
     private var items: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: quotas.map(\.client))
-            .filter { supportsCodex || !$0.requiresCodexLiveData }
+            .filter { supportsCodex || !allowedClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) || !$0.requiresCodexLiveData }
     }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
+    private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients) }
     private var previewItems: [QuotaSidebarItem] {
         items.filter { item in
             guard controller.sidebarLayout.isVisible(item, in: .compact) else { return false }
@@ -108,15 +110,15 @@ struct QuotaSidebarModuleSettingsView: View {
 
     private var compactPreview: some View {
         let count = QuotaSidebarContentOrder.compactIDs(items: previewItems, quotas: previewQuotas).count
-        let layout = ClientRailLayout.fixed(trackCount: count, availableHeight: controller.availableRailHeight)
-        let shares = FloatingTodayModelUsagePresentation.items(from: modelShares, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
+        let layout = ClientRailLayout.fixed(trackCount: count, dotCount: previewItems.filter(\.usesCompactDot).count, availableHeight: controller.availableRailHeight)
+        let shares = FloatingTodayModelUsagePresentation.items(from: ClientLocalRuntimePresentation.models(codex: modelShares, clients: clients.todaySummaries, allowed: allowedClients), fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         return HStack(alignment: .center, spacing: 24) {
             if count > 0 {
                 ScrollView(.vertical) {
                     QuotaSidebarCompactBars(items: previewItems, quotas: previewQuotas, layout: layout,
-                        rateFraction: QuotaSidebarRatePresentation.fraction(rate: monitor.totalSnapshot.rollingTokensPerSecond,
-                            fullScale: fullScale, available: monitor.monitoringEnabled && monitor.dataSource != nil),
-                        modelRates: monitor.totalSnapshot.modelRates, shares: shares, colors: selection.colors)
+                        rateFraction: QuotaSidebarRatePresentation.fraction(rate: selectedRates.reduce(0) { $0 + $1.tokensPerSecond },
+                            fullScale: fullScale, available: (allowedClients.contains("codex") && monitor.monitoringEnabled && monitor.dataSource != nil) || runtime.projection(allowed: allowedClients).sourceAvailable),
+                        modelRates: selectedRates, shares: shares, colors: selection.colors)
                 }.scrollIndicators(.hidden).frame(width: 16, height: min(layout.height, 330))
                     .background(Color.black, in: Capsule())
             }
@@ -152,6 +154,7 @@ struct QuotaSidebarSettingsRailPreview: View {
     @ObservedObject var monitor: LiveRateMonitor
     var quotaItemsOverride: [ClientQuotaItem]? = nil
     @ObservedObject private var clients = MultiClientUsageStore.shared
+    @ObservedObject private var runtime = ClaudeLocalRuntime.shared
     @AppStorage(ClientDisplayScope.key) private var scope = "codex"
     @AppStorage(ClientQuotaSelection.key) private var selectionRaw = ""
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
@@ -167,21 +170,25 @@ struct QuotaSidebarSettingsRailPreview: View {
     }
     private var items: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: quotas.map(\.client)).filter {
-            controller.sidebarLayout.isVisible($0, in: .compact) && ((scope == "all" || scope == "codex") || !$0.requiresCodexLiveData)
+            controller.sidebarLayout.isVisible($0, in: .compact) && ((scope == "all" || scope == "codex" || scope == "claudeCode" || scope == "claudeDesktop") || !$0.requiresCodexLiveData)
         }
     }
+    private var allowedClients: Set<String> { ClientDisplayScope.clients(scope, available: clients.displayClientIDs) }
+    private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients) }
+    private var selectedModels: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
+    private var selectedRunning: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: runtime.projection(allowed: allowedClients).running, allowed: allowedClients) }
     var body: some View {
-        let layout = ClientRailLayout.fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas).count, availableHeight: controller.availableRailHeight)
+        let layout = ClientRailLayout.fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas).count, dotCount: items.filter(\.usesCompactDot).count, availableHeight: controller.availableRailHeight)
         ScrollView(.vertical) {
             QuotaSidebarCompactBars(items: items, quotas: quotas, layout: layout,
-                rateFraction: QuotaSidebarRatePresentation.fraction(rate: monitor.totalSnapshot.rollingTokensPerSecond, fullScale: fullScale, available: monitor.monitoringEnabled && monitor.dataSource != nil),
-                modelRates: monitor.totalSnapshot.modelRates, shares: shares,
-                taskStateLabel: "任务状态：\(tasks.runningThreadSummary.total) 个运行任务，非进度百分比", highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
+                rateFraction: QuotaSidebarRatePresentation.fraction(rate: selectedRates.reduce(0) { $0 + $1.tokensPerSecond }, fullScale: fullScale, available: (allowedClients.contains("codex") && monitor.monitoringEnabled && monitor.dataSource != nil) || runtime.projection(allowed: allowedClients).sourceAvailable),
+                modelRates: selectedRates, shares: shares,
+                taskStateLabel: "任务状态：\(selectedRunning.total) 个运行任务，非进度百分比", highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
                 .frame(minHeight: layout.height)
         }.scrollIndicators(.hidden).frame(width: 16)
             .background(Color(red: 0.035, green: 0.045, blue: 0.038), in: Capsule())
             .help("一级菜单实时预览；修改显示与顺序可立即查看")
-            .onChange(of: store.todayModelBreakdowns, initial: true) { _, rows in
+            .onChange(of: selectedModels, initial: true) { _, rows in
                 shares = FloatingTodayModelUsagePresentation.items(from: rows, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
             }
     }

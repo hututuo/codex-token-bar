@@ -134,6 +134,9 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
 
 cp "$BUILD_DIR/$PRODUCT_NAME" "$MACOS_DIR/$PRODUCT_NAME"
+# The local-only statusline executable is intentionally independent of the UI.
+cp "$BUILD_DIR/TokenBarClaudeLocal" "$MACOS_DIR/TokenBarClaudeLocal"
+chmod +x "$MACOS_DIR/TokenBarClaudeLocal"
 cp -R "$BUILD_DIR/CodexTokenBar_CodexTokenBar.bundle" "$RESOURCES_DIR/"
 chmod +x "$MACOS_DIR/$PRODUCT_NAME"
 
@@ -174,6 +177,7 @@ if [[ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]]; then
   sign_target "$FRAMEWORKS_DIR/Sparkle.framework"
 fi
 
+sign_target "$MACOS_DIR/TokenBarClaudeLocal"
 sign_target "$APP_DIR" app
 codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 

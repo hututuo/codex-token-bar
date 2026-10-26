@@ -23,6 +23,7 @@ pub fn run() {
 
     let app_result = tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
+        .manage(core::claude_local_runtime::ClaudeLocalRuntimeRegistry::default())
         .manage(core::agent_speed_reporting::AgentSpeedReportingRegistry::default())
         .manage(commands::surface::BodySpeedDetailsRequestState::default())
         .manage(commands::modeltrace::ModelTraceRegistry::default())
@@ -179,6 +180,7 @@ pub fn run() {
             commands::multi_client_usage::save_multi_client_usage_preferences,
             commands::multi_client_usage::refresh_multi_client_usage,
             commands::multi_client_usage::read_claude_local_quota,
+            commands::claude_local_runtime::read_claude_local_runtime_snapshot,
             commands::dashboard::read_quota_cycles,
             commands::dashboard::read_quota_cycle_usage,
             commands::codex_instances::list_codex_instances,

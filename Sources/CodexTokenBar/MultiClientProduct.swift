@@ -76,7 +76,7 @@ struct CodexObservedQuotaProvider: ClientQuotaProvider {
 struct ClaudeCapturedQuotaProvider: ClientQuotaProvider {
     let snapshot: ClaudeLocalQuota
     let allowsNetwork = false
-    static let setup = "在 Claude Code 的 statusLine 设置中配置已安装的 claude-monitor --statusline，使用一次 Claude 后点击刷新。只读取 ~/.claude-monitor/statusline/latest.json；本软件不会安装工具或修改 Claude 配置。"
+    static let setup = "可手动将本地 TokenBarClaudeLocal 配置为 Claude Code statusLine 命令；也兼容已有 claude-monitor --statusline 缓存。本软件不修改 Claude 配置、不读凭据、不联网。"
     func reading() -> ClientQuotaReading {
         let windows = [("5h", snapshot.fiveHour), ("7d", snapshot.sevenDay)].compactMap { label, value in
             value.map { ClientQuotaReading.Window(label: label, usedPercent: $0.usedPercent, resetsAt: $0.resetsAt) }

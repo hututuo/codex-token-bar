@@ -11,7 +11,7 @@ mod outside_click;
 mod motion;
 #[cfg(target_os = "macos")]
 mod canvas_macos;
-#[cfg(any(windows, test))]
+// Shared logical widths are used by placement/motion on every platform.
 mod canvas_geometry;
 #[cfg(windows)]
 mod canvas_windows;

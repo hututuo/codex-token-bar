@@ -57,7 +57,8 @@ struct MultiClientUsageSettingsView: View {
             Divider()
             ClientQuotaSettingsView(codex: codexQuota)
             ClaudeLocalQuotaReadings()
-            Text("只读 Claude-Code-Usage-Monitor 已保存的状态栏额度，不安装钩子、不读取凭据、不联网。记录属于最近一个 Claude 进程，无法绑定账户；超过 10 分钟或窗口到期就不再显示百分比。Codex 菜单栏额度开关与顺序继续使用「状态栏」设置。")
+            ClaudeLocalCaptureSetup()
+            Text("Claude 仅从本地日志、已有状态栏缓存读取；不会调用 Claude 或 Anthropic 接口，也不向速蹬上报。额度缓存不绑定账户，超过 10 分钟即失效。")
                 .font(.callout).foregroundStyle(.secondary)
             HStack {
                 Button("备份其他客户端账本") {
@@ -161,7 +162,30 @@ struct ClaudeLocalQuotaReadings: View {
         VStack(alignment: compact ? .center : .leading, spacing: 4) {
             Text("Claude Code 额度").font(compact ? .system(size: 9) : .headline)
             ClientQuotaReadingView(reading: ClaudeCapturedQuotaProvider(snapshot: store.claudeQuota).reading(), compact: compact)
-            if !compact { Text("联网额度：关闭（尚未接入）").font(.caption).foregroundStyle(.secondary) }
+            if !compact { Text("额度仅从本地读取").font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+}
+
+/// Manual opt-in only. Copying is separate from changing Claude's own settings.
+private struct ClaudeLocalCaptureSetup: View {
+    private var executable: URL? {
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/TokenBarClaudeLocal")
+        if FileManager.default.isExecutableFile(atPath: bundled.path) { return bundled }
+        let sibling = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("TokenBarClaudeLocal")
+        return FileManager.default.isExecutableFile(atPath: sibling.path) ? sibling : nil
+    }
+    var body: some View {
+        DisclosureGroup("接入 Claude 本地状态栏") {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Claude 自己提供额度、上下文和 API 耗时；Token Bar 只接收本地 stdin，不发网络请求。")
+                if let executable {
+                    let command = "'" + executable.path.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+                    Text(command).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
+                    Button("复制本地命令") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(command, forType: .string) }
+                    Text("请手动填入 Claude Code 的 statusLine.command；这会替换原状态栏命令，Token Bar 不自动修改。")
+                } else { Text("当前安装未包含本地采集助手；可继续读取已有 claude-monitor 缓存。") }
+            }.font(.caption).foregroundStyle(.secondary).padding(.top, 5)
         }
     }
 }

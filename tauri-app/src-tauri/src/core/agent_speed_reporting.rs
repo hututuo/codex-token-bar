@@ -15,6 +15,15 @@ use tokio::{
 
 const STATUS_LINE_LIMIT: usize = 4096;
 const MAX_TPS: f64 = 1_000_000_000.0;
+const REPORTER_DENIED_SOURCE_IDS: &[&str] = &["claudeCode", "claudeDesktop"];
+
+fn reporter_start_payload(username: &str) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": true,
+        "username": username,
+        "deniedSourceIds": REPORTER_DENIED_SOURCE_IDS,
+    })
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -195,7 +204,7 @@ impl AgentSpeedReportingRegistry {
                 "Agent Speed reporter helper could not start.".to_owned()
             })?;
 
-            let startup = serde_json::json!({ "enabled": true, "username": username.clone() });
+            let startup = reporter_start_payload(&username);
             let mut line = serde_json::to_vec(&startup)
                 .map_err(|_| "Agent Speed reporter helper could not start.".to_owned())?;
             line.push(b'\n');
@@ -474,11 +483,15 @@ fn sanitize_status(raw: RawStatusLine, username: &str) -> Option<AgentSpeedRepor
         return None;
     }
 
-    let sources = raw
+    let has_unreportable_source = raw
+        .sources
+        .iter()
+        .any(|source| reportable_source_name(&source.id).is_none());
+    let sources: Vec<AgentSpeedSourceStatus> = raw
         .sources
         .into_iter()
         .filter_map(|source| {
-            let name = canonical_source_name(&source.id)?;
+            let name = reportable_source_name(&source.id)?;
             if source.name != name || !source.tps.is_finite() {
                 return None;
             }
@@ -490,6 +503,18 @@ fn sanitize_status(raw: RawStatusLine, username: &str) -> Option<AgentSpeedRepor
         })
         .take(32)
         .collect();
+
+    let live_output_tps = if has_unreportable_source {
+        sources
+            .iter()
+            .map(|source| source.tps)
+            .sum::<f64>()
+            .clamp(0.0, MAX_TPS)
+    } else if raw.live_output_tps.is_finite() {
+        raw.live_output_tps.clamp(0.0, MAX_TPS)
+    } else {
+        0.0
+    };
 
     let last_report_at = raw.last_report_at.and_then(sanitize_timestamp);
     let profile_url = raw.profile_url.and_then(sanitize_profile_url);
@@ -503,12 +528,10 @@ fn sanitize_status(raw: RawStatusLine, username: &str) -> Option<AgentSpeedRepor
             raw.phase
         },
         status_message: message_for(&raw.message_code).into(),
-        live_output_tps: if raw.live_output_tps.is_finite() {
-            raw.live_output_tps.clamp(0.0, MAX_TPS)
-        } else {
+        live_output_tps,
+        estimated_share: if has_unreportable_source {
             0.0
-        },
-        estimated_share: if raw.estimated_share.is_finite() {
+        } else if raw.estimated_share.is_finite() {
             raw.estimated_share.clamp(0.0, 1.0)
         } else {
             0.0
@@ -535,6 +558,14 @@ fn canonical_source_name(id: &str) -> Option<&'static str> {
         "kimi" => Some("Kimi"),
         "grokBuild" => Some("Grok Build"),
         _ => None,
+    }
+}
+
+fn reportable_source_name(id: &str) -> Option<&'static str> {
+    if REPORTER_DENIED_SOURCE_IDS.contains(&id) {
+        None
+    } else {
+        canonical_source_name(id)
     }
 }
 
@@ -695,6 +726,11 @@ mod tests {
                     tps: 12.5,
                 },
                 RawSourceLine {
+                    id: "claudeCode".into(),
+                    name: "Claude Code".into(),
+                    tps: 22.0,
+                },
+                RawSourceLine {
                     id: "local-path".into(),
                     name: "/Users/private".into(),
                     tps: 99.0,
@@ -704,8 +740,8 @@ mod tests {
         };
         let status = sanitize_status(raw, "TokenBar-a1b2").unwrap();
         assert_eq!(status.phase, "running");
-        assert_eq!(status.live_output_tps, 0.0);
-        assert_eq!(status.estimated_share, 1.0);
+        assert_eq!(status.live_output_tps, 12.5);
+        assert_eq!(status.estimated_share, 0.0);
         assert_eq!(status.sources.len(), 1);
         assert_eq!(status.sources[0].name, "Codex");
         assert!(status.last_report_at.is_none());
@@ -736,6 +772,22 @@ mod tests {
             assert_eq!(canonical_source_name(id), Some(name), "source id {id}");
         }
         assert_eq!(canonical_source_name("workBuddyAi"), None);
+    }
+
+    #[test]
+    fn reporter_start_contract_and_status_guard_deny_only_claude_sources() {
+        let startup = reporter_start_payload("TokenBar-test");
+        assert_eq!(startup["enabled"], true);
+        assert_eq!(startup["username"], "TokenBar-test");
+        assert_eq!(
+            startup["deniedSourceIds"],
+            serde_json::json!(["claudeCode", "claudeDesktop"])
+        );
+        assert_eq!(reportable_source_name("codex"), Some("Codex"));
+        assert_eq!(reportable_source_name("deepseek"), Some("DeepSeek"));
+        assert_eq!(reportable_source_name("claudeCode"), None);
+        assert_eq!(reportable_source_name("claudeDesktop"), None);
+        assert_eq!(reportable_source_name("unknown"), None);
     }
 
     #[test]

@@ -35,7 +35,7 @@ internal static class Program
         var parentWatch = StatusProtocol.WatchParentExitAsync(input, lifetime);
         try
         {
-            await ReporterRuntime.RunAsync(start.Username, status, lifetime.Token).ConfigureAwait(false);
+            await ReporterRuntime.RunAsync(start, status, lifetime.Token).ConfigureAwait(false);
             return 0;
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
@@ -74,7 +74,9 @@ internal static class SelfTests
         {
             await DefaultOffDoesNotStartAsync().ConfigureAwait(false);
             await InvalidShortUsernameDoesNotStartAsync().ConfigureAwait(false);
+            await InvalidSourcePolicyDoesNotStartAsync().ConfigureAwait(false);
             await ParentEofCancelsAsync().ConfigureAwait(false);
+            SourcePolicyIsDefaultDeniedByKind();
             PayloadIsWhitelisted();
             InitialSnapshotIsOnlyABaseline();
             Console.WriteLine("PASS: Agent Speed reporter local tests");
@@ -89,7 +91,7 @@ internal static class SelfTests
 
     private static async Task DefaultOffDoesNotStartAsync()
     {
-        await using var input = new MemoryStream(Encoding.UTF8.GetBytes("{\"enabled\":false,\"username\":\"TokenBar-1234\"}\n"));
+        await using var input = new MemoryStream(Encoding.UTF8.GetBytes("{\"enabled\":false,\"username\":\"TokenBar-1234\",\"deniedSourceIds\":[\"claudeCode\",\"claudeDesktop\"]}\n"));
         if (await StatusProtocol.ReadStartCommandAsync(input).ConfigureAwait(false) is not null)
         {
             throw new InvalidOperationException();
@@ -98,8 +100,19 @@ internal static class SelfTests
 
     private static async Task InvalidShortUsernameDoesNotStartAsync()
     {
-        await using var input = new MemoryStream(Encoding.UTF8.GetBytes("{\"enabled\":true,\"username\":\"x\"}\n"));
+        await using var input = new MemoryStream(Encoding.UTF8.GetBytes("{\"enabled\":true,\"username\":\"x\",\"deniedSourceIds\":[\"claudeCode\",\"claudeDesktop\"]}\n"));
         if (await StatusProtocol.ReadStartCommandAsync(input).ConfigureAwait(false) is not null)
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static async Task InvalidSourcePolicyDoesNotStartAsync()
+    {
+        await using var missing = new MemoryStream(Encoding.UTF8.GetBytes("{\"enabled\":true,\"username\":\"TokenBar-1234\"}\n"));
+        await using var altered = new MemoryStream(Encoding.UTF8.GetBytes("{\"enabled\":true,\"username\":\"TokenBar-1234\",\"deniedSourceIds\":[\"claudeCode\",\"claudeCode\"]}\n"));
+        if (await StatusProtocol.ReadStartCommandAsync(missing).ConfigureAwait(false) is not null
+            || await StatusProtocol.ReadStartCommandAsync(altered).ConfigureAwait(false) is not null)
         {
             throw new InvalidOperationException();
         }
@@ -117,12 +130,40 @@ internal static class SelfTests
 
     private static void PayloadIsWhitelisted()
     {
-        const string allowed = "{\"schema\":1,\"client\":{},\"deviceId\":\"id\",\"username\":\"TokenBar-1234\",\"run\":{},\"sentAt\":\"2026-01-01T00:00:00Z\",\"windowMs\":0,\"activity\":\"idle\",\"live\":{},\"peak\":{},\"delta\":{},\"title\":{},\"sources\":[],\"models\":[{\"harnessRequests\":[],\"modeUsage\":[]}]}";
+        const string allowed = "{\"schema\":1,\"client\":{},\"deviceId\":\"id\",\"username\":\"TokenBar-1234\",\"run\":{},\"sentAt\":\"2026-01-01T00:00:00Z\",\"windowMs\":0,\"activity\":\"idle\",\"live\":{},\"peak\":{},\"delta\":{},\"title\":{},\"sources\":[],\"models\":[{\"sources\":[\"codex\"],\"harnessRequests\":[],\"modeUsage\":[]}]}";
         const string withTraffic = "{\"schema\":1,\"sources\":[{\"traffic\":{}}]}";
         const string withCost = "{\"schema\":1,\"models\":[{\"cost\":{}}]}";
+        const string codexOnly = "{\"schema\":1,\"sources\":[{\"source\":\"codex\"}],\"models\":[{\"sources\":[\"codex\"]}]}";
+        const string claudeCode = "{\"schema\":1,\"sources\":[{\"source\":\"claudeCode\"}],\"models\":[]}";
+        const string claudeDesktop = "{\"schema\":1,\"sources\":[{\"source\":\"claudeDesktop\"}],\"models\":[]}";
+        const string mixed = "{\"schema\":1,\"sources\":[{\"source\":\"codex\"},{\"source\":\"claudeCode\"}],\"models\":[]}";
+        const string unattributed = "{\"schema\":1,\"delta\":{\"requests\":10}}";
         if (!ReportPayloadWhitelist.IsAllowed(Encoding.UTF8.GetBytes(allowed))
+            || !ReportPayloadWhitelist.IsAllowed(Encoding.UTF8.GetBytes(codexOnly))
             || ReportPayloadWhitelist.IsAllowed(Encoding.UTF8.GetBytes(withTraffic))
             || ReportPayloadWhitelist.IsAllowed(Encoding.UTF8.GetBytes(withCost)))
+        {
+            throw new InvalidOperationException();
+        }
+
+        if (ReportPayloadWhitelist.IsAllowed(Encoding.UTF8.GetBytes(claudeCode))
+            || ReportPayloadWhitelist.IsAllowed(Encoding.UTF8.GetBytes(claudeDesktop))
+            || ReportPayloadWhitelist.IsAllowed(Encoding.UTF8.GetBytes(mixed))
+            || ReportPayloadWhitelist.IsAllowed(Encoding.UTF8.GetBytes(unattributed)))
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static void SourcePolicyIsDefaultDeniedByKind()
+    {
+        if (!AgentSpeedReportSourcePolicy.IsReportable(SourceKind.Codex)
+            || !AgentSpeedReportSourcePolicy.IsReportable(SourceKind.DeepSeek)
+            || AgentSpeedReportSourcePolicy.IsReportable(SourceKind.ClaudeCode)
+            || AgentSpeedReportSourcePolicy.IsReportable(SourceKind.ClaudeDesktop)
+            || AgentSpeedReportSourcePolicy.ReportableSources.Count != Enum.GetValues<SourceKind>().Length - 2
+            || !AgentSpeedReportSourcePolicy.HasRequiredDenyList(["claudeCode", "claudeDesktop"])
+            || AgentSpeedReportSourcePolicy.HasRequiredDenyList(["claudeCode", "claudeCode"]))
         {
             throw new InvalidOperationException();
         }

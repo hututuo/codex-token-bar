@@ -3,7 +3,7 @@ import { clientBrand, quotaFill, type QuotaItem, type QuotaSelection } from "../
 import { modelRateGradient } from "../components/liveRate/modelRatePresentation";
 import type { ModelRateContribution } from "../types/live";
 import type { RunningThreadSummaryStatus } from "../types/threadActivity";
-import { compactSidebarIDs, fixedSidebarRailLayout, quotaWindowsForClient } from "./sidebarLayoutPresentation";
+import { compactSidebarIDs, fixedSidebarRailLayout, quotaWindowsForClient, sidebarUsesCompactDot, sidebarItemTitle } from "./sidebarLayoutPresentation";
 
 export function SidebarCompactBars({ items, quotas, selection, ratePercent, modelRates = [], models = [],
   expected = {}, visible = true, preview = false, indicator, rateLabel = "全会话实时速率（估算）",
@@ -15,12 +15,13 @@ export function SidebarCompactBars({ items, quotas, selection, ratePercent, mode
   taskStatus: RunningThreadSummaryStatus; taskLabel: string;
 }) {
   const layout = fixedSidebarRailLayout(compactSidebarIDs(items, quotas).length,
-    preview ? 100000 : typeof window === "undefined" ? 900 : window.innerHeight || 900);
+    preview ? 100000 : typeof window === "undefined" ? 900 : window.innerHeight || 900, items.filter(sidebarUsesCompactDot).length);
   return <div className={`qs-bars${preview ? " qs-bars-preview" : ""}`}
     style={{ gap: layout.gap, overflowY: "auto", "--integrated-bar-height": `${layout.barHeight}px`, ...(preview ? { height: layout.height } : {}) } as CSSProperties}
     data-visible={visible} aria-hidden={!visible} aria-label={preview ? "一级收起外观预览" : "悬停查看额度"}>
     {indicator}
     {items.map(id => <Fragment key={id}>
+      {sidebarUsesCompactDot(id) && <span data-sidebar-item={id} role="img" aria-label={sidebarItemTitle(id, x => x)} title={sidebarItemTitle(id, x => x)} style={{ width: 6, height: 6, minHeight: 6, borderRadius: "50%", background: "#b6ef75", opacity: .8 }} />}
       {id === "speed" && <span className="qs-bar qs-rate-bar" data-sidebar-item={id} style={{ height: layout.barHeight }} data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}>
         <i style={{ height: `${ratePercent ?? 0}%`, background: modelRateGradient(modelRates, "0deg") }} />
       </span>}

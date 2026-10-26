@@ -18,6 +18,9 @@ final class AgentSpeedReportingController: ObservableObject {
     static let serviceURL = "https://deng.codexradar.com"
     static let apiURL = "https://speed-api.codexradar.com/api/agent-speed"
     static let website = URL(string: serviceURL + "/")!
+    /// Claude remains available to local collection; this reporting monitor never reads either Claude source.
+    static let deniedReportingSources: Set<SourceKind> = [.claudeCode, .claudeDesktop]
+    static let reportableSources = Set(SourceKind.allCases.filter { !deniedReportingSources.contains($0) })
 
     struct Source: Identifiable, Equatable {
         let id: String
@@ -75,13 +78,17 @@ final class AgentSpeedReportingController: ObservableObject {
          transport: any ReportTransport = URLSessionReportTransport(),
          makeSigner: @escaping @Sendable (String) throws -> any ReportSigner = AgentSpeedReportingIdentity.signer,
          monotonic: @escaping () -> Int64 = { Int64(ProcessInfo.processInfo.systemUptime * 1000) },
-         makeMonitor: @escaping (SpeedStore) -> any AgentSpeedReportingMonitor = {
-             AgentSpeedCore.LiveMonitor(store: $0, pricing: PriceBook())
-         }) {
+         makeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)? = nil) {
         self.defaults = defaults
         self.api = ReportAPI(transport: transport, userAgent: Self.userAgent)
         self.makeSigner = makeSigner
-        self.makeMonitor = makeMonitor
+        self.makeMonitor = makeMonitor ?? { store in
+            AgentSpeedCore.LiveMonitor(
+                store: store,
+                configuration: MonitorConfiguration(enabledSources: Self.reportableSources),
+                pricing: PriceBook()
+            )
+        }
         self.monotonic = monotonic
         enabled = defaults.bool(forKey: Self.enabledKey)
         username = defaults.string(forKey: Self.usernameKey) ?? "TokenBar-" + UUID().uuidString.prefix(8).lowercased()
@@ -192,6 +199,100 @@ final class AgentSpeedReportingController: ObservableObject {
     static func accepts(_ document: ReportDiscovery) -> Bool {
         document.supportsThisClient && document.api.string == apiURL && document.apiKeyMode != .required
     }
+
+    /// Source-filter both identity-bearing rows and aggregates before they reach the report window.
+    static func reportableSample(_ sample: ReportSample) -> ReportSample {
+        let sources = sample.sources.filter { reportableSources.contains($0.key) }
+        var live = Rate.zero
+        var estimatedOutput = 0.0
+        var liveCost = LiveCost.zero
+        for source in sources.values {
+            live.output += source.live.output
+            live.total += source.live.total
+            estimatedOutput += source.liveEstimated.output
+            liveCost.add(source.liveCost)
+        }
+        let counters = ReportCounters(
+            byModel: sample.facts.counters.byModel.filter { reportableSources.contains($0.key.source) },
+            byMode: sample.facts.counters.byMode.filter { reportableSources.contains($0.key.model.source) }
+        )
+        let facts = ReportLiveFacts(
+            agents: sample.facts.agents.filter { reportableSources.contains($0.key) },
+            generatingModels: sample.facts.generatingModels.filter { reportableSources.contains($0.key.source) },
+            counters: counters
+        )
+        return ReportSample(
+            live: live,
+            estimatedShare: live.output > 0 ? estimatedOutput / live.output : 0,
+            liveCost: liveCost,
+            sources: sources,
+            facts: facts,
+            traffic: .off
+        )
+    }
+
+    /// The last in-process boundary before a report is signed or passed to HTTP.
+    static func reportPayloadHasOnlyReportableSources(_ data: Data) -> Bool {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
+        var hasSourceProvenance = false
+        var sourceReferenceCount = 0
+        if let sources = root["sources"] {
+            guard let rows = sources as? [[String: Any]] else { return false }
+            hasSourceProvenance = true
+            for row in rows {
+                guard let raw = row["source"] as? String,
+                      let source = SourceKind(rawValue: raw), reportableSources.contains(source) else { return false }
+                sourceReferenceCount += 1
+            }
+        }
+        if let models = root["models"] {
+            guard let rows = models as? [[String: Any]] else { return false }
+            hasSourceProvenance = true
+            for row in rows {
+                guard let rawSources = row["sources"] as? [String] else { return false }
+                for raw in rawSources {
+                    guard let source = SourceKind(rawValue: raw), reportableSources.contains(source) else { return false }
+                    sourceReferenceCount += 1
+                }
+                if let harness = row["harnessRequests"] {
+                    guard let entries = harness as? [[String: Any]] else { return false }
+                    for entry in entries {
+                        guard let raw = entry["source"] as? String,
+                              let source = SourceKind(rawValue: raw), reportableSources.contains(source) else { return false }
+                        sourceReferenceCount += 1
+                    }
+                }
+                if let modes = row["modeUsage"] {
+                    guard let entries = modes as? [[String: Any]] else { return false }
+                    for entry in entries {
+                        guard let raw = entry["source"] as? String,
+                              let source = SourceKind(rawValue: raw), reportableSources.contains(source) else { return false }
+                        sourceReferenceCount += 1
+                    }
+                }
+            }
+        }
+        guard hasSourceProvenance else { return false }
+        let hasSourceRows = (root["sources"] as? [[String: Any]])?.isEmpty == false
+        let hasModelRows = (root["models"] as? [[String: Any]])?.contains(where: {
+            ($0["sources"] as? [String])?.isEmpty == false
+        }) == true
+        if Self.containsNonzeroNumber(root["live"]) || Self.containsNonzeroNumber(root["peak"]) {
+            guard hasSourceRows else { return false }
+        }
+        if Self.containsNonzeroNumber(root["delta"]), sourceReferenceCount == 0 || (!hasSourceRows && !hasModelRows) {
+            return false
+        }
+        return true
+    }
+
+    private static func containsNonzeroNumber(_ value: Any?) -> Bool {
+        if let number = value as? NSNumber { return number.doubleValue != 0 }
+        if let object = value as? [String: Any] { return object.values.contains(where: containsNonzeroNumber) }
+        if let array = value as? [Any] { return array.contains(where: containsNonzeroNumber) }
+        return false
+    }
+
     static func safeProfile(_ url: URL?) -> URL? {
         guard let url, url.scheme == "https", url.host == "deng.codexradar.com", url.user == nil, url.password == nil else { return nil }
         return url
@@ -210,13 +311,16 @@ final class AgentSpeedReportingController: ObservableObject {
         if phase == "waiting" { phase = "running"; message = "已参加 · 等待新的请求统计" }
         // Refresh discovery daily; a fresh monitor/run baselines all prior counters.
         if Date().timeIntervalSince(discoveryAt) >= 86400 { retry(); return }
-        let sample = ReportSample(snapshot: snapshot, traffic: .off)
+        let sample = Self.reportableSample(ReportSample(snapshot: snapshot, traffic: .off))
         lastSample = sample
         if Date().timeIntervalSince(uiTick) >= 1 {
             uiTick = Date()
             liveOutputTps = sample.live.output; estimatedShare = sample.estimatedShare
-            sources = snapshot.sources.filter { $0.available && $0.enabled }.map {
-                Source(id: $0.kind.rawValue, name: Self.sourceName($0.kind), tps: $0.live.output)
+            let availableKinds = Set(snapshot.sources.filter {
+                $0.available && $0.enabled && Self.reportableSources.contains($0.kind)
+            }.map(\.kind))
+            sources = sample.sources.filter { availableKinds.contains($0.key) }.map {
+                Source(id: $0.key.rawValue, name: Self.sourceName($0.key), tps: $0.value.live.output)
             }
         }
         if run == nil, let document {
@@ -244,7 +348,12 @@ final class AgentSpeedReportingController: ObservableObject {
                 let envelope = ReportEnvelope(client: Self.client, deviceId: deviceID, username: username,
                     runId: run.id, seq: ticket.seq, sentAtMs: Self.nowMS + clockCorrection * 1000,
                     windowMs: ticket.windowMs, activity: ticket.activity, titleLevel: run.title.level)
-                run.bodies[ticket.seq] = ReportBody.data(envelope, content, sample, Self.options(document))
+                let body = ReportBody.data(envelope, content, sample, Self.options(document))
+                guard Self.reportPayloadHasOnlyReportableSources(body) else {
+                    fail("报告来源无法确认，已停止上报")
+                    return
+                }
+                run.bodies[ticket.seq] = body
                 self.run = run; windowStarted = true
             case .send(let ticket): send(ticket)
             case .delivered(let ticket), .lost(let ticket): run?.bodies[ticket.seq] = nil
@@ -255,6 +364,10 @@ final class AgentSpeedReportingController: ObservableObject {
 
     private func send(_ ticket: ReportScheduler.Ticket) {
         guard let run, let body = run.bodies[ticket.seq], let signer else { return }
+        guard Self.reportPayloadHasOnlyReportableSources(body) else {
+            fail("报告来源无法确认，已停止上报")
+            return
+        }
         let token = generation, runID = run.id
         delivery = Task { [weak self] in
             guard let self else { return }
@@ -282,6 +395,9 @@ final class AgentSpeedReportingController: ObservableObject {
 
     private func request(endpoint: String, body: Data, signer: any ReportSigner, method: String = "POST") async -> Result<ReportReply, ReportTransportError> {
         guard enabled, !Task.isCancelled, let document else { return .failure(.other(-999)) }
+        if endpoint == ReportEndpoint.reports && !Self.reportPayloadHasOnlyReportableSources(body) {
+            return .failure(.other(-999))
+        }
         let builder = ReportRequestBuilder(userAgent: Self.userAgent, deviceId: deviceID, apiKey: nil)
         let url = document.api.appending(endpoint: endpoint), timestamp = Self.nowMS / 1000 + clockCorrection
         do {
@@ -289,6 +405,9 @@ final class AgentSpeedReportingController: ObservableObject {
                 try builder.make(method: method, url: url, body: body, signer: signer, timestamp: timestamp)
             }.value
             guard enabled, !Task.isCancelled else { return .failure(.other(-999)) }
+            if endpoint == ReportEndpoint.reports && !Self.reportPayloadHasOnlyReportableSources(request.body) {
+                return .failure(.other(-999))
+            }
             return await api.call(request)
         } catch { return .failure(.other(-1)) }
     }

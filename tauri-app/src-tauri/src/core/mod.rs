@@ -4,6 +4,7 @@ pub(crate) mod app_operation_lock;
 pub mod auto_resume;
 pub(crate) mod atomic_file;
 pub mod codex_instances;
+pub mod claude_local_runtime;
 pub(crate) mod coordination_fs;
 pub(crate) mod cross_process_lock;
 pub mod dashboard;

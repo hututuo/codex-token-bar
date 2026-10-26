@@ -8,7 +8,8 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "CodexTokenBar", targets: ["CodexTokenBar"])
+        .executable(name: "CodexTokenBar", targets: ["CodexTokenBar"]),
+        .executable(name: "TokenBarClaudeLocal", targets: ["TokenBarClaudeLocal"])
     ],
     dependencies: [
         .package(url: "https://github.com/narner/TiktokenSwift.git", from: "1.0.0"),
@@ -19,6 +20,15 @@ let package = Package(
             name: "CZstd",
             path: "Sources/CZstd",
             publicHeadersPath: "include"
+        ),
+        .target(
+            name: "ClaudeLocalCaptureCore",
+            path: "Sources/ClaudeLocalCaptureCore"
+        ),
+        .executableTarget(
+            name: "TokenBarClaudeLocal",
+            dependencies: ["ClaudeLocalCaptureCore"],
+            path: "Sources/TokenBarClaudeLocal"
         ),
         .target(
             name: "AgentSpeedCore",
@@ -40,6 +50,11 @@ let package = Package(
             name: "AgentSpeedCoreTests",
             dependencies: ["AgentSpeedCore"],
             path: "Vendor/AgentSpeed/macos/Tests/AgentSpeedCoreTests"
+        ),
+        .testTarget(
+            name: "ClaudeLocalCaptureCoreTests",
+            dependencies: ["ClaudeLocalCaptureCore"],
+            path: "Tests/ClaudeLocalCaptureCoreTests"
         ),
         .testTarget(
             name: "CodexTokenBarTests",

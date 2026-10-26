@@ -211,5 +211,5 @@ export function MultiClientUsageSidebarRows({codexTokens}: {codexTokens?:number}
 }
 export function ClaudeLocalQuotaPanel({compact=false}:{compact?:boolean}) {
   const {snapshot}=useMultiClientUsage();
-  return <section className={compact ? "multi-client-quota-inline" : "multi-client-quota"}><h4>Claude Code 额度</h4><ClientQuotaPanel compact={compact} reading={snapshot.quotas?.find(q=>q.client==="claudeCode") ?? unavailableQuota("claudeCode")}/>{!compact && <small>联网额度：关闭（尚未接入）</small>}</section>;
+  return <section className={compact ? "multi-client-quota-inline" : "multi-client-quota"}><h4>Claude Code 额度</h4><ClientQuotaPanel compact={compact} reading={snapshot.quotas?.find(q=>q.client==="claudeCode") ?? unavailableQuota("claudeCode")}/>{!compact && <small>额度仅从本地读取</small>}</section>;
 }

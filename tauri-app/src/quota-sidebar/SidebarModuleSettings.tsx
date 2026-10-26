@@ -97,7 +97,7 @@ export function SidebarModuleSettings({ layout, catalog, selection, disabled = f
     </details>
     <ol>{draftItems.map(id => {
       const windows = id.startsWith("quota:") ? quotaWindowsForClient(catalog, id.slice(6)) : [];
-      const supportsCompact = id === "speed" || id === "models" || id === "tasks" || id.startsWith("quota:");
+      const supportsCompact = true;
       const compactVisible = supportsCompact && isSidebarItemVisible(layout, id, "compact"), expandedVisible = isSidebarItemVisible(layout, id, "expanded"), active = selected === id;
       return <li key={id} data-layout-item={id} data-highlighted={active} data-dragging={dragging === id}
         data-insert={target?.id === id ? target.after ? "after" : "before" : undefined}>

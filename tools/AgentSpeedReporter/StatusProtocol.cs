@@ -4,7 +4,7 @@ using AgentSpeed.Core;
 
 namespace CodexTokenBar.AgentSpeedReporter;
 
-internal sealed record StartCommand(bool Enabled, string Username);
+internal sealed record StartCommand(bool Enabled, string Username, IReadOnlySet<string> DeniedSourceIds);
 
 internal sealed record StatusSource(
     [property: JsonPropertyName("id")] string Id,
@@ -67,9 +67,27 @@ internal static class StatusProtocol
             using var document = JsonDocument.Parse(bytes.AsMemory(0, count), new JsonDocumentOptions { MaxDepth = 4 });
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object
-                || root.EnumerateObject().Any(property => property.Name is not ("enabled" or "username"))
+                || root.EnumerateObject().Any(property => property.Name is not ("enabled" or "username" or "deniedSourceIds"))
                 || !root.TryGetProperty("enabled", out var enabled) || enabled.ValueKind != JsonValueKind.True
-                || !root.TryGetProperty("username", out var username) || username.ValueKind != JsonValueKind.String)
+                || !root.TryGetProperty("username", out var username) || username.ValueKind != JsonValueKind.String
+                || !root.TryGetProperty("deniedSourceIds", out var deniedSourceIds)
+                || deniedSourceIds.ValueKind != JsonValueKind.Array || deniedSourceIds.GetArrayLength() > 16)
+            {
+                return null;
+            }
+
+            var denied = new List<string>();
+            foreach (var source in deniedSourceIds.EnumerateArray())
+            {
+                if (source.ValueKind != JsonValueKind.String || source.GetString() is not { } sourceId
+                    || sourceId.Length > 32)
+                {
+                    return null;
+                }
+
+                denied.Add(sourceId);
+            }
+            if (!AgentSpeedReportSourcePolicy.HasRequiredDenyList(denied))
             {
                 return null;
             }
@@ -81,7 +99,7 @@ internal static class StatusProtocol
                 return null;
             }
 
-            return new StartCommand(true, value.Trim());
+            return new StartCommand(true, value.Trim(), denied.ToHashSet(StringComparer.Ordinal));
         }
         catch (JsonException)
         {

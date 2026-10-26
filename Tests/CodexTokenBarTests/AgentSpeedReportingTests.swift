@@ -112,6 +112,11 @@ final class AgentSpeedReportingTests: XCTestCase {
         try await waitFor { monitor.starts == 1 }
         var snapshot = SpeedSnapshot.empty
         snapshot.state = .starting(progress: 0.8)
+        snapshot.sources = [
+            .init(kind: .codex, enabled: true, rootPath: "", available: true, sessionCount: 1,
+                  live: .init(output: 50, total: 150), today: .zero, activeAgents: 0),
+        ]
+        snapshot.live = .init(output: 50, total: 150)
         snapshot.report.counters.add(.init(requests: 10, output: 1000, measuredOutput: 1000, measuredMs: 20_000),
                                     to: .init(modelId: "gpt-6.1-sol", source: .codex))
         controller.receive(snapshot)
@@ -148,6 +153,86 @@ final class AgentSpeedReportingTests: XCTestCase {
         clock = 10_000; controller.receive(snapshot)
         let after = await transport.requests()
         XCTAssertEqual(after.count, sent.count)
+    }
+
+    func testClaudeSourcesAreExcludedBeforeReportSerializationWhileCodexAndOtherSourcesRemain() throws {
+        var counters = ReportCounters()
+        counters.add(.init(requests: 5, output: 40, input: 80), to: .init(modelId: "claude-model", source: .claudeCode))
+        counters.add(.init(requests: 7, output: 60, input: 100), to: .init(modelId: "desktop-model", source: .claudeDesktop))
+        counters.add(.init(requests: 2, output: 12, input: 30), to: .init(modelId: "gpt-6.1-sol", source: .codex))
+        counters.add(.init(requests: 4, output: 30, input: 50), to: .init(modelId: "deepseek-v3", source: .deepseek))
+        var snapshot = SpeedSnapshot.empty
+        snapshot.state = .running
+        snapshot.live = .init(output: 1_027, total: 2_054)
+        snapshot.liveEstimatedShare = 0.9
+        snapshot.sources = [
+            .init(kind: .claudeCode, enabled: true, rootPath: "", available: true, sessionCount: 1,
+                  live: .init(output: 1_000, total: 2_000), today: .zero, activeAgents: 3,
+                  liveEstimated: .init(output: 1_000, total: 2_000)),
+            .init(kind: .claudeDesktop, enabled: true, rootPath: "", available: true, sessionCount: 1,
+                  live: .init(output: 20, total: 40), today: .zero, activeAgents: 2,
+                  liveEstimated: .init(output: 20, total: 40)),
+            .init(kind: .codex, enabled: true, rootPath: "", available: true, sessionCount: 1,
+                  live: .init(output: 20, total: 40), today: .zero, activeAgents: 1,
+                  liveEstimated: .init(output: 5, total: 10)),
+            .init(kind: .deepseek, enabled: true, rootPath: "", available: true, sessionCount: 1,
+                  live: .init(output: 7, total: 14), today: .zero, activeAgents: 0,
+                  liveEstimated: .init(output: 2, total: 4)),
+        ]
+        snapshot.report = .init(
+            agents: [.claudeCode: .init(generating: 3), .claudeDesktop: .init(generating: 2), .codex: .init(generating: 1)],
+            generatingModels: [
+                .init(modelId: "claude-model", source: .claudeCode): 3,
+                .init(modelId: "gpt-6.1-sol", source: .codex): 1,
+            ],
+            counters: counters
+        )
+        let mixed = ReportSample(snapshot: snapshot, traffic: .off)
+
+        let safe = AgentSpeedReportingController.reportableSample(mixed)
+        XCTAssertEqual(Set(safe.sources.keys), [.codex, .deepseek])
+        XCTAssertEqual(safe.live.output, 27)
+        XCTAssertEqual(safe.live.total, 54)
+        XCTAssertEqual(safe.estimatedShare, 7.0 / 27.0, accuracy: 0.0001)
+        XCTAssertEqual(safe.facts.counters.total.requests, 6)
+        XCTAssertEqual(safe.facts.counters.total.output, 42)
+        XCTAssertEqual(Set(safe.facts.agents.keys), [.codex])
+        XCTAssertEqual(Set(safe.facts.generatingModels.keys.map(\.source)), [.codex])
+
+        let window = ReportWindow(.init())
+        let envelope = ReportEnvelope(
+            client: AgentSpeedReportingController.client, deviceId: "device", username: "test-device",
+            runId: "run", seq: 1, sentAtMs: 1_767_000_000_000, windowMs: 1_000,
+            activity: .active, titleLevel: 0
+        )
+        let body = ReportBody.data(
+            envelope, window.content(safe), safe,
+            ReportOptions(sections: [.sources, .models], extensions: .init(modelHarnessRequests: true, executionModes: true))
+        )
+        XCTAssertTrue(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(body))
+        let text = try XCTUnwrap(String(data: body, encoding: .utf8))
+        XCTAssertFalse(text.contains("claudeCode"))
+        XCTAssertFalse(text.contains("claudeDesktop"))
+        XCTAssertTrue(text.contains("codex"))
+        XCTAssertTrue(text.contains("deepseek"))
+    }
+
+    func testReportPayloadGuardRejectsClaudeUnknownAndUnattributedBodies() {
+        XCTAssertTrue(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(
+            Data(#"{"sources":[{"source":"codex"}],"models":[]}"#.utf8)
+        ))
+        XCTAssertFalse(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(
+            Data(#"{"sources":[{"source":"claudeCode"}],"models":[]}"#.utf8)
+        ))
+        XCTAssertFalse(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(
+            Data(#"{"sources":[{"source":"claudeDesktop"}],"models":[]}"#.utf8)
+        ))
+        XCTAssertFalse(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(
+            Data(#"{"sources":[{"source":"unrecognized"}],"models":[]}"#.utf8)
+        ))
+        XCTAssertFalse(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(
+            Data(#"{"schema":1,"delta":{"requests":10}}"#.utf8)
+        ))
     }
 
     func testFailedNicknameCannotGrantConsent() {

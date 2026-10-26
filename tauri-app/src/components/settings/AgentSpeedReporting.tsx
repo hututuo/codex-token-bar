@@ -17,7 +17,7 @@ export interface AgentSpeedReportingStatus {
 const website = "https://deng.codexradar.com/";
 const privacy = `${website}agent-speed/privacy/`;
 const terms = `${website}agent-speed/terms/`;
-const disclosure = "仅上报速度、Token、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止这条链路的采集和上报。";
+const disclosure = "仅上报速度、Token、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。Claude Code／Desktop 始终只在本地读取，不参与上报。关闭后停止这条链路的采集和上报。";
 const duplicateNotice = "同一台电脑的同一数据源，请只在 Agent Speed 或 Token Bar 中开启一处上报，避免重复累计。";
 export const supportedHarnesses = "Codex、Claude Code、Claude Desktop（本地 Code／Agent 会话）、DSH、OpenCode、Gemini CLI、omp、Antigravity、WorkBuddy、WorkBuddy AI、ZCode、Kimi Code、Grok Build";
 const initial: AgentSpeedReportingStatus = {

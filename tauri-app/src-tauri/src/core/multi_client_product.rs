@@ -107,17 +107,17 @@ pub fn quota_provider_snapshots(claude: &ClaudeLocalQuotaSnapshot) -> Vec<QuotaP
         "missing" => (
             "notConnected",
             Vec::new(),
-            "请在 Claude 的用户设置中安装或启用 claude-monitor --statusline，然后重新打开 Claude 并使用一次以生成本地缓存。此流程不会自动修改你的 Claude 配置。额度未绑定到具体账号，只反映最近 Claude 进程；缓存超过 10 分钟会过期。",
+            "可手动配置 Claude 本地 statusLine 命令：Windows 使用 ClaudeLocalReader --capture-statusline，Mac 使用 TokenBarClaudeLocal；也兼容已有 claude-monitor --statusline 缓存。使用 Claude 生成新记录后刷新。此流程不会自动修改你的 Claude 配置。额度未绑定到具体账号，只反映最近 Claude 进程；缓存超过 10 分钟会过期。",
         ),
         "stale" => (
             "unavailable",
             Vec::new(),
-            "Claude 状态栏缓存超过 10 分钟，已过期。请重新打开 Claude 并使用一次以更新本地缓存；额度未绑定到具体账号。",
+            "Claude 状态栏缓存超过 10 分钟，已过期。请使用 Claude 生成新的本地状态栏记录；额度未绑定到具体账号。",
         ),
         _ => (
             "unavailable",
             Vec::new(),
-            "Claude 本地状态栏缓存无效或暂不可用。请在 Claude 的用户设置中安装或启用 claude-monitor --statusline，再重新打开 Claude 并使用一次。此流程不会自动修改配置；额度未绑定到具体账号，缓存超过 10 分钟会过期。",
+            "Claude 本地状态栏缓存无效或暂不可用。可手动配置本地状态栏命令（Windows：ClaudeLocalReader --capture-statusline；Mac：TokenBarClaudeLocal；兼容已有 claude-monitor --statusline），使用 Claude 生成新记录后刷新。此流程不会自动修改配置；额度未绑定到具体账号，缓存超过 10 分钟会过期。",
         ),
     };
 
@@ -464,7 +464,7 @@ mod tests {
         assert_eq!(disconnected[0].state, "notConnected");
         assert!(disconnected[0]
             .notice
-            .contains("claude-monitor --statusline"));
+            .contains("ClaudeLocalReader --capture-statusline"));
         assert!(disconnected[0].notice.contains("10 分钟"));
     }
 }

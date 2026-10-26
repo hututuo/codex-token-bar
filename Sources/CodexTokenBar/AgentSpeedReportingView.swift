@@ -22,7 +22,7 @@ struct AgentSpeedReportingSettingsView: View {
                 TextField("排行榜昵称", text: $nickname).textFieldStyle(.roundedBorder)
                     .disabled(controller.enabled)
             }
-            Text("仅上报速度、Token、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。关闭后停止这条链路的采集和上报。")
+            Text("仅上报速度、Token、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。Claude Code／Desktop 始终只在本地读取，不参与上报。关闭后停止这条链路的采集和上报。")
                 .font(.callout).foregroundStyle(.secondary)
             Text("同一台电脑的同一数据源，请只在 Agent Speed 或 Token Bar 中开启一处上报，避免重复累计。")
                 .font(.callout).foregroundStyle(.secondary)
@@ -57,7 +57,7 @@ struct AgentSpeedReportingSettingsView: View {
                 }
             }
             DisclosureGroup("支持的软件") {
-                Text("Codex、Claude Code、Claude Desktop（本地 Code／Agent 会话）、DSH、OpenCode、Gemini CLI、omp、Antigravity、WorkBuddy、WorkBuddy AI、ZCode、Kimi Code、Grok Build。自动发现本地默认目录及环境变量指定的目录；云端未落地的会话无法统计。")
+                Text("Claude Code／Desktop 只在本机统计，不上报。可上报：Codex、DSH、OpenCode、Gemini CLI、omp、Antigravity、WorkBuddy、WorkBuddy AI、ZCode、Kimi Code、Grok Build。自动发现本地默认目录及环境变量指定的目录；云端未落地的会话无法统计。")
                     .font(.callout).padding(.top, 6)
             }
             HStack(spacing: 16) {

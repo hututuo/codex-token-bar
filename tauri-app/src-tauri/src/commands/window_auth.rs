@@ -79,6 +79,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "read_agent_speed_reporting_status",
+    "read_claude_local_runtime_snapshot",
     "read_sidebar_trend",
     "get_codex_home",
     "read_app_settings",

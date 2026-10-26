@@ -61,13 +61,25 @@ final class QuotaSidebarItemLayoutTests: XCTestCase {
         var value = QuotaSidebarItemLayout()
         value.move(.quota("claudeCode"), relativeTo: .speed, after: false)
         var items = value.arranged(availableQuotaClients: ["codex", "claudeCode"]).filter(value.isVisible)
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["claudeCode:5h", "claudeCode:7d", "speed", "codex:7d", "models", "tasks"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["modeltrace", "claudeCode:5h", "claudeCode:7d", "speed", "tps", "codex:7d", "models", "tasks", "radar", "credits"])
         value.hidden.insert(QuotaSidebarItem.quota("claudeCode").id)
         items = value.arranged(availableQuotaClients: ["codex", "claudeCode"]).filter(value.isVisible)
         XCTAssertFalse(items.contains(.quota("claudeCode")))
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["speed", "codex:7d", "models", "tasks"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["modeltrace", "speed", "tps", "codex:7d", "models", "tasks", "radar", "credits"])
         value.hidden.insert(QuotaSidebarItem.tps.id)
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items.filter(value.isVisible), quotas: quotas), ["speed", "codex:7d", "models", "tasks"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items.filter(value.isVisible), quotas: quotas), ["modeltrace", "speed", "codex:7d", "models", "tasks", "radar", "credits"])
+    }
+
+    func testCompactDotsUseSameOrderAndOnlySixPointsOfHeight() {
+        let items: [QuotaSidebarItem] = [.modeltrace, .speed, .tps]
+        XCTAssertTrue(items.allSatisfy(\.hasCompactRepresentation))
+        XCTAssertEqual(items.filter(\.usesCompactDot), [.modeltrace, .tps])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: []), ["modeltrace", "speed", "tps"])
+        XCTAssertEqual(ClientRailLayout.fixed(trackCount: 3, dotCount: 2, availableHeight: 900).height, 112)
+        var layout = QuotaSidebarItemLayout()
+        layout.setVisible(.tps, in: .compact, visible: false)
+        XCTAssertFalse(layout.isVisible(.tps, in: .compact))
+        XCTAssertTrue(layout.isVisible(.tps, in: .expanded))
     }
 
     func testTemporaryMissingClientDoesNotEraseItsPlacementOrHiddenChoice() throws {

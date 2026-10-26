@@ -1,3 +1,4 @@
+import { useClientScope } from "../../multiClient/useClientScope";
 import type { ClientCostPeriods } from "../../multiClient/originalDashboardProjection";
 import type { QuotaItem } from "../../multiClient/integratedClientModel";
 import { LiveRateCard } from "../../components/LiveRateCard";
@@ -97,6 +98,7 @@ export function DashboardSummarySection({
   // doing so would make a chart aggregate look like a current model reading.
   const latestTodayTokens = dashboard.usageSummary?.todayTokens ?? 0;
   const latestTodayModels = dashboard.usageSummary?.todayModelBreakdowns ?? [];
+  const scope = useClientScope();
   return (
     <>
       {!speedOnly && <>
@@ -146,7 +148,8 @@ export function DashboardSummarySection({
       />
       </>}
       {includesCodex && <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />}
-      {includesCodex && <LiveRateCard
+      {(includesCodex || scope.allowed.some(c => ["claudeCode", "claudeDesktop"].includes(c))) && <LiveRateCard
+        includesCodex={includesCodex} localClients={scope.allowed}
         sourceToken={sourceToken}
         liveThreadOptions={liveThreadOptions}
         floatingEnabled={displaySurfaces.floatingWindowEnabled}

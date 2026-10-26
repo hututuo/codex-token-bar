@@ -1199,8 +1199,8 @@ struct DashboardView: View {
                 floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
                 tokenRateFullScale: $tokenRateFullScale,
                 onOpenSettings: { showingAppSettings = true },
-                sourceLabel: codexOnly ? nil : (allowedClients.contains("codex") ? "Codex 正文 TPS" : ClientDisplayScope.title(clientScope) + " · 正文 TPS 未接入"),
-                sourceAvailable: allowedClients.contains("codex")
+                sourceLabel: codexOnly ? nil : (allowedClients.contains("codex") ? "Codex 正文 TPS" : ClientDisplayScope.title(clientScope) + " · 本地测速"),
+                sourceAvailable: allowedClients.contains("codex"), localClients: allowedClients
             )
 
             ActivitySection(

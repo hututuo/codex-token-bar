@@ -170,12 +170,19 @@ pub async fn save_display_surfaces(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     live_rate: tauri::State<'_, crate::commands::live::LiveRateMonitorRegistry>,
+    claude_runtime: tauri::State<'_, crate::core::claude_local_runtime::ClaudeLocalRuntimeRegistry>,
     display: DisplaySurfaceSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_display_surfaces")?;
     // 保存（磁盘写+fsync）在阻塞池；托盘同步沿用既有原生调用路径（live 流
     // 循环本就从异步任务调用同一原生入口），失败只记录不回滚已保存设置。
-    let saved = run_blocking_command(move || platform::save_display_surfaces(display)).await?;
+    let claude_runtime = claude_runtime.inner().clone();
+    let saved = run_blocking_command(move || {
+        let saved = platform::save_display_surfaces(display)?;
+        claude_runtime.set_live_rate_enabled(saved.display_surfaces.live_rate_enabled);
+        Ok(saved)
+    })
+    .await?;
     let saved = sync_saved_display_surfaces(
         saved,
         |saved| live_rate.sync_status_tray_interest(&app, &saved.display_surfaces),

@@ -17,9 +17,13 @@ pub(crate) async fn read_multi_client_usage_snapshot() -> Result<MultiClientUsag
 #[tauri::command]
 pub(crate) async fn save_multi_client_usage_preferences(
     preferences: Vec<MultiClientUsagePreference>,
+    runtime: tauri::State<'_, crate::core::claude_local_runtime::ClaudeLocalRuntimeRegistry>,
 ) -> Result<Vec<MultiClientUsagePreference>, String> {
+    let runtime = runtime.inner().clone();
     let result = run_blocking_command(move || {
-        multi_client_usage::save_multi_client_usage_preferences(preferences)
+        let saved = multi_client_usage::save_multi_client_usage_preferences(preferences)?;
+        runtime.reconcile_preferences(&saved);
+        Ok(saved)
     })
     .await?;
     if let Ok(mut last) = multi_client_scan_clock().lock() {

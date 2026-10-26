@@ -17,6 +17,7 @@ struct LiveRateView: View {
     let onOpenSettings: () -> Void
     var sourceLabel: String? = nil
     var sourceAvailable = true
+    var localClients: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -49,7 +50,10 @@ struct LiveRateView: View {
             .frame(height: LiveRatePanelLayout.contentHeight)
             ObservedSpeedView(monitor: monitor)
             } else {
-                Text("暂无正文测速样本").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                if localClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) { Text("暂无正文测速样本").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
+            }
+            if !localClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) {
+                ClaudeLocalSpeedView(allowed: localClients)
             }
         }
         .padding(.horizontal, 12)
@@ -72,6 +76,7 @@ struct LiveRateView: View {
     }
 
     private func syncMonitoringEnabled(_ enabled: Bool) {
+        MultiClientUsageStore.shared.syncLocalRuntime(monitoringEnabled: enabled)
         guard sourceAvailable else { return }
         monitor.setMonitoringEnabled(enabled)
         floatingPanelShowRateAndBar = enabled

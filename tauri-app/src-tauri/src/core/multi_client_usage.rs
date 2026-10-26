@@ -547,7 +547,9 @@ fn make_snapshot(
     trend_buckets: Vec<MultiClientUsageTrendBucket>,
     daily_buckets: Vec<MultiClientUsageTrendBucket>,
 ) -> MultiClientUsageSnapshot {
-    let local_claude_quota = read_claude_local_quota();
+    let local_claude_quota = if preferences.iter().any(|p| p.client == "claudeCode" && p.enabled) {
+        read_claude_local_quota()
+    } else { claude_quota_state("missing") };
     MultiClientUsageSnapshot {
         preferences,
         summaries,
@@ -760,22 +762,29 @@ fn refresh_multi_client_usage_at(
 }
 
 pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
-    let path = app_paths::home_dir()
-        .join(".claude-monitor")
-        .join("statusline")
-        .join("latest.json");
+    let home = app_paths::home_dir();
+    let app_capture = if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Local"))
+            .join("CodexTokenBar").join("claude-local-statusline").join("latest.json")
+    } else {
+        home.join("Library").join("Application Support").join("CodexTokenBar")
+            .join("claude-local-statusline").join("latest.json")
+    };
+    let path = if fs::symlink_metadata(&app_capture).is_ok() { app_capture }
+        else { home.join(".claude-monitor").join("statusline").join("latest.json") };
     read_claude_local_quota_at(&path, OffsetDateTime::now_utc().unix_timestamp() as f64)
 }
 
 fn read_claude_local_quota_at(path: &Path, now_epoch: f64) -> ClaudeLocalQuotaSnapshot {
-    let metadata = match fs::metadata(&path) {
+    let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return claude_quota_state("missing")
         }
         Err(_) => return claude_quota_state("invalid"),
     };
-    if metadata.len() > 64 * 1024 {
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 64 * 1024 {
         return claude_quota_state("invalid");
     }
     let bytes = match fs::File::open(path).and_then(|file| {

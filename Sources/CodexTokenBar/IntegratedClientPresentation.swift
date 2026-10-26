@@ -130,9 +130,10 @@ struct ClientRailLayout: Equatable {
     let height: Double
     /// Keep the current 46pt tracks; overflowing content scrolls instead of
     /// silently switching styles or imposing an item-count limit.
-    static func fixed(trackCount: Int, availableHeight: Double) -> Self {
+    static func fixed(trackCount: Int, dotCount: Int = 0, availableHeight: Double) -> Self {
         let count = max(0, trackCount)
-        let preferred = Double(count) * 46 + Double(max(0, count - 1)) * 12 + 30
+        let dots = min(count, max(0, dotCount))
+        let preferred = Double(count - dots) * 46 + Double(dots) * 6 + Double(max(0, count - 1)) * 12 + 30
         let maxHeight = max(30, availableHeight.isFinite ? availableHeight : 900)
         return Self(barHeight: 46, gap: 12, height: min(maxHeight, preferred))
     }

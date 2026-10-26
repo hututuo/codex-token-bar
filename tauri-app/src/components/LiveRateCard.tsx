@@ -1,3 +1,4 @@
+import { ClaudeLocalRuntimePanel } from "../multiClient/ClaudeLocalRuntime";
 import { CacheUsageNotice } from "./cacheReminder/CacheUsageNotice";
 import { ObservedSpeedDetails } from "./liveRate/ObservedSpeedDetails";
 import { canUseQuotaSidebar } from "../settings/displaySettings";
@@ -7,6 +8,8 @@ import { LiveRateMeter } from "./liveRate/LiveRateMeter";
 import { liveRateNotice } from "./liveRate/liveRateNotice";
 
 interface LiveRateCardProps {
+  includesCodex?: boolean;
+  localClients?: readonly string[];
   sourceToken?: CodexHomeSourceToken | null;
   liveThreadOptions?: LiveThreadOption[];
   floatingSettings: FloatingWindowSettings;
@@ -30,6 +33,7 @@ interface LiveRateCardProps {
 }
 
 export function LiveRateCard({
+  includesCodex = true, localClients = [],
   sourceToken = null,
   liveThreadOptions = [],
   floatingSettings,
@@ -71,6 +75,7 @@ export function LiveRateCard({
 
   return (
     <section className={liveRateEnabled ? "live-card" : "live-card is-live-disabled"} aria-label="实时速率">
+      {includesCodex && <>
       <div className="section-title-row">
         <div>
           <div className="live-heading-line">
@@ -194,6 +199,8 @@ export function LiveRateCard({
         </div>
       </div>
       <ObservedSpeedDetails data={snapshot} threads={liveThreadOptions} sourceToken={sourceToken} />
+      </>}
+      <ClaudeLocalRuntimePanel allowed={localClients} monitoringEnabled={liveRateEnabled}/>
     </section>
   );
 }
