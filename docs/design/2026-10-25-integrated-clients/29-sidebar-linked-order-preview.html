@@ -10,15 +10,18 @@
 @media(max-width:650px){.app{margin:10px 6px;border-radius:18px}.workspace{grid-template-columns:150px minmax(0,1fr)}.preview{padding:18px 8px}.preview .section-head{display:block}.preview .hint{display:block;font-size:10px;margin-top:7px;line-height:1.5}.stages{min-height:0;grid-template-columns:32px 88px;gap:6px;justify-content:center}.stage-title{font-size:10px;white-space:nowrap}.stage-inner{min-height:590px}.settings{padding:18px 10px}.settings-subtitle{font-size:11px}.row-main{gap:6px;padding-right:7px}.name{font-size:11px}.row-meta{font-size:9px}.grip{width:21px}.windows{margin-left:42px;gap:9px;flex-wrap:wrap}.window-note{font-size:9px}.settings .section-head h2{font-size:14px}.preview-note{font-size:10px}.app-head h1{font-size:17px}.tag{display:block;font-size:9px;max-width:90px;line-height:1.5}.actions{font-size:10px;flex-wrap:wrap}.action-help{font-size:10px}}
 @media(max-width:420px){.workspace{grid-template-columns:130px minmax(0,1fr)}.preview{padding-left:3px;padding-right:3px}.row-meta{display:none}.settings{padding-left:7px;padding-right:7px}.windows{margin-left:15px}.app-head{padding:15px 12px}.app-head p{font-size:10px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+.preview{position:relative}.stages{position:relative}.stage{z-index:1}.connections{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:2}.connection-path{fill:none;stroke-width:1.3;stroke-linecap:round}.connection-label{font-size:9px;font-weight:600;paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round}.mapping-caption{min-height:66px;padding:9px 10px;margin:0 0 14px;background:#b6ef750b;border:1px solid #b6ef7528;border-radius:7px;line-height:1.6}.mapping-caption strong{display:block;font-size:12px;font-weight:600}.mapping-caption span{font-size:11px;color:#d2d9c8}.preview.has-selection .rail-group,.preview.has-selection .mini-module{opacity:.32;transition:opacity .14s}.preview.has-selection [data-module].is-linked{opacity:1;outline:1px solid #b6ef7566;outline-offset:3px;background:#b6ef7510!important}.setting-row.is-selected{border-color:#b6ef7580;background:#b6ef750a}.setting-row.is-selected:before{content:"";position:absolute;left:-1px;top:10px;bottom:10px;width:3px;background:var(--green);border-radius:2px}.setting-row.is-selected.before:before{top:-5px;bottom:auto;right:0;width:auto;height:2px}.row-meta .selected-hint{display:block;text-align:right;color:var(--green);font-size:9px;margin-top:3px}.rail-group.is-linked .track{box-shadow:0 0 0 3px #b6ef7514}.stage-title{color:#dce2d4}.settings-subtitle strong{font-weight:500;color:var(--green)}
+@media(max-width:650px){.mapping-caption{padding:7px;min-height:88px}.mapping-caption strong{font-size:11px}.mapping-caption span{font-size:10px}.connection-label{font-size:8px}}
 </style>
 <div class="app">
   <header class="app-head"><div class="logo" aria-hidden="true">&gt;_</div><div><h1>侧栏设置</h1><p>Codex Token Bar · 一级与二级联动</p></div><span class="tag">网页交互稿 · 模拟数据</span></header>
   <main class="workspace">
-    <section class="preview" aria-label="侧栏联动预览"><div class="section-head"><h2>预览</h2><span class="hint">沿用当前条长与圆环尺寸</span></div>
-      <div class="stages"><div class="stage"><div class="stage-title">一级 · 收起</div><div class="stage-inner"><div class="rail" id="rail" aria-label="一级竖条"></div></div></div><div class="stage"><div class="stage-title">二级 · 展开</div><div class="stage-inner"><div class="level2"><div class="tools" aria-hidden="true"><span>♧</span><span>↻</span><span>▱</span></div><div class="secondary-list" id="secondary" aria-label="二级菜单"></div><div class="footer-settings">☷ &nbsp;侧栏设置</div></div></div></div></div>
+    <section class="preview has-selection" aria-label="侧栏联动预览"><div class="section-head"><h2>对应预览</h2><span class="hint">指向或点击一项，看它展开到哪里</span></div>
+      <div class="mapping-caption" id="mapping-caption" role="status"></div>
+      <div class="stages" id="stages"><svg class="connections" id="connections" aria-hidden="true"></svg><div class="stage"><div class="stage-title">一级 · 收起</div><div class="stage-inner"><div class="rail" id="rail" aria-label="一级竖条"></div></div></div><div class="stage"><div class="stage-title">二级 · 展开</div><div class="stage-inner"><div class="level2"><div class="tools" aria-hidden="true"><span>♧</span><span>↻</span><span>▱</span></div><div class="secondary-list" id="secondary" aria-label="二级菜单"></div><div class="footer-settings">☷ &nbsp;侧栏设置</div></div></div></div></div>
       <p class="preview-note">同一客户端一起移动。两项额度对应两根条，展开后对应左右半环；只有一项就用整环。</p>
     </section>
-    <section class="settings" aria-label="侧栏排序与显示"><div class="section-head"><h2>显示与顺序</h2><button class="reset" id="reset">恢复默认</button></div><p class="settings-subtitle">拖动左侧把手排序，勾选控制显示。<br>有一级竖条的项目，会和二级菜单一起调整。</p>
+    <section class="settings" aria-label="侧栏排序与显示"><div class="section-head"><h2>显示与顺序</h2><button class="reset" id="reset">恢复默认</button></div><p class="settings-subtitle"><strong>指向一行，两级同时高亮对应位置。</strong><br>拖动把手排序，勾选控制两级一起显示。</p>
       <div class="list" id="settings-list" aria-label="可拖动的侧栏项目"></div>
       <div class="actions"><span>仅二级的入口不另造竖条</span><span class="saved" id="saved" role="status">已保存到此网页</span></div>
       <div class="action-help">7天用圆点，5小时用半圆，颜色区分客户端。<br>可用键盘排序：聚焦把手 → 空格提起 → ↑↓ 移动 → 空格放下；Esc 取消。</div>
@@ -43,7 +46,7 @@ const definitions={
 };
 const initial={order:Object.keys(definitions),hidden:['usage'],windows:{codex:['7d'],claude:['5h','7d']}};
 const copy=v=>JSON.parse(JSON.stringify(v));
-let state=copy(initial),dragID=null,dropTarget=null,keyboardDrag=null,pointerDrag=null,pointerFrame=null;
+let state=copy(initial),dragID=null,dropTarget=null,keyboardDrag=null,pointerDrag=null,pointerFrame=null,selectedID='claude',connectionFrame=null,hoverLockUntil=0;
 try{const cached=JSON.parse(localStorage.getItem(key));if(cached&&Array.isArray(cached.order)){state.order=[...new Set([...cached.order.filter(id=>definitions[id]),...initial.order])];state.hidden=Array.isArray(cached.hidden)?cached.hidden.filter(id=>definitions[id]):[];for(const id of ['codex','claude'])if(Array.isArray(cached.windows?.[id]))state.windows[id]=definitions[id].windows.filter(w=>cached.windows[id].includes(w));}}catch{}
 const $=id=>document.getElementById(id);
 function save(message='已保存到此网页'){try{localStorage.setItem(key,JSON.stringify(state));$('saved').textContent=message;}catch{$('saved').textContent='本次预览已更新（无法持久保存）';}}
@@ -60,7 +63,7 @@ function ring(values,color){
   return `<svg class="ring" viewBox="0 0 46 46">${values.map((v,i)=>`<path d="${paths[i]}" fill="none" stroke="${track}" stroke-width="3"/><path d="${paths[i]}" fill="none" stroke="${v.fill}" stroke-width="3" stroke-linecap="round" pathLength="100" stroke-dasharray="${v.value} 100"/>`).join('')}<text x="14" y="27" text-anchor="middle" fill="#fff" font-size="11" font-weight="500">${values[0].value}</text><path d="M23 19v8" stroke="#ffffff60"/><text x="32" y="27" text-anchor="middle" fill="#fff" font-size="11" font-weight="500">${values[1].value}</text></svg>`;
 }
 function quotaValues(id){return state.windows[id].map(w=>({window:w,value:id==='codex'?72:w==='5h'?62:84,fill:w==='5h'?'var(--green)':'var(--purple)'}));}
-function track(value,fill,brand,window){return `<div class="track"><div class="track-fill" style="height:${value}%;background:${fill}"></div>${brand?`<i class="marker ${window==='5h'?'half':''}" style="background:${brand}"></i>`:''}</div>`;}
+function track(value,fill,brand,window){return `<div class="track" data-window="${window||''}"><div class="track-fill" style="height:${value}%;background:${fill}"></div>${brand?`<i class="marker ${window==='5h'?'half':''}" style="background:${brand}"></i>`:''}</div>`;}
 function renderPreviews(){
   let first='',second='';
   for(const id of state.order){if(state.hidden.includes(id))continue;const d=definitions[id];let small='',large='';
@@ -78,11 +81,52 @@ function renderPreviews(){
   }
   $('rail').innerHTML=first||'<span class="empty">—</span>';$('secondary').innerHTML=second||'<div class="empty">未显示模块</div>';
 }
-function render(){renderSettings();renderPreviews();}
+function queueConnections(){if(connectionFrame!==null)cancelAnimationFrame(connectionFrame);connectionFrame=requestAnimationFrame(()=>{connectionFrame=null;drawConnections();});}
+function drawConnections(){
+  const overlay=$('connections'),stage=$('stages').getBoundingClientRect();
+  overlay.setAttribute('viewBox',`0 0 ${stage.width} ${stage.height}`);overlay.innerHTML='';
+  const first=document.querySelector(`#rail [data-module="${selectedID}"]`),second=document.querySelector(`#secondary [data-module="${selectedID}"]`);
+  if(!first||!second)return;
+  const viewport=$('secondary').getBoundingClientRect(),secondBounds=second.getBoundingClientRect();
+  if(secondBounds.bottom<viewport.top||secondBounds.top>viewport.bottom)return;
+  const d=definitions[selectedID],ringBounds=second.querySelector('.ring')?.getBoundingClientRect(),tracks=[...first.querySelectorAll('.track')];
+  const paths=tracks.map((track,index)=>{
+    const a=track.getBoundingClientRect(),window=track.dataset.window;
+    const x1=a.right-stage.left+3,y1=a.top+a.height/2-stage.top;
+    const paired=d.kind==='quota'&&tracks.length===2;
+    const target=ringBounds||secondBounds;
+    const x2=(paired&&index===1?target.right-4:target.left+2)-stage.left;
+    const y2=target.top+target.height/2-stage.top+(paired&&index===1?14:0);
+    const color=window==='5h'?'#b6ef75':window==='7d'?'#b4acff':'#78b7ff';
+    const cx1=x1+Math.max(10,(x2-x1)*.35),cx2=x2-Math.max(12,(x2-x1)*.35);
+    const label=window==='5h'?'5h':window==='7d'?'7d':'';
+    return `<path class="connection-path" stroke="${color}" d="M${x1},${y1} C${cx1},${y1} ${cx2},${y2} ${x2},${y2}"/><circle cx="${x1}" cy="${y1}" r="2" fill="${color}"/><circle cx="${x2}" cy="${y2}" r="2.4" fill="${color}"/>${label?`<text class="connection-label" x="${x1+8}" y="${y1-6}" fill="${color}">${label}</text>`:''}`;
+  });overlay.innerHTML=paths.join('');
+}
+function selectModule(id,{reveal=false}={}){
+  if(!definitions[id])return;selectedID=id;
+  document.querySelectorAll('.is-linked,.is-selected').forEach(n=>n.classList.remove('is-linked','is-selected'));
+  document.querySelector(`#settings-list [data-id="${id}"]`)?.classList.add('is-selected');
+  document.querySelectorAll(`[data-module="${id}"]`).forEach(n=>n.classList.add('is-linked'));
+  document.querySelectorAll('#settings-list .selected-hint').forEach(n=>n.remove());
+  const meta=document.querySelector(`#settings-list [data-id="${id}"] .row-meta`);
+  if(meta){const badge=document.createElement('span');badge.className='selected-hint';badge.textContent='正在对应';meta.appendChild(badge);}
+  let description;
+  if(state.hidden.includes(id))description='已隐藏：一级和二级都不显示。';
+  else if(definitions[id].kind==='quota'){
+    const values=quotaValues(id);
+    description=values.length===2?'5小时条 → 左半环；7天条 → 右半环。':values.length===1?`${values[0].window==='5h'?'5小时':'7天'}这一根条 → 一个完整圆环。`:'没有选中额度窗口，两级都不显示。';
+  }else if(definitions[id].kind==='secondary')description='只在二级展开时显示，一级不另画竖条。';
+  else description=id==='speed'?'一级速度条 → 二级速度环。':'一级模型色带 → 二级模型占比。';
+  $('mapping-caption').innerHTML=`<strong>${definitions[id].name}</strong><span>${description}</span>`;
+  if(reveal){const element=document.querySelector(`#secondary [data-module="${id}"]`);if(element){const rect=element.getBoundingClientRect(),area=$('secondary').getBoundingClientRect();if(rect.top<area.top)$('secondary').scrollTop-=area.top-rect.top+4;else if(rect.bottom>area.bottom)$('secondary').scrollTop+=rect.bottom-area.bottom+4;}}
+  queueConnections();
+}
+function render(){renderSettings();renderPreviews();selectModule(selectedID);}
 function clearDrop(){document.querySelectorAll('.before,.after').forEach(e=>e.classList.remove('before','after'));}
 function move(id,target,after){const next=state.order.filter(v=>v!==id);let index=next.indexOf(target);if(index<0)return;next.splice(index+(after?1:0),0,id);state.order=next;}
 const list=$('settings-list');
-list.addEventListener('change',e=>{const input=e.target;if(input.dataset.visible){const id=input.dataset.visible;state.hidden=state.hidden.filter(v=>v!==id);if(!input.checked)state.hidden.push(id);}else if(input.dataset.window){const {client,window:w}=input.dataset;state.windows[client]=definitions[client].windows.filter(v=>v===w?input.checked:state.windows[client].includes(v));}else return;save();render();});
+list.addEventListener('change',e=>{const input=e.target;if(input.dataset.visible){const id=input.dataset.visible;selectedID=id;state.hidden=state.hidden.filter(v=>v!==id);if(!input.checked)state.hidden.push(id);}else if(input.dataset.window){const {client,window:w}=input.dataset;selectedID=client;state.windows[client]=definitions[client].windows.filter(v=>v===w?input.checked:state.windows[client].includes(v));}else return;save();render();});
 function updatePointer(x,y){
   if(!pointerDrag)return;
   if(!dragID&&Math.hypot(x-pointerDrag.x,y-pointerDrag.y)<4)return;
@@ -110,11 +154,11 @@ function finishPointer(apply){
   pointerDrag.ghost?.remove();
   if(handle.hasPointerCapture(pointerID))handle.releasePointerCapture(pointerID);
   pointerDrag=null;dragID=null;dropTarget=null;clearDrop();
-  if(moved){if(apply)save();render();list.querySelector(`[data-handle="${moved}"]`)?.focus();announce(apply?definitions[moved].name+'顺序已更新，两级菜单已同步':'已取消移动');}
+  if(moved){selectedID=moved;hoverLockUntil=performance.now()+500;if(apply)save();render();list.querySelector(`[data-handle="${moved}"]`)?.focus();announce(apply?definitions[moved].name+'顺序已更新，两级菜单已同步':'已取消移动');}
 }
 list.addEventListener('pointerdown',e=>{
   const handle=e.target.closest('[data-handle]');if(!handle||e.button!==0)return;
-  e.preventDefault();handle.focus();pointerDrag={id:handle.dataset.handle,handle,pointerID:e.pointerId,x:e.clientX,y:e.clientY};handle.setPointerCapture(e.pointerId);
+  e.preventDefault();handle.focus();selectModule(handle.dataset.handle,{reveal:true});pointerDrag={id:handle.dataset.handle,handle,pointerID:e.pointerId,x:e.clientX,y:e.clientY};handle.setPointerCapture(e.pointerId);
 });
 list.addEventListener('pointermove',e=>{
   if(!pointerDrag||e.pointerId!==pointerDrag.pointerID)return;
@@ -128,9 +172,13 @@ list.addEventListener('keydown',e=>{const handle=e.target.closest('[data-handle]
   else if(keyboardDrag&&['ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();const index=state.order.indexOf(id),target=state.order[index+(e.key==='ArrowUp'?-1:1)];if(target){move(id,target,e.key==='ArrowDown');renderSettings();list.querySelector(`[data-handle="${id}"]`)?.focus();announce('移动到第'+(state.order.indexOf(id)+1)+'项');}}
   else if(keyboardDrag&&e.key==='Escape'){e.preventDefault();state.order=keyboardDrag.original;keyboardDrag=null;render();list.querySelector(`[data-handle="${id}"]`)?.focus();$('saved').textContent='已取消移动';}
 });
-list.addEventListener('pointerover',e=>{const row=e.target.closest('.setting-row');document.querySelectorAll('.is-linked').forEach(n=>n.classList.remove('is-linked'));if(row)document.querySelectorAll(`[data-module="${row.dataset.id}"]`).forEach(n=>n.classList.add('is-linked'));});
-list.addEventListener('pointerleave',()=>document.querySelectorAll('.is-linked').forEach(n=>n.classList.remove('is-linked')));
-$('reset').addEventListener('click',()=>{keyboardDrag=null;state=copy(initial);save('已恢复默认');render();});
+list.addEventListener('pointermove',e=>{const row=e.target.closest('.setting-row');if(row&&!pointerDrag&&performance.now()>=hoverLockUntil&&row.dataset.id!==selectedID)selectModule(row.dataset.id,{reveal:true});});
+list.addEventListener('focusin',e=>{const row=e.target.closest('.setting-row');if(row&&!pointerDrag&&row.dataset.id!==selectedID)selectModule(row.dataset.id,{reveal:true});});
+list.addEventListener('click',e=>{const row=e.target.closest('.setting-row');if(row)selectModule(row.dataset.id,{reveal:true});});
+document.querySelector('.stages').addEventListener('click',e=>{const item=e.target.closest('[data-module]');if(item)selectModule(item.dataset.module,{reveal:true});});
+$('secondary').addEventListener('scroll',queueConnections,{passive:true});
+new ResizeObserver(queueConnections).observe($('stages'));
+$('reset').addEventListener('click',()=>{keyboardDrag=null;selectedID='claude';state=copy(initial);save('已恢复默认');render();});
 render();
 </script>
 </html>
