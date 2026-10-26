@@ -45,3 +45,9 @@ Mac累计Token模块原先只在`clientScope == codex`显示Codex，汇总漏掉
 最新验证：Swift179项、前端118项通过，TS/Vite通过；Rust布局3项通过，含新字段回存与旧隐藏兼容。日志分别为`scratch/sidebar-levels-native-final.log`、`scratch/sidebar-levels-ui-final.log`、`scratch/sidebar-levels-ts-final.log`。新增测试覆盖整环两半端点、不淡出、总填充长度、半环独立完整条、模型颜色比例、两级独立隐藏、重启保存和恢复顺序保留勾选。原生实际组件测试确认速度／任务也注册同一形变层，反向后清理归零。
 
 33号图是实际原生组件渲染、模拟额度。Mac隔离预览已重新编译启动；完整人工拖动及动效手感未替代用户验收，Windows EXE未运行／替换。此前测试中的JSON原字符串比较改为保存原编码再比，避免再次编码产生不同字典键序误报。
+
+### 文字显隐跟随展开／收起
+
+用户发现文字在圆环尚未到位时已完整出现。原二级内容层只做60ms淡入，现改为与展开同长的440ms渐入（前段较轻、后段逐渐清晰），收起按原180ms非线性曲线淡出；百分比、标签、TPS和按钮文字共同处理，不逐个添加定时器，也不等圆环完成后再突然显示。环形路径仍由原合成器接管，淡入只作用于原内容层。
+
+Tauri二级内容层同步440ms进入／180ms退出，退出保留内容与320ms事件丢失回收兜底不变。减少动态效果时取消过渡。原生定向测试日志`scratch/sidebar-disclosure-fade-native.log`；前端118项通过，TS/Vite通过，日志`scratch/sidebar-disclosure-fade-ui.log`及`scratch/sidebar-disclosure-fade-ts.log`。这属于透明度过渡调整，不新增扫描、刷新或常驻动画循环；人工视觉验收仍看隔离Mac预览。

@@ -19,7 +19,7 @@ export function measureSidebarSummary(root: HTMLElement): SidebarContentMeasurem
   return { contentHeight, speedRowHeight: row ? row.getBoundingClientRect().height + 4 : 40 };
 }
 
-// CSS fades the outer layer for 220ms. Keep outgoing children until it ends;
+// CSS fades in over the 440ms reveal and out over the 180ms collapse. Keep outgoing children until it ends;
 // the bounded fallback also retires them when WebKit suppresses transitionend.
 export const SIDEBAR_SUMMARY_RETIRE_MS = 320;
 

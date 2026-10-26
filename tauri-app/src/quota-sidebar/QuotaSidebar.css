@@ -116,6 +116,8 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 /* Both layers keep their layout across mode changes; only opacity is animated.
    Inert removes hidden summary buttons from pointer and keyboard hit testing. */
 .qs-bars,.qs-summary{transition:opacity .22s cubic-bezier(.2,.8,.2,1);animation:none}
+.qs-summary{transition:opacity .18s cubic-bezier(.333333,1,.666667,1)}
+.qs-summary[data-visible=true]{transition-duration:.44s;transition-timing-function:cubic-bezier(.35,0,.2,1)}
 .qs-bars[data-visible=false],.qs-summary[data-visible=false]{opacity:0;pointer-events:none}
 .qs-bars[data-visible=true],.qs-summary[data-visible=true]{opacity:1}
 @media(prefers-reduced-motion:reduce){.qs-bars,.qs-summary{transition:none}}

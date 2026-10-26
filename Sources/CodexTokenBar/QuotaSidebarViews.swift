@@ -203,6 +203,16 @@ struct QuotaSidebarRail: View {
         }
     }
 
+    private var disclosureFade: Animation? {
+        guard !reduceMotion else { return nil }
+        // Labels emerge while the ring is taking shape, rather than becoming
+        // opaque in 60ms. Use the same endpoints as the native reveal, without
+        // delayed tasks that could survive a quick pointer reversal.
+        return controller.interaction.expanded
+            ? .timingCurve(0.35, 0, 0.2, 1, duration: MatchedStrokeMorphTiming.standard.openingDuration)
+            : .timingCurve(1.0 / 3, 1, 2.0 / 3, 1, duration: MatchedStrokeMorphTiming.standard.closingDuration)
+    }
+
     private func morphRoutes(_ anchors: [String: Anchor<CGRect>], in proxy: GeometryProxy) -> [ClientQuotaMorphRoute] {
         let viewport = anchors["quota-viewport"].map { proxy[$0] }
         var routes = ClientQuotaRingGroup.make(quotaItems).flatMap { group -> [ClientQuotaMorphRoute] in
@@ -310,7 +320,7 @@ struct QuotaSidebarRail: View {
                 }
             }
             .opacity(controller.interaction.expanded ? 1 : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.06), value: controller.interaction.expanded)
+            .animation(disclosureFade, value: controller.interaction.expanded)
             .allowsHitTesting(controller.interaction.expanded)
             .accessibilityHidden(!controller.interaction.expanded)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: monitor.latestModelSpeeds30m.count)
