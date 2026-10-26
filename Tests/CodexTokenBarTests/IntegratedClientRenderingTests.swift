@@ -4,37 +4,46 @@ import XCTest
 @testable import CodexTokenBar
 
 final class IntegratedClientRenderingTests: XCTestCase {
-    @MainActor func testQuotaComponentsRenderWithUnknownClaudeAndHistoricalCodexReading() throws {
-        // 92% is the existing design's historical screenshot reading, not a live query.
-        let codex = ClientQuotaItem(id: "codex:7d", client: "codex", window: "7d", remaining: 92,
-            resetsAt: nil, source: "历史截图读数 · 非实时", status: "历史样本")
-        let claude = ClientQuotaItem(id: "claudeCode:5h", client: "claudeCode", window: "5h", remaining: nil,
-            resetsAt: nil, source: "本地缓存 · 未绑定账号", status: "未接入")
-        let claudeSeven = ClientQuotaItem(id: "claudeCode:7d", client: "claudeCode", window: "7d", remaining: nil,
-            resetsAt: nil, source: "本地缓存 · 未绑定账号", status: "未接入")
+    @MainActor func testQuotaComponentsRenderWithMatchedSidebarMetricsAndDisplayOnlyMockQuota() throws {
+        let fixtures = ClientQuotaProjection.previewItems(includeClaude: true)
+        let codex = fixtures[0], claude = fixtures[1], claudeSeven = fixtures[2]
         let suite = "IntegratedQuotaRender-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let candidate = VStack(alignment: .leading, spacing: 14) {
-            Text("候选组件真实渲染 · 历史样本，非安装版").font(.caption).foregroundStyle(.secondary)
+            Text("候选原生组件渲染 · 额度均为模拟数据").font(.caption).foregroundStyle(.secondary)
             HStack(alignment: .top, spacing: 24) {
+                VStack(spacing: 12) {
+                    ForEach(fixtures) { item in
+                        ClientQuotaRailTrack(item: item, height: 46, fillHex: item.fill)
+                    }
+                }.padding(.vertical, 15).frame(width: 16).background(Color.black, in: Capsule())
                 VStack(spacing: 14) {
                     Image(systemName: "pin").font(.caption).foregroundStyle(.secondary)
+                    ZStack {
+                        Circle().stroke(.white.opacity(0.15), lineWidth: 3)
+                        Circle().trim(from: 0, to: 0.62).stroke(Color(red: 120.0/255, green: 183.0/255, blue: 1), style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
+                        Text("速率").font(.system(size: 11))
+                    }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                     ClientPairedQuotaRing(left: codex, right: nil)
                     ClientPairedQuotaRing(left: claude, right: claudeSeven)
-                    Text("单项整环 · 双项左右半环").font(.system(size: 9))
+                    ZStack {
+                        Circle().stroke(Color.orange.opacity(0.5), lineWidth: 2)
+                        Text("2").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(.orange)
+                    }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
+                    Text("运行主任务").font(.system(size: 10)).foregroundStyle(.secondary)
                 }.padding(.vertical, 20).frame(width: 88).background(Color.black, in: RoundedRectangle(cornerRadius: 22))
                 VStack(alignment: .leading, spacing: 14) {
                     Text("额度概览").font(.title3.bold())
                     Divider()
                     ClientQuotaRings(items: [codex, claude, claudeSeven])
-                }.padding(20).frame(width: 400).background(Color.black, in: RoundedRectangle(cornerRadius: 24))
+                }.padding(20).frame(width: 380).background(Color.black, in: RoundedRectangle(cornerRadius: 24))
             }
-        }.padding(24).frame(width: 584, height: 580, alignment: .topLeading)
+        }.padding(24).frame(width: 620, height: 580, alignment: .topLeading)
             .background(Color(white: 0.07)).foregroundStyle(.white)
             .environment(\.colorScheme, .dark).defaultAppStorage(defaults)
         let host = NSHostingView(rootView: candidate)
-        host.frame = CGRect(x: 0, y: 0, width: 584, height: 580)
+        host.frame = CGRect(x: 0, y: 0, width: 620, height: 580)
         host.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: bitmap)

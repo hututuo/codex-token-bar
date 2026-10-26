@@ -48,6 +48,35 @@ private struct SidebarValueBar: View {
     }
 }
 
+/// The brand cap is separate from the continuous quota track and never changes
+/// the percentage denominator. Total height stays within the existing rail slot.
+struct ClientQuotaRailTrack: View {
+    let item: ClientQuotaItem
+    let height: Double
+    let fillHex: String
+    var body: some View {
+        VStack(spacing: ClientSidebarMetrics.capGap) {
+            ClientRailBrandCap()
+                .stroke(Color(nsColor: NSColor(clientHex: item.brand)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                .frame(width: ClientSidebarMetrics.capWidth, height: ClientSidebarMetrics.capHeight)
+            SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
+                color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true, expected: item.expected)
+                .frame(width: 4, height: ClientSidebarMetrics.trackHeight(height))
+        }.frame(width: 8, height: height)
+    }
+}
+
+private struct ClientRailBrandCap: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { path in
+            path.move(to: CGPoint(x: rect.minX + 0.75, y: rect.maxY - 0.75))
+            path.addLine(to: CGPoint(x: rect.minX + 0.75, y: rect.minY + 0.75))
+            path.addLine(to: CGPoint(x: rect.maxX - 0.75, y: rect.minY + 0.75))
+            path.addLine(to: CGPoint(x: rect.maxX - 0.75, y: rect.maxY - 0.75))
+        }
+    }
+}
+
 private struct SidebarValueRing: View {
     let fraction: Double?
     let color: Color
@@ -96,7 +125,7 @@ struct QuotaSidebarRail: View {
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
         let items = ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode),
             includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
-            includeFiveHour: quotaSelection.enabled.contains("codex:5h"))
+            includeFiveHour: quotaSelection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated)
         return quotaSelection.arranged(items).filter { quotaSelection.includes($0) &&
             (allowed.contains($0.client) || ($0.client == "claudeCode" && allowed.contains("claudeDesktop"))) }
     }
@@ -190,12 +219,9 @@ struct QuotaSidebarRail: View {
                             SidebarValueBar(fraction: clientScope == "codex" || clientScope == "all" ? Double(rateFraction) : nil, color: SidebarPalette.blue, vertical: true, modelRates: monitor.totalSnapshot.modelRates)
                                 .frame(width: 4, height: layout.barHeight).help("Codex 全会话实时速率（估算）\(rateText)")
                             ForEach(quotaItems) { item in
-                                SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
-                                    color: Color(nsColor: NSColor(clientHex: quotaSelection.colors[item.id] ?? item.brand)), vertical: true, expected: item.expected)
-                                    .frame(width: 4, height: layout.barHeight)
-                                    .overlay(alignment: .topLeading) {
-                                        Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 3, height: 3).offset(x: controller.edge == .right ? -5 : 6, y: 0)
-                                    }.help(item.title + " · " + item.value + " " + item.status)
+                                ClientQuotaRailTrack(item: item, height: layout.barHeight,
+                                    fillHex: quotaSelection.colors[item.id] ?? item.fill)
+                                    .help(item.title + " · " + item.value + " " + item.status)
                             }
                             SidebarModelShareStrip(items: clientScope == "codex" || clientScope == "all" ? shares : [], vertical: true).frame(width: 4, height: layout.barHeight)
                         }.frame(width: 16).padding(.vertical, 15).frame(minHeight: geometry.size.height)
@@ -277,7 +303,7 @@ struct QuotaSidebarRail: View {
                     ZStack {
                         Circle().stroke(SidebarPalette.amber.opacity(0.5), lineWidth: 3)
                         Text(tasks.runningThreadSummary.freshness == .fresh ? "\(tasks.runningThreadSummary.total)" : "—").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(SidebarPalette.amber)
-                    }.frame(width: 46, height: 46)
+                    }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                     Text(runningText).font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
                         .contentTransition(.numericText())
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: runningText)
@@ -392,7 +418,7 @@ struct QuotaSidebarRail: View {
                 ZStack {
                     SidebarValueRing(fraction: Double(rateFraction), color: SidebarPalette.blue, modelRates: monitor.totalSnapshot.modelRates)
                     Text("速率").font(.system(size: 11))
-                }.frame(width: 46, height: 46)
+                }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                 Text(rateText).font(.system(size: 11, weight: .medium, design: .rounded))
                     .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
                     .contentTransition(.numericText())
@@ -642,7 +668,7 @@ struct QuotaSidebarDetailView: View {
     private func detailQuotaItems(_ quota: AccountQuotaSnapshot) -> [ClientQuotaItem] {
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
         return ClientQuotaProjection.items(codex: quota, claude: clients.quotaReading(.claudeCode),
-            includeClaude: allowed.contains("claudeCode") || allowed.contains("claudeDesktop"))
+            includeClaude: allowed.contains("claudeCode") || allowed.contains("claudeDesktop"), preview: ClientPreviewMode.simulated)
             .filter { allowed.contains($0.client) || ($0.client == "claudeCode" && allowed.contains("claudeDesktop")) }
     }
 

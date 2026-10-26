@@ -20,7 +20,7 @@ struct ClientScopePicker: View {
                 scopeButton("汇总", id: "all")
                 }.padding(3).background(AppTheme.solidControlBackground, in: RoundedRectangle(cornerRadius: 8))
                 Spacer()
-                if ClientPreviewMode.simulated { Text("Claude 模拟数据").font(.caption.weight(.medium)).foregroundStyle(AppTheme.accentAmber) }
+                if ClientPreviewMode.simulated { Text("Codex / Claude 模拟数据").font(.caption.weight(.medium)).foregroundStyle(AppTheme.accentAmber) }
             }
             MultiClientDiscoveryNotice()
         }.frame(maxWidth: 980, alignment: .leading).task { clients.start() }
@@ -46,7 +46,7 @@ struct ClientQuotaSettingsView: View {
     private var selection: ClientQuotaSelection { .decode(selectionRaw) }
     private var items: [ClientQuotaItem] {
         selection.arranged(ClientQuotaProjection.items(codex: codex,
-            claude: clients.quotaReading(.claudeCode), includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop }, includeFiveHour: selection.enabled.contains("codex:5h")))
+            claude: clients.quotaReading(.claudeCode), includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop }, includeFiveHour: selection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -66,7 +66,7 @@ struct ClientQuotaSettingsView: View {
                         selectionRaw = next.encoded
                     })).toggleStyle(.checkbox).font(.system(size: 11))
                     Spacer(minLength: 0)
-                    ColorPicker("填充", selection: Binding(get: { Color(nsColor: NSColor(clientHex: selection.colors[item.id] ?? item.brand)) }, set: { color in
+                    ColorPicker("填充", selection: Binding(get: { Color(nsColor: NSColor(clientHex: selection.colors[item.id] ?? item.fill)) }, set: { color in
                         guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
                         var next = selection
                         next.colors[item.id] = String(format: "#%02X%02X%02X", Int(rgb.redComponent * 255), Int(rgb.greenComponent * 255), Int(rgb.blueComponent * 255))
@@ -101,7 +101,7 @@ struct ClientQuotaRings: View {
                                 ZStack {
                                     Circle().stroke(.secondary.opacity(0.15), lineWidth: 6)
                                     Circle().trim(from: 0, to: (item.remaining ?? 0) / 100)
-                                        .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.brand)), style: StrokeStyle(lineWidth: 6, lineCap: .round)).rotationEffect(.degrees(-90))
+                                        .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.fill)), style: StrokeStyle(lineWidth: 6, lineCap: .round)).rotationEffect(.degrees(-90))
                                     if let expected = item.expected {
                                         Rectangle().fill(.primary).frame(width: 2, height: 10).offset(y: -44).rotationEffect(.degrees(expected * 360))
                                     }
@@ -139,20 +139,20 @@ struct ClientPairedQuotaRing: View {
                 } else {
                     Circle().stroke(.white.opacity(0.15), lineWidth: 3)
                     Circle().trim(from: 0, to: (left.remaining ?? 0) / 100)
-                        .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[left.id] ?? left.brand)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[left.id] ?? left.fill)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
                         .rotationEffect(.degrees(-90)).opacity(left.remaining == nil ? 0 : 1)
                 }
                 if let expected = left.expected {
-                    Rectangle().fill(.white).frame(width: 1.5, height: 7).offset(y: -29).rotationEffect(.degrees(right == nil ? expected * 360 : 180 + expected * 180))
+                    Rectangle().fill(.white).frame(width: 1.5, height: 7).offset(y: -ClientSidebarMetrics.ringSize / 2).rotationEffect(.degrees(right == nil ? expected * 360 : 180 + expected * 180))
                 }
                 if let expected = right?.expected {
-                    Rectangle().fill(.white).frame(width: 1.5, height: 7).offset(y: -29).rotationEffect(.degrees(expected * 180))
+                    Rectangle().fill(.white).frame(width: 1.5, height: 7).offset(y: -ClientSidebarMetrics.ringSize / 2).rotationEffect(.degrees(expected * 180))
                 }
                 HStack(spacing: 2) {
-                    Text(left.value)
-                    if let right { Text("|").foregroundStyle(.gray); Text(right.value) }
-                }.font(.system(size: right == nil ? 17 : 9, weight: .semibold, design: .rounded)).monospacedDigit()
-            }.frame(width: 58, height: 58)
+                    Text(right == nil ? left.value : left.compactValue)
+                    if let right { Text("|").foregroundStyle(.white.opacity(0.5)); Text(right.compactValue) }
+                }.font(.system(size: right == nil ? 18 : 11, weight: .medium, design: .rounded)).monospacedDigit()
+            }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
             legend(left)
             if let right { legend(right) }
         }.frame(width: 74).padding(.vertical, 3)
@@ -161,13 +161,13 @@ struct ClientPairedQuotaRing: View {
     }
     private func half(_ item: ClientQuotaItem, rotation: Double) -> some View {
         Circle().trim(from: 0.006, to: 0.006 + 0.488 * (item.remaining ?? 0) / 100)
-            .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.brand)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+            .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.fill)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
             .rotationEffect(.degrees(rotation)).opacity(item.remaining == nil ? 0 : 1)
     }
     private func legend(_ item: ClientQuotaItem) -> some View {
         HStack(spacing: 3) {
             Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 4, height: 4)
-            Text(item.title).lineLimit(1).minimumScaleFactor(0.8)
-        }.font(.system(size: 8)).foregroundStyle(.white.opacity(0.8))
+            Text(item.shortClientTitle + " · " + item.window).lineLimit(1).minimumScaleFactor(0.9)
+        }.font(.system(size: 10)).foregroundStyle(.white.opacity(0.8))
     }
 }

@@ -213,3 +213,19 @@ test("unknown cache counts are excluded rather than interpreted as misses", asyn
     );
     assert.equal(cacheCoverage(undefined, rows, ["gemini"]).ratio, null);
   }));
+
+test("brand cap is independent from quota fill and shares the original ring size", async () =>
+  withSsrModules(async (load) => {
+    const { quotaFill, clientBrand, clientSidebarMetrics, quotaTrackHeight } = await load("/src/multiClient/integratedClientModel.ts");
+    assert.equal(clientSidebarMetrics.ringSize, 49);
+    assert.equal(quotaFill({ window: "5h" }), "#B6EF75");
+    assert.equal(quotaFill({ window: "7d" }), "#B4ACFF");
+    assert.notEqual(quotaFill({window:"7d"}), clientBrand.codex);
+    for (const height of [8, 24, 46]) assert.equal(quotaTrackHeight(height) + clientSidebarMetrics.capHeight + clientSidebarMetrics.capGap, height);
+    const { PairedQuotaRing } = await load("/src/multiClient/IntegratedClients.tsx");
+    const item = { id:"codex:7d", client:"codex", window:"7d", remaining:72, status:"", source:"test" };
+    const html = renderToStaticMarkup(React.createElement(PairedQuotaRing, { left:item, colors:{"codex:7d":"#123456"} }));
+    assert.match(html, /width:49px;height:49px/);
+    assert.match(html, /stroke="#123456"/);
+    assert.match(html, /background:#3941FF/);
+  }));

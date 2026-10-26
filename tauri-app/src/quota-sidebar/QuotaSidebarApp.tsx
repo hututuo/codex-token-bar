@@ -1,5 +1,5 @@
 import { ClientQuotaSettings, ClientQuotaDetailRings, PairedQuotaRing, ScopedSidebarUsage, ClientSidebarUsageRows, clientTitle, useClientQuotaItems, useClientScope } from "../multiClient/IntegratedClients";
-import { clientBrand, railLayout, quotaRingGroups } from "../multiClient/integratedClientModel";
+import { clientBrand, quotaFill, quotaTrackHeight, railLayout, quotaRingGroups } from "../multiClient/integratedClientModel";
 import { MultiClientUsageSidebarRows, useQuotaDisplay } from "../multiClient/MultiClientUsage";
 import { LiveActivityRateHistory } from "../components/liveRate/LiveActivityRateHistory";
 import { modelUsageColor } from "../components/modelUsagePresentation";
@@ -351,7 +351,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
     <div className="qs-bars" style={{gap:layout.gap,overflowY:"auto","--integrated-bar-height":`${layout.barHeight}px`} as CSSProperties} data-visible={state.mode === "rest"} aria-hidden={state.mode !== "rest"} aria-label="悬停查看额度">
       {cacheWarning && <span className="qs-cache-indicator" style={{ top: `calc(50% - ${showsFiveHour ? 114 : 87}px)` }} role="status" aria-label={`缓存命中偏低：${cacheAdviceTitle(cacheWarning)}`} title={`缓存命中偏低 · ${cacheAdviceTitle(cacheWarning)}`} />}
       <span className="qs-bar qs-rate-bar" style={{height:layout.barHeight}} data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}><i style={{ height: `${ratePercent ?? 0}%`, background: modelRateGradient(data.snapshot.modelRates, "0deg") }} /></span>
-      {quotaItems.map(item => <span key={item.id} className="integrated-quota-track" style={{height:layout.barHeight}} title={`${item.client} · ${item.window} ${item.remaining === null ? item.status : Math.round(item.remaining)+"%"}`}><i className="integrated-client-dot" style={{background:clientBrand[item.client]}}/><Bar percent={item.remaining} color={quotaSelection.colors[item.id] ?? clientBrand[item.client]} expected={item.id === "codex:5h" ? expectedFive : item.id === "codex:7d" ? expectedSeven : null} /></span>)}{modelStrip(true)}
+      {quotaItems.map(item => <span key={item.id} className="integrated-quota-track" style={{height:layout.barHeight}} title={`${item.client} · ${item.window} ${item.remaining === null ? item.status : Math.round(item.remaining)+"%"}`}><i className="integrated-client-cap" aria-hidden="true" style={{borderColor:clientBrand[item.client]}}/><span className="integrated-quota-value-track" style={{height:quotaTrackHeight(layout.barHeight)}}><Bar percent={item.remaining} color={quotaSelection.colors[item.id] ?? quotaFill(item)} expected={item.id === "codex:5h" ? expectedFive : item.id === "codex:7d" ? expectedSeven : null} /></span></span>)}{modelStrip(true)}
     </div><SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning} onMeasure={onContentMeasurement}>{() => {
       if (cacheWarning) return <section className="qs-cache-notice" aria-label="缓存命中提醒">
         <div className="qs-cache-heading">

@@ -69,3 +69,10 @@
 ![最新24小时原图实际运行，含Claude模拟数据](../design/2026-10-25-integrated-clients/18-original-chart-claude-mock-24h-verified.png)
 
 ![收起已读引导后的最终候选版实际界面，Claude为模拟数据](../design/2026-10-25-integrated-clients/19-original-layout-final-claude-mock.png)
+
+
+## 2026-10-26：侧栏额度样式校正
+
+按用户反馈统一原侧栏环尺寸、数字和说明字号；一级额度条使用独立客户端门形色帽，条内为额度窗口填充色。候选模拟额度改为显示投影，PRO单窗口、Claude双窗口均能预览；不落入额度账本。详见设计文档v9及20/21号图。
+
+定向回归：`scratch/sidebar-cap-swift-final.log`（62项），`scratch/sidebar-cap-ui-final.log`（22项），`scratch/sidebar-cap-ts-build.log`（TS/Vite）。未重跑此前已通过的全量Rust/Swift/UI，未做正式安装或Windows EXE验收。

@@ -6,6 +6,8 @@ import {
 } from "./useClientScope";
 import {
   clientBrand,
+  quotaFill,
+  clientSidebarMetrics,
   type QuotaItem,
   type QuotaSelection,
 } from "./integratedClientModel";
@@ -80,7 +82,7 @@ export function ClientQuotaSettings({ codex }: { codex?: QuotaSnapshot }) {
             <input
               type="color"
               aria-label={`${clientTitle(i.client)} ${i.window}填充颜色`}
-              value={selection.colors[i.id] ?? clientBrand[i.client]}
+              value={selection.colors[i.id] ?? quotaFill(i)}
               onChange={(e) =>
                 save({
                   ...selection,
@@ -129,7 +131,7 @@ export function PairedQuotaRing({
         r="26"
         fill="none"
         stroke="#343a35"
-        strokeWidth="3"
+        strokeWidth="4.6"
         strokeDasharray="80 163.36"
       />
       <circle
@@ -137,8 +139,8 @@ export function PairedQuotaRing({
         cy="30"
         r="26"
         fill="none"
-        stroke={colors[i.id] ?? clientBrand[i.client]}
-        strokeWidth="3"
+        stroke={colors[i.id] ?? quotaFill(i)}
+        strokeWidth="4.6"
         strokeLinecap="round"
         strokeDasharray={`${(80 * (i.remaining ?? 0)) / 100} 163.36`}
         opacity={i.remaining === null ? 0 : 1}
@@ -164,7 +166,7 @@ export function PairedQuotaRing({
       title={`${clientTitle(i.client)} ${i.window} · ${i.resetsAt ? "重置 " + new Date(i.resetsAt).toLocaleString() : "重置时间未知"}`}
     >
       <i style={{ background: clientBrand[i.client] }} />
-      {clientTitle(i.client)} · {i.window}
+      {i.client === "claudeCode" || i.client === "claudeDesktop" ? "Claude" : clientTitle(i.client)} · {i.window}
       {i.remaining === null ? " · " + i.status : ""}
     </span>
   );
@@ -179,7 +181,7 @@ export function PairedQuotaRing({
           : `${clientTitle(left.client)} ${left.window} 剩余 ${value(left)}，完整圆环`
       }
     >
-      <div>
+      <div style={{ width: clientSidebarMetrics.ringSize, height: clientSidebarMetrics.ringSize }}>
         <svg viewBox="0 0 60 60" aria-hidden="true">
           {right ? (
             <>
@@ -194,15 +196,15 @@ export function PairedQuotaRing({
                 r="26"
                 fill="none"
                 stroke="#343a35"
-                strokeWidth="3"
+                strokeWidth="4.6"
               />
               <circle
                 cx="30"
                 cy="30"
                 r="26"
                 fill="none"
-                stroke={colors[left.id] ?? clientBrand[left.client]}
-                strokeWidth="3"
+                stroke={colors[left.id] ?? quotaFill(left)}
+                strokeWidth="4.6"
                 strokeLinecap="round"
                 strokeDasharray="163.36"
                 strokeDashoffset={163.36 * (1 - (left.remaining ?? 0) / 100)}
@@ -226,11 +228,11 @@ export function PairedQuotaRing({
           )}
         </svg>
         <strong>
-          {value(left)}
+          {right ? (left.remaining === null ? "—" : Math.round(left.remaining)) : value(left)}
           {right && (
             <>
               <b>|</b>
-              {value(right)}
+              {right.remaining === null ? "—" : Math.round(right.remaining)}
             </>
           )}
         </strong>
@@ -281,7 +283,7 @@ export function ClientQuotaDetailRings({
                         cy="50"
                         r="44"
                         fill="none"
-                        stroke={selection.colors[i.id] ?? clientBrand[client]}
+                        stroke={selection.colors[i.id] ?? quotaFill(i)}
                         strokeWidth="6"
                         strokeLinecap="round"
                         strokeDasharray="276.46"

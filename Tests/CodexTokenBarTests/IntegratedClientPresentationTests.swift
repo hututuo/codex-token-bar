@@ -2,6 +2,29 @@ import XCTest
 @testable import CodexTokenBar
 
 final class IntegratedClientPresentationTests: XCTestCase {
+    func testPreviewQuotaIsExplicitDisplayOnlyAndKeepsProSingleWindow() {
+        let source = AccountQuotaSnapshot.empty
+        let reading = ClaudeCapturedQuotaProvider(snapshot: .missing).reading()
+        let real = ClientQuotaProjection.items(codex: source, claude: reading, includeClaude: true)
+        XCTAssertTrue(real.allSatisfy { $0.remaining == nil })
+        let preview = ClientQuotaProjection.items(codex: source, claude: reading, includeClaude: true, preview: true)
+        XCTAssertEqual(preview.map(\.remaining), [72, 62, 84])
+        XCTAssertEqual(preview.map(\.id), ["codex:7d", "claudeCode:5h", "claudeCode:7d"])
+        XCTAssertNil(ClientQuotaRingGroup.make(preview)[0].right)
+        XCTAssertNil(source.sevenDay)
+        XCTAssertTrue(preview.allSatisfy { $0.source.contains("模拟") })
+        XCTAssertEqual(ClientQuotaProjection.previewItems(includeClaude: false).count, 1)
+    }
+    func testBrandCapAndQuotaFillHaveIndependentMeaningAndDoNotGrowRailSlot() {
+        let items = ClientQuotaProjection.previewItems(includeClaude: true)
+        XCTAssertEqual(items[1].brand, items[2].brand)
+        XCTAssertNotEqual(items[1].fill, items[2].fill)
+        for item in items { XCTAssertNotEqual(item.fill, item.brand) }
+        for total in [8.0, 24, 46] {
+            XCTAssertEqual(ClientSidebarMetrics.trackHeight(total) + ClientSidebarMetrics.capHeight + ClientSidebarMetrics.capGap, total)
+        }
+        XCTAssertEqual(ClientSidebarMetrics.ringSize, 46)
+    }
     func testPersistedScopeDoesNotFlashCodexWhileClientSnapshotLoads() {
         XCTAssertEqual(ClientDisplayScope.clients("claudeCode", available: []), ["claudeCode"])
         XCTAssertEqual(ClientDisplayScope.clients("all", available: ["gemini", "gemini"]), ["codex", "gemini"])

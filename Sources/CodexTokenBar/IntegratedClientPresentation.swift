@@ -38,6 +38,9 @@ struct ClientQuotaItem: Identifiable, Equatable {
     let status: String
     var expected: Double? = nil
     var brand: String { ClientBrand.hex(client) }
+    var fill: String { window == "5h" ? "#B6EF75" : window == "7d" ? "#B4ACFF" : "#78B7FF" }
+    var shortClientTitle: String { client == "claudeCode" || client == "claudeDesktop" ? "Claude" : ClientDisplayScope.title(client) }
+    var compactValue: String { remaining.map { String(format: "%.0f", $0) } ?? "—" }
     var value: String { remaining.map { String(format: "%.0f%%", $0) } ?? "—" }
     var title: String { ClientDisplayScope.title(client) + " · " + window }
 }
@@ -67,7 +70,10 @@ struct ClientQuotaSelection: Codable, Equatable {
 }
 
 enum ClientQuotaProjection {
-    static func items(codex: AccountQuotaSnapshot, claude: ClientQuotaReading, includeClaude: Bool, includeFiveHour: Bool = false) -> [ClientQuotaItem] {
+    static func items(codex: AccountQuotaSnapshot, claude: ClientQuotaReading, includeClaude: Bool, includeFiveHour: Bool = false, preview: Bool = false) -> [ClientQuotaItem] {
+        // Explicit display-only fixture. Callers gate this to the isolated DEBUG preview;
+        // never put simulated observations into AccountQuotaStore or quota history.
+        if preview { return previewItems(includeClaude: includeClaude) }
         var items: [ClientQuotaItem] = []
         func add(_ id: String, _ label: String, _ window: AccountQuotaWindow?) {
             let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: codex)
@@ -92,6 +98,29 @@ enum ClientQuotaProjection {
         }
         return items
     }
+
+    private static let previewStartedAt = Date()
+    static func previewItems(includeClaude: Bool, now: Date? = nil) -> [ClientQuotaItem] {
+        let now = now ?? previewStartedAt
+        var items = [ClientQuotaItem(id: "codex:7d", client: "codex", window: "7d", remaining: 72,
+            resetsAt: now.addingTimeInterval(3 * 86400), source: "模拟额度 · 不写入账本", status: "模拟")]
+        if includeClaude {
+            items += [("5h", 62.0, 7200.0), ("7d", 84.0, 4 * 86400.0)].map { window, remaining, seconds in
+                ClientQuotaItem(id: "claudeCode:" + window, client: "claudeCode", window: window, remaining: remaining,
+                    resetsAt: now.addingTimeInterval(seconds), source: "模拟额度 · 不写入账本", status: "模拟")
+            }
+        }
+        return items
+    }
+}
+
+enum ClientSidebarMetrics {
+    static let ringSize = 46.0
+    static let ringStroke = 3.0
+    static let capWidth = 8.0
+    static let capHeight = 4.0
+    static let capGap = 2.0
+    static func trackHeight(_ total: Double) -> Double { max(2, total - capHeight - capGap) }
 }
 
 struct ClientRailLayout: Equatable {
