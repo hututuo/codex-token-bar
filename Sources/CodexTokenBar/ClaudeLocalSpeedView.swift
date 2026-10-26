@@ -71,6 +71,11 @@ struct ClaudeLocalSpeedView: View {
                 Spacer()
                 Text(local.enabled ? "本地日志 · 估算" : "读取已关闭").font(.caption).foregroundStyle(.secondary)
             }
+            if local.live.output > 0 {
+                Text("活动曲线 · 估算占比 \(Int((local.estimatedShare * 100).rounded()))%")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .help("沿用 Agent Speed 的请求时间线估算分类；不是逐字流式实测。")
+            }
             if rows.isEmpty {
                 Text(local.sourceAvailable ? "等待新的输出记录" : "暂无本地实时样本").font(.callout).foregroundStyle(.secondary)
             } else {

@@ -255,6 +255,22 @@ final class ClaudeLocalRuntimeTests: XCTestCase {
         XCTAssertTrue(runtime.snapshot.rows.isEmpty)
     }
 
+    func testEstimatedShareReusesUpstreamSourceFactsWithoutCrossClientLeakage() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var code = source(.claudeCode, available: true, output: 60)
+        code.live = .init(output: 60, total: 100)
+        code.liveEstimated = .init(output: 15, total: 30)
+        var desktop = source(.claudeDesktop, available: true, output: 100)
+        desktop.live = .init(output: 100, total: 160)
+        desktop.liveEstimated = .init(output: 100, total: 160)
+        let core = coreSnapshot(timestamp: now, sources: [code, desktop], agents: [])
+        XCTAssertEqual(ClaudeLocalRuntime.project(from: core, allowedSources: [.claudeCode]).estimatedShare, 0.25)
+        XCTAssertEqual(ClaudeLocalRuntime.project(from: core, allowedSources: [.claudeCode, .claudeDesktop]).estimatedShare, 115.0 / 160)
+        code.live = .zero
+        let idle = coreSnapshot(timestamp: now, sources: [code], agents: [])
+        XCTAssertEqual(ClaudeLocalRuntime.project(from: idle, allowedSources: [.claudeCode]).estimatedShare, 0)
+    }
+
     private func claudePreferences(codeEnabled: Bool, desktopEnabled: Bool, sharedPath: String) -> [MultiClientUsagePreference] {
         var values = MultiClientUsagePreference.defaults
         for index in values.indices {

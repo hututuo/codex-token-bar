@@ -9,3 +9,10 @@
 - Test-only adaptations: the Swift strict-body checker and loopback end-to-end server overlay the client `app` schema in memory to accept both `AgentSpeed` (upstream fixtures) and `CodexTokenBar` (this product); `spec/report-schema.json` and signed vectors remain untouched. Session and live-monitor fixture tests set explicit scratch roots for every source family so nil-root defaults cannot read files from the developer's home directory.
 - The Swift target uses the checkout's existing `CZstd` package target. Its public Zstd headers are version 1.5.7, matching upstream's API version; no duplicate Zstd source is vendored here.
 - The upstream Swift tests are exposed as a separate `AgentSpeedCoreTests` SwiftPM test target. Fixture paths resolve inside this vendored tree at `spec/fixtures`.
+
+## Reuse and upstream synchronization
+
+- Reuse public AgentSpeedCore APIs for local monitoring, source parsing, calibration, execution phases/parents, bundled pricing arithmetic, and report protocol. Keep Token Bar adapters outside the vendor tree.
+- `UPSTREAM.json` pins every copied upstream file and the six reviewed local adaptations. `python3 scripts/agent_speed_vendor.py check` verifies this offline; `check --remote` checks GitHub HEAD explicitly during release preparation.
+- Before a release, review upstream changes and synchronize both Swift and C# sources/specs/tests as one revision. Preserve the local Claude no-network/no-report policy, original ledgers, client identity adaptations and isolated test roots.
+- Follow [the maintained sync checklist](../../docs/maintenance/agent-speed-upstream-sync.md). No upstream auto-updater, account provider or network service is enabled by importing this library.

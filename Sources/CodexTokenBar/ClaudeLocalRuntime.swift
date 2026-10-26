@@ -30,6 +30,8 @@ struct ClaudeLocalRuntimeSnapshot: Equatable, Sendable {
     let configurationIssue: String?
     let timestamp: Date
     let live: Rate
+    /// Upstream request-timeline estimate, not a body-stream measurement.
+    let estimatedShare: Double
     let today: TokenTotals
     let sourceTotals: [String: TokenTotals]
     let modelRates: [ModelRateContribution]
@@ -43,6 +45,7 @@ struct ClaudeLocalRuntimeSnapshot: Equatable, Sendable {
         configurationIssue: nil,
         timestamp: .distantPast,
         live: .zero,
+        estimatedShare: 0,
         today: .zero,
         sourceTotals: [:],
         modelRates: [],
@@ -187,6 +190,7 @@ final class ClaudeLocalRuntime: ObservableObject {
                 configurationIssue: configurationIssue,
                 timestamp: core.timestamp,
                 live: .zero,
+                estimatedShare: 0,
                 today: .zero,
                 sourceTotals: [:],
                 modelRates: [],
@@ -203,6 +207,12 @@ final class ClaudeLocalRuntime: ObservableObject {
             result.output += status.live.output
             result.total += status.live.total
         }
+        // Use the core's calibrated estimate directly, scoped to the same
+        // sources as the total. No independent speed predictor is introduced.
+        let estimated = selectedStatuses.reduce(0.0) { partial, source in
+            partial + (source.liveEstimated.output.isFinite ? max(0, source.liveEstimated.output) : 0)
+        }
+        let estimatedShare = live.output.isFinite && live.output > 0 ? min(1, max(0, estimated / live.output)) : 0
         let today = selectedStatuses.reduce(into: TokenTotals.zero) { result, status in
             result.requests += status.today.requests
             result.input += status.today.input
@@ -244,6 +254,7 @@ final class ClaudeLocalRuntime: ObservableObject {
             configurationIssue: configurationIssue,
             timestamp: now,
             live: live,
+            estimatedShare: estimatedShare,
             today: today,
             sourceTotals: sourceTotals,
             modelRates: modelRates,
@@ -487,6 +498,7 @@ final class ClaudeLocalRuntime: ObservableObject {
             && lhs.sourceAvailable == rhs.sourceAvailable
             && lhs.configurationIssue == rhs.configurationIssue
             && lhs.live == rhs.live
+            && lhs.estimatedShare == rhs.estimatedShare
             && lhs.today == rhs.today
             && lhs.sourceTotals == rhs.sourceTotals
             && lhs.modelRates == rhs.modelRates

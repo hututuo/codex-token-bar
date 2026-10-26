@@ -25,6 +25,11 @@ export function qualifiedClaudeInterval(row: NonNullable<ClaudeRuntimeSnapshot["
   const tps = row.outputTokens / (row.durationMs / 1000);
   return Number.isFinite(tps) && tps >= 2 && tps <= 500 ? tps : null;
 }
+export function scopedClaudeEstimateShare(value: number, enabledSources: readonly string[], allowed: readonly string[]): number | null {
+  if (!Number.isFinite(value) || value < 0 || value > 1 || !enabledSources.length) return null;
+  const selected = new Set(allowed);
+  return enabledSources.every(source => selected.has(source)) ? value : null;
+}
 async function poll() {
   if (pending || !listeners.size) return;
   pending = true;
@@ -60,7 +65,12 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
   const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop"].includes(c)));
   const active = (agent: ClaudeRuntimeAgent) => selected.has(agent.client) && ["generating", "tools"].includes(agent.phase)
     && Date.parse(agent.lastActivity) >= Date.now() - 300000;
+  const enabledSources = snapshot.preferences.filter(p => p.enabled && ["claudeCode", "claudeDesktop"].includes(p.client));
+  const estimatedShareForSelection = scopedClaudeEstimateShare(value.estimatedShare, enabledSources.map(p => p.client), allowed);
   return { ...value, enabled,
+    // Upstream's fraction is aggregate-only. Do not apply another client's
+    // calibration to a filtered client view.
+    estimatedShareForSelection,
     modelRates: enabled ? value.modelRates.filter(r => selected.has(r.client)) : [],
     mainAgents: enabled ? value.mainAgents.filter(active) : [], subagents: enabled ? value.subagents.filter(active) : [],
     rows: enabled ? [...recent.values()].filter(r => selected.has(r.client)).sort((a,b) => Date.parse(b.endedAt) - Date.parse(a.endedAt)) : [],
@@ -79,6 +89,7 @@ export function ClaudeLocalRuntimePanel({ allowed, compact = false, monitoringEn
   };
   return <div className="claude-local-runtime" style={{ fontSize: compact ? 10 : 12, paddingBlock: compact ? 3 : 8 }}>
     <strong>Claude · 请求区间 TPS</strong>
+    {!compact && runtime.modelRates.some(r => r.outputTps > 0) && runtime.estimatedShareForSelection !== null && <div><small title="沿用 Agent Speed 的请求时间线分类，并非逐字流式实测">活动曲线 · 估算占比 {(runtime.estimatedShareForSelection * 100).toFixed(0)}%</small></div>}
     {!runtime.enabled ? <p>本地读取已关闭</p> : !models.length ? <p className="qs-muted">{(runtime.configurationIssue ? "本地读取器暂不可用" : "等待本地输出记录")}</p> :
       <table style={{ width: "100%", fontVariantNumeric: "tabular-nums" }}><thead><tr><th>模型</th><th>最新</th>{!compact && <><th>5分钟</th><th>15分钟</th><th>30分钟</th></>}</tr></thead><tbody>{models.map(model => <tr key={model}>
         <td style={{ color: modelUsageColor(model), textAlign: "left" }}>{model.replace("claude-", "")}</td>

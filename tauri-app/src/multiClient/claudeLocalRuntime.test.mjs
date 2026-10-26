@@ -40,3 +40,14 @@ test("compact dots use the same item identities and budget six points each", asy
     assert.equal(fixedSidebarRailLayout(3, 900, 2).height, 112);
   });
 });
+
+test("upstream estimate fraction is used only for the matching source selection", async () => {
+  await withSsrModules(async load => {
+    const { scopedClaudeEstimateShare } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");
+    assert.equal(scopedClaudeEstimateShare(.25, ["claudeCode"], ["claudeCode"]), .25);
+    assert.equal(scopedClaudeEstimateShare(.75, ["claudeCode","claudeDesktop"], ["claudeCode"]), null);
+    assert.equal(scopedClaudeEstimateShare(.75, ["claudeCode","claudeDesktop"], ["codex","claudeCode","claudeDesktop"]), .75);
+    assert.equal(scopedClaudeEstimateShare(NaN, ["claudeCode"], ["claudeCode"]), null);
+    assert.equal(scopedClaudeEstimateShare(.5, [], ["claudeCode"]), null);
+  });
+});

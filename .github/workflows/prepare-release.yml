@@ -47,8 +47,20 @@ jobs:
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact source SHA is required'; exit 1; }
           echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
-  macos:
+  agent-speed-sync:
     needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+      - name: Check Agent Speed upstream before preparing installers
+        run: python3 scripts/agent_speed_vendor.py check --remote
+
+  macos:
+    needs: [source, agent-speed-sync]
     runs-on: macos-15
     timeout-minutes: 50
     env:
@@ -102,7 +114,7 @@ jobs:
           retention-days: 7
 
   windows:
-    needs: source
+    needs: [source, agent-speed-sync]
     runs-on: windows-2025
     timeout-minutes: 80
     steps:

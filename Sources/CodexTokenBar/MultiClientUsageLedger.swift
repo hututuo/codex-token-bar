@@ -406,28 +406,14 @@ final class MultiClientUsageLedger: @unchecked Sendable {
               cacheRead <= input, cacheWrite <= input - cacheRead,
               cacheWrite == 0 || rates.cacheWrite == rates.cacheWrite1h else { return nil }
         let uncachedInput = input - cacheRead - cacheWrite
-        let maxClass: Int64 = 100_000_000
+        let maxClass = ResponseCost.maxClassTokens
         guard uncachedInput <= maxClass, cacheRead <= maxClass, cacheWrite <= maxClass, output <= maxClass else { return nil }
 
-        func multiply(_ tokens: Int64, _ rate: Int64) -> Int64? {
-            let (result, overflow) = tokens.multipliedReportingOverflow(by: rate)
-            return overflow ? nil : result
-        }
-        let components = [
-            multiply(uncachedInput, rates.input),
-            multiply(cacheRead, rates.cachedInput),
-            multiply(cacheWrite, rates.cacheWrite),
-            multiply(output, rates.output)
-        ]
-        guard components.allSatisfy({ $0 != nil }) else { return nil }
-        var picoUSD: Int64 = 0
-        for component in components.compactMap({ $0 }) {
-            let (sum, overflow) = picoUSD.addingReportingOverflow(component)
-            guard !overflow else { return nil }
-            picoUSD = sum
-        }
-        let (rounded, overflow) = picoUSD.addingReportingOverflow(500_000)
-        guard !overflow else { return nil }
-        return rounded / 1_000_000
+        // Keep Token Bar's exact-model, period, lifetime and size admission
+        // rules above; reuse the upstream integer classes, tier and rounding.
+        // Do not call the broader fuzzy model resolver for historical billing.
+        let usage = AgentSpeedCore.TokenUsage(input: Int(input), cachedInput: Int(cacheRead),
+            cacheWriteInput: Int(cacheWrite), output: Int(output))
+        return ResponseCost.microUsd(ResponseCost.picoUsd(usage: usage, pricing: pricing).pico)
     }
 }
