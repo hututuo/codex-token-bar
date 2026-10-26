@@ -40,6 +40,7 @@ struct ClientQuotaItem: Identifiable, Equatable {
     var brand: String { ClientBrand.hex(client) }
     var fill: String { window == "5h" ? "#B6EF75" : window == "7d" ? "#B4ACFF" : "#78B7FF" }
     var shortClientTitle: String { client == "claudeCode" || client == "claudeDesktop" ? "Claude" : ClientDisplayScope.title(client) }
+    var windowTitle: String { window == "5h" ? "5小时" : window == "7d" ? "7天" : window }
     var compactValue: String { remaining.map { String(format: "%.0f", $0) } ?? "—" }
     var value: String { remaining.map { String(format: "%.0f%%", $0) } ?? "—" }
     var title: String { ClientDisplayScope.title(client) + " · " + window }
@@ -117,10 +118,10 @@ enum ClientQuotaProjection {
 enum ClientSidebarMetrics {
     static let ringSize = 46.0
     static let ringStroke = 3.0
-    static let capWidth = 8.0
-    static let capHeight = 4.0
-    static let capGap = 2.0
-    static func trackHeight(_ total: Double) -> Double { max(2, total - capHeight - capGap) }
+    static let capWidth = 4.0
+    static let capHeight = 2.0
+    static let capGap = 0.0
+    static func trackHeight(_ total: Double) -> Double { max(2, total) }
 }
 
 struct ClientRailLayout: Equatable {

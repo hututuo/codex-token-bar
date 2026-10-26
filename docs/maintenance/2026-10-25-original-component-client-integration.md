@@ -76,3 +76,11 @@
 按用户反馈统一原侧栏环尺寸、数字和说明字号；一级额度条使用独立客户端门形色帽，条内为额度窗口填充色。候选模拟额度改为显示投影，PRO单窗口、Claude双窗口均能预览；不落入额度账本。详见设计文档v9及20/21号图。
 
 定向回归：`scratch/sidebar-cap-swift-final.log`（62项），`scratch/sidebar-cap-ui-final.log`（22项），`scratch/sidebar-cap-ts-build.log`（TS/Vite）。未重跑此前已通过的全量Rust/Swift/UI，未做正式安装或Windows EXE验收。
+
+
+## 2026-10-26：v10用户反馈校正与隔离核对
+
+- 品牌颜色融合进原竖条顶端半圆；单值14pt、双值内收；窗口左右对应、客户端统一置于下一行。额度自定义设置移到Mac侧栏设置首屏，与Windows现有顺序对齐。
+- 定向Swift 63项、前端23项、TS/Vite通过。日志：`scratch/sidebar-fused-swift-final.log`、`sidebar-fused-ui.log`、`sidebar-fused-ts-final.log`。22/23号图为实际组件渲染，模拟额度。
+- 收到正式测速主线程协调后，仅核对候选隔离：bundle/偏好域 `local.codex.token-bar.multiclient-preview`；Foundation数据根 `scratch/launch-preview/home-v2`，额度和多客户端SQLite/账号安全观察锁均在其Application Support下；Codex源为 `scratch/launch-preview/home/.codex` 本地副本，精确索引缓存为 `scratch/launch-preview/usage-cache`。通过候选实际打开文件确认，未占用正式原始账本或锁。
+- 只看见一条的直接配置证据是正式版与候选都设成left，无证据需要改互斥逻辑。按正式主线程协调，候选保持left，正式线程自行将它的显示改right；本分支不修改正式偏好、不启停正式进程。候选启动脚本仅对候选域保证left，网络仍被sandbox禁止。

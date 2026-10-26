@@ -98,7 +98,7 @@
   width: 74px;
   padding: 3px 0;
 }
-.integrated-paired-ring > div {
+.integrated-paired-ring > div:first-child {
   width: 49px;
   height: 49px;
   position: relative;
@@ -157,31 +157,68 @@
   opacity: 0.7;
 }
 .qs-bars .integrated-quota-track {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
+  position: relative;
   flex: none;
-  width: 8px;
+  width: 4px;
 }
 .integrated-client-cap {
-  box-sizing: border-box;
-  width: 8px;
-  height: 4px;
-  border: 1.5px solid;
-  border-bottom: 0;
-  border-radius: 1px 1px 0 0;
-  flex: none;
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  top: 0;
+  width: 4px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  pointer-events: none;
 }
 .integrated-quota-value-track {
   display: block;
   width: 4px;
-  flex: none;
 }
 .integrated-paired-ring[data-mode="paired"] strong {
   font-size: 11px;
   font-weight: 500;
+  gap: 1px;
 }
+.integrated-paired-ring[data-mode="paired"] strong > span {
+  width: 14px;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: -.2px;
+}
+.integrated-paired-ring[data-mode="paired"] strong > span[data-digits="3"] { font-size: 8px; }
+.integrated-paired-ring[data-mode="paired"] strong b {
+  width: 1px;
+  height: 8px;
+  background: currentColor;
+  opacity: .35;
+}
+.integrated-ring-captions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 74px;
+}
+.integrated-ring-windows, .integrated-ring-clients {
+  display: flex;
+  justify-content: center;
+  gap: 0;
+}
+.integrated-ring-windows > span {
+  flex: 1;
+  font-size: 9px;
+  line-height: 12px;
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.integrated-ring-clients > span { flex: 1; min-width: 0; }
+.integrated-quota-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.integrated-quota-columns { display: flex; gap: 12px; font-size: 10px; color: #a1a8a1; }
+.integrated-quota-columns > span:first-child { flex: 1; }
+.integrated-quota-columns > span:last-child { width: 50px; text-align: center; }
 
 /* The compact viewport may scroll only at a physical pixel limit. Safe centering
    keeps the first track reachable when content is taller than the monitor. */
@@ -200,7 +237,7 @@
   height: var(--integrated-bar-height, 46px);
 }
 .integrated-paired-ring[data-mode="single"] strong {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 500;
 }
 .integrated-scope .multi-client-discovery {

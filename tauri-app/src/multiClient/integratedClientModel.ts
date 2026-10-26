@@ -12,12 +12,15 @@ export const clientBrand: Record<string, string> = {
   opencode: "#B7B1B1",
 };
 // Match the existing Windows sidebar's 49px rate/task rings.
-export const clientSidebarMetrics = { ringSize: 49, capWidth: 8, capHeight: 4, capGap: 2 } as const;
+export const clientSidebarMetrics = { ringSize: 49, capWidth: 4, capHeight: 2, capGap: 0 } as const;
 export function quotaFill(item: Pick<QuotaItem, "window">): string {
   return item.window === "5h" ? "#B6EF75" : item.window === "7d" ? "#B4ACFF" : "#78B7FF";
 }
+export function quotaWindowTitle(window: string): string {
+  return window === "5h" ? "5小时" : window === "7d" ? "7天" : window;
+}
 export function quotaTrackHeight(total: number): number {
-  return Math.max(2, total - clientSidebarMetrics.capHeight - clientSidebarMetrics.capGap);
+  return Math.max(2, total);
 }
 export const scopeKey = "multiClient.displayScope.v1";
 export function scopeClients(raw: string, available: string[]): string[] {

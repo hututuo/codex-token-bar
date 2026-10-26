@@ -221,11 +221,26 @@ test("brand cap is independent from quota fill and shares the original ring size
     assert.equal(quotaFill({ window: "5h" }), "#B6EF75");
     assert.equal(quotaFill({ window: "7d" }), "#B4ACFF");
     assert.notEqual(quotaFill({window:"7d"}), clientBrand.codex);
-    for (const height of [8, 24, 46]) assert.equal(quotaTrackHeight(height) + clientSidebarMetrics.capHeight + clientSidebarMetrics.capGap, height);
+    for (const height of [8, 24, 46]) assert.equal(quotaTrackHeight(height), height);
     const { PairedQuotaRing } = await load("/src/multiClient/IntegratedClients.tsx");
     const item = { id:"codex:7d", client:"codex", window:"7d", remaining:72, status:"", source:"test" };
     const html = renderToStaticMarkup(React.createElement(PairedQuotaRing, { left:item, colors:{"codex:7d":"#123456"} }));
     assert.match(html, /width:49px;height:49px/);
     assert.match(html, /stroke="#123456"/);
     assert.match(html, /background:#3941FF/);
+  }));
+
+test("paired quota captions map windows left/right then name the client once", async () =>
+  withSsrModules(async load => {
+    const { PairedQuotaRing, ClientQuotaSettings } = await load("/src/multiClient/IntegratedClients.tsx");
+    const left = {id:"claudeCode:5h",client:"claudeCode",window:"5h",remaining:62,source:"mock",status:""};
+    const right = {...left,id:"claudeCode:7d",window:"7d",remaining:84};
+    const html = renderToStaticMarkup(React.createElement(PairedQuotaRing,{left,right}));
+    const windows = html.slice(html.indexOf('class="integrated-ring-windows"'), html.indexOf('class="integrated-ring-clients"'));
+    assert.ok(windows.indexOf("5小时") < windows.indexOf("7天"));
+    assert.equal((html.match(/class="integrated-ring-legend"/g) || []).length, 1);
+    assert.match(html, /左侧 Claude Code 5h 62%/);
+    assert.match(html, /右侧 Claude Code 7d 84%/);
+    const settings = renderToStaticMarkup(React.createElement(ClientQuotaSettings, {}));
+    for (const title of ["额度显示与外观", "长条", "短条", "自动", "填充颜色", "顺序", "恢复默认"]) assert.ok(settings.includes(title));
   }));

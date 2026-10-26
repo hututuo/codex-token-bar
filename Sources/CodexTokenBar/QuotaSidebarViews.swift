@@ -48,32 +48,21 @@ private struct SidebarValueBar: View {
     }
 }
 
-/// The brand cap is separate from the continuous quota track and never changes
-/// the percentage denominator. Total height stays within the existing rail slot.
+/// Color only the existing capsule's top semicircle; no added cap, gap or slot.
 struct ClientQuotaRailTrack: View {
     let item: ClientQuotaItem
     let height: Double
     let fillHex: String
     var body: some View {
-        VStack(spacing: ClientSidebarMetrics.capGap) {
-            ClientRailBrandCap()
-                .stroke(Color(nsColor: NSColor(clientHex: item.brand)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                .frame(width: ClientSidebarMetrics.capWidth, height: ClientSidebarMetrics.capHeight)
-            SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
-                color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true, expected: item.expected)
-                .frame(width: 4, height: ClientSidebarMetrics.trackHeight(height))
-        }.frame(width: 8, height: height)
-    }
-}
-
-private struct ClientRailBrandCap: Shape {
-    func path(in rect: CGRect) -> Path {
-        Path { path in
-            path.move(to: CGPoint(x: rect.minX + 0.75, y: rect.maxY - 0.75))
-            path.addLine(to: CGPoint(x: rect.minX + 0.75, y: rect.minY + 0.75))
-            path.addLine(to: CGPoint(x: rect.maxX - 0.75, y: rect.minY + 0.75))
-            path.addLine(to: CGPoint(x: rect.maxX - 0.75, y: rect.maxY - 0.75))
-        }
+        SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
+            color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true, expected: item.expected)
+            .frame(width: ClientSidebarMetrics.capWidth, height: height)
+            .overlay(alignment: .top) {
+                Circle().fill(Color(nsColor: NSColor(clientHex: item.brand)))
+                    .frame(width: ClientSidebarMetrics.capWidth, height: ClientSidebarMetrics.capWidth)
+                    .mask(alignment: .top) { Rectangle().frame(height: ClientSidebarMetrics.capHeight) }
+                    .allowsHitTesting(false)
+            }
     }
 }
 

@@ -9,6 +9,7 @@ final class IntegratedClientPresentationTests: XCTestCase {
         XCTAssertTrue(real.allSatisfy { $0.remaining == nil })
         let preview = ClientQuotaProjection.items(codex: source, claude: reading, includeClaude: true, preview: true)
         XCTAssertEqual(preview.map(\.remaining), [72, 62, 84])
+        XCTAssertEqual(preview.map(\.windowTitle), ["7天", "5小时", "7天"])
         XCTAssertEqual(preview.map(\.id), ["codex:7d", "claudeCode:5h", "claudeCode:7d"])
         XCTAssertNil(ClientQuotaRingGroup.make(preview)[0].right)
         XCTAssertNil(source.sevenDay)
@@ -21,8 +22,10 @@ final class IntegratedClientPresentationTests: XCTestCase {
         XCTAssertNotEqual(items[1].fill, items[2].fill)
         for item in items { XCTAssertNotEqual(item.fill, item.brand) }
         for total in [8.0, 24, 46] {
-            XCTAssertEqual(ClientSidebarMetrics.trackHeight(total) + ClientSidebarMetrics.capHeight + ClientSidebarMetrics.capGap, total)
+            XCTAssertEqual(ClientSidebarMetrics.trackHeight(total), total)
         }
+        XCTAssertEqual(ClientSidebarMetrics.capWidth, ClientSidebarMetrics.capHeight * 2)
+        XCTAssertEqual(ClientSidebarMetrics.capGap, 0)
         XCTAssertEqual(ClientSidebarMetrics.ringSize, 46)
     }
     func testPersistedScopeDoesNotFlashCodexWhileClientSnapshotLoads() {

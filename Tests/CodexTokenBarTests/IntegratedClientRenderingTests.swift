@@ -52,4 +52,25 @@ final class IntegratedClientRenderingTests: XCTestCase {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
         }
     }
+    @MainActor func testQuotaSettingsExposeSelectionColorOrderAndLength() throws {
+        let suite = "QuotaSettingsRender-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = VStack(alignment: .leading, spacing: 14) {
+            Text("侧栏设置 · 候选组件渲染，模拟额度").font(.system(size: 12)).foregroundStyle(.secondary)
+            ClientQuotaSettingsView(codex: .empty, quotaItems: ClientQuotaProjection.previewItems(includeClaude: true))
+        }.padding(20).frame(width: 390, height: 420, alignment: .topLeading)
+            .background(Color(white: 0.04)).foregroundStyle(.white)
+            .environment(\.colorScheme, .dark).defaultAppStorage(defaults)
+        let host = NSHostingView(rootView: root)
+        host.frame = CGRect(x: 0, y: 0, width: 390, height: 420)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        XCTAssertGreaterThan(bitmap.pixelsWide, 0)
+        if let output = ProcessInfo.processInfo.environment["TOKENBAR_QUOTA_SETTINGS_RENDER_OUTPUT"] {
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+        }
+    }
+
 }

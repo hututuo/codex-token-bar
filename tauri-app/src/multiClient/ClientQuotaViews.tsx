@@ -7,6 +7,8 @@ import {
 import {
   clientBrand,
   quotaFill,
+  quotaWindowTitle,
+  defaultQuotaSelection,
   clientSidebarMetrics,
   type QuotaItem,
   type QuotaSelection,
@@ -23,7 +25,7 @@ export function ClientQuotaSettings({ codex }: { codex?: QuotaSnapshot }) {
   }
   return (
     <section className="integrated-quota-settings">
-      <h4>额度项目</h4>
+      <div className="integrated-quota-heading"><h4>额度显示与外观</h4><button onClick={() => save({ ...defaultQuotaSelection })}>恢复默认</button></div>
       <label>
         竖条长度{" "}
         <select
@@ -52,6 +54,7 @@ export function ClientQuotaSettings({ codex }: { codex?: QuotaSnapshot }) {
         将不同客户端的额度合在一个环内
       </label>
       <p>默认按客户端配对：一项用整环，两项用左右半环。</p>
+      <div className="integrated-quota-columns"><span>显示的额度</span><span>填充颜色</span><span>顺序</span></div>
       {catalog.map((i, index) => {
         const checked =
           !selection.hidden.includes(i.id) &&
@@ -160,15 +163,14 @@ export function PairedQuotaRing({
       )}
     </g>
   );
-  const legend = (i: QuotaItem) => (
-    <span
-      className="integrated-ring-legend"
-      title={`${clientTitle(i.client)} ${i.window} · ${i.resetsAt ? "重置 " + new Date(i.resetsAt).toLocaleString() : "重置时间未知"}`}
-    >
+  const clientLegend = (i: QuotaItem) => (
+    <span className="integrated-ring-legend" title={clientTitle(i.client)}>
       <i style={{ background: clientBrand[i.client] }} />
-      {i.client === "claudeCode" || i.client === "claudeDesktop" ? "Claude" : clientTitle(i.client)} · {i.window}
-      {i.remaining === null ? " · " + i.status : ""}
+      {i.client === "claudeCode" || i.client === "claudeDesktop" ? "Claude" : clientTitle(i.client)}
     </span>
+  );
+  const windowLegend = (i: QuotaItem) => (
+    <span style={{color:colors[i.id] ?? quotaFill(i)}} title={`${clientTitle(i.client)} ${i.window} · ${i.resetsAt ? "重置 " + new Date(i.resetsAt).toLocaleString() : "重置时间未知"}${i.remaining === null ? " · " + i.status : ""}`}>{quotaWindowTitle(i.window)}</span>
   );
   return (
     <div
@@ -228,17 +230,13 @@ export function PairedQuotaRing({
           )}
         </svg>
         <strong>
-          {right ? (left.remaining === null ? "—" : Math.round(left.remaining)) : value(left)}
-          {right && (
-            <>
-              <b>|</b>
-              {right.remaining === null ? "—" : Math.round(right.remaining)}
-            </>
-          )}
+          {right ? <><span data-digits={left.remaining === null ? 1 : String(Math.round(left.remaining)).length}>{left.remaining === null ? "—" : Math.round(left.remaining)}</span><b aria-hidden="true"/><span data-digits={right.remaining === null ? 1 : String(Math.round(right.remaining)).length}>{right.remaining === null ? "—" : Math.round(right.remaining)}</span></> : value(left)}
         </strong>
       </div>
-      {legend(left)}
-      {right && legend(right)}
+      <div className="integrated-ring-captions">
+        <div className="integrated-ring-windows">{windowLegend(left)}{right && windowLegend(right)}</div>
+        <div className="integrated-ring-clients">{clientLegend(left)}{right && right.client !== left.client && clientLegend(right)}</div>
+      </div>
     </div>
   );
 }

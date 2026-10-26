@@ -6,8 +6,12 @@ struct QuotaSidebarModuleSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            ClientQuotaSettingsView(codex: quotaSnapshot)
+            Button("客户端用量：颜色、样式与显示…") { AppSettingsRouteRequest.request(.multiClientUsage) }
+                .font(.system(size: 11))
+            Divider().overlay(.white.opacity(0.12))
             HStack {
-                Text("侧栏设置").font(.system(size: 15, weight: .semibold))
+                Text("二级菜单模块").font(.system(size: 15, weight: .semibold))
                 Spacer()
                 Button("恢复默认顺序") { controller.resetModuleOrder() }
                     .font(.system(size: 11)).disabled(controller.moduleOrder == QuotaSidebarDetail.defaultModuleOrder)
@@ -30,8 +34,6 @@ struct QuotaSidebarModuleSettingsView: View {
                         .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
                 }
             }
-            ClientQuotaSettingsView(codex: quotaSnapshot)
-            Button("各客户端用量与额度显示…") { AppSettingsRouteRequest.request(.multiClientUsage) }
             Text("设置入口固定在底部，隐藏的项目会保留顺序。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading)
