@@ -11,8 +11,8 @@ internal class FileTailer : TranscriptTailer
 
     private StartAlignment _alignment;
 
-    public FileTailer(string path)
-        : base(path)
+    public FileTailer(string path, IPositionedReadBackend? readBackend = null)
+        : base(path, readBackend)
     {
     }
 
@@ -40,7 +40,8 @@ internal class FileTailer : TranscriptTailer
         if (_alignment == StartAlignment.SkipPartialLine && Offset <= length)
         {
             Span<byte> previous = stackalloc byte[1];
-            Lines.AlignToNextLine = RandomAccess.Read(handle, previous, Offset - 1) != 1 || previous[0] != (byte)'\n';
+            Lines.AlignToNextLine = ReadAt(handle, previous, Offset - 1, probe: true, cancellationToken) != 1
+                || previous[0] != (byte)'\n';
         }
 
         _alignment = StartAlignment.None;
@@ -54,7 +55,7 @@ internal class FileTailer : TranscriptTailer
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var want = (int)Math.Min(buffer.Length, length - Offset);
-                    var read = RandomAccess.Read(handle, buffer.AsSpan(0, want), Offset);
+                    var read = ReadAt(handle, buffer.AsSpan(0, want), Offset, cancellationToken: cancellationToken);
                     if (read <= 0)
                     {
                         break;

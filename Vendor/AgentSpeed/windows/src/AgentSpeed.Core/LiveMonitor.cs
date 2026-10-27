@@ -23,6 +23,7 @@ public sealed class LiveMonitor : IDisposable
     private const int MaxPendingPaths = 10_000;
 
     private readonly SpeedHub _hub;
+    private readonly IPositionedReadBackend? _readBackend;
     private readonly object _gate = new();
     private readonly object _pendingGate = new();
     private readonly AutoResetEvent _wake = new(false);
@@ -38,12 +39,17 @@ public sealed class LiveMonitor : IDisposable
     private bool _disposed;
 
     /// <param name="pricing">Prices every response (METRICS 9); null leaves costs unknown.</param>
-    public LiveMonitor(SpeedHub hub, MonitorConfiguration? configuration = null, PriceBook? pricing = null)
+    public LiveMonitor(
+        SpeedHub hub,
+        MonitorConfiguration? configuration = null,
+        PriceBook? pricing = null,
+        IPositionedReadBackend? readBackend = null)
     {
         ArgumentNullException.ThrowIfNull(hub);
         _hub = hub;
         _configuration = configuration ?? MonitorConfiguration.Default;
         Pricing = pricing;
+        _readBackend = readBackend;
     }
 
     public PriceBook? Pricing { get; }
@@ -332,8 +338,37 @@ public sealed class LiveMonitor : IDisposable
     private void RunSession(MonitorConfiguration configuration, CancellationToken token)
     {
         var zone = TimeZoneInfo.Local;
+        var locations = SourceLocations.Resolve(configuration);
+        foreach (var (family, path) in locations.FileRoots())
+        {
+            if (path.Length > 0 && Families.IsEnabled(family, configuration.EnabledSources))
+            {
+                LocalSourcePathPolicy.EnsureReadablePath(path);
+            }
+        }
+        if (Families.IsEnabled(RootFamily.Codex, configuration.EnabledSources)
+            && locations.CodexArchiveRoot.Length > 0)
+        {
+            LocalSourcePathPolicy.EnsureReadablePath(locations.CodexArchiveRoot);
+        }
+        if (Families.IsEnabled(RootFamily.OpenCode, configuration.EnabledSources)
+            && locations.OpenCodeRoot.Length > 0)
+        {
+            LocalSourcePathPolicy.EnsureReadablePath(locations.OpenCodeRoot);
+        }
+        if (Families.IsEnabled(RootFamily.ZCode, configuration.EnabledSources)
+            && locations.ZCodeRoot.Length > 0)
+        {
+            LocalSourcePathPolicy.EnsureReadablePath(locations.ZCodeRoot);
+        }
+
         using var core = new MonitorCore(
-            configuration, SourceLocations.Resolve(configuration), LocalDay.StartMs(NowMs(), zone), pricing: Pricing, zone: zone);
+            configuration,
+            locations,
+            LocalDay.StartMs(NowMs(), zone),
+            pricing: Pricing,
+            zone: zone,
+            readBackend: _readBackend);
         core.ReadWholeFilesInBackground = true;
         core.BackgroundReadCompleted = SignalWake;
         core.BeforeBackgroundRead = BeforeBackgroundRead;

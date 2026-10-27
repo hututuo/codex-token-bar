@@ -1,10 +1,11 @@
 //! A rollout's logical JSONL identity survives lossless storage conversion.
 //! Seeking compressed data is a bounded streaming skip, never a temp file.
+use crate::core::shared_source_io::{probe_uncached, SourceReader};
+use std::collections::HashMap;
 use std::fs::{self, File, Metadata};
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::collections::HashMap;
 
 pub(super) fn is_rollout(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "jsonl") || is_compressed(path)
@@ -211,16 +212,65 @@ fn cache_key(path: &Path, file: &File) -> io::Result<String> {
     { Ok(format!("{}:{m:?}",path.display())) }
 }
 
-fn read_number(file: &mut File, count: usize) -> io::Result<u64> {
+/// Cursor adapter for validation reads. It shares neither the physical cursor
+/// nor the block cache with payload decoders.
+struct UncachedReader {
+    file: File,
+    position: u64,
+    len: u64,
+}
+
+impl UncachedReader {
+    fn new(file: &File) -> io::Result<Self> {
+        Ok(Self {
+            file: file.try_clone()?,
+            position: 0,
+            len: file.metadata()?.len(),
+        })
+    }
+}
+
+impl Read for UncachedReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let bytes = probe_uncached(&self.file, self.position, buffer.len())?;
+        buffer[..bytes.len()].copy_from_slice(&bytes);
+        self.position = self.position.saturating_add(bytes.len() as u64);
+        Ok(bytes.len())
+    }
+}
+
+impl Seek for UncachedReader {
+    fn seek(&mut self, offset: SeekFrom) -> io::Result<u64> {
+        let target = match offset {
+            SeekFrom::Start(value) => Some(i128::from(value)),
+            SeekFrom::Current(delta) => i128::from(self.position).checked_add(i128::from(delta)),
+            SeekFrom::End(delta) => i128::from(self.len).checked_add(i128::from(delta)),
+        }
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid physical seek"))?;
+        if !(0..=i128::from(u64::MAX)).contains(&target) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "physical seek is outside the u64 range",
+            ));
+        }
+        self.position = target as u64;
+        Ok(self.position)
+    }
+}
+
+fn read_number(file: &mut UncachedReader, count: usize) -> io::Result<u64> {
     let mut bytes=[0;8]; file.read_exact(&mut bytes[..count])?; Ok(u64::from_le_bytes(bytes))
 }
-fn skip(file: &mut File, count: u64, end: u64) -> io::Result<()> {
+fn skip(file: &mut UncachedReader, count: u64, end: u64) -> io::Result<()> {
     let position=file.stream_position()?.checked_add(count).ok_or_else(||invalid("zstd offset overflow"))?;
     if position>end { return Err(invalid("truncated zstd payload")); }
     file.seek(SeekFrom::Start(position))?; Ok(())
 }
-fn inspect(file: &mut File) -> io::Result<Layout> {
-    let end=file.metadata()?.len();
+fn inspect(file: &mut UncachedReader) -> io::Result<Layout> {
+    let end=file.len;
     file.seek(SeekFrom::Start(0))?;
     let mut frames=0u64; let mut blocks=0u64; let mut total=Some(0u64); let mut skippable=false;
     while file.stream_position()?<end {
@@ -256,16 +306,18 @@ fn inspect(file: &mut File) -> io::Result<Layout> {
     Ok(Layout {logical_size:total,single_frame:frames==1 && !skippable,declared_size:total.is_some()})
 }
 
-type Decoder=zstd::stream::read::Decoder<'static,BufReader<File>>;
-fn decoder(file: File) -> io::Result<Decoder> {
-    let mut d=zstd::stream::read::Decoder::new(file)?;
+type Decoder<R> = zstd::stream::read::Decoder<'static, BufReader<R>>;
+fn decoder<R: Read>(reader: R) -> io::Result<Decoder<R>> {
+    let mut d=zstd::stream::read::Decoder::new(reader)?;
     d.window_log_max(27)?; // at most 128 MiB, independently of I/O buffers
     Ok(d)
 }
-enum Storage { Plain(File), Compressed(Decoder) }
+enum Storage { Plain(SourceReader), Compressed(Decoder<SourceReader>) }
 pub(super) struct RolloutReader {
     storage: Option<Storage>,
+    raw_file: File,
     physical: PathBuf,
+    version_key: String,
     layout: Layout,
     logical_position: u64,
 }
@@ -335,23 +387,27 @@ impl RolloutReader {
         }
         Err(io::Error::new(io::ErrorKind::Interrupted, "rollout representations changed during open; retry"))
     }
-    pub fn from_file(mut file: File, physical: PathBuf) -> io::Result<Self> {
+    pub fn from_file(file: File, physical: PathBuf) -> io::Result<Self> {
         let before=cache_key(&physical,&file)?;
+        let raw_file=file.try_clone()?;
         let mut layout=Layout { logical_size:Some(file.metadata()?.len()),single_frame:false,declared_size:false };
         let storage=if is_compressed(&physical) {
             let cache=layout_cache();
             let cached=cache.lock().map_err(|_|invalid("zstd layout cache poisoned"))?.get(&before).copied();
             layout=if let Some(value)=cached {value} else {
-                let value=inspect(&mut file).map_err(|e|io::Error::new(e.kind(),format!("zstd结构检查失败 {}：{e}",physical.display())))?;
+                let mut probe=UncachedReader::new(&file)?;
+                let value=inspect(&mut probe).map_err(|e|io::Error::new(e.kind(),format!("zstd结构检查失败 {}：{e}",physical.display())))?;
                 if cache_key(&physical,&file)?!=before { return Err(invalid("rollout changed during frame inspection")); }
-                let mut map=cache.lock().map_err(|_|invalid("zstd layout cache poisoned"))?;
-                if map.len()>=32768 {map.clear();}
-                map.insert(before.clone(),value); value
+                if value.logical_size.is_some() {
+                    let mut map=cache.lock().map_err(|_|invalid("zstd layout cache poisoned"))?;
+                    if map.len()>=32768 {map.clear();}
+                    map.insert(before.clone(),value);
+                }
+                value
             };
-            file.seek(SeekFrom::Start(0))?;
-            let mut d=decoder(file)?;
             if layout.logical_size.is_none() {
                 // Unknown-size frames cannot use the metadata reuse lane.
+                let mut d=decoder(UncachedReader::new(&raw_file)?)?;
                 let mut bytes=[0;128*1024]; let mut size=0u64;
                 loop { let n=d.read(&mut bytes).map_err(|e|io::Error::new(e.kind(),format!("zstd长度核对失败 {}：{e}",physical.display())))?; if n==0 {break;}
                     #[cfg(test)]
@@ -359,18 +415,15 @@ impl RolloutReader {
                     size=size.checked_add(n as u64).ok_or_else(||invalid("rollout logical size overflow"))?;
                 }
                 layout.logical_size=Some(size);
-                if cache_key(&physical,d.get_ref().get_ref())?!=before {return Err(invalid("rollout changed during size validation"));}
+                if cache_key(&physical,&raw_file)?!=before {return Err(invalid("rollout changed during size validation"));}
                 cache.lock().map_err(|_|invalid("zstd layout cache poisoned"))?.insert(before.clone(),layout);
-                let mut file=d.finish().into_inner(); file.seek(SeekFrom::Start(0))?; d=decoder(file)?;
             }
-            Storage::Compressed(d)
-        } else {Storage::Plain(file)};
-        Ok(Self {storage:Some(storage),physical,layout,logical_position:0})
+            Storage::Compressed(decoder(SourceReader::new(&raw_file)?)?)
+        } else {Storage::Plain(SourceReader::new(&raw_file)?)};
+        Ok(Self {storage:Some(storage),raw_file,physical,version_key:before,layout,logical_position:0})
     }
     pub fn raw(&self) -> &File {
-        match self.storage.as_ref().expect("reader storage") {
-            Storage::Plain(f)=>f,Storage::Compressed(d)=>d.get_ref().get_ref()
-        }
+        &self.raw_file
     }
     pub fn metadata(&self) -> io::Result<Metadata> {self.raw().metadata()}
     pub fn logical_size(&self) -> u64 {self.layout.logical_size.expect("opened logical size")}
@@ -379,9 +432,20 @@ impl RolloutReader {
     pub fn fast_reuse_supported(&self) -> bool {self.compressed() && self.layout.single_frame && self.layout.declared_size}
     pub fn verify_end(&mut self, size: u64) -> io::Result<()> {
         if !self.compressed() {return Ok(());}
-        self.seek(SeekFrom::Start(size))?;
-        let mut byte=[0;1];
-        if self.read(&mut byte)?!=0 {return Err(invalid("zstd decoded length differs from declared length"));}
+        let before=cache_key(&self.physical,&self.raw_file)?;
+        if before!=self.version_key {return Err(invalid("rollout changed before decoded-length validation"));}
+        let mut d=decoder(UncachedReader::new(&self.raw_file)?)?;
+        let mut remaining=size;
+        let mut bytes=[0;128*1024];
+        while remaining>0 {
+            let want=remaining.min(bytes.len() as u64) as usize;
+            let count=d.read(&mut bytes[..want])?;
+            if count==0 {return Err(invalid("zstd decoded length differs from declared length"));}
+            remaining-=count as u64;
+        }
+        let mut extra=[0;1];
+        if d.read(&mut extra)?!=0 {return Err(invalid("zstd decoded length differs from declared length"));}
+        if cache_key(&self.physical,&self.raw_file)?!=before {return Err(invalid("rollout changed during decoded-length validation"));}
         Ok(())
     }
 }
@@ -410,8 +474,8 @@ impl Seek for RolloutReader {
         let target=target.ok_or_else(||invalid("invalid logical seek"))?;
         if target<self.logical_position {
             let Some(Storage::Compressed(d))=self.storage.take() else {unreachable!()};
-            let mut file=d.finish().into_inner(); file.seek(SeekFrom::Start(0))?;
-            self.storage=Some(Storage::Compressed(decoder(file)?)); self.logical_position=0;
+            let mut reader=d.finish().into_inner(); reader.seek(SeekFrom::Start(0))?;
+            self.storage=Some(Storage::Compressed(decoder(reader)?)); self.logical_position=0;
         }
         let mut buffer=[0;64*1024];
         while self.logical_position<target {
@@ -435,4 +499,51 @@ impl SourceHandle for RolloutReader {
     fn raw_file(&self) -> &File {self.raw()}
     fn logical_length(&self) -> io::Result<u64> {Ok(self.logical_size())}
     fn validate_decoded_end(&mut self, size: u64) -> io::Result<()> {self.verify_end(size)}
+}
+
+#[cfg(test)]
+mod shared_read_tests {
+    use super::*;
+    use crate::core::shared_source_io::snapshot_stats;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn payload_readers_share_physical_blocks_but_validation_bypasses_cache() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "rollout-shared-source-{}-{unique}.jsonl.zst",
+            std::process::id()
+        ));
+        fs::write(&path, b"shared physical bytes for rollout source io").unwrap();
+        let mut file = File::open(&path).unwrap();
+
+        let before = snapshot_stats();
+        let mut first = SourceReader::new(&file).unwrap();
+        let mut first_bytes = [0; 6];
+        first.read_exact(&mut first_bytes).unwrap();
+        assert_eq!(&first_bytes, b"shared");
+        let after_first = snapshot_stats();
+
+        let mut second = SourceReader::new(&file).unwrap();
+        let mut second_bytes = [0; 6];
+        second.read_exact(&mut second_bytes).unwrap();
+        assert_eq!(second_bytes, first_bytes);
+        let after_second = snapshot_stats();
+        assert!(after_second.cache_hits > after_first.cache_hits);
+
+        let mut validation = UncachedReader::new(&file).unwrap();
+        let mut validated_bytes = [0; 6];
+        validation.read_exact(&mut validated_bytes).unwrap();
+        assert_eq!(validated_bytes, first_bytes);
+        let after_validation = snapshot_stats();
+        assert!(after_validation.physical_reads > after_second.physical_reads);
+        assert!(after_second.physical_reads >= before.physical_reads + 1);
+        assert_eq!(file.stream_position().unwrap(), 0);
+
+        drop((first, second, validation, file));
+        let _ = fs::remove_file(path);
+    }
 }

@@ -58,9 +58,27 @@ pub(crate) fn read(identity: &QuotaHistoryIdentity) -> Result<Vec<QuotaCycle>, S
         let Some(path) = path.filter(|p| p.exists()) else {
             continue;
         };
+        #[cfg(test)]
         let result = sqlite::open_read_only(&path, Duration::from_secs(2)).and_then(|connection| {
             database::query_stable_identity_rows(&connection, identity, None)
         });
+        #[cfg(not(test))]
+        let result = (|| -> Result<Vec<QuotaHistoryRow>, String> {
+            let source_identity = crate::core::business_store_route::source_identity(
+                "quota_history_legacy",
+                &path,
+            )?;
+            let logical_path = format!("legacy/quota-history/{source_identity}");
+            let connection = crate::core::business_store_route::open_store(
+                "quota_history_legacy",
+                &source_identity,
+                &logical_path,
+                &[path],
+            )?;
+            database::query_stable_identity_rows(&connection, identity, None)
+                .map_err(|error| error.to_string())
+        })()
+        .map_err(super::store_route_sql_error);
         match result {
             Ok(found) => rows.extend(found),
             Err(_) if optional => {}

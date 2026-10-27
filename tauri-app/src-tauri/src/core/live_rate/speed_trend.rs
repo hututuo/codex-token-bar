@@ -1,10 +1,15 @@
 //! Durable numeric history and sparse five-minute completed-body speed trends.
 //!
-//! This store is intentionally standalone: callers choose its SQLite path, and its
-//! payloads contain sample metadata and measurements only, never response text.
+//! Callers retain the historical logical path; production routes its source
+//! partition into business container A. Isolated tests use plain SQLite files.
+//! Payloads contain measurements and metadata only, never response text.
 
 use crate::models::SpeedSample;
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
+#[cfg(test)]
+use rusqlite::{Connection, Transaction};
+#[cfg(not(test))]
+use crate::core::business_store_connection::{StoreConnection as Connection, StoreTransaction as Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -194,7 +199,16 @@ impl BodySpeedTrendStore {
     }
 
     fn connect(&self) -> rusqlite::Result<Connection> {
+        #[cfg(test)]
         let connection = Connection::open(&self.path)?;
+        #[cfg(not(test))]
+        let connection = {
+            let identity = self.path.file_name().and_then(|name| name.to_str())
+                .ok_or_else(|| rusqlite::Error::InvalidPath(self.path.clone()))?;
+            let logical = format!("body-speed/{identity}");
+            crate::core::business_store_route::open_store("body-speed", identity, &logical, &[self.path.clone()])
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error))))?
+        };
         connection.busy_timeout(Duration::from_secs(3))?;
         Ok(connection)
     }

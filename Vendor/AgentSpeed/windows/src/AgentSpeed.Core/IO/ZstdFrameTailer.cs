@@ -29,8 +29,8 @@ internal sealed class ZstdFrameTailer : TranscriptTailer
 
     private bool _resyncing;
 
-    public ZstdFrameTailer(string path)
-        : base(path)
+    public ZstdFrameTailer(string path, IPositionedReadBackend? readBackend = null)
+        : base(path, readBackend)
     {
     }
 
@@ -67,7 +67,7 @@ internal sealed class ZstdFrameTailer : TranscriptTailer
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var available = length - Offset;
-                    var fill = Fill(handle, window, (int)Math.Min(window.Length, available), Offset);
+                    var fill = Fill(handle, window, (int)Math.Min(window.Length, available), Offset, cancellationToken);
                     var atEnd = fill >= available || fill < Math.Min(window.Length, available);
                     var used = Scan(window.AsSpan(0, fill), decoder, sink);
                     Offset += used;
@@ -115,12 +115,12 @@ internal sealed class ZstdFrameTailer : TranscriptTailer
         }
     }
 
-    private static int Fill(SafeFileHandle handle, byte[] buffer, int want, long offset)
+    private int Fill(SafeFileHandle handle, byte[] buffer, int want, long offset, CancellationToken cancellationToken)
     {
         var total = 0;
         while (total < want)
         {
-            var read = RandomAccess.Read(handle, buffer.AsSpan(total, want - total), offset + total);
+            var read = ReadAt(handle, buffer.AsSpan(total, want - total), offset + total, cancellationToken: cancellationToken);
             if (read <= 0)
             {
                 break;

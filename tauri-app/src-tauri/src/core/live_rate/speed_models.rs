@@ -3,6 +3,7 @@
 //! Lookups are keyed by the exact `(thread, turn)` pair from a rollout
 //! `turn_context` record. Neighboring records are never used as a fallback.
 
+use crate::core::shared_source_io::SourceReader;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, Metadata};
@@ -50,6 +51,7 @@ struct CandidateFile {
     modified: Option<SystemTime>,
 }
 
+#[derive(Clone)]
 struct FileCache {
     identity: String,
     offset: u64,
@@ -324,7 +326,9 @@ impl ModelResolver {
             let budget = remaining
                 .min(per_thread_budget)
                 .min(MAX_BYTES_PER_FILE_PER_LOOKUP);
-            let bytes_read = self.scan_file(candidate, budget);
+            let Some(bytes_read) = self.scan_file(candidate, budget) else {
+                continue;
+            };
             remaining = remaining.saturating_sub(bytes_read);
             let (thread, turns) = &requests[*thread_index];
             if let Some(cache) = self.files.get(&candidate.path) {
@@ -359,20 +363,19 @@ impl ModelResolver {
         resolved
     }
 
-    fn scan_file(&mut self, candidate: &CandidateFile, byte_budget: usize) -> usize {
+    fn scan_file(&mut self, candidate: &CandidateFile, byte_budget: usize) -> Option<usize> {
         if byte_budget == 0 {
-            return 0;
+            return Some(0);
         }
-        let Ok(mut file) = open_readonly(candidate.path.as_path()) else {
-            self.files.remove(&candidate.path);
-            return 0;
+        let Ok(file) = open_readonly(candidate.path.as_path()) else {
+            return None;
         };
         let Ok(metadata) = file.metadata() else {
-            return 0;
+            return None;
         };
         if !metadata.is_file() {
             self.files.remove(&candidate.path);
-            return 0;
+            return None;
         }
         let size = metadata.len();
         let modified = metadata.modified().ok();
@@ -381,6 +384,7 @@ impl ModelResolver {
             .files
             .remove(&candidate.path)
             .unwrap_or_else(|| FileCache::new(identity.clone()));
+        let original_entry = entry.clone();
         if entry.identity != identity
             || size < entry.offset
             || (size == entry.observed_size && modified != entry.modified)
@@ -392,18 +396,34 @@ impl ModelResolver {
             entry.offset = size.saturating_sub(initial_window);
             entry.dropping_line = entry.offset > 0;
         }
-        if entry.offset > size || file.seek(SeekFrom::Start(entry.offset)).is_err() {
-            self.files.insert(candidate.path.clone(), entry);
-            return 0;
+        if entry.offset > size {
+            self.files.insert(candidate.path.clone(), original_entry);
+            return None;
+        }
+        let mut source = match SourceReader::new(&file) {
+            Ok(source) => source,
+            Err(_) => {
+                self.files.insert(candidate.path.clone(), original_entry);
+                return None;
+            }
+        };
+        if source.seek(SeekFrom::Start(entry.offset)).is_err() {
+            self.files.insert(candidate.path.clone(), original_entry);
+            return None;
         }
 
         let mut remaining = byte_budget.min(MAX_BYTES_PER_FILE_PER_LOOKUP);
         let mut bytes_read = 0usize;
         let mut chunk = [0u8; 64 * 1024];
+        let mut read_failed = false;
         while remaining > 0 {
             let requested = chunk.len().min(remaining);
-            let Ok(count) = file.read(&mut chunk[..requested]) else {
-                break;
+            let count = match source.read(&mut chunk[..requested]) {
+                Ok(count) => count,
+                Err(_) => {
+                    read_failed = true;
+                    break;
+                }
             };
             if count == 0 {
                 break;
@@ -414,10 +434,14 @@ impl ModelResolver {
             entry.carry.extend_from_slice(&chunk[..count]);
             consume_lines(&mut entry);
         }
+        if read_failed {
+            self.files.insert(candidate.path.clone(), original_entry);
+            return None;
+        }
         entry.observed_size = size;
         entry.modified = modified;
         self.files.insert(candidate.path.clone(), entry);
-        bytes_read
+        Some(bytes_read)
     }
 }
 

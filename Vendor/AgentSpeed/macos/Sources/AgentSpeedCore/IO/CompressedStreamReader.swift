@@ -1,3 +1,4 @@
+import SharedSourceIO
 import CZstd
 import Darwin
 import Foundation
@@ -73,7 +74,7 @@ struct CompressedStreamReader: Sendable {
         var frameOpen = false
         reading: while offset < stat.size {
             let wanted = Int(min(Int64(Self.inputChunkBytes), stat.size - offset))
-            let count = Darwin.pread(descriptor, input.baseAddress, wanted, off_t(offset))
+            let count = SharedSourceIO.shared.pread(descriptor, into: UnsafeMutableRawBufferPointer(start: input.baseAddress, count: wanted), offset: offset)
             if count < 0 {
                 if errno == EINTR { continue }
                 result.failed = true

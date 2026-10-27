@@ -85,7 +85,15 @@ internal sealed class OpenCodeDatabase : IDisposable
     /// <exception cref="OpenCodeOpenException">The database is missing, unreadable or of an unsupported format.</exception>
     public static OpenCodeDatabase Open(string path)
     {
-        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+        if (string.IsNullOrEmpty(path))
+        {
+            throw new OpenCodeOpenException(OpenCodeStatus.Missing, "missing");
+        }
+
+        AgentSpeed.Core.IO.LocalSourcePathPolicy.EnsureReadablePath(path);
+        AgentSpeed.Core.IO.LocalSourcePathPolicy.EnsureReadablePath(path + "-wal");
+        AgentSpeed.Core.IO.LocalSourcePathPolicy.EnsureReadablePath(path + "-shm");
+        if (!File.Exists(path))
         {
             throw new OpenCodeOpenException(OpenCodeStatus.Missing, "missing");
         }

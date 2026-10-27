@@ -1,3 +1,4 @@
+import SharedSourceIO
 import Foundation
 
 /// Follows one transcript file: plain JSONL (METRICS 5), a zstd frame stream for `.zstd` files (METRICS 5.1), a
@@ -154,7 +155,7 @@ struct DocumentReader: Sendable {
         defer { buffer.deallocate() }
         var filled = 0
         while filled < size {
-            let count = Darwin.pread(descriptor, buffer.baseAddress! + filled, size - filled, off_t(filled))
+            let count = SharedSourceIO.shared.pread(descriptor, into: UnsafeMutableRawBufferPointer(start: buffer.baseAddress! + filled, count: size - filled), offset: Int64(filled))
             if count < 0, errno == EINTR { continue }
             guard count > 0 else { break }
             filled += count

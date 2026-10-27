@@ -399,6 +399,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let auditChunkIndex: UInt64
     }
 
+    private struct BusinessStageDemand: Error {
+        let jobs: [FullRebuildJob]
+        let enrichmentTotal: Int
+    }
+
     private struct FullRebuildJob {
         enum Reason {
             case sourceChange
@@ -591,6 +596,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private let fileManager: FileManager
     private let operationGate: CodexUsageHistoryIndexOperationGate
 
+    /// The migration gate normalizes an isolated backup, never the original
+    /// user's database. The established ledger/fork/retention migrations run
+    /// unchanged, then only that verified schema is imported into A.
+    static func businessIndexDirectory(legacyCache: Bool = false) -> URL {
+        databaseURL(for: URL(fileURLWithPath: "/"), legacyCache: legacyCache).deletingLastPathComponent()
+    }
+
+    static func prepareBusinessSnapshot(at url: URL) throws {
+        _ = try CodexUsageHistoryIndex(databaseURL: url, fileManager: .default)
+    }
+
     convenience init(
         codexHome: URL,
         fileManager: FileManager = .default,
@@ -614,6 +630,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         onProgress: ((PreciseIndexProgress) -> Void)? = nil
     ) throws -> CodexUsageHistoryIndex? {
         let current = databaseURL(for: codexHome)
+        if BusinessSQLiteRoutes.store(for: current) != nil, BusinessStoreFiles.exists(current) {
+            return try CodexUsageHistoryIndex(codexHome: codexHome, fileManager: fileManager,
+                createsFileIfMissing: false, onProgress: onProgress)
+        }
         let legacy = databaseURL(for: codexHome, legacyCache: true)
         for url in [current, candidateMigrationManifestURL(for: current),
                     legacy, candidateMigrationManifestURL(for: legacy)] {
@@ -740,7 +760,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         openMode: OpenMode = .active,
         createsFileIfMissing: Bool = true
     ) throws {
-        let existedBeforeOpen = fileManager.fileExists(atPath: databaseURL.path)
+        let existedBeforeOpen = BusinessStoreFiles.exists(databaseURL, fileManager: fileManager)
         let gate = Self.operationGate(for: databaseURL)
         let migratedViaCandidate: Bool
         if openMode == .active {
@@ -830,6 +850,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         fileManager: FileManager,
         onProgress: ((PreciseIndexProgress) -> Void)?
     ) throws -> Bool {
+        if BusinessSQLiteRoutes.store(for: databaseURL) != nil {
+            switch try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
+            case .compatible: return false
+            default: throw CodexUsageIndexRepairRequiredError(reason: "归并后的索引需要模块迁移，已保留账本并停止旧文件交换")
+            }
+        }
         // Reject future contracts before resuming or switching any candidate.
         if case let .upgradeRequired(component, stored, supported) = try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
             throw CodexUsageIndexUpgradeRequiredError(component: component, stored: stored, supported: supported)
@@ -840,7 +866,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             if manifest.phase == .retained {
                 guard manifest.manifestVersion == CandidateMigrationManifest.currentVersion,
                       URL(fileURLWithPath: manifest.sourcePath).resolvingSymlinksInPath() == databaseURL.resolvingSymlinksInPath(),
-                      fileManager.fileExists(atPath: databaseURL.path) else {
+                      BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
                     throw CodexUsageIndexRepairRequiredError(reason: "已迁移账本缺失；保留旧库并停止自动重建")
                 }
                 return false
@@ -856,7 +882,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             return !wasAlreadySwitched
         }
 
-        guard fileManager.fileExists(atPath: databaseURL.path) else { return false }
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else { return false }
         let assessment = try assessMigration(
             databaseURL: databaseURL,
             fileManager: fileManager
@@ -1128,7 +1154,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             return
         }
 
-        if fileManager.fileExists(atPath: databaseURL.path),
+        if BusinessStoreFiles.exists(databaseURL, fileManager: fileManager),
            !fileManager.fileExists(atPath: rollbackURL.path) {
             try fileManager.moveItem(at: databaseURL, to: rollbackURL)
         }
@@ -1148,11 +1174,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             fileManager: fileManager
         )
 
-        if !fileManager.fileExists(atPath: databaseURL.path),
+        if !BusinessStoreFiles.exists(databaseURL, fileManager: fileManager),
            fileManager.fileExists(atPath: candidateURL.path) {
             try fileManager.moveItem(at: candidateURL, to: databaseURL)
         }
-        guard fileManager.fileExists(atPath: databaseURL.path),
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager),
               !fileManager.fileExists(atPath: candidateURL.path) else {
             throw CodexUsageIndexRepairRequiredError(
                 reason: "schema 11 候选切换未完成；下次启动将按清单继续"
@@ -1563,7 +1589,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         rollbackURL: URL,
         fileManager: FileManager
     ) throws {
-        guard fileManager.fileExists(atPath: databaseURL.path) else {
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
             throw CodexUsageIndexRepairRequiredError(
                 reason: "schema 11 清理缺少已发布活动库；已保留回滚库"
             )
@@ -1639,7 +1665,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         databaseURL: URL,
         fileManager: FileManager
     ) throws -> MigrationAssessment {
-        guard fileManager.fileExists(atPath: databaseURL.path) else {
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
             return .compatible
         }
         let readOnly = SQLiteDatabaseDriver(
@@ -1884,7 +1910,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         policy: CodexUsageIndexStorageMaintenancePolicy,
         availableCapacityOverride: UInt64?
     ) throws -> CodexUsageIndexStorageMaintenanceOutcome {
-        try driver.withConnection { connection in
+        if let store = BusinessSQLiteRoutes.store(for: driver.url) {
+            return try BusinessDatabaseMaintenance.run(container: store.containerURL, now: now,
+                policy: policy, availableCapacity: availableCapacityOverride)
+        }
+        return try driver.withConnection { connection in
             try configure(connection)
             let nowUnix = Int64(now.timeIntervalSince1970.rounded(.down))
             let lastChecked = try connection.readRows(
@@ -2584,20 +2614,37 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: @escaping SessionParser,
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
-        var stagedArtifacts: [URL] = []
-        let result = try driver.withConnection { connection in
-            try configure(connection)
-            return try connection.transaction { transaction in
-                try synchronizeInTransaction(files: files, sessionID: sessionID,
-                    messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: onProgress,
-                    connection: transaction, stagedArtifacts: &stagedArtifacts)
+        var attempt = 0
+        while true {
+            var stagedArtifacts: [URL] = []
+            do {
+                let result = try driver.withConnection { connection in
+                    try configure(connection)
+                    return try connection.transaction { transaction in
+                        try synchronizeInTransaction(files: files, sessionID: sessionID,
+                            messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: onProgress,
+                            connection: transaction, stagedArtifacts: &stagedArtifacts)
+                    }
+                }
+                // Only the complete generation's commit permits job cleanup.
+                for artifact in stagedArtifacts { removeStagingDatabase(at: artifact) }
+                removeStagingDirectoryIfEmpty()
+                return result
+            } catch let demand as BusinessStageDemand {
+                // SQLite has one writer per physical A file. Build durable
+                // private jobs after rolling back the tentative publication,
+                // then retry its original accounting transaction unchanged.
+                attempt += 1
+                guard attempt <= 8 else { throw CodexUsageIndexRepairRequiredError(reason: "源会话持续变化，已保留旧账和扫描断点，等待下次刷新") }
+                for batch in stagingBatches(for: demand.jobs) {
+                    try ensureStagingCapacity(for: batch)
+                    _ = try stageFullRebuilds(batch, parser: parser,
+                        eventEnrichmentTotal: demand.enrichmentTotal) { completed,total in
+                        onProgress?(completed, total, .backfillingModel)
+                    }
+                }
             }
         }
-        // A batch savepoint is not a publication. Keep retry artifacts until
-        // the entire generation and its coverage receipt have committed.
-        for artifact in stagedArtifacts { removeStagingDatabase(at: artifact) }
-        removeStagingDirectoryIfEmpty()
-        return result
     }
 
     private func synchronizeInTransaction(
@@ -2822,6 +2869,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var lineagesRequiringMaximumMerge = Set<String>()
         var provenanceRotated = false
         let stagingBatches = stagingBatches(for: fullRebuildJobs)
+        if BusinessSQLiteRoutes.store(for: driver.url) != nil {
+            for job in fullRebuildJobs {
+                var ready = false
+                for url in stagingDatabaseURLs(for: job.file) {
+                    if try reusableStage(at: url, for: job) != nil { ready = true; break }
+                }
+                if !ready { throw BusinessStageDemand(jobs: fullRebuildJobs, enrichmentTotal: eventEnrichmentTotal) }
+            }
+        }
         let finalSynchronization = try connection.transaction { connection in
             let preRotationAttributionState = try currentAttributionState(
                 connection: connection
@@ -3642,7 +3698,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             databaseURL(for: codexHome, legacyCache: true),
         ]
         for databaseURL in databaseURLs {
-            guard fileManager.fileExists(atPath: databaseURL.path) else { continue }
+            guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else { continue }
             let reader = SQLiteDatabaseDriver(
                 url: databaseURL,
                 readOnly: true,
@@ -7483,13 +7539,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             fileManager: fileManager
         )
         return try stage.withConnection { connection in
+            let temporary = connection.businessBinding != nil
+            let tableKind = temporary ? "TEMP TABLE" : "TABLE"
             try connection.execute(
                 """
                 PRAGMA synchronous=FULL;
                 PRAGMA temp_store=FILE;
                 PRAGMA cache_size=-4096;
 
-                CREATE TABLE manifest (
+                CREATE \(tableKind) manifest (
                     complete INTEGER PRIMARY KEY CHECK(complete IN (0, 1)),
                     manifest_schema_version INTEGER NOT NULL,
                     canonical_path TEXT NOT NULL,
@@ -7519,11 +7577,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     physical_stamp TEXT
                 );
 
-                CREATE TABLE fingerprints (
+                CREATE \(tableKind) fingerprints (
                     value BLOB PRIMARY KEY
                 ) WITHOUT ROWID;
 
-                CREATE TABLE events (
+                CREATE \(tableKind) events (
                     source_offset INTEGER PRIMARY KEY,
                     timestamp REAL NOT NULL,
                     tokens INTEGER NOT NULL,
@@ -7539,14 +7597,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     usage_fingerprint BLOB
                 ) WITHOUT ROWID;
 
-                CREATE TABLE chunks (
+                CREATE \(tableKind) chunks (
                     chunk_index INTEGER PRIMARY KEY,
                     byte_count INTEGER NOT NULL,
                     sha256 TEXT NOT NULL
                 ) WITHOUT ROWID;
                 """
             )
-            var staged = try connection.transaction { transaction in
+            func parseStage(_ body: (SQLiteDatabaseConnection) throws -> StagedFullRebuild) throws -> StagedFullRebuild {
+                temporary ? try connection.readTransaction(body) : try connection.transaction(body)
+            }
+            var staged = try parseStage { transaction in
                 let fingerprintStatement = try transaction.prepare(
                     "INSERT OR IGNORE INTO fingerprints(value) VALUES (?);"
                 )
@@ -7725,6 +7786,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     prefixSHA256: result.contentHash
                 )
             }
+            if temporary { try BusinessStoreFiles.materializeTemporaryStage(connection) }
             let quickCheck = try connection.readRows("PRAGMA quick_check;") {
                 $0.text(0) ?? ""
             }
@@ -7736,8 +7798,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     path: databaseURL.path
                 )
             }
-            let attributes = try fileManager.attributesOfItem(atPath: databaseURL.path)
-            var actualBytes = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            var actualBytes = try BusinessStoreFiles.byteCount(at: databaseURL, connection: connection, fileManager: fileManager)
             try connection.execute(
                 """
                 UPDATE manifest
@@ -7750,8 +7811,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     .text(artifactID)
                 ]
             )
-            let publishedAttributes = try fileManager.attributesOfItem(atPath: databaseURL.path)
-            let publishedBytes = (publishedAttributes[.size] as? NSNumber)?.uint64Value ?? 0
+            let publishedBytes = try BusinessStoreFiles.byteCount(at: databaseURL, connection: connection, fileManager: fileManager)
             if publishedBytes != actualBytes {
                 actualBytes = publishedBytes
                 try connection.execute(
@@ -7762,9 +7822,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ]
                 )
             }
-            let syncHandle = try FileHandle(forReadingFrom: databaseURL)
-            try syncHandle.synchronize()
-            try syncHandle.close()
+            try BusinessStoreFiles.seal(at: databaseURL, connection: connection)
             staged = StagedFullRebuild(
                 job: staged.job,
                 databaseURL: staged.databaseURL,
@@ -7793,9 +7851,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         at databaseURL: URL,
         for job: FullRebuildJob
     ) throws -> Bool {
-        guard fileManager.fileExists(atPath: databaseURL.path) else {
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
             return false
         }
+        if try BusinessStoreFiles.isUnmaterializedStage(databaseURL) { return true }
         do {
             let stage = SQLiteDatabaseDriver(
                 url: databaseURL,
@@ -7929,6 +7988,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let destination = stagingDirectoryURL.appendingPathComponent("preserved", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        if try BusinessStoreFiles.quarantine(databaseURL, into: destination) { return }
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let source = URL(fileURLWithPath: databaseURL.path + suffix)
             if fileManager.fileExists(atPath: source.path) {
@@ -7943,7 +8003,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         for job: FullRebuildJob,
         prior: StagedFullRebuild? = nil
     ) throws -> StagedFullRebuild? {
-        guard fileManager.fileExists(atPath: databaseURL.path) else {
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
             return nil
         }
         do {
@@ -8098,10 +8158,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     physicalStamp: row.text(25)
                 )
                 let actualBytes = UInt64(rawActualBytes)
-                let databaseAttributes = try? self.fileManager.attributesOfItem(
-                    atPath: databaseURL.path
-                )
-                let databaseSize = (databaseAttributes?[.size] as? NSNumber)?.uint64Value
+                let databaseSize = try? BusinessStoreFiles.byteCount(at: databaseURL, fileManager: self.fileManager)
                 let storedEventCount = try? stage.readRows(
                     "SELECT COUNT(*) FROM events;"
                 ) { $0.int(0) ?? -1 }.first
@@ -8460,7 +8517,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 defer { try? handle.close() }
                 let offset = oldChunks.prefix(position).reduce(Int64(0)) { $0 + $1.1 }
                 try handle.seek(toOffset:UInt64(offset))
-                let data = try handle.read(upToCount:Int(old.1)) ?? Data()
+                let data = try handle.readProbe(upToCount:Int(old.1)) ?? Data()
                 unchangedContent = data.count == Int(old.1) && SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined() == old.2
             }
             let rawGeneration = UUID().uuidString
@@ -8700,6 +8757,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func stagingDatabaseURLs(for file: URL) -> [URL] {
         let primary = stagingDatabaseURL(for: file)
+        if BusinessSQLiteRoutes.store(for: primary) != nil {
+            let digest = stagingDatabaseDigest(for: file)
+            return BusinessStoreFiles.stageURLs(in: stagingDirectoryURL).filter {
+                let name = $0.lastPathComponent
+                return name == primary.lastPathComponent || (name.hasPrefix(digest + ".candidate-") && name.hasSuffix(".sqlite"))
+            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
         guard let entries = try? fileManager.contentsOfDirectory(
             at: stagingDirectoryURL,
             includingPropertiesForKeys: nil,
@@ -8727,6 +8791,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func removeStagingDatabase(at url: URL) {
+        if BusinessSQLiteRoutes.store(for: url) != nil {
+            // Publication already committed. A failed cleanup is retryable;
+            // it must never fall through to deleting a physical A family.
+            _ = try? BusinessStoreFiles.removeCompletedStage(url)
+            return
+        }
         try? fileManager.removeItem(at: url)
         try? fileManager.removeItem(atPath: url.path + "-wal")
         try? fileManager.removeItem(atPath: url.path + "-shm")
@@ -8916,10 +8986,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         let probeLength = 4_096
         var data = Data("\(size):".utf8)
-        data.append(try handle.read(upToCount: probeLength) ?? Data())
+        data.append(try handle.readProbe(upToCount: probeLength) ?? Data())
         if size > UInt64(probeLength) {
             try handle.seek(toOffset: size - UInt64(probeLength))
-            data.append(try handle.read(upToCount: probeLength) ?? Data())
+            data.append(try handle.readProbe(upToCount: probeLength) ?? Data())
         }
         return SHA256.hash(data: data)
             .map { String(format: "%02x", $0) }
@@ -8932,6 +9002,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     static func relocateLegacyIndex(from legacy: URL, to destination: URL,
         fileManager: FileManager = .default,
         onProgress: ((PreciseIndexProgress) -> Void)? = nil) throws {
+        if BusinessSQLiteRoutes.store(for: destination) != nil { return }
         guard legacy.standardizedFileURL != destination.standardizedFileURL,
               !fileManager.fileExists(atPath: destination.path),
               fileManager.fileExists(atPath: legacy.path)

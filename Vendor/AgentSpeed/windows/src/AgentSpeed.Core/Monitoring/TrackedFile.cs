@@ -73,9 +73,13 @@ internal static class Families
     };
 
     /// <summary>Antigravity databases are queried; every other family is a file read by its extension.</summary>
-    public static TranscriptTailer CreateTailer(RootFamily family, string path) =>
+    public static TranscriptTailer CreateTailer(
+        RootFamily family,
+        string path,
+        IPositionedReadBackend? readBackend = null) =>
         family == RootFamily.Antigravity ? new AntigravityTailer(path)
-        : family == RootFamily.GrokBuild ? new GrokBuild.GrokTailer(path) : TranscriptTailer.For(path);
+        : family == RootFamily.GrokBuild ? new GrokBuild.GrokTailer(path, readBackend)
+        : TranscriptTailer.For(path, readBackend);
 
     /// <summary>True when any source of the family is enabled.</summary>
     public static bool IsEnabled(RootFamily family, IReadOnlySet<SourceKind> enabled) => family switch
@@ -138,10 +142,10 @@ internal sealed class SourceRoot(RootFamily family, string path, bool enabled)
 /// <summary>A discovered transcript: its tailer, its parser and what was last observed on disk.</summary>
 internal sealed class TrackedFile
 {
-    public TrackedFile(SourceRoot root, string path, IDeduper deduper)
+    public TrackedFile(SourceRoot root, string path, IDeduper deduper, IPositionedReadBackend? readBackend = null)
     {
         Root = root;
-        Tailer = Families.CreateTailer(root.Family, path);
+        Tailer = Families.CreateTailer(root.Family, path, readBackend);
         Parser = Families.CreateParser(root.Family, path, deduper, root.Path);
     }
 

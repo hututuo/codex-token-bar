@@ -16,7 +16,7 @@ pub(crate) fn read_consumption_evidence(
     let Ok(path) = database_path(codex_home) else {
         return vec![ConsumptionEvidence::Unknown; ranges.len()];
     };
-    let Ok(connection) = sqlite::open_read_only(&path, StdDuration::from_secs(3)) else {
+    let Ok(connection) = open_read_only_index(&path, StdDuration::from_secs(3)) else {
         return vec![ConsumptionEvidence::Unknown; ranges.len()];
     };
     if connection.execute_batch("BEGIN DEFERRED").is_err() {
@@ -151,7 +151,7 @@ pub(crate) fn read(
     ranges: &[(f64, f64)],
 ) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
     let path = database_path(codex_home)?;
-    let connection = sqlite::open_read_only(&path, StdDuration::from_secs(3))
+    let connection = open_read_only_index(&path, StdDuration::from_secs(3))
         .map_err(|e| format!("周期明细索引待读取：{e}"))?;
     connection
         .execute_batch("BEGIN DEFERRED")

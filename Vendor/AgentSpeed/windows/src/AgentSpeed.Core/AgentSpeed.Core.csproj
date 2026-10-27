@@ -11,6 +11,9 @@
     <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../../../../../tools/AgentSpeedLocalIO/PositionedReadBackend.cs" Link="IO/PositionedReadBackend.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- METRICS 9 / DESIGN 9: the bundled price table and currency list; spec/assets stays the single source of truth. -->
     <EmbeddedResource Include="..\..\..\spec\assets\prices.json" Link="Pricing\prices.json" LogicalName="AgentSpeed.Prices.json" />
     <EmbeddedResource Include="..\..\..\spec\assets\currencies.json" Link="Money\currencies.json" LogicalName="AgentSpeed.Currencies.json" />

@@ -582,6 +582,26 @@
       "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
       "sha256": "cf79f56a0a2a187da7278f2d3799b3e6a4dd86379367d2a432d4b8b04347bdcd"
     },
+    "macos/Sources/AgentSpeedCore/IO/CompressedStreamReader.swift": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "e1d4537771d77819c32eb43f851c122ae3e8d5b61357c9633004a8ceae67ecac"
+    },
+    "macos/Sources/AgentSpeedCore/IO/FileTailer.swift": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "2bbb72ffb13ccf5df6745a57f998abf8f3ce917623e1505c318bd76fb9c022ef"
+    },
+    "macos/Sources/AgentSpeedCore/IO/HarnessMetadata.swift": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "d0c5365b86a4e77ebef0354f92b328b28bf503b2fd59f6ded2647a49a730c7a9"
+    },
+    "macos/Sources/AgentSpeedCore/IO/TranscriptReader.swift": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "c259e1c81ba9a65f90ccc9138208f2b498f3badd002b57a6391b8df33ff5dbc8"
+    },
+    "macos/Sources/AgentSpeedCore/IO/ZstdFrameTailer.swift": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "feb112cf964c550c06ff35c34c80c9bb07fd97a8cd23da6b551687b4b8266fa5"
+    },
     "macos/Sources/AgentSpeedCore/Models.swift": {
       "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
       "sha256": "2cfde8a430096e6cc3a80161093f92947c4e5001a2547f9caf45d4cafa292a6b"
@@ -614,6 +634,10 @@
       "reason": "Use explicit isolated source roots; never read developer home during tests",
       "sha256": "07f3a4ef28741681962f08b63742a9dc4d020493ea45006b3c32805cbaf2c203"
     },
+    "windows/src/AgentSpeed.Core/AgentSpeed.Core.csproj": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "9eb102f292fbe8f1eafacf0a159aaf84e25579bc24dd41043f2ab4509b3d95d9"
+    },
     "windows/src/AgentSpeed.Core/Engine/EngineFrame.cs": {
       "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
       "sha256": "bf39328cf0c52d4a37bbd07c340638fac35ba7b8181c31bd2e1a0a8b8c6ba02b"
@@ -622,13 +646,61 @@
       "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
       "sha256": "410533512487fe95651b83bef2d04fe41612163b41efdc0e2a23486f0650d0ac"
     },
+    "windows/src/AgentSpeed.Core/Gemini/GeminiProjects.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "7c6d333d8aa3683c2519ef6e595437e59a5541cb09f599c44f4a882b24e31ad9"
+    },
+    "windows/src/AgentSpeed.Core/GrokBuild/GrokMetadata.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "de03acb2e635961159d04a49d03fb9e4610bff3b3a260c8694ffc71639fee5a7"
+    },
+    "windows/src/AgentSpeed.Core/IO/FileIdentity.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "9f5200cc3351194065601e284bc28a0005b4aec4282d41ae2f8d315bba9c4dd3"
+    },
+    "windows/src/AgentSpeed.Core/IO/FileTailer.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "31557b256b0b417ac687ffda6c2515acabbc2906a62534b7cc83c2fcba2e49d2"
+    },
+    "windows/src/AgentSpeed.Core/IO/Sqlite/SqliteReadOnly.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "38096cd94204e5b1436f4c6acdf8e686e274693774324c7486f11c4a12187881"
+    },
+    "windows/src/AgentSpeed.Core/IO/TranscriptTailer.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "81197e0a1ec08a1a97ca78cba4108021f079a5df2dc2d90a088f7f2ea46bf923"
+    },
+    "windows/src/AgentSpeed.Core/IO/WholeFileTailers.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "e843ff2c30714049574b9ee0754617e8304dd45df09d80ae6c4cc1f472ba2175"
+    },
+    "windows/src/AgentSpeed.Core/IO/ZstdFrameTailer.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "c610e1a9707e63a757ad58834de0f2fb48a7930bd46ec28a1a057b0269336dcf"
+    },
+    "windows/src/AgentSpeed.Core/LiveMonitor.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "8d6349f2e5f869b9503dc4177ccb9658fb465fc6349e268ff7d8b673c26da02c"
+    },
     "windows/src/AgentSpeed.Core/Models.cs": {
       "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
       "sha256": "a6d0e31cca406da553e662096d1f8203bf2df8e615730f77fb5ae85500fceec0"
     },
     "windows/src/AgentSpeed.Core/Monitoring/MonitorCore.cs": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
-      "sha256": "9bfc36913696cb769424c7369039e3dd4b0ff0dced69285fa2c9c6898f6e2bc8"
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "f303f27adf873aa48b2699ecf45b1a2995b0c751eeabaff7a225a4c7173baa09"
+    },
+    "windows/src/AgentSpeed.Core/Monitoring/TrackedFile.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "357afefc36038d4845de35990549ce2ffc6e13c19f943a42d2a48bf259755c4e"
+    },
+    "windows/src/AgentSpeed.Core/Omp/OmpPaths.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "20a86617ee1f40382060279c2512052e6253cff23b0ecec0bc17a5cf51757411"
+    },
+    "windows/src/AgentSpeed.Core/OpenCode/OpenCodeDatabase.cs": {
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
+      "sha256": "57960bab3a6e74710c948dd6bedd79b7682ef7f0dbac7f968bd0c0324b619ccd"
     },
     "windows/src/AgentSpeed.Core/Reporting/ReportBody.cs": {
       "reason": "Token Bar report client.app identity; signing protocol unchanged",

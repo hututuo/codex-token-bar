@@ -1,3 +1,5 @@
+using AgentSpeed.Core.IO;
+
 namespace AgentSpeed.Core.IO.Sqlite;
 
 /// <summary>
@@ -12,13 +14,16 @@ internal static class SqliteReadOnly
     /// <summary>A WAL-mode database (header bytes 18 and 19 are 2) whose <c>-wal</c> file is gone: nobody has it open.</summary>
     public static bool IsClosedWalDatabase(string path)
     {
-        if (File.Exists(path + WalSuffix))
-        {
-            return false;
-        }
-
         try
         {
+            LocalSourcePathPolicy.EnsureReadablePath(path);
+            LocalSourcePathPolicy.EnsureReadablePath(path + WalSuffix);
+            LocalSourcePathPolicy.EnsureReadablePath(path + "-shm");
+            if (File.Exists(path + WalSuffix))
+            {
+                return false;
+            }
+
             using var handle = TranscriptTailer.Open(path);
             Span<byte> header = stackalloc byte[20];
             return RandomAccess.Read(handle, header, 0) == header.Length
@@ -39,6 +44,9 @@ internal static class SqliteReadOnly
     /// <exception cref="SqliteException">The database cannot be opened or read.</exception>
     public static SqliteConnection Open(string path, out bool immutable)
     {
+        LocalSourcePathPolicy.EnsureReadablePath(path);
+        LocalSourcePathPolicy.EnsureReadablePath(path + WalSuffix);
+        LocalSourcePathPolicy.EnsureReadablePath(path + "-shm");
         immutable = IsClosedWalDatabase(path);
         if (immutable)
         {

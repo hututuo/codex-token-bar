@@ -1,6 +1,7 @@
 //! Displaced observations survive a source replacement/deletion. These tables
 //! contain evidence, not a second aggregate to blindly add to current events.
-use rusqlite::{params, Connection, OptionalExtension};
+use super::Connection;
+use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 
 const REVISION: &str = "2";

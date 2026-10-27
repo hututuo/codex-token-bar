@@ -35,6 +35,7 @@ internal sealed partial class MonitorCore : IDisposable
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     private readonly IReadOnlySet<SourceKind> _enabled;
+    private readonly IPositionedReadBackend? _readBackend;
     private readonly SourceSet _enabledSet;
     private readonly IResponseObserver? _observer;
     private readonly Deduper _deduper = new();
@@ -73,9 +74,11 @@ internal sealed partial class MonitorCore : IDisposable
         long todayStartMs,
         IResponseObserver? observer = null,
         PriceBook? pricing = null,
-        TimeZoneInfo? zone = null)
+        TimeZoneInfo? zone = null,
+        IPositionedReadBackend? readBackend = null)
     {
         _enabled = configuration.EnabledSources;
+        _readBackend = readBackend;
         _enabledSet = SourceSet.From(_enabled);
         _observer = observer;
         _engine = new SpeedEngine(todayStartMs, pricing, zone);
@@ -255,7 +258,7 @@ internal sealed partial class MonitorCore : IDisposable
                     continue;
                 }
 
-                var tracked = new TrackedFile(root, file.Path, _deduper);
+                var tracked = new TrackedFile(root, file.Path, _deduper, _readBackend);
                 _files[file.Path] = tracked;
                 if (PlanInitialRead(tracked, file, todayStartMs) is { } plan)
                 {
@@ -945,7 +948,7 @@ internal sealed partial class MonitorCore : IDisposable
             return false;
         }
 
-        var tracked = new TrackedFile(root, file.Path, _deduper);
+        var tracked = new TrackedFile(root, file.Path, _deduper, _readBackend);
         _files[file.Path] = tracked;
         if (PlanInitialRead(tracked, file, todayStartMs) is not { } plan)
         {

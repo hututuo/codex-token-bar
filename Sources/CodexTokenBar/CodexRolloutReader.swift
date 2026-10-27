@@ -1,4 +1,5 @@
 import CZstd
+import SharedSourceIO
 import Darwin
 import Foundation
 
@@ -28,16 +29,23 @@ private final class CodexRolloutReaderWorkCounterBox {
 }
 #endif
 
+extension CodexReadHandle {
+    func readProbe(upToCount count: Int) throws -> Data? {
+        try SharedSourceIO.shared.withUncachedReads { try read(upToCount: count) }
+    }
+}
+
 extension FileHandle: CodexReadHandle {
     var physicalHandle: FileHandle { self }
     func logicalSize() throws -> UInt64 { try SourceFileObservation.readPhysical(handle: self).size }
     func validateDecodedEnd(at size: UInt64) throws {}
     func readBytes(into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
-        while true {
-            let n = Darwin.read(fileDescriptor, buffer.baseAddress, buffer.count)
-            if n >= 0 { return n }
-            if errno != EINTR { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        }
+        let position = try offset()
+        guard position <= UInt64(Int64.max) else { throw CocoaError(.fileReadTooLarge) }
+        let n = SharedSourceIO.shared.pread(fileDescriptor, into: buffer, offset: Int64(position))
+        guard n >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        try seek(toOffset: position + UInt64(n))
+        return n
     }
 }
 
@@ -345,7 +353,7 @@ final class CodexRolloutReader: CodexReadHandle, @unchecked Sendable {
     private static func inspect(_ file: FileHandle, physicalSize: UInt64) throws -> Layout {
         func failure(_ message: String) -> NSError { NSError(domain: "CodexRolloutReader", code: 2, userInfo: [NSLocalizedDescriptionKey: message]) }
         func number(_ count: Int) throws -> UInt64 {
-            let data = try file.read(upToCount: count) ?? Data()
+            let data = try file.readShared(upToCount: count, probe: true)
             guard data.count == count else { throw failure("压缩帧头或块头截断") }
             return data.enumerated().reduce(UInt64(0)) { $0 | UInt64($1.element) << (8 * $1.offset) }
         }

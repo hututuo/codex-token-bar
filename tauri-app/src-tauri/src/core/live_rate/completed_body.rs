@@ -5,12 +5,12 @@
 
 use super::state::{read_recent_rollout_threads, RolloutThread};
 use super::LiveRateSourceScope;
+use crate::core::shared_source_io::{probe_uncached, read_range};
 use crate::models::{BodySpeedHistoryPage, SpeedSample};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Condvar;
@@ -691,9 +691,7 @@ impl Reader {
         let mut samples = Vec::new();
 
         for thread in threads {
-            if budget == 0
-                || file_count >= RECENT_THREAD_LIMIT
-            {
+            if budget == 0 || file_count >= RECENT_THREAD_LIMIT {
                 continue;
             }
             if thread.id.is_empty()
@@ -702,7 +700,7 @@ impl Reader {
             {
                 continue;
             }
-            let Ok(mut file) = File::open(&thread.rollout_path) else {
+            let Ok(file) = File::open(&thread.rollout_path) else {
                 continue;
             };
             let Ok(metadata) = file.metadata() else {
@@ -744,7 +742,7 @@ impl Reader {
                 if boundary_size > budget || boundary_size > per_file_budget {
                     continue;
                 }
-                let boundary = match read_boundary(&mut file, state.cursor) {
+                let boundary = match read_boundary(&file, state.cursor) {
                     Ok(boundary) => boundary,
                     Err(_) => continue,
                 };
@@ -753,12 +751,9 @@ impl Reader {
                 needs_reset = boundary != state.boundary;
             }
             if needs_reset {
-                let header = match read_header(&mut file, &mut budget, &mut per_file_budget) {
+                let header = match read_header(&file, &mut budget, &mut per_file_budget) {
                     Ok(header) => header,
-                    Err(_) => {
-                        self.files.remove(&thread.rollout_path);
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
                 if header.is_empty() {
                     self.files.remove(&thread.rollout_path);
@@ -767,15 +762,11 @@ impl Reader {
                 let mut state = FileState::new(identity, size, modified_at, &header);
                 let boundary_size = state.cursor.min(BOUNDARY_BYTES as u64) as usize;
                 if boundary_size > budget || boundary_size > per_file_budget {
-                    self.files.remove(&thread.rollout_path);
                     continue;
                 }
-                state.boundary = match read_boundary(&mut file, state.cursor) {
+                state.boundary = match read_boundary(&file, state.cursor) {
                     Ok(boundary) => boundary,
-                    Err(_) => {
-                        self.files.remove(&thread.rollout_path);
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
                 budget = budget.saturating_sub(state.boundary.len());
                 per_file_budget = per_file_budget.saturating_sub(state.boundary.len());
@@ -784,7 +775,6 @@ impl Reader {
             let Some(state) = self.files.get_mut(&thread.rollout_path) else {
                 continue;
             };
-            state.modified_at = modified_at;
             if size <= state.cursor || budget == 0 || per_file_budget == 0 {
                 continue;
             }
@@ -794,16 +784,13 @@ impl Reader {
             if amount == 0 {
                 continue;
             }
-            if file.seek(SeekFrom::Start(state.cursor)).is_err() {
-                continue;
-            }
-            let mut bytes = vec![0u8; amount];
-            let Ok(read) = file.read(&mut bytes) else {
+            let Ok(bytes) = read_range(&file, state.cursor, amount) else {
                 continue;
             };
-            bytes.truncate(read);
+            let read = bytes.len();
             state.cursor = state.cursor.saturating_add(read as u64);
             state.boundary = advance_boundary(&state.boundary, &bytes);
+            state.modified_at = modified_at;
             budget = budget.saturating_sub(read);
             per_file_budget = per_file_budget.saturating_sub(read);
             let _remaining_file_budget = per_file_budget;
@@ -817,18 +804,16 @@ impl Reader {
 }
 
 fn read_header(
-    file: &mut File,
+    file: &File,
     budget: &mut usize,
     per_file_budget: &mut usize,
 ) -> std::io::Result<Vec<u8>> {
     if *budget == 0 || *per_file_budget == 0 {
         return Ok(Vec::new());
     }
-    file.seek(SeekFrom::Start(0))?;
     let limit = MAX_LINE_BYTES.min(*budget).min(*per_file_budget);
-    let mut bytes = vec![0u8; limit];
-    let read = file.read(&mut bytes)?;
-    bytes.truncate(read);
+    let mut bytes = probe_uncached(file, 0, limit)?;
+    let read = bytes.len();
     *budget = budget.saturating_sub(read);
     *per_file_budget = per_file_budget.saturating_sub(read);
     if let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
@@ -839,12 +824,16 @@ fn read_header(
     Ok(bytes)
 }
 
-fn read_boundary(file: &mut File, cursor: u64) -> std::io::Result<Vec<u8>> {
+fn read_boundary(file: &File, cursor: u64) -> std::io::Result<Vec<u8>> {
     let length = cursor.min(BOUNDARY_BYTES as u64) as usize;
     let start = cursor.saturating_sub(length as u64);
-    file.seek(SeekFrom::Start(start))?;
-    let mut bytes = vec![0u8; length];
-    file.read_exact(&mut bytes)?;
+    let bytes = probe_uncached(file, start, length)?;
+    if bytes.len() != length {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "short completed-body boundary probe",
+        ));
+    }
     Ok(bytes)
 }
 
@@ -1123,7 +1112,9 @@ pub(super) fn read_history_page(
     as_of: Option<f64>,
     retention_days: u16,
 ) -> BodySpeedHistoryPage {
-    let as_of = as_of.filter(|value| value.is_finite()).unwrap_or_else(current_time_seconds);
+    let as_of = as_of
+        .filter(|value| value.is_finite())
+        .unwrap_or_else(current_time_seconds);
     let retention_days = match retention_days {
         15 | 30 => retention_days,
         _ => 30,
@@ -1631,7 +1622,13 @@ mod tests {
         assembler.consume_line(&context(turn, "parent-model", now), "child-thread", now);
         assert!(assembler
             .consume_line(
-                &completed(turn, "inherited-item", (now - 2.0) * 1_000.0, now * 1_000.0, now),
+                &completed(
+                    turn,
+                    "inherited-item",
+                    (now - 2.0) * 1_000.0,
+                    now * 1_000.0,
+                    now
+                ),
                 "child-thread",
                 now,
             )

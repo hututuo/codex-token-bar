@@ -23,9 +23,12 @@ internal enum StartAlignment
 /// </summary>
 internal abstract class TranscriptTailer
 {
-    protected TranscriptTailer(string path)
+    private const int MaxBackendReadBytes = 4 * 1024 * 1024;
+
+    protected TranscriptTailer(string path, IPositionedReadBackend? readBackend = null)
     {
         Path = path;
+        ReadBackend = readBackend;
     }
 
     public string Path { get; }
@@ -39,21 +42,27 @@ internal abstract class TranscriptTailer
 
     public long TotalBytesRead { get; protected set; }
 
+    protected IPositionedReadBackend? ReadBackend { get; }
+
     protected LineSplitter Lines { get; } = new();
 
     /// <summary>
     /// Plain JSONL for most files, a zstd frame stream for <c>.zstd</c> (METRICS 5.1), a whole zstd stream for Codex
     /// <c>.jsonl.zst</c> (5.3) and a whole document for legacy Gemini <c>.json</c> (4.6).
     /// </summary>
-    public static TranscriptTailer For(string path) =>
-        path.EndsWith(".zstd", StringComparison.OrdinalIgnoreCase) ? new ZstdFrameTailer(path)
-        : path.EndsWith(".jsonl.zst", StringComparison.OrdinalIgnoreCase) ? new ZstStreamTailer(path)
-        : path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? new DocumentTailer(path)
-        : new FileTailer(path);
+    public static TranscriptTailer For(string path, IPositionedReadBackend? readBackend = null) =>
+        path.EndsWith(".zstd", StringComparison.OrdinalIgnoreCase) ? new ZstdFrameTailer(path, readBackend)
+        : path.EndsWith(".jsonl.zst", StringComparison.OrdinalIgnoreCase) ? new ZstStreamTailer(path, readBackend)
+        : path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? new DocumentTailer(path, readBackend)
+        : new FileTailer(path, readBackend);
 
     /// <summary>Opens for reading without ever locking the writer out (read/write/delete sharing).</summary>
-    public static SafeFileHandle Open(string path) => File.OpenHandle(
-        path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, FileOptions.SequentialScan);
+    public static SafeFileHandle Open(string path)
+    {
+        LocalSourcePathPolicy.EnsureReadablePath(path);
+        return File.OpenHandle(
+            path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, FileOptions.SequentialScan);
+    }
 
     /// <summary>Positions the tailer before the first read.</summary>
     public abstract void StartAt(long offset, StartAlignment alignment = StartAlignment.None);
@@ -77,5 +86,52 @@ internal abstract class TranscriptTailer
         var replaced = length < Offset || (Identity is { } known && identity is { } current && known != current);
         Identity = identity;
         return replaced;
+    }
+
+    /// <summary>Reads from the direct OS handle by default; an explicitly injected backend uses the shared local pipe.</summary>
+    protected int ReadAt(
+        SafeFileHandle handle,
+        Span<byte> destination,
+        long offset,
+        bool probe = false,
+        CancellationToken cancellationToken = default)
+    {
+        if (ReadBackend is null)
+        {
+            return RandomAccess.Read(handle, destination, offset);
+        }
+
+        if (offset < 0 || Identity is not { FileId.Length: 32 } identity)
+        {
+            throw new IOException("source_file_identity_unavailable");
+        }
+
+        var total = 0;
+        while (total < destination.Length)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var requested = Math.Min(MaxBackendReadBytes, destination.Length - total);
+            var bytes = ReadBackend.Read(
+                Path,
+                identity.Volume,
+                identity.FileId,
+                checked((ulong)(offset + total)),
+                requested,
+                probe,
+                cancellationToken);
+            if (bytes.Length > requested)
+            {
+                throw new IOException("source_read_exceeded_request");
+            }
+
+            bytes.AsSpan().CopyTo(destination[total..]);
+            total += bytes.Length;
+            if (bytes.Length < requested)
+            {
+                break;
+            }
+        }
+
+        return total;
     }
 }

@@ -47,7 +47,7 @@ internal sealed class GrokBatch(GrokParser owner, GrokMetadata? metadata) : ILin
     }
 }
 
-internal sealed class GrokTailer(string path) : FileTailer(path)
+internal sealed class GrokTailer(string path, IPositionedReadBackend? readBackend = null) : FileTailer(path, readBackend)
 {
     public override TailReadResult ReadAppended(ILineSink sink, CancellationToken cancellationToken = default)
     {

@@ -16,5 +16,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../Vendor/AgentSpeed/windows/src/AgentSpeed.Core/AgentSpeed.Core.csproj" />
+    <Compile Include="../LocalSourceReadPipe.cs" Link="LocalSourceReadPipe.cs" />
+    <Compile Include="../LocalSourceReadPipeSelfTests.cs" Link="LocalSourceReadPipeSelfTests.cs" />
   </ItemGroup>
 </Project>

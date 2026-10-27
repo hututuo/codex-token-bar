@@ -245,7 +245,7 @@ internal static class StatusProtocol
     }
 }
 
-internal sealed class StatusEmitter(Stream output)
+internal sealed class StatusEmitter(CodexTokenBar.LocalSource.LocalSourceProtocolOutput output)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private HelperStatus _latest = new(
@@ -257,9 +257,8 @@ internal sealed class StatusEmitter(Stream output)
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await output.WriteAsync(bytes.AsMemory(), cancellationToken).ConfigureAwait(false);
-            await output.WriteAsync("\n"u8.ToArray().AsMemory(), cancellationToken).ConfigureAwait(false);
-            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            output.WriteLine(bytes);
             _latest = status;
         }
         finally

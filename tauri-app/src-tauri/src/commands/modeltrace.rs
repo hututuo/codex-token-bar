@@ -56,6 +56,9 @@ fn scope(source: &CapturedCodexHomeSource) -> Result<String, String> {
         ))
     ))
 }
+fn storage_identity(source: &CapturedCodexHomeSource) -> Result<String, String> {
+    crate::core::business_store_route::source_identity("modeltrace", &source.codex_home)
+}
 fn validate(source: &CapturedCodexHomeSource, expected: &str) -> Result<(), String> {
     validate_captured_codex_home_source(source)?;
     if scope(source)? != expected {
@@ -80,6 +83,7 @@ impl ModelTraceRegistry {
         let prepared = (|| -> Result<_, String> {
             let source = capture_codex_home_source(source_token.as_ref())?;
             let scope_key = scope(&source)?;
+            let storage_identity = storage_identity(&source)?;
             let run = Run {
                 id: uuid::Uuid::new_v4().to_string(),
                 model,
@@ -94,14 +98,14 @@ impl ModelTraceRegistry {
                 samples: vec![],
             };
             self.cancel.store(false, Ordering::SeqCst);
-            self.publish(&app, &scope_key, &run)?;
-            Ok((source, scope_key, run))
+            self.publish(&app, &storage_identity, &scope_key, &run)?;
+            Ok((source, storage_identity, scope_key, run))
         })();
         match prepared {
-            Ok((source, key, run)) => {
+            Ok((source, storage_identity, key, run)) => {
                 let worker = self.clone();
                 let result = run.clone();
-                tauri::async_runtime::spawn_blocking(move || worker.execute(app, source, key, run));
+                tauri::async_runtime::spawn_blocking(move || worker.execute(app, source, storage_identity, key, run));
                 Ok(result)
             }
             Err(e) => {
@@ -127,23 +131,21 @@ impl ModelTraceRegistry {
         }
         let _gate = self.settings_gate.lock().map_err(|_| "检测设置锁不可用")?;
         let file = path()?;
-        if !file.exists() {
-            return Ok(());
-        }
-        let mut settings = store::auto_settings(&file)?;
+        let source = capture_codex_home_source(None)?;
+        let storage_identity = storage_identity(&source)?;
+        let mut settings = store::auto_settings(&file, &storage_identity)?;
         if !settings.enabled || !(1..=168).contains(&settings.interval_hours) {
             return Ok(());
         }
-        let source = capture_codex_home_source(None)?;
         let key = scope(&source)?;
         if settings.scope_key.as_deref() != Some(&key) || settings.next_run_at.is_none() {
             settings.scope_key = Some(key);
             settings.next_run_at = Some(now() + i64::from(settings.interval_hours) * 3600);
-            return store::save_auto_settings(&file, &settings);
+            return store::save_auto_settings(&file, &storage_identity, &settings);
         }
         if settings.next_run_at.is_some_and(|due| due <= now()) {
             settings.next_run_at = Some(now() + i64::from(settings.interval_hours) * 3600);
-            store::save_auto_settings(&file, &settings)?;
+            store::save_auto_settings(&file, &storage_identity, &settings)?;
             self.start_run(
                 app,
                 modeltrace::DEFAULT_MODEL.into(),
@@ -152,8 +154,8 @@ impl ModelTraceRegistry {
         }
         Ok(())
     }
-    fn publish(&self, app: &tauri::AppHandle, scope: &str, run: &Run) -> Result<(), String> {
-        store::save(&path()?, scope, run)?;
+    fn publish(&self, app: &tauri::AppHandle, storage_identity: &str, scope: &str, run: &Run) -> Result<(), String> {
+        store::save(&path()?, storage_identity, scope, run)?;
         *self.active.lock().map_err(|_| "检测状态锁不可用")? = Some((scope.into(), run.clone()));
         let _ = app.emit("modeltrace-updated", scope);
         Ok(())
@@ -162,6 +164,7 @@ impl ModelTraceRegistry {
         &self,
         app: tauri::AppHandle,
         source: CapturedCodexHomeSource,
+        storage_identity: String,
         scope_key: String,
         mut run: Run,
     ) {
@@ -182,6 +185,7 @@ impl ModelTraceRegistry {
         });
         let result = (|| -> Result<(), String> {
             validate(&source, &scope_key)?;
+            let storage_identity = storage_identity.as_str();
             let work = path()?.parent().ok_or("无法定位检测目录")?.join("work");
             std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
             let mut session = ProbeSession::connect(&source.codex_home, &self.cancel)?;
@@ -194,7 +198,7 @@ impl ModelTraceRegistry {
                         run.samples.push(sample);
                         run.valid_samples = run.samples.len();
                     }
-                    self.publish(&app, &scope_key, &run)
+                    self.publish(&app, storage_identity, &scope_key, &run)
                 })?;
             if self.cancel.load(Ordering::SeqCst) {
                 return Err("检测已取消".into());
@@ -225,7 +229,7 @@ impl ModelTraceRegistry {
                 run.message = Some(e);
             }
         }
-        if let Err(e) = self.publish(&app, &scope_key, &run) {
+        if let Err(e) = self.publish(&app, &storage_identity, &scope_key, &run) {
             run.message = Some(format!("检测记录保存失败：{e}"));
             if let Ok(mut active) = self.active.lock() {
                 *active = Some((scope_key.clone(), run));
@@ -233,11 +237,11 @@ impl ModelTraceRegistry {
         }
         if let Ok(_gate) = self.settings_gate.lock() {
             if let Ok(file) = path() {
-                if let Ok(mut settings) = store::auto_settings(&file) {
+                if let Ok(mut settings) = store::auto_settings(&file, &storage_identity) {
                     if settings.enabled && settings.scope_key.as_deref() == Some(&scope_key) {
                         settings.next_run_at =
                             Some(now() + i64::from(settings.interval_hours) * 3600);
-                        let _ = store::save_auto_settings(&file, &settings);
+                        let _ = store::save_auto_settings(&file, &storage_identity, &settings);
                     }
                 }
             }
@@ -258,13 +262,14 @@ pub async fn read_modeltrace_snapshot(
     run_blocking_command(move || {
         let source = capture_codex_home_source(source_token.as_ref())?;
         let scope_key = scope(&source)?;
+        let storage_identity = storage_identity(&source)?;
         let active = registry
             .active
             .lock()
             .map_err(|_| "检测状态锁不可用")?
             .clone();
         let is_busy = registry.busy.load(Ordering::SeqCst);
-        let mut runs = store::history(&path()?, &scope_key)?;
+        let mut runs = store::history(&path()?, &storage_identity, &scope_key)?;
         for run in &mut runs {
             let owned = active
                 .as_ref()
@@ -274,7 +279,7 @@ pub async fn read_modeltrace_snapshot(
                 run.status = "interrupted".into();
                 run.completed_at = Some(now());
                 run.message = Some("上次检测已中断，未自动重试".into());
-                store::save(&path()?, &scope_key, run)?;
+                store::save(&path()?, &storage_identity, &scope_key, run)?;
             }
         }
         if let Some((key, value)) = active {
@@ -292,7 +297,7 @@ pub async fn read_modeltrace_snapshot(
             models: modeltrace::request_models(),
             runs,
             busy: is_busy,
-            settings: store::auto_settings(&path()?)?,
+            settings: store::auto_settings(&path()?, &storage_identity)?,
         })
     })
     .await
@@ -344,13 +349,14 @@ pub async fn save_modeltrace_auto_settings(
             .map_err(|_| "检测设置锁不可用")?;
         let source = capture_codex_home_source(source_token.as_ref())?;
         let key = scope(&source)?;
+        let storage_identity = storage_identity(&source)?;
         let settings = AutoSettings {
             enabled,
             interval_hours,
             next_run_at: enabled.then(|| now() + i64::from(interval_hours) * 3600),
             scope_key: Some(key),
         };
-        store::save_auto_settings(&path()?, &settings)?;
+        store::save_auto_settings(&path()?, &storage_identity, &settings)?;
         Ok(settings)
     })
     .await

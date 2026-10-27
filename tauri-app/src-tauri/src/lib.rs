@@ -1,3 +1,6 @@
+#[cfg(feature = "business-store-fixture")]
+pub mod business_store_fixture;
+
 mod commands;
 mod core;
 mod models;
@@ -57,6 +60,8 @@ pub fn run() {
                     "windows autostart repair skipped: {error}"
                 ));
             }
+
+            core::business_store_route::bootstrap().map_err(std::io::Error::other)?;
 
             commands::multi_client_usage::initialize_background_refresh(app.handle().clone());
 

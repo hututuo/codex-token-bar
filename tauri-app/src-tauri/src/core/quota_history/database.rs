@@ -2,7 +2,11 @@ use super::{
     now_unix, QuotaHistoryIdentity, QuotaHistoryRow,
     QUOTA_HISTORY_MAINTENANCE_INTERVAL_SECONDS, QUOTA_HISTORY_POLICY_VERSION,
 };
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::{params, Result as SqlResult};
+#[cfg(test)]
+use rusqlite::Connection;
+#[cfg(not(test))]
+use crate::core::business_store_connection::StoreConnection as Connection;
 #[cfg(test)]
 use rusqlite::OptionalExtension;
 

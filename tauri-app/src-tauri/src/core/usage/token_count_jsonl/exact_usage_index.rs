@@ -36,10 +36,11 @@ use crate::models::{
     TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
 };
 use fs2::available_space;
-use rusqlite::{
-    backup::Backup, params, Connection, OpenFlags, OptionalExtension, Transaction,
-    TransactionBehavior,
-};
+#[cfg(not(test))]
+use crate::core::business_store_connection::{StoreConnection as Connection, StoreTransaction as Transaction};
+#[cfg(test)]
+use rusqlite::{backup::Backup, Connection, Transaction};
+use rusqlite::{params, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
@@ -486,7 +487,7 @@ pub(super) fn index_upgrade_required(
     if !existing_regular_index(&path)? {
         return Ok(None);
     }
-    let read_only = sqlite::open_read_only(&path, StdDuration::from_secs(1)).map_err(|error| {
+    let read_only = open_read_only_index(&path, StdDuration::from_secs(1)).map_err(|error| {
         format!(
             "无法只读探测精确 token 索引兼容性 {}：{error}",
             path.display()
@@ -808,7 +809,7 @@ pub(super) fn read_only_source_probe(
             changed: Some(true),
         });
     }
-    let connection = sqlite::open_read_only(&path, timeout).map_err(|error| {
+    let connection = open_read_only_index(&path, timeout).map_err(|error| {
         format!(
             "无法只读打开精确 token 索引源探针 {}：{error}",
             path.display()
@@ -937,7 +938,7 @@ pub(super) fn read_cache_turn_requests(
     if !existing_regular_index(&path)? {
         return Err("精确 token 索引尚不可用，无法读取请求明细".into());
     }
-    let connection = sqlite::open_read_only(&path, StdDuration::from_secs(2)).map_err(|error| {
+    let connection = open_read_only_index(&path, StdDuration::from_secs(2)).map_err(|error| {
         format!("无法只读打开精确 token 索引以读取缓存轮次请求：{error}")
     })?;
     let schema_version = metadata_i64(&connection, "schema_version")?;
@@ -1127,7 +1128,14 @@ struct StageSourceValidation {
     source: FileSignature,
     prefix_sha256: [u8; 32],
     artifact_id: String,
-    stage: FileSignature,
+    stage: StageStoreSignature,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StageStoreSignature {
+    size: u64,
+    modified_ns: u128,
+    digest: String,
 }
 
 struct StagedFullRebuildResult {
@@ -1561,7 +1569,13 @@ impl ExactUsageIndex {
         {
             let legacy=app_paths::tauri_usage_cache_dir().ok_or("无法定位旧用量索引目录")?
                 .join("exact-token-index").join(format!("{}.sqlite3",stable_path_fingerprint(codex_home)));
-            relocate_legacy_index(codex_home,&legacy,&path)?;
+            let mut sources = Vec::new();
+            if path.is_file() { sources.push(path.clone()); }
+            if legacy.is_file() && legacy != path { sources.push(legacy); }
+            let store = crate::core::business_store_route::exact_store_spec(&path)?;
+            drop(crate::core::business_store_route::open_store(
+                "exact", &store.source_identity, &store.logical_path, &sources,
+            )?);
         }
         Self::open_at(codex_home,path)
     }
@@ -1619,7 +1633,7 @@ impl ExactUsageIndex {
         let existed_before = existing_regular_index(&path)?;
         let (migration_assessment, metadata_table_exists) = if existed_before {
             let read_only =
-                sqlite::open_read_only(&path, StdDuration::from_secs(1)).map_err(|error| {
+                open_read_only_index(&path, StdDuration::from_secs(1)).map_err(|error| {
                     format!(
                         "无法在完整性检查前只读探测精确 token 索引 {}，已保留原索引并拒绝自动重建：{error}",
                         path.display()
@@ -2042,6 +2056,56 @@ impl ExactUsageIndex {
         if self.migration_pending {
             return Ok(ExactStorageMaintenanceOutcome::NotDue);
         }
+        #[cfg(not(test))]
+        {
+            use crate::core::business_store_route::{
+                ContainerMaintenanceOutcome, ContainerMaintenancePolicy,
+            };
+            let outcome = crate::core::business_store_route::maintain_container_storage_if_due(
+                now_unix,
+                ContainerMaintenancePolicy {
+                    minimum_check_interval_seconds: policy.minimum_check_interval_seconds,
+                    minimum_free_bytes: policy.minimum_free_bytes,
+                    absolute_free_bytes: policy.absolute_free_bytes,
+                    minimum_free_percent: policy.minimum_free_percent,
+                    disk_reserve_bytes: policy.disk_reserve_bytes,
+                },
+                available_bytes_override,
+            )?;
+            return Ok(match outcome {
+                ContainerMaintenanceOutcome::NotDue => ExactStorageMaintenanceOutcome::NotDue,
+                ContainerMaintenanceOutcome::Busy => ExactStorageMaintenanceOutcome::Busy,
+                ContainerMaintenanceOutcome::BelowThreshold {
+                    database_bytes,
+                    free_bytes,
+                } => ExactStorageMaintenanceOutcome::BelowThreshold {
+                    database_bytes,
+                    free_bytes,
+                },
+                ContainerMaintenanceOutcome::InsufficientSpace {
+                    database_bytes,
+                    free_bytes,
+                    available_bytes,
+                    required_bytes,
+                } => ExactStorageMaintenanceOutcome::InsufficientSpace {
+                    database_bytes,
+                    free_bytes,
+                    available_bytes,
+                    required_bytes,
+                },
+                ContainerMaintenanceOutcome::Compacted {
+                    before_bytes,
+                    after_bytes,
+                    reclaimed_bytes,
+                } => ExactStorageMaintenanceOutcome::Compacted {
+                    before_bytes,
+                    after_bytes,
+                    reclaimed_bytes,
+                },
+            });
+        }
+        #[cfg(test)]
+        {
         let last_checked = metadata_i64(&self.connection, STORAGE_MAINTENANCE_LAST_CHECKED_KEY)?;
         if last_checked.is_some_and(|last| {
             now_unix.saturating_sub(last) < policy.minimum_check_interval_seconds
@@ -2120,6 +2184,7 @@ impl ExactUsageIndex {
             after_bytes,
             reclaimed_bytes: database_bytes.saturating_sub(after_bytes),
         })
+        }
     }
 
     fn record_storage_maintenance_check(
@@ -5305,7 +5370,7 @@ pub(super) fn peek_startup_identity(
         }
     }
 
-    let connection = sqlite::open_read_only(&path, StdDuration::from_millis(100))
+    let connection = open_read_only_index(&path, StdDuration::from_millis(100))
         .map_err(|error| format!("无法只读打开精确 token 索引 {}：{error}", path.display()))?;
     let schema_version = required_startup_metadata_i64(&connection, "schema_version")?;
     if !(GITHUB_BASE_SCHEMA_VERSION..=CURRENT_SCHEMA_VERSION).contains(&schema_version) {
@@ -6243,6 +6308,9 @@ fn stage_or_reuse_full_rebuild(
     let existing_paths = staging_database_paths(index_path, &job.path)?;
     let mut blocked = false;
     for database_path in &existing_paths {
+        if !existing_regular_index(database_path)? {
+            continue;
+        }
         if restartable_private_stage(database_path, job)? {
             preserve_private_stage_family(database_path)?;
             continue;
@@ -6252,7 +6320,7 @@ fn stage_or_reuse_full_rebuild(
         }
         blocked = true;
     }
-    if blocked || primary_path.exists() {
+    if blocked || existing_regular_index(&primary_path)? {
         return Err(StagedFullRebuildError::Fatal(format!(
             "精确 token 现有暂存未通过内容与 checkpoint 验证，已保留暂存和上一代统计；需要修复后重试：{}", primary_path.display()
         )));
@@ -6311,8 +6379,15 @@ fn build_staged_full_rebuild(
     let staging_sync = prepare_staging_database_sync(&database_path)?;
     let mut stage = open_staging_connection(&database_path)?;
     initialize_staging_schema(&stage)?;
+    let staging_behavior = if cfg!(test) {
+        TransactionBehavior::Immediate
+    } else {
+        // The parser writes only to TEMP tables. A deferred transaction keeps
+        // the shared A container available to quota and other module writers.
+        TransactionBehavior::Deferred
+    };
     let transaction = stage
-        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .transaction_with_behavior(staging_behavior)
         .map_err(|error| format!("无法开始精确 token 单文件暂存事务：{error}"))?;
     let mut sink = StagingEventSink {
         transaction: &transaction,
@@ -6329,6 +6404,8 @@ fn build_staged_full_rebuild(
     .map_err(StagedFullRebuildError::IncompleteSource)?;
     let event_count = sink.ordinal;
     drop(sink);
+    #[cfg(feature = "business-store-fixture")]
+    crate::business_store_fixture::assert_concurrent_a_write()?;
     #[cfg(test)]
     FULL_SCAN_BYTES.fetch_add(committed_signature.size, Ordering::SeqCst);
     run_after_prefix_scan_hook_for_testing(&job.file);
@@ -6469,8 +6546,12 @@ fn build_staged_full_rebuild(
     transaction
         .commit()
         .map_err(|error| format!("无法耐久提交精确 token 单文件暂存：{error}"))?;
+    #[cfg(not(test))]
+    materialize_staging_temp_tables(&mut stage)?;
     quick_check_index(&stage, None)?;
 
+    #[cfg(test)]
+    let actual_bytes = {
     let mut actual_bytes = fs::metadata(&database_path)
         .map_err(|error| format!("无法读取精确 token 暂存大小：{error}"))?
         .len();
@@ -6504,8 +6585,46 @@ fn build_staged_full_rebuild(
     }
     drop(stage);
     sync_staging_database(&database_path, &staging_sync)?;
+    actual_bytes
+    };
 
-    let stage_signature = file_signature_from_handle(&fs::File::open(&database_path).map_err(|error| error.to_string())?, &database_path)?;
+    #[cfg(not(test))]
+    let actual_bytes = {
+        stage.execute(
+            r#"UPDATE manifest SET complete=1, actual_bytes=0, integrity=?1
+               WHERE complete=0 AND artifact_id=?2"#,
+            params![STAGING_MANIFEST_INTEGRITY, &artifact_id],
+        ).map_err(|error| format!("无法发布精确 token 暂存清单：{error}"))?;
+        drop(stage);
+        sync_staging_database(&database_path, &staging_sync)?;
+        let mut actual_bytes = staged_store_size(&database_path)?;
+        let mut stage = open_staging_connection(&database_path)?;
+        stage.execute(
+            "UPDATE manifest SET actual_bytes=?1 WHERE complete=1 AND artifact_id=?2",
+            params![checked_i64(actual_bytes, "暂存实际大小")?, &artifact_id],
+        ).map_err(|error| format!("无法校准精确 token 暂存大小：{error}"))?;
+        drop(stage);
+        sync_staging_database(&database_path, &staging_sync)?;
+        let final_bytes = staged_store_size(&database_path)?;
+        if final_bytes != actual_bytes {
+            actual_bytes = final_bytes;
+            let stage = open_staging_connection(&database_path)?;
+            stage.execute(
+                "UPDATE manifest SET actual_bytes=?1 WHERE complete=1 AND artifact_id=?2",
+                params![checked_i64(actual_bytes, "暂存实际大小")?, &artifact_id],
+            ).map_err(|error| format!("无法再次校准精确 token 暂存大小：{error}"))?;
+            drop(stage);
+            sync_staging_database(&database_path, &staging_sync)?;
+            if staged_store_size(&database_path)? != actual_bytes {
+                return Err(StagedFullRebuildError::Fatal(
+                    "精确 token 暂存大小在封存时持续变化".into(),
+                ));
+            }
+        }
+        actual_bytes
+    };
+
+    let stage_signature = staged_store_signature(&database_path)?;
     Ok(StagedFullRebuild {
         source_validation: Some(StageSourceValidation { source: committed_signature,
             prefix_sha256: parsed.prefix_sha256, artifact_id: artifact_id.clone(), stage: stage_signature }),
@@ -6524,16 +6643,16 @@ fn build_staged_full_rebuild(
     })
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 struct StagingDatabaseSyncHandle {
     file: fs::File,
 }
 
-#[cfg(not(windows))]
+#[cfg(not(all(windows, test)))]
 struct StagingDatabaseSyncHandle;
 
 fn prepare_staging_database_sync(path: &Path) -> Result<StagingDatabaseSyncHandle, String> {
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::{
@@ -6561,7 +6680,7 @@ fn prepare_staging_database_sync(path: &Path) -> Result<StagingDatabaseSyncHandl
             })
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(all(windows, test)))]
     {
         let _ = path;
         Ok(StagingDatabaseSyncHandle)
@@ -6569,7 +6688,7 @@ fn prepare_staging_database_sync(path: &Path) -> Result<StagingDatabaseSyncHandl
 }
 
 fn sync_staging_database(path: &Path, handle: &StagingDatabaseSyncHandle) -> Result<(), String> {
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::FlushFileBuffers;
@@ -6584,7 +6703,7 @@ fn sync_staging_database(path: &Path, handle: &StagingDatabaseSyncHandle) -> Res
         Ok(())
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), test))]
     {
         let _ = handle;
         fs::OpenOptions::new()
@@ -6593,9 +6712,49 @@ fn sync_staging_database(path: &Path, handle: &StagingDatabaseSyncHandle) -> Res
             .and_then(|file| file.sync_all())
             .map_err(|error| format!("无法同步精确 token 暂存文件：{error}"))
     }
+
+    #[cfg(not(test))]
+    {
+        let _ = handle;
+        crate::core::business_store_route::seal_exact_store(path)
+    }
+}
+
+fn staged_store_signature(path: &Path) -> Result<StageStoreSignature, String> {
+    #[cfg(not(test))]
+    {
+        if crate::core::business_store_route::exact_store_observation(path)?.is_none() {
+            crate::core::business_store_route::seal_exact_store(path)?;
+        }
+        let (size, _, digest, sealed_at) = crate::core::business_store_route::exact_store_observation(path)?
+            .ok_or_else(|| "精确 token 暂存分区缺少封存证明".to_string())?;
+        let modified_ns = (sealed_at * 1_000_000_000.0).round();
+        if !modified_ns.is_finite() || modified_ns < 0.0 {
+            return Err("精确 token 暂存封存时间无效".into());
+        }
+        return Ok(StageStoreSignature {
+            size,
+            modified_ns: modified_ns as u128,
+            digest,
+        });
+    }
+    #[cfg(test)]
+    {
+        let signature = file_signature(path)?;
+        Ok(StageStoreSignature {
+            size: signature.size,
+            modified_ns: signature.modified_ns,
+            digest: signature.physical.map_or_else(String::new, PhysicalFileStamp::encode),
+        })
+    }
+}
+
+fn staged_store_size(path: &Path) -> Result<u64, String> {
+    staged_store_signature(path).map(|signature| signature.size)
 }
 
 fn open_staging_connection(path: &Path) -> Result<Connection, String> {
+    #[cfg(test)]
     let connection = Connection::open(path).map_err(|error| {
         format!(
             "无法打开精确 token 单文件暂存 {}：{}",
@@ -6603,27 +6762,38 @@ fn open_staging_connection(path: &Path) -> Result<Connection, String> {
             error
         )
     })?;
+    #[cfg(not(test))]
+    let connection = open_exact_business_store(path)?;
     connection
         .busy_timeout(StdDuration::from_secs(30))
         .map_err(|error| format!("无法设置精确 token 暂存等待时间：{error}"))?;
+    #[cfg(test)]
+    let staging_pragmas = "PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE; PRAGMA cache_size = -4096;";
+    #[cfg(not(test))]
+    let staging_pragmas = "PRAGMA synchronous = FULL; PRAGMA temp_store = FILE; PRAGMA cache_size = -4096;";
     connection
         .execute_batch(
-            r#"
-            PRAGMA journal_mode = DELETE;
-            PRAGMA synchronous = FULL;
-            PRAGMA temp_store = FILE;
-            PRAGMA cache_size = -4096;
-            "#,
+            staging_pragmas,
         )
         .map_err(|error| format!("无法配置精确 token 单文件暂存：{error}"))?;
     Ok(connection)
 }
 
 fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
+    #[cfg(not(test))]
     connection
-        .execute_batch(
-            r#"
-            CREATE TABLE manifest (
+        .set_temporary_namespace_mode(true)
+        .map_err(|error| format!("无法启用精确 token TEMP 暂存命名空间：{error}"))?;
+    connection
+        .execute_batch(&staging_schema_sql(!cfg!(test)))
+        .map_err(|error| format!("无法初始化精确 token 单文件暂存结构：{error}"))
+}
+
+fn staging_schema_sql(temporary: bool) -> String {
+    let create_table = if temporary { "TEMP TABLE" } else { "TABLE" };
+    format!(
+        r#"
+            CREATE {create_table} manifest (
                 complete INTEGER PRIMARY KEY CHECK(complete IN (0, 1)),
                 manifest_schema_version INTEGER NOT NULL,
                 staging_mode TEXT NOT NULL CHECK(staging_mode IN ('full', 'delta')),
@@ -6661,11 +6831,11 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 physical_stamp TEXT
             ) WITHOUT ROWID;
 
-            CREATE TABLE fingerprints (
+            CREATE {create_table} fingerprints (
                 fingerprint BLOB PRIMARY KEY
             ) WITHOUT ROWID;
 
-            CREATE TABLE events (
+            CREATE {create_table} events (
                 ordinal INTEGER PRIMARY KEY,
                 timestamp INTEGER NOT NULL,
                 tokens INTEGER NOT NULL,
@@ -6681,14 +6851,54 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 accounting_kind INTEGER NOT NULL DEFAULT 0, reported_total_tokens INTEGER, token_source_offset INTEGER, usage_fingerprint BLOB
             ) WITHOUT ROWID;
 
-            CREATE TABLE chunks (
+            CREATE {create_table} chunks (
                 chunk_index INTEGER PRIMARY KEY,
                 byte_count INTEGER NOT NULL,
                 sha256 BLOB NOT NULL
             ) WITHOUT ROWID;
-            "#,
+            "#
+    )
+}
+
+#[cfg(not(test))]
+fn materialize_staging_temp_tables(connection: &mut Connection) -> Result<(), String> {
+    connection
+        .set_temporary_namespace_mode(false)
+        .map_err(|error| format!("无法切换精确 token 暂存目标命名空间：{error}"))?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始精确 token 暂存物化事务：{error}"))?;
+    transaction
+        .execute_batch(&staging_schema_sql(false))
+        .map_err(|error| format!("无法创建精确 token 持久暂存表：{error}"))?;
+
+    const TABLES: [(&str, &str); 4] = [
+        (
+            "manifest",
+            "complete,manifest_schema_version,staging_mode,source_id,base_generation,base_resume_offset,base_prefix_sha256,fingerprint_codec_version,path,session_id,migration_revision,parser_revision,target_building_generation,artifact_id,actual_bytes,integrity,size,modified_ns,prefix_sha256,resume_offset,previous_total_tokens,fork_replay_started_ns,fork_replay_active,is_explicit_subagent_fork,last_skipped_fork_replay_token_ns,current_model,current_user_prompt_start,current_user_prompt_end,assistant_response_start,assistant_response_end,event_count,fingerprint_count,chunk_count,accounting_state,physical_stamp",
+        ),
+        ("fingerprints", "fingerprint"),
+        (
+            "events",
+            "ordinal,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,accounting_kind,reported_total_tokens,token_source_offset,usage_fingerprint",
+        ),
+        ("chunks", "chunk_index,byte_count,sha256"),
+    ];
+    for (table, columns) in TABLES {
+        transaction
+            .execute_batch(&format!(
+                "INSERT INTO {table} ({columns}) SELECT {columns} FROM temp.{table}"
+            ))
+            .map_err(|error| format!("无法物化精确 token 暂存表 {table}：{error}"))?;
+    }
+    transaction
+        .execute_batch(
+            "DROP TABLE temp.manifest; DROP TABLE temp.fingerprints; DROP TABLE temp.events; DROP TABLE temp.chunks;",
         )
-        .map_err(|error| format!("无法初始化精确 token 单文件暂存结构：{error}"))
+        .map_err(|error| format!("无法清理精确 token TEMP 暂存表：{error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交精确 token 暂存物化事务：{error}"))
 }
 
 fn reusable_staged_full_rebuild(
@@ -6700,7 +6910,7 @@ fn reusable_staged_full_rebuild(
         return Ok(None);
     }
     let reusable = (|| {
-        let stage = sqlite::open_read_only(database_path, StdDuration::from_secs(1))
+        let stage = open_read_only_index(database_path, StdDuration::from_secs(1))
             .map_err(|error| format!("无法只读打开精确 token 单文件暂存：{error}"))?;
         validated_staged_full_rebuild(&stage, database_path, job, target_generation, None)
     })();
@@ -6875,9 +7085,7 @@ fn validated_staged_full_rebuild(
         && super::session_parser::paginated_subagent_boundary(&mut RolloutReader::open(&job.file).map_err(|e| e.to_string())?)?.is_some() {
         return Ok(None);
     }
-    let artifact_bytes = fs::metadata(database_path)
-        .map_err(|error| format!("无法复核精确 token 暂存文件大小：{error}"))?
-        .len();
+    let artifact_bytes = staged_store_size(database_path)?;
     if manifest.path != job.path
         || manifest.session_id != job.session_id
         || manifest.migration_revision != expected_migration_revision
@@ -6928,7 +7136,7 @@ fn validated_staged_full_rebuild(
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    let stage_signature = file_signature_from_handle(&fs::File::open(database_path).map_err(|error| error.to_string())?, database_path)?;
+    let stage_signature = staged_store_signature(database_path)?;
     let known = (manifest_signature.size, manifest_signature.modified_ns.to_string(),
         manifest_signature.physical.map(|stamp| stamp.encode()));
     let reusable_proof = proof.is_some_and(|proof| proof.source == manifest_signature
@@ -7071,7 +7279,7 @@ fn import_staged_full_rebuild(
     mode: ExactSyncMode,
 ) -> Result<(), String> {
     let validated = {
-        let stage = sqlite::open_read_only(&staged.database_path, StdDuration::from_secs(1))
+        let stage = open_read_only_index(&staged.database_path, StdDuration::from_secs(1))
             .map_err(|error| format!("无法只读打开待导入的精确 token 暂存：{error}"))?;
         validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job, generation, staged.source_validation.as_ref())?
             .ok_or_else(|| "精确 token 单文件暂存在导入前失效".to_string())?
@@ -7080,18 +7288,27 @@ fn import_staged_full_rebuild(
     {
         return Err("精确 token 单文件暂存清单在导入前发生变化".into());
     }
-    let stage_path = staged.database_path.to_str().ok_or_else(|| {
-        format!(
-            "精确 token 暂存路径不是有效 UTF-8：{}",
-            staged.database_path.display()
-        )
-    })?;
+    #[cfg(not(test))]
+    crate::core::business_store_route::attach_exact_store_alias(
+        connection,
+        "exact_stage_import",
+        &staged.database_path,
+    )?;
+    #[cfg(test)]
+    {
+        let stage_path = staged.database_path.to_str().ok_or_else(|| {
+            format!(
+                "精确 token 暂存路径不是有效 UTF-8：{}",
+                staged.database_path.display()
+            )
+        })?;
     connection
         .execute(
             "ATTACH DATABASE ?1 AS exact_stage_import",
             params![stage_path],
         )
         .map_err(|error| format!("无法附加待导入的精确 token 暂存：{error}"))?;
+    }
 
     let import_result = (|| {
         let transaction = connection
@@ -7292,6 +7509,12 @@ fn import_staged_full_rebuild(
             .map_err(|error| format!("无法提交精确 token 单文件暂存导入：{error}"))
     })();
 
+    #[cfg(not(test))]
+    let detach_result = crate::core::business_store_route::detach_exact_store_alias(
+        connection,
+        "exact_stage_import",
+    );
+    #[cfg(test)]
     let detach_result = connection
         .execute_batch("DETACH DATABASE exact_stage_import")
         .map_err(|error| format!("无法卸载已导入的精确 token 暂存：{error}"));
@@ -7306,6 +7529,14 @@ fn staged_enrichment_matches_published_events(
     connection: &Connection,
     staged: &StagedFullRebuild,
 ) -> Result<bool, String> {
+    #[cfg(not(test))]
+    crate::core::business_store_route::attach_exact_store_alias(
+        connection,
+        "exact_enrichment_compare",
+        &staged.database_path,
+    )?;
+    #[cfg(test)]
+    {
     let stage_path = staged.database_path.to_str().ok_or_else(|| {
         format!(
             "历史字段补全暂存路径不是有效 UTF-8：{}",
@@ -7318,6 +7549,7 @@ fn staged_enrichment_matches_published_events(
             params![stage_path],
         )
         .map_err(|error| format!("无法附加历史字段补全暂存：{error}"))?;
+    }
     let comparison = connection
         .query_row(
             r#"
@@ -7358,6 +7590,12 @@ fn staged_enrichment_matches_published_events(
             |row| row.get::<_, bool>(0),
         )
         .map_err(|error| format!("无法核对历史 model/reasoning 补全事件：{error}"));
+    #[cfg(not(test))]
+    let detach = crate::core::business_store_route::detach_exact_store_alias(
+        connection,
+        "exact_enrichment_compare",
+    );
+    #[cfg(test)]
     let detach = connection
         .execute_batch("DETACH DATABASE exact_enrichment_compare")
         .map_err(|error| format!("无法卸载历史字段补全暂存：{error}"));
@@ -7369,6 +7607,13 @@ fn staged_enrichment_matches_published_events(
 }
 
 fn ensure_staging_directory(index_path: &Path) -> Result<(), String> {
+    #[cfg(not(test))]
+    {
+        let _ = index_path;
+        return Ok(());
+    }
+    #[cfg(test)]
+    {
     let directory = staging_directory(index_path);
     match fs::symlink_metadata(&directory) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -7414,9 +7659,17 @@ fn ensure_staging_directory(index_path: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+    }
 }
 
 fn remove_staging_directory(index_path: &Path) -> Result<(), String> {
+    #[cfg(not(test))]
+    {
+        let _ = index_path;
+        return Ok(());
+    }
+    #[cfg(test)]
+    {
     let directory = staging_directory(index_path);
     match fs::symlink_metadata(&directory) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
@@ -7453,6 +7706,7 @@ fn remove_staging_directory(index_path: &Path) -> Result<(), String> {
             error
         )),
     }
+    }
 }
 
 fn staging_directory(index_path: &Path) -> PathBuf {
@@ -7473,7 +7727,7 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
     let candidate_prefix = format!("{digest}.candidate-");
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![primary]),
         Err(error) => {
             return Err(format!(
                 "无法枚举精确 token 暂存目录 {}：{error}",
@@ -7481,7 +7735,8 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
             ))
         }
     };
-    let mut paths = entries
+    let mut paths = vec![primary.clone()];
+    paths.extend(entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
@@ -7490,7 +7745,7 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
             };
             path == &primary || (name.starts_with(&candidate_prefix) && name.ends_with(".sqlite3"))
         })
-        .collect::<Vec<_>>();
+        .filter(|path| path != &primary));
     paths.sort_by_key(|path| {
         if path == &primary {
             (0, String::new())
@@ -11173,7 +11428,7 @@ fn estimate_active_rollouts(
     if !database.is_file() {
         return Ok(());
     }
-    let state_connection = sqlite::open_read_only(&database, StdDuration::from_millis(100))
+    let state_connection = open_read_only_index(&database, StdDuration::from_millis(100))
         .map_err(|error| format!("无法预扫描 active rollout：{error}"))?;
     if !column_exists_checked(&state_connection, "threads", "rollout_path")? {
         return Ok(());
@@ -11339,7 +11594,7 @@ fn visit_active_rollouts(
     if !database.exists() {
         return Ok(());
     }
-    let state_connection = match sqlite::open_read_only(&database, StdDuration::from_millis(100)) {
+    let state_connection = match open_read_only_index(&database, StdDuration::from_millis(100)) {
         Ok(connection) => connection,
         Err(error) => {
             scan_completeness.mark_incomplete();
@@ -11544,7 +11799,7 @@ fn stage_thread_metadata(
         }));
     };
 
-    let connection = match sqlite::open_read_only(&database, StdDuration::from_secs(3)) {
+    let connection = match open_read_only_index(&database, StdDuration::from_secs(3)) {
         Ok(connection) => connection,
         Err(error) => {
             warnings.push(thread_info_warning(format!(
@@ -11774,6 +12029,35 @@ fn publish_thread_metadata_only(
 }
 
 fn existing_regular_index(path: &Path) -> Result<bool, String> {
+    #[cfg(not(test))]
+    {
+        if existing_regular_legacy_file(path)? {
+            if crate::core::business_store_route::exact_store_exists(path)? {
+                return Ok(true);
+            }
+            if crate::core::business_store_route::exact_legacy_input_is_retired_unchanged(path)? {
+                return Ok(false);
+            }
+            return Ok(true);
+        }
+        if !crate::core::business_store_route::exact_store_exists(path)? {
+            return Ok(false);
+        }
+        // A job namespace can be registered before its first A-table write.
+        // If the process stopped while its TEMP producer was parsing, retry
+        // that known empty namespace instead of treating registration alone
+        // as a corrupt, permanently blocking stage.
+        let connection = open_exact_business_store(path)?;
+        return connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type IN ('table','index','view','trigger'))",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| format!("无法检查精确 token 暂存分区对象：{error}"));
+    }
+    #[cfg(test)]
+    {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
             "拒绝打开符号链接形式的精确 token 索引：{}",
@@ -11790,6 +12074,7 @@ fn existing_regular_index(path: &Path) -> Result<bool, String> {
             path.display(),
             error
         )),
+    }
     }
 }
 
@@ -11812,15 +12097,28 @@ fn schema11_manifest_path(index_path: &Path) -> PathBuf {
 }
 
 fn schema11_file_stamp(path: &Path) -> Result<Schema11FileStamp, String> {
+    #[cfg(not(test))]
+    {
+        if crate::core::business_store_route::exact_store_observation(path)?.is_none() {
+            crate::core::business_store_route::seal_exact_store(path)?;
+        }
+        let (size, _, _, sealed_at) = crate::core::business_store_route::exact_store_observation(path)?
+            .ok_or_else(|| "精确 token 模块缺少耐久 seal".to_string())?;
+        let modified_ns = (sealed_at * 1_000_000_000.0).round() as i64;
+        return Ok(Schema11FileStamp { size, modified_ns: modified_ns.to_string() });
+    }
+    #[cfg(test)]
+    {
     let signature = file_signature(path)?;
     Ok(Schema11FileStamp {
         size: signature.size,
         modified_ns: signature.modified_ns.to_string(),
     })
+    }
 }
 
 fn schema11_source_receipt(index_path: &Path) -> Result<Schema11SourceReceipt, String> {
-    let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(1))
+    let connection = open_read_only_index(index_path, StdDuration::from_secs(1))
         .map_err(|error| format!("无法读取 schema 11 活动索引收据：{error}"))?;
     let before = schema11_source_receipt_from_connection(index_path, &connection)?;
     quick_check_index(&connection, Some(index_path))?;
@@ -11834,7 +12132,7 @@ fn schema11_source_receipt(index_path: &Path) -> Result<Schema11SourceReceipt, S
 fn schema11_source_receipt_without_quick_check(
     index_path: &Path,
 ) -> Result<Schema11SourceReceipt, String> {
-    let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(1))
+    let connection = open_read_only_index(index_path, StdDuration::from_secs(1))
         .map_err(|error| format!("无法读取 schema 11 活动索引收据：{error}"))?;
     schema11_source_receipt_from_connection(index_path, &connection)
 }
@@ -11904,6 +12202,12 @@ fn schema11_load_manifest(manifest_path: &Path) -> Result<Schema11CandidateManif
 }
 
 fn schema11_sync_file(path: &Path) -> Result<(), String> {
+    #[cfg(not(test))]
+    {
+        return crate::core::business_store_route::seal_exact_store(path);
+    }
+    #[cfg(test)]
+    {
     fs::OpenOptions::new()
         .read(true)
         // Windows FlushFileBuffers requires GENERIC_WRITE. This opens an
@@ -11912,6 +12216,7 @@ fn schema11_sync_file(path: &Path) -> Result<(), String> {
         .open(path)
         .and_then(|file| file.sync_all())
         .map_err(|error| format!("无法同步 schema 11 候选文件 {}：{error}", path.display()))
+    }
 }
 
 fn schema11_sync_parent(path: &Path) -> Result<(), String> {
@@ -11940,10 +12245,20 @@ fn schema11_move_sidecar_if_present(source: &Path, destination: &Path) -> Result
 }
 
 fn schema11_migration_capacity(index_path: &Path) -> Result<(), String> {
+    #[cfg(not(test))]
+    let (database_bytes, wal_bytes) = {
+        let (size, _, _, _) = crate::core::business_store_route::exact_store_observation(index_path)?
+            .ok_or_else(|| "无法检查 schema 11 模块 seal".to_string())?;
+        (size, 0u64)
+    };
+    #[cfg(test)]
+    let (database_bytes, wal_bytes) = {
     let database_bytes = file_signature(index_path)?.size;
     let wal_bytes = optional_index_sidecar_signature(&sqlite_sidecar_path(index_path, "-wal"))?
         .map(|signature| signature.size)
         .unwrap_or(0);
+        (database_bytes, wal_bytes)
+    };
     #[cfg(test)]
     let overridden_free = MIGRATION_AVAILABLE_BYTES_OVERRIDE.with(|value| value.replace(None));
     #[cfg(not(test))]
@@ -11951,7 +12266,17 @@ fn schema11_migration_capacity(index_path: &Path) -> Result<(), String> {
     let available = if let Some(available) = overridden_free {
         available
     } else {
-        available_space(index_path.parent().unwrap_or_else(|| Path::new(".")))
+        #[cfg(not(test))]
+        let capacity_root = crate::core::business_store_route::container_path()?
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        #[cfg(test)]
+        let capacity_root = index_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        available_space(&capacity_root)
             .map_err(|error| format!("无法检查 schema 11 迁移空间：{error}"))?
     };
     // Free space already excludes the legacy database. Budget a candidate
@@ -11972,7 +12297,14 @@ fn schema11_migration_capacity(index_path: &Path) -> Result<(), String> {
 }
 
 fn schema11_copy_candidate(index_path: &Path, candidate_path: &Path) -> Result<(), String> {
-    let source = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
+    #[cfg(not(test))]
+    {
+        crate::core::business_store_route::clone_exact_store(index_path, candidate_path)
+            .map(|_| ())
+    }
+    #[cfg(test)]
+    {
+    let source = open_read_only_index(index_path, StdDuration::from_secs(5))
         .map_err(|error| format!("无法只读打开 schema 11 迁移活动库：{error}"))?;
     let mut destination = Connection::open(candidate_path)
         .map_err(|error| format!("无法创建 schema 11 候选库：{error}"))?;
@@ -11993,6 +12325,7 @@ fn schema11_copy_candidate(index_path: &Path, candidate_path: &Path) -> Result<(
         .map_err(|error| format!("无法规范化 schema 11 候选库日志模式：{error}"))?;
     drop(destination);
     schema11_sync_file(candidate_path)
+    }
 }
 
 fn schema11_lineage(connection: &Connection) -> Result<Vec<Option<String>>, String> {
@@ -13476,9 +13809,12 @@ fn migrate_schema9_or10_to_schema11_candidate(candidate_path: &Path) -> Result<(
         (Ok(()), Ok(())) => {}
     }
     preparation.advance("candidate_vacuum");
+    #[cfg(test)]
     connection
         .execute_batch("VACUUM; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")
         .map_err(|error| format!("无法压实 schema 11 候选库：{error}"))?;
+    #[cfg(not(test))]
+    crate::core::business_store_route::seal_exact_store(candidate_path)?;
     preparation.finish();
     // The caller immediately advances to the Migrated phase and performs the
     // complete candidate validation, including quick_check. Repeating it here
@@ -13528,7 +13864,7 @@ fn prepare_schema11_candidate_if_needed(
         // receipt path; running candidate `quick_check` here would duplicate
         // that work on every launch and would inspect the database before the
         // read-only compatibility gate rejects future revisions.
-        let Ok(source) = sqlite::open_read_only(index_path, StdDuration::from_secs(1)) else {
+        let Ok(source) = open_read_only_index(index_path, StdDuration::from_secs(1)) else {
             // This is only a migration-routing probe. Let the normal read-only
             // compatibility/integrity path classify and report any open or
             // page error with its established non-destructive diagnostics.
@@ -13571,7 +13907,7 @@ fn prepare_schema11_candidate_if_needed(
             None,
         );
         schema11_migration_capacity(index_path)?;
-        let source_connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
+        let source_connection = open_read_only_index(index_path, StdDuration::from_secs(5))
             .map_err(|error| format!("无法只读读取 schema 11 迁移基线：{error}"))?;
         let source_facts_started = Instant::now();
         let source_facts =
@@ -13693,7 +14029,7 @@ fn schema11_resume_candidate(
     let source_facts = if let Some(facts) = manifest.source_facts.clone() {
         facts
     } else {
-        let source = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
+        let source = open_read_only_index(index_path, StdDuration::from_secs(5))
             .map_err(|error| format!("无法读取 schema 11 候选迁移对账事实：{error}"))?;
         let facts = schema11_migration_facts(&source, manifest.source_receipt.schema_version)?;
         manifest.source_facts = Some(facts.clone());
@@ -13712,7 +14048,7 @@ fn schema11_resume_candidate(
         );
         let stage_started = Instant::now();
         if existing_regular_index(candidate_path)? {
-            let candidate = sqlite::open_read_only(candidate_path, StdDuration::from_secs(5))
+            let candidate = open_read_only_index(candidate_path, StdDuration::from_secs(5))
                 .map_err(|error| format!("无法验证已有 schema 11 候选副本：{error}"))?;
             let candidate_facts =
                 schema11_migration_facts(&candidate, manifest.source_receipt.schema_version)?;
@@ -13830,6 +14166,32 @@ fn schema11_finish_candidate_switch(
     facts: &Schema11MigrationFacts,
     validated: Option<Schema11ValidatedStorage>,
 ) -> Result<Schema11ValidatedStorage, String> {
+    #[cfg(not(test))]
+    {
+        if existing_regular_index(index_path)? && !existing_regular_index(rollback_path)? {
+            if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
+                return Err("活动索引在候选切换前发生变化；已保留候选库和清单".into());
+            }
+            crate::core::business_store_route::clone_exact_store(index_path, rollback_path)?;
+            maybe_fail_schema11_migration_for_testing(10)?;
+        }
+        if !existing_regular_index(rollback_path)? {
+            return Err("schema 11 切换缺少受管回滚命名空间；已保留候选和清单".into());
+        }
+        if existing_regular_index(candidate_path)? {
+            crate::core::business_store_route::replace_exact_store(candidate_path, index_path)?;
+            schema11_sync_file(index_path)?;
+            maybe_fail_schema11_migration_for_testing(11)?;
+        }
+        let validation = validate_schema11_candidate(index_path, facts)?;
+        maybe_fail_schema11_migration_for_testing(12)?;
+        manifest.phase = Schema11CandidatePhase::Switched;
+        schema11_store_manifest(manifest_path, manifest)?;
+        crate::core::business_store_route::remove_exact_store(candidate_path)?;
+        return Ok(validation);
+    }
+    #[cfg(test)]
+    {
     if existing_regular_index(index_path)? && !existing_regular_index(rollback_path)? {
         if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
             return Err("活动索引在原子切换前发生变化；已保留候选库和清单".into());
@@ -13896,6 +14258,7 @@ fn schema11_finish_candidate_switch(
     manifest.phase = Schema11CandidatePhase::Switched;
     schema11_store_manifest(manifest_path, manifest)?;
     Ok(validation)
+    }
 }
 
 fn validate_schema11_candidate(
@@ -13910,7 +14273,7 @@ fn validate_schema11_storage(
     expected_facts: Option<&Schema11MigrationFacts>,
 ) -> Result<Schema11ValidatedStorage, String> {
     let preparation = IndexPreparationTrace::new("candidate_validation");
-    let connection = sqlite::open_read_only(index_path, StdDuration::from_secs(5))
+    let connection = open_read_only_index(index_path, StdDuration::from_secs(5))
         .map_err(|error| format!("无法只读打开 schema 11 候选库：{error}"))?;
     let storage_before = schema11_source_receipt_from_connection(index_path, &connection)?;
     if matches!(metadata_i64(&connection, "schema_version")?, Some(12) | Some(ACCOUNTING_SCHEMA_VERSION) | Some(CURRENT_SCHEMA_VERSION)) {
@@ -14469,6 +14832,13 @@ fn canonical_index_path(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn optional_index_sidecar_signature(path: &Path) -> Result<Option<FileSignature>, String> {
+    #[cfg(not(test))]
+    {
+        let _ = path;
+        return Ok(None);
+    }
+    #[cfg(test)]
+    {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
             "拒绝读取符号链接形式的精确 token 索引侧写文件：{}",
@@ -14488,6 +14858,7 @@ fn optional_index_sidecar_signature(path: &Path) -> Result<Option<FileSignature>
             path.display(),
             error
         )),
+    }
     }
 }
 
@@ -14549,10 +14920,15 @@ fn open_index_connection(
     create_if_missing: bool,
     initialize_metadata: bool,
 ) -> Result<Connection, String> {
+    #[cfg(not(test))]
+    let connection = open_exact_business_store(path)?;
+    #[cfg(test)]
     let mut flags = OpenFlags::default();
+    #[cfg(test)]
     if !create_if_missing {
         flags.remove(OpenFlags::SQLITE_OPEN_CREATE);
     }
+    #[cfg(test)]
     let connection = Connection::open_with_flags(path, flags)
         .map_err(|error| format!("无法打开精确 token 索引 {}：{}", path.display(), error))?;
     connection
@@ -14590,6 +14966,53 @@ fn open_index_connection(
         return Err("精确 token 索引外键约束未启用".into());
     }
     Ok(connection)
+}
+
+#[cfg(not(test))]
+fn open_exact_business_store(path: &Path) -> Result<Connection, String> {
+    let store = crate::core::business_store_route::exact_store_spec(path)?;
+    let legacy_sources = if existing_regular_legacy_file(path)? {
+        vec![path.to_path_buf()]
+    } else {
+        Vec::new()
+    };
+    crate::core::business_store_route::open_store(
+        "exact",
+        &store.source_identity,
+        &store.logical_path,
+        &legacy_sources,
+    )
+}
+
+fn open_read_only_index(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
+    #[cfg(test)]
+    {
+        return sqlite::open_read_only(path, timeout).map_err(|error| error.to_string());
+    }
+    #[cfg(not(test))]
+    {
+        let connection = open_exact_business_store(path)?;
+        connection
+            .busy_timeout(timeout)
+            .map_err(|error| format!("无法设置精确 token 索引读取等待时间：{error}"))?;
+        Ok(connection)
+    }
+}
+
+fn existing_regular_legacy_file(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "拒绝导入符号链接形式的精确 token 索引：{}",
+            path.display()
+        )),
+        Ok(metadata) if !metadata.is_file() => Err(format!(
+            "精确 token 索引路径不是普通文件：{}",
+            path.display()
+        )),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("无法检查旧精确 token 索引 {}：{error}", path.display())),
+    }
 }
 
 fn reject_orphaned_index_rows(connection: &Connection) -> Result<(), String> {
@@ -17576,6 +17999,13 @@ pub(super) fn fail_next_session_catalog_publish_for_testing() {
 }
 
 fn remove_staging_database_storage(path: &Path) -> Result<(), String> {
+    #[cfg(not(test))]
+    {
+        invalidate_index_integrity_signature(path);
+        return crate::core::business_store_route::remove_exact_store(path).map(|_| ());
+    }
+    #[cfg(test)]
+    {
     invalidate_index_integrity_signature(path);
     let mut existing = Vec::new();
     for candidate in [
@@ -17613,6 +18043,7 @@ fn remove_staging_database_storage(path: &Path) -> Result<(), String> {
         })?;
     }
     Ok(())
+    }
 }
 
 fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
@@ -17624,6 +18055,7 @@ fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 // SQLite backup copies every table (including pending, retained evidence and
 // canonical bindings) from a WAL-consistent snapshot. Keep the upgraded legacy
 // DB as recovery material; schema 13 makes earlier releases refuse to write it.
+#[cfg(test)]
 pub(super) fn relocate_legacy_index(home: &Path,legacy: &Path,destination: &Path) -> Result<(),String> {
     if legacy==destination || existing_regular_index(destination)? ||
         (!existing_regular_index(legacy)? && !schema11_manifest_path(legacy).exists()) { return Ok(()); }
@@ -17642,7 +18074,7 @@ pub(super) fn relocate_legacy_index(home: &Path,legacy: &Path,destination: &Path
     let candidate=sqlite_sidecar_path(destination,".ledger-copy");
     schema11_copy_candidate(legacy,&candidate)?;
     {
-        let copy=sqlite::open_read_only(&candidate,StdDuration::from_secs(5)).map_err(|e|e.to_string())?;
+        let copy=open_read_only_index(&candidate,StdDuration::from_secs(5)).map_err(|e|e.to_string())?;
         let checked:String=copy.query_row("PRAGMA quick_check",[],|r|r.get(0)).map_err(|e|e.to_string())?;
         if checked!="ok" { return Err("历史账本副本校验失败；旧库已保留".into()); }
         retention::validate(&copy)?;
@@ -17659,6 +18091,105 @@ pub(super) fn relocate_legacy_index(home: &Path,legacy: &Path,destination: &Path
     // Share the platform-aware directory synchronization used by candidate
     // publication, including the Windows directory handle flags.
     schema11_sync_parent(destination)?;
+    Ok(())
+}
+
+pub(crate) fn bootstrap_legacy_indexes() -> Result<(), String> {
+    #[cfg(test)]
+    return Ok(());
+
+    #[cfg(not(test))]
+    {
+        let current_root = app_paths::usage_history_dir()
+            .ok_or_else(|| "无法定位精确 token 索引目录".to_string())?;
+        let cache_root = app_paths::tauri_usage_cache_dir()
+            .ok_or_else(|| "无法定位旧精确 token 索引目录".to_string())?
+            .join("exact-token-index");
+        let mut inputs = Vec::new();
+        let mut migration_manifests = Vec::new();
+        collect_exact_legacy_inputs(&current_root, &current_root, &mut inputs, &mut migration_manifests)?;
+        if cache_root != current_root {
+            collect_exact_legacy_inputs(&cache_root, &current_root, &mut inputs, &mut migration_manifests)?;
+        }
+        if let Some(manifest) = migration_manifests.first() {
+            return Err(format!(
+                "发现尚未恢复的 Exact schema 迁移清单；保留所有旧库并停止启动：{}",
+                manifest.display()
+            ));
+        }
+        let mut by_target: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        for (target, source) in inputs {
+            let sources = by_target.entry(target).or_default();
+            if !sources.iter().any(|prior| {
+                std::fs::canonicalize(prior).ok() == std::fs::canonicalize(&source).ok()
+            }) {
+                sources.push(source);
+            }
+        }
+        for (target, sources) in by_target {
+            let store = crate::core::business_store_route::exact_store_spec(&target)?;
+            let _ = crate::core::business_store_route::open_store_during_bootstrap(
+                "exact",
+                &store.source_identity,
+                &store.logical_path,
+                &sources,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(test))]
+fn collect_exact_legacy_inputs(
+    source_root: &Path,
+    target_root: &Path,
+    inputs: &mut Vec<(PathBuf, PathBuf)>,
+    migration_manifests: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    fn walk(
+        directory: &Path,
+        source_root: &Path,
+        target_root: &Path,
+        inputs: &mut Vec<(PathBuf, PathBuf)>,
+        migration_manifests: &mut Vec<PathBuf>,
+    ) -> Result<(), String> {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(format!("无法枚举旧精确 token 索引目录 {}：{error}", directory.display())),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+            if metadata.file_type().is_symlink() {
+                if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+                    name.ends_with(".sqlite3") || name.ends_with(".schema11-migration.json")
+                }) {
+                    return Err(format!("旧精确 token 输入是符号链接；拒绝切换：{}", path.display()));
+                }
+                continue;
+            }
+            if metadata.is_dir() {
+                walk(&path, source_root, target_root, inputs, migration_manifests)?;
+                continue;
+            }
+            if !metadata.is_file() { continue; }
+            let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+            if name.ends_with(".schema11-migration.json") {
+                migration_manifests.push(path);
+                continue;
+            }
+            if path.extension().and_then(|value| value.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("sqlite3")) {
+                let relative = path.strip_prefix(source_root).map_err(|error| error.to_string())?;
+                inputs.push((target_root.join(relative), path));
+            }
+        }
+        Ok(())
+    }
+    if source_root.is_dir() {
+        walk(source_root, source_root, target_root, inputs, migration_manifests)?;
+    }
     Ok(())
 }
 
@@ -18526,7 +19057,7 @@ fn excerpt_warning(message: String) -> LocalDataWarning {
 }
 
 fn restartable_private_stage(path: &Path, job: &FullRebuildJob) -> Result<bool, String> {
-    let c = sqlite::open_read_only(path, StdDuration::from_secs(1)).map_err(|e| e.to_string())?;
+    let c = open_read_only_index(path, StdDuration::from_secs(1)).map_err(|e| e.to_string())?;
     if quick_check_index(&c, None).is_err() { return Ok(false); }
     for column in ["manifest_schema_version", "parser_revision", "complete"] {
         if !column_exists_checked(&c, "manifest", column)? { return Ok(false); }
@@ -18555,6 +19086,20 @@ fn restartable_private_stage(path: &Path, job: &FullRebuildJob) -> Result<bool, 
 /// Preserve private recovery artifacts outside the active staging enumeration.
 /// Never discard an original session or the last published index.
 fn preserve_private_stage_family(path: &Path) -> Result<(), String> {
+    #[cfg(not(test))]
+    {
+        if !existing_regular_index(path)? {
+            return Ok(());
+        }
+        let mut preserved_name = path.as_os_str().to_os_string();
+        preserved_name.push(format!(".preserved.{}", Uuid::new_v4()));
+        let preserved = PathBuf::from(preserved_name);
+        crate::core::business_store_route::clone_exact_store(path, &preserved)?;
+        crate::core::business_store_route::remove_exact_store(path)?;
+        return Ok(());
+    }
+    #[cfg(test)]
+    {
     let members: Vec<PathBuf> = ["", "-journal", "-wal", "-shm"].iter()
         .map(|suffix| PathBuf::from(format!("{}{suffix}", path.display())))
         .filter(|p| p.exists()).collect();
@@ -18565,6 +19110,7 @@ fn preserve_private_stage_family(path: &Path) -> Result<(), String> {
         fs::rename(&source, destination.join(source.file_name().ok_or("暂存路径无文件名")?)).map_err(|e| e.to_string())?;
     }
     Ok(())
+    }
 }
 
 fn is_history_repair_workspace(path: &Path) -> bool {

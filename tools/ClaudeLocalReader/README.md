@@ -8,15 +8,18 @@ The project targets .NET 10 because the referenced AgentSpeed.Core project curre
 
 - `ClaudeLocalReader.exe` or `--once`: write one compact runtime JSON snapshot to stdout.
 - `--watch`: write the latest snapshot at most once per second. When stdin is redirected, EOF requests shutdown; Ctrl+C also stops it.
-- `--root <local-path>`: use a local Claude projects directory. UNC/network paths are rejected.
-- `--codex-root <local-path>`: use a local Codex sessions directory. The app passes the selected Codex Home's `sessions` directory; UNC/network paths are rejected.
+- `--root <local-path>`: use a local Claude projects directory. UNC paths and mapped network drives are rejected; reparse points and offline/cloud-recall files are not read.
+- `--codex-root <local-path>`: use a local Codex sessions directory. The app passes the selected Codex Home's `sessions` directory; UNC paths and mapped network drives are rejected.
 - `--source codex`, `--source claudeCode`, and/or `--source claudeDesktop`: monitor only the selected local client(s). Omitting all `--source` options keeps the standalone helper's default of both Claude sources. The app always passes explicit source selections.
+- When the app launches `--watch` with redirected stdin/stdout, the helper and Agent Speed reporter can request bounded local transcript ranges from the parent over anonymous pipes. The parent validates each request against the selected local source roots and the file's Windows `FILE_ID_INFO`; response headers are JSON and response bodies are raw bytes. The helper does not open paths outside its configured monitor roots.
 - `--capture-statusline`: read at most 64 KiB of raw Claude JSON from stdin (no app schema/timestamp required), assign the local capture clock, keep only the approved cache fields, atomically write the app-owned LocalApplicationData cache, and write a fixed success line to stdout.
 - `--self-test`: validate cache filtering, normalization, bounds, and runtime redaction without opening Claude files or writing the cache.
 
 ## Runtime snapshot
 
 Schema version 1 uses camelCase and retains the existing top-level `client: "claude"` protocol ID. It contains per-source `sourceAvailable`, live totals scoped to selected sources, per-source `modelRates` (missing models are retained as `unknown`), `mainAgents`, `subagents`, and `latestResponse`. `responseEvents` contains at most 32 response-completion records with numeric usage and timing only. Agent and event IDs are per-process salted HMACs; transcript paths, project names, cwd, prompts, assistant text, and message text are not emitted.
+
+The shared positioned-read broker covers text transcript ranges, including compressed text streams. OpenCode, Antigravity, and ZCode SQLite sources continue through AgentSpeed.Core's native read-only SQLite queries and WAL handling; SQLite pages and query results do not pass through the range broker.
 
 ## Statusline cache
 

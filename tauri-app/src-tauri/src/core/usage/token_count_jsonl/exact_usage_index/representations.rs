@@ -45,7 +45,7 @@ pub(super) fn migrate(db: &mut Connection, index_path: &Path, existed_before: bo
         name.push(".schema13-before-representations.sqlite");
         let backup=PathBuf::from(name);
         if backup.exists() {
-            let saved=sqlite::open_read_only(&backup,StdDuration::from_secs(5)).map_err(|e|e.to_string())?;
+            let saved=open_read_only_index(&backup,StdDuration::from_secs(5)).map_err(|e|e.to_string())?;
             if metadata_i64(&saved,"schema_version")?!=Some(ACCOUNTING_SCHEMA_VERSION) {
                 return Err("升级前备份版本不一致，已保留原库与备份".into());
             }

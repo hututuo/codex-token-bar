@@ -1879,6 +1879,10 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private func reclaimDatabaseIfNeeded(deletedRows: Int) {
         guard deletedRows > 0,
               let url = databaseURL ?? Self.defaultDatabaseURL else { return }
+        if let store = BusinessSQLiteRoutes.store(for: url) {
+            _ = try? BusinessDatabaseMaintenance.run(container: store.containerURL)
+            return
+        }
         let driver = SQLiteDatabaseDriver(
             url: url,
             readOnly: false,

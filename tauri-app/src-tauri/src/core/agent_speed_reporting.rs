@@ -17,13 +17,18 @@ const STATUS_LINE_LIMIT: usize = 4096;
 const MAX_TPS: f64 = 1_000_000_000.0;
 const REPORTER_DENIED_SOURCE_IDS: &[&str] = &["claudeCode", "claudeDesktop"];
 
-fn reporter_start_payload(username: &str, local_roots: &std::collections::BTreeMap<String, String>) -> serde_json::Value {
+fn reporter_start_payload(
+    username: &str,
+    local_roots: &std::collections::BTreeMap<String, String>,
+) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "enabled": true,
         "username": username,
         "deniedSourceIds": REPORTER_DENIED_SOURCE_IDS,
     });
-    if !local_roots.is_empty() { payload["localSourceRoots"] = serde_json::json!(local_roots); }
+    if !local_roots.is_empty() {
+        payload["localSourceRoots"] = serde_json::json!(local_roots);
+    }
     payload
 }
 
@@ -172,18 +177,25 @@ impl AgentSpeedReportingRegistry {
                     return Err(error);
                 }
             };
-            let codex_home = std::path::PathBuf::from(crate::platform::default_codex_home_status().path);
-            let local_source_roots = match crate::core::claude_local_runtime::selected_reporting_local_roots() {
-                Ok(roots) => roots,
-                Err(_) => {
-                    self.invalidate_generation(); self.stop_process().await;
-                    self.set_error_status(settings, "local_source_unavailable");
-                    return Err("Local activity source configuration is unavailable.".into());
-                }
-            };
+            let codex_home =
+                std::path::PathBuf::from(crate::platform::default_codex_home_status().path);
+            let local_source_roots =
+                match crate::core::claude_local_runtime::selected_reporting_local_roots() {
+                    Ok(roots) => roots,
+                    Err(_) => {
+                        self.invalidate_generation();
+                        self.stop_process().await;
+                        self.set_error_status(settings, "local_source_unavailable");
+                        return Err("Local activity source configuration is unavailable.".into());
+                    }
+                };
             if self.child_is_running_for(&username, &codex_home, &local_source_roots) {
                 return Ok(());
             }
+            let source_read_roots = crate::core::claude_local_runtime::reporting_source_read_roots(
+                &codex_home,
+                &local_source_roots,
+            );
 
             self.invalidate_generation();
             self.stop_process().await;
@@ -224,7 +236,11 @@ impl AgentSpeedReportingRegistry {
             let startup = reporter_start_payload(&username, &local_source_roots);
             let mut line = serde_json::to_vec(&startup)
                 .map_err(|_| "Agent Speed reporter helper could not start.".to_owned())?;
-            if line.len() >= STATUS_LINE_LIMIT { return Err("Local activity source configuration exceeds the startup limit.".into()); }
+            if line.len() >= STATUS_LINE_LIMIT {
+                return Err(
+                    "Local activity source configuration exceeds the startup limit.".into(),
+                );
+            }
             line.push(b'\n');
             child_stdin.write_all(&line).await.map_err(|_| {
                 self.set_error_status(settings, "helper_unavailable");
@@ -247,13 +263,22 @@ impl AgentSpeedReportingRegistry {
 
             let data = Arc::clone(&self.data);
             let status_username = username.clone();
+            let status_stdin = Arc::clone(&self.stdin);
             let generation = self
                 .data
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .generation;
             tauri::async_runtime::spawn(async move {
-                read_helper_status(child_stdout, data, status_username, generation).await;
+                read_helper_status(
+                    child_stdout,
+                    data,
+                    status_stdin,
+                    source_read_roots,
+                    status_username,
+                    generation,
+                )
+                .await;
             });
             Ok(())
         }
@@ -332,7 +357,12 @@ impl AgentSpeedReportingRegistry {
     }
 
     #[cfg(windows)]
-    fn child_is_running_for(&self, username: &str, codex_home: &std::path::Path, local_source_roots: &std::collections::BTreeMap<String,String>) -> bool {
+    fn child_is_running_for(
+        &self,
+        username: &str,
+        codex_home: &std::path::Path,
+        local_source_roots: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
         let mut child = self.child.lock().unwrap_or_else(|error| error.into_inner());
         let running = match child.as_mut() {
             Some(child) => matches!(child.try_wait(), Ok(None)),
@@ -340,7 +370,9 @@ impl AgentSpeedReportingRegistry {
         };
         if running {
             let data = self.data.lock().unwrap_or_else(|error| error.into_inner());
-            return data.active_username.as_deref() == Some(username) && data.active_codex_home.as_deref() == Some(codex_home) && &data.active_local_source_roots == local_source_roots;
+            return data.active_username.as_deref() == Some(username)
+                && data.active_codex_home.as_deref() == Some(codex_home)
+                && &data.active_local_source_roots == local_source_roots;
         }
 
         child.take();
@@ -410,11 +442,11 @@ struct RawSourceLine {
 async fn read_helper_status(
     stdout: tokio::process::ChildStdout,
     data: Arc<Mutex<RegistryData>>,
+    stdin: Arc<AsyncMutex<Option<ChildStdin>>>,
+    source_read_roots: Vec<std::path::PathBuf>,
     username: String,
     generation: u64,
 ) {
-    use tokio::io::AsyncBufReadExt as _;
-
     let mut reader = BufReader::new(stdout);
     loop {
         let line = match read_bounded_line(&mut reader, STATUS_LINE_LIMIT).await {
@@ -422,6 +454,29 @@ async fn read_helper_status(
             Ok(None) => break,
             Err(_) => continue,
         };
+        if crate::core::claude_local_runtime::is_source_read_request(&line) {
+            let roots = source_read_roots.clone();
+            let reply = tokio::task::spawn_blocking(move || {
+                crate::core::claude_local_runtime::source_read_reply(&line, &roots)
+            })
+            .await
+            .ok()
+            .flatten();
+            let Some(reply) = reply else {
+                continue;
+            };
+            let mut writer = stdin.lock().await;
+            let Some(pipe) = writer.as_mut() else {
+                break;
+            };
+            if pipe.write_all(&reply.header).await.is_err()
+                || pipe.write_all(&reply.payload).await.is_err()
+                || pipe.flush().await.is_err()
+            {
+                break;
+            }
+            continue;
+        }
         let Ok(raw) = serde_json::from_slice::<RawStatusLine>(&line) else {
             continue;
         };
@@ -815,11 +870,16 @@ mod tests {
     fn local_roots_are_startup_only_and_the_legacy_empty_frame_is_unchanged() {
         let empty = reporter_start_payload("TokenBar-test", &Default::default());
         assert!(empty.get("localSourceRoots").is_none());
-        let roots = std::collections::BTreeMap::from([("gemini".to_owned(), r"C:\Local\Gemini".to_owned()),
-            ("deepseek".to_owned(), r"C:\Local\DSH".to_owned())]);
+        let roots = std::collections::BTreeMap::from([
+            ("gemini".to_owned(), r"C:\Local\Gemini".to_owned()),
+            ("deepseek".to_owned(), r"C:\Local\DSH".to_owned()),
+        ]);
         let startup = reporter_start_payload("TokenBar-test", &roots);
         assert_eq!(startup["localSourceRoots"]["gemini"], r"C:\Local\Gemini");
-        assert_eq!(startup["deniedSourceIds"], serde_json::json!(["claudeCode", "claudeDesktop"]));
+        assert_eq!(
+            startup["deniedSourceIds"],
+            serde_json::json!(["claudeCode", "claudeDesktop"])
+        );
     }
 
     #[test]

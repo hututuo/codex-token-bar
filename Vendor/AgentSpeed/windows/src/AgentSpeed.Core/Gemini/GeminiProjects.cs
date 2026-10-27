@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
+using AgentSpeed.Core.IO;
 using AgentSpeed.Core.Parsing;
 
 namespace AgentSpeed.Core.Gemini;
@@ -151,6 +152,7 @@ internal static class GeminiProjects
     {
         try
         {
+            LocalSourcePathPolicy.EnsureReadablePath(path);
             var info = new FileInfo(path);
             if (!info.Exists || (info.Attributes & FileAttributes.ReparsePoint) != 0 || info.Length > MaxFileBytes)
             {

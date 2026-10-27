@@ -1,3 +1,4 @@
+import SharedSourceIO
 import Darwin
 import Foundation
 
@@ -74,7 +75,7 @@ struct FileTailer: Sendable {
         defer { buffer.deallocate() }
         while offset < stat.size {
             let wanted = Int(min(Int64(capacity), stat.size - offset))
-            let count = Darwin.pread(descriptor, buffer.baseAddress, wanted, off_t(offset))
+            let count = SharedSourceIO.shared.pread(descriptor, into: UnsafeMutableRawBufferPointer(start: buffer.baseAddress, count: wanted), offset: offset)
             if count < 0 {
                 if errno == EINTR { continue }
                 result.failed = true
@@ -103,7 +104,7 @@ struct FileTailer: Sendable {
             offset = min(recordedSize, size)
             if offset > 0 {
                 var last: UInt8 = 0
-                if Darwin.pread(descriptor, &last, 1, off_t(offset - 1)) == 1, last != 0x0A {
+                if (withUnsafeMutableBytes(of: &last) { SharedSourceIO.shared.pread(descriptor, into: $0, offset: offset - 1, probe: true) }) == 1, last != 0x0A {
                     lines.skipToNextNewline()
                 }
             }

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    io::Write,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -16,6 +18,8 @@ const RUNTIME_CLIENTS: [&str; 6] = [
 ];
 const OTHER_CLIENTS: [&str; 3] = ["deepseek", "gemini", "opencode"];
 const MAX_RUNTIME_LINE_BYTES: usize = 256 * 1024;
+const MAX_SOURCE_READ_LINE_BYTES: usize = 4096;
+const MAX_SOURCE_READ_BYTES: usize = 4 * 1024 * 1024;
 const MAX_COUNTER: u64 = 10_000;
 // Upstream clamps each input/output field to 1e12; total is their sum.
 const MAX_OUTPUT_TOKENS: u64 = 1_000_000_000_000;
@@ -161,7 +165,7 @@ struct RuntimeRoots {
 struct RuntimeWorker {
     key: RuntimeConfigKey,
     child: std::process::Child,
-    stdin: Option<std::process::ChildStdin>,
+    stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
     frame: Arc<Mutex<RuntimeFrame>>,
 }
 
@@ -865,6 +869,7 @@ fn start_worker(
 
     #[cfg(windows)]
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let source_roots = runtime_source_read_roots(&roots, &key);
     let mut command = Command::new(helper);
     command
         .arg("--watch")
@@ -910,8 +915,10 @@ fn start_worker(
         let _ = child.wait();
         return Err(());
     };
+    let stdin = Arc::new(Mutex::new(Some(stdin)));
     let frame = Arc::new(Mutex::new(RuntimeFrame::default()));
     let reader_frame = frame.clone();
+    let reader_stdin = Arc::clone(&stdin);
     let client_allowlist = key.enabled_clients.clone();
     let reader_thread = thread::Builder::new()
         .name("claude-local-runtime-reader".into())
@@ -920,6 +927,28 @@ fn start_worker(
             loop {
                 match read_bounded_line(&mut reader) {
                     Ok(Some(Ok(bytes))) => {
+                        if is_source_read_request(&bytes) {
+                            if let Some(reply) = source_read_reply(&bytes, &source_roots) {
+                                let write_result = {
+                                    let mut writer = reader_stdin
+                                        .lock()
+                                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    if let Some(stdin) = writer.as_mut() {
+                                        stdin
+                                            .write_all(&reply.header)
+                                            .and_then(|()| stdin.write_all(&reply.payload))
+                                            .and_then(|()| stdin.flush())
+                                    } else {
+                                        break;
+                                    }
+                                };
+                                if write_result.is_err() {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+
                         let parsed = parse_runtime_snapshot(&bytes, &client_allowlist);
                         if let Ok(mut frame) = reader_frame.lock() {
                             match parsed {
@@ -962,7 +991,7 @@ fn start_worker(
     Ok(RuntimeWorker {
         key,
         child,
-        stdin: Some(stdin),
+        stdin,
         frame,
     })
 }
@@ -972,7 +1001,12 @@ fn stop_worker(mut worker: Option<RuntimeWorker>) {
     let Some(mut worker) = worker.take() else {
         return;
     };
-    drop(worker.stdin.take());
+    let stdin = worker
+        .stdin
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    drop(stdin);
     let deadline = Instant::now() + Duration::from_millis(900);
     loop {
         match worker.child.try_wait() {
@@ -983,6 +1017,406 @@ fn stop_worker(mut worker: Option<RuntimeWorker>) {
     }
     let _ = worker.child.kill();
     let _ = worker.child.wait();
+}
+
+/// Roots shared by the opted-in local display reader. Only clients explicitly enabled in the
+/// helper configuration are included; the reporter uses its separate non-Claude allowlist.
+fn runtime_source_read_roots(roots: &RuntimeRoots, key: &RuntimeConfigKey) -> Vec<PathBuf> {
+    let mut allowed = Vec::new();
+    for client in &key.enabled_clients {
+        match client.as_str() {
+            "codex" => {
+                if let Some(root) = roots.codex_root.as_ref() {
+                    allowed.push(root.clone());
+                    if let Some(home) = root.parent() {
+                        allowed.push(home.join("archived_sessions"));
+                    }
+                }
+            }
+            "claudeCode" | "claudeDesktop" => {
+                if let Some(root) = roots.claude_root.as_ref() {
+                    allowed.push(root.clone());
+                }
+            }
+            other => {
+                if let Some(root) = roots.other_roots.get(other) {
+                    allowed.push(root.clone());
+                }
+            }
+        }
+    }
+    allowed
+}
+
+/// Roots the Windows reporter's upstream monitor can read. The reporter keeps its complete
+/// non-Claude SourceKind set; this authorization list mirrors those default roots and saved
+/// DeepSeek/Gemini/OpenCode roots without using display-mode preferences.
+pub(crate) fn reporting_source_read_roots(
+    codex_home: &Path,
+    local_source_roots: &BTreeMap<String, String>,
+) -> Vec<PathBuf> {
+    let home = source_read_user_home();
+    let mut roots = vec![
+        codex_home.join("sessions"),
+        codex_home.join("archived_sessions"),
+        local_source_roots
+            .get("deepseek")
+            .map(|root| PathBuf::from(root.as_str()))
+            .unwrap_or_else(|| {
+                std::env::var_os("DSH_HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".dsh"))
+                    .join("sessions")
+            }),
+        local_source_roots
+            .get("gemini")
+            .map(|root| PathBuf::from(root.as_str()))
+            .unwrap_or_else(|| {
+                std::env::var_os("GEMINI_CLI_HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.clone())
+                    .join(".gemini")
+                    .join("tmp")
+            }),
+        local_source_roots
+            .get("opencode")
+            .map(|root| PathBuf::from(root.as_str()))
+            .unwrap_or_else(|| {
+                std::env::var_os("XDG_DATA_HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".local").join("share"))
+                    .join("opencode")
+            }),
+    ];
+
+    let omp_agent = std::env::var_os("PI_CODING_AGENT_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".omp").join("agent"));
+    roots.push(omp_agent.join("sessions"));
+    let omp_profiles = home.join(".omp").join("profiles");
+    let omp_profiles_text = omp_profiles.to_string_lossy();
+    if is_local_absolute_source_path(&omp_profiles_text)
+        && is_local_source_drive(&omp_profiles_text)
+    {
+        if let Ok(entries) = std::fs::read_dir(&omp_profiles) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_type()
+                    .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
+                {
+                    roots.push(entry.path().join("agent").join("sessions"));
+                }
+            }
+        }
+    }
+
+    for store in ["antigravity-cli", "antigravity", "antigravity-ide"] {
+        roots.push(home.join(".gemini").join(store).join("conversations"));
+    }
+    roots.push(home.join(".workbuddy").join("projects"));
+    roots.push(home.join(".workbuddy-ai").join("projects"));
+
+    let zcode_base = std::env::var_os("ZCODE_DATA_BASE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.clone());
+    roots.push(zcode_base.join(".zcode").join("cli").join("db"));
+    let kimi_home = std::env::var_os("KIMI_CODE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".kimi-code"));
+    roots.push(kimi_home.join("sessions"));
+    let grok_home = std::env::var_os("GROK_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".grok"));
+    roots.push(grok_home.join("sessions"));
+    roots
+}
+
+fn source_read_user_home() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(crate::core::app_paths::home_dir)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceReadRequest {
+    #[serde(rename = "type")]
+    message_type: String,
+    id: i64,
+    path: String,
+    identity: SourceReadFileIdentity,
+    offset: u64,
+    count: u32,
+    probe: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceReadFileIdentity {
+    volume: u64,
+    file_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceReadResponse<'a> {
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    id: i64,
+    count: usize,
+    error: Option<&'a str>,
+}
+
+pub(crate) struct SourceReadReply {
+    pub(crate) header: Vec<u8>,
+    pub(crate) payload: Vec<u8>,
+}
+
+pub(crate) fn is_source_read_request(line: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(line)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|kind| kind == "sourceRead")
+}
+
+pub(crate) fn source_read_reply(line: &[u8], roots: &[PathBuf]) -> Option<SourceReadReply> {
+    let value = serde_json::from_slice::<serde_json::Value>(line).ok()?;
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("sourceRead") {
+        return None;
+    }
+    let id = value
+        .get("id")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|id| *id > 0)?;
+    if line.len() > MAX_SOURCE_READ_LINE_BYTES {
+        return Some(source_read_error(id, "invalid_request"));
+    }
+    let request = match serde_json::from_value::<SourceReadRequest>(value) {
+        Ok(request) => request,
+        Err(_) => return Some(source_read_error(id, "invalid_request")),
+    };
+    if request.message_type != "sourceRead"
+        || request.path.len() > MAX_SOURCE_READ_LINE_BYTES
+        || request.path.chars().any(char::is_control)
+        || request.count as usize > MAX_SOURCE_READ_BYTES
+        || decode_file_id(&request.identity.file_id).is_none()
+    {
+        return Some(source_read_error(id, "invalid_request"));
+    }
+
+    let path = match resolve_source_read_path(&request.path, roots) {
+        Ok(path) => path,
+        Err(code) => return Some(source_read_error(id, code)),
+    };
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return Some(source_read_error(id, "source_unavailable")),
+    };
+    if !file_matches_expected_identity(&file, &request.identity) {
+        return Some(source_read_error(id, "identity_changed"));
+    }
+
+    let count = request.count as usize;
+    let result = if request.probe {
+        super::shared_source_io::probe_uncached(&file, request.offset, count)
+    } else {
+        super::shared_source_io::read_range(&file, request.offset, count)
+    };
+    match result {
+        Ok(payload) if payload.len() <= count => Some(source_read_success(id, payload)),
+        _ => Some(source_read_error(id, "source_read_failed")),
+    }
+}
+
+fn source_read_success(id: i64, payload: Vec<u8>) -> SourceReadReply {
+    source_read_response(id, payload, None)
+}
+
+fn source_read_error(id: i64, code: &'static str) -> SourceReadReply {
+    source_read_response(id, Vec::new(), Some(code))
+}
+
+fn source_read_response(id: i64, payload: Vec<u8>, error: Option<&'static str>) -> SourceReadReply {
+    let response = SourceReadResponse {
+        message_type: "sourceReadResult",
+        id,
+        count: payload.len(),
+        error,
+    };
+    let mut header = serde_json::to_vec(&response).expect("fixed source-read response serializes");
+    header.push(b'\n');
+    SourceReadReply { header, payload }
+}
+
+fn decode_file_id(text: &str) -> Option<[u8; 16]> {
+    let bytes = text.as_bytes();
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut identifier = [0_u8; 16];
+    for (index, pair) in bytes.chunks_exact(2).enumerate() {
+        identifier[index] = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
+    }
+    Some(identifier)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn resolve_source_read_path(path: &str, roots: &[PathBuf]) -> Result<PathBuf, &'static str> {
+    if !is_local_absolute_source_path(path) {
+        return Err("invalid_path");
+    }
+    if !is_local_source_drive(path) {
+        return Err("root_denied");
+    }
+    let requested = PathBuf::from(path);
+    if path_has_reparse_component(&requested) {
+        return Err("root_denied");
+    }
+    let canonical = std::fs::canonicalize(&requested).map_err(|_| "source_unavailable")?;
+    let metadata = std::fs::metadata(&canonical).map_err(|_| "source_unavailable")?;
+    if !metadata.is_file() {
+        return Err("source_unavailable");
+    }
+    let permitted = roots.iter().any(|root| {
+        let root_text = root.to_string_lossy();
+        if !is_local_absolute_source_path(&root_text)
+            || !is_local_source_drive(&root_text)
+            || path_has_reparse_component(root)
+        {
+            return false;
+        }
+        std::fs::canonicalize(root)
+            .ok()
+            .is_some_and(|canonical_root| canonical.starts_with(canonical_root))
+    });
+    if !permitted {
+        return Err("root_denied");
+    }
+    Ok(canonical)
+}
+
+fn is_local_absolute_source_path(path: &str) -> bool {
+    if path.is_empty() || path.chars().any(char::is_control) {
+        return false;
+    }
+    source_drive_root(path).is_some()
+}
+
+fn source_drive_root(path: &str) -> Option<String> {
+    let start = if path.starts_with(r"\\?\") { 4 } else { 0 };
+    let bytes = path.as_bytes();
+    if bytes.len() < start + 3
+        || !bytes[start].is_ascii_alphabetic()
+        || bytes[start + 1] != b':'
+        || !matches!(bytes[start + 2], b'\\' | b'/')
+    {
+        return None;
+    }
+    Some(format!("{}:\\", char::from(bytes[start])))
+}
+
+fn source_drive_type_is_local(drive_type: u32) -> bool {
+    // DRIVE_REMOVABLE, DRIVE_FIXED, DRIVE_CDROM (read-only), and DRIVE_RAMDISK.
+    matches!(drive_type, 2 | 3 | 5 | 6)
+}
+
+#[cfg(windows)]
+fn is_local_source_drive(path: &str) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+
+    let Some(root) = source_drive_root(path) else {
+        return false;
+    };
+    let mut wide = root.encode_utf16().collect::<Vec<_>>();
+    wide.push(0);
+    // Check drive type before canonicalization or metadata/open calls so mapped network drives
+    // are rejected before path probing can touch their remote share.
+    source_drive_type_is_local(unsafe { GetDriveTypeW(wide.as_ptr()) })
+}
+
+#[cfg(not(windows))]
+fn is_local_source_drive(_path: &str) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn path_has_reparse_component(path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
+    const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x0004_0000;
+    const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+    const SOURCE_READ_DENIED_ATTRIBUTES: u32 = FILE_ATTRIBUTE_REPARSE_POINT
+        | FILE_ATTRIBUTE_OFFLINE
+        | FILE_ATTRIBUTE_RECALL_ON_OPEN
+        | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+    let mut current = path.to_path_buf();
+    loop {
+        if std::fs::symlink_metadata(&current)
+            .ok()
+            .is_some_and(|metadata| metadata.file_attributes() & SOURCE_READ_DENIED_ATTRIBUTES != 0)
+        {
+            return true;
+        }
+        if !current.pop() {
+            return false;
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn path_has_reparse_component(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn file_matches_expected_identity(file: &std::fs::File, expected: &SourceReadFileIdentity) -> bool {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
+    };
+    let Some(expected_id) = decode_file_id(&expected.file_id) else {
+        return false;
+    };
+    let mut info = FILE_ID_INFO::default();
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as _,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    ok != 0 && info.VolumeSerialNumber == expected.volume && info.FileId.Identifier == expected_id
+}
+
+#[cfg(not(windows))]
+fn file_matches_expected_identity(
+    _file: &std::fs::File,
+    _expected: &SourceReadFileIdentity,
+) -> bool {
+    false
 }
 
 fn read_bounded_line<R: std::io::BufRead>(
@@ -1466,6 +1900,18 @@ mod tests {
     fn canonical_windows_disk_prefix_is_not_an_unc_or_device_namespace() {
         assert!(is_verbatim_local_disk_path(r"\\?\C:\Users\local\.codex"));
         assert!(is_verbatim_local_disk_path(r"\\?\d:/Codex/sessions"));
+        assert!(is_local_absolute_source_path(r"\\?\C:\Users\local\.codex"));
+        assert!(is_local_absolute_source_path(r"E:/Users/local/.codex"));
+        assert_eq!(source_drive_root(r"\\?\C:\Users\local"), Some("C:\\".into()));
+        assert_eq!(source_drive_root(r"E:/Users/local"), Some("E:\\".into()));
+        assert!(source_drive_root(r"\\server\share").is_none());
+        assert!(source_drive_root(r"C:relative").is_none());
+        for drive_type in [2, 3, 5, 6] {
+            assert!(source_drive_type_is_local(drive_type));
+        }
+        for drive_type in [0, 1, 4, 99] {
+            assert!(!source_drive_type_is_local(drive_type));
+        }
         for path in [
             r"\\?\UNC\server\share",
             r"\\.\C:\",
@@ -1475,12 +1921,90 @@ mod tests {
             "//server/share",
         ] {
             assert!(!is_verbatim_local_disk_path(path), "{path}");
+            assert!(!is_local_absolute_source_path(path), "{path}");
         }
         #[cfg(windows)]
         assert!(validate_local_absolute_path(std::path::Path::new(
             r"\\?\Z:\tokenbar-missing-fixture"
         ))
         .is_ok());
+    }
+
+    #[test]
+    fn source_read_dispatch_is_bounded_and_never_echoes_paths() {
+        let request = serde_json::json!({
+            "type": "sourceRead",
+            "id": 7,
+            "path": r"\\server\private\session.jsonl",
+            "identity": { "volume": 4, "fileId": "00112233445566778899aabbccddeeff" },
+            "offset": 0,
+            "count": 16,
+            "probe": false
+        });
+        let bytes = serde_json::to_vec(&request).unwrap();
+        assert!(is_source_read_request(&bytes));
+        let reply = source_read_reply(&bytes, &[]).unwrap();
+        assert!(reply.payload.is_empty());
+        assert!(reply.header.len() <= MAX_SOURCE_READ_LINE_BYTES);
+        let header = std::str::from_utf8(&reply.header).unwrap();
+        assert!(!header.contains("private"));
+        let response: serde_json::Value = serde_json::from_slice(header.trim().as_bytes()).unwrap();
+        assert_eq!(response["type"], "sourceReadResult");
+        assert_eq!(response["id"], 7);
+        assert_eq!(response["count"], 0);
+        assert_eq!(response["error"], "invalid_path");
+
+        let mut oversized = request;
+        oversized["path"] =
+            serde_json::Value::String("C:\\".to_owned() + &"x".repeat(MAX_SOURCE_READ_LINE_BYTES));
+        let bytes = serde_json::to_vec(&oversized).unwrap();
+        let reply = source_read_reply(&bytes, &[]).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(
+            std::str::from_utf8(&reply.header)
+                .unwrap()
+                .trim()
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(response["error"], "invalid_request");
+        assert!(!std::str::from_utf8(&reply.header).unwrap().contains("xxxx"));
+    }
+
+    #[test]
+    fn reporter_read_roots_cover_selected_non_claude_roots_and_codex_archives() {
+        let codex_home = std::env::temp_dir().join("tokenbar-source-read-codex-home");
+        let deepseek = std::env::temp_dir().join("tokenbar-source-read-deepseek");
+        let gemini = std::env::temp_dir().join("tokenbar-source-read-gemini");
+        let opencode = std::env::temp_dir().join("tokenbar-source-read-opencode");
+        let roots = reporting_source_read_roots(
+            &codex_home,
+            &BTreeMap::from([
+                (
+                    "deepseek".to_owned(),
+                    deepseek.to_string_lossy().into_owned(),
+                ),
+                ("gemini".to_owned(), gemini.to_string_lossy().into_owned()),
+                (
+                    "opencode".to_owned(),
+                    opencode.to_string_lossy().into_owned(),
+                ),
+            ]),
+        );
+        for expected in [
+            codex_home.join("sessions"),
+            codex_home.join("archived_sessions"),
+            deepseek,
+            gemini,
+            opencode,
+        ] {
+            assert!(
+                roots.contains(&expected),
+                "missing reporter source root: {expected:?}"
+            );
+        }
+        assert!(roots
+            .iter()
+            .all(|root| !root.to_string_lossy().contains(".claude")));
     }
 
     #[test]

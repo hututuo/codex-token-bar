@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Threading.Channels;
 using AgentSpeed.Core;
+using AgentSpeed.Core.IO;
 using AgentSpeed.Core.Reporting;
+using CodexTokenBar.LocalSource;
 
 namespace CodexTokenBar.AgentSpeedReporter;
 
@@ -21,7 +23,11 @@ internal static class ReporterRuntime
     private static readonly ReportClientInfo Client = ReportClientInfo.Windows(ClientVersion);
     private static readonly HashSet<ReportSection> AllowedSections = [ReportSection.Sources, ReportSection.Models];
 
-    public static async Task RunAsync(StartCommand start, StatusEmitter status, CancellationToken cancellationToken)
+    public static async Task RunAsync(
+        StartCommand start,
+        StatusEmitter status,
+        IPositionedReadBackend readBackend,
+        CancellationToken cancellationToken)
     {
         if (!AgentSpeedReportSourcePolicy.HasRequiredDenyList(start.DeniedSourceIds))
         {
@@ -42,7 +48,8 @@ internal static class ReporterRuntime
             AgentSpeedReportSourcePolicy.ReportableSources,
             DshRoot: start.LocalSourceRoots.GetValueOrDefault("deepseek"),
             OpenCodeRoot: start.LocalSourceRoots.GetValueOrDefault("opencode"),
-            GeminiRoot: start.LocalSourceRoots.GetValueOrDefault("gemini")));
+            GeminiRoot: start.LocalSourceRoots.GetValueOrDefault("gemini")),
+            readBackend: readBackend);
         monitor.Start();
 
         await status.PublishAsync(Status(

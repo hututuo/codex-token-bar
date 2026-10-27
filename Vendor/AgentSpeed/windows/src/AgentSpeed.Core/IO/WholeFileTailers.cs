@@ -10,8 +10,8 @@ internal abstract class WholeFileTailer : TranscriptTailer
 {
     private (long Length, DateTime WriteUtc)? _read;
 
-    protected WholeFileTailer(string path)
-        : base(path)
+    protected WholeFileTailer(string path, IPositionedReadBackend? readBackend = null)
+        : base(path, readBackend)
     {
     }
 
@@ -64,7 +64,7 @@ internal abstract class WholeFileTailer : TranscriptTailer
 /// A compressed Codex session (<c>.jsonl.zst</c>, METRICS 5.3): one zstd stream decoded with bounded buffers from the
 /// start (any number of frames, skippable frames skipped, no per-frame output limit). Never tailed.
 /// </summary>
-internal sealed class ZstStreamTailer(string path) : WholeFileTailer(path)
+internal sealed class ZstStreamTailer(string path, IPositionedReadBackend? readBackend = null) : WholeFileTailer(path, readBackend)
 {
     private const int ChunkBytes = 1024 * 1024;
 
@@ -75,7 +75,9 @@ internal sealed class ZstStreamTailer(string path) : WholeFileTailer(path)
         var buffer = ArrayPool<byte>.Shared.Rent(ChunkBytes);
         try
         {
-            using var file = new FileStream(handle, FileAccess.Read, bufferSize: 0);
+            using Stream file = ReadBackend is null
+                ? new FileStream(handle, FileAccess.Read, bufferSize: 0)
+                : CreatePositionedReadStream(length, cancellationToken);
             using var zstd = new DecompressionStream(file, ChunkBytes, checkEndOfStream: true, leaveOpen: true);
             while (true)
             {
@@ -108,13 +110,23 @@ internal sealed class ZstStreamTailer(string path) : WholeFileTailer(path)
 
         return length;
     }
+
+    private Stream CreatePositionedReadStream(long length, CancellationToken cancellationToken)
+    {
+        if (Identity is not { FileId.Length: 32 } identity || ReadBackend is null)
+        {
+            throw new IOException("source_file_identity_unavailable");
+        }
+
+        return new PositionedReadStream(Path, identity, length, ReadBackend, cancellationToken);
+    }
 }
 
 /// <summary>
 /// A legacy Gemini CLI session (<c>.json</c>, METRICS 4.6): one JSON document rewritten in place, handed to the parser
 /// whole. Documents over <see cref="MaxBytes"/> are not read.
 /// </summary>
-internal sealed class DocumentTailer(string path) : WholeFileTailer(path)
+internal sealed class DocumentTailer(string path, IPositionedReadBackend? readBackend = null) : WholeFileTailer(path, readBackend)
 {
     public const int MaxBytes = Gemini.GeminiParser.MaxDocumentBytes;
 
@@ -140,7 +152,7 @@ internal sealed class DocumentTailer(string path) : WholeFileTailer(path)
             while (total < size)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var read = RandomAccess.Read(handle, buffer.AsSpan(total, size - total), total);
+                var read = ReadAt(handle, buffer.AsSpan(total, size - total), total, cancellationToken: cancellationToken);
                 if (read <= 0)
                 {
                     break;
@@ -157,4 +169,78 @@ internal sealed class DocumentTailer(string path) : WholeFileTailer(path)
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
+}
+
+/// <summary>A per-consumer seekable stream whose bytes come from the explicit positioned-read backend.</summary>
+internal sealed class PositionedReadStream(
+    string path,
+    FileIdentity identity,
+    long length,
+    IPositionedReadBackend backend,
+    CancellationToken cancellationToken) : Stream
+{
+    private const int MaximumRequestBytes = 4 * 1024 * 1024;
+    private long _position;
+
+    public override bool CanRead => true;
+    public override bool CanSeek => true;
+    public override bool CanWrite => false;
+    public override long Length => length;
+
+    public override long Position
+    {
+        get => _position;
+        set => _position = ValidatePosition(value);
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        return Read(buffer.AsSpan(offset, count));
+    }
+
+    public override int Read(Span<byte> buffer)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (buffer.IsEmpty)
+        {
+            return 0;
+        }
+
+        var count = Math.Min(buffer.Length, MaximumRequestBytes);
+        var bytes = backend.Read(path, identity.Volume, identity.FileId, checked((ulong)_position), count, probe: false, cancellationToken);
+        if (bytes.Length > count)
+        {
+            throw new IOException("source_read_exceeded_request");
+        }
+
+        bytes.AsSpan().CopyTo(buffer);
+        _position += bytes.Length;
+        return bytes.Length;
+    }
+
+    public override long Seek(long offset, SeekOrigin origin)
+    {
+        var target = origin switch
+        {
+            SeekOrigin.Begin => offset,
+            SeekOrigin.Current => checked(_position + offset),
+            SeekOrigin.End => checked(length + offset),
+            _ => throw new ArgumentOutOfRangeException(nameof(origin)),
+        };
+        _position = ValidatePosition(target);
+        return _position;
+    }
+
+    public override void Flush()
+    {
+    }
+
+    public override void SetLength(long value) => throw new NotSupportedException();
+
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    private static long ValidatePosition(long value) => value < 0
+        ? throw new IOException("seek_before_start")
+        : value;
 }

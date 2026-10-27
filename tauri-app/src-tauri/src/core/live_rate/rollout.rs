@@ -5,6 +5,7 @@ use super::stream::{
     latest_scheduled_timestamp, LiveMetricEvent, LiveTokenCategory, WINDOW_SECONDS,
 };
 use super::LiveRateSourceScope;
+use crate::core::shared_source_io::{probe_uncached, SourceReader};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -101,8 +102,9 @@ pub(super) fn read_rollout_metrics_with_signals(
         }
         let file_size = signature.len;
         let key = (source_scope.clone(), path.clone());
+        let mut baseline_update = None;
         let (offset, reset_for_rewrite, probe_context_tail) = {
-            let mut state = rollout_state();
+            let state = rollout_state();
             if state.scope_generations.get(source_scope) != Some(&generation) {
                 return Ok((Vec::new(), Vec::new()));
             }
@@ -113,45 +115,64 @@ pub(super) fn read_rollout_metrics_with_signals(
                 );
                 let same_length_rewrite =
                     previous.offset == file_size && previous.modified_at != signature.modified_at;
-                let boundary_changed = (previous.modified_at != signature.modified_at
+                let boundary_changed = if (previous.modified_at != signature.modified_at
                     || previous.offset != file_size)
-                    && previous.boundary.as_ref().is_some_and(|expected| {
-                        read_boundary(&path, previous.offset).as_ref() != Some(expected)
-                    });
+                    && previous.boundary.is_some()
+                {
+                    let Some(boundary) = read_boundary(&path, previous.offset) else {
+                        // A failed guard probe must not turn this poll into a new baseline.
+                        continue;
+                    };
+                    previous.boundary.as_ref() != Some(&boundary)
+                } else {
+                    false
+                };
                 let reset = previous.offset > file_size
                     || identity_changed
                     || same_length_rewrite
                     || boundary_changed;
                 if reset {
-                    state.offsets.insert(
-                        key.clone(),
-                        RolloutOffset {
-                            offset: file_size,
-                            boundary: read_boundary(&path, file_size),
-                            identity: signature.identity.clone(),
-                            modified_at: signature.modified_at,
-                        },
-                    );
+                    let Some(boundary) = read_boundary(&path, file_size) else {
+                        continue;
+                    };
+                    baseline_update = Some(RolloutOffset {
+                        offset: file_size,
+                        boundary: Some(boundary),
+                        identity: signature.identity.clone(),
+                        modified_at: signature.modified_at,
+                    });
                     (file_size, true, true)
                 } else {
                     (previous.offset, false, false)
                 }
             } else {
-                state.offsets.insert(
-                    key.clone(),
-                    RolloutOffset {
-                        offset: file_size,
-                        boundary: read_boundary(&path, file_size),
-                        identity: signature.identity.clone(),
-                        modified_at: signature.modified_at,
-                    },
-                );
+                let Some(boundary) = read_boundary(&path, file_size) else {
+                    continue;
+                };
+                baseline_update = Some(RolloutOffset {
+                    offset: file_size,
+                    boundary: Some(boundary),
+                    identity: signature.identity.clone(),
+                    modified_at: signature.modified_at,
+                });
                 (file_size, false, true)
             }
         };
-        let tail_boundary = (include_cache_reminder && probe_context_tail)
-            .then(|| context_history_boundary(&path, file_size))
-            .flatten();
+        let tail_boundary = if include_cache_reminder && probe_context_tail {
+            match context_history_boundary(&path, file_size) {
+                Ok(boundary) => boundary,
+                Err(_) => continue,
+            }
+        } else {
+            None
+        };
+        if let Some(baseline) = baseline_update {
+            let mut state = rollout_state();
+            if state.scope_generations.get(source_scope) != Some(&generation) {
+                return Ok((Vec::new(), Vec::new()));
+            }
+            state.offsets.insert(key.clone(), baseline);
+        }
         if let Some(boundary) = tail_boundary {
             let observation = match boundary {
                 ContextHistoryBoundary::ExplicitContextReset => CacheObservation::ContextReset,
@@ -178,19 +199,25 @@ pub(super) fn read_rollout_metrics_with_signals(
                 continue;
             }
         };
+        let boundary = if new_offset != offset {
+            match read_boundary(&path, new_offset) {
+                Some(boundary) => Some(boundary),
+                None => continue,
+            }
+        } else {
+            None
+        };
         {
             let mut state = rollout_state();
             if state.scope_generations.get(source_scope) != Some(&generation) {
                 return Ok((Vec::new(), Vec::new()));
             }
-            let boundary = if new_offset != offset {
-                read_boundary(&path, new_offset)
-            } else {
+            let boundary = boundary.or_else(|| {
                 state
                     .offsets
                     .get(&key)
                     .and_then(|previous| previous.boundary.clone())
-            };
+            });
             state.offsets.insert(
                 key,
                 RolloutOffset {
@@ -632,12 +659,20 @@ struct RolloutLine {
 
 // A bounded tail read used only on initial file binding, rewrite, or cursor guards.
 fn read_tail(path: &Path, end_offset: u64, max_bytes: usize) -> Option<Vec<u8>> {
+    let file = File::open(path).ok()?;
+    read_tail_from_file(&file, end_offset, max_bytes).ok()
+}
+
+fn read_tail_from_file(file: &File, end_offset: u64, max_bytes: usize) -> std::io::Result<Vec<u8>> {
     let count = end_offset.min(max_bytes as u64) as usize;
-    let mut file = File::open(path).ok()?;
-    file.seek(SeekFrom::Start(end_offset - count as u64)).ok()?;
-    let mut bytes = vec![0; count];
-    file.read_exact(&mut bytes).ok()?;
-    Some(bytes)
+    let bytes = probe_uncached(file, end_offset - count as u64, count)?;
+    if bytes.len() != count {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "short rollout tail probe",
+        ));
+    }
+    Ok(bytes)
 }
 
 // A bounded cursor guard, read only on binding or a changed file, never an idle poll.
@@ -651,12 +686,29 @@ enum ContextHistoryBoundary {
     ValidTokenCount,
 }
 
-fn context_history_boundary(path: &Path, end_offset: u64) -> Option<ContextHistoryBoundary> {
-    let bytes = read_tail(path, end_offset, CONTEXT_TAIL_PROBE_BYTES)?;
+fn context_history_boundary(
+    path: &Path,
+    end_offset: u64,
+) -> std::io::Result<Option<ContextHistoryBoundary>> {
+    let file = File::open(path)?;
+    context_history_boundary_from_file(&file, end_offset)
+}
+
+fn context_history_boundary_from_file(
+    file: &File,
+    end_offset: u64,
+) -> std::io::Result<Option<ContextHistoryBoundary>> {
+    let bytes = read_tail_from_file(file, end_offset, CONTEXT_TAIL_PROBE_BYTES)?;
     // A concurrently appended or crash-truncated record is not a complete
     // rollout event. Ignore that suffix while still honoring the latest full
     // record available within the bounded tail.
-    let complete_len = bytes.iter().rposition(|byte| *byte == b'\n')? + 1;
+    let Some(complete_len) = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map(|index| index + 1)
+    else {
+        return Ok(None);
+    };
     let complete_bytes = &bytes[..complete_len];
 
     let starts_at_file_head = end_offset <= CONTEXT_TAIL_PROBE_BYTES as u64;
@@ -677,15 +729,15 @@ fn context_history_boundary(path: &Path, end_offset: u64) -> Option<ContextHisto
         let line = line.trim_end_matches('\r');
         match history_marker(line) {
             Some(ContextHistoryBoundary::ExplicitContextReset) => {
-                return Some(ContextHistoryBoundary::ExplicitContextReset);
+                return Ok(Some(ContextHistoryBoundary::ExplicitContextReset));
             }
             Some(ContextHistoryBoundary::ValidTokenCount) => {
-                return Some(ContextHistoryBoundary::ValidTokenCount);
+                return Ok(Some(ContextHistoryBoundary::ValidTokenCount));
             }
             None => {}
         }
     }
-    None
+    Ok(None)
 }
 
 fn history_marker(line: &str) -> Option<ContextHistoryBoundary> {
@@ -711,7 +763,8 @@ fn history_marker(line: &str) -> Option<ContextHistoryBoundary> {
 }
 
 fn read_new_lines(path: &Path, offset: u64) -> std::io::Result<(u64, Vec<RolloutLine>)> {
-    let mut file = fs::File::open(path)?;
+    let file = fs::File::open(path)?;
+    let mut file = SourceReader::new(&file)?;
     file.seek(SeekFrom::Start(offset))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
@@ -890,7 +943,7 @@ mod rollout_reader_tests {
 
         let initial_size = fs::metadata(&path).unwrap().len();
         assert_eq!(
-            context_history_boundary(&path, initial_size),
+            context_history_boundary(&path, initial_size).unwrap(),
             Some(ContextHistoryBoundary::ExplicitContextReset)
         );
         let (offset, old_lines) = read_new_lines(&path, initial_size).unwrap();
@@ -905,7 +958,7 @@ mod rollout_reader_tests {
 
         let current_size = fs::metadata(&path).unwrap().len();
         assert_eq!(
-            context_history_boundary(&path, current_size),
+            context_history_boundary(&path, current_size).unwrap(),
             Some(ContextHistoryBoundary::ValidTokenCount),
             "a valid request after compaction supersedes the old cold-context marker"
         );
@@ -940,7 +993,7 @@ mod rollout_reader_tests {
             CONTEXT_TAIL_PROBE_BYTES
         );
         assert_eq!(
-            context_history_boundary(&path, size),
+            context_history_boundary(&path, size).unwrap(),
             None,
             "a reset marker older than the bounded tail must remain unknown"
         );
@@ -952,7 +1005,7 @@ mod rollout_reader_tests {
         drop(file);
         let partial_size = fs::metadata(&path).unwrap().len();
         assert_eq!(
-            context_history_boundary(&path, partial_size),
+            context_history_boundary(&path, partial_size).unwrap(),
             Some(ContextHistoryBoundary::ExplicitContextReset),
             "an unterminated tail record must not hide the latest complete marker"
         );

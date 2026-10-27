@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using AgentSpeed.Core;
+using AgentSpeed.Core.IO;
+using CodexTokenBar.LocalSource;
 
 namespace ClaudeLocalReader;
 
@@ -18,7 +20,7 @@ internal static class Program
             var options = ParseArguments(args);
             if (options.SelfTest)
             {
-                RunSelfTests();
+                await RunSelfTestsAsync().ConfigureAwait(false);
                 Console.Out.WriteLine("ClaudeLocalReader self-test passed.");
                 return 0;
             }
@@ -95,8 +97,12 @@ internal static class Program
             }
         };
 
-        using var monitor = new LiveMonitor(hub, configuration);
         using var lifetime = new CancellationTokenSource();
+        var protocolOutput = new LocalSourceProtocolOutput(Console.OpenStandardOutput());
+        using var sourceReadPipe = options.Watch && Console.IsInputRedirected
+            ? new LocalSourceReadPipe(Console.OpenStandardInput(), protocolOutput.WriteLine)
+            : null;
+        using var monitor = new LiveMonitor(hub, configuration, readBackend: sourceReadPipe);
         ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
         {
             eventArgs.Cancel = true;
@@ -104,16 +110,16 @@ internal static class Program
         };
         Console.CancelKeyPress += cancelHandler;
         Task? parentWatch = null;
-        if (options.Watch && Console.IsInputRedirected)
+        if (sourceReadPipe is not null)
         {
-            parentWatch = WatchParentInputAsync(lifetime);
+            parentWatch = WatchSourcePipeAsync(sourceReadPipe.Start(), lifetime);
         }
 
         try
         {
             monitor.Start();
             var ready = await WaitForReadySnapshotAsync(firstReady.Task, lifetime.Token).ConfigureAwait(false);
-            WriteSnapshot(RuntimeSnapshotMapper.Map(ready, processSalt, enabled, responseEvents.Read()));
+            WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(ready, processSalt, enabled, responseEvents.Read()));
             if (!options.Watch)
             {
                 return;
@@ -122,12 +128,14 @@ internal static class Program
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
             while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
             {
-                WriteSnapshot(RuntimeSnapshotMapper.Map(latest.Read(), processSalt, enabled, responseEvents.Read()));
+                WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(latest.Read(), processSalt, enabled, responseEvents.Read()));
             }
         }
         finally
         {
             lifetime.Cancel();
+            monitor.Dispose();
+            sourceReadPipe?.Dispose();
             Console.CancelKeyPress -= cancelHandler;
             if (parentWatch is not null)
             {
@@ -157,38 +165,18 @@ internal static class Program
         throw new TimeoutException("The local Claude monitor did not publish its initial snapshot.");
     }
 
-    private static async Task WatchParentInputAsync(CancellationTokenSource lifetime)
+    private static async Task WatchSourcePipeAsync(Task pipeCompletion, CancellationTokenSource lifetime)
     {
-        var input = Console.OpenStandardInput();
-        var buffer = new byte[256];
-        try
+        await pipeCompletion.ConfigureAwait(false);
+        if (!lifetime.IsCancellationRequested)
         {
-            while (await input.ReadAsync(buffer, lifetime.Token).ConfigureAwait(false) > 0)
-            {
-                // The helper has no input protocol in watch mode; EOF is the parent's shutdown signal.
-            }
-
-            if (!lifetime.IsCancellationRequested)
-            {
-                lifetime.Cancel();
-            }
-        }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
-        {
-        }
-        catch (IOException)
-        {
-            if (!lifetime.IsCancellationRequested)
-            {
-                lifetime.Cancel();
-            }
+            lifetime.Cancel();
         }
     }
 
-    private static void WriteSnapshot(RuntimeSnapshot snapshot)
+    private static void WriteSnapshot(LocalSourceProtocolOutput output, RuntimeSnapshot snapshot)
     {
-        Console.Out.WriteLine(JsonSerializer.Serialize(snapshot, JsonOptions));
-        Console.Out.Flush();
+        output.WriteLine(JsonSerializer.SerializeToUtf8Bytes(snapshot, JsonOptions));
     }
 
     private static Options ParseArguments(string[] args)
@@ -311,6 +299,7 @@ internal static class Program
             throw new ArgumentException("Only local filesystem paths are supported.");
         }
 
+        LocalSourcePathPolicy.EnsureReadablePath(path);
         var fullPath = Path.GetFullPath(path);
         var current = Path.GetPathRoot(fullPath);
         if (string.IsNullOrEmpty(current))
@@ -358,7 +347,7 @@ internal static class Program
         && path[start + 1] == ':'
         && path[start + 2] is '\\' or '/';
 
-    private static void RunSelfTests()
+    private static async Task RunSelfTestsAsync()
     {
         const string input = """
             {
@@ -419,6 +408,13 @@ internal static class Program
         Require(!HasAllowedLocalRootPathSyntax(@"\\server\share"), "UNC path rejected");
         Require(!HasAllowedLocalRootPathSyntax("//server/share"), "slash UNC path rejected");
         Require(!HasAllowedLocalRootPathSyntax(@"\\?\C:relative"), "drive-relative verbatim path rejected");
+        Require(LocalSourcePathPolicy.IsLocalDriveType(2), "removable drives are local");
+        Require(LocalSourcePathPolicy.IsLocalDriveType(3), "fixed drives are local");
+        Require(LocalSourcePathPolicy.IsLocalDriveType(5), "CD-ROM drives are local and read-only");
+        Require(LocalSourcePathPolicy.IsLocalDriveType(6), "RAM disks are local");
+        Require(!LocalSourcePathPolicy.IsLocalDriveType(0), "unknown drives are rejected");
+        Require(!LocalSourcePathPolicy.IsLocalDriveType(1), "unmounted drives are rejected");
+        Require(!LocalSourcePathPolicy.IsLocalDriveType(4), "mapped network drives are rejected");
         try
         {
             StatuslineCache.Parse(new byte[StatuslineCache.MaximumInputBytes + 1]);
@@ -582,6 +578,7 @@ internal static class Program
         var withStaleIdle = sample with { Agents = sample.Agents.Append(staleIdle).ToArray() };
         var prunedIdle = RuntimeSnapshotMapper.Map(withStaleIdle, RandomNumberGenerator.GetBytes(32));
         Require(prunedIdle.MainAgents.Count == 1, "stale idle transcript removal");
+        await LocalSourceReadPipeSelfTests.RunAsync().ConfigureAwait(false);
 
         static void ExpectInvalid(string json)
         {

@@ -90,4 +90,8 @@ dotnet run --project tools/ActivityEngineProbe/ActivityEngineProbe.csproj \
   Tests/Fixtures/activity-model-attribution.json
 ```
 
-更多客户端显示仍由产品显式启用：DSH sessions、Gemini tmp（Mac 默认也覆盖 sandbox tmp）、OpenCode data。不能因为把 reader 导入就启用上游所有来源。Mac 和 Windows 的显示与上报都跟随应用保存的 Codex Home，以及已启用来源的 DSH/Gemini/OpenCode 自选根；Windows 的 `localSourceRoots` 只经启动 stdin 管道传递，不写入 HTTP 上报。报告过程仍需 opt-in，Claude deny-list 不变。Windows 两个进程的物理读取尚未统一，这不能写成已共享运行实例。
+更多客户端显示仍由产品显式启用：DSH sessions、Gemini tmp（Mac 默认也覆盖 sandbox tmp）、OpenCode data。不能因为把 reader 导入就启用上游所有来源。Mac 和 Windows 的显示与上报都跟随应用保存的 Codex Home，以及已启用来源的 DSH/Gemini/OpenCode 自选根；Windows 的 `localSourceRoots` 只经启动 stdin 管道传递，不写入 HTTP 上报。报告过程仍需 opt-in，Claude deny-list 不变。2026-10-28 已经本地有界管道接入同一个 Rust 物理读取缓存；计算 monitor/游标仍独立，不称为同一个计算实例。
+
+## 2026-10-28 物理读取适配
+
+来源锁现有 34 个本地适配，pin 不变。Swift IO 的五个入口经 vendor 外 `Sources/SharedSourceIO`；Windows Core 的定位读取经 vendor 外 `tools/AgentSpeedLocalIO/PositionedReadBackend.cs`，Reader/Reporter 共用 `tools/LocalSourceReadPipe.cs`，Rust 统一 `shared_source_io`。同步必须保留项目链接和有界二进制管道/根许可/128位文件身份/远程盘拒绝测试；纯本地校验探测仍绕过缓存，外部 SQLite 继续原生只读查询。不能将上游 tailer 原始读取恢复后仍声称物理读取已统一。完整边界见 [实现回执](2026-10-28-business-ledger-and-shared-io.md)。

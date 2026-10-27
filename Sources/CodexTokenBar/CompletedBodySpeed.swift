@@ -194,7 +194,7 @@ actor CompletedBodySpeedReader {
     private func boundary(_ handle: FileHandle, at offset: UInt64) throws -> Data {
         let count = min(offset, 128)
         try handle.seek(toOffset: offset - count)
-        return try handle.read(upToCount: Int(count)) ?? Data()
+        return try handle.readShared(upToCount: Int(count), probe: true)
     }
     func read(
         options: [LiveThreadOption],
@@ -232,7 +232,7 @@ actor CompletedBodySpeedReader {
                 if state.identity != identity || size < state.offset || changedBoundary {
                     state = State(); state.identity = identity
                     // Read only the header for ownership; do not scan inherited history.
-                    let head = try handle.read(upToCount: 64 * 1024) ?? Data()
+                    let head = try handle.readShared(upToCount: 64 * 1024, probe: true)
                     if let newline = head.firstIndex(of: 10),
                        let root = try? JSONSerialization.jsonObject(with: head[..<newline]) as? [String: Any],
                        let payload = root["payload"] as? [String: Any] { state.assembler.configure(metadata: payload) }
@@ -242,7 +242,7 @@ actor CompletedBodySpeedReader {
                 guard size > state.offset else { states[path] = state; continue }
                 try handle.seek(toOffset: state.offset)
                 let amount = min(budget, 8 * 1_048_576, Int(size - state.offset))
-                let data = try handle.read(upToCount: amount) ?? Data()
+                let data = try handle.readShared(upToCount: amount)
                 budget -= data.count
                 guard let last = data.lastIndex(of: 10) else {
                     // A corrupt giant line is skipped within the fixed budget, not retained forever.

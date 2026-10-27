@@ -1,3 +1,4 @@
+import Darwin
 import Sparkle
 import SwiftUI
 
@@ -16,6 +17,15 @@ struct CodexTokenBarApp: App {
 
     init() {
         TokenRateScaleSettings.initializeForV092()
+        do { try BusinessDatabaseMigration.startProduction() }
+        catch {
+            let alert = NSAlert()
+            alert.messageText = "账本升级尚未完成"
+            alert.informativeText = error.localizedDescription + "\n原始账本和备份已保留；本次没有启动新的业务写入器。"
+            alert.addButton(withTitle: "退出")
+            alert.runModal()
+            Darwin.exit(EXIT_FAILURE)
+        }
         let updaterController = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,

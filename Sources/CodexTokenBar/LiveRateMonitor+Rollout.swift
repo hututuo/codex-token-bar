@@ -71,7 +71,7 @@ extension LiveRateMonitor {
             )
         }
         try handle.seek(toOffset: readOffset)
-        let data = try handle.readToEnd() ?? Data()
+        let data = try handle.readToEndShared()
         guard !data.isEmpty else {
             return (
                 try rolloutReadState(
@@ -380,7 +380,7 @@ extension LiveRateMonitor {
         let tailByteCount = min(metadata.size, rolloutTurnContextBackscanByteLimit)
         let tailOffset = metadata.size - tailByteCount
         try handle.seek(toOffset: tailOffset)
-        let tailData = try handle.read(upToCount: Int(tailByteCount)) ?? Data()
+        let tailData = try handle.readShared(upToCount: Int(tailByteCount))
         let bytes = Array(tailData)
         let completeEnd: Int
         if bytes.last == 0x0A {
@@ -472,7 +472,7 @@ extension LiveRateMonitor {
     ) throws -> RolloutBoundarySignature {
         let requestedByteCount = min(offset, rolloutBoundarySignatureByteLimit)
         try handle.seek(toOffset: offset - requestedByteCount)
-        let data = try handle.read(upToCount: Int(requestedByteCount)) ?? Data()
+        let data = try handle.readShared(upToCount: Int(requestedByteCount))
         return RolloutBoundarySignature(
             sampledByteCount: data.count,
             sha256: Array(SHA256.hash(data: data))

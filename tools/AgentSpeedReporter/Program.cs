@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using AgentSpeed.Core;
+using CodexTokenBar.LocalSource;
 using AgentSpeed.Core.Reporting;
 
 namespace CodexTokenBar.AgentSpeedReporter;
@@ -32,11 +33,13 @@ internal static class Program
         }
 
         using var lifetime = new CancellationTokenSource();
-        var status = new StatusEmitter(output);
-        var parentWatch = StatusProtocol.WatchParentExitAsync(input, lifetime);
+        var protocolOutput = new LocalSourceProtocolOutput(output);
+        using var sourceReadPipe = new LocalSourceReadPipe(input, protocolOutput.WriteLine);
+        var status = new StatusEmitter(protocolOutput);
+        var parentWatch = WatchSourcePipeAsync(sourceReadPipe.Start(), lifetime);
         try
         {
-            await ReporterRuntime.RunAsync(start, status, lifetime.Token).ConfigureAwait(false);
+            await ReporterRuntime.RunAsync(start, status, sourceReadPipe, lifetime.Token).ConfigureAwait(false);
             return 0;
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
@@ -56,6 +59,7 @@ internal static class Program
         finally
         {
             lifetime.Cancel();
+            sourceReadPipe.Dispose();
             try
             {
                 await parentWatch.ConfigureAwait(false);
@@ -63,6 +67,15 @@ internal static class Program
             catch (OperationCanceledException)
             {
             }
+        }
+    }
+
+    private static async Task WatchSourcePipeAsync(Task pipeCompletion, CancellationTokenSource lifetime)
+    {
+        await pipeCompletion.ConfigureAwait(false);
+        if (!lifetime.IsCancellationRequested)
+        {
+            lifetime.Cancel();
         }
     }
 }
@@ -73,6 +86,7 @@ internal static class SelfTests
     {
         try
         {
+            await LocalSourceReadPipeSelfTests.RunAsync().ConfigureAwait(false);
             await DefaultOffDoesNotStartAsync().ConfigureAwait(false);
             await InvalidShortUsernameDoesNotStartAsync().ConfigureAwait(false);
             await InvalidSourcePolicyDoesNotStartAsync().ConfigureAwait(false);

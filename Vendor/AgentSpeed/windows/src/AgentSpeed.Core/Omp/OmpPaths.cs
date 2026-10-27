@@ -1,3 +1,5 @@
+using AgentSpeed.Core.IO;
+
 namespace AgentSpeed.Core.Omp;
 
 /// <summary>
@@ -69,6 +71,7 @@ internal static class OmpPaths
     {
         try
         {
+            LocalSourcePathPolicy.EnsureReadablePath(path);
             return new DirectoryInfo(path)
                 .EnumerateDirectories("*", new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = 0 })
                 .Where(d => (d.Attributes & FileAttributes.ReparsePoint) == 0)

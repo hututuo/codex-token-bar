@@ -1,6 +1,7 @@
 use crate::core::{
     app_paths, atomic_file,
     multi_client_product::{self, ProductDetection, QuotaProviderSnapshot},
+    shared_source_io::{probe_uncached, read_range, SourceReader},
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -1256,7 +1257,8 @@ fn scan_transcript_file(
     client: &str,
     path: &Path,
 ) -> Result<(), String> {
-    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    let source = fs::File::open(path).map_err(|error| error.to_string())?;
+    let metadata = source.metadata().map_err(|error| error.to_string())?;
     let source_modified_ns = modified_ns(&metadata);
     let path_key = path.to_string_lossy().to_string();
     let previous =
@@ -1269,7 +1271,8 @@ fn scan_transcript_file(
     if client == "deepseek" && lower_name.ends_with(".jsonl.zstd") {
         let modified = source_modified_ns as f64 / 1_000_000_000.0;
         let start = if let Some(saved) = &previous {
-            let identity = file_prefix_identity(path, saved.offset.min(4_096) as usize)?;
+            let identity =
+                file_prefix_identity_from_file(&source, saved.offset.min(4_096) as usize)?;
             if saved.fingerprint.as_deref() == Some(identity.as_str())
                 && saved.offset <= metadata.len()
                 && (saved.size != metadata.len() || saved.modified == modified)
@@ -1287,16 +1290,8 @@ fn scan_transcript_file(
         } else {
             0
         };
-        let mut source = fs::File::open(path).map_err(|error| error.to_string())?;
-        use std::io::{Seek, SeekFrom};
-        source
-            .seek(SeekFrom::Start(start))
-            .map_err(|error| error.to_string())?;
-        let mut chunk = Vec::new();
-        source
-            .take(4 * 1024 * 1024)
-            .read_to_end(&mut chunk)
-            .map_err(|error| error.to_string())?;
+        let chunk =
+            read_range(&source, start, 4 * 1024 * 1024).map_err(|error| error.to_string())?;
         let (decoded, consumed) = decode_dsh_frames(&chunk, 16 * 1024 * 1024)?;
         if consumed == 0 {
             if chunk.len() >= 4 * 1024 * 1024 {
@@ -1306,7 +1301,7 @@ fn scan_transcript_file(
         }
         let events = parse_deepseek(&decoded, path);
         let offset = start.saturating_add(consumed as u64);
-        let identity = file_prefix_identity(path, offset.min(4_096) as usize)?;
+        let identity = file_prefix_identity_from_file(&source, offset.min(4_096) as usize)?;
         persist_source_update(
             connection,
             client,
@@ -1324,7 +1319,7 @@ fn scan_transcript_file(
         let modified = source_modified_ns as f64 / 1_000_000_000.0;
         let start = if let Some(saved) = &previous {
             let width = saved.offset.min(4_096) as usize;
-            let identity = file_prefix_identity(path, width)?;
+            let identity = file_prefix_identity_from_file(&source, width)?;
             let unchanged_prefix = saved.fingerprint.as_deref() == Some(identity.as_str());
             if unchanged_prefix
                 && saved.offset <= metadata.len()
@@ -1343,16 +1338,8 @@ fn scan_transcript_file(
         } else {
             0
         };
-        let mut source = fs::File::open(path).map_err(|error| error.to_string())?;
-        use std::io::{Seek, SeekFrom};
-        source
-            .seek(SeekFrom::Start(start))
-            .map_err(|error| error.to_string())?;
-        let mut chunk = Vec::new();
-        source
-            .take(4 * 1024 * 1024)
-            .read_to_end(&mut chunk)
-            .map_err(|error| error.to_string())?;
+        let chunk =
+            read_range(&source, start, 4 * 1024 * 1024).map_err(|error| error.to_string())?;
         let Some(last_newline) = chunk.iter().rposition(|byte| *byte == b'\n') else {
             if chunk.len() >= 4 * 1024 * 1024 {
                 return Err("单条 JSONL 记录超过 4 MiB，断点未前移".into());
@@ -1362,7 +1349,7 @@ fn scan_transcript_file(
         let complete_len = last_newline + 1;
         let content = &chunk[..complete_len];
         let claude_file_client = if client == "claudeCode" || client == "claudeDesktop" {
-            Some(classify_claude_file(path)?)
+            Some(classify_claude_file(&source)?)
         } else {
             None
         };
@@ -1378,7 +1365,7 @@ fn scan_transcript_file(
             }
         };
         let offset = start.saturating_add(complete_len as u64);
-        let identity = file_prefix_identity(path, offset.min(4_096) as usize)?;
+        let identity = file_prefix_identity_from_file(&source, offset.min(4_096) as usize)?;
         persist_source_update(
             connection,
             client,
@@ -1399,8 +1386,8 @@ fn scan_transcript_file(
             MAX_SOURCE_FILE_BYTES / 1024 / 1024
         ));
     }
-    let raw = fs::read(path).map_err(|error| error.to_string())?;
-    let fingerprint = hex_digest(&raw);
+    let raw = read_all_cached(&source, metadata.len())?;
+    let fingerprint = uncached_content_identity(&source, metadata.len())?;
     if previous.as_ref().is_some_and(|checkpoint| {
         checkpoint.size == metadata.len()
             && checkpoint.modified == source_modified_ns as f64 / 1_000_000_000.0
@@ -1411,7 +1398,7 @@ fn scan_transcript_file(
     let content = raw;
     let events = match client {
         "claudeCode" | "claudeDesktop" => {
-            if classify_claude_bytes(&content) != client {
+            if classify_claude_file(&source)? != client {
                 Vec::new()
             } else {
                 parse_claude(&content, path, client)
@@ -1984,10 +1971,16 @@ fn parse_gemini(bytes: &[u8], path: &Path) -> Vec<UsageEvent> {
 /// source path and its bounded prefix fingerprint. The transcript itself is never cached or stored.
 fn deepseek_session_hint(path: &Path) -> String {
     let path_key = path.to_string_lossy().into_owned();
-    let size = fs::metadata(path)
+    let file = fs::File::open(path).ok();
+    let size = file
+        .as_ref()
+        .and_then(|file| file.metadata().ok())
         .map(|metadata| metadata.len())
         .unwrap_or(0);
-    let fingerprint = file_prefix_identity(path, size.min(4_096) as usize).unwrap_or_default();
+    let fingerprint = file
+        .as_ref()
+        .and_then(|file| file_prefix_identity_from_file(file, size.min(4_096) as usize).ok())
+        .unwrap_or_default();
     let cache = DEEPSEEK_SESSION_HINT_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
     if let Ok(cache) = cache.lock() {
         if let Some((_, _, session)) = cache.iter().find(|(cached_path, cached_fingerprint, _)| {
@@ -1997,7 +1990,10 @@ fn deepseek_session_hint(path: &Path) -> String {
         }
     }
 
-    let session = read_deepseek_header_id(path).unwrap_or_else(|| deepseek_path_session_hint(path));
+    let session = file
+        .as_ref()
+        .and_then(|file| read_deepseek_header_id(file, path))
+        .unwrap_or_else(|| deepseek_path_session_hint(path));
     if let Ok(mut cache) = cache.lock() {
         cache.retain(|(cached_path, _, _)| cached_path != &path_key);
         if cache.len() >= MAX_DEEPSEEK_SESSION_HINT_CACHE {
@@ -2008,13 +2004,8 @@ fn deepseek_session_hint(path: &Path) -> String {
     session
 }
 
-fn read_deepseek_header_id(path: &Path) -> Option<String> {
-    let mut file = fs::File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(4 * 1024 * 1024)
-        .read_to_end(&mut bytes)
-        .ok()?;
+fn read_deepseek_header_id(file: &fs::File, path: &Path) -> Option<String> {
+    let bytes = read_range(file, 0, 4 * 1024 * 1024).ok()?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -2169,12 +2160,46 @@ fn collect_opencode_json_rows(value: &Value, rows: &mut Vec<Value>, depth: usize
     }
 }
 
-fn file_prefix_identity(path: &Path, width: usize) -> Result<String, String> {
-    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut prefix = vec![0; width];
-    let read = file.read(&mut prefix).map_err(|error| error.to_string())?;
-    prefix.truncate(read);
-    Ok(format!("{}:{}", read, hex_digest(&prefix)))
+fn file_prefix_identity_from_file(file: &fs::File, width: usize) -> Result<String, String> {
+    let prefix = probe_uncached(file, 0, width).map_err(|error| error.to_string())?;
+    Ok(format!("{}:{}", prefix.len(), hex_digest(&prefix)))
+}
+
+fn read_all_cached(file: &fs::File, expected_size: u64) -> Result<Vec<u8>, String> {
+    let source = SourceReader::new(file).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::with_capacity(usize::try_from(expected_size).unwrap_or(0));
+    source
+        .take(MAX_SOURCE_FILE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 != expected_size {
+        return Err("源文件在读取期间发生变化，断点未前移".into());
+    }
+    Ok(bytes)
+}
+
+fn uncached_content_identity(file: &fs::File, size: u64) -> Result<String, String> {
+    let mut hash = Sha256::new();
+    let mut offset = 0u64;
+    while offset < size {
+        let count = (size - offset).min(4 * 1024 * 1024) as usize;
+        let bytes = probe_uncached(file, offset, count).map_err(|error| error.to_string())?;
+        if bytes.len() != count {
+            return Err("源文件在内容校验期间发生变化，断点未前移".into());
+        }
+        hash.update(&bytes);
+        offset += count as u64;
+    }
+    Ok(hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn classify_claude_file(file: &fs::File) -> Result<&'static str, String> {
+    let prefix = probe_uncached(file, 0, 64 * 1024).map_err(|error| error.to_string())?;
+    Ok(classify_claude_bytes(&prefix))
 }
 
 fn decode_dsh_frames(input: &[u8], maximum_decoded: usize) -> Result<(Vec<u8>, usize), String> {
@@ -2219,15 +2244,6 @@ fn decode_dsh_frames(input: &[u8], maximum_decoded: usize) -> Result<(Vec<u8>, u
         }
     }
     Ok((decoded[..committed_bytes].to_vec(), committed))
-}
-
-fn classify_claude_file(path: &Path) -> Result<&'static str, String> {
-    let file = fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut prefix = Vec::new();
-    file.take(64 * 1024)
-        .read_to_end(&mut prefix)
-        .map_err(|error| error.to_string())?;
-    Ok(classify_claude_bytes(&prefix))
 }
 
 fn classify_claude_bytes(bytes: &[u8]) -> &'static str {
@@ -3681,6 +3697,51 @@ mod tests {
             && !value.show_sidebar
             && !value.show_menu_bar
             && !value.show_quota));
+    }
+
+    #[test]
+    fn transcript_payload_uses_broker_and_uncached_identity_matches_source_bytes() {
+        let temporary = TempDir::new("shared-source-reader");
+        let path = temporary.path().join("session.json");
+        let bytes = br#"{"messages":[]}"#;
+        fs::write(&path, bytes).unwrap();
+        let file = fs::File::open(&path).unwrap();
+
+        assert_eq!(read_all_cached(&file, bytes.len() as u64).unwrap(), bytes);
+        assert_eq!(
+            uncached_content_identity(&file, bytes.len() as u64).unwrap(),
+            hex_digest(bytes)
+        );
+        assert_eq!(
+            file_prefix_identity_from_file(&file, 8).unwrap(),
+            format!("8:{}", hex_digest(&bytes[..8]))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transcript_read_failure_preserves_existing_checkpoint() {
+        let temporary = TempDir::new("read-failure-checkpoint");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let transcript = temporary.path().join("session.jsonl");
+        fs::write(&transcript, b"{}\n").unwrap();
+        let mut connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        scan_transcript_file(&mut connection, "gemini", &transcript).unwrap();
+        let before = read_checkpoint(&connection, "gemini", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
+
+        fs::remove_file(&transcript).unwrap();
+        fs::create_dir(&transcript).unwrap();
+        assert!(scan_transcript_file(&mut connection, "gemini", &transcript).is_err());
+        let after = read_checkpoint(&connection, "gemini", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.offset, before.offset);
+        assert_eq!(after.size, before.size);
+        assert_eq!(after.modified, before.modified);
+        assert_eq!(after.fingerprint, before.fingerprint);
     }
 
     #[test]

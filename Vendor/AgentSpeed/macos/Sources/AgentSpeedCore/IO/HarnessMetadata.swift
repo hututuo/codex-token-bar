@@ -1,3 +1,4 @@
+import SharedSourceIO
 import Darwin
 import Foundation
 
@@ -9,7 +10,7 @@ enum HarnessMetadata {
         guard let stat = FileStat.fstat(descriptor), stat.isRegularFile, stat.size >= 0, stat.size <= maxBytes else { return nil }
         var data = Data(count: Int(stat.size))
         let read = data.withUnsafeMutableBytes { bytes in
-            Darwin.pread(descriptor, bytes.baseAddress, bytes.count, 0)
+            SharedSourceIO.shared.pread(descriptor, into: bytes, offset: 0, probe: true)
         }
         guard read == data.count else { return nil }
         return try? JSONParser.parse(data)

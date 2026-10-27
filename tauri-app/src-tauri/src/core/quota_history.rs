@@ -7,8 +7,11 @@ use crate::models::{
 };
 #[cfg(test)]
 use crate::models::RecentUsagePoint;
-use rusqlite::backup::Backup;
-use rusqlite::{Connection, Result as SqlResult};
+#[cfg(test)]
+use rusqlite::{backup::Backup, Connection};
+#[cfg(not(test))]
+use crate::core::business_store_connection::StoreConnection as Connection;
+use rusqlite::Result as SqlResult;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -214,6 +217,7 @@ impl QuotaHistoryDatabase {
     fn default() -> Result<Self, String> {
         let path = database_path()
             .ok_or_else(|| "无法定位系统应用支持目录，不能读取额度历史".to_string())?;
+        #[cfg(test)]
         migrate_legacy_quota_history_if_needed(&path)
             .map_err(|error| format!("迁移 Tauri 额度历史失败：{error}"))?;
         Ok(Self { path })
@@ -243,7 +247,7 @@ impl QuotaHistoryDatabase {
             return Ok(false);
         };
         let _database_guard = quota_history_database_guard();
-        let mut connection = self.open()?;
+        let mut connection = self.open_for_identity(Some(identity))?;
         ensure_schema(&connection)?;
         maintain_if_due(&mut connection, now)?;
 
@@ -334,7 +338,7 @@ impl QuotaHistoryDatabase {
             return Ok(QuotaHistoryBundle::default());
         };
         let _database_guard = quota_history_database_guard();
-        let mut connection = self.open()?;
+        let mut connection = self.open_for_identity(Some(identity))?;
         ensure_schema(&connection)?;
         maintain_if_due(&mut connection, now_unix())?;
         let filter_row = QuotaHistoryRow::from_bundle(identity, bundle, now_unix());
@@ -357,7 +361,7 @@ impl QuotaHistoryDatabase {
         // Replay the complete retained identity timeline before choosing chart
         // ranges: a prior accepted baseline can precede the visible window.
         let local_rows = database::all_rows_for_row(connection, filter_row)?;
-        let peer_rows = self.read_peer_rows_for_identity(identity, f64::MAX);
+        let peer_rows = self.read_peer_rows_for_identity(identity, f64::MAX)?;
         Ok(merge_history_rows(local_rows, peer_rows))
     }
 
@@ -365,18 +369,63 @@ impl QuotaHistoryDatabase {
         &self,
         identity: &QuotaHistoryIdentity,
         age_seconds: f64,
-    ) -> Vec<QuotaHistoryRow> {
+    ) -> SqlResult<Vec<QuotaHistoryRow>> {
+        #[cfg(test)]
+        {
         let Some(peer_path) = app_paths::legacy_shared_quota_history_database_path() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         if peer_path == self.path || !peer_path.exists() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let Ok(connection) = sqlite::open_read_only(&peer_path, Duration::from_millis(250)) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        rows_since_for_read_only_peer(&connection, age_seconds, identity).unwrap_or_default()
+        return Ok(rows_since_for_read_only_peer(&connection, age_seconds, identity).unwrap_or_default());
+        }
+        #[cfg(not(test))]
+        {
+            let mut paths = vec![self.path.clone()];
+            if let Some(path) = app_paths::legacy_shared_quota_history_database_path() {
+                if path != self.path {
+                    paths.push(path);
+                }
+            }
+            let mut rows = Vec::new();
+            for path in paths {
+                let source_identity = crate::core::business_store_route::source_identity(
+                    "quota_history_legacy",
+                    &path,
+                )
+                .map_err(store_route_sql_error)?;
+                let logical_path = format!("legacy/quota-history/{source_identity}");
+                let connection = if path.is_file() {
+                    crate::core::business_store_route::open_store(
+                        "quota_history_legacy",
+                        &source_identity,
+                        &logical_path,
+                        &[path],
+                    )
+                    .map(Some)
+                } else {
+                    crate::core::business_store_route::open_registered_store(
+                        "quota_history_legacy",
+                        &source_identity,
+                        &logical_path,
+                    )
+                }
+                .map_err(store_route_sql_error)?;
+                if let Some(connection) = connection {
+                    rows.extend(rows_since_for_read_only_peer(
+                        &connection,
+                        age_seconds,
+                        identity,
+                    )?);
+                }
+            }
+            Ok(rows)
+        }
     }
 
     #[cfg(test)]
@@ -432,12 +481,46 @@ impl QuotaHistoryDatabase {
         self.history_rows_for_identity(&connection, identity, &filter_row, age_seconds)
     }
 
+    #[cfg(test)]
     fn open(&self) -> SqlResult<Connection> {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         sqlite::open_wal(&self.path, Duration::from_secs(3))
     }
+
+    fn open_for_identity(
+        &self,
+        identity: Option<&QuotaHistoryIdentity>,
+    ) -> SqlResult<Connection> {
+        #[cfg(test)]
+        {
+            let _ = identity;
+            self.open()
+        }
+        #[cfg(not(test))]
+        {
+            let identity = identity.ok_or(rusqlite::Error::InvalidQuery)?;
+            let source_identity = crate::core::business_store_route::source_identity(
+                "quota_history",
+                Path::new(&identity.home_identity),
+            )
+            .map_err(store_route_sql_error)?;
+            let logical_path = format!("quota-history/home/{source_identity}");
+            crate::core::business_store_route::open_store(
+                "quota_history",
+                &source_identity,
+                &logical_path,
+                &[],
+            )
+            .map_err(store_route_sql_error)
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn store_route_sql_error(error: String) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error)))
 }
 
 #[derive(Clone, Debug)]
@@ -1128,6 +1211,7 @@ fn database_path() -> Option<PathBuf> {
     app_paths::quota_history_database_path()
 }
 
+#[cfg(test)]
 fn migrate_legacy_quota_history_if_needed(path: &Path) -> SqlResult<()> {
     let _database_guard = quota_history_database_guard();
     if path.exists() {

@@ -134,7 +134,7 @@ actor MultiClientUsageScanner {
     private func deepSeekSession(_ url: URL, identity: String) throws -> String {
         if let cached = deepSeekContexts[url.path], cached.identity == identity { return cached.session }
         let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
-        let bytes = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+        let bytes = try handle.readShared(upToCount: 4 * 1024 * 1024)
         let decoded = url.pathExtension.lowercased() == "zstd" ? try MultiClientCompressedUsageReader.decode(bytes).data : bytes
         let fallback = url.lastPathComponent.hasPrefix("session.v") ? url.deletingLastPathComponent().lastPathComponent : url.deletingPathExtension().lastPathComponent
         let session = MultiClientUsageParsers.deepSeekHeaderSession(data: decoded) ?? fallback
@@ -184,7 +184,7 @@ actor MultiClientUsageScanner {
         if !isDatabase {
             let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
             let width = min(4096, max(0, saved?.offset ?? 0))
-            let prefix = try handle.read(upToCount: Int(width)) ?? Data()
+            let prefix = try handle.readShared(upToCount: Int(width), probe: true)
             let digest = SHA256.hash(data: prefix).map { String(format: "%02x", $0) }.joined()
             identity += ":" + String(width) + ":" + digest
         }
@@ -220,7 +220,7 @@ actor MultiClientUsageScanner {
             let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
             let start = saved.flatMap { $0.identity == identity && $0.offset <= size && ($0.size != size || $0.modified == modified) ? $0.offset : nil } ?? 0
             try handle.seek(toOffset: UInt64(start))
-            let bytes = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+            let bytes = try handle.readShared(upToCount: 4 * 1024 * 1024)
             let batch = try MultiClientCompressedUsageReader.decode(bytes)
             guard batch.consumed > 0 else {
                 if bytes.count >= 4 * 1024 * 1024 { throw ScanError.oversized }
@@ -230,13 +230,13 @@ actor MultiClientUsageScanner {
             offset = start + Int64(batch.consumed)
             try handle.seek(toOffset: 0)
             let width = min(4096, offset)
-            let prefix = try handle.read(upToCount: Int(width)) ?? Data()
+            let prefix = try handle.readShared(upToCount: Int(width), probe: true)
             checkpointIdentity = String(describing: attrs[.systemFileNumber] ?? "") + ":" + String(width) + ":" + SHA256.hash(data: prefix).map { String(format: "%02x", $0) }.joined()
         } else if url.pathExtension.lowercased() == "jsonl" {
             let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
             let start = saved.flatMap { $0.identity == identity && $0.offset <= size && ($0.size != size || $0.modified == modified) ? $0.offset : nil } ?? 0
             try handle.seek(toOffset: UInt64(start))
-            let bytes = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+            let bytes = try handle.readShared(upToCount: 4 * 1024 * 1024)
             guard let newline = bytes.lastIndex(of: 10) else {
                 if bytes.count >= 4 * 1024 * 1024 { throw ScanError.oversized }
                 return // Hold a partial trailing line; do not publish a checkpoint beyond it.
@@ -246,17 +246,17 @@ actor MultiClientUsageScanner {
             offset = start + Int64(complete.count)
             try handle.seek(toOffset: 0)
             let width = min(4096, offset)
-            let prefix = try handle.read(upToCount: Int(width)) ?? Data()
+            let prefix = try handle.readShared(upToCount: Int(width), probe: true)
             let digest = SHA256.hash(data: prefix).map { String(format: "%02x", $0) }.joined()
             checkpointIdentity = String(describing: attrs[.systemFileNumber] ?? "") + ":" + String(width) + ":" + digest
         } else {
             guard size <= 16 * 1024 * 1024 else { throw ScanError.oversized }
-            events = try MultiClientUsageParsers.parse(data: Data(contentsOf: url), client: client, sessionHint: sessionHint)
+            events = try MultiClientUsageParsers.parse(data: FileHandle.readSourceDocument(at: url, maximumBytes: 16 * 1024 * 1024), client: client, sessionHint: sessionHint)
             offset = size
             let prefix = try FileHandle(forReadingFrom: url)
             defer { try? prefix.close() }
             let width = min(4096, size)
-            let bytes = try prefix.read(upToCount: Int(width)) ?? Data()
+            let bytes = try prefix.readShared(upToCount: Int(width), probe: true)
             checkpointIdentity = String(describing: attrs[.systemFileNumber] ?? "") + ":" + String(width) + ":" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         }
         _ = try ledger.ingest(events, client: client, sourceKey: key,

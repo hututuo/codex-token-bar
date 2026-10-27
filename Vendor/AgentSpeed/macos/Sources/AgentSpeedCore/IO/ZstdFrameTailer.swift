@@ -1,3 +1,4 @@
+import SharedSourceIO
 import CZstd
 import Darwin
 import Foundation
@@ -120,7 +121,7 @@ struct ZstdFrameTailer: Sendable {
         pending.append(contentsOf: repeatElement(0, count: count))
         let offset = self.offset
         let read = pending.withUnsafeMutableBytes { buffer in
-            Darwin.pread(descriptor, buffer.baseAddress! + previous, count, off_t(offset))
+            SharedSourceIO.shared.pread(descriptor, into: UnsafeMutableRawBufferPointer(start: buffer.baseAddress! + previous, count: count), offset: offset)
         }
         pending.removeLast(count - max(read, 0))
         return read
