@@ -1574,6 +1574,42 @@ button {
   grid-template-columns: 74px minmax(384px, 2.7fr) minmax(116px, 0.72fr) minmax(320px, 1.45fr);
 }
 
+/* Keep the original quota tracks and account tools in one surface. Windows
+   wrap within their client row instead of squeezing every client into a rail. */
+.quota-strip.quota-strip--clients {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding: 10px 12px;
+}
+.quota-client-rows { display: grid; gap: 12px; min-width: 0; }
+.quota-client-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: start; gap: 12px; min-width: 0; }
+.quota-client-label { display: grid; gap: 4px; min-width: 0; padding-top: 3px; }
+.quota-client-label strong { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: var(--weight-semibold); }
+.quota-client-label i { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+.quota-client-label span { color: var(--muted); font-size: 9px; }
+.quota-client-windows { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 10px 12px; min-width: 0; }
+.quota-client-window { min-width: 0; }
+.quota-client-empty { margin: 3px 0; color: var(--muted); font-size: 11px; }
+.quota-strip.quota-strip--tools {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 10px 0 0;
+  min-height: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  gap: 8px;
+}
+.quota-strip--tools > .quota-plan { grid-column: auto; flex: 1 0 84px; }
+.quota-strip--tools > .quota-reset-card { flex: 0 0 154px; }
+.quota-strip--tools > .quota-pace { grid-column: auto; flex: 0 1 348px; min-width: 0; margin-left: auto; }
+.quota-strip--tools > .quota-read-warning { flex: 0 0 100%; }
+.quota-strip--clients:has(.quota-strip--details-open) { z-index: 24; }
+
 .quota-plan {
   display: flex;
   flex-direction: column;

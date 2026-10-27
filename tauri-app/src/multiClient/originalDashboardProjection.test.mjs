@@ -30,7 +30,7 @@ test('client fee scopes retain the original six metrics and model chips',async()
 }));
 test('client quota reuses original quota bars without the Codex attribution owner',async()=>withSsrModules(async load=>{
  const {QuotaStrip}=await load('/src/components/QuotaStrip.tsx');const html=renderToStaticMarkup(React.createElement(QuotaStrip,{clientItems:[{id:'claudeCode:5h',client:'claudeCode',window:'5h',remaining:62,resetsAt:null,status:'',source:'模拟'}]}));
- assert.match(html,/class="quota-strip"/);assert.match(html,/class="quota-bar"/);assert.match(html,/62%/);assert.doesNotMatch(html,/重置卡|官方直连/);
+ assert.match(html,/class="quota-strip quota-strip--clients"/);assert.match(html,/class="quota-bar"/);assert.match(html,/62%/);assert.doesNotMatch(html,/重置卡|官方直连/);
 }));
 
 test('dashboard keeps free review separate with its own reference price and unchanged raw rows',async()=>withSsrModules(async load=>{

@@ -142,19 +142,24 @@ test("monitoring settings own the default-on attribution, tier and shared price-
 });
 
 test("Radar attribution only subscribes to the existing shared client and precise readiness is explicit", async () => {
-  const [hook, summary, dashboardData] = await Promise.all([
+  const [hook, summary, dashboardData, page] = await Promise.all([
     readFile(new URL("../../api/useSubscribedCodexRadarSnapshot.ts", import.meta.url), "utf8"),
     readFile(new URL("../../pages/dashboard/DashboardSummarySection.tsx", import.meta.url), "utf8"),
     readFile(new URL("../../state/useDashboardData.ts", import.meta.url), "utf8"),
+    readFile(new URL("../../pages/DashboardPage.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(hook, /subscribeCodexRadarState/);
   assert.doesNotMatch(hook, /readCodexRadarState|fetch\(/);
-  assert.match(summary, /dashboard\.preciseRecentUsageCoveredAt/);
-  assert.match(summary, /dashboard\.preciseRecentUsageFresh === true/);
+  assert.match(page, /quotaDashboard=\{dashboard\}/);
+  assert.match(page, /dashboard=\{displayDashboard\}/);
+  assert.match(summary, /const quotaData = quotaDashboard \?\? dashboard/);
+  assert.match(summary, /quotaData\.preciseRecentUsageCoveredAt/);
+  assert.match(summary, /quotaData\.preciseRecentUsageFresh === true/);
   assert.doesNotMatch(summary, /usagePrecisionWarnings/);
-  assert.match(summary, /dashboard\.attributionIdentity/);
-  assert.match(summary, /dashboard\.quotaUpdatedAt/);
+  assert.match(summary, /attributionIdentity=\{quotaData\.attributionIdentity/);
+  assert.match(summary, /quotaUpdatedAt=\{quotaData\.quotaUpdatedAt/);
+  assert.match(summary, /recentUsage24h=\{quotaData\.recentUsage24h\}/);
   assert.match(dashboardData, /advanceQuotaComparisonObservation/);
   assert.match(dashboardData, /comparison\.shouldRefreshPreciseUsage/);
   assert.doesNotMatch(dashboardData, /quotaTimestampChanged/);

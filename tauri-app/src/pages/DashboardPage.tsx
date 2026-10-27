@@ -224,7 +224,8 @@ export function DashboardPage({
   threadDeleteBridgeStatus,
 }: DashboardPageProps) {
   const clientScope = useClientScope();
-  const { items: clientQuotaItems } = useClientQuotaItems(dashboard.quota);
+  // Dashboard quota must not inherit the sidebar's hidden-window choices.
+  const { catalog: clientQuotaItems } = useClientQuotaItems(dashboard.quota);
   const displayDashboard = useMemo(() => projectOriginalDashboard(dashboard, clientScope.snapshot, clientScope.allowed), [dashboard, clientScope.snapshot, clientScope.allowed.join(",")]);
   const displayCosts = useMemo(() => clientScope.codexOnly ? undefined : clientCostPeriods(dashboard, clientScope.snapshot, clientScope.allowed), [dashboard, clientScope.snapshot, clientScope.allowed.join(",")]);
   const [sharedAccountAttribution, setSharedAccountAttribution] = useState<SharedAccountAttributionResult | null>(null);
@@ -270,6 +271,7 @@ export function DashboardPage({
         clientCosts={displayCosts}
         clientQuotaItems={clientScope.codexOnly ? undefined : clientQuotaItems}
         includesCodex={clientScope.allowed.includes("codex")}
+        quotaDashboard={dashboard}
               sourceToken={sourceToken}
               dashboard={displayDashboard}
               displaySurfaces={displaySurfaces}

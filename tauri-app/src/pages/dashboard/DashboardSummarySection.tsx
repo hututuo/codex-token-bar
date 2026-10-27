@@ -23,6 +23,7 @@ interface DashboardSummarySectionProps {
   includesCodex?: boolean;
   sourceToken?: CodexHomeSourceToken | null;
   dashboard: DashboardSnapshot;
+  quotaDashboard?: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
   quotaRefreshIntervalMs: number;
@@ -62,6 +63,7 @@ export function DashboardSummarySection({
   clientCosts,
   clientQuotaItems,
   includesCodex = true,
+  quotaDashboard,
   sourceToken = null,
   dashboard,
   displaySurfaces,
@@ -99,37 +101,39 @@ export function DashboardSummarySection({
   const latestTodayTokens = dashboard.usageSummary?.todayTokens ?? 0;
   const latestTodayModels = dashboard.usageSummary?.todayModelBreakdowns ?? [];
   const scope = useClientScope();
+  const quotaData = quotaDashboard ?? dashboard;
   return (
     <>
       {!speedOnly && <>
       <QuotaStrip
         clientItems={clientQuotaItems}
-        attributionIdentity={dashboard.attributionIdentity ?? null}
-        diagnostics={dashboard.diagnostics}
+        includesCodex={includesCodex}
+        attributionIdentity={quotaData.attributionIdentity ?? null}
+        diagnostics={quotaData.diagnostics}
         onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
         onAttributionSafetyAcknowledge={onAttributionSafetyAcknowledge}
         onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
         onAttributionChange={onAttributionChange}
         onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
         onRetryQuotaRefresh={onQuotaRefresh}
-        preciseDataAvailable={dashboard.preciseRecentUsageCoveredAt !== null
-          && dashboard.preciseRecentUsageCoveredAt !== undefined}
-        preciseDataCoveredAt={dashboard.preciseRecentUsageCoveredAt ?? null}
-        preciseDataFresh={dashboard.preciseRecentUsageFresh === true}
-        preciseObserverEpoch={dashboard.preciseObserverEpoch ?? null}
-        preciseObserverStartedAtUnixMicros={dashboard.preciseObserverStartedAtUnixMicros ?? null}
-        preciseObserverSequence={dashboard.preciseObserverSequence ?? null}
-        preciseAttributionProvenanceEpoch={dashboard.preciseAttributionProvenanceEpoch ?? null}
-        preciseAttributionGeneration={dashboard.preciseAttributionGeneration ?? null}
-        preciseAttributionUnsafeSinceGeneration={dashboard.preciseAttributionUnsafeSinceGeneration ?? null}
-        preciseAttributionUnsafeID={dashboard.preciseAttributionUnsafeId ?? null}
-        preciseAttributionCurrentScanUnsafe={dashboard.preciseAttributionCurrentScanUnsafe === true}
-        quotaUpdatedAt={dashboard.quotaUpdatedAt ?? null}
+        preciseDataAvailable={quotaData.preciseRecentUsageCoveredAt !== null
+          && quotaData.preciseRecentUsageCoveredAt !== undefined}
+        preciseDataCoveredAt={quotaData.preciseRecentUsageCoveredAt ?? null}
+        preciseDataFresh={quotaData.preciseRecentUsageFresh === true}
+        preciseObserverEpoch={quotaData.preciseObserverEpoch ?? null}
+        preciseObserverStartedAtUnixMicros={quotaData.preciseObserverStartedAtUnixMicros ?? null}
+        preciseObserverSequence={quotaData.preciseObserverSequence ?? null}
+        preciseAttributionProvenanceEpoch={quotaData.preciseAttributionProvenanceEpoch ?? null}
+        preciseAttributionGeneration={quotaData.preciseAttributionGeneration ?? null}
+        preciseAttributionUnsafeSinceGeneration={quotaData.preciseAttributionUnsafeSinceGeneration ?? null}
+        preciseAttributionUnsafeID={quotaData.preciseAttributionUnsafeId ?? null}
+        preciseAttributionCurrentScanUnsafe={quotaData.preciseAttributionCurrentScanUnsafe === true}
+        quotaUpdatedAt={quotaData.quotaUpdatedAt ?? null}
         quotaRefreshIntervalMs={quotaRefreshIntervalMs}
-        recentUsage24h={dashboard.recentUsage24h}
-        snapshot={dashboard.quota}
+        recentUsage24h={quotaData.recentUsage24h}
+        snapshot={quotaData.quota}
         sourceHomeIdentity={sourceHomeIdentity}
-        warnings={dashboard.warnings}
+        warnings={quotaData.warnings}
       />
       <StatsStrip
         clientCosts={clientCosts}
