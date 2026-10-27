@@ -1,410 +1,138 @@
-# Codex Token Bar
+<p align="center"><img src="Assets/showcase/icon.png" width="80" alt="Codex Token Bar"></p>
+<h1 align="center">Codex Token Bar</h1>
+<p align="center"><b>专注写代码。额度和进度，一眼有数。</b></p>
+<p align="center">多种显示方式 · 官方额度 · 缓存提醒 · 用量趋势 · 模型 TPS</p>
+<p align="center">简体中文 · <a href="README.en.md">English</a></p>
+<p align="center"><a href="https://github.com/hututuo/codex-token-bar/releases/latest">下载最新版</a> · <a href="#安装">安装说明</a> · <a href="#完整工作台">完整功能</a> · <a href="docs/DEVELOPMENT.md">开发与打包</a></p>
 
-> **历史设计参考：缓存间隔诊断（2026-10-14 / v7）**
-> [动态 P95＋明显下降点规范](docs/design/cache-retention-dynamic-p95-drop.md)与[合成示意](docs/design/assets/cache-retention-dynamic-synthetic.svg)作为历史设计保留。过渡期恢复可关闭的低缓存命中提醒；续问时限建议、间隔图及其额外扫描链路仍停用。缓存统计和费用账本保留。
-> Historical design only: optional low-cache reminders are restored for the transition period. Follow-up timing recommendations, interval charts and their extra scanner remain inactive. Cache accounting and the cost ledger remain available.
+Codex 在干活，额度还剩多少、哪几个任务在跑、缓存有没有命中、模型输出有多快？**Token Bar 把这些信息放在余光里，需要时再展开。**
 
-简体中文 | [English](#english)
+macOS 使用 Swift / SwiftUI 原生实现；Windows 提供 Tauri + React + Rust 的 x64 / ARM64 版本。用量与正文统计在本地处理，支持多个会话并行使用。
 
-<table align="center">
-  <tr>
-    <td align="center" width="180">
-      <img src="Assets/AppIcon.png" width="112" alt="Codex Token Bar app icon"><br>
-      <strong>Codex Token Bar</strong>
-    </td>
-    <td align="center" width="280">
-      <img src="Assets/wechat-group-qr.jpeg" width="220" alt="HTT 的仓库交流群二维码"><br>
-      欢迎扫码加入群聊，讨论使用问题、交流想法，也会发布产品发布和更新通知。
-    </td>
-  </tr>
-</table>
+## 不用切回主窗口，也知道发生了什么
 
-Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机 Codex 日志、账号接口和 Codex 雷达站，显示 token 用量、实时输出速度、缓存命中率、官方实际提供的额度窗口、推荐模型、IQ 趋势和重置卡详情。
+**侧边栏、悬浮窗、菜单栏／托盘、主界面，选你顺手的显示方式。** 官方额度监控直接融入这些显示面，无需反复打开账号页面。
 
-当前有两条正式实现线：
+<p align="center"><img src="Assets/showcase/displays.gif" alt="同一桌面中展示贴边色条、悬停速览、额度详情、左右停靠和悬浮窗" width="100%"></p>
 
-- macOS：Swift / SwiftUI 原生版，继续作为 macOS 主版本发布。
-- Windows：Tauri + React / TypeScript + Rust 版，分别提供 x64 和 ARM64 安装包。
+| 显示方式 | 怎么用 |
+|---|---|
+| 贴边侧栏 | 左右停靠、自动吸附、记住位置；平时是一条色条，悬停查看概要，点击查看完整详情。 |
+| 桌面悬浮窗 | 把速率、用量、任务、模型占比和额度放在桌面一角；可拖动，调整内容、顺序、配色、字号和透明度。 |
+| 菜单栏／托盘 | 主窗口收起后仍有状态入口，随时返回仪表盘；具体外观和可配置项随平台而异。 |
+| 主界面 | 用量、额度、图表、缓存排行、模型速度和会话管理集中查看。 |
 
-<p align="center">
-  <img src="Assets/DashboardPreview.png" alt="Codex Token Bar 主界面截图" width="100%">
-</p>
+**官方额度与使用节奏一起看：**按账号实际提供的窗口显示 5h／7d 剩余和重置时间；接口提供 Reserve 时单独展示。额度条上的白线是均匀使用参考，帮助判断当前消耗节奏。重置卡可查看接口提供的数量、来源和到期信息，仅展示，不自动兑换。
 
-<p align="center">
-  <img src="Assets/FloatingPanelPreview.png" alt="悬浮实时 token 速率窗口" width="420">
-</p>
+## 额度花在哪，沿着时间线看清楚
 
-<p align="center">
-  <img src="Assets/ResetCreditDetailPreview.png" alt="重置卡详情截图" width="32%">
-  <img src="Assets/CodexRadarDetailPreview.png" alt="Codex 雷达详情截图" width="32%">
-  <img src="Assets/ActivityChartPreview.png" alt="最近 24 小时 token 活动截图" width="32%">
-</p>
+**刚才用了多少？今天哪段最密集？选一段时间，对照本地用量与额度变化。**
 
-## 亮点
+<p align="center"><img src="Assets/showcase/usage.gif" alt="原程序用量图表切换 24 小时、7 天、30 天范围" width="100%"></p>
 
-- 全会话实时活动速率，支持主界面、悬浮窗和状态栏/托盘读数；中断即停、结束最多收尾5秒。
-- 正文 TPS：按本地消息时间和正文分词量计算，展示会话、模型、时间和可信度；主页显示最近6条，详情查看历史，侧栏显示各模型最新及15/30分钟速度。
-- 历史账本保留：会话归档、移动或删除后继续保留已记录用量；fork后自有新增轮次正常统计。恢复可关闭的低命中提醒；续问时限建议仍在保留分支，缓存统计、排行、命中率图和费用账本继续提供。
-- 安全自动续跑：先选项目和精确会话，再按间隔、每日时间、额度恢复或服务器容量中断发送一次“继续”；默认关闭，不代替用户批准权限或回答人工输入。
-- 会话增强：支持侧栏删除、Markdown 导出、移动到项目、会话 ID、粘贴修复、阅读宽度和滚动位置恢复，并保留 Codex++ 的 AGPL-3.0 归属。
-- Codex 实例：在 Swift 与跨平台设置中创建或登记隔离实例，独立使用 Codex Home 和桌面数据目录，支持精确启停、严格前缀会话同步、分歧保留、自动同步和校验回滚。
-- 双雷达：官方 Radar 显示建议动作、24h / 48h 概率和模型 IQ；众测雷达显示公开众测前三名、覆盖情况和完整排行，并对字段包装、别名和局部坏数据做兼容。
-- 速蹬窗口：把雷达建议、模型 IQ、当前可用额度窗口和本地实时速度放进一个可配置的小窗口。
-- 年度 token 热力图、最近 24 小时 5 分钟粒度曲线、缓存命中率曲线和缓存排行。
-- Codex 额度按官方实际窗口自适应：只提供 7d 时只显示 7d，同时提供 5h / 7d 时才显示两条，并保留本地轻量历史、雷达站额度预估和节奏提示。
-- 官方额度：读取当前 Codex 登录对应的额度；接口返回 Reserve 储备窗口时单独展示其额度和重置时间。
-- 重置卡详情：显示可用重置机会、每张卡的来源、关联用户、到期时间、剩余时间和卡片编号。
-- 本地优先：读取 `~/.codex` 本地数据，不上传 prompt、输出、日志或账号额度。
+- **24 小时 / 7 天 / 30 天趋势**：24 小时按 5 分钟分桶；切换 token、调用、缓存命中率、API 等值费用和额度曲线。
+- **悬停、横向浏览、区间汇总**：回看某段工作的用量、模型构成和额度变化；按同周期数据反推额度容量，作为使用参考。
+- **365 天活动热力图**：查看每日、每周、累计、模型占比、模型费用、缓存命中和额度剩余；点击两个日期汇总区间。
+- **按模型和 token 构成拆开看**：输入、缓存输入、输出分别统计，缓存包含在输入中。
 
-## 平台版本
+<p align="center"><img src="Assets/showcase/heatmap.png" alt="年度 Token 活动热力图" width="100%"></p>
 
-| 平台 | 实现 | 发布资产 | 说明 |
-|---|---|---|---|
-| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.9.7-macos-arm64.dmg` | 当前 macOS 稳定线，带 Sparkle 更新检查。 |
-| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.9.7-windows-x64-setup.exe` | 面向 Intel / AMD Windows 10/11，带 Tauri 自动更新。 |
-| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.9.7-windows-arm64-setup.exe` | 面向 Windows on ARM，带 Tauri 自动更新；安装器进程可能经模拟运行，但 App 二进制是 ARM64。 |
+官方剩余额度、使用节奏参考和 API 等值费用分别标示。**API 等值是按已知模型价格计算的参考值，不是订阅实际扣费**；缺少价格时会显示已知小计或待读取。
 
-## 为什么
+## 额度突然跑得快？先看这次缓存
 
-Codex 的本地日志里已经有很多有用信息，但平时很难快速看清“今天用了多少”“现在输出多快”“缓存是不是命中”“额度够不够烧”。Codex Token Bar 把这些本地数据整理成一个轻量 dashboard，并提供一个不挡视线的小悬浮窗。
+换了模型、思考强度或上下文后，如果本次请求缓存复用偏低，**侧栏会主动提醒，显示命中率和相关会话。** 看一眼，再决定是否检查刚才的操作。
 
-## 特色：Codex 雷达站
+<p align="center"><img src="Assets/showcase/cache-reminder.gif" alt="切换思考强度、开启 Fast、发送消息后，左侧弹出低缓存命中提醒的演示" width="100%"></p>
+<p align="center"><a href="Assets/showcase/cache-reminder.mp4">播放有音效的完整演示（12 秒）</a></p>
 
-Codex Token Bar 可以读取 [codexradar.com](https://codexradar.com/) 提供的 JSON 订阅，把雷达站信息整理进主界面和悬浮窗。你可以直接看到当前建议动作、24h / 48h 概率、今日主模型、IQ 分数、其他模型对比、Plus / 5x Pro / 20x Pro 的 5h 与 7d 预估额度，以及带曲线和表格的详细信息。
+提醒可关闭；新上下文首次请求豁免。按实际返回的 token 用量判断，**不按等待时间判断缓存失效**。模型、强度或上下文变化只是可能的排查方向，低命中本身不能确定原因。
 
-默认每 10 分钟刷新一次。雷达数据来自公开订阅，主界面会标明 `Codex 雷达 codexradar.com` 作为来源。
+主界面还可按会话或单轮查看缓存排行、命中与未命中 token，搜索、筛选并追到具体上下文。
 
-## 特色：重置卡详情
+## 现在在忙什么，哪个模型输出更快
 
-Codex Token Bar 使用当前 Codex 登录凭据，直接读取官方账号接口，把“重置机会 / 重置卡”展示成可读详情。你可以看到当前有几张可用重置卡、每张卡为什么发放、关联到谁、明确的到期日期、还剩多久到期和卡片编号。
+**实时活动曲线看进度，正文 TPS 比较模型。** 侧栏显示近 30 分钟内各模型最新合格读数，详情补充近 15 / 30 分钟均速。
 
-这个功能是只读的：应用只展示信息，不会调用消耗重置卡的接口，也不会上传账号额度或会话内容。
+<p align="center"><img src="Assets/showcase/body-tps.png" alt="各模型正文 TPS、近 15/30 分钟均速与最近六条样本" width="100%"></p>
+
+| 指标 | 它告诉你什么 |
+|---|---|
+| 实时活动速率 | 汇总多个会话的本地活动估算，展示工作节奏；识别到中断时停止，正常完成后最多收尾 5 秒。 |
+| 正文 TPS | 已完成助手正文的本地分词量 ÷ 日志起止时长，包含中间消息和最终文本。展示最新读数、模型均速与可追溯样本。 |
+
+主界面显示最近 6 条；查看详情可定位**采样时间、会话、轮次、正文 ID、正文类型、token 数、时长、TPS 和置信度**。短计时、计时不一致和异常速率等样本保留原因，不参与模型均速。
+
+正文 TPS 可能包含网络等待，不能当作服务器纯生成速度；隐藏思考和工具返回不作为正文测速样本。实时曲线也不作为实测速度记录。
+
+## 完整工作台
+
+| 还可以做什么 | 功能 |
+|---|---|
+| 查看并行工作 | 主会话与子 Agent、模型和思考强度；任务完成和未读反馈。 |
+| 追踪历史账本 | 已入账的用量在会话归档、移动、删除后保留；fork 后新增轮次继续统计，压缩／未压缩来源避免重复记账。 |
+| 查看参考信息 | 官方 Radar 的建议和趋势、社区 RadarBench 的排行与覆盖情况；第三方数据标明来源和状态。 |
+| 管理会话 | 搜索、归档、恢复归档；创建、校验、导出恢复包；永久删除前核对影响范围并备份。 |
+| 改善会话体验 | Markdown 导出、项目移动、ID 显示、粘贴修复、阅读宽度和滚动位置恢复等可选增强。 |
+| 管理独立实例 | 创建或登记独立 Codex Home 与桌面数据目录；启动、停止、配置与会话同步，分歧保留和校验回滚。 |
+| 配置自动续跑 | 指定精确会话，按间隔、每日时间、额度恢复或特定失败条件续跑，设置冷却和每日次数限制。默认关闭。 |
+| 自定义桌面 | 浮窗内容、排序、配色、字号、透明度、完成提示，以及显示面开关。 |
+
+自动续跑的“自动批准普通操作”为独立选项，默认关闭；危险操作、额外权限、人工输入和未知请求仍拦截。旧 Codex 侧栏直接删除入口已停用，删除请使用 Token Bar 的会话管理流程。
+
+**交互展示页：**仓库同时提供 [完整展示页源码](docs/showcase/index.html)。本地运行 `python3 -m http.server 8080` 后打开 `http://127.0.0.1:8080/docs/showcase/`，可直接操作原程序组件，包括侧栏展开、左右停靠、完整详情、悬浮窗分页、图表图例和时间范围。
+
+上方显示方式、用量图和正文 TPS 使用作者授权公开的本机真实统计快照，采集时间见画面，不是实时监控或模型性能基准。界面使用跨平台原组件与原样式；缓存宣传片单独使用模拟情境，Bar 提醒为原生渲染。素材来源与重建方法见 [展示制作说明](docs/showcase/README.md)。
 
 ## 安装
 
-推荐从 [GitHub Releases](https://github.com/hututuo/codex-token-bar/releases/latest) 下载对应平台的安装包。
+从 [GitHub Releases](https://github.com/hututuo/codex-token-bar/releases/latest) 下载对应平台安装包和同版本 `SHA256SUMS`。
 
-### macOS
+| 平台 | 安装包 | 要求 |
+|---|---|---|
+| macOS Apple Silicon | `CodexTokenBar-v0.9.7-macos-arm64.dmg` | macOS 14+；打开 DMG，拖到 Applications。 |
+| Windows x64 | `CodexTokenBar-v0.9.7-windows-x64-setup.exe` | Intel / AMD Windows 10/11。 |
+| Windows ARM64 | `CodexTokenBar-v0.9.7-windows-arm64-setup.exe` | Windows on ARM，应用二进制为 ARM64。 |
 
-1. 下载 `CodexTokenBar-v0.9.7-macos-arm64.dmg` 和 `SHA256SUMS-v0.9.7.txt`。
-2. 可选校验：
+可选校验：
 
 ```bash
+# macOS：与同版本 SHA256SUMS 中的值比较
 shasum -a 256 CodexTokenBar-v0.9.7-macos-arm64.dmg
-cat SHA256SUMS-v0.9.7.txt
 ```
 
-3. 打开 DMG，把 `Codex Token Bar.app` 拖到 Applications。
+```powershell
+# Windows：与同版本 SHA256SUMS 中的值比较
+Get-FileHash .\CodexTokenBar-v0.9.7-windows-x64-setup.exe -Algorithm SHA256
+```
 
-macOS 构建是 ad-hoc 签名，尚未 Apple notarize。首次打开如果提示“未知开发者”：系统设置 -> 隐私与安全 -> 找到 `Codex Token Bar` -> 点“仍要打开” -> 确认“打开”。
+macOS 目前为 ad-hoc 签名，尚未公证。首次打开如提示未知开发者，可在“系统设置 → 隐私与安全”中确认“仍要打开”。Windows 暂无商业代码签名，SmartScreen 可能提示未知发布者；请从本仓库 Release 下载。缺少 WebView2 Runtime 时，安装器按默认策略处理。
 
-备用一行安装方式：
+macOS 也可用以下命令安装最新版并替换已有应用：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/install.sh | bash
 ```
 
-### Windows
+macOS 使用 Sparkle，Windows 使用独立的 Tauri 更新通道；默认每 4 小时检查，确认后安装。更新失败时可下载同架构安装包覆盖安装，保留本地历史数据。
 
-1. Windows x64 下载 `CodexTokenBar-v0.9.7-windows-x64-setup.exe`。
-2. Windows ARM64 下载 `CodexTokenBar-v0.9.7-windows-arm64-setup.exe`。
-3. 可选校验：
+## 数据与常见问题
 
-```powershell
-Get-FileHash .\CodexTokenBar-v0.9.7-windows-x64-setup.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS-v0.9.7.txt
-```
+- **数据从哪来？** 本机 Codex Home 中的 `sessions/` 提供用量和轮次，SQLite 元数据补充会话信息；Token Bar 保留自己的本地统计索引。额度与重置卡通过本机官方 Codex app-server 读取，由 Codex 处理网络与鉴权。
+- **会上传对话吗？** 应用不上传 prompt、输出、会话日志或账号额度。额度查询和第三方雷达需要联网；雷达参考与本地统计分开标示。
+- **为什么没有 5h / Reserve？** 只展示账号接口实际返回的窗口，不补造额度。
+- **额度读不到怎么办？** 先确认 Codex 已登录且可正常访问账号。使用应用中的诊断信息反馈具体版本、平台和报错。
+- **删除会话会删掉统计吗？** 已入账的历史统计保留；从未被读取、且源文件已经丢失的用量无法凭空恢复。
+- **还有续问时限建议吗？** 该建议、缓存间隔图和额外扫描仍隔离停用；缓存统计、提醒与费用账本保留。[历史设计](docs/design/cache-retention-dynamic-p95-drop.md)仅供查阅。
 
-Windows 构建暂未使用商业代码签名证书。首次下载运行时，Microsoft Defender SmartScreen 可能提示未知发布者；请只从本仓库官方 Release 下载，并在运行前核对 SHA256。
+开发、双端打包、更新签名和可选 Codex 侧栏补丁见 [开发与维护](docs/DEVELOPMENT.md)。
 
-Windows 10/11 通常已经内置或自动安装 WebView2 Runtime；如果系统缺失，安装器会按 Tauri 默认策略处理 WebView2。
+## 交流与反馈
 
-## 更新
+安装或使用遇到问题，可在 [Issues](https://github.com/hututuo/codex-token-bar/issues) 提交系统版本、软件版本、报错和截图，也欢迎扫码进群。
 
-macOS Swift 版内置 Sparkle 更新检查，默认每 4 小时读取一次 GitHub 上的 `appcast.xml`，也可以在 App 菜单中关闭自动检查或随时手动检查。发现更高版本后只会弹窗提示，由你确认后再安装，不会静默替换应用。
-
-Windows Tauri 版会由应用级监控每 4 小时读取一次 GitHub Release 里的 `latest-windows.json`，即使隐藏自启动且尚未打开主界面也能保留提醒；系统通知不可用时会显示持久托盘标记和安装入口。主界面仍可手动检查，安装前会验证 Tauri updater 签名并等待用户确认。Windows metadata 与 macOS Sparkle appcast 分开维护，不会混用。自动更新失败时，请从官方 Release 下载对应架构安装器，安装到原目录并保留本地历史数据。
-
-## 可选：Codex Desktop 侧边栏补丁
-
-部分 Codex Desktop 版本会只从全局最近会话第一页生成项目侧边栏。如果某个 workspace 的很多本地会话不在第一页里，侧边栏就可能只显示几条对话，但本地数据库其实还在。
-
-Codex Token Bar 附带一个可选的本机热补丁脚本：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/scripts/patch_codex_desktop_sidebar.sh | bash -s -- install
-```
-
-查看状态：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/scripts/patch_codex_desktop_sidebar.sh | bash -s -- status
-```
-
-回滚到最近一次备份：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/scripts/patch_codex_desktop_sidebar.sh | bash -s -- rollback
-```
-
-脚本会按 bundle identifier 自动发现已安装的 Codex Desktop App，也可通过 `CODEX_APP_PATH` 或 `--app PATH` 显式指定。随后它会备份 `app.asar` 和原始签名，本地改写 renderer bundle，重新 ad-hoc 签名并打开该 App。它不会修改 `~/.codex` 数据。后续官方 Codex 更新可能会覆盖这个补丁。
-
-## 数据源
-
-应用会把包含以下内容的目录视为 Codex Home：
-
-```text
-sessions/
-state_5.sqlite
-```
-
-`sessions/` 用于精确 token_count、缓存命中率和会话轮次统计。`state_5.sqlite` 在可用时用于补充会话元数据。额度和重置卡通过本机常驻 Codex app-server 的官方接口读取，网络请求和鉴权由 Codex 处理；按窗口时长识别 5h / 7d 和接口返回的 Reserve 窗口，并保存轻量额度历史；本地 token 和费用统计仍由本机日志汇总。登录过期时请先在 Codex 中重新登录。
-
-## 从源码运行
-
-macOS Swift 版：
-
-```bash
-brew install git-lfs
-git lfs install
-scripts/prepare_tiktoken_lfs.sh
-swift run CodexTokenBar
-```
-
-Windows / Tauri 版：
-
-```powershell
-cd tauri-app
-npm ci
-npm run tauri -- dev
-```
-
-## 本地打包
-
-macOS Swift 发布包：
-
-```bash
-APP_BUILD=926 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.9.7
-```
-
-Windows Tauri 发布包：
-
-```powershell
-.\scripts\build_tauri_windows_release.ps1 -Version 0.9.3 -Arch both
-```
-
-Windows 脚本只生成 x64 / ARM64 NSIS 安装器和 `dist/release/v0.9.7/windows-build/build-manifest.json`，不需要 updater 私钥；如果 `windows-build` 已存在会直接失败。把完整 `windows-build` 目录传回 Mac 后，签名到一个尚不存在的发布目录：
-
-```bash
-TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
-scripts/sign_tauri_windows_release.sh --version 0.9.3 --repo hututuo/codex-token-bar \
-  --build-dir dist/release/v0.9.7/windows-build \
-  --release-dir dist/release/v0.9.7/windows \
-  --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
-```
-
-当前本地 updater key 使用显式空密码；签名器会区分“变量未设置”和“变量已设置为空”。如果以后改用非空密码，只通过 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量传入，不要把密码写到命令参数或日志里。Mac 脚本生成对应 `.sig`、`latest-windows.json` 和 `SHA256SUMS-v0.9.7-windows.txt`。Windows 安装器当前未使用商业代码签名证书；`.sig` 只用于 Tauri 自动更新校验。
+<p align="center"><img src="Assets/wechat-group-qr.jpeg" width="240" alt="HTT 的仓库微信群二维码"><br><sub>二维码有有效期，失效时请通过 Issue 反馈。</sub></p>
 
 ## License
 
-GNU AGPL v3. The original Codex Token Bar MIT notice is preserved in
-[`LICENSES/CodexTokenBar-MIT.txt`](LICENSES/CodexTokenBar-MIT.txt), and the
-Codex++ attribution and modification notice is in
-[`OPEN_SOURCE_NOTICES.md`](OPEN_SOURCE_NOTICES.md).
-
----
-
-## English
-
-Codex Token Bar is a local-first Codex usage dashboard. It reads local Codex logs, account endpoints, and the Codex Radar feed to show token usage, live output speed, cache hit rates, the quota windows Codex actually provides, recommended models, IQ trends, and reset-credit details.
-
-There are now two official implementation lines:
-
-- macOS: native Swift / SwiftUI, used for the macOS release.
-- Windows: Tauri + React / TypeScript + Rust, distributed as separate x64 and ARM64 installers.
-
-<p align="center">
-  <img src="Assets/DashboardPreview.png" alt="Codex Token Bar dashboard screenshot" width="100%">
-</p>
-
-<p align="center">
-  <img src="Assets/FloatingPanelPreview.png" alt="Floating live token-rate panel" width="420">
-</p>
-
-<p align="center">
-  <img src="Assets/ResetCreditDetailPreview.png" alt="Reset credit detail screenshot" width="32%">
-  <img src="Assets/CodexRadarDetailPreview.png" alt="Codex Radar detail screenshot" width="32%">
-  <img src="Assets/ActivityChartPreview.png" alt="Recent 24-hour token activity screenshot" width="32%">
-</p>
-
-## Highlights
-
-- Live all-session activity speed across the dashboard, floating panel, and status/tray surfaces; interruptions stop promptly and normal completion finishes within five seconds.
-- Body-text TPS from local message timing and tokenized text, with conversation, model, time and confidence; six latest dashboard samples, history details, and latest/15-minute/30-minute model speeds in the sidebar.
-- Durable usage history after sessions are archived, moved or deleted, with fork-owned new rounds counted. Optional low-cache-hit reminders are restored; follow-up timing recommendations remain on the retained branch. Cache statistics, rankings, hit-rate charts and the cost ledger remain available.
-- Safe automatic resume: choose a project and exact conversation, then continue on an interval, local daily time, quota recovery, or a confirmed server-capacity interruption. It is off by default and never approves permissions or answers interactive prompts for you.
-- Session enhancements: sidebar deletion, Markdown export, project moves, session IDs, paste repair, reading width, and scroll restoration, with Codex++ AGPL-3.0 attribution preserved.
-- Codex instances: create or register isolated instances in both native and cross-platform settings, with separate Codex Home and desktop data, identity-checked lifecycle control, strict-prefix session sync, conflict preservation, automatic sync, and verified rollback.
-- Dual Radar: official Radar shows suggested action, 24h / 48h probabilities, and model IQ; Crowd Radar shows the public top three, coverage, and full ranking with wrapper, alias, and lossy-row compatibility.
-- Floating pace panel: combines Radar action, model IQ, the currently available quota windows, and local live speed in a configurable compact window.
-- Yearly token heatmap, 5-minute recent activity chart, cache hit-rate curve, and cache hit ranking.
-- Adaptive Codex quota display: a 7-day-only account shows only 7d, while 5h and 7d appear together only when both are available, with lightweight local history, Radar estimates, and compact pace hints.
-- Official quota: reads the quota for the current Codex login and shows separate Reserve windows and reset times when returned by the endpoint.
-- Reset credit details: see available reset credits, grant reason, linked user, expiry time, remaining time, and card ID.
-- Local-first: reads local `~/.codex` data and does not upload prompts, outputs, logs, or quota data.
-
-## Platform Builds
-
-| Platform | Implementation | Release asset | Notes |
-|---|---|---|---|
-| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.9.7-macos-arm64.dmg` | Current stable macOS line with Sparkle update checking. |
-| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.9.7-windows-x64-setup.exe` | For Intel / AMD Windows 10/11, with Tauri auto-update. |
-| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.9.7-windows-arm64-setup.exe` | For Windows on ARM, with Tauri auto-update. The installer process may run under emulation, while the app binary is ARM64. |
-
-## Why
-
-Codex already writes useful local usage data, but it is hard to see the current speed, daily burn, cache behavior, and quota pace at a glance. Codex Token Bar turns those local files into a small dashboard and an unobtrusive floating meter.
-
-## Feature: Codex Radar
-
-Codex Token Bar can read the public JSON feed from [codexradar.com](https://codexradar.com/) and bring Radar data into the dashboard and floating panel. You can see the current suggested action, 24h / 48h probabilities, today's primary model, IQ scores, other model comparisons, Plus / 5x Pro / 20x Pro 5h and 7d quota estimates, plus detailed charts and tables.
-
-The Radar feed refreshes every 10 minutes by default. The dashboard credits the source as `Codex 雷达 codexradar.com`.
-
-## Feature: Reset Credit Details
-
-Codex Token Bar uses the current Codex login for the selected Codex Home to read the official account endpoint directly and turns reset credits into a readable detail view. You can see how many reset credits are available, why each one was granted, who it is linked to, the exact expiry date, remaining time, and card ID.
-
-This feature is read-only: the app displays the information but never calls the endpoint that consumes a reset credit, and it does not upload quota data or conversation content.
-
-## Installation
-
-Download the correct installer from [GitHub Releases](https://github.com/hututuo/codex-token-bar/releases/latest).
-
-### macOS
-
-1. Download `CodexTokenBar-v0.9.7-macos-arm64.dmg` and `SHA256SUMS-v0.9.7.txt`.
-2. Optionally verify:
-
-```bash
-shasum -a 256 CodexTokenBar-v0.9.7-macos-arm64.dmg
-cat SHA256SUMS-v0.9.7.txt
-```
-
-3. Open the DMG and drag `Codex Token Bar.app` to Applications.
-
-The macOS build is ad-hoc signed and is not Apple notarized. macOS may show an "unidentified developer" warning on first launch. Download only from the official release page and verify the SHA256 checksum before opening.
-
-Backup install:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/install.sh | bash
-```
-
-### Windows
-
-1. Download `CodexTokenBar-v0.9.7-windows-x64-setup.exe` for Windows x64.
-2. Download `CodexTokenBar-v0.9.7-windows-arm64-setup.exe` for Windows ARM64.
-3. Optionally verify:
-
-```powershell
-Get-FileHash .\CodexTokenBar-v0.9.7-windows-x64-setup.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS-v0.9.7.txt
-```
-
-The Windows build is currently unsigned with a commercial code-signing certificate. Microsoft Defender SmartScreen may warn about an unknown publisher on first launch. Download only from the official release page and verify the SHA256 checksum before running.
-
-Windows 10/11 usually includes or automatically installs WebView2 Runtime. If it is missing, the installer follows Tauri's default WebView2 handling.
-
-## Update
-
-The macOS Swift build uses Sparkle to read GitHub `appcast.xml` every four hours by default. You can disable automatic checks in the app menu or run a manual check at any time. A newer version is only presented for confirmation and is never installed silently.
-
-The Windows Tauri build has an app-level monitor that reads `latest-windows.json` from GitHub Releases every four hours, including during hidden autostart before the dashboard is opened. If system notifications are unavailable, it keeps a persistent tray badge and install entry. Manual checks remain available in the dashboard; installation verifies the Tauri updater signature and waits for user confirmation. Windows metadata remains separate from the macOS Sparkle appcast. If automatic updating fails, download the official installer for your architecture, install in the original directory and retain local history data.
-
-## Optional Codex Desktop Sidebar Patch
-
-Some Codex Desktop builds populate a project sidebar from only the first global recent-conversation page. Codex Token Bar includes an optional local hot patch:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/scripts/patch_codex_desktop_sidebar.sh | bash -s -- install
-```
-
-Status:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/scripts/patch_codex_desktop_sidebar.sh | bash -s -- status
-```
-
-Rollback:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/scripts/patch_codex_desktop_sidebar.sh | bash -s -- rollback
-```
-
-The script auto-discovers the installed Codex Desktop app by bundle identifier, or accepts an explicit path through `CODEX_APP_PATH` or `--app PATH`. It then backs up `app.asar` and the original signature, rewrites the renderer bundle locally, ad-hoc re-signs the selected app, and reopens it. It does not modify `~/.codex` data.
-
-## Data Sources
-
-The app treats a folder with the following entries as Codex Home:
-
-```text
-sessions/
-state_5.sqlite
-```
-
-`sessions/` powers precise token_count, cache hit-rate, and turn-level statistics. `state_5.sqlite` supplements session metadata. Quotas and reset cards are read through a persistent local Codex app-server for the Codex Home selected in app settings; Codex handles authentication and network requests, and window duration identifies 5h, 7d, and any Reserve windows returned by the endpoint. Lightweight quota history and local token and cost totals stay on this device. If the login expires, sign in again in Codex.
-
-## Run From Source
-
-macOS Swift build:
-
-```bash
-brew install git-lfs
-git lfs install
-scripts/prepare_tiktoken_lfs.sh
-swift run CodexTokenBar
-```
-
-Windows / Tauri build:
-
-```powershell
-cd tauri-app
-npm ci
-npm run tauri -- dev
-```
-
-## Package Locally
-
-macOS Swift release assets:
-
-```bash
-APP_BUILD=926 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.9.7
-```
-
-Windows Tauri release assets:
-
-```powershell
-.\scripts\build_tauri_windows_release.ps1 -Version 0.9.3 -Arch both
-```
-
-The Windows script produces only x64 / ARM64 NSIS installers and `dist/release/v0.9.7/windows-build/build-manifest.json`; it does not need the updater private key and fails if `windows-build` already exists. After transferring the complete `windows-build` directory back to the Mac, sign it into a release directory that does not yet exist:
-
-```bash
-TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
-scripts/sign_tauri_windows_release.sh --version 0.9.3 --repo hututuo/codex-token-bar \
-  --build-dir dist/release/v0.9.7/windows-build \
-  --release-dir dist/release/v0.9.7/windows \
-  --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
-```
-
-The current local updater key uses an explicitly empty password, and the signer distinguishes an unset variable from a variable set to an empty value. If a future key uses a non-empty password, provide it only through `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; never place it in command arguments or logs. The Mac script produces matching `.sig` files, `latest-windows.json`, and `SHA256SUMS-v0.9.7-windows.txt`. Windows installers are currently not signed with a commercial code-signing certificate; `.sig` is for Tauri updater verification.
-
-## License
-
-GNU AGPL v3. The original Codex Token Bar MIT notice is preserved in
-[`LICENSES/CodexTokenBar-MIT.txt`](LICENSES/CodexTokenBar-MIT.txt); Codex++
-attribution and modification details are recorded in
-[`OPEN_SOURCE_NOTICES.md`](OPEN_SOURCE_NOTICES.md).
+GNU AGPL v3。保留原 Codex Token Bar 的 [MIT 声明](LICENSES/CodexTokenBar-MIT.txt)，Codex++ 的归属和修改说明见 [OPEN_SOURCE_NOTICES.md](OPEN_SOURCE_NOTICES.md)。
