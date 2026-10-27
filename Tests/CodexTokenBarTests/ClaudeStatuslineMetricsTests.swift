@@ -4,26 +4,61 @@ import XCTest
 final class ClaudeStatuslineMetricsTests: XCTestCase {
     let now = Date(timeIntervalSince1970: 1_800_000_000)
     func testAPIDeltaIsSessionAndModelBoundAndRejectsRollback() {
-        let old = ClaudeStatuslineMetrics(session: "a", model: "claude-sonnet", capturedAt: now, output: 100, apiMilliseconds: 1000, contextUsed: nil, contextSize: nil)
-        let new = ClaudeStatuslineMetrics(session: "a", model: "claude-sonnet", capturedAt: now.addingTimeInterval(5), output: 300, apiMilliseconds: 5000, contextUsed: nil, contextSize: nil)
+        let old = ClaudeStatuslineMetrics(session: "a", model: "claude-sonnet", capturedAt: now, output: 100, apiMilliseconds: 1000, contextUsed: nil, contextSize: nil, usageKey: "old")
+        let new = ClaudeStatuslineMetrics(session: "a", model: "claude-sonnet", capturedAt: now.addingTimeInterval(5), output: 300, apiMilliseconds: 5000, contextUsed: nil, contextSize: nil, usageKey: "new")
         let sample = new.sample(after: old)
-        XCTAssertEqual(sample?.tps, 50)
+        XCTAssertEqual(sample?.tps, 75)
         XCTAssertEqual(sample?.duration, 4)
         XCTAssertEqual(sample?.session.count, 64)
         XCTAssertTrue(sample?.qualified == true)
         XCTAssertNil(old.sample(after: new))
-        XCTAssertNil(new.sample(after: .init(session: "other", model: old.model, capturedAt: old.capturedAt, output: 100, apiMilliseconds: 1000, contextUsed: nil, contextSize: nil)))
-        XCTAssertNil(new.sample(after: .init(session: old.session, model: "other", capturedAt: old.capturedAt, output: 100, apiMilliseconds: 1000, contextUsed: nil, contextSize: nil)))
+        XCTAssertNil(new.sample(after: .init(session: "other", model: old.model, capturedAt: old.capturedAt, output: 100, apiMilliseconds: 1000, contextUsed: nil, contextSize: nil, usageKey: "old")))
+        XCTAssertNil(new.sample(after: .init(session: old.session, model: "other", capturedAt: old.capturedAt, output: 100, apiMilliseconds: 1000, contextUsed: nil, contextSize: nil, usageKey: "old")))
     }
+    func testShorterNextResponseAndSubagentOnlyDurationUseHUDSemantics() {
+        let first = ClaudeStatuslineMetrics(session: "s", model: "c", capturedAt: now, output: 500,
+            apiMilliseconds: 1000, contextUsed: nil, contextSize: nil, usageKey: "request1")
+        let subagentUpdate = ClaudeStatuslineMetrics(session: "s", model: "c", capturedAt: now.addingTimeInterval(1), output: 500,
+            apiMilliseconds: 3000, contextUsed: nil, contextSize: nil, usageKey: "request1")
+        XCTAssertNil(subagentUpdate.sample(after: first))
+        let next = ClaudeStatuslineMetrics(session: "s", model: "c", capturedAt: now.addingTimeInterval(3), output: 80,
+            apiMilliseconds: 5000, contextUsed: nil, contextSize: nil, usageKey: "request2")
+        XCTAssertEqual(next.sample(after: subagentUpdate)?.tps, 40)
+        XCTAssertEqual(next.sample(after: subagentUpdate)?.outputTokens, 80)
+        var rollback = next; rollback.usageKey = "request3"
+        XCTAssertNil(rollback.sample(after: next))
+    }
+
+    func testLegacySpeedRowsArePreservedButExcludedFromNewAverages() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("speed.sqlite")
+        let old = SQLiteDatabaseDriver(url: url)
+        try old.execute("CREATE TABLE api_speed(id TEXT PRIMARY KEY, ended REAL NOT NULL, payload TEXT NOT NULL, model TEXT NOT NULL, tokens INTEGER NOT NULL, duration REAL NOT NULL)")
+        var legacy = ClaudeAPISpeedSample(id: "legacy", session: "s", model: "c", endedAt: now, outputTokens: 200, duration: 4)
+        legacy.method = nil
+        let json = String(data: try JSONEncoder().encode(legacy), encoding: .utf8)!
+        try old.execute("INSERT INTO api_speed VALUES(?1,?2,?3,'c',200,4)", bindings: [.text("legacy"), .double(now.timeIntervalSince1970), .text(json)])
+        let db = ClaudeLocalSpeedLedger(url: url)
+        let rows = try await db.records(now: now)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertFalse(rows[0].qualified)
+        let result = try await db.aggregates(now: now)
+        XCTAssertTrue(result.0.isEmpty)
+        XCTAssertTrue(result.1.isEmpty)
+    }
+
     func testStatuslineRejectsStaleAndImpossibleCountsWithoutReadingTranscript() throws {
         let input: [String: Any] = ["schema_version": 1, "captured_at_epoch": now.timeIntervalSince1970,
             "session_id": "session", "model": ["id": "claude-sonnet"], "cost": ["total_api_duration_ms": 12000],
             "context_window": ["total_output_tokens": 300, "context_window_size": 200000,
-                "current_usage": ["input_tokens": 100, "cache_read_input_tokens": 200]],
+                "current_usage": ["input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 200]],
             "prompt": "never exposed", "api_key": "never exposed"]
         let data = try JSONSerialization.data(withJSONObject: input)
         let parsed = ClaudeStatuslineMetrics.decode(data, now: now)
-        XCTAssertEqual(parsed?.contextUsed, 300)
+        XCTAssertEqual(parsed?.contextUsed, 320)
+        XCTAssertEqual(parsed?.output, 20) // Never use total_output_tokens as a cumulative output delta.
         XCTAssertEqual(parsed?.contextSize, 200000)
         XCTAssertNil(ClaudeStatuslineMetrics.decode(data, now: now.addingTimeInterval(601)))
         XCTAssertNil(ClaudeStatuslineMetrics.decode(Data(repeating: 32, count: 65537), now: now))

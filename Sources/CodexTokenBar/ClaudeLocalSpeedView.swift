@@ -10,15 +10,15 @@ struct ClaudeLocalSpeedView: View {
 
     private var local: ClaudeLocalRuntimeSnapshot { runtime.projection(allowed: allowed) }
     private struct Row: Identifiable {
-        let id: String; let model: String?; let outputTokens: Int; let duration: Double?; let endedAt: Date
+        let id: String; let model: String?; let outputTokens: Int; let duration: Double?; let endedAt: Date; var trusted = true
     }
     private var apiRows: [ClaudeAPISpeedSample] { allowed.contains("claudeCode") ? statusline.samples.filter { $0.endedAt >= Date().addingTimeInterval(-1800) } : [] }
     private var rows: [Row] {
-        if !apiRows.isEmpty { return apiRows.map { Row(id: $0.id, model: $0.model, outputTokens: $0.outputTokens, duration: $0.duration, endedAt: $0.endedAt) } }
+        if !apiRows.isEmpty { return apiRows.map { Row(id: $0.id, model: $0.model, outputTokens: $0.outputTokens, duration: $0.duration, endedAt: $0.endedAt, trusted: $0.qualified) } }
         return local.rows.sorted { $0.endedAt > $1.endedAt }.map { Row(id: $0.id, model: $0.model, outputTokens: $0.outputTokens, duration: $0.duration, endedAt: $0.endedAt) }
     }
     private func rate(_ row: Row) -> Double? {
-        guard let duration = row.duration, duration > 0.4 else { return nil }
+        guard row.trusted, let duration = row.duration, duration > 0.4 else { return nil }
         let value = Double(row.outputTokens) / duration
         return value.isFinite && value >= 2 && value <= 500 ? value : nil
     }
@@ -67,7 +67,7 @@ struct ClaudeLocalSpeedView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text(apiRows.isEmpty ? "Claude · 请求区间 TPS" : "Claude · API 耗时 TPS").font(.system(size: 13, weight: .semibold))
+                Text(apiRows.isEmpty ? "Claude · 请求区间 TPS" : "Claude · 响应均速 TPS").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Text(local.enabled ? "本地日志 · 估算" : "读取已关闭").font(.caption).foregroundStyle(.secondary)
             }
@@ -111,7 +111,7 @@ struct ClaudeLocalSpeedView: View {
             if allowed.contains("claudeCode"), let context = statusline.metrics, let used = context.contextUsed, let size = context.contextSize, size > 0 {
                 Text("上下文 \(used) / \(size) Token").font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            Text(apiRows.isEmpty ? "请求区间包含等待和工具耗时；不与正文 TPS 混算。" : "输出 Token 增量 ÷ API 累计耗时增量；本地状态栏数据。")
+            Text(apiRows.isEmpty ? "请求区间包含等待和工具耗时；不与正文 TPS 混算。" : "本次响应输出 Token ÷ 本地记录的请求耗时；包含等待，非逐字流式测速。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -126,7 +126,7 @@ struct ClaudeLocalSpeedCompact: View {
         let api = allowed.contains("claudeCode") ? statusline.samples.filter { $0.qualified && $0.endedAt >= Date().addingTimeInterval(-1800) } : []
         let models = statusline.windows.map(\.model)
         VStack(spacing: 3) {
-            Text(api.isEmpty ? "Claude · 区间 TPS" : "Claude · API TPS").font(.system(size: 9))
+            Text(api.isEmpty ? "Claude · 区间 TPS" : "Claude · 响应 TPS").font(.system(size: 9))
             if !api.isEmpty {
                 ForEach(models, id: \.self) { model in
                     HStack(spacing: 3) {

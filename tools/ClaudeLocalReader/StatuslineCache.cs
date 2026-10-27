@@ -59,7 +59,7 @@ internal static class StatuslineCache
         MaxDepth = 12,
     };
 
-    public static StatuslineSnapshot Parse(ReadOnlySpan<byte> input)
+    public static StatuslineSnapshot Parse(ReadOnlySpan<byte> input, bool fromStatusline = false)
     {
         if (input.Length is 0 or > MaximumInputBytes)
         {
@@ -68,12 +68,14 @@ internal static class StatuslineCache
 
         using var document = JsonDocument.Parse(input.ToArray(), new JsonDocumentOptions { MaxDepth = 12 });
         var root = document.RootElement;
-        if (root.ValueKind != JsonValueKind.Object || !TryInt64(root, "schema_version", out var version) || version != 1)
+        if (root.ValueKind != JsonValueKind.Object
+            || (!fromStatusline && (!TryInt64(root, "schema_version", out var version) || version != 1)))
         {
             throw new InvalidDataException("Unsupported Claude statusline cache schema.");
         }
 
-        if (!TryFiniteNumber(root, "captured_at_epoch", out var capturedAt) || capturedAt < 0)
+        var capturedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+        if (!fromStatusline && (!TryFiniteNumber(root, "captured_at_epoch", out capturedAt) || capturedAt < 0))
         {
             throw new InvalidDataException("Claude statusline cache has an invalid capture time.");
         }
@@ -96,7 +98,9 @@ internal static class StatuslineCache
     public static async Task<StatuslineSnapshot> ReadAndCacheAsync(Stream input, CancellationToken cancellationToken)
     {
         var bytes = await ReadBoundedAsync(input, cancellationToken).ConfigureAwait(false);
-        var snapshot = Parse(bytes);
+        // Claude sends raw statusline JSON, not our normalized on-disk schema.
+        // Capture time is assigned locally; never trust a producer-supplied clock.
+        var snapshot = Parse(bytes, fromStatusline: true);
         await WriteAtomicallyAsync(snapshot, cancellationToken).ConfigureAwait(false);
         return snapshot;
     }

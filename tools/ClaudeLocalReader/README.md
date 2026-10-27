@@ -10,7 +10,7 @@ The project targets .NET 10 because the referenced AgentSpeed.Core project curre
 - `--watch`: write the latest snapshot at most once per second. When stdin is redirected, EOF requests shutdown; Ctrl+C also stops it.
 - `--root <local-path>`: use a local Claude projects directory. UNC/network paths are rejected.
 - `--source claudeCode` and/or `--source claudeDesktop`: monitor only the selected enabled Claude clients. Omitting both keeps the standalone helper's default of both local Claude sources.
-- `--capture-statusline`: read at most 64 KiB of JSON from stdin, keep only the approved cache fields, atomically write the app-owned LocalApplicationData cache, and write a fixed success line to stdout.
+- `--capture-statusline`: read at most 64 KiB of raw Claude JSON from stdin (no app schema/timestamp required), assign the local capture clock, keep only the approved cache fields, atomically write the app-owned LocalApplicationData cache, and write a fixed success line to stdout.
 - `--self-test`: validate cache filtering, normalization, bounds, and runtime redaction without opening Claude files or writing the cache.
 
 ## Runtime snapshot

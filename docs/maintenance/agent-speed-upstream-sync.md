@@ -73,3 +73,7 @@ python3 scripts/agent_speed_vendor.py check --remote
 - 增量使用 SourceStatus.liveEstimated 和 ResponseCost；未增加 Claude 网络路径或历史扫描器。
 - PASS：Swift 应用回归 27 项、上游价格表 18 项；来源锁工具 7 项；前端范围/SSR 4 项；发版工作流契约 7 项；前端构建和两份 YAML 语法检查。离线来源核对和公开 GitHub HEAD 检查均通过。
 - 真实活跃 Claude / Windows 产物验收状态延续上一轮，不能以这次核心回归替代；没有安装或替换正式应用。
+
+## 2026-10-27 标准价表合并要求
+
+Codex 原当前标准价已接到 pinned PriceBook / prices.json；Mac 与 Tauri 历史价格共用 `Sources/CodexTokenBar/Resources/standard-api-price-history.json`。今后同步上游价格时，保留冻结历史，追加新的生效日期、价格与 revision，不得把新价套进旧事件。雷达历史基准/Spark 参考价不随当前表修改。具体改动与口径见 [核对报告](2026-10-27-speed-reading-and-price-unification.md)。

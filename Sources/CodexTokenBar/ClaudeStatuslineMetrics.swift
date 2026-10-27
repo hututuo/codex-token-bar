@@ -10,8 +10,9 @@ struct ClaudeAPISpeedSample: Identifiable, Codable, Equatable, Sendable {
     let endedAt: Date
     let outputTokens: Int
     let duration: Double
+    var method: String? = "statusline-response-api-v2"
     var tps: Double { Double(outputTokens) / duration }
-    var qualified: Bool { duration > 0.4 && tps.isFinite && (2...500).contains(tps) }
+    var qualified: Bool { method == "statusline-response-api-v2" && duration > 0.4 && tps.isFinite && (2...500).contains(tps) }
 }
 
 struct ClaudeStatuslineMetrics: Equatable, Sendable {
@@ -22,6 +23,7 @@ struct ClaudeStatuslineMetrics: Equatable, Sendable {
     let apiMilliseconds: Double
     let contextUsed: Int?
     let contextSize: Int?
+    var usageKey: String = ""
 
     static func decode(_ data: Data, now: Date) -> Self? {
         guard data.count <= 65_536, let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -31,14 +33,15 @@ struct ClaudeStatuslineMetrics: Equatable, Sendable {
               let session = root["session_id"] as? String, !session.isEmpty, session.utf8.count <= 256,
               let model = (root["model"] as? [String: Any])?["id"] as? String, !model.isEmpty, model.utf8.count <= 256,
               let context = root["context_window"] as? [String: Any],
-              let output = count(context["total_output_tokens"]),
-              let duration = (root["cost"] as? [String: Any])?["total_api_duration_ms"] as? Double, duration.isFinite, duration >= 0 else { return nil }
-        let current = context["current_usage"] as? [String: Any]
+              let current = context["current_usage"] as? [String: Any],
+              let output = count(current["output_tokens"]),
+              let duration = count((root["cost"] as? [String: Any])?["total_api_duration_ms"]) else { return nil }
         let keys = ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
-        let values = keys.compactMap { count(current?[$0]) }
+        let values = keys.compactMap { count(current[$0]) }
         let sum = values.reduce(Int64(0)) { min(Int64(Int.max), $0 + Int64($1)) }
         return .init(session: session, model: model, capturedAt: Date(timeIntervalSince1970: time), output: output,
-            apiMilliseconds: duration, contextUsed: values.isEmpty ? nil : Int(sum), contextSize: count(context["context_window_size"]))
+            apiMilliseconds: Double(duration), contextUsed: values.isEmpty ? nil : Int(sum), contextSize: count(context["context_window_size"]),
+            usageKey: keys.map { count(current[$0]).map(String.init) ?? "unknown" }.joined(separator: ":"))
     }
     private static func count(_ value: Any?) -> Int? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
@@ -48,13 +51,13 @@ struct ClaudeStatuslineMetrics: Equatable, Sendable {
     }
     func sample(after old: Self) -> ClaudeAPISpeedSample? {
         guard session == old.session, model == old.model, capturedAt > old.capturedAt,
-              output > old.output, apiMilliseconds > old.apiMilliseconds else { return nil }
+              !usageKey.isEmpty, usageKey != old.usageKey, output > 0, apiMilliseconds > old.apiMilliseconds else { return nil }
         let elapsed = (apiMilliseconds - old.apiMilliseconds) / 1000
         guard elapsed.isFinite, elapsed > 0 else { return nil }
         let opaqueSession = SHA256.hash(data: Data(session.utf8)).map { String(format: "%02x", $0) }.joined()
-        let key = "\(opaqueSession)|\(model)|\(apiMilliseconds)|\(output)"
+        let key = "statusline-response-api-v2|\(opaqueSession)|\(model)|\(apiMilliseconds)|\(usageKey)"
         let id = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
-        return .init(id: id, session: opaqueSession, model: model, endedAt: capturedAt, outputTokens: output - old.output, duration: elapsed)
+        return .init(id: id, session: opaqueSession, model: model, endedAt: capturedAt, outputTokens: output, duration: elapsed)
     }
 }
 
@@ -85,11 +88,17 @@ actor ClaudeLocalSpeedLedger {
             try value.execute("CREATE TABLE IF NOT EXISTS api_speed(id TEXT PRIMARY KEY, ended REAL NOT NULL, payload TEXT NOT NULL, model TEXT NOT NULL, tokens INTEGER NOT NULL, duration REAL NOT NULL)")
             try value.execute("CREATE INDEX IF NOT EXISTS api_speed_by_time ON api_speed(ended)")
             try value.execute("CREATE INDEX IF NOT EXISTS api_speed_by_model ON api_speed(model,ended)")
+            // Preserve older samples for inspection, but never average the old
+            // output-delta interpretation together with corrected response samples.
+            let columns = try value.readRows("PRAGMA table_info(api_speed)") { $0.text(1) ?? "" }
+            if !columns.contains("method") {
+                try value.execute("ALTER TABLE api_speed ADD COLUMN method TEXT NOT NULL DEFAULT 'legacy-output-delta-v1'")
+            }
             db = value
         }
         guard let db else { return [] }
         if let sample, let json = String(data: try JSONEncoder().encode(sample), encoding: .utf8) {
-            try db.execute("INSERT OR IGNORE INTO api_speed(id,ended,payload,model,tokens,duration) VALUES(?1,?2,?3,?4,?5,?6)", bindings: [.text(sample.id), .double(sample.endedAt.timeIntervalSince1970), .text(json), .text(sample.model), .int64(Int64(sample.outputTokens)), .double(sample.duration)])
+            try db.execute("INSERT OR IGNORE INTO api_speed(id,ended,payload,model,tokens,duration,method) VALUES(?1,?2,?3,?4,?5,?6,?7)", bindings: [.text(sample.id), .double(sample.endedAt.timeIntervalSince1970), .text(json), .text(sample.model), .int64(Int64(sample.outputTokens)), .double(sample.duration), .text(sample.method ?? "legacy-output-delta-v1")])
         }
         try db.execute("DELETE FROM api_speed WHERE ended < ?1", bindings: [.double(now.addingTimeInterval(-7 * 86400).timeIntervalSince1970)])
         return try db.readRows("SELECT payload FROM api_speed WHERE ended >= ?1 ORDER BY ended DESC LIMIT 1000", bindings: [.double(now.addingTimeInterval(-1800).timeIntervalSince1970)]) { row -> ClaudeAPISpeedSample? in
@@ -100,7 +109,7 @@ actor ClaudeLocalSpeedLedger {
     func aggregates(now: Date) throws -> ([ClaudeAPISpeedWindow], [ClaudeAPISpeedBucket]) {
         guard let db else { return ([], []) }
         let epoch = now.timeIntervalSince1970
-        let valid = "duration > 0.4 AND tokens / duration BETWEEN 2 AND 500"
+        let valid = "method = 'statusline-response-api-v2' AND duration > 0.4 AND tokens / duration BETWEEN 2 AND 500"
         let windows = try db.readRows("""
             SELECT model,
             SUM(CASE WHEN ended>=?1 THEN tokens ELSE 0 END)*1.0 / NULLIF(SUM(CASE WHEN ended>=?1 THEN duration ELSE 0 END),0),

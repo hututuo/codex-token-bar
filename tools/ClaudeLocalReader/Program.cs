@@ -272,7 +272,7 @@ internal static class Program
         const string input = """
             {
               "schema_version": 1,
-              "captured_at_epoch": 1800000000.25,
+              "captured_at_epoch": 1700000000.25,
               "session_id": "local-session",
               "model": { "id": "claude-sonnet-4-6", "display_name": "Claude Sonnet", "path": "drop-me" },
               "rate_limits": {
@@ -298,6 +298,15 @@ internal static class Program
               "unknown": "drop-me"
             }
             """;
+        const string rawStatusline = """
+            {"session_id":"raw","model":{"id":"claude-sonnet"},"cost":{"total_api_duration_ms":1200},
+             "context_window":{"current_usage":{"output_tokens":80}},"api_key":"discard"}
+            """;
+        var captured = StatuslineCache.Parse(System.Text.Encoding.UTF8.GetBytes(rawStatusline), fromStatusline: true);
+        Require(captured.SchemaVersion == 1 && captured.SessionId == "raw", "raw Claude statusline normalization");
+        Require(Math.Abs(captured.CapturedAtEpoch - DateTimeOffset.UtcNow.ToUnixTimeSeconds()) < 5, "local capture clock");
+        Require(captured.ContextWindow?.CurrentUsage?.OutputTokens == 80, "per-response output preserved");
+        ExpectInvalid(rawStatusline); // Disk reader remains strict about normalized metadata.
         var snapshot = StatuslineCache.Parse(System.Text.Encoding.UTF8.GetBytes(input));
         var normalized = JsonDocument.Parse(StatuslineCache.Serialize(snapshot));
         var root = normalized.RootElement;
