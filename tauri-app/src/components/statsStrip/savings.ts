@@ -351,7 +351,7 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
     && estimate.excludedModels.length > 0;
   const hasUnpricedUsage = estimate.unpricedModels.length > 0 || estimate.unpricedCalls > 0;
   const priceBasis = hasOnlyExcludedModels
-    ? `${estimate.excludedModels.join("、")} ${estimate.excludedCalls} 次调用属于独立额度，不参与 API 等值`
+    ? `${estimate.excludedModels.join("、")} ${estimate.excludedCalls} 次调用不计入总费用或额度价值`
     : hasUnpricedUsage && estimate.detectedModels.length === 0 && estimate.fallbackModelCalls === 0
     ? "未知价格模型未计入 API 等值"
     : estimate.detectedModels.length > 0
@@ -361,7 +361,7 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
     ? `；未知价格模型 ${estimate.unpricedModels.join("、")} ${estimate.unpricedCalls} 次调用未计入 API 等值`
     : "";
   const excludedNote = !hasOnlyExcludedModels && estimate.excludedModels.length > 0
-    ? `；${estimate.excludedModels.join("、")} ${estimate.excludedCalls} 次调用属于独立额度，不参与 API 等值`
+    ? `；${estimate.excludedModels.join("、")} ${estimate.excludedCalls} 次调用不计入总费用或额度价值`
     : "";
   if (estimate.netSavingsUSD !== null && estimate.subscriptionCostUSD !== null && estimate.monthlyPlanUSD !== null) {
     return {

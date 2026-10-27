@@ -166,7 +166,7 @@ test("lifetime savings excludes Spark while preserving its model calls", () => {
   assert.deepEqual(estimate?.excludedModels, ["gpt-5.3-codex-spark"]);
   assert.equal(estimate?.excludedCalls, 2);
   const helpText = savingsPresentation(estimate).helpText;
-  assert.match(helpText, /独立额度/);
+  assert.match(helpText, /不计入总费用或额度价值/);
   assert.doesNotMatch(helpText, /缺少逐模型历史/);
   assert.doesNotMatch(helpText, /未知模型回退/);
 });
@@ -229,8 +229,8 @@ test("7d API estimate applies the auto-review timestamp rule per five-minute poi
   });
 
   assert.ok(estimate);
-  assert.equal(estimate.apiEquivalentUSD, 3.105);
-  assert.deepEqual(estimate.detectedModels, ["gpt56Luna", "gpt54Legacy"]);
+  assert.equal(estimate.apiEquivalentUSD, 0);
+  assert.deepEqual(estimate.detectedModels, []);
   assert.deepEqual(estimate.modelBreakdowns.map((row) => row.eventStartUnix), [
     Date.parse("2026-07-29T23:55:00Z") / 1000,
     Date.parse("2026-07-30T00:05:00Z") / 1000,

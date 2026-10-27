@@ -473,7 +473,7 @@ struct TokenHeatmap: View {
                 modelBreakdowns: rows,
                 modelCostUSD: cost,
                 isModelCost: mode == .modelCost,
-                hasUnknownPrices: costItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
+                hasUnknownPrices: costItems.contains { !$0.isReferenceOnly && $0.costUSD == nil }
             )
         }
 

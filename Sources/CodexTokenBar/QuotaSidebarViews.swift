@@ -379,7 +379,7 @@ struct QuotaSidebarRail: View {
         }
         .onChange(of: selectedModelRows, initial: true) { _, rows in
             shares = FloatingTodayModelUsagePresentation.items(from: rows,
-                fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
+                fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
         }
         .onChange(of: quotaItems, initial: true) { _, _ in updateCompactLayout() }
         .onChange(of: controller.sidebarLayout) { _, _ in updateCompactLayout() }
@@ -829,9 +829,9 @@ struct QuotaSidebarDetailView: View {
 
     private func codexOverview(_ snapshot: TokenDisplaySnapshot, projected: DashboardSnapshot? = nil) -> some View {
         let total = snapshot.todayModelBreakdowns.map(\.breakdown).combined
-        let models = FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
+        let models = FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
         let cost = FloatingTodayModelUsagePresentation.knownCostUSD(in: models)
-        let costLabel = models.contains { !$0.usesIndependentQuota && $0.costUSD == nil } ? "今日 API 等值 · 已知小计" : "今日 API 等值"
+        let costLabel = models.contains { !$0.isReferenceOnly && $0.costUSD == nil } ? "今日 API 等值 · 已知小计" : "今日 API 等值"
 
         return VStack(alignment: .leading, spacing: 6) {
             ClientQuotaRings(items: detailQuotaItems(snapshot.quota)).id("top")
@@ -919,7 +919,7 @@ struct QuotaSidebarDetailView: View {
     }
 
     private func modelUsage(_ snapshot: TokenDisplaySnapshot) -> some View {
-        let items = Array(FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 })
+        let items = Array(FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 })
         return VStack(alignment: .leading, spacing: 6) {
             sectionTitle("今日模型用量", subtitle: "Token 占比 · API 等值")
             if items.isEmpty {

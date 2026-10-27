@@ -491,7 +491,7 @@ function floatingPagedContentDescriptors(
     const items = floatingTodayModelUsageItems(
       modelRows,
       priceModel,
-      { showPlaceholders: todayModelUsageReady(snapshot) },
+      { showPlaceholders: todayModelUsageReady(snapshot), mergeAutoReview: false },
     );
     const pageCount = floatingModelUsagePageCount("cost", items);
     return Array.from({ length: pageCount }, (_, modelPageIndex) => ({
@@ -697,12 +697,12 @@ function FloatingTodayModelUsageRow({
   showPlaceholders: boolean;
   style: CSSProperties;
 }) {
-  const allItems = floatingTodayModelUsageItems(rows, priceModel, { showPlaceholders });
+  const allItems = floatingTodayModelUsageItems(rows, priceModel, { showPlaceholders, mergeAutoReview: page === "share" });
   const items = floatingModelUsagePageItems(page, allItems, pageIndex);
   const overflowText = page === "share" ? floatingModelUsageOverflowText(allItems) : null;
   return (
     <div
-      aria-label={`${floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders })}${demo ? "（示例，仅用于引导展示）" : ""}`}
+      aria-label={`${floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders, mergeAutoReview: page === "share" })}${demo ? "（示例，仅用于引导展示）" : ""}`}
       className={`floating-row floating-model-usage${page === "share" ? " floating-model-usage--share" : " floating-model-usage--cost"}`}
       style={style}
     >

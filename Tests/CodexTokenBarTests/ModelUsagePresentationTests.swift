@@ -168,7 +168,7 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         XCTAssertEqual(floatingItems.map(\.label), ["Luna"])
         XCTAssertEqual(floatingItems.first?.tokens, 800_000)
-        XCTAssertEqual(floatingItems.first?.costUSD ?? -1, 0.16, accuracy: 0.0001)
+        XCTAssertEqual(floatingItems.first?.costUSD ?? -1, 0.10, accuracy: 0.0001)
     }
 
     func testFloatingAutoReviewUsesDatedUnderlyingTargetsAndPreservesPricingRows() throws {

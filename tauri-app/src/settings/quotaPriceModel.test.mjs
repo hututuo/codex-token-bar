@@ -183,11 +183,11 @@ test("mixed model coverage prices Codex aliases, excludes Spark, and falls back 
     "gpt56Terra",
   );
 
-  assert.equal(estimate.costUSD, 9.9);
+  assert.equal(estimate.costUSD, 9.7);
   assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra", "gpt56Luna", "gpt53Codex", "gpt52Codex"]);
   assert.equal(estimate.fallbackCalls, 0);
-  assert.deepEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"]);
-  assert.equal(estimate.excludedCalls, 1);
+  assert.deepEqual(estimate.excludedModels, ["gpt-5.3-codex-spark", "codex-auto-review"]);
+  assert.equal(estimate.excludedCalls, 2);
   assert.deepEqual(estimate.unpricedModels, []);
   assert.equal(estimate.unpricedCalls, 0);
 });
@@ -211,8 +211,10 @@ test("mixed historical and current auto-review rows use their event timestamps",
     "gpt56Sol",
   );
 
-  assert.equal(estimate.costUSD, 2.7);
-  assert.deepEqual(estimate.detectedModels, ["gpt56Luna", "gpt54Legacy"]);
+  assert.equal(estimate.costUSD, 0);
+  assert.deepEqual(estimate.detectedModels, []);
+  assert.deepEqual(estimate.excludedModels,["codex-auto-review"]);
+  assert.equal(estimate.excludedCalls,2);
 });
 
 test("Spark-only rows keep calls but produce an explicit zero API amount", () => {

@@ -6,6 +6,7 @@ import {
 import type { OfficialAPIPriceModel, QuotaPriceBasis } from "../../settings/quotaPriceModel";
 import {
   modelAwareAPICostUSD,
+  quotaValueExcludedModelName,
   type ModelAwareAPICostEstimate,
 } from "../../settings/quotaPriceModel.ts";
 import type { SharedAccountRadarTier } from "../../settings/sharedAccountAttribution";
@@ -440,14 +441,13 @@ function costForBreakdown(
   priceModel: OfficialAPIPriceModel,
   basis: QuotaPriceBasis,
 ): ModelAwareAPICostEstimate {
-  const modelBreakdowns = buckets.every((bucket) => (
+  const complete = buckets.every((bucket) => (
     bucket.modelTrackingComplete === true && Array.isArray(bucket.modelBreakdowns)
-  ))
-    ? buckets.flatMap((bucket) => (bucket.modelBreakdowns ?? []).map((row) => ({
+  ));
+  const modelBreakdowns = buckets.flatMap((bucket) => (bucket.modelBreakdowns ?? []).map((row) => ({
       ...row,
       eventStartUnix: row.eventStartUnix ?? bucket.startUnix,
-    })))
-    : [];
+    }))).filter(row => complete || quotaValueExcludedModelName(row.model) !== null);
   return modelAwareAPICostUSD(
     modelBreakdowns,
     {

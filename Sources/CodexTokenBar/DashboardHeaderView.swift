@@ -1243,7 +1243,7 @@ struct DashboardModelCostRow: View {
         return FloatingTodayModelUsagePresentation.items(
             from: sourceRows,
             fallbackModel: fallbackModel,
-            mergeAutoReview: true
+            mergeAutoReview: false
         )
     }
 
@@ -1291,14 +1291,14 @@ struct DashboardModelCostRow: View {
         let visibleItems = items
         let visibleTotalCost = FloatingTodayModelUsagePresentation.knownCostUSD(in: visibleItems)
         let visibleTotalCostText = visibleTotalCost.map { "API \($0.quotaEstimatorMoneyText)" } ?? "—"
-        let hasUnknownPrices = visibleItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
+        let hasUnknownPrices = visibleItems.contains { !$0.isReferenceOnly && $0.costUSD == nil }
         let visibleReferenceEntries = visibleItems.compactMap { item -> String? in
             guard let referenceCostUSD = item.referenceCostUSD else { return nil }
             return "\(item.label) 参考 \(referenceCostUSD.quotaEstimatorMoneyText)"
         }
         let visibleReferenceCostSummary = visibleReferenceEntries.isEmpty
             ? nil
-            : visibleReferenceEntries.joined(separator: " · ")
+            : visibleReferenceEntries.joined(separator: " · ") + "（不计入合计）"
         let modelFamilies = clientCosts?.groups(scope) ?? FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: visibleItems)
         let pendingItems = scope == .sevenDay ? FloatingTodayModelUsagePresentation.items(
             from: sevenDayPendingRows, fallbackModel: fallbackModel

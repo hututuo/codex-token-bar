@@ -20,7 +20,7 @@ export function clientCostGroups(items: FloatingModelUsageItem[]) {
 }
 export function clientCostPeriods(codex: DashboardSnapshot, snapshot: Snapshot, allowed: string[], now=Date.now()/1000):ClientCostPeriods {
   const make = (rows:Summary[], original:ModelTokenBreakdown[]) => {
-    const items:FloatingModelUsageItem[] = allowed.includes('codex') ? floatingTodayModelUsageItems(original,'gpt56Sol',{showPlaceholders:false}).map(x=>({...x,key:'codex|'+x.key})) : [];
+    const items:FloatingModelUsageItem[] = allowed.includes('codex') ? floatingTodayModelUsageItems(original,'gpt56Sol',{showPlaceholders:false,mergeAutoReview:false}).map(x=>({...x,key:'codex|'+x.key})) : [];
     for(const row of rows.filter(x=>allowed.includes(x.client))) items.push({key:row.client+'|'+row.model,
       label:row.model.replace(/^claude-/,'').replaceAll('-',' '),tokens:row.inputTokens+row.outputTokens,share:0,
       costUSD:(row.unpricedRequests??0)>0?null:row.apiCostUSD??null,usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(row.model)});

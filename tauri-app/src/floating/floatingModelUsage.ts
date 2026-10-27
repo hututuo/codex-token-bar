@@ -9,6 +9,8 @@ import {
   independentQuotaReferenceCostUSD,
   independentQuotaModelName,
   modelAwareAPICostUSD,
+  isAutoReviewUsage,
+  autoReviewReferenceCostUSD,
   type OfficialAPIPriceModel,
 } from "../settings/quotaPriceModel.ts";
 import { formatTokens } from "../utils/format.ts";
@@ -30,6 +32,8 @@ export interface FloatingModelUsageItem {
 export const FLOATING_MODEL_USAGE_VISIBLE_LIMIT = 4;
 export const FLOATING_MODEL_USAGE_MINIMUM_COUNT = 4;
 interface CombinedModelUsage {
+  reviewReferenceCostUSD: number;
+  reviewReferenceUnknown: boolean;
   costUSD: number;
   priceUnknown: boolean;
   model: string | null;
@@ -101,6 +105,8 @@ export function floatingTodayModelUsageItems(
       ? modelUsageKey(row.model, row.eventStartUnix)
       : floatingModelUsageKey(row.model, row.eventStartUnix);
     const current = grouped.get(key) ?? {
+      reviewReferenceCostUSD: 0,
+      reviewReferenceUnknown: false,
       costUSD: 0,
       priceUnknown: false,
       model: row.model,
@@ -117,6 +123,12 @@ export function floatingTodayModelUsageItems(
       outputTokens: finiteNonnegative(row.breakdown.outputTokens), calls: finiteNonnegative(row.breakdown.calls),
     } };
     const price = modelAwareAPICostUSD([priceRow], priceRow.breakdown, fallbackModel);
+    if(isAutoReviewUsage(row.model)) {
+      const reference=autoReviewReferenceCostUSD(row.model,priceRow.breakdown.inputTokens,
+        priceRow.breakdown.cachedInputTokens,priceRow.breakdown.outputTokens,row.eventStartUnix);
+      current.reviewReferenceUnknown ||= reference===null;
+      current.reviewReferenceCostUSD += reference??0;
+    }
     current.costUSD += price.costUSD;
     // An anonymous row still carries real tokens, but has no model price.
     // Keep the accounting fallback out of per-model presentation.
@@ -137,6 +149,8 @@ export function floatingTodayModelUsageItems(
       if (grouped.size >= FLOATING_MODEL_USAGE_MINIMUM_COUNT) break;
       if (!grouped.has(key)) {
         grouped.set(key, {
+          reviewReferenceCostUSD: 0,
+          reviewReferenceUnknown: false,
           costUSD: 0,
           priceUnknown: false,
           model: key,
@@ -151,8 +165,9 @@ export function floatingTodayModelUsageItems(
   }
   return [...grouped.entries()].map(([key, row]) => {
     const usesIndependentQuota = independentQuotaModelName(row.model) !== null;
-    const costUSD = usesIndependentQuota || row.priceUnknown ? null : row.costUSD;
-    const referenceCostUSD = independentQuotaReferenceCostUSD(
+    const reviewOnly=isAutoReviewUsage(key);
+    const costUSD = usesIndependentQuota || reviewOnly || row.priceUnknown ? null : row.costUSD;
+    const referenceCostUSD = reviewOnly ? (row.reviewReferenceUnknown ? null : row.reviewReferenceCostUSD) : independentQuotaReferenceCostUSD(
       row.model,
       row.inputTokens,
       row.cachedInputTokens,
@@ -222,6 +237,10 @@ export function floatingModelUsagePageItems(
   return items.slice(start, start + sizes[safePageIndex]);
 }
 
+export function isReferenceOnlyModelUsage(item: FloatingModelUsageItem): boolean {
+  return item.usesIndependentQuota || isAutoReviewUsage(item.key.split("|").at(-1));
+}
+
 export function floatingModelUsageValue(
   item: FloatingModelUsageItem,
   page: FloatingModelUsagePage,
@@ -232,7 +251,7 @@ export function floatingModelUsageValue(
     if (percent > 0 && percent < 10) return `${percent.toFixed(1)}%`;
     return `${Math.round(percent)}%`;
   }
-  if (item.usesIndependentQuota) {
+  if (isReferenceOnlyModelUsage(item)) {
     const referenceCost = item.referenceCostUSD === null
       ? "—"
       : floatingModelUsageMoneyText(item.referenceCostUSD);
@@ -242,7 +261,7 @@ export function floatingModelUsageValue(
 }
 
 export function hasUnknownModelPrices(items: FloatingModelUsageItem[]): boolean {
-  return items.some((item) => item.tokens > 0 && !item.usesIndependentQuota && item.costUSD === null);
+  return items.some((item) => item.tokens > 0 && !isReferenceOnlyModelUsage(item) && item.costUSD === null);
 }
 
 /**
@@ -255,7 +274,7 @@ export function hasUnknownModelPrices(items: FloatingModelUsageItem[]): boolean 
 export function floatingModelUsageKnownCostUSD(
   items: FloatingModelUsageItem[],
 ): number | null {
-  const billable = items.filter((item) => item.tokens > 0 && !item.usesIndependentQuota);
+  const billable = items.filter((item) => item.tokens > 0 && !isReferenceOnlyModelUsage(item));
   const known = billable.filter((item) => item.costUSD !== null);
   if (billable.some((item) => item.costUSD === null) && known.length === 0) {
     return null;
@@ -267,7 +286,7 @@ export function floatingModelUsageAccessibilityText(
   page: FloatingModelUsagePage,
   rows: ModelUsageRowLike[] | null | undefined,
   fallbackModel: OfficialAPIPriceModel,
-  options: { showPlaceholders?: boolean } = {},
+  options: { showPlaceholders?: boolean; mergeAutoReview?: boolean } = {},
 ): string {
   const items = floatingTodayModelUsageItems(rows, fallbackModel, options);
   if (items.length === 0) return "今日模型待读取";

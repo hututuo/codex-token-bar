@@ -553,3 +553,13 @@ test("current Radar price revision reprices the same raw bucket breakdown withou
   assert.equal(result.localComparableUSD, 2);
   assert.equal(result.localCurrentAPIEquivalentUSD, 2);
 });
+
+test('incomplete model tracking still removes known free review from quota value', () => {
+  const partial=bucket(0,2_000_000,{calls:2,modelTrackingComplete:false,modelBreakdowns:[
+    {model:'codex-auto-review',breakdown:{inputTokens:1_000_000,cachedInputTokens:0,outputTokens:0,totalTokens:1_000_000,calls:1}},
+  ]});
+  const result=estimate({buckets:[partial],scannedBuckets:[partial],priceModel:'gpt56Sol'});
+  assert.equal(result.tokens.inputTokens,2_000_000);assert.equal(result.tokens.calls,2);
+  assert.equal(result.localCurrentAPIEquivalentUSD,4);assert.equal(result.localComparableUSD,5);
+  assert.deepEqual(result.excludedModels,['codex-auto-review']);assert.equal(result.excludedCalls,1);
+});

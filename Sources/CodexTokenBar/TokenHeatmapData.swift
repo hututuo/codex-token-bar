@@ -115,7 +115,7 @@ extension TokenHeatmap {
                 modelBreakdowns: rows,
                 modelCostUSD: cost,
                 isModelCost: true,
-                hasUnknownPrices: items.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
+                hasUnknownPrices: items.contains { !$0.isReferenceOnly && $0.costUSD == nil }
             )
         }
     }

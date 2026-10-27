@@ -181,7 +181,7 @@ function row(model, inputTokens, cachedInputTokens, outputTokens, totalTokens, c
   return { model, eventStartUnix, breakdown: { inputTokens, cachedInputTokens, outputTokens, totalTokens, calls } };
 }
 
-test("floating merges Review but dashboard separates it without changing totals or dated prices", () => {
+test("share merging retains tokens while fees exclude review and detail retains dated references", () => {
   const before = Date.parse("2026-07-29T12:00:00Z") / 1000;
   const after = Date.parse("2026-07-31T12:00:00Z") / 1000;
   const rows = [
@@ -193,13 +193,13 @@ test("floating merges Review but dashboard separates it without changing totals 
   const floating = floatingTodayModelUsageItems(rows, "gpt56Sol");
   const dashboard = floatingTodayModelUsageItems(rows, "gpt56Sol", { mergeAutoReview: false });
   assert.deepEqual(floating.map((item) => [item.label, item.tokens, item.costUSD]), [
-    ["5.4", 2_000_000, 5], ["Luna", 2_000_000, 0.4],
+    ["5.4", 2_000_000, 2.5], ["Luna", 2_000_000, 0.2],
   ]);
   assert.equal(dashboard.length, 4);
   assert.ok(dashboard.some((item) => item.label === "Auto Review（Luna）" && item.tokens === 1_000_000));
-  assert.ok(dashboard.some((item) => item.label === "Auto Review（5.4）" && item.costUSD === 2.5));
+  assert.ok(dashboard.some((item) => item.label === "Auto Review（5.4）" && item.costUSD === null && item.referenceCostUSD === 2.5));
   assert.equal(dashboard.reduce((sum, item) => sum + item.tokens, 0), 4_000_000);
-  assert.ok(Math.abs(dashboard.reduce((sum, item) => sum + item.costUSD, 0) - 5.4) < 1e-10);
+  assert.ok(Math.abs(dashboard.reduce((sum, item) => sum + (item.costUSD??0), 0) - 2.7) < 1e-10);
 });
 
 test("unpriced future models retain names and token shares without showing a zero or fallback price", () => {

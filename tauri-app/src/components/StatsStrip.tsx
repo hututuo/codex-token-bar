@@ -122,7 +122,7 @@ function StatsStripView({
     : expectedModelTokens <= 0 || modelCostRows.length > 0;
   const modelCostItems = useMemo(() => (
     clientCosts ? clientCosts[modelCostScope] : modelCostDataAvailable && modelDetailAvailable
-      ? floatingTodayModelUsageItems(modelCostRows, priceModel, { mergeAutoReview: true })
+      ? floatingTodayModelUsageItems(modelCostRows, priceModel, { mergeAutoReview: false })
       : []
   ), [clientCosts, modelCostScope, modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel]);
   const modelCostTotal = floatingModelUsageKnownCostUSD(modelCostItems);
@@ -132,7 +132,7 @@ function StatsStripView({
     : modelCostScope === "today"
     ? todayModelDisplayState
     : "current";
-  const independentReferenceSummary = modelCostItems
+  const referenceCostSummary = modelCostItems
     .filter((item) => item.referenceCostUSD !== null)
     .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
     .join(" · ");
@@ -213,9 +213,9 @@ function StatsStripView({
                   {modelPricesIncomplete ? "已知价格小计" : modelCostScope === "sevenDay" && cycleHistory.selected?.incomplete ? "已观测部分" : "合计"} {modelCostTotal === null ? "—" : `API ${floatingModelUsageMoneyText(modelCostTotal)}`}
                 </strong>
                 {modelPricesIncomplete ? <small className="stats-model-cost-reference">部分模型价格未知，未计入金额</small> : null}
-                {independentReferenceSummary ? (
+                {referenceCostSummary ? (
                   <small className="stats-model-cost-reference">
-                    {independentReferenceSummary}
+                    {referenceCostSummary}（不计入合计）
                   </small>
                 ) : null}
 

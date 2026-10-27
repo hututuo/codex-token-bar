@@ -25,6 +25,9 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
     /// Known dated contributions when the complete row cannot be priced.
     /// `costUSD` stays nil so this subtotal never implies a complete price.
     var knownPartialCostUSD: Double? = nil
+    var isReferenceOnly: Bool {
+        usesIndependentQuota || CodexAutoReviewPricingPolicy.isAutoReviewUsage(id.split(separator: "|").last.map(String.init))
+    }
 
     func valueText(for page: FloatingTodayModelUsagePage) -> String {
         switch page {
@@ -34,7 +37,7 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
             if percent > 0, percent < 10 { return String(format: "%.1f%%", percent) }
             return "\(Int(percent.rounded()))%"
         case .cost:
-            if usesIndependentQuota {
+            if isReferenceOnly {
                 let referenceCost = referenceCostUSD?.quotaEstimatorMoneyText ?? "—"
                 return "\(referenceCost)（不计入总计）"
             }
@@ -169,7 +172,7 @@ enum FloatingTodayModelUsagePresentation {
             let independent = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil
             let costUSD: Double?
             let knownPartialCostUSD: Double?
-            if independent || (row.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            if independent || CodexAutoReviewPricingPolicy.isAutoReviewUsage(row.model) || (row.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
                 costUSD = nil
                 knownPartialCostUSD = nil
             } else {
@@ -190,7 +193,7 @@ enum FloatingTodayModelUsagePresentation {
                     && estimate.fallbackCalls == 0
                     ? estimate.costUSD : nil
             }
-            let referenceCostUSD = IndependentQuotaReferencePricing.costUSD(
+            let referenceCostUSD = AutoReviewReferencePricing.costUSD(for: row) ?? IndependentQuotaReferencePricing.costUSD(
                 for: row.model,
                 breakdown: row.breakdown
             )
@@ -300,7 +303,7 @@ enum FloatingTodayModelUsagePresentation {
     /// Include priced epochs even when another epoch makes a row incomplete.
     /// No priced usage is different from a measured zero-dollar subtotal.
     static func knownCostUSD(in items: [FloatingTodayModelUsageItem]) -> Double? {
-        let billable = items.filter { $0.tokens > 0 && !$0.usesIndependentQuota }
+        let billable = items.filter { $0.tokens > 0 && !$0.isReferenceOnly }
         let knownCosts = billable.compactMap { $0.knownPartialCostUSD ?? $0.costUSD }
         if knownCosts.isEmpty && billable.contains(where: { $0.costUSD == nil }) {
             return nil
@@ -374,7 +377,7 @@ struct FloatingTodayModelUsageRow: View {
             from: displayRows,
             fallbackModel: fallbackModel,
             showPlaceholders: showPlaceholders,
-            mergeAutoReview: true
+            mergeAutoReview: page == .share
         )
         let items = FloatingTodayModelUsagePresentation.pageItems(
             for: page,
@@ -434,7 +437,7 @@ struct FloatingTodayModelUsageRow: View {
                 rows: displayRows,
                 fallbackModel: fallbackModel,
                 showPlaceholders: showPlaceholders,
-                mergeAutoReview: true
+                mergeAutoReview: page == .share
             ) + (usesGuideDemo ? "（示例，仅用于引导展示）" : "")
         )
     }

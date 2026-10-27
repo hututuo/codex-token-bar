@@ -1058,9 +1058,9 @@ function RecentChartQuotaEstimateOverlay({
           <b>命中 {percentText(selection.cacheHitRate)}</b>
         </div>
         {selection.excludedModels.length > 0 ? (
-          <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="独立额度说明">
+          <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="不计入费用说明">
             <span>{selection.excludedModels.join("、")} {selection.excludedCalls} 次调用</span>
-            <em>独立额度，不参与 API 等值</em>
+            <em>免费检查或独立额度，不计入费用</em>
           </div>
         ) : null}
         <div className="quota-estimate-row">
@@ -1136,9 +1136,9 @@ function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelec
         <em>当前 API {moneyText(attribution.localCurrentAPIEquivalentUSD)}</em>
       </div>
       {attribution.excludedModels.length > 0 ? (
-        <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="独立额度说明">
+        <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="不计入费用说明">
           <span>{attribution.excludedModels.join("、")} {attribution.excludedCalls} 次调用</span>
-          <em>独立额度，不参与 API 等值</em>
+          <em>免费检查或独立额度，不计入费用</em>
         </div>
       ) : null}
     </>
@@ -1308,7 +1308,7 @@ function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuota
     return `无 ${title} 额度`;
   }
 
-  const excludedNote = estimate.excludedModels.length > 0 ? " · 独立额度不计入" : "";
+  const excludedNote = estimate.excludedModels.length > 0 ? " · 免费检查或独立额度不计入" : "";
   const boundaryNote = estimate.boundaryBreakdown.leading.totalTokens > 0
     || estimate.boundaryBreakdown.trailing.totalTokens > 0
     ? ` · 边缘另计 ${formatTokens(estimate.boundaryBreakdown.leading.totalTokens + estimate.boundaryBreakdown.trailing.totalTokens)}`

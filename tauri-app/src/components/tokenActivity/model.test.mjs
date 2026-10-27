@@ -16,11 +16,11 @@ test("model cost heatmap labels unknown prices as a subtotal and retains Review 
     })),
   };
   const summary = hoverSummary(day, "modelCost", "gpt56Sol");
-  assert.match(summary, /已知价格小计 \$0\.40/);
+  assert.match(summary, /已知价格小计 \$0\.20/);
   assert.match(summary, /Auto Review（Luna） \$0\.20/);
   assert.match(summary, /GPT-5\.6-NewLane 价格未知/);
   const range = summarizeRange([day], day.date, day.date, "modelCost", "gpt56Sol");
-  assert.match(range.value, /已知价格小计 \$0\.40/);
+  assert.match(range.value, /已知价格小计 \$0\.20/);
   assert.match(range.value, /GPT-5\.6-NewLane 价格未知/);
 });
 

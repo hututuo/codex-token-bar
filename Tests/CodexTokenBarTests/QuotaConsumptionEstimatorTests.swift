@@ -430,8 +430,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 2.7, accuracy: 0.0001)
-        XCTAssertEqual(estimate.detectedModels, [.gpt56Luna, .gpt54Legacy])
+        XCTAssertEqual(estimate.costUSD, 0, accuracy: 0.0001)
+        XCTAssertTrue(estimate.detectedModels.isEmpty)
+        XCTAssertEqual(estimate.excludedModels, ["codex-auto-review"])
+        XCTAssertEqual(estimate.excludedCalls, 2)
         XCTAssertEqual(estimate.fallbackCalls, 0)
     }
 
@@ -561,11 +563,11 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 9.9, accuracy: 0.0001)
+        XCTAssertEqual(estimate.costUSD, 9.7, accuracy: 0.0001)
         XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra, .gpt56Luna, .gpt53Codex, .gpt52Codex])
         XCTAssertEqual(estimate.fallbackCalls, 0)
-        XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
-        XCTAssertEqual(estimate.excludedCalls, 1)
+        XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark", "codex-auto-review"])
+        XCTAssertEqual(estimate.excludedCalls, 2)
         XCTAssertEqual(estimate.unpricedModels, ["future-model"])
         XCTAssertEqual(estimate.unpricedCalls, 1)
     }

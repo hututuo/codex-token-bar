@@ -318,7 +318,7 @@ function SharedAccountAttributionDetail({
               </div>
               {attribution.excludedModels.length > 0 ? (
                 <div>
-                  <dt>独立额度</dt>
+                  <dt>不计入费用</dt>
                   <dd>{attribution.excludedModels.join("、")} {attribution.excludedCalls} 次调用，不参与 API 等值</dd>
                 </div>
               ) : null}

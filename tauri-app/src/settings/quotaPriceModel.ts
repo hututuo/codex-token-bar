@@ -89,7 +89,7 @@ export interface ModelAwareAPICostEstimate {
   /** Exact parsed model keys, including the distinct `gpt55` card. */
   detectedModelKeys?: DetectedOfficialAPIPriceModel[];
   fallbackCalls: number;
-  /** Models on an independent quota; retained in token/model stats but never priced. */
+  /** Free checks and independent quotas stay in token stats, outside billable value. */
   excludedModels: string[];
   excludedCalls: number;
   /** Explicit model names with no recognized API card; omitted from dollars. */
@@ -336,7 +336,7 @@ export function modelAwareAPICostUSD(
   const excludedModels: string[] = [];
   let excludedCalls = 0;
   const excludedBreakdown = rows.reduce((total, row) => {
-    const excluded = independentQuotaModelName(row.model);
+    const excluded = quotaValueExcludedModelName(row.model);
     if (!excluded) return total;
     if (!excludedModels.includes(excluded)) excludedModels.push(excluded);
     excludedCalls += finiteNonnegative(row.breakdown.calls);
@@ -351,7 +351,7 @@ export function modelAwareAPICostUSD(
   let unpricedCalls = 0;
   const unpricedRows = new Set<ModelTokenCostRow>();
   const unpricedBreakdown = rows.reduce((total, row) => {
-    if (independentQuotaModelName(row.model)) return total;
+    if (quotaValueExcludedModelName(row.model)) return total;
     const missingDatedPrice = basis === "current" && Number.isFinite(row.eventStartUnix)
       && standardAPIPriceQuote(detectedOfficialAPIPriceModel(row.model, row.eventStartUnix) ?? fallbackModel, row.eventStartUnix) === null;
     if (!isExplicitUnknownModel(row.model, row.eventStartUnix) && !missingDatedPrice) return total;
@@ -395,7 +395,7 @@ export function modelAwareAPICostUSD(
   const grouped = new Map<DetectedOfficialAPIPriceModel, ModelTokenCostRow["breakdown"]>();
   const unknown = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 };
   for (const row of rows) {
-    const excluded = independentQuotaModelName(row.model);
+    const excluded = quotaValueExcludedModelName(row.model);
     if (excluded) {
       continue;
     }
@@ -416,7 +416,7 @@ export function modelAwareAPICostUSD(
     breakdown: ModelTokenCostRow["breakdown"];
   }>();
   for (const row of rows) {
-    if (independentQuotaModelName(row.model)) continue;
+    if (quotaValueExcludedModelName(row.model)) continue;
     const detected = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix);
     if (unpricedRows.has(row)) continue;
     const model = detected ?? fallbackModel;
@@ -526,6 +526,35 @@ function canonicalModelKey(value: string | null | undefined): string {
     .toLowerCase()
     .replaceAll("_", "-")
     .replace(/[^a-z0-9]+/g, "");
+}
+
+export function isAutoReviewUsage(value: string | null | undefined): boolean {
+  const normalized = (value ?? "").trim().toLowerCase().replaceAll("_", "-");
+  return normalized.startsWith("codex-auto-review@") || canonicalModelKey(value) === "codexautoreview";
+}
+
+/** Free review remains in usage facts, but never in quota/subscription value. */
+export function quotaValueExcludedModelName(value: string | null | undefined): string | null {
+  return isAutoReviewUsage(value) ? "codex-auto-review" : independentQuotaModelName(value);
+}
+
+export function autoReviewReferenceCostUSD(
+  model: string | null | undefined,
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+  eventStartUnix?: number,
+): number | null {
+  if (!isAutoReviewUsage(model)) return null;
+  const normalized = (model ?? "").trim().toLowerCase().replaceAll("_", "-");
+  const target = normalized === "codex-auto-review@luna" ? "gpt56Luna"
+    : normalized === "codex-auto-review@5.4" ? "gpt54Legacy"
+    : normalized.includes("@") ? null : detectedOfficialAPIPriceModel(model, eventStartUnix);
+  if (!target) return null;
+  const rates = eventStartUnix === undefined
+    ? officialAPIPrices(target, "current")
+    : standardAPIPriceQuote(target, eventStartUnix)?.rates;
+  return rates ? costUSDForRates(inputTokens, cachedInputTokens, outputTokens, rates) : null;
 }
 
 /** Resolve the dated rule for an alias, using the current rule for legacy rows. */

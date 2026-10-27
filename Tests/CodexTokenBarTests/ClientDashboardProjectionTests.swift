@@ -2,7 +2,7 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ClientDashboardProjectionTests: XCTestCase {
-    func testDashboardAutoReviewMergesIntoDatedLunaWithoutChangingFacts() {
+    func testDashboardAutoReviewStaysSeparateWithoutChangingFacts() {
         let original = ["gpt-5.6-luna", "codex-auto-review@luna", "gpt-6-luna"].map {
             ModelTokenBreakdown(model: $0, breakdown: .init(
                 inputTokens: 100, cachedInputTokens: 0, outputTokens: 20,
@@ -13,10 +13,10 @@ final class ClientDashboardProjectionTests: XCTestCase {
             codex: .empty, todayCodex: original, rows: [], today: [], sevenDay: [],
             allowed: ["codex"], now: Date()
         )
-        XCTAssertEqual(costs.today.count, 2)
-        XCTAssertEqual(costs.today.first { $0.id == "codex|gpt-5.6-luna" }?.tokens, 240)
+        XCTAssertEqual(costs.today.count, 3)
+        XCTAssertEqual(costs.today.first { $0.id == "codex|gpt-5.6-luna" }?.tokens, 120)
         XCTAssertEqual(costs.today.first { $0.id == "codex|gpt-6-luna" }?.tokens, 120)
-        XCTAssertFalse(costs.today.contains { $0.label.contains("Auto Review") })
+        XCTAssertTrue(costs.today.contains { $0.label.contains("Auto Review") && $0.costUSD == nil && $0.referenceCostUSD != nil })
         XCTAssertEqual(original[1].model, "codex-auto-review@luna")
     }
 

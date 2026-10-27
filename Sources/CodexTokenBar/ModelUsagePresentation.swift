@@ -251,10 +251,12 @@ enum ModelUsagePresentation {
     /// floating underlying model.
     static func rowsWithDatedAutoReviewTargets(from rows: [ModelTokenBreakdown]) -> [ModelTokenBreakdown] {
         rows.flatMap { row in
-            if row.pricePeriods == nil, key(for: row.model).hasPrefix(autoReviewDisplayPrefix),
-               let target = autoReviewUnderlyingModelKey(for: row.model) {
+            if row.pricePeriods == nil, key(for: row.model).hasPrefix(autoReviewDisplayPrefix) {
+                // Keep the free-service identity even when only an old display
+                // key remains. Its underlying card is for reference pricing,
+                // never a replacement for the usage's billable identity.
                 return [ModelTokenBreakdown(model: row.model, breakdown: row.breakdown,
-                    pricePeriods: [.init(model: target, start: nil, breakdown: row.breakdown)])]
+                    pricePeriods: [.init(model: row.model, start: nil, breakdown: row.breakdown)])]
             }
             guard key(for: row.model) == "codex-auto-review", row.pricePeriods != nil else {
                 return [row]

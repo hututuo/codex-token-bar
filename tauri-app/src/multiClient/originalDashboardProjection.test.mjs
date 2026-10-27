@@ -33,15 +33,15 @@ test('client quota reuses original quota bars without the Codex attribution owne
  assert.match(html,/class="quota-strip"/);assert.match(html,/class="quota-bar"/);assert.match(html,/62%/);assert.doesNotMatch(html,/重置卡|官方直连/);
 }));
 
-test('dashboard merges Auto Review into the existing Luna estimate and preserves raw rows',async()=>withSsrModules(async load=>{
+test('dashboard keeps free review separate with its own reference price and unchanged raw rows',async()=>withSsrModules(async load=>{
  const {clientCostPeriods}=await load('/src/multiClient/originalDashboardProjection.ts');
  const source=dashboard();
  const rows=['gpt-5.6-luna','codex-auto-review','gpt-6-luna'].map(model=>({model,eventStartUnix:stamp,breakdown:{inputTokens:100,cachedInputTokens:0,outputTokens:20,totalTokens:120,calls:1}}));
  source.stats.modelBreakdowns=rows;
  const costs=clientCostPeriods(source,snapshot(),['codex'],stamp).lifetime;
- assert.equal(costs.length,2);
- assert.equal(costs.find(x=>x.key==='codex|gpt-5.6-luna')?.tokens,240);
+ assert.equal(costs.length,3);
+ assert.equal(costs.find(x=>x.key==='codex|gpt-5.6-luna')?.tokens,120);
  assert.equal(costs.find(x=>x.key==='codex|gpt-6-luna')?.tokens,120);
- assert.equal(costs.some(x=>x.label.includes('Auto Review')),false);
+ assert.equal(costs.some(x=>x.label.includes('Auto Review')&&x.costUSD===null&&x.referenceCostUSD>0),true);
  assert.equal(rows[1].model,'codex-auto-review');
 }));
