@@ -1,5 +1,6 @@
 import {
   standardAPIPriceQuote,
+  currentStandardAPIPriceQuote,
 } from "./standardAPIPriceSchedule.ts";
 
 export type OfficialAPIPriceModel =
@@ -116,25 +117,16 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
 // priority/service-tier and regional multipliers remain outside this estimate.
 // Local Codex usage does not expose cache writes separately.
 // https://developers.openai.com/api/docs/pricing
-const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
-  gpt6Astra: { inputUSDPerMillion: 10, cachedInputUSDPerMillion: 1, outputUSDPerMillion: 50 },
-  gpt61Sol: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 10 },
-  gpt6Sol: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 10 },
-  gpt6Luna: { inputUSDPerMillion: 0.1, cachedInputUSDPerMillion: 0.01, outputUSDPerMillion: 0.5 },
-  gpt56Sol: { inputUSDPerMillion: 4, cachedInputUSDPerMillion: 0.4, outputUSDPerMillion: 20 },
-  gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
-  gpt56Luna: { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 },
-  gpt53Codex: { inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14 },
-  gpt52Codex: { inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14 },
-  gpt54Legacy: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
-  gpt54MiniLegacy: { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 },
+const MODEL_STANDARD_KEYS: Record<DetectedOfficialAPIPriceModel, string> = {
+  gpt6Astra: "gpt-6-astra", gpt61Sol: "gpt-6.1-sol", gpt6Sol: "gpt-6-sol", gpt6Luna: "gpt-6-luna",
+  gpt56Sol: "gpt-5.6-sol", gpt56Terra: "gpt-5.6-terra", gpt56Luna: "gpt-5.6-luna", gpt55: "gpt-5.5",
+  gpt53Codex: "gpt-5.3-codex", gpt52Codex: "gpt-5.2-codex", gpt54Legacy: "gpt-5.4", gpt54MiniLegacy: "gpt-5.4-mini",
 };
-
-const GPT55_API_PRICES: APIPriceRates = {
-  inputUSDPerMillion: 5,
-  cachedInputUSDPerMillion: 0.5,
-  outputUSDPerMillion: 30,
-};
+function currentRates(model: DetectedOfficialAPIPriceModel): APIPriceRates {
+  const quote = currentStandardAPIPriceQuote(MODEL_STANDARD_KEYS[model]);
+  if (!quote) throw new Error(`Missing admitted standard price: ${model}`);
+  return quote.rates;
+}
 
 // Codex Radar's public 2026-07-30 quota basis uses the then-published model
 // price card. Keep this separate from current OpenAI prices so both sides of
@@ -210,11 +202,11 @@ export function officialAPIPrices(
   priceModel: OfficialAPIPriceModel | "gpt55",
   basis: QuotaPriceBasis = "current",
 ): APIPriceRates {
-  if (priceModel === "gpt55") return GPT55_API_PRICES;
+  if (priceModel === "gpt55") return currentRates("gpt55");
   const normalized = normalizeOfficialAPIPriceModel(priceModel) ?? "gpt56Sol";
   return basis === "radar20260730"
-    ? RADAR_2026_07_30_PRICES[normalized] ?? CURRENT_API_PRICES[normalized]
-    : CURRENT_API_PRICES[normalized];
+    ? RADAR_2026_07_30_PRICES[normalized] ?? currentRates(normalized)
+    : currentRates(normalized);
 }
 
 export function officialAPICostUSD(

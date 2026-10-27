@@ -1,4 +1,5 @@
 import XCTest
+import AgentSpeedCore
 @testable import CodexTokenBar
 
 final class StandardAPIPriceScheduleTests: XCTestCase {
@@ -178,6 +179,23 @@ final class StandardAPIPriceScheduleTests: XCTestCase {
         let noDate = ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: rows,
             timestamp: nil, fallbackBreakdown: breakdown, fallbackModel: .gpt56Sol)
         XCTAssertEqual(noDate.costUSD, 2.05, accuracy: 0.000001)
+    }
+
+    func testEveryAdmittedCurrentCardUsesPinnedUpstreamAndHistoryRetainsFreeze() throws {
+        let ids = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.4", "gpt-5.4-mini"]
+        for id in ids {
+            let entry = try XCTUnwrap(PriceBook.bundled.models.first { $0.id == id })
+            let prices = try XCTUnwrap(entry.pricing?.base.prices)
+            let quote = try XCTUnwrap(StandardAPIPriceSchedule.currentQuote(for: id))
+            XCTAssertEqual(quote.rates.inputUSDPerMillion, Double(prices.input) / 1_000_000)
+            XCTAssertEqual(quote.rates.cachedInputUSDPerMillion, Double(prices.cachedInput) / 1_000_000)
+            XCTAssertEqual(quote.rates.outputUSDPerMillion, Double(prices.output) / 1_000_000)
+            // This date is a frozen local accounting snapshot, never Date().
+            XCTAssertEqual(StandardAPIPriceSchedule.quote(for: id, at: date("2026-10-26T00:00:00Z"))?.rates, quote.rates)
+        }
+        for model in OfficialAPIPriceModel.allCases {
+            XCTAssertGreaterThan(model.currentPriceRates.outputUSDPerMillion, 0)
+        }
     }
 
     private func date(_ value: String) -> Date {

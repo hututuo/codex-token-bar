@@ -475,34 +475,27 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     }
 
     var currentPriceRates: APIPriceRates {
-        // Standard short-context prices published by OpenAI. Long-context,
-        // cache-write, priority/service-tier and regional multipliers remain
-        // outside this estimate. Local Codex usage does not expose cache
-        // writes separately, so only input, cached input, and output are priced.
+        // Current values share Agent Speed's pinned asset; historical event
+        // quotes and the Radar vintage remain separate, immutable projections.
+        let key: String
         switch self {
-        case .gpt6Astra:
-            APIPriceRates(inputUSDPerMillion: 10.00, cachedInputUSDPerMillion: 1.00, outputUSDPerMillion: 50.00)
-        case .gpt61Sol:
-            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.10, outputUSDPerMillion: 10.00)
-        case .gpt6Sol:
-            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 10.00)
-        case .gpt6Luna:
-            APIPriceRates(inputUSDPerMillion: 0.10, cachedInputUSDPerMillion: 0.01, outputUSDPerMillion: 0.50)
-        case .gpt56Sol:
-            APIPriceRates(inputUSDPerMillion: 4.00, cachedInputUSDPerMillion: 0.40, outputUSDPerMillion: 20.00)
-        case .gpt55:
-            APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
-        case .gpt56Terra:
-            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
-        case .gpt56Luna:
-            APIPriceRates(inputUSDPerMillion: 0.20, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.20)
-        case .gpt53Codex, .gpt52Codex:
-            APIPriceRates(inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14.00)
-        case .gpt54Legacy:
-            APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
-        case .gpt54MiniLegacy:
-            APIPriceRates(inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.50)
+        case .gpt6Astra: key = "gpt-6-astra"
+        case .gpt61Sol: key = "gpt-6.1-sol"
+        case .gpt6Sol: key = "gpt-6-sol"
+        case .gpt6Luna: key = "gpt-6-luna"
+        case .gpt56Sol: key = "gpt-5.6-sol"
+        case .gpt55: key = "gpt-5.5"
+        case .gpt56Terra: key = "gpt-5.6-terra"
+        case .gpt56Luna: key = "gpt-5.6-luna"
+        case .gpt53Codex: key = "gpt-5.3-codex"
+        case .gpt52Codex: key = "gpt-5.2-codex"
+        case .gpt54Legacy: key = "gpt-5.4"
+        case .gpt54MiniLegacy: key = "gpt-5.4-mini"
         }
+        guard let quote = StandardAPIPriceSchedule.currentQuote(for: key) else {
+            preconditionFailure("Missing admitted current price: \(key)")
+        }
+        return quote.rates
     }
 
     var inputUSDPerMillion: Double {

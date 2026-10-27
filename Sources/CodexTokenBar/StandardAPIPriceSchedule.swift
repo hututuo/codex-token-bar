@@ -1,4 +1,5 @@
 import Foundation
+import AgentSpeedCore
 
 /// A small, historical lookup for OpenAI's standard short-context API card.
 ///
@@ -106,135 +107,52 @@ enum StandardAPIPriceSchedule {
         return currentQuote(forCanonicalKey: modelKey)
     }
 
-    private static func quote(
-        forCanonicalKey modelKey: String,
-        at eventDate: Date
-    ) -> StandardAPIPriceQuote? {
-        switch modelKey {
-        case "gpt-6-astra":
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 10,
-                cachedInputUSDPerMillion: 1,
-                outputUSDPerMillion: 50
-            ), revision: "standard-api-gpt-6-astra")
-        case "gpt-6.1-sol":
-            guard eventDate >= gpt61SolCutover else { return nil }
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 2,
-                cachedInputUSDPerMillion: 0.1,
-                outputUSDPerMillion: 10
-            ), revision: "standard-api-gpt-6.1-sol-from-2026-09-29")
-        case "gpt-6-sol":
-            guard eventDate >= gpt6SolAndLunaCutover else { return nil }
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 2,
-                cachedInputUSDPerMillion: 0.2,
-                outputUSDPerMillion: 10
-            ), revision: "standard-api-gpt-6-sol-from-2026-09-22")
-        case "gpt-6-luna":
-            guard eventDate >= gpt6SolAndLunaCutover else { return nil }
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 0.1,
-                cachedInputUSDPerMillion: 0.01,
-                outputUSDPerMillion: 0.5
-            ), revision: "standard-api-gpt-6-luna-from-2026-09-22")
-        case "gpt-5.5":
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 5,
-                cachedInputUSDPerMillion: 0.5,
-                outputUSDPerMillion: 30
-            ), revision: "standard-api-gpt-5.5")
-        case "gpt-5.6-sol":
-            if eventDate < solCutover {
-                return fixedQuote(modelKey, rates: APIPriceRates(
-                    inputUSDPerMillion: 5,
-                    cachedInputUSDPerMillion: 0.5,
-                    outputUSDPerMillion: 30
-                ), revision: "standard-api-gpt-5.6-sol-before-2026-08-21")
-            }
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 4,
-                cachedInputUSDPerMillion: 0.4,
-                outputUSDPerMillion: 20
-            ), revision: "standard-api-gpt-5.6-sol-from-2026-08-21")
-        case "gpt-5.6-terra":
-            if eventDate < terraAndLunaCutover {
-                return fixedQuote(modelKey, rates: APIPriceRates(
-                    inputUSDPerMillion: 2.5,
-                    cachedInputUSDPerMillion: 0.25,
-                    outputUSDPerMillion: 15
-                ), revision: "standard-api-gpt-5.6-terra-before-2026-07-30")
-            }
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 2,
-                cachedInputUSDPerMillion: 0.2,
-                outputUSDPerMillion: 12
-            ), revision: "standard-api-gpt-5.6-terra-from-2026-07-30")
-        case "gpt-5.6-luna":
-            if eventDate < terraAndLunaCutover {
-                return fixedQuote(modelKey, rates: APIPriceRates(
-                    inputUSDPerMillion: 1,
-                    cachedInputUSDPerMillion: 0.1,
-                    outputUSDPerMillion: 6
-                ), revision: "standard-api-gpt-5.6-luna-before-2026-07-30")
-            }
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 0.2,
-                cachedInputUSDPerMillion: 0.02,
-                outputUSDPerMillion: 1.2
-            ), revision: "standard-api-gpt-5.6-luna-from-2026-07-30")
-        case "gpt-5.3-codex", "gpt-5.2-codex":
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 1.75,
-                cachedInputUSDPerMillion: 0.175,
-                outputUSDPerMillion: 14
-            ), revision: "standard-api-\(modelKey)")
-        case "gpt-5.4":
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 2.5,
-                cachedInputUSDPerMillion: 0.25,
-                outputUSDPerMillion: 15
-            ), revision: "standard-api-gpt-5.4")
-        case "gpt-5.4-mini":
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 0.75,
-                cachedInputUSDPerMillion: 0.075,
-                outputUSDPerMillion: 4.5
-            ), revision: "standard-api-gpt-5.4-mini")
-        default:
-            return nil
+    private struct History: Decodable {
+        struct Row: Decodable {
+            let modelKey: String
+            let fromUnix: Double?
+            let revision: String
+            let rates: Rates
         }
+        struct Rates: Decodable {
+            let inputUSDPerMillion: Double
+            let cachedInputUSDPerMillion: Double
+            let outputUSDPerMillion: Double
+            var value: APIPriceRates { APIPriceRates(inputUSDPerMillion: inputUSDPerMillion,
+                cachedInputUSDPerMillion: cachedInputUSDPerMillion, outputUSDPerMillion: outputUSDPerMillion) }
+        }
+        let schema: Int
+        let rows: [Row]
+    }
+    private static let history: History = {
+        guard let url = Bundle.module.url(forResource: "standard-api-price-history", withExtension: "json"),
+              let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode(History.self, from: data),
+              value.schema == 1 else { preconditionFailure("Missing or invalid bundled standard price history") }
+        return value
+    }()
+
+    private static func quote(forCanonicalKey modelKey: String, at eventDate: Date) -> StandardAPIPriceQuote? {
+        guard let row = history.rows.last(where: { $0.modelKey == modelKey && ($0.fromUnix ?? -Double.infinity) <= eventDate.timeIntervalSince1970 }) else { return nil }
+        return fixedQuote(modelKey, rates: row.rates.value, revision: row.revision)
     }
 
-    private static func currentQuote(forCanonicalKey modelKey: String) -> StandardAPIPriceQuote? {
-        // Current is intentionally independent of the historical API. A
-        // future cutover must update this branch without changing old events.
-        switch modelKey {
-        case "gpt-6-sol", "gpt-6-luna":
-            return quote(forCanonicalKey: modelKey, at: .distantFuture)
-        case "gpt-5.6-sol":
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 4,
-                cachedInputUSDPerMillion: 0.4,
-                outputUSDPerMillion: 20
-            ), revision: "standard-api-gpt-5.6-sol-from-2026-08-21")
-        case "gpt-5.6-terra":
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 2,
-                cachedInputUSDPerMillion: 0.2,
-                outputUSDPerMillion: 12
-            ), revision: "standard-api-gpt-5.6-terra-from-2026-07-30")
-        case "gpt-5.6-luna":
-            return fixedQuote(modelKey, rates: APIPriceRates(
-                inputUSDPerMillion: 0.2,
-                cachedInputUSDPerMillion: 0.02,
-                outputUSDPerMillion: 1.2
-            ), revision: "standard-api-gpt-5.6-luna-from-2026-07-30")
-        default:
-            // For fixed-price rows the current revision is the same stable
-            // standard card, while the dated method still requires a date.
-            return quote(forCanonicalKey: modelKey, at: Date.distantFuture)
+    private static let currentRatesByModel: [String: APIPriceRates] = {
+        var values: [String: APIPriceRates] = [:]
+        let unit = 1_000_000.0
+        for model in PriceBook.bundled.models {
+            guard let base = model.pricing?.base.prices else { continue }
+            values[model.id] = APIPriceRates(inputUSDPerMillion: Double(base.input) / unit,
+                cachedInputUSDPerMillion: Double(base.cachedInput) / unit, outputUSDPerMillion: Double(base.output) / unit)
         }
+        return values
+    }()
+
+    private static func currentQuote(forCanonicalKey modelKey: String) -> StandardAPIPriceQuote? {
+        // Only exact admitted standard IDs. No fuzzy resolver, network, Fast,
+        // long-context or cache-write default is introduced into the old Codex card.
+        guard let rates = currentRatesByModel[modelKey],
+              let revision = history.rows.last(where: { $0.modelKey == modelKey })?.revision else { return nil }
+        return fixedQuote(modelKey, rates: rates, revision: revision)
     }
 
     private static func fixedQuote(
