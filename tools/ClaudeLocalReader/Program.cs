@@ -69,7 +69,11 @@ internal static class Program
             EnsureLocalPath(codexRoot, "Codex");
         }
 
-        var configuration = new MonitorConfiguration(enabled, CodexRoot: codexRoot, ClaudeRoot: claudeRoot);
+        foreach (var path in options.OtherRoots.Values) { EnsureLocalPath(Path.GetFullPath(path), "Activity"); }
+        var configuration = new MonitorConfiguration(enabled, CodexRoot: codexRoot, ClaudeRoot: claudeRoot,
+            DshRoot: options.OtherRoots.GetValueOrDefault(SourceKind.DeepSeek),
+            OpenCodeRoot: options.OtherRoots.GetValueOrDefault(SourceKind.OpenCode),
+            GeminiRoot: options.OtherRoots.GetValueOrDefault(SourceKind.Gemini));
         var hub = new SpeedHub(context: null);
         var processSalt = RandomNumberGenerator.GetBytes(32);
         var latest = new SnapshotCell();
@@ -197,6 +201,7 @@ internal static class Program
         var sources = new HashSet<SourceKind>();
         string? root = null;
         string? codexRoot = null;
+        var otherRoots = new Dictionary<SourceKind, string>();
         for (var index = 0; index < args.Length; index++)
         {
             switch (args[index])
@@ -239,14 +244,26 @@ internal static class Program
                     }
 
                     break;
+                case "--dsh-root" or "--gemini-root" or "--opencode-root" when index + 1 < args.Length:
+                    var rootSource = args[index] switch {
+                        "--dsh-root" => SourceKind.DeepSeek,
+                        "--gemini-root" => SourceKind.Gemini,
+                        _ => SourceKind.OpenCode,
+                    };
+                    if (!otherRoots.TryAdd(rootSource, args[++index]) || string.IsNullOrWhiteSpace(args[index]))
+                        throw new ArgumentException("A local source root may be specified only once.");
+                    break;
                 case "--source" when index + 1 < args.Length:
                     sourceWasSpecified = true;
                     var source = args[++index] switch
                     {
                         "codex" => SourceKind.Codex,
+                        "deepseek" => SourceKind.DeepSeek,
+                        "gemini" => SourceKind.Gemini,
+                        "opencode" => SourceKind.OpenCode,
                         "claudeCode" => SourceKind.ClaudeCode,
                         "claudeDesktop" => SourceKind.ClaudeDesktop,
-                        _ => throw new ArgumentException("Only local Codex and Claude sources are supported."),
+                        _ => throw new ArgumentException("Only supported local sources are allowed."),
                     };
                     sources.Add(source);
                     break;
@@ -256,8 +273,8 @@ internal static class Program
         }
 
         if ((watch && once)
-            || (captureStatusline && (watch || once || root is not null || codexRoot is not null || sourceWasSpecified))
-            || (selfTest && (watch || once || captureStatusline || root is not null || codexRoot is not null || sourceWasSpecified)))
+            || (captureStatusline && (watch || once || root is not null || codexRoot is not null || otherRoots.Count > 0 || sourceWasSpecified))
+            || (selfTest && (watch || once || captureStatusline || root is not null || codexRoot is not null || otherRoots.Count > 0 || sourceWasSpecified)))
         {
             throw new ArgumentException("Helper modes cannot be combined.");
         }
@@ -279,7 +296,9 @@ internal static class Program
             throw new ArgumentException("--codex-root requires --source codex.");
         }
 
-        return new Options(watch, captureStatusline, selfTest, root, codexRoot, sources);
+        if (otherRoots.Keys.Any(source => !sources.Contains(source)))
+            throw new ArgumentException("A source root requires its corresponding --source.");
+        return new Options(watch, captureStatusline, selfTest, root, codexRoot, sources, otherRoots);
     }
 
     private static bool IsClaudeSource(SourceKind source) =>
@@ -287,9 +306,9 @@ internal static class Program
 
     private static void EnsureLocalPath(string path, string sourceName)
     {
-        if (path.StartsWith("\\\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal))
+        if (!HasAllowedLocalRootPathSyntax(path))
         {
-            throw new ArgumentException("Network paths are not supported.");
+            throw new ArgumentException("Only local filesystem paths are supported.");
         }
 
         var fullPath = Path.GetFullPath(path);
@@ -314,6 +333,30 @@ internal static class Program
             }
         }
     }
+
+    private static bool HasAllowedLocalRootPathSyntax(string path)
+    {
+        const string extendedPrefix = @"\\?\";
+        if (path.StartsWith(extendedPrefix, StringComparison.Ordinal))
+        {
+            // Windows canonicalization can preserve this extended-length local drive form.
+            // Do not permit UNC, device, volume, or GLOBALROOT namespaces through this prefix.
+            return IsDriveRootedPath(path, extendedPrefix.Length);
+        }
+
+        if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return IsDriveRootedPath(path, 0) || Path.IsPathFullyQualified(path);
+    }
+
+    private static bool IsDriveRootedPath(string path, int start) =>
+        path.Length >= start + 3
+        && ((path[start] is >= 'A' and <= 'Z') || (path[start] is >= 'a' and <= 'z'))
+        && path[start + 1] == ':'
+        && path[start + 2] is '\\' or '/';
 
     private static void RunSelfTests()
     {
@@ -367,6 +410,15 @@ internal static class Program
 
         ExpectInvalid("{\"schema_version\":1,\"captured_at_epoch\":1,\"rate_limits\":{\"five_hour\":{\"used_percentage\":101}}}");
         ExpectInvalid("{\"schema_version\":1,\"captured_at_epoch\":1,\"context_window\":{\"current_usage\":{\"input_tokens\":-1}}}");
+        Require(HasAllowedLocalRootPathSyntax(@"C:\Users\Test\.codex\sessions"), "normal local drive path accepted");
+        Require(HasAllowedLocalRootPathSyntax(@"\\?\C:\Users\Test\.codex\sessions"), "extended-length local drive path accepted");
+        Require(HasAllowedLocalRootPathSyntax(@"\\?\d:/Users/Test/.codex/sessions"), "extended-length local drive path accepts forward separators");
+        Require(!HasAllowedLocalRootPathSyntax(@"\\?\UNC\server\share"), "extended UNC rejected");
+        Require(!HasAllowedLocalRootPathSyntax(@"\\.\C:\Users\Test"), "device namespace rejected");
+        Require(!HasAllowedLocalRootPathSyntax(@"\\?\GLOBALROOT\Device\HarddiskVolume1"), "GLOBALROOT namespace rejected");
+        Require(!HasAllowedLocalRootPathSyntax(@"\\server\share"), "UNC path rejected");
+        Require(!HasAllowedLocalRootPathSyntax("//server/share"), "slash UNC path rejected");
+        Require(!HasAllowedLocalRootPathSyntax(@"\\?\C:relative"), "drive-relative verbatim path rejected");
         try
         {
             StatuslineCache.Parse(new byte[StatuslineCache.MaximumInputBytes + 1]);
@@ -426,6 +478,47 @@ internal static class Program
             new HashSet<SourceKind> { SourceKind.Codex }, manyResponses);
         Require(boundedEvents.ResponseEvents.Count == 32, "bounded response event history");
 
+        var modelSwitchBase = CreateSampleSnapshot();
+        var switchedSession = modelSwitchBase.Agents.Single(agent => agent.Source == SourceKind.ClaudeCode && !agent.IsSubagent);
+        var afterModelSwitch = modelSwitchBase with
+        {
+            Agents = modelSwitchBase.Agents.Select(agent => agent.Id == switchedSession.Id
+                ? agent with { Model = "claude-opus-4-1" }
+                : agent).ToArray(),
+            LiveModels =
+            [
+                new SourceModelRate(SourceKind.ClaudeCode, "claude-sonnet-4-6", new Rate(0.5, 0.75)),
+                new SourceModelRate(SourceKind.ClaudeCode, "claude-opus-4-1", new Rate(2.25, 3.0)),
+            ],
+        };
+        var mappedModelSwitch = RuntimeSnapshotMapper.Map(
+            afterModelSwitch,
+            RandomNumberGenerator.GetBytes(32),
+            new HashSet<SourceKind> { SourceKind.ClaudeCode });
+        Require(mappedModelSwitch.MainAgents.Single().Model == "claude-opus-4-1", "session current model after switch");
+        Require(mappedModelSwitch.ModelRates.Count(rate => rate.Model == "claude-sonnet-4-6") == 1
+            && mappedModelSwitch.ModelRates.Single(rate => rate.Model == "claude-sonnet-4-6").OutputTps == 0.5
+            && mappedModelSwitch.ModelRates.Single(rate => rate.Model == "claude-opus-4-1").OutputTps == 2.25,
+            "previous-model live tail remains attributed across a session model switch");
+
+        var sharedModelSnapshot = CreateSampleSnapshot() with
+        {
+            LiveModels =
+            [
+                new SourceModelRate(SourceKind.ClaudeCode, "shared-model", new Rate(2, 3)),
+                new SourceModelRate(SourceKind.Codex, "shared-model", new Rate(5, 7)),
+            ],
+        };
+        var mappedSharedModels = RuntimeSnapshotMapper.Map(
+            sharedModelSnapshot,
+            RandomNumberGenerator.GetBytes(32),
+            new HashSet<SourceKind> { SourceKind.ClaudeCode, SourceKind.Codex });
+        var sharedModelRates = mappedSharedModels.ModelRates.Where(rate => rate.Model == "shared-model").ToArray();
+        Require(sharedModelRates.Length == 2
+            && sharedModelRates.Single(rate => rate.Client == "claudeCode").OutputTps == 2
+            && sharedModelRates.Single(rate => rate.Client == "codex").OutputTps == 5,
+            "same-name model rates stay isolated by source");
+
         var defaultArguments = ParseArguments([]);
         Require(defaultArguments.Sources.Count == 2
             && defaultArguments.Sources.Contains(SourceKind.ClaudeCode)
@@ -435,6 +528,45 @@ internal static class Program
             && codexArguments.Sources.Contains(SourceKind.Codex)
             && codexArguments.CodexRoot is not null,
             "explicit Codex root CLI selection");
+        var externalArguments = ParseArguments(
+        [
+            "--source", "deepseek", "--dsh-root", "C:\\Users\\Test\\.deepseek\\sessions",
+            "--source", "gemini", "--gemini-root", "C:\\Users\\Test\\.gemini",
+            "--source", "opencode", "--opencode-root", "C:\\Users\\Test\\.local\\share\\opencode",
+        ]);
+        Require(externalArguments.Sources.SetEquals([SourceKind.DeepSeek, SourceKind.Gemini, SourceKind.OpenCode])
+            && externalArguments.OtherRoots.Count == 3
+            && externalArguments.OtherRoots.ContainsKey(SourceKind.DeepSeek)
+            && externalArguments.OtherRoots.ContainsKey(SourceKind.Gemini)
+            && externalArguments.OtherRoots.ContainsKey(SourceKind.OpenCode),
+            "explicit DeepSeek, Gemini, and OpenCode source roots");
+
+        var externalBase = CreateSampleSnapshot();
+        var externalSources = new[] { SourceKind.DeepSeek, SourceKind.Gemini, SourceKind.OpenCode };
+        var externalSnapshot = externalBase with
+        {
+            Sources = externalBase.Sources.Concat(externalSources.Select((source, index) => new SourceStatus(
+                source, true, "private-path", true, 1, new Rate(index + 1, index + 2), TokenTotals.Zero, 1))).ToArray(),
+            Agents = externalBase.Agents.Concat(externalSources.Select((source, index) => new AgentStatus(
+                $"private-external-{index}", source, "private-project", null, AgentPhase.Generating,
+                false, new Rate(index + 1, index + 2), null, DateTimeOffset.UtcNow))).ToArray(),
+            LiveModels = externalSources.Select((source, index) => new SourceModelRate(
+                source, $"external-model-{index}", new Rate(index + 1, index + 2))).ToArray(),
+        };
+        var mappedExternalSources = RuntimeSnapshotMapper.Map(
+            externalSnapshot,
+            RandomNumberGenerator.GetBytes(32),
+            externalSources.ToHashSet());
+        Require(mappedExternalSources.SourceAvailable["deepseek"]
+            && mappedExternalSources.SourceAvailable["gemini"]
+            && mappedExternalSources.SourceAvailable["opencode"],
+            "explicit external sources appear as available");
+        Require(mappedExternalSources.LiveOutputTps == 6 && mappedExternalSources.LiveTotalTps == 9
+            && mappedExternalSources.MainAgents.Select(agent => agent.Client).Order(StringComparer.Ordinal)
+                .SequenceEqual(["deepseek", "gemini", "opencode"])
+            && mappedExternalSources.ModelRates.Select(rate => rate.Client).Order(StringComparer.Ordinal)
+                .SequenceEqual(["deepseek", "gemini", "opencode"]),
+            "external source totals, agents, and models map by source");
 
         var sample = CreateSampleSnapshot();
         var staleIdle = new AgentStatus(
@@ -489,7 +621,15 @@ internal static class Program
             var codex = new AgentStatus("C:\\Users\\someone\\.codex\\sessions\\codex.jsonl", SourceKind.Codex,
                 "ignored-codex-project", null, AgentPhase.Generating, false, new Rate(8, 10), 2.3, now);
             return new SpeedSnapshot(now, MonitorState.Running, new Rate(11, 14), 0.4, Rate.Zero, null, null,
-                TokenTotals.Zero, sources, [main, sub, codex], 2, 1, [], response, []);
+                TokenTotals.Zero, sources, [main, sub, codex], 2, 1, [], response, [])
+            {
+                LiveModels =
+                [
+                    new SourceModelRate(SourceKind.ClaudeCode, "claude-sonnet-4-6", new Rate(2, 3)),
+                    new SourceModelRate(SourceKind.ClaudeCode, "claude-haiku-4-5", new Rate(1, 1)),
+                    new SourceModelRate(SourceKind.Codex, null, new Rate(8, 10)),
+                ],
+            };
         }
     }
 
@@ -557,5 +697,6 @@ internal static class Program
         bool SelfTest,
         string? Root,
         string? CodexRoot,
-        IReadOnlySet<SourceKind> Sources);
+        IReadOnlySet<SourceKind> Sources,
+        IReadOnlyDictionary<SourceKind, string> OtherRoots);
 }

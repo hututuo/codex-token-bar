@@ -17,12 +17,14 @@ const STATUS_LINE_LIMIT: usize = 4096;
 const MAX_TPS: f64 = 1_000_000_000.0;
 const REPORTER_DENIED_SOURCE_IDS: &[&str] = &["claudeCode", "claudeDesktop"];
 
-fn reporter_start_payload(username: &str) -> serde_json::Value {
-    serde_json::json!({
+fn reporter_start_payload(username: &str, local_roots: &std::collections::BTreeMap<String, String>) -> serde_json::Value {
+    let mut payload = serde_json::json!({
         "enabled": true,
         "username": username,
         "deniedSourceIds": REPORTER_DENIED_SOURCE_IDS,
-    })
+    });
+    if !local_roots.is_empty() { payload["localSourceRoots"] = serde_json::json!(local_roots); }
+    payload
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -74,6 +76,10 @@ impl AgentSpeedReportingStatus {
 struct RegistryData {
     status: Option<AgentSpeedReportingStatus>,
     active_username: Option<String>,
+    #[cfg(windows)]
+    active_codex_home: Option<std::path::PathBuf>,
+    #[cfg(windows)]
+    active_local_source_roots: std::collections::BTreeMap<String, String>,
     #[cfg(any(windows, test))]
     generation: u64,
 }
@@ -166,7 +172,16 @@ impl AgentSpeedReportingRegistry {
                     return Err(error);
                 }
             };
-            if self.child_is_running_for(&username) {
+            let codex_home = std::path::PathBuf::from(crate::platform::default_codex_home_status().path);
+            let local_source_roots = match crate::core::claude_local_runtime::selected_reporting_local_roots() {
+                Ok(roots) => roots,
+                Err(_) => {
+                    self.invalidate_generation(); self.stop_process().await;
+                    self.set_error_status(settings, "local_source_unavailable");
+                    return Err("Local activity source configuration is unavailable.".into());
+                }
+            };
+            if self.child_is_running_for(&username, &codex_home, &local_source_roots) {
                 return Ok(());
             }
 
@@ -186,6 +201,8 @@ impl AgentSpeedReportingRegistry {
                 .stderr(Stdio::null())
                 .env_clear();
             copy_safe_environment(&mut command, &username);
+            // The app-selected home wins over an unrelated parent-process CODEX_HOME.
+            command.env("CODEX_HOME", &codex_home);
             if let Some(profile) = std::env::var_os("USERPROFILE") {
                 command.current_dir(profile);
             }
@@ -204,9 +221,10 @@ impl AgentSpeedReportingRegistry {
                 "Agent Speed reporter helper could not start.".to_owned()
             })?;
 
-            let startup = reporter_start_payload(&username);
+            let startup = reporter_start_payload(&username, &local_source_roots);
             let mut line = serde_json::to_vec(&startup)
                 .map_err(|_| "Agent Speed reporter helper could not start.".to_owned())?;
+            if line.len() >= STATUS_LINE_LIMIT { return Err("Local activity source configuration exceeds the startup limit.".into()); }
             line.push(b'\n');
             child_stdin.write_all(&line).await.map_err(|_| {
                 self.set_error_status(settings, "helper_unavailable");
@@ -220,6 +238,8 @@ impl AgentSpeedReportingRegistry {
             {
                 let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
                 data.active_username = Some(username.clone());
+                data.active_codex_home = Some(codex_home);
+                data.active_local_source_roots = local_source_roots;
                 data.status = Some(AgentSpeedReportingStatus::from_settings(settings));
             }
             *self.stdin.lock().await = Some(child_stdin);
@@ -312,7 +332,7 @@ impl AgentSpeedReportingRegistry {
     }
 
     #[cfg(windows)]
-    fn child_is_running_for(&self, username: &str) -> bool {
+    fn child_is_running_for(&self, username: &str, codex_home: &std::path::Path, local_source_roots: &std::collections::BTreeMap<String,String>) -> bool {
         let mut child = self.child.lock().unwrap_or_else(|error| error.into_inner());
         let running = match child.as_mut() {
             Some(child) => matches!(child.try_wait(), Ok(None)),
@@ -320,7 +340,7 @@ impl AgentSpeedReportingRegistry {
         };
         if running {
             let data = self.data.lock().unwrap_or_else(|error| error.into_inner());
-            return data.active_username.as_deref() == Some(username);
+            return data.active_username.as_deref() == Some(username) && data.active_codex_home.as_deref() == Some(codex_home) && &data.active_local_source_roots == local_source_roots;
         }
 
         child.take();
@@ -584,6 +604,7 @@ fn message_for(code: &str) -> &'static str {
         "key_unavailable" => "设备签名密钥不可用",
         "reporting_failed" => "服务错误导致上报停止",
         "helper_unavailable" => "上报程序不可用",
+        "local_source_unavailable" => "本地来源配置不可用，已停止上报",
         "windows_only" => "Agent Speed 上报仅支持 Windows",
         "disabled" => "未开启",
         _ => "上报程序意外停止",
@@ -776,7 +797,7 @@ mod tests {
 
     #[test]
     fn reporter_start_contract_and_status_guard_deny_only_claude_sources() {
-        let startup = reporter_start_payload("TokenBar-test");
+        let startup = reporter_start_payload("TokenBar-test", &Default::default());
         assert_eq!(startup["enabled"], true);
         assert_eq!(startup["username"], "TokenBar-test");
         assert_eq!(
@@ -791,10 +812,25 @@ mod tests {
     }
 
     #[test]
+    fn local_roots_are_startup_only_and_the_legacy_empty_frame_is_unchanged() {
+        let empty = reporter_start_payload("TokenBar-test", &Default::default());
+        assert!(empty.get("localSourceRoots").is_none());
+        let roots = std::collections::BTreeMap::from([("gemini".to_owned(), r"C:\Local\Gemini".to_owned()),
+            ("deepseek".to_owned(), r"C:\Local\DSH".to_owned())]);
+        let startup = reporter_start_payload("TokenBar-test", &roots);
+        assert_eq!(startup["localSourceRoots"]["gemini"], r"C:\Local\Gemini");
+        assert_eq!(startup["deniedSourceIds"], serde_json::json!(["claudeCode", "claudeDesktop"]));
+    }
+
+    #[test]
     fn stale_helper_generation_cannot_publish_or_clear_current_state() {
         let data = RegistryData {
             status: None,
             active_username: Some("TokenBar-current".into()),
+            #[cfg(windows)]
+            active_codex_home: None,
+            #[cfg(windows)]
+            active_local_source_roots: Default::default(),
             generation: 9,
         };
         assert!(!status_writer_is_current(&data, 8, "TokenBar-previous"));

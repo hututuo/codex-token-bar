@@ -15,8 +15,9 @@ final class SharedAgentSpeedMonitorPool {
         let store = SpeedStore()
         let monitor: LiveMonitor
         var subscribers: [UUID: Subscriber] = [:]
-        init(root: URL?) {
-            monitor = LiveMonitor(store: store, configuration: .init(enabledSources: [], codexRoot: root), pricing: PriceBook())
+        init(configuration: MonitorConfiguration) {
+            var configuration = configuration; configuration.enabledSources = []
+            monitor = LiveMonitor(store: store, configuration: configuration, pricing: PriceBook())
         }
     }
     private var entries: [String: Entry] = [:]
@@ -24,16 +25,27 @@ final class SharedAgentSpeedMonitorPool {
     init(onCreate: ((URL?) -> Void)? = nil) { factory = onCreate }
 
     func lease(store: SpeedStore, sources: Set<SourceKind>, codexRoot: URL? = nil) -> any AgentSpeedReportingMonitor {
-        Lease(pool: self, store: store, sources: sources.subtracting([.claudeCode, .claudeDesktop]), root: codexRoot)
+        lease(store: store, configuration: ActivitySourceConfiguration.make(codexEnabled: false, codexHome: nil, preferences: []).monitorConfiguration, sources: sources, codexRoot: codexRoot)
     }
-    private func start(id: UUID, store: SpeedStore, sources: Set<SourceKind>, root: URL?) {
+    func lease(store: SpeedStore, configuration: MonitorConfiguration, sources: Set<SourceKind>, codexRoot: URL? = nil) -> any AgentSpeedReportingMonitor {
+        var configuration = configuration
+        if let codexRoot { configuration.codexRoot = codexRoot }
+        configuration.enabledSources = sources.subtracting([.claudeCode, .claudeDesktop])
+        return Lease(pool: self, store: store, configuration: configuration)
+    }
+    private func start(id: UUID, store: SpeedStore, configuration: MonitorConfiguration) {
+        let sources = configuration.enabledSources
+        let root = configuration.codexRoot
         guard !sources.isEmpty else { return }
-        let key = (root ?? LiveMonitor.defaultCodexRoot).standardizedFileURL.resolvingSymlinksInPath().path
+        let key = [root ?? LiveMonitor.defaultCodexRoot, configuration.dshRoot ?? LiveMonitor.defaultDshRoot,
+                   configuration.geminiRoot ?? LiveMonitor.defaultGeminiRoots[0],
+                   configuration.opencodeRoot ?? LiveMonitor.defaultOpencodeRoot]
+            .map { $0.standardizedFileURL.resolvingSymlinksInPath().path }.joined(separator: "\u{0}") + (configuration.geminiRoot == nil ? "\u{0}automatic-gemini-roots" : "")
         let entry: Entry
         if let saved = entries[key] { entry = saved }
         else {
             factory?(root)
-            entry = Entry(root: root)
+            entry = Entry(configuration: configuration)
             entries[key] = entry
             _ = entry.store.addLiveListener { [weak entry] snapshot in
                 guard let entry else { return }
@@ -66,14 +78,13 @@ final class SharedAgentSpeedMonitorPool {
     private final class Lease: AgentSpeedReportingMonitor {
         let pool: SharedAgentSpeedMonitorPool
         let store: SpeedStore
-        let sources: Set<SourceKind>
-        let root: URL?
+        let configuration: MonitorConfiguration
         let id = UUID()
         var started = false
-        init(pool: SharedAgentSpeedMonitorPool, store: SpeedStore, sources: Set<SourceKind>, root: URL?) {
-            self.pool = pool; self.store = store; self.sources = sources; self.root = root
+        init(pool: SharedAgentSpeedMonitorPool, store: SpeedStore, configuration: MonitorConfiguration) {
+            self.pool = pool; self.store = store; self.configuration = configuration
         }
-        func start() { guard !started else { return }; started = true; pool.start(id: id, store: store, sources: sources, root: root) }
+        func start() { guard !started else { return }; started = true; pool.start(id: id, store: store, configuration: configuration) }
         func stop() { guard started else { return }; started = false; pool.stop(id: id) }
     }
 }

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using AgentSpeed.Core;
 using AgentSpeed.Core.Reporting;
 
@@ -75,6 +76,10 @@ internal static class SelfTests
             await DefaultOffDoesNotStartAsync().ConfigureAwait(false);
             await InvalidShortUsernameDoesNotStartAsync().ConfigureAwait(false);
             await InvalidSourcePolicyDoesNotStartAsync().ConfigureAwait(false);
+            await LegacyStartFrameIsCompatibleAsync().ConfigureAwait(false);
+            await LocalSourceRootsAreAcceptedAsync().ConfigureAwait(false);
+            await InvalidLocalSourceRootsAreRejectedAsync().ConfigureAwait(false);
+            await StartFrameByteLimitIsPreservedAsync().ConfigureAwait(false);
             await ParentEofCancelsAsync().ConfigureAwait(false);
             SourcePolicyIsDefaultDeniedByKind();
             PayloadIsWhitelisted();
@@ -116,6 +121,110 @@ internal static class SelfTests
         {
             throw new InvalidOperationException();
         }
+    }
+
+    private static async Task LegacyStartFrameIsCompatibleAsync()
+    {
+        var start = await ReadStartAsync(CreateStartFrame()).ConfigureAwait(false);
+        if (start is null
+            || start.Username != "TokenBar-1234"
+            || !start.DeniedSourceIds.SetEquals(["claudeCode", "claudeDesktop"])
+            || start.LocalSourceRoots.Count != 0)
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static async Task LocalSourceRootsAreAcceptedAsync()
+    {
+        var roots = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["deepseek"] = @"C:\Users\Test\.deepseek\sessions",
+            ["gemini"] = @"\\?\D:\Users\Test\.gemini",
+            ["opencode"] = "E:/Users/Test/.local/share/opencode",
+        };
+        var start = await ReadStartAsync(CreateStartFrame(roots)).ConfigureAwait(false);
+        if (start is null
+            || start.LocalSourceRoots.Count != 3
+            || start.LocalSourceRoots["deepseek"] != roots["deepseek"]
+            || start.LocalSourceRoots["gemini"] != roots["gemini"]
+            || start.LocalSourceRoots["opencode"] != roots["opencode"]
+            || !start.DeniedSourceIds.SetEquals(["claudeCode", "claudeDesktop"]))
+        {
+            throw new InvalidOperationException();
+        }
+
+        var atLimit = @"C:\" + new string('a', 1021);
+        var acceptedAtLimit = await ReadStartAsync(CreateStartFrame(new Dictionary<string, string> { ["deepseek"] = atLimit }))
+            .ConfigureAwait(false);
+        if (acceptedAtLimit is null || acceptedAtLimit.LocalSourceRoots["deepseek"].Length != 1024)
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static async Task InvalidLocalSourceRootsAreRejectedAsync()
+    {
+        var invalid = new (string Source, string Path)[]
+        {
+            ("claudeCode", @"C:\Users\Test\.claude"),
+            ("claudeDesktop", @"C:\Users\Test\.claude"),
+            ("codex", @"C:\Users\Test\.codex"),
+            ("deepseek", @"\\server\share"),
+            ("deepseek", @"\\?\UNC\server\share"),
+            ("deepseek", @"\\.\C:\Users\Test"),
+            ("deepseek", @"\\?\GLOBALROOT\Device\HarddiskVolume1"),
+            ("deepseek", @"C:relative"),
+            ("deepseek", string.Empty),
+            ("deepseek", "C:\\Users\\Test\\bad\u0001path"),
+            ("deepseek", @"C:\" + new string('a', 1022)),
+        };
+        foreach (var (source, path) in invalid)
+        {
+            var command = CreateStartFrame(new Dictionary<string, string> { [source] = path });
+            if (await ReadStartAsync(command).ConfigureAwait(false) is not null)
+            {
+                throw new InvalidOperationException();
+            }
+        }
+
+        const string fourEntries = "{\"enabled\":true,\"username\":\"TokenBar-1234\",\"deniedSourceIds\":[\"claudeCode\",\"claudeDesktop\"],\"localSourceRoots\":{\"deepseek\":\"C:\\\\a\",\"gemini\":\"C:\\\\b\",\"opencode\":\"C:\\\\c\",\"deepseek\":\"C:\\\\d\"}}";
+        const string nonObject = "{\"enabled\":true,\"username\":\"TokenBar-1234\",\"deniedSourceIds\":[\"claudeCode\",\"claudeDesktop\"],\"localSourceRoots\":null}";
+        if (await ReadStartAsync(fourEntries).ConfigureAwait(false) is not null
+            || await ReadStartAsync(nonObject).ConfigureAwait(false) is not null)
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static async Task StartFrameByteLimitIsPreservedAsync()
+    {
+        var frame = CreateStartFrame();
+        var belowLimit = frame + new string(' ', StatusProtocol.MaxInputBytes - 1 - Encoding.UTF8.GetByteCount(frame));
+        if (await ReadStartAsync(belowLimit).ConfigureAwait(false) is null)
+        {
+            throw new InvalidOperationException();
+        }
+
+        var atLimit = frame + new string(' ', StatusProtocol.MaxInputBytes - Encoding.UTF8.GetByteCount(frame));
+        if (await ReadStartAsync(atLimit).ConfigureAwait(false) is not null)
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static string CreateStartFrame(IReadOnlyDictionary<string, string>? localSourceRoots = null)
+    {
+        var rootsProperty = localSourceRoots is null
+            ? string.Empty
+            : ",\"localSourceRoots\":" + JsonSerializer.Serialize(localSourceRoots);
+        return "{\"enabled\":true,\"username\":\"TokenBar-1234\",\"deniedSourceIds\":[\"claudeCode\",\"claudeDesktop\"]" + rootsProperty + "}";
+    }
+
+    private static async Task<StartCommand?> ReadStartAsync(string json)
+    {
+        await using var input = new MemoryStream(Encoding.UTF8.GetBytes(json + "\n"));
+        return await StatusProtocol.ReadStartCommandAsync(input).ConfigureAwait(false);
     }
 
     private static async Task ParentEofCancelsAsync()

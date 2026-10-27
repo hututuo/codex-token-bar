@@ -570,9 +570,33 @@
     "windows/src/AgentSpeed.Core/ZCode/ZCodeSource.cs": "535cd637d25882f97968b3bc37e3aa0794368d1b1ae8ac66dc916c1790fadde3"
   },
   "patches": {
+    "macos/Sources/AgentSpeedCore/Engine/EngineTypes.swift": {
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "sha256": "26d7eb0c2f377898ebf180aaeb4ba2f3055893b6fe86454625f0ebf238c5d9a6"
+    },
+    "macos/Sources/AgentSpeedCore/Engine/LiveRate.swift": {
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "sha256": "397cb365076980a522ec392e993083bf4cba9488016b230679c6e86132d52914"
+    },
+    "macos/Sources/AgentSpeedCore/Engine/SpeedEngine.swift": {
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "sha256": "cf79f56a0a2a187da7278f2d3799b3e6a4dd86379367d2a432d4b8b04347bdcd"
+    },
+    "macos/Sources/AgentSpeedCore/Models.swift": {
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "sha256": "2cfde8a430096e6cc3a80161093f92947c4e5001a2547f9caf45d4cafa292a6b"
+    },
+    "macos/Sources/AgentSpeedCore/Monitor/SnapshotBuilder.swift": {
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "sha256": "1b56ac395c245d8d1293c73612a91fad36379bafe93f2f4dfba73742ba0590b6"
+    },
     "macos/Sources/AgentSpeedCore/Reporting/ReportBody.swift": {
       "reason": "Token Bar report client.app identity; signing protocol unchanged",
       "sha256": "818cab55b1dadf16c2cbe26c104e1d87ab371f6f5d3b71ac941b544fdd6fd7e0"
+    },
+    "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
+      "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation",
+      "sha256": "106f8a5816dbc27eda7b0a0fb36942faae9ad713cfa647ff5bc4750c556b02b5"
     },
     "macos/Tests/AgentSpeedCoreTests/LiveMonitorTests.swift": {
       "reason": "Use explicit isolated source roots; never read developer home during tests",
@@ -589,6 +613,22 @@
     "macos/Tests/AgentSpeedCoreTests/SessionTests.swift": {
       "reason": "Use explicit isolated source roots; never read developer home during tests",
       "sha256": "07f3a4ef28741681962f08b63742a9dc4d020493ea45006b3c32805cbaf2c203"
+    },
+    "windows/src/AgentSpeed.Core/Engine/EngineFrame.cs": {
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "sha256": "bf39328cf0c52d4a37bbd07c340638fac35ba7b8181c31bd2e1a0a8b8c6ba02b"
+    },
+    "windows/src/AgentSpeed.Core/Engine/SpeedEngine.cs": {
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "sha256": "410533512487fe95651b83bef2d04fe41612163b41efdc0e2a23486f0650d0ac"
+    },
+    "windows/src/AgentSpeed.Core/Models.cs": {
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "sha256": "a6d0e31cca406da553e662096d1f8203bf2df8e615730f77fb5ae85500fceec0"
+    },
+    "windows/src/AgentSpeed.Core/Monitoring/MonitorCore.cs": {
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "sha256": "9bfc36913696cb769424c7369039e3dd4b0ff0dced69285fa2c9c6898f6e2bc8"
     },
     "windows/src/AgentSpeed.Core/Reporting/ReportBody.cs": {
       "reason": "Token Bar report client.app identity; signing protocol unchanged",

@@ -23,13 +23,14 @@
 
 本地临时 SQLite 使用生产 SQL 的合成数值 fixture，20,000 个一秒活动区间（两个模型轮换），主文件 19,800,064 字节，约 990 字节/区间。批量插入约 0.13 秒。线性估算单一同时活跃维度每天 8 小时、明细 7 天约 190 MiB；全天活跃约 571 MiB。并发维度会增加容量；不含原用量账本、WAL 和额外 30 天聚合，不是用户实测或容量上限承诺。原始测量见 scratch/activity-speed-capacity.json。
 
-## 明确未完成
+## 当前未完成项（2026-10-28 更新）
 
-1. A 旧 Codex 分库归并：exact 按 CodexHome 的隔离、staging/candidate 恢复和 safety 整库替换必须先改成安全的来源/模块隔离，尚未切换任何旧 writer。当前不能声称只剩两个业务库。
-2. 唯一物理日志读取 owner：Mac 只收敛了上游显示/上报 monitor；历史账本与 Bar 读取仍可能重读，Windows 报告 helper 与本地显示 helper 也尚未完成共用 IO。
-3. 上游切模尾部按事件模型精确分配、更多客户端实时显示和对应跨端 fixture，仍待补齐；当前总量守恒不等于事件归属问题已全部解决。
-4. 真 Windows 目标构建和 C# helper 自测未运行（当前环境无 dotnet，交叉目标缺少 C 头文件）；不等于 Windows EXE 已完成。
-5. 未安装、未启动候选版进行本轮视觉/长期功耗验收，未重启或替换正式 Mac/Windows 应用，未迁移真实用户数据库。
+1. A 旧 Codex 分库归并仍未切换任何 writer。exact 索引以整文件隔离 Codex Home，source/event ID、generation、session 与派生聚合都没有跨 Home 分区；safety 的恢复会整文件替换。必须先完成来源分区和模块恢复迁移，不能只改数据库路径。当前实际不止两个业务 SQLite。
+2. 一份物理日志一个读取责任者仍未完成。Mac 的同配置 Agent Speed 显示/上报可共享 monitor；历史账本和原 Bar 读取仍可能重读。Windows 的显示 helper 与上报 helper 使用同一核心、同一配置解析，但仍是两个进程和两套 reader 实例。
+3. Windows Rust 目标交叉检查、两个 C# helper 编译与离线自测已完成；Windows 原生文件系统、交互应用、DPAPI 和联网注册运行未验收。HTTWIN 已知 SSH 连接不可用，没有扫描局域网。
+4. 本轮未启动候选应用进行视觉/持续功耗验收，未安装、重启、替换正式 Mac/Windows 应用，未迁移真实用户库。
+
+已完成的事件模型归属、更多客户端聚合显示及跨端 fixture 不再列为待做。最新增量与验证见 [2026-10-28 回执](2026-10-28-multi-client-scoped-runtime.md)。完整方案尚未全部交付。
 
 ## 验证
 

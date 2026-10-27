@@ -247,7 +247,19 @@ public enum MonitorWarning: Equatable, Sendable {
     case unsupportedFormat(SourceKind)
 }
 
+/// Additive live attribution. Response tails retain the model recorded on that response,
+/// independently of the agent's current model. Nil means no model was recorded.
+public struct SourceModelRate: Equatable, Sendable {
+    public var source: SourceKind
+    public var model: String?
+    public var rate: Rate
+    public init(source: SourceKind, model: String?, rate: Rate) {
+        self.source = source; self.model = model; self.rate = rate
+    }
+}
+
 public struct SpeedSnapshot: Equatable, Sendable {
+    public var liveModels: [SourceModelRate]
     public var timestamp: Date
     public var state: MonitorState
     public var live: Rate
@@ -298,7 +310,8 @@ public struct SpeedSnapshot: Equatable, Sendable {
         dayStart: Date = .distantPast,
         liveCost: LiveCost = .zero,
         todayCost: CostTally = .zero,
-        report: ReportLiveFacts = .empty
+        report: ReportLiveFacts = .empty,
+        liveModels: [SourceModelRate] = []
     ) {
         self.timestamp = timestamp
         self.state = state
@@ -320,6 +333,7 @@ public struct SpeedSnapshot: Equatable, Sendable {
         self.liveCost = liveCost
         self.todayCost = todayCost
         self.report = report
+        self.liveModels = liveModels
     }
 
     public static let empty = SpeedSnapshot(

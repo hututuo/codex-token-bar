@@ -17,6 +17,7 @@ pub(crate) async fn read_multi_client_usage_snapshot() -> Result<MultiClientUsag
 #[tauri::command]
 pub(crate) async fn save_multi_client_usage_preferences(
     preferences: Vec<MultiClientUsagePreference>,
+    app: tauri::AppHandle,
     runtime: tauri::State<'_, crate::core::claude_local_runtime::ClaudeLocalRuntimeRegistry>,
 ) -> Result<Vec<MultiClientUsagePreference>, String> {
     let runtime = runtime.inner().clone();
@@ -29,6 +30,20 @@ pub(crate) async fn save_multi_client_usage_preferences(
     if let Ok(mut last) = multi_client_scan_clock().lock() {
         *last = None;
     }
+    #[cfg(windows)]
+    {
+        // Restart only an already opted-in reporter whose effective roots changed.
+        if let Ok(reporting) = run_blocking_command(|| crate::platform::read_app_settings().map(|s| s.agent_speed_reporting)).await {
+            if reporting.enabled {
+                use tauri::Manager as _;
+                if let Some(registry) = app.try_state::<crate::core::agent_speed_reporting::AgentSpeedReportingRegistry>() {
+                    let _ = registry.start(&app, &reporting).await;
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = app;
     Ok(result)
 }
 

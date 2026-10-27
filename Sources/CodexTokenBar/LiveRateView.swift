@@ -118,7 +118,7 @@ private struct LiveRateInstrumentReader: View {
         var value = monitor.totalSnapshot
         value.modelRates = ClientLocalRuntimePresentation.rates(codex: value.modelRates,
             claude: local.projection(allowed: allowedClients).modelRates, allowed: allowedClients,
-            mode: .normalized(modeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex))
+            mode: .normalized(modeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex), others: upstream.externalModelRates(allowed: allowedClients))
         value.rollingTokensPerSecond = value.modelRates.reduce(0) { $0 + $1.tokensPerSecond }
         return value
     }

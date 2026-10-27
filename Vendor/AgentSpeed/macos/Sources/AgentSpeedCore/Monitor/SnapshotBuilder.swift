@@ -116,7 +116,8 @@ enum SnapshotBuilder {
             dayStart: date(output.todayStartMs),
             liveCost: output.liveCost,
             todayCost: output.todayCost,
-            report: output.report
+            report: output.report,
+            liveModels: output.liveModels
         )
     }
 

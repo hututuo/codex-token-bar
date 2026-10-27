@@ -167,7 +167,7 @@ internal sealed class SpeedEngine
             {
                 var fraction = (double)overlap / stored.Interval.DurationMs;
                 var output = stored.Response.Tokens.Output * fraction;
-                measured.Add(stored.Response.Source, stored.Response.AgentId, output, stored.Response.Tokens.Total * fraction);
+                measured.Add(stored.Response.Source, stored.Response.AgentId, output, stored.Response.Tokens.Total * fraction, stored.Response.Model);
                 if (stored.Response.CostMicroUsd is { } cost)
                 {
                     costs.Add(stored.Response.Source, stored.Response.AgentId, new LiveCost(cost * fraction, output));
@@ -183,10 +183,10 @@ internal sealed class SpeedEngine
         var estimated = new Accumulator(SourceCount);
         var estimates = new List<(long StartMs, long EndMs, SpeedPair Speed)>();
 
-        void AddEstimate(SourceKind source, string agentId, SpeedPair reference, long overlap)
+        void AddEstimate(SourceKind source, string agentId, SpeedPair reference, long overlap, string? model)
         {
             var output = reference.Output * overlap / 1000.0;
-            estimated.Add(source, agentId, output, reference.Total * overlap / 1000.0);
+            estimated.Add(source, agentId, output, reference.Total * overlap / 1000.0, model);
             if (reference.CostRate is { } rate)
             {
                 costs.Add(source, agentId, new LiveCost(rate * overlap / 1000.0, output));
@@ -208,7 +208,7 @@ internal sealed class SpeedEngine
 
             estimates.Add((stored.Interval.StartMs, stored.Interval.EndMs, reference));
             var overlap = SpeedMath.Overlap(windowStart, nowMs, stored.Interval.StartMs, stored.Interval.EndMs);
-            AddEstimate(response.Source, response.AgentId, reference, overlap);
+            AddEstimate(response.Source, response.AgentId, reference, overlap, response.Model);
         }
 
         foreach (var agent in _agents.Values)
@@ -229,7 +229,7 @@ internal sealed class SpeedEngine
             var estimateStart = latestEnd.TryGetValue(agent.Id, out var ownEnd) ? Math.Max(start, ownEnd) : start;
             estimates.Add((estimateStart, nowMs, estimate));
             var overlap = SpeedMath.Overlap(windowStart, nowMs, estimateStart, nowMs);
-            AddEstimate(agent.Source, agent.Id, estimate, overlap);
+            AddEstimate(agent.Source, agent.Id, estimate, overlap, agent.Model);
         }
 
         var seconds = WindowMs / 1000.0;
@@ -289,6 +289,13 @@ internal sealed class SpeedEngine
             events,
             _today.UnfinalizedCount)
         {
+            LiveModels = measured.ModelTotals.Concat(estimated.ModelTotals)
+                .GroupBy(pair => pair.Key)
+                .OrderBy(group => group.Key.Source)
+                .ThenBy(group => group.Key.Model, StringComparer.Ordinal)
+                .Select(group => new SourceModelRate(group.Key.Source, group.Key.Model,
+                    new Rate(group.Sum(pair => pair.Value.Output) / seconds,
+                             group.Sum(pair => pair.Value.Total) / seconds))).ToArray(),
             LiveCost = liveCost,
             SourceLiveCost = sourceLiveCost,
             TodayCost = _today.Cost,
@@ -748,7 +755,9 @@ internal sealed class SpeedEngine
 
         public Dictionary<string, (double Output, double Total)> AgentTotals { get; } = new(StringComparer.Ordinal);
 
-        public void Add(SourceKind source, string agentId, double output, double total)
+        public Dictionary<(SourceKind Source, string? Model), (double Output, double Total)> ModelTotals { get; } = [];
+
+        public void Add(SourceKind source, string agentId, double output, double total, string? model = null)
         {
             if (output == 0 && total == 0)
             {
@@ -761,6 +770,8 @@ internal sealed class SpeedEngine
             SourceTotal[(int)source] += total;
             AgentTotals.TryGetValue(agentId, out var sum);
             AgentTotals[agentId] = (sum.Output + output, sum.Total + total);
+            ModelTotals.TryGetValue((source, model), out var modelSum);
+            ModelTotals[(source, model)] = (modelSum.Output + output, modelSum.Total + total);
         }
     }
 }

@@ -4,7 +4,11 @@ using AgentSpeed.Core;
 
 namespace CodexTokenBar.AgentSpeedReporter;
 
-internal sealed record StartCommand(bool Enabled, string Username, IReadOnlySet<string> DeniedSourceIds);
+internal sealed record StartCommand(
+    bool Enabled,
+    string Username,
+    IReadOnlySet<string> DeniedSourceIds,
+    IReadOnlyDictionary<string, string> LocalSourceRoots);
 
 internal sealed record StatusSource(
     [property: JsonPropertyName("id")] string Id,
@@ -67,13 +71,22 @@ internal static class StatusProtocol
             using var document = JsonDocument.Parse(bytes.AsMemory(0, count), new JsonDocumentOptions { MaxDepth = 4 });
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object
-                || root.EnumerateObject().Any(property => property.Name is not ("enabled" or "username" or "deniedSourceIds"))
                 || !root.TryGetProperty("enabled", out var enabled) || enabled.ValueKind != JsonValueKind.True
                 || !root.TryGetProperty("username", out var username) || username.ValueKind != JsonValueKind.String
                 || !root.TryGetProperty("deniedSourceIds", out var deniedSourceIds)
                 || deniedSourceIds.ValueKind != JsonValueKind.Array || deniedSourceIds.GetArrayLength() > 16)
             {
                 return null;
+            }
+
+            var topLevelNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in root.EnumerateObject())
+            {
+                if (property.Name is not ("enabled" or "username" or "deniedSourceIds" or "localSourceRoots")
+                    || !topLevelNames.Add(property.Name))
+                {
+                    return null;
+                }
             }
 
             var denied = new List<string>();
@@ -99,13 +112,64 @@ internal static class StatusProtocol
                 return null;
             }
 
-            return new StartCommand(true, value.Trim(), denied.ToHashSet(StringComparer.Ordinal));
+            var localSourceRoots = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (root.TryGetProperty("localSourceRoots", out var rootsElement))
+            {
+                if (rootsElement.ValueKind != JsonValueKind.Object || rootsElement.EnumerateObject().Count() > 3)
+                {
+                    return null;
+                }
+
+                foreach (var property in rootsElement.EnumerateObject())
+                {
+                    if (!IsLocalRootSourceId(property.Name)
+                        || property.Value.ValueKind != JsonValueKind.String
+                        || property.Value.GetString() is not { } path
+                        || !IsValidLocalSourceRoot(path)
+                        || !localSourceRoots.TryAdd(property.Name, path))
+                    {
+                        return null;
+                    }
+                }
+            }
+
+            return new StartCommand(true, value.Trim(), denied.ToHashSet(StringComparer.Ordinal), localSourceRoots);
         }
         catch (JsonException)
         {
             return null;
         }
     }
+
+    private static bool IsLocalRootSourceId(string sourceId) =>
+        sourceId is "deepseek" or "gemini" or "opencode";
+
+    private static bool IsValidLocalSourceRoot(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path.Length > 1024 || path.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        const string extendedPrefix = @"\\?\";
+        if (path.StartsWith(extendedPrefix, StringComparison.Ordinal))
+        {
+            return IsDriveRootedPath(path, extendedPrefix.Length);
+        }
+
+        if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return IsDriveRootedPath(path, 0);
+    }
+
+    private static bool IsDriveRootedPath(string path, int start) =>
+        path.Length >= start + 3
+        && ((path[start] is >= 'A' and <= 'Z') || (path[start] is >= 'a' and <= 'z'))
+        && path[start + 1] == ':'
+        && path[start + 2] is '\\' or '/';
 
     public static async Task WatchParentExitAsync(Stream input, CancellationTokenSource lifetime)
     {

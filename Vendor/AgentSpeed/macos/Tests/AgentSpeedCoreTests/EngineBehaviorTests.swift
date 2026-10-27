@@ -168,4 +168,37 @@ struct EngineBehaviorTests {
         #expect(output.averageToday == 50)
         #expect(output.agents.isEmpty || output.agents.first?.recentSpeed == 50)
     }
+    @Test func modelSwitchKeepsSettledTailAndCurrentEstimateSeparate() {
+        let now = Self.base + 10_000
+        var engine = SpeedEngine()
+        var old = Self.record("old", start: now - 3000, end: now - 1000, input: 60, output: 120)
+        old.model = "old-model"
+        engine.upsert(old, project: "p", isCompletion: true, emitsEvents: false)
+        engine.setAgent(EngineAgent(id: "a1", source: .codex, project: "p", model: "new-model",
+                                    phase: .generating, inFlightStartMs: now - 1000, lastLineMs: now))
+        let output = engine.advance(nowMs: now, todayStartMs: Self.base, emitsEvents: false)
+        #expect(output.liveModels.map(\.model) == ["new-model", "old-model"])
+        #expect(output.liveModels.first { $0.model == "old-model" }?.rate.output == 40)
+        #expect(output.liveModels.first { $0.model == "new-model" }?.rate.output == 20)
+        #expect(output.liveModels.reduce(0) { $0 + $1.rate.output } == output.live.output)
+        #expect(output.liveModels.reduce(0) { $0 + $1.rate.total } == output.live.total)
+    }
+
+    @Test func unknownModelsAndEqualNamesInDifferentSourcesRemainAdditive() {
+        let now = Self.base + 3000
+        var engine = SpeedEngine()
+        for (key, source, model, count) in [("c", SourceKind.codex, "same" as String?, 90),
+                                           ("k", .claudeCode, "same", 60), ("u", .claudeCode, nil, 30)] {
+            engine.upsert(ResponseRecord(key: key, source: source, agentId: key, model: model,
+                startMs: Self.base, endMs: now, usage: TokenUsage(output: count)),
+                project: "p", isCompletion: true, emitsEvents: false)
+        }
+        let output = engine.advance(nowMs: now, todayStartMs: Self.base, emitsEvents: false)
+        #expect(output.liveModels.count == 3)
+        #expect(output.liveModels.first { $0.model == nil }?.rate.output == 10)
+        for source in [SourceKind.codex, .claudeCode] {
+            #expect(output.liveModels.filter { $0.source == source }.reduce(0) { $0 + $1.rate.output } == output.sourceLive[source]?.output)
+        }
+    }
+
 }

@@ -41,7 +41,11 @@ final class AgentSpeedReportingController: ObservableObject {
     private let defaults: UserDefaults
     private let api: ReportAPI
     private let makeSigner: @Sendable (String) throws -> any ReportSigner
-    private let makeMonitor: (SpeedStore) -> any AgentSpeedReportingMonitor
+    private let makeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)?
+    private var selectedCodexHome: URL?
+    private var codexSelectionKnown = false
+    private var localPreferences: [MultiClientUsagePreference] = []
+    private(set) var reportingConfiguration = ActivitySourceConfiguration.make(codexEnabled: false, codexHome: nil, preferences: []).monitorConfiguration
     private let monotonic: () -> Int64
     private let store = SpeedStore()
     private var monitor: (any AgentSpeedReportingMonitor)?
@@ -82,10 +86,9 @@ final class AgentSpeedReportingController: ObservableObject {
         self.defaults = defaults
         self.api = ReportAPI(transport: transport, userAgent: Self.userAgent)
         self.makeSigner = makeSigner
-        self.makeMonitor = makeMonitor ?? { store in
-            SharedAgentSpeedMonitorPool.shared.lease(store: store, sources: Self.reportableSources)
-        }
+        self.makeMonitor = makeMonitor
         self.monotonic = monotonic
+        reportingConfiguration.enabledSources = Self.reportableSources
         enabled = defaults.bool(forKey: Self.enabledKey)
         username = defaults.string(forKey: Self.usernameKey) ?? "TokenBar-" + UUID().uuidString.prefix(8).lowercased()
     }
@@ -118,6 +121,25 @@ final class AgentSpeedReportingController: ObservableObject {
         enabled = value
         stopRuntime()
         if value { begin() }
+    }
+
+    /// Configuration only while reporting is off. An actual root transition
+    /// starts a fresh reporting baseline, never uploads the previous home's tail.
+    func configureCodexHome(_ home: URL?) {
+        selectedCodexHome = home; codexSelectionKnown = true
+        reconcileLocalSources()
+    }
+    func configureLocalPreferences(_ preferences: [MultiClientUsagePreference]) {
+        localPreferences = preferences
+        reconcileLocalSources()
+    }
+    private func reconcileLocalSources() {
+        var next = ActivitySourceConfiguration.make(codexEnabled: false, codexHome: selectedCodexHome, preferences: localPreferences).monitorConfiguration
+        next.enabledSources = Self.reportableSources
+        if codexSelectionKnown && selectedCodexHome == nil { next.enabledSources.remove(.codex) }
+        guard next != reportingConfiguration else { return }
+        reportingConfiguration = next
+        if started && enabled { stopRuntime(); begin() }
     }
 
     func retry() { guard enabled else { return }; stopRuntime(); begin() }
@@ -185,7 +207,8 @@ final class AgentSpeedReportingController: ObservableObject {
             profileURL = Self.safeProfile(value.profileURL)
             lastRegistration = Date()
             listener = store.addLiveListener { [weak self] snapshot in self?.receive(snapshot) }
-            let monitor = makeMonitor(store)
+            let monitor = makeMonitor?(store) ?? SharedAgentSpeedMonitorPool.shared.lease(store: store,
+                configuration: reportingConfiguration, sources: reportingConfiguration.enabledSources)
             self.monitor = monitor
             phase = "preparing"; message = "正在识别本地软件 · 历史记录不会补报"
             monitor.start()

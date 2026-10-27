@@ -28,4 +28,20 @@ final class ActivitySpeedPresentationTests: XCTestCase {
         XCTAssertEqual(creates,1)
         first.stop(); second.stop(); denied.stop()
     }
+    @MainActor func testRatesUseResponseModelsInsteadOfLatestAgentAndKeepUnknownRemainder() {
+        var snapshot = SpeedSnapshot.empty
+        snapshot.sources = [.init(kind: .codex, enabled: true, rootPath: "", available: true,
+            sessionCount: 1, live: .init(output: 70, total: 120), today: .zero, activeAgents: 0)]
+        snapshot.liveModels = [.init(source: .codex, model: "old-model", rate: .init(output: 40, total: 60)),
+                               .init(source: .codex, model: "new-model", rate: .init(output: 20, total: 50)),
+                               .init(source: .claudeCode, model: "unrelated", rate: .init(output: 500, total: 500))]
+        let rates = AgentSpeedDisplayRuntime.modelRates(snapshot: snapshot, source: .codex)
+        XCTAssertEqual(rates, [.init(model: "new-model", tokensPerSecond: 20),
+                               .init(model: "old-model", tokensPerSecond: 40),
+                               .init(model: "unknown", tokensPerSecond: 10)])
+        snapshot.liveModels = []
+        XCTAssertEqual(AgentSpeedDisplayRuntime.modelRates(snapshot: snapshot, source: .codex),
+                       [.init(model: "unknown", tokensPerSecond: 70)])
+    }
+
 }

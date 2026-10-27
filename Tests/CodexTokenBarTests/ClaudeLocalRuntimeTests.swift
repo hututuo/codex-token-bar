@@ -363,7 +363,9 @@ final class ClaudeLocalRuntimeTests: XCTestCase {
             toolsCount: agents.filter { $0.phase == .tools }.count,
             history: [],
             lastResponse: nil,
-            warnings: []
+            warnings: [],
+            // Fixtures supply event-model metadata explicitly. Production gets it from LiveWindow.
+            liveModels: agents.map { .init(source: $0.source, model: $0.model, rate: $0.live) }
         )
     }
 }

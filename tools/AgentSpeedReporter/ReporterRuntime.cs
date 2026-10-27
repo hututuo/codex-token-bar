@@ -38,7 +38,11 @@ internal static class ReporterRuntime
         });
         var hub = new SpeedHub(context: null);
         hub.LivePublished += (_, snapshot) => snapshots.Writer.TryWrite(snapshot);
-        using var monitor = new LiveMonitor(hub, new MonitorConfiguration(AgentSpeedReportSourcePolicy.ReportableSources));
+        using var monitor = new LiveMonitor(hub, new MonitorConfiguration(
+            AgentSpeedReportSourcePolicy.ReportableSources,
+            DshRoot: start.LocalSourceRoots.GetValueOrDefault("deepseek"),
+            OpenCodeRoot: start.LocalSourceRoots.GetValueOrDefault("opencode"),
+            GeminiRoot: start.LocalSourceRoots.GetValueOrDefault("gemini")));
         monitor.Start();
 
         await status.PublishAsync(Status(

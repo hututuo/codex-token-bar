@@ -591,6 +591,7 @@ internal sealed partial class MonitorCore : IDisposable
             LiveCost = frame.LiveCost,
             TodayCost = frame.TodayCost,
             Report = frame.Report,
+            LiveModels = frame.LiveModels,
             TodayModes = frame.TodayModes,
         };
         return (snapshot, frame.Events);

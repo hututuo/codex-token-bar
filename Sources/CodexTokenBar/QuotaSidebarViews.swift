@@ -180,7 +180,7 @@ struct QuotaSidebarRail: View {
     private var supportsCodex: Bool { clientScope == "codex" || clientScope == "all" }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var localLive: ClaudeLocalRuntimeSnapshot { claudeRuntime.projection(allowed: allowedClients) }
-    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: localLive.modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex)) }
+    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: localLive.modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
     private var liveRate: Double { liveRates.reduce(0) { $0 + $1.tokensPerSecond } }
     private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: allowedClients) }
     private var selectedModelRows: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }

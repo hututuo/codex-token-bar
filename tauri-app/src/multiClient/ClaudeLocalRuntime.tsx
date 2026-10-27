@@ -61,20 +61,20 @@ function subscribe(listener: () => void) {
 export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnabled = true) {
   const { snapshot } = useMultiClientUsage();
   const mode = useActivitySpeedMode();
-  const enabled = monitoringEnabled && (mode === "agentSpeed" || snapshot.preferences.some(p => p.enabled && ["claudeCode", "claudeDesktop"].includes(p.client)));
+  const enabled = monitoringEnabled && (mode === "agentSpeed" || snapshot.preferences.some(p => p.enabled && ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(p.client)));
   const subscribeWhenEnabled = useCallback((listener: () => void) => enabled ? subscribe(listener) : () => {}, [enabled]);
   const value = useSyncExternalStore(subscribeWhenEnabled, () => cached, () => empty);
-  const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop"].includes(c) || (c === "codex" && mode === "agentSpeed")));
+  const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(c) || (c === "codex" && mode === "agentSpeed")));
   const active = (agent: ClaudeRuntimeAgent) => selected.has(agent.client) && ["generating", "tools"].includes(agent.phase)
     && Date.parse(agent.lastActivity) >= Date.now() - 300000;
-  const enabledSources = snapshot.preferences.filter(p => p.enabled && ["claudeCode", "claudeDesktop"].includes(p.client));
+  const enabledSources = snapshot.preferences.filter(p => p.enabled);
   const estimatedShareForSelection = scopedClaudeEstimateShare(value.estimatedShare, enabledSources.map(p => p.client), allowed);
   return { ...value, enabled,
     // Upstream's fraction is aggregate-only. Do not apply another client's
     // calibration to a filtered client view.
     estimatedShareForSelection,
     modelRates: enabled ? value.modelRates.filter(r => selected.has(r.client)) : [],
-    mainAgents: enabled ? value.mainAgents.filter(a => a.client !== "codex" && active(a)) : [], subagents: enabled ? value.subagents.filter(a => a.client !== "codex" && active(a)) : [],
+    mainAgents: enabled ? value.mainAgents.filter(a => ["claudeCode", "claudeDesktop"].includes(a.client) && active(a)) : [], subagents: enabled ? value.subagents.filter(a => ["claudeCode", "claudeDesktop"].includes(a.client) && active(a)) : [],
     rows: enabled ? [...recent.values()].filter(r => selected.has(r.client)).sort((a,b) => Date.parse(b.endedAt) - Date.parse(a.endedAt)) : [],
   };
 }

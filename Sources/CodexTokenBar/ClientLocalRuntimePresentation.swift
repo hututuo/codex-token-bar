@@ -3,10 +3,10 @@ import Foundation
 /// One display projection for both sidebar levels. Source accounting and
 /// measured request intervals remain separate from the activity animation.
 enum ClientLocalRuntimePresentation {
-    static func rates(codex: [ModelRateContribution], claude: [ModelRateContribution], allowed: Set<String>, mode: ActivitySpeedDisplayMode = .bar, upstreamCodex: [ModelRateContribution] = []) -> [ModelRateContribution] {
+    static func rates(codex: [ModelRateContribution], claude: [ModelRateContribution], allowed: Set<String>, mode: ActivitySpeedDisplayMode = .bar, upstreamCodex: [ModelRateContribution] = [], others: [ModelRateContribution] = []) -> [ModelRateContribution] {
         let codexRates = mode == .agentSpeed ? upstreamCodex : codex
         var sums: [String: Double] = [:]
-        for row in (allowed.contains("codex") ? codexRates : []) + claude where row.tokensPerSecond.isFinite && row.tokensPerSecond > 0 {
+        for row in (allowed.contains("codex") ? codexRates : []) + claude + others where row.tokensPerSecond.isFinite && row.tokensPerSecond > 0 {
             let key = ModelUsagePresentation.autoReviewUnderlyingModelKey(for: row.model) ?? ModelUsagePresentation.key(for: row.model)
             sums[key, default: 0] += row.tokensPerSecond
         }

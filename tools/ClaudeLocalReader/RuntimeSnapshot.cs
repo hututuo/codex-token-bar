@@ -63,7 +63,7 @@ internal sealed record ResponseEventInput(long Sequence, ResponseSummary Respons
 internal static class RuntimeSnapshotMapper
 {
     private static readonly SourceKind[] ClaudeSources = [SourceKind.ClaudeCode, SourceKind.ClaudeDesktop];
-    private static readonly SourceKind[] RuntimeSources = [SourceKind.Codex, SourceKind.ClaudeCode, SourceKind.ClaudeDesktop];
+    private static readonly SourceKind[] RuntimeSources = [SourceKind.Codex, SourceKind.ClaudeCode, SourceKind.ClaudeDesktop, SourceKind.DeepSeek, SourceKind.Gemini, SourceKind.OpenCode];
     private const int MaximumResponseEvents = 32;
 
     public static RuntimeSnapshot Map(
@@ -82,7 +82,7 @@ internal static class RuntimeSnapshotMapper
             .ToArray();
         var safeIds = selected.ToDictionary(agent => agent.Id, agent => SafeId(processSalt, agent.Id), StringComparer.Ordinal);
         var sourceAvailable = RuntimeSources
-            .Where(source => source != SourceKind.Codex || enabledSources.Contains(SourceKind.Codex))
+            .Where(source => ClaudeSources.Contains(source) || enabledSources.Contains(source))
             .ToDictionary(
             ClientId,
             source => enabledSources.Contains(source)
@@ -95,17 +95,18 @@ internal static class RuntimeSnapshotMapper
         var liveTotal = FiniteNonnegative(selectedStatuses.Sum(row => row.Live.Total));
         var estimatedOutput = FiniteNonnegative(selectedStatuses.Sum(row => row.LiveEstimated.Output));
         var estimatedShare = liveOutput > 0 ? Math.Clamp(estimatedOutput / liveOutput, 0, 1) : 0;
-        var modelRates = selected
-            .GroupBy(agent => (agent.Source, Model: CleanModel(agent.Model)))
+        var modelRates = snapshot.LiveModels
+            .Where(item => RuntimeSources.Contains(item.Source) && enabledSources.Contains(item.Source))
+            .GroupBy(item => (item.Source, Model: CleanModel(item.Model)))
             .OrderBy(group => ClientId(group.Key.Source), StringComparer.Ordinal)
             .ThenBy(group => group.Key.Model, StringComparer.Ordinal)
             .Select(group => new ModelRate(
                 ClientId(group.Key.Source),
                 group.Key.Model,
-                FiniteNonnegative(group.Sum(agent => agent.Live.Output)),
-                FiniteNonnegative(group.Sum(agent => agent.Live.Total)),
-                group.Count(agent => agent.Phase == AgentPhase.Generating),
-                group.Count(agent => agent.Phase == AgentPhase.Tools)))
+                FiniteNonnegative(group.Sum(item => item.Rate.Output)),
+                FiniteNonnegative(group.Sum(item => item.Rate.Total)),
+                selected.Count(agent => agent.Source == group.Key.Source && CleanModel(agent.Model) == group.Key.Model && agent.Phase == AgentPhase.Generating),
+                selected.Count(agent => agent.Source == group.Key.Source && CleanModel(agent.Model) == group.Key.Model && agent.Phase == AgentPhase.Tools)))
             .ToArray();
         var runtimeAgents = selected
             .Select(agent => new RuntimeAgent(
@@ -172,6 +173,9 @@ internal static class RuntimeSnapshotMapper
     private static string ClientId(SourceKind source) => source switch
     {
         SourceKind.Codex => "codex",
+        SourceKind.DeepSeek => "deepseek",
+        SourceKind.Gemini => "gemini",
+        SourceKind.OpenCode => "opencode",
         SourceKind.ClaudeCode => "claudeCode",
         SourceKind.ClaudeDesktop => "claudeDesktop",
         _ => throw new ArgumentOutOfRangeException(nameof(source)),

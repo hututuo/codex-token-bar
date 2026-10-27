@@ -98,6 +98,7 @@ struct EngineOutput: Sendable {
     var sourceLive: [SourceKind: Rate]
     /// The estimated part of `sourceLive`.
     var sourceLiveEstimated: [SourceKind: Rate]
+    var liveModels: [SourceModelRate] = []
     /// The live cost rate (METRICS 9.5), in total and per source.
     var liveCost: LiveCost = .zero
     var sourceLiveCost: [SourceKind: LiveCost] = [:]

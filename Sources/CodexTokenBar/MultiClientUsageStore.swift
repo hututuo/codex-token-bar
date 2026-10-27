@@ -344,7 +344,8 @@ final class MultiClientUsageStore: ObservableObject {
     func syncLocalRuntime(monitoringEnabled: Bool? = nil) {
         let enabled = monitoringEnabled ?? (defaults.object(forKey: "liveRateMonitoringEnabled") == nil || defaults.bool(forKey: "liveRateMonitoringEnabled"))
         let mode = ActivitySpeedDisplayMode.normalized(defaults.string(forKey: ActivitySpeedDisplayMode.key))
-        AgentSpeedDisplayRuntime.shared.configure(enabled: enabled && mode == .agentSpeed)
+        AgentSpeedReportingController.shared.configureLocalPreferences(preferences)
+        AgentSpeedDisplayRuntime.shared.configure(monitoringEnabled: enabled, codexEnabled: enabled && mode == .agentSpeed, preferences: preferences)
         ClaudeLocalRuntime.shared.configure(preferences: preferences, monitoringEnabled: enabled)
         ClaudeStatuslineStore.shared.setEnabled(enabled && preferences.contains { $0.enabled && $0.client == .claudeCode })
     }

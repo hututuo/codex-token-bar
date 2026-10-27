@@ -6,9 +6,20 @@ use std::{
 };
 
 const CLAUDE_CLIENTS: [&str; 2] = ["claudeCode", "claudeDesktop"];
-const RUNTIME_CLIENTS: [&str; 3] = ["codex", "claudeCode", "claudeDesktop"];
+const RUNTIME_CLIENTS: [&str; 6] = [
+    "codex",
+    "claudeCode",
+    "claudeDesktop",
+    "deepseek",
+    "gemini",
+    "opencode",
+];
+const OTHER_CLIENTS: [&str; 3] = ["deepseek", "gemini", "opencode"];
 const MAX_RUNTIME_LINE_BYTES: usize = 256 * 1024;
 const MAX_COUNTER: u64 = 10_000;
+// Upstream clamps each input/output field to 1e12; total is their sum.
+const MAX_OUTPUT_TOKENS: u64 = 1_000_000_000_000;
+const MAX_TOTAL_TOKENS: u64 = 2 * MAX_OUTPUT_TOKENS;
 const MAX_RATE: f64 = 1_000_000_000.0;
 const MAX_RESPONSE_EVENTS: usize = 32;
 const SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(10);
@@ -52,8 +63,11 @@ impl ClaudeLocalRuntimeSnapshot {
             .into_iter()
             .map(|client| (client.to_string(), false))
             .collect::<BTreeMap<_, _>>();
-        if clients.iter().any(|client| client == "codex") {
-            source_available.insert("codex".into(), false);
+        for client in clients
+            .iter()
+            .filter(|client| RUNTIME_CLIENTS.contains(&client.as_str()))
+        {
+            source_available.insert(client.clone(), false);
         }
         Self {
             enabled,
@@ -134,12 +148,14 @@ struct RuntimeConfigKey {
     claude_root: Option<String>,
     codex_root: Option<String>,
     enabled_clients: Vec<String>,
+    other_roots: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
 struct RuntimeRoots {
     claude_root: Option<std::path::PathBuf>,
     codex_root: Option<std::path::PathBuf>,
+    other_roots: BTreeMap<String, std::path::PathBuf>,
 }
 
 struct RuntimeWorker {
@@ -216,8 +232,10 @@ impl ClaudeLocalRuntimeRegistry {
                 );
             }
         };
-        let codex_root =
-            codex_opted_in.then(|| crate::platform::default_codex_home().join("sessions"));
+        let codex_root = codex_opted_in.then(|| {
+            std::path::PathBuf::from(crate::platform::default_codex_home_status().path)
+                .join("sessions")
+        });
         let mut requested_clients = preferences
             .iter()
             .map(|preference| preference.client.clone())
@@ -392,7 +410,10 @@ impl ClaudeLocalRuntimeRegistry {
     ) {
         let enabled = enabled_claude_preferences(preferences);
         let codex_root = codex_local_activity_enabled(crate::core::activity_speed_capture::mode())
-            .then(|| crate::platform::default_codex_home().join("sessions"));
+            .then(|| {
+                std::path::PathBuf::from(crate::platform::default_codex_home_status().path)
+                    .join("sessions")
+            });
         let next_key = runtime_configuration(&enabled, codex_root)
             .ok()
             .flatten()
@@ -464,7 +485,9 @@ fn enabled_claude_preferences(
     preferences
         .iter()
         .filter(|preference| {
-            CLAUDE_CLIENTS.contains(&preference.client.as_str()) && preference.enabled
+            RUNTIME_CLIENTS.contains(&preference.client.as_str())
+                && preference.client != "codex"
+                && preference.enabled
         })
         .map(|preference| EnabledClaudePreference {
             client: preference.client.clone(),
@@ -512,7 +535,10 @@ fn read_enabled_claude_preferences() -> Result<Vec<EnabledClaudePreference>, &'s
     }
     let mut selected = BTreeMap::new();
     for preference in parsed.preferences {
-        if !CLAUDE_CLIENTS.contains(&preference.client.as_str()) || !preference.enabled {
+        if !RUNTIME_CLIENTS.contains(&preference.client.as_str())
+            || preference.client == "codex"
+            || !preference.enabled
+        {
             continue;
         }
         selected
@@ -549,12 +575,25 @@ fn runtime_configuration(
     preferences: &[EnabledClaudePreference],
     codex_root: Option<std::path::PathBuf>,
 ) -> Result<Option<(RuntimeConfigKey, RuntimeRoots)>, &'static str> {
-    let claude_root = if preferences.is_empty() {
+    let claude_preferences = preferences
+        .iter()
+        .filter(|p| CLAUDE_CLIENTS.contains(&p.client.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let claude_root = if claude_preferences.is_empty() {
         None
     } else {
-        Some(shared_local_root(preferences)?)
+        Some(shared_local_root(&claude_preferences)?)
     };
-    if claude_root.is_none() && codex_root.is_none() {
+    let mut other_roots = BTreeMap::new();
+    for preference in preferences
+        .iter()
+        .filter(|p| OTHER_CLIENTS.contains(&p.client.as_str()))
+    {
+        let root = other_client_root(&preference.client, &preference.path)?;
+        other_roots.insert(preference.client.clone(), root);
+    }
+    if claude_root.is_none() && codex_root.is_none() && other_roots.is_empty() {
         return Ok(None);
     }
     let mut enabled_clients = preferences
@@ -570,14 +609,79 @@ fn runtime_configuration(
         claude_root: claude_root.as_deref().map(normalized_path_key),
         codex_root: codex_root.as_deref().map(normalized_path_key),
         enabled_clients: enabled_clients.clone(),
+        other_roots: other_roots
+            .iter()
+            .map(|(client, root)| (client.clone(), normalized_path_key(root)))
+            .collect(),
     };
     Ok(Some((
         key,
         RuntimeRoots {
             claude_root,
             codex_root,
+            other_roots,
         },
     )))
+}
+
+fn other_client_root(client: &str, path: &str) -> Result<std::path::PathBuf, &'static str> {
+    use std::path::PathBuf;
+    let home = crate::core::app_paths::home_dir();
+    let env_path = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    let mut root = if path.trim().is_empty() {
+        match client {
+            "deepseek" => env_path("DSH_HOME")
+                .unwrap_or_else(|| home.join(".dsh"))
+                .join("sessions"),
+            "gemini" => env_path("GEMINI_CLI_HOME")
+                .unwrap_or_else(|| home.clone())
+                .join(".gemini")
+                .join("tmp"),
+            "opencode" => env_path("OPENCODE_DATA_DIR").unwrap_or_else(|| {
+                env_path("XDG_DATA_HOME")
+                    .unwrap_or_else(|| home.join(".local").join("share"))
+                    .join("opencode")
+            }),
+            _ => return Err("unsupported_local_source"),
+        }
+    } else if path.trim() == "~" {
+        home.clone()
+    } else if let Some(suffix) = path
+        .trim()
+        .strip_prefix("~/")
+        .or_else(|| path.trim().strip_prefix("~\\"))
+    {
+        home.join(suffix)
+    } else {
+        PathBuf::from(path.trim())
+    };
+    if client == "opencode" && root.file_name().is_some_and(|name| name == "opencode.db") {
+        root.pop();
+    }
+    validate_local_absolute_path(&root)?;
+    Ok(root)
+}
+
+/// Same resolver as the display helper; this returns only non-Claude roots
+/// for the opt-in reporter's local startup pipe, never an upload document.
+pub(crate) fn selected_reporting_local_roots() -> Result<BTreeMap<String, String>, &'static str> {
+    read_enabled_claude_preferences()?
+        .iter()
+        .filter(|p| OTHER_CLIENTS.contains(&p.client.as_str()))
+        .map(|p| {
+            let root = other_client_root(&p.client, &p.path)?
+                .to_string_lossy()
+                .to_string();
+            if root.chars().count() > 1024 || root.chars().any(char::is_control) {
+                return Err("local_source_root_invalid");
+            }
+            Ok((p.client.clone(), root))
+        })
+        .collect()
 }
 
 fn codex_local_activity_enabled(speed_display_mode: &str) -> bool {
@@ -617,9 +721,23 @@ fn default_claude_root() -> std::path::PathBuf {
         .join("projects")
 }
 
+// A canonical Windows disk path uses this prefix too; it is not a UNC share.
+// Permit only drive-qualified disks, never device namespaces or verbatim UNC.
+fn is_verbatim_local_disk_path(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return false;
+    };
+    let bytes = rest.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
 fn validate_local_absolute_path(path: &std::path::Path) -> Result<(), &'static str> {
     let text = path.to_string_lossy();
-    let unc = text.starts_with("\\\\") || text.starts_with("//");
+    let unc =
+        (text.starts_with("\\\\") || text.starts_with("//")) && !is_verbatim_local_disk_path(&text);
     if unc || !path.is_absolute() {
         return Err("claude_root_must_be_local_absolute");
     }
@@ -669,12 +787,16 @@ fn capture_activity_rates(
         let root = match client.as_str() {
             "codex" => key.codex_root.as_deref(),
             "claudeCode" | "claudeDesktop" => key.claude_root.as_deref(),
-            _ => None,
+            other => key.other_roots.get(other).map(String::as_str),
         };
         let Some(root) = root else { continue };
         // Codex's monitor receives <home>/sessions; both display algorithms
         // must persist the same home identity rather than two folder hashes.
-        let activity_root = if client == "codex" { root.strip_suffix("\\sessions").unwrap_or(root) } else { root };
+        let activity_root = if client == "codex" {
+            root.strip_suffix("\\sessions").unwrap_or(root)
+        } else {
+            root
+        };
         let source_signature = crate::core::activity_speed_capture::root_identity(activity_root);
         let rates = snapshot
             .model_rates
@@ -754,6 +876,15 @@ fn start_worker(
     }
     if let Some(root) = roots.codex_root {
         command.arg("--codex-root").arg(root);
+    }
+    for (client, root) in roots.other_roots {
+        let flag = match client.as_str() {
+            "deepseek" => "--dsh-root",
+            "gemini" => "--gemini-root",
+            "opencode" => "--opencode-root",
+            _ => return Err(()),
+        };
+        command.arg(flag).arg(root);
     }
     // Keep process startup deterministic and prevent forwarding unrelated credential variables.
     command.env_clear();
@@ -981,21 +1112,19 @@ fn parse_runtime_snapshot(
     }
     let captured = parse_timestamp(&wire.captured_at)?;
     validate_snapshot_timestamp(captured)?;
-    let codex_selected = enabled_clients.iter().any(|client| client == "codex");
-    if codex_selected != wire.source_available.contains_key("codex") {
-        return Err("helper_source_mismatch");
-    }
-    let expected_sources = CLAUDE_CLIENTS.len() + if codex_selected { 1 } else { 0 };
-    if wire.source_available.len() != expected_sources
-        || CLAUDE_CLIENTS
-            .iter()
-            .any(|client| !wire.source_available.contains_key(*client))
-        || wire
-            .source_available
-            .keys()
-            .any(|client| !RUNTIME_CLIENTS.contains(&client.as_str()))
+    let expected_sources = CLAUDE_CLIENTS
+        .iter()
+        .copied()
+        .chain(enabled_clients.iter().map(String::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
+    if wire
+        .source_available
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected_sources
     {
-        return Err("helper_output_invalid");
+        return Err("helper_source_mismatch");
     }
     for client in &wire.source_available {
         if *client.1 && !enabled_clients.iter().any(|enabled| enabled == client.0) {
@@ -1050,8 +1179,9 @@ fn parse_runtime_snapshot(
         .map(|response| {
             validate_source_client(&wire.source_available, enabled_clients, &response.client)?;
             validate_optional_text(response.model.as_deref(), 256)?;
-            if response.output_tokens > MAX_COUNTER
-                || response.total_tokens > MAX_COUNTER
+            if response.output_tokens > MAX_OUTPUT_TOKENS
+                || response.total_tokens > MAX_TOTAL_TOKENS
+                || response.total_tokens < response.output_tokens
                 || response
                     .duration_ms
                     .is_some_and(|duration| duration > 24 * 60 * 60 * 1000)
@@ -1087,8 +1217,9 @@ fn parse_runtime_snapshot(
         }
         validate_source_client(&wire.source_available, enabled_clients, &event.client)?;
         validate_optional_text(event.model.as_deref(), 256)?;
-        if event.output_tokens > MAX_COUNTER
-            || event.total_tokens > MAX_COUNTER
+        if event.output_tokens > MAX_OUTPUT_TOKENS
+            || event.total_tokens > MAX_TOTAL_TOKENS
+            || event.total_tokens < event.output_tokens
             || event
                 .duration_ms
                 .is_some_and(|duration| duration > 24 * 60 * 60 * 1000)
@@ -1299,6 +1430,92 @@ mod tests {
     }
 
     #[test]
+    fn large_valid_token_responses_do_not_discard_the_live_speed_frame() {
+        let fixture = fresh_codex_fixture()
+            .replace("\"outputTokens\":7", "\"outputTokens\":15000")
+            .replace("\"totalTokens\":11", "\"totalTokens\":500000");
+        let parsed = parse_runtime_snapshot(fixture.as_bytes(), &["codex".into()]).unwrap();
+        assert_eq!(parsed.latest_response.unwrap().output_tokens, 15000);
+        assert_eq!(parsed.response_events[0].total_tokens, 500000);
+        let oversized = fixture.replace("\"totalTokens\":500000", "\"totalTokens\":2000000000001");
+        assert!(parse_runtime_snapshot(oversized.as_bytes(), &["codex".into()]).is_err());
+        let inconsistent = fixture.replace("\"totalTokens\":500000", "\"totalTokens\":100");
+        assert!(parse_runtime_snapshot(inconsistent.as_bytes(), &["codex".into()]).is_err());
+    }
+
+    #[test]
+    fn unavailable_snapshots_keep_selected_client_coverage_explicit() {
+        let snapshot = ClaudeLocalRuntimeSnapshot::unavailable_for(
+            true,
+            Some("waiting_for_local_snapshot"),
+            &["deepseek".into(), "gemini".into(), "opencode".into()],
+        );
+        for client in [
+            "claudeCode",
+            "claudeDesktop",
+            "deepseek",
+            "gemini",
+            "opencode",
+        ] {
+            assert_eq!(snapshot.source_available.get(client), Some(&false));
+        }
+        assert!(snapshot.model_rates.is_empty());
+    }
+
+    #[test]
+    fn canonical_windows_disk_prefix_is_not_an_unc_or_device_namespace() {
+        assert!(is_verbatim_local_disk_path(r"\\?\C:\Users\local\.codex"));
+        assert!(is_verbatim_local_disk_path(r"\\?\d:/Codex/sessions"));
+        for path in [
+            r"\\?\UNC\server\share",
+            r"\\.\C:\",
+            r"\\?\GLOBALROOT\Device\Harddisk0",
+            r"\\server\share",
+            r"\\?\C:relative",
+            "//server/share",
+        ] {
+            assert!(!is_verbatim_local_disk_path(path), "{path}");
+        }
+        #[cfg(windows)]
+        assert!(validate_local_absolute_path(std::path::Path::new(
+            r"\\?\Z:\tokenbar-missing-fixture"
+        ))
+        .is_ok());
+    }
+
+    #[test]
+    fn other_clients_have_independent_explicit_local_roots() {
+        let home = std::env::temp_dir().join("tokenbar-fixture-home");
+        let preferences = vec![
+            EnabledClaudePreference {
+                client: "deepseek".into(),
+                path: home.join("dsh").to_string_lossy().into(),
+            },
+            EnabledClaudePreference {
+                client: "gemini".into(),
+                path: home.join("gemini").to_string_lossy().into(),
+            },
+            EnabledClaudePreference {
+                client: "opencode".into(),
+                path: home
+                    .join("opencode")
+                    .join("opencode.db")
+                    .to_string_lossy()
+                    .into(),
+            },
+        ];
+        let (key, roots) = runtime_configuration(&preferences, None).unwrap().unwrap();
+        assert_eq!(key.enabled_clients, vec!["deepseek", "gemini", "opencode"]);
+        assert!(roots.claude_root.is_none());
+        assert_eq!(
+            roots.other_roots.get("opencode"),
+            Some(&home.join("opencode"))
+        );
+        assert_eq!(key.other_roots.len(), 3);
+        assert!(other_client_root("gemini", "//server/share").is_err());
+    }
+
+    #[test]
     fn parses_only_enabled_claude_sources_and_exposes_safe_projection() {
         let parsed = parse_runtime_snapshot(fresh_fixture().as_bytes(), &enabled()).unwrap();
         assert!(parsed.enabled);
@@ -1431,6 +1648,7 @@ mod tests {
             state.failed_config = Some(RuntimeConfigKey {
                 claude_root: Some("c:\\users\\example\\.claude\\projects".into()),
                 codex_root: None,
+                other_roots: BTreeMap::new(),
                 enabled_clients: vec!["claudeCode".into()],
             });
             state.retry_after = Some(Instant::now() + Duration::from_secs(60));
@@ -1450,6 +1668,7 @@ mod tests {
             state.failed_config = Some(RuntimeConfigKey {
                 claude_root: Some("c:\\users\\example\\.claude\\projects".into()),
                 codex_root: None,
+                other_roots: BTreeMap::new(),
                 enabled_clients: vec!["claudeCode".into()],
             });
             state.retry_after = Some(Instant::now() + Duration::from_secs(60));

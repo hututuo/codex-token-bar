@@ -150,6 +150,7 @@ struct SpeedEngine: Sendable {
             liveEstimatedShare: window.estimatedShare,
             sourceLive: window.bySource,
             sourceLiveEstimated: window.estimatedBySource,
+            liveModels: window.byModel,
             liveCost: window.cost,
             sourceLiveCost: window.costBySource,
             agents: agentList(nowMs: nowMs, window: window, references: references),

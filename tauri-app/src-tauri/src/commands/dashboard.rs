@@ -329,6 +329,21 @@ async fn persist_codex_home_transition(
             envelope.transition_generation
         ));
     }
+    #[cfg(windows)]
+    {
+        // Optional reporting follows the same selected source. A failure here
+        // must not turn an already committed source change into a UI error.
+        if let Ok(reporting) = run_blocking_command(|| platform::read_app_settings().map(|settings| settings.agent_speed_reporting)).await {
+            if reporting.enabled {
+                use tauri::Manager as _;
+                if let Some(registry) = app.try_state::<crate::core::agent_speed_reporting::AgentSpeedReportingRegistry>() {
+                    if let Err(error) = registry.start(&app, &reporting).await {
+                        startup_trace::mark_performance(format!("reporter source reconciliation failed: {error}"));
+                    }
+                }
+            }
+        }
+    }
     Ok(envelope)
 }
 

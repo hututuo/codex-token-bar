@@ -73,6 +73,51 @@ final class AgentSpeedReportingTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    func testLocalSourceConfigurationRespectsConsentAndClaudeDenyList() async throws {
+        let transport = SpeedReportTestTransport(), monitor = SpeedReportTestMonitor()
+        let controller = AgentSpeedReportingController(defaults: defaults(), transport: transport, makeMonitor: { _ in monitor })
+        controller.start()
+        let home = URL(fileURLWithPath: "/tmp/explicit-codex-home")
+        controller.configureCodexHome(home)
+        var preferences = MultiClientUsagePreference.defaults
+        for index in preferences.indices {
+            preferences[index].enabled = true
+            if preferences[index].client == .deepseek { preferences[index].path = "/tmp/explicit-dsh-sessions" }
+        }
+        controller.configureLocalPreferences(preferences)
+        XCTAssertEqual(controller.reportingConfiguration.codexRoot?.path, home.appendingPathComponent("sessions").path)
+        XCTAssertEqual(controller.reportingConfiguration.dshRoot?.path, "/tmp/explicit-dsh-sessions")
+        XCTAssertFalse(controller.reportingConfiguration.enabledSources.contains(.claudeCode))
+        XCTAssertFalse(controller.reportingConfiguration.enabledSources.contains(.claudeDesktop))
+        controller.configureCodexHome(nil)
+        XCTAssertFalse(controller.reportingConfiguration.enabledSources.contains(.codex))
+        XCTAssertFalse(controller.enabled)
+        XCTAssertEqual(monitor.starts, 0)
+        let calls = await transport.count()
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testOptedInReporterRestartsOnlyForActualRootChanges() async throws {
+        let transport = SpeedReportTestTransport(), monitor = SpeedReportTestMonitor()
+        let controller = AgentSpeedReportingController(defaults: defaults(), transport: transport,
+            makeSigner: { _ in SoftwareReportSigner() }, makeMonitor: { _ in monitor })
+        controller.start()
+        controller.configureCodexHome(URL(fileURLWithPath: "/tmp/first-codex-home"))
+        controller.setEnabled(true, username: "test-device")
+        defer { controller.setEnabled(false) }
+        try await waitFor { monitor.starts == 1 }
+        let firstCalls = await transport.count()
+        controller.configureCodexHome(URL(fileURLWithPath: "/tmp/first-codex-home"))
+        controller.configureLocalPreferences(MultiClientUsagePreference.defaults)
+        XCTAssertEqual(monitor.starts, 1)
+        let unchangedCalls = await transport.count()
+        XCTAssertEqual(unchangedCalls, firstCalls)
+        controller.configureCodexHome(URL(fileURLWithPath: "/tmp/second-codex-home"))
+        try await waitFor { monitor.starts == 2 }
+        XCTAssertEqual(monitor.stops, 1)
+        XCTAssertEqual(controller.reportingConfiguration.codexRoot?.path, "/tmp/second-codex-home/sessions")
+    }
+
     func testDisableWhileDiscoveringPreventsLateRegistrationAndScan() async throws {
         let transport = SpeedReportTestTransport(), monitor = SpeedReportTestMonitor()
         await transport.holdDiscovery()

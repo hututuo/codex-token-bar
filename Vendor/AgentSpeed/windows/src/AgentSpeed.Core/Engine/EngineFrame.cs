@@ -29,6 +29,7 @@ internal sealed record EngineFrame(
     int UnfinalizedToday)
 {
     public IReadOnlyList<ExecutionModeUsage> TodayModes { get; init; } = [];
+    public IReadOnlyList<SourceModelRate> LiveModels { get; init; } = [];
 
     /// <summary>The live cost rate (METRICS 9.5) in total.</summary>
     public LiveCost LiveCost { get; init; }

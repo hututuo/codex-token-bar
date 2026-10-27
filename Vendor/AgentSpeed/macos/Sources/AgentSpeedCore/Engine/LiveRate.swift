@@ -10,6 +10,7 @@ struct InFlightEstimate: Sendable {
     var speed: Rate
     /// micro-USD per second of the same reference responses (METRICS 9.5); nil when none has a known cost.
     var costRate: Double?
+    var model: String? = nil
 }
 
 /// A reference speed with the cost rate of the same responses.
@@ -121,6 +122,8 @@ public struct LiveCost: Equatable, Sendable {
 
 /// Measured plus estimated tokens inside the live window `[nowMs - W, nowMs]` (METRICS 6.3).
 struct LiveWindow: Sendable {
+    private struct ModelKey: Hashable { var source: SourceKind; var model: String? }
+    private(set) var byModel: [SourceModelRate] = []
     private(set) var total = Rate.zero
     private(set) var estimatedShare = 0.0
     private(set) var bySource: [SourceKind: Rate] = [:]
@@ -151,6 +154,7 @@ struct LiveWindow: Sendable {
         var sourceTokens: [SourceKind: Rate] = [:]
         var estimatedSourceTokens: [SourceKind: Rate] = [:]
         var agentTokens: [String: Rate] = [:]
+        var modelTokens: [ModelKey: Rate] = [:]
         // Cost in micro-USD and known output tokens inside the window, before dividing by its length.
         var sourceCost: [SourceKind: LiveCost] = [:]
         var agentCost: [String: LiveCost] = [:]
@@ -163,6 +167,7 @@ struct LiveWindow: Sendable {
             measured.add(tokens)
             sourceTokens[response.record.source, default: .zero].add(tokens)
             agentTokens[response.record.agentId, default: .zero].add(tokens)
+            modelTokens[ModelKey(source: response.record.source, model: response.record.model), default: .zero].add(tokens)
             if let microUsd = response.record.costMicroUsd {
                 let known = LiveCost(microUsdPerSecond: Double(microUsd) * share, knownOutput: tokens.output)
                 sourceCost[response.record.source, default: .zero].add(known)
@@ -180,6 +185,7 @@ struct LiveWindow: Sendable {
             sourceTokens[estimate.source, default: .zero].add(tokens)
             estimatedSourceTokens[estimate.source, default: .zero].add(tokens)
             agentTokens[estimate.agentId, default: .zero].add(tokens)
+            modelTokens[ModelKey(source: estimate.source, model: estimate.model), default: .zero].add(tokens)
             if let costRate = estimate.costRate {
                 let known = LiveCost(microUsdPerSecond: costRate * overlap, knownOutput: tokens.output)
                 sourceCost[estimate.source, default: .zero].add(known)
@@ -194,7 +200,7 @@ struct LiveWindow: Sendable {
             guard let reference = references.estimate(for: agent) else { continue }
             addEstimate(InFlightEstimate(
                 agentId: record.agentId, source: record.source, startMs: response.startMs, endMs: response.endMs,
-                speed: reference.speed, costRate: reference.costRate
+                speed: reference.speed, costRate: reference.costRate, model: record.model
             ))
         }
 
@@ -207,7 +213,7 @@ struct LiveWindow: Sendable {
             let start = max(inFlightStart, latestEnds[agent.id] ?? inFlightStart)
             addEstimate(InFlightEstimate(
                 agentId: agent.id, source: agent.source, startMs: start, endMs: nil, speed: reference.speed,
-                costRate: reference.costRate
+                costRate: reference.costRate, model: agent.model
             ))
         }
 
@@ -228,6 +234,10 @@ struct LiveWindow: Sendable {
         bySource = sourceTokens.mapValues { Rate(output: $0.output / seconds, total: $0.total / seconds) }
         estimatedBySource = estimatedSourceTokens.mapValues { Rate(output: $0.output / seconds, total: $0.total / seconds) }
         byAgent = agentTokens.mapValues { Rate(output: $0.output / seconds, total: $0.total / seconds) }
+        byModel = modelTokens.filter { $0.value.output != 0 || $0.value.total != 0 }.map { key, value in
+            SourceModelRate(source: key.source, model: key.model,
+                            rate: Rate(output: value.output / seconds, total: value.total / seconds))
+        }.sorted { ($0.source.rawValue, $0.model ?? "") < ($1.source.rawValue, $1.model ?? "") }
     }
 }
 

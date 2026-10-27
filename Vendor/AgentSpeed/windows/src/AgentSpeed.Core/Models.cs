@@ -153,6 +153,8 @@ public abstract record MonitorWarning
     public sealed record UnsupportedFormat(SourceKind Source) : MonitorWarning;
 }
 
+public readonly record struct SourceModelRate(SourceKind Source, string? Model, Rate Rate);
+
 /// <param name="LiveEstimatedShare">Share of <paramref name="Live"/> (0..1) that is an in-flight estimate.</param>
 /// <param name="AverageToday">Output tok/s over today's valid responses.</param>
 /// <param name="History">Last 300 one-second buckets, oldest first.</param>
@@ -192,6 +194,7 @@ public sealed record SpeedSnapshot(
     /// <summary>Live reporting's agent counts and cumulative ledger (METRICS 11.2, 11.4).</summary>
     public Reporting.ReportLiveFacts Report { get; init; } = Reporting.ReportLiveFacts.Empty;
     public IReadOnlyList<ExecutionModeUsage> TodayModes { get; init; } = [];
+    public IReadOnlyList<SourceModelRate> LiveModels { get; init; } = [];
 
     public static SpeedSnapshot Empty { get; } = new(
         DateTimeOffset.MinValue,
