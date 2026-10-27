@@ -80,6 +80,8 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "read_agent_speed_reporting_status",
     "read_claude_local_runtime_snapshot",
+    "read_activity_speed_history",
+    "read_activity_speed_mode",
     "read_sidebar_trend",
     "get_codex_home",
     "read_app_settings",
@@ -112,6 +114,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
 ];
 
 pub(crate) const QUOTA_SIDEBAR_ONLY_COMMANDS: &[&str] = &["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "quota_sidebar_pointer_state", "drag_quota_sidebar"];
+const ACTIVITY_SPEED_SETTINGS_COMMANDS: &[&str] = &["save_activity_speed_mode"];
 
 const SIDEBAR_MODULE_SETTINGS_COMMANDS: &[&str] = &[
     "read_sidebar_module_visibility",
@@ -148,6 +151,11 @@ pub(crate) fn require_window_label(
 }
 
 pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
+    if ACTIVITY_SPEED_SETTINGS_COMMANDS.contains(&command) {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar" | "quota-sidebar-detail");
+    }
+    if matches!(command, "read_activity_speed_history" | "read_activity_speed_mode" | "read_claude_local_runtime_snapshot")
+        && label == "quota-sidebar-detail" { return true; }
     // The speed detail reads source-validated numeric buckets only. Other
     // history, account and mutation commands keep their existing boundaries.
     if command == "read_body_speed_trend" && label == "quota-sidebar-detail" { return true; }
@@ -200,6 +208,20 @@ fn is_app_surface_label(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_controls_are_narrow_and_details_do_not_gain_account_settings() {
+        for label in ["main", "quota-sidebar", "quota-sidebar-detail"] {
+            for command in ["read_activity_speed_mode", "save_activity_speed_mode", "read_activity_speed_history", "read_claude_local_runtime_snapshot"] {
+                assert!(allows_window_label(command, label), "{command} {label}");
+            }
+        }
+        for label in ["floating", "status", "unknown"] {
+            assert!(!allows_window_label("save_activity_speed_mode", label));
+        }
+        assert!(!allows_window_label("save_display_surfaces", "quota-sidebar-detail"));
+        assert!(!allows_window_label("read_app_settings", "quota-sidebar-detail"));
+    }
 
     #[test]
     fn speed_detail_can_read_numeric_trend_without_account_or_history_authority() {
@@ -501,6 +523,7 @@ mod tests {
             .chain(SURFACE_SAFE_COMMANDS.iter())
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
             .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
+            .chain(ACTIVITY_SPEED_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(
@@ -524,6 +547,7 @@ mod tests {
             .chain(SURFACE_SAFE_COMMANDS.iter())
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
             .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
+            .chain(ACTIVITY_SPEED_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(

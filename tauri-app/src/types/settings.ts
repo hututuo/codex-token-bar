@@ -213,6 +213,7 @@ export interface DisplaySurfaceSettings {
   quotaSidebarEnabled: boolean;
   quotaSidebarSide: "left" | "right";
   liveRateEnabled: boolean;
+  speedDisplayMode?: "bar" | "agentSpeed";
   statusTrayLiveTextEnabled: boolean;
   statusMetricOrder: StatusMetricId[];
   statusMetricLabelStyle: StatusMetricLabelStyle;

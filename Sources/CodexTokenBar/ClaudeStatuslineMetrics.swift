@@ -148,7 +148,6 @@ actor ClaudeLocalSpeedLedger {
         if !enabled { task?.cancel(); task = nil; baselines.removeAll(); metrics = nil; quota = .missing; samples = []; windows = []; buckets = []; return }
         guard task == nil else { return }
         task = Task { [weak self] in
-            await self?.loadHistory()
             while !Task.isCancelled {
                 await self?.poll()
                 try? await Task.sleep(for: .seconds(2))
@@ -175,27 +174,9 @@ actor ClaudeLocalSpeedLedger {
         let reading = readings.max { $0.capturedAt < $1.capturedAt }
         guard !Task.isCancelled else { return }
         if metrics != reading { metrics = reading }
-        var changed = false
-        for reading in readings {
-        let old = baselines[reading.session]
-        baselines[reading.session] = reading
-        if baselines.count > 64 { baselines = [reading.session: reading] }
-        guard old?.capturedAt != reading.capturedAt else { continue }
-        do {
-            let rows = try await ledger.records(adding: old.flatMap { reading.sample(after: $0) }, now: now)
-            guard !Task.isCancelled else { return }
-            if samples != rows { samples = rows }
-            changed = true
-            error = nil
-        } catch { self.error = "本地测速索引暂不可用" }
-        }
-        // Recompute at minute boundaries even after a session goes quiet.
-        if changed || Int(now.timeIntervalSince1970) % 60 < 2 {
-            if let result = try? await ledger.aggregates(now: now), !Task.isCancelled {
-                if windows != result.0 { windows = result.0 }
-                if buckets != result.1 { buckets = result.1 }
-            }
-        }
+        // Quota/context polling only. Legacy API-speed records remain on
+        // disk for migration; this path never opens or writes the old speed DB.
+
     }
 }
 

@@ -60,7 +60,7 @@ pub use settings::{
     complete_floating_paging_guide, initialize_sidebar_layout, read_app_settings, read_sidebar_layout,
     read_sidebar_module_visibility,
     read_sidebar_module_order,
-    save_display_surfaces, save_floating_position, save_floating_settings,
+    save_display_surfaces, save_activity_speed_mode, save_floating_position, save_floating_settings,
     save_auto_resume_settings, save_custom_account_display_name, save_quota_refresh_interval_ms,
     save_quota_history_filter,
     save_session_enhancement_settings, save_setup_guide_completed,

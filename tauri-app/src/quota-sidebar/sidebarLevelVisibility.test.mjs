@@ -9,8 +9,9 @@ test("Claude-only scope never borrows Codex task counts or live speed",async()=>
   const quota={id:'claudeCode:5h',client:'claudeCode',window:'5h',remaining:62};
   const config=normalizeSidebarLayout(null);
   const claude=sidebarLayoutItems(config,[quota],false);
-  for(const id of ['tasks','speed','models'])assert.equal(claude.includes(id),false,id);
+  for(const id of ['tasks','speed'])assert.equal(claude.includes(id),false,id);
   assert.equal(claude.includes('quota:claudeCode'),true);
+  assert.equal(claude.includes('models'),true,'Claude local usage has its own model composition');
   const combined=sidebarLayoutItems(config,[quota],true);
   assert.equal(combined.includes('tasks'),true);
  });

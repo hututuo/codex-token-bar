@@ -83,11 +83,7 @@ final class AgentSpeedReportingController: ObservableObject {
         self.api = ReportAPI(transport: transport, userAgent: Self.userAgent)
         self.makeSigner = makeSigner
         self.makeMonitor = makeMonitor ?? { store in
-            AgentSpeedCore.LiveMonitor(
-                store: store,
-                configuration: MonitorConfiguration(enabledSources: Self.reportableSources),
-                pricing: PriceBook()
-            )
+            SharedAgentSpeedMonitorPool.shared.lease(store: store, sources: Self.reportableSources)
         }
         self.monotonic = monotonic
         enabled = defaults.bool(forKey: Self.enabledKey)

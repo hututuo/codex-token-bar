@@ -38,7 +38,7 @@ test("new controls preserve Codex defaults and no percent is added into the toke
  await withSsrModules(async load=>{
   const {MultiClientUsageSettings,ClientUsageChart}=await load("/src/multiClient/MultiClientUsage.tsx");
   const settings=renderToStaticMarkup(React.createElement(MultiClientUsageSettings));
-  assert.doesNotMatch(settings,/<legend[^>]*>Gemini CLI/);assert.match(settings,/手动接入其他日志目录/);assert.match(settings,/联网额度：关闭/);
+  assert.doesNotMatch(settings,/<legend[^>]*>Gemini CLI/);assert.match(settings,/手动接入其他日志目录/);assert.match(settings,/额度仅从本地读取/);
 
   const chart=renderToStaticMarkup(React.createElement(ClientUsageChart,{points:[{client:"codex",startUnix:1800000000,tokens:120},{client:"gemini",startUnix:1800000000,tokens:30}],colors:{codex:"#00ff00",gemini:"#0000ff"}}));
   assert.match(chart,/role="button"/);assert.match(chart,/Codex 120/);assert.match(chart,/Gemini CLI 30/);assert.doesNotMatch(chart,/usedPercent/);

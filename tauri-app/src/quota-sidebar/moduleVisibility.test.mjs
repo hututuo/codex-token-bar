@@ -29,7 +29,7 @@ test('all modules can be hidden while the permanent settings entry remains reach
    assert.ok(dom.document.querySelector('.qs-window-status'));
    render(DEFAULT_MODULE_VISIBILITY,["radar","tasks","credits","overview","speeds","modeltrace"]);
    const nodes=[...dom.document.querySelector(".qs-module-stack").children];
-   assert.ok(nodes.indexOf(dom.document.querySelector("[data-sidebar-item=radar]")) < nodes.indexOf(dom.document.querySelector("[data-sidebar-item=modeltrace]")));
+   assert.ok(nodes.indexOf(dom.document.querySelector(".qs-module-stack [data-sidebar-item=radar]")) < nodes.indexOf(dom.document.querySelector(".qs-module-stack [data-sidebar-item=modeltrace]")));
    render({...DEFAULT_MODULE_VISIBILITY,speeds:false});
    assert.equal(dom.document.querySelector('.qs-model-speeds'),null);
    assert.equal(dom.document.querySelector('.qs-rate-trigger'),null);

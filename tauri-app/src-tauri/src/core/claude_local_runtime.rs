@@ -6,9 +6,11 @@ use std::{
 };
 
 const CLAUDE_CLIENTS: [&str; 2] = ["claudeCode", "claudeDesktop"];
+const RUNTIME_CLIENTS: [&str; 3] = ["codex", "claudeCode", "claudeDesktop"];
 const MAX_RUNTIME_LINE_BYTES: usize = 256 * 1024;
 const MAX_COUNTER: u64 = 10_000;
 const MAX_RATE: f64 = 1_000_000_000.0;
+const MAX_RESPONSE_EVENTS: usize = 32;
 const SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(10);
 const IDLE_AGENT_MAX_AGE_SECONDS: i64 = 5 * 60;
 const HELPER_ENV_ALLOWLIST: &[&str] = &[
@@ -35,17 +37,27 @@ pub struct ClaudeLocalRuntimeSnapshot {
     pub main_agents: Vec<ClaudeLocalRuntimeAgent>,
     pub subagents: Vec<ClaudeLocalRuntimeAgent>,
     pub latest_response: Option<ClaudeLocalLatestResponse>,
+    #[serde(default)]
+    pub response_events: Vec<ClaudeLocalActivityEvent>,
     pub configuration_issue: Option<String>,
 }
 
 impl ClaudeLocalRuntimeSnapshot {
     fn unavailable(enabled: bool, issue: Option<&str>) -> Self {
+        Self::unavailable_for(enabled, issue, &[])
+    }
+
+    fn unavailable_for(enabled: bool, issue: Option<&str>, clients: &[String]) -> Self {
+        let mut source_available = CLAUDE_CLIENTS
+            .into_iter()
+            .map(|client| (client.to_string(), false))
+            .collect::<BTreeMap<_, _>>();
+        if clients.iter().any(|client| client == "codex") {
+            source_available.insert("codex".into(), false);
+        }
         Self {
             enabled,
-            source_available: CLAUDE_CLIENTS
-                .into_iter()
-                .map(|client| (client.to_string(), false))
-                .collect(),
+            source_available,
             configuration_issue: issue.map(str::to_owned),
             ..Self::default()
         }
@@ -89,6 +101,20 @@ pub struct ClaudeLocalLatestResponse {
     pub ended_at: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeLocalActivityEvent {
+    pub id: String,
+    pub r#type: String,
+    pub client: String,
+    pub model: Option<String>,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub duration_ms: Option<u64>,
+    pub speed: Option<f64>,
+    pub ended_at: String,
+}
+
 #[derive(Clone, Default)]
 pub struct ClaudeLocalRuntimeRegistry {
     inner: Arc<Mutex<RegistryState>>,
@@ -105,8 +131,15 @@ struct RegistryState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RuntimeConfigKey {
-    root: String,
+    claude_root: Option<String>,
+    codex_root: Option<String>,
     enabled_clients: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeRoots {
+    claude_root: Option<std::path::PathBuf>,
+    codex_root: Option<std::path::PathBuf>,
 }
 
 struct RuntimeWorker {
@@ -155,43 +188,72 @@ impl ClaudeLocalRuntimeRegistry {
             }
         };
         self.lock_state().last_global_enabled = Some(settings.display_surfaces.live_rate_enabled);
+        let mode = settings.display_surfaces.speed_display_mode.as_str();
+        let codex_opted_in = codex_local_activity_enabled(mode);
         if !settings.display_surfaces.live_rate_enabled {
             self.stop_worker();
-            return ClaudeLocalRuntimeSnapshot::unavailable(false, None);
+            let disabled_clients = if codex_opted_in {
+                vec!["codex".to_owned()]
+            } else {
+                Vec::new()
+            };
+            return ClaudeLocalRuntimeSnapshot::unavailable_for(false, None, &disabled_clients);
         }
 
         let preferences = match read_enabled_claude_preferences() {
             Ok(preferences) => preferences,
             Err(issue) => {
                 self.stop_worker();
-                return ClaudeLocalRuntimeSnapshot::unavailable(false, Some(issue));
+                let codex_client = if codex_opted_in {
+                    vec!["codex".to_owned()]
+                } else {
+                    Vec::new()
+                };
+                return ClaudeLocalRuntimeSnapshot::unavailable_for(
+                    false,
+                    Some(issue),
+                    &codex_client,
+                );
             }
         };
-        let enabled_clients = preferences
+        let codex_root =
+            codex_opted_in.then(|| crate::platform::default_codex_home().join("sessions"));
+        let mut requested_clients = preferences
             .iter()
             .map(|preference| preference.client.clone())
             .collect::<Vec<_>>();
+        if codex_opted_in {
+            requested_clients.push("codex".into());
+        }
+        let (key, roots) = match runtime_configuration(&preferences, codex_root) {
+            Ok(Some(configuration)) => configuration,
+            Ok(None) => {
+                self.stop_worker();
+                return ClaudeLocalRuntimeSnapshot::unavailable(false, None);
+            }
+            Err(issue) => {
+                self.stop_worker();
+                return ClaudeLocalRuntimeSnapshot::unavailable_for(
+                    true,
+                    Some(issue),
+                    &requested_clients,
+                );
+            }
+        };
+        let enabled_clients = key.enabled_clients.clone();
         if enabled_clients.is_empty() {
             self.stop_worker();
             return ClaudeLocalRuntimeSnapshot::unavailable(false, None);
         }
-
-        let root = match shared_local_root(&preferences) {
-            Ok(root) => root,
-            Err(issue) => {
-                self.stop_worker();
-                return ClaudeLocalRuntimeSnapshot::unavailable(true, Some(issue));
-            }
-        };
-        let key = RuntimeConfigKey {
-            root: normalized_path_key(&root),
-            enabled_clients: enabled_clients.clone(),
-        };
         let helper = match packaged_helper_path(app) {
             Ok(helper) => helper,
             Err(issue) => {
                 self.stop_worker();
-                return ClaudeLocalRuntimeSnapshot::unavailable(true, Some(issue));
+                return ClaudeLocalRuntimeSnapshot::unavailable_for(
+                    true,
+                    Some(issue),
+                    &enabled_clients,
+                );
             }
         };
 
@@ -222,7 +284,7 @@ impl ClaudeLocalRuntimeRegistry {
                     .retry_after
                     .is_some_and(|retry_after| Instant::now() < retry_after);
             if !is_backing_off {
-                match start_worker(helper, root, key.clone(), enabled_clients) {
+                match start_worker(helper, roots.clone(), key.clone()) {
                     Ok(worker) => {
                         state.worker = Some(worker);
                         state.failed_config = None;
@@ -231,9 +293,10 @@ impl ClaudeLocalRuntimeRegistry {
                     Err(_) => {
                         state.failed_config = Some(key);
                         state.retry_after = Some(Instant::now() + Duration::from_secs(5));
-                        return ClaudeLocalRuntimeSnapshot::unavailable(
+                        return ClaudeLocalRuntimeSnapshot::unavailable_for(
                             true,
                             Some("helper_start_failed"),
+                            &enabled_clients,
                         );
                     }
                 }
@@ -241,31 +304,50 @@ impl ClaudeLocalRuntimeRegistry {
         }
 
         let Some(worker) = state.worker.as_ref() else {
-            return ClaudeLocalRuntimeSnapshot::unavailable(true, Some("helper_unavailable"));
+            return ClaudeLocalRuntimeSnapshot::unavailable_for(
+                true,
+                Some("helper_unavailable"),
+                &enabled_clients,
+            );
         };
         let Ok(frame) = worker.frame.lock() else {
-            return ClaudeLocalRuntimeSnapshot::unavailable(true, Some("helper_output_invalid"));
+            return ClaudeLocalRuntimeSnapshot::unavailable_for(
+                true,
+                Some("helper_output_invalid"),
+                &enabled_clients,
+            );
         };
         let Some(received_at) = frame.received_at else {
-            return ClaudeLocalRuntimeSnapshot::unavailable(
+            return ClaudeLocalRuntimeSnapshot::unavailable_for(
                 true,
                 frame.issue.or(Some("waiting_for_local_snapshot")),
+                &enabled_clients,
             );
         };
         if received_at.elapsed() > SNAPSHOT_MAX_AGE {
-            return ClaudeLocalRuntimeSnapshot::unavailable(true, Some("helper_output_stale"));
+            return ClaudeLocalRuntimeSnapshot::unavailable_for(
+                true,
+                Some("helper_output_stale"),
+                &enabled_clients,
+            );
         }
-        match frame.snapshot.clone() {
+        let snapshot = match frame.snapshot.clone() {
             Some(mut snapshot) => {
                 snapshot.enabled = true;
                 snapshot.configuration_issue = None;
                 snapshot
             }
-            None => ClaudeLocalRuntimeSnapshot::unavailable(
+            None => ClaudeLocalRuntimeSnapshot::unavailable_for(
                 true,
                 frame.issue.or(Some("helper_output_invalid")),
+                &enabled_clients,
             ),
+        };
+        drop(frame);
+        if snapshot.configuration_issue.is_none() {
+            capture_activity_rates(&snapshot, &key, mode);
         }
+        snapshot
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, RegistryState> {
@@ -309,7 +391,9 @@ impl ClaudeLocalRuntimeRegistry {
         preferences: &[crate::core::multi_client_usage::MultiClientUsagePreference],
     ) {
         let enabled = enabled_claude_preferences(preferences);
-        let next_key = runtime_configuration(&enabled)
+        let codex_root = codex_local_activity_enabled(crate::core::activity_speed_capture::mode())
+            .then(|| crate::platform::default_codex_home().join("sessions"));
+        let next_key = runtime_configuration(&enabled, codex_root)
             .ok()
             .flatten()
             .map(|(key, _)| key);
@@ -463,21 +547,41 @@ fn shared_local_root(
 
 fn runtime_configuration(
     preferences: &[EnabledClaudePreference],
-) -> Result<Option<(RuntimeConfigKey, std::path::PathBuf)>, &'static str> {
-    if preferences.is_empty() {
+    codex_root: Option<std::path::PathBuf>,
+) -> Result<Option<(RuntimeConfigKey, RuntimeRoots)>, &'static str> {
+    let claude_root = if preferences.is_empty() {
+        None
+    } else {
+        Some(shared_local_root(preferences)?)
+    };
+    if claude_root.is_none() && codex_root.is_none() {
         return Ok(None);
     }
-    let root = shared_local_root(preferences)?;
     let mut enabled_clients = preferences
         .iter()
         .map(|preference| preference.client.clone())
         .collect::<Vec<_>>();
+    if let Some(root) = codex_root.as_ref() {
+        validate_local_absolute_path(root)?;
+        enabled_clients.push("codex".into());
+    }
     enabled_clients.sort();
     let key = RuntimeConfigKey {
-        root: normalized_path_key(&root),
-        enabled_clients,
+        claude_root: claude_root.as_deref().map(normalized_path_key),
+        codex_root: codex_root.as_deref().map(normalized_path_key),
+        enabled_clients: enabled_clients.clone(),
     };
-    Ok(Some((key, root)))
+    Ok(Some((
+        key,
+        RuntimeRoots {
+            claude_root,
+            codex_root,
+        },
+    )))
+}
+
+fn codex_local_activity_enabled(speed_display_mode: &str) -> bool {
+    speed_display_mode == "agentSpeed"
 }
 
 fn preference_root(path: &str) -> Result<std::path::PathBuf, &'static str> {
@@ -545,6 +649,55 @@ fn normalized_path_key(path: &std::path::Path) -> String {
         .to_lowercase()
 }
 
+fn capture_activity_rates(
+    snapshot: &ClaudeLocalRuntimeSnapshot,
+    key: &RuntimeConfigKey,
+    mode: &str,
+) {
+    let Some(captured_at) = snapshot
+        .captured_at
+        .as_deref()
+        .and_then(|value| parse_timestamp(value).ok())
+    else {
+        return;
+    };
+    let now = captured_at.unix_timestamp_nanos() as f64 / 1_000_000_000.0;
+    for client in &key.enabled_clients {
+        if client == "codex" && !codex_local_activity_enabled(mode) {
+            continue;
+        }
+        let root = match client.as_str() {
+            "codex" => key.codex_root.as_deref(),
+            "claudeCode" | "claudeDesktop" => key.claude_root.as_deref(),
+            _ => None,
+        };
+        let Some(root) = root else { continue };
+        // Codex's monitor receives <home>/sessions; both display algorithms
+        // must persist the same home identity rather than two folder hashes.
+        let activity_root = if client == "codex" { root.strip_suffix("\\sessions").unwrap_or(root) } else { root };
+        let source_signature = crate::core::activity_speed_capture::root_identity(activity_root);
+        let rates = snapshot
+            .model_rates
+            .iter()
+            .filter(|rate| rate.client == *client)
+            .map(|rate| (rate.model.clone(), rate.output_tps))
+            .collect();
+        let available = snapshot
+            .source_available
+            .get(client)
+            .copied()
+            .unwrap_or(false);
+        crate::core::activity_speed_capture::record(
+            client,
+            &source_signature,
+            mode,
+            rates,
+            now,
+            available,
+        );
+    }
+}
+
 fn packaged_helper_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, &'static str> {
     use tauri::Manager as _;
 
@@ -577,9 +730,8 @@ fn packaged_helper_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, &'
 
 fn start_worker(
     helper: std::path::PathBuf,
-    root: std::path::PathBuf,
+    roots: RuntimeRoots,
     key: RuntimeConfigKey,
-    enabled_clients: Vec<String>,
 ) -> Result<RuntimeWorker, ()> {
     #[cfg(windows)]
     use std::os::windows::process::CommandExt as _;
@@ -594,11 +746,15 @@ fn start_worker(
     let mut command = Command::new(helper);
     command
         .arg("--watch")
-        .arg("--root")
-        .arg(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(root) = roots.claude_root {
+        command.arg("--root").arg(root);
+    }
+    if let Some(root) = roots.codex_root {
+        command.arg("--codex-root").arg(root);
+    }
     // Keep process startup deterministic and prevent forwarding unrelated credential variables.
     command.env_clear();
     for key in HELPER_ENV_ALLOWLIST {
@@ -608,7 +764,7 @@ fn start_worker(
     }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    for client in &enabled_clients {
+    for client in &key.enabled_clients {
         command.arg("--source").arg(client);
     }
     let mut child = command.spawn().map_err(|_| ())?;
@@ -625,7 +781,7 @@ fn start_worker(
     };
     let frame = Arc::new(Mutex::new(RuntimeFrame::default()));
     let reader_frame = frame.clone();
-    let client_allowlist = enabled_clients.clone();
+    let client_allowlist = key.enabled_clients.clone();
     let reader_thread = thread::Builder::new()
         .name("claude-local-runtime-reader".into())
         .spawn(move || {
@@ -745,6 +901,8 @@ struct RuntimeWireSnapshot {
     main_agents: Vec<RuntimeWireAgent>,
     subagents: Vec<RuntimeWireAgent>,
     latest_response: Option<RuntimeWireResponse>,
+    #[serde(default)]
+    response_events: Vec<RuntimeWireEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -784,6 +942,20 @@ struct RuntimeWireResponse {
     ended_at: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimeWireEvent {
+    id: String,
+    r#type: String,
+    client: String,
+    model: Option<String>,
+    output_tokens: u64,
+    total_tokens: u64,
+    duration_ms: Option<u64>,
+    speed: Option<f64>,
+    ended_at: String,
+}
+
 fn parse_runtime_snapshot(
     bytes: &[u8],
     enabled_clients: &[String],
@@ -801,16 +973,27 @@ fn parse_runtime_snapshot(
     if !wire.estimated_share.is_finite() || !(0.0..=1.0).contains(&wire.estimated_share) {
         return Err("helper_output_invalid");
     }
+    if enabled_clients
+        .iter()
+        .any(|client| !RUNTIME_CLIENTS.contains(&client.as_str()))
+    {
+        return Err("helper_source_mismatch");
+    }
     let captured = parse_timestamp(&wire.captured_at)?;
     validate_snapshot_timestamp(captured)?;
-    if wire.source_available.len() != CLAUDE_CLIENTS.len()
+    let codex_selected = enabled_clients.iter().any(|client| client == "codex");
+    if codex_selected != wire.source_available.contains_key("codex") {
+        return Err("helper_source_mismatch");
+    }
+    let expected_sources = CLAUDE_CLIENTS.len() + if codex_selected { 1 } else { 0 };
+    if wire.source_available.len() != expected_sources
         || CLAUDE_CLIENTS
             .iter()
             .any(|client| !wire.source_available.contains_key(*client))
         || wire
             .source_available
             .keys()
-            .any(|client| !CLAUDE_CLIENTS.contains(&client.as_str()))
+            .any(|client| !RUNTIME_CLIENTS.contains(&client.as_str()))
     {
         return Err("helper_output_invalid");
     }
@@ -892,6 +1075,44 @@ fn parse_runtime_snapshot(
         })
         .transpose()?;
 
+    if wire.response_events.len() > MAX_RESPONSE_EVENTS {
+        return Err("helper_output_invalid");
+    }
+    let mut event_ids = std::collections::HashSet::new();
+    let mut response_events = Vec::with_capacity(wire.response_events.len());
+    for event in wire.response_events {
+        validate_safe_prefixed_id(&event.id, "event-")?;
+        if !event_ids.insert(event.id.clone()) || event.r#type != "responseCompleted" {
+            return Err("helper_output_invalid");
+        }
+        validate_source_client(&wire.source_available, enabled_clients, &event.client)?;
+        validate_optional_text(event.model.as_deref(), 256)?;
+        if event.output_tokens > MAX_COUNTER
+            || event.total_tokens > MAX_COUNTER
+            || event
+                .duration_ms
+                .is_some_and(|duration| duration > 24 * 60 * 60 * 1000)
+        {
+            return Err("helper_output_invalid");
+        }
+        if let Some(speed) = event.speed {
+            validate_rate(speed)?;
+        }
+        let ended = parse_timestamp(&event.ended_at)?;
+        validate_not_future(ended)?;
+        response_events.push(ClaudeLocalActivityEvent {
+            id: event.id,
+            r#type: event.r#type,
+            client: event.client,
+            model: event.model,
+            output_tokens: event.output_tokens,
+            total_tokens: event.total_tokens,
+            duration_ms: event.duration_ms,
+            speed: event.speed,
+            ended_at: event.ended_at,
+        });
+    }
+
     Ok(ClaudeLocalRuntimeSnapshot {
         enabled: true,
         captured_at: Some(wire.captured_at),
@@ -903,6 +1124,7 @@ fn parse_runtime_snapshot(
         main_agents,
         subagents,
         latest_response,
+        response_events,
         configuration_issue: None,
     })
 }
@@ -959,7 +1181,7 @@ fn validate_source_client(
     enabled_clients: &[String],
     client: &str,
 ) -> Result<(), &'static str> {
-    if !CLAUDE_CLIENTS.contains(&client)
+    if !RUNTIME_CLIENTS.contains(&client)
         || !enabled_clients.iter().any(|enabled| enabled == client)
         || source_available.get(client) != Some(&true)
     {
@@ -968,8 +1190,8 @@ fn validate_source_client(
     Ok(())
 }
 
-fn validate_safe_id(value: &str) -> Result<(), &'static str> {
-    let Some(suffix) = value.strip_prefix("agent-") else {
+fn validate_safe_prefixed_id(value: &str, prefix: &str) -> Result<(), &'static str> {
+    let Some(suffix) = value.strip_prefix(prefix) else {
         return Err("helper_output_invalid");
     };
     if suffix.len() != 24
@@ -980,6 +1202,10 @@ fn validate_safe_id(value: &str) -> Result<(), &'static str> {
         return Err("helper_output_invalid");
     }
     Ok(())
+}
+
+fn validate_safe_id(value: &str) -> Result<(), &'static str> {
+    validate_safe_prefixed_id(value, "agent-")
 }
 
 fn validate_text(value: &str, max_chars: usize, allow_empty: bool) -> Result<(), &'static str> {
@@ -1038,6 +1264,10 @@ mod tests {
         vec!["claudeCode".into()]
     }
 
+    fn codex_enabled() -> Vec<String> {
+        vec!["codex".into()]
+    }
+
     fn fresh_fixture() -> String {
         VALID.replace(
             "2026-10-26T00:00:00Z",
@@ -1047,6 +1277,27 @@ mod tests {
         )
     }
 
+    fn fresh_codex_fixture() -> String {
+        fresh_fixture()
+            .replace(
+                "\"claudeCode\":true",
+                "\"claudeCode\":false",
+            )
+            .replace(
+                "\"claudeDesktop\":false",
+                "\"claudeDesktop\":false,\"codex\":true",
+            )
+            .replace("\"liveOutputTps\":12.5", "\"liveOutputTps\":8.0")
+            .replace("\"liveTotalTps\":18.0", "\"liveTotalTps\":10.0")
+            .replace("\"client\":\"claudeCode\",\"model\":\"claude-sonnet\"", "\"client\":\"codex\",\"model\":\"unknown\"")
+            .replace("\"client\":\"claudeCode\",\"parentId\":null", "\"client\":\"codex\",\"parentId\":null")
+            .replace("\"model\":\"claude-sonnet\",\"lastActivity\"", "\"model\":null,\"lastActivity\"")
+            .replace(
+                "\"latestResponse\":null",
+                "\"latestResponse\":{\"client\":\"codex\",\"model\":null,\"outputTokens\":7,\"totalTokens\":11,\"durationMs\":3000,\"speed\":2.3,\"endedAt\":\"2026-10-26T00:00:00Z\"},\"responseEvents\":[{\"id\":\"event-0123456789abcdef01234567\",\"type\":\"responseCompleted\",\"client\":\"codex\",\"model\":null,\"outputTokens\":7,\"totalTokens\":11,\"durationMs\":3000,\"speed\":2.3,\"endedAt\":\"2026-10-26T00:00:00Z\"}]",
+            )
+    }
+
     #[test]
     fn parses_only_enabled_claude_sources_and_exposes_safe_projection() {
         let parsed = parse_runtime_snapshot(fresh_fixture().as_bytes(), &enabled()).unwrap();
@@ -1054,6 +1305,43 @@ mod tests {
         assert_eq!(parsed.model_rates[0].client, "claudeCode");
         assert_eq!(parsed.source_available.get("claudeDesktop"), Some(&false));
         assert_eq!(parsed.main_agents[0].id, "agent-0123456789abcdef01234567");
+    }
+
+    #[test]
+    fn parses_opt_in_codex_activity_without_losing_unknown_models_or_safe_events() {
+        let parsed =
+            parse_runtime_snapshot(fresh_codex_fixture().as_bytes(), &codex_enabled()).unwrap();
+        assert_eq!(parsed.source_available.get("codex"), Some(&true));
+        assert_eq!(parsed.model_rates.len(), 1);
+        assert_eq!(parsed.model_rates[0].client, "codex");
+        assert_eq!(parsed.model_rates[0].model, "unknown");
+        assert_eq!(parsed.main_agents[0].client, "codex");
+        assert_eq!(parsed.main_agents[0].model, None);
+        assert_eq!(parsed.latest_response.as_ref().unwrap().client, "codex");
+        assert_eq!(parsed.response_events.len(), 1);
+        assert_eq!(parsed.response_events[0].client, "codex");
+        assert_eq!(parsed.response_events[0].r#type, "responseCompleted");
+        assert!(parsed.response_events[0].id.starts_with("event-"));
+    }
+
+    #[test]
+    fn rejects_unbounded_response_event_frames() {
+        let mut fixture: serde_json::Value = serde_json::from_str(&fresh_codex_fixture()).unwrap();
+        let event = fixture["responseEvents"][0].clone();
+        fixture["responseEvents"] = serde_json::Value::Array(vec![event; MAX_RESPONSE_EVENTS + 1]);
+        let bytes = serde_json::to_vec(&fixture).unwrap();
+        assert_eq!(
+            parse_runtime_snapshot(&bytes, &codex_enabled()).unwrap_err(),
+            "helper_output_invalid"
+        );
+    }
+
+    #[test]
+    fn rejects_codex_runtime_data_when_the_display_mode_did_not_select_it() {
+        assert_eq!(
+            parse_runtime_snapshot(fresh_codex_fixture().as_bytes(), &enabled()).unwrap_err(),
+            "helper_source_mismatch"
+        );
     }
 
     #[test]
@@ -1100,6 +1388,9 @@ mod tests {
         assert!(parse_runtime_snapshot(bad_id.as_bytes(), &enabled()).is_err());
         let bad_phase = fresh_fixture().replace("generating", "unknown-phase");
         assert!(parse_runtime_snapshot(bad_phase.as_bytes(), &enabled()).is_err());
+        let bad_event_id =
+            fresh_codex_fixture().replace("event-0123456789abcdef01234567", "private-session-id");
+        assert!(parse_runtime_snapshot(bad_event_id.as_bytes(), &codex_enabled()).is_err());
     }
 
     #[test]
@@ -1138,7 +1429,8 @@ mod tests {
         {
             let mut state = registry.lock_state();
             state.failed_config = Some(RuntimeConfigKey {
-                root: "c:\\users\\example\\.claude\\projects".into(),
+                claude_root: Some("c:\\users\\example\\.claude\\projects".into()),
+                codex_root: None,
                 enabled_clients: vec!["claudeCode".into()],
             });
             state.retry_after = Some(Instant::now() + Duration::from_secs(60));
@@ -1156,7 +1448,8 @@ mod tests {
         {
             let mut state = registry.lock_state();
             state.failed_config = Some(RuntimeConfigKey {
-                root: "c:\\users\\example\\.claude\\projects".into(),
+                claude_root: Some("c:\\users\\example\\.claude\\projects".into()),
+                codex_root: None,
                 enabled_clients: vec!["claudeCode".into()],
             });
             state.retry_after = Some(Instant::now() + Duration::from_secs(60));
@@ -1184,7 +1477,7 @@ mod tests {
                 preference.path = root.clone();
             }
         }
-        let first = runtime_configuration(&enabled_claude_preferences(&preferences))
+        let first = runtime_configuration(&enabled_claude_preferences(&preferences), None)
             .unwrap()
             .unwrap()
             .0;
@@ -1196,10 +1489,11 @@ mod tests {
             preference.order = preference.order.saturating_add(10);
             preference.style = "detailed".into();
         }
-        let same_configuration = runtime_configuration(&enabled_claude_preferences(&cosmetic_edit))
-            .unwrap()
-            .unwrap()
-            .0;
+        let same_configuration =
+            runtime_configuration(&enabled_claude_preferences(&cosmetic_edit), None)
+                .unwrap()
+                .unwrap()
+                .0;
         assert_eq!(first, same_configuration);
 
         let code = preferences
@@ -1207,15 +1501,74 @@ mod tests {
             .find(|preference| preference.client == "claudeCode")
             .unwrap();
         code.path = format!("{root}-changed");
-        assert!(runtime_configuration(&enabled_claude_preferences(&preferences)).is_err());
+        assert!(runtime_configuration(&enabled_claude_preferences(&preferences), None).is_err());
 
         for preference in &mut preferences {
             preference.enabled = false;
         }
         assert!(
-            runtime_configuration(&enabled_claude_preferences(&preferences))
+            runtime_configuration(&enabled_claude_preferences(&preferences), None)
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn selected_codex_home_adds_only_codex_and_display_mode_defaults_to_bar() {
+        let default_settings: crate::models::AppSettingsSnapshot =
+            serde_json::from_str("{}").unwrap();
+        assert_eq!(default_settings.display_surfaces.speed_display_mode, "bar");
+        assert!(!codex_local_activity_enabled(
+            &default_settings.display_surfaces.speed_display_mode
+        ));
+
+        let selected_settings: crate::models::AppSettingsSnapshot = serde_json::from_str(
+            r#"{"displaySurfaces":{"liveRateEnabled":true,"speedDisplayMode":"agentSpeed"}}"#,
+        )
+        .unwrap();
+        assert!(codex_local_activity_enabled(
+            &selected_settings.display_surfaces.speed_display_mode
+        ));
+
+        let selected_home = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("selected-codex-home")
+            .join("sessions");
+        let (key, roots) = runtime_configuration(&[], Some(selected_home.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(key.enabled_clients, vec!["codex"]);
+        assert!(key.claude_root.is_none());
+        assert_eq!(roots.codex_root, Some(selected_home));
+        assert!(runtime_configuration(&[], None).unwrap().is_none());
+
+        let claude_preferences = vec![EnabledClaudePreference {
+            client: "claudeCode".into(),
+            path: std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("separate-claude-projects")
+                .display()
+                .to_string(),
+        }];
+        let separate_codex_home = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("another-codex-home")
+            .join("sessions");
+        let (combined_key, combined_roots) =
+            runtime_configuration(&claude_preferences, Some(separate_codex_home.clone()))
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            combined_key.enabled_clients,
+            vec!["claudeCode".to_owned(), "codex".to_owned()]
+        );
+        assert_ne!(combined_key.claude_root, combined_key.codex_root);
+        assert_eq!(combined_roots.codex_root, Some(separate_codex_home));
     }
 }

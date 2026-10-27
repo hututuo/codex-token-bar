@@ -79,6 +79,7 @@ final class LiveRateMonitor: ObservableObject {
     private var speedModelLookupAttempts: [String: Double] = [:]
     private var resolvedSpeedModels: [String: [String: String]] = [:]
     private var speedSourceIdentity: String?
+    private var activitySpeedSourceIdentity: String?
 
     private let resolver = CodexDataSourceResolver()
     let logReaderFactory: LiveRateLogReaderMaking
@@ -399,6 +400,11 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     func resetSourceLocalState(for source: CodexDataSource?) {
+        activitySpeedSourceIdentity = source.map { ActivitySpeedSourceIdentity.root($0.codexHome) }
+        ActivitySpeedHistoryController.shared.selectSource(client: "codex", identity: activitySpeedSourceIdentity)
+        ActivitySpeedHistoryController.shared.reset(client: "codex")
+        AgentSpeedDisplayRuntime.shared.configure(enabled: monitoringEnabled && ActivitySpeedDisplayMode.normalized(UserDefaults.standard.string(forKey: ActivitySpeedDisplayMode.key)) == .agentSpeed && source != nil,
+            codexHome: source?.codexHome)
         activityRateHistory.clear()
         logsDirectorySource?.cancel()
         logsDirectorySource = nil
@@ -1619,6 +1625,11 @@ final class LiveRateMonitor: ObservableObject {
         lastSnapshotPublishAt = now
 
         activityRateHistory.record(now: now, rates: throughputCurve.modelRates)
+        if ActivitySpeedDisplayMode.normalized(UserDefaults.standard.string(forKey: ActivitySpeedDisplayMode.key)) == .bar {
+            ActivitySpeedHistoryController.shared.record(client: "codex", sourceIdentity: activitySpeedSourceIdentity ?? "legacy/unscoped",
+                rates: throughputCurve.modelRates, at: now,
+                available: monitoringEnabled && dataSource != nil, mode: .bar)
+        }
         let selectedHasRecentActivity = throughputCurve.rate(thread: threadID) > 0
         selectedSmoothedTokensPerSecond = throughputCurve.rate(thread: threadID)
         if let updated = updatedSnapshot(

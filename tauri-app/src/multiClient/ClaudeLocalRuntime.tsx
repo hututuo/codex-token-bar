@@ -1,4 +1,5 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore, useEffect, useState } from "react";
+import { useActivitySpeedMode, ActivitySpeedModePicker, selectedActivityRates, type ActivityModelRate } from "./activitySpeedMode";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
 import { useMultiClientUsage } from "./MultiClientUsage";
@@ -59,10 +60,11 @@ function subscribe(listener: () => void) {
 }
 export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnabled = true) {
   const { snapshot } = useMultiClientUsage();
-  const enabled = monitoringEnabled && snapshot.preferences.some(p => p.enabled && ["claudeCode", "claudeDesktop"].includes(p.client));
+  const mode = useActivitySpeedMode();
+  const enabled = monitoringEnabled && (mode === "agentSpeed" || snapshot.preferences.some(p => p.enabled && ["claudeCode", "claudeDesktop"].includes(p.client)));
   const subscribeWhenEnabled = useCallback((listener: () => void) => enabled ? subscribe(listener) : () => {}, [enabled]);
   const value = useSyncExternalStore(subscribeWhenEnabled, () => cached, () => empty);
-  const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop"].includes(c)));
+  const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop"].includes(c) || (c === "codex" && mode === "agentSpeed")));
   const active = (agent: ClaudeRuntimeAgent) => selected.has(agent.client) && ["generating", "tools"].includes(agent.phase)
     && Date.parse(agent.lastActivity) >= Date.now() - 300000;
   const enabledSources = snapshot.preferences.filter(p => p.enabled && ["claudeCode", "claudeDesktop"].includes(p.client));
@@ -72,36 +74,41 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
     // calibration to a filtered client view.
     estimatedShareForSelection,
     modelRates: enabled ? value.modelRates.filter(r => selected.has(r.client)) : [],
-    mainAgents: enabled ? value.mainAgents.filter(active) : [], subagents: enabled ? value.subagents.filter(active) : [],
+    mainAgents: enabled ? value.mainAgents.filter(a => a.client !== "codex" && active(a)) : [], subagents: enabled ? value.subagents.filter(a => a.client !== "codex" && active(a)) : [],
     rows: enabled ? [...recent.values()].filter(r => selected.has(r.client)).sort((a,b) => Date.parse(b.endedAt) - Date.parse(a.endedAt)) : [],
   };
 }
 
-export function ClaudeLocalRuntimePanel({ allowed, compact = false, monitoringEnabled = true }: { allowed: readonly string[]; compact?: boolean; monitoringEnabled?: boolean }) {
-  const runtime = useClaudeLocalRuntime(allowed, monitoringEnabled);
-  if (!allowed.some(c => ["claudeCode", "claudeDesktop"].includes(c))) return null;
-  const qualified = runtime.rows.filter(row => qualifiedClaudeInterval(row) !== null);
-  const models = [...new Set(qualified.map(row => row.model ?? "unknown"))].sort();
-  const mean = (model: string, minutes: number) => {
-    const rows = qualified.filter(r => r.model === model && Date.parse(r.endedAt) >= Date.now() - minutes * 60000);
-    const duration = rows.reduce((n,r) => n + (r.durationMs ?? 0), 0);
-    return duration ? (rows.reduce((n,r) => n + r.outputTokens, 0) * 1000 / duration).toFixed(1) : "—";
-  };
-  return <div className="claude-local-runtime" style={{ fontSize: compact ? 10 : 12, paddingBlock: compact ? 3 : 8 }}>
-    <strong>Claude · 请求区间 TPS</strong>
-    {!compact && runtime.modelRates.some(r => r.outputTps > 0) && runtime.estimatedShareForSelection !== null && <div><small title="沿用 Agent Speed 的请求时间线分类，并非逐字流式实测">活动曲线 · 估算占比 {(runtime.estimatedShareForSelection * 100).toFixed(0)}%</small></div>}
-    {!runtime.enabled ? <p>本地读取已关闭</p> : !models.length ? <p className="qs-muted">{(runtime.configurationIssue ? "本地读取器暂不可用" : "等待本地输出记录")}</p> :
-      <table style={{ width: "100%", fontVariantNumeric: "tabular-nums" }}><thead><tr><th>模型</th><th>最新</th>{!compact && <><th>5分钟</th><th>15分钟</th><th>30分钟</th></>}</tr></thead><tbody>{models.map(model => <tr key={model}>
-        <td style={{ color: modelUsageColor(model), textAlign: "left" }}>{model.replace("claude-", "")}</td>
-        <td>{qualifiedClaudeInterval(qualified.find(r => (r.model ?? "unknown") === model)!)?.toFixed(1)}</td>
-        {!compact && <><td>{mean(model, 5)}</td><td>{mean(model, 15)}</td><td>{mean(model, 30)}</td></>}
-      </tr>)}</tbody></table>}
-    {!compact && <>{qualified.length > 0 && <ClaudeIntervalTrend rows={qualified}/>}
-      <small>本次运行采样 · 本地请求区间估算；与 Codex 正文 TPS 分开计算。</small>
-      {runtime.rows.slice(0,6).map(row => <div key={[row.client,row.endedAt,row.outputTokens].join(":")} style={{display:"flex",gap:8,paddingBlock:3}}>
-        <time>{new Date(row.endedAt).toLocaleTimeString()}</time><span>{row.model}</span><span style={{marginLeft:"auto"}}>{row.outputTokens} Token · {row.durationMs === null ? "无时长" : (row.durationMs/1000).toFixed(2)+"s"} · {qualifiedClaudeInterval(row)?.toFixed(1) ?? "低置信度"}</span>
-      </div>)}</>}
+interface Aggregate { weightedOutput:number; coveredSeconds:number }
+interface ActivitySeries { dimensions:{displayMode:string;client:string;model:string;estimatorId?:string}; rolling5m:Aggregate|null;rolling15m:Aggregate|null;rolling30m:Aggregate|null;fiveMinuteTrend:{bucketStart:number;value:Aggregate}[] }
+const meanText=(value:Aggregate|null)=>value&&value.coveredSeconds>0?(value.weightedOutput/value.coveredSeconds).toFixed(1):"—";
+export function ClientActivitySpeedPanel({ allowed, compact = false, monitoringEnabled = true, codexRates = [], codexAvailable = false, codexOutputRate }: { allowed: readonly string[]; compact?: boolean; monitoringEnabled?: boolean; codexRates?: readonly ActivityModelRate[]; codexAvailable?: boolean; codexOutputRate?: number }) {
+  const runtime = useClaudeLocalRuntime(allowed, monitoringEnabled), mode=useActivitySpeedMode();
+  const [history,setHistory]=useState<ActivitySeries[]>([]),[issue,setIssue]=useState("");
+  const rates=selectedActivityRates(codexRates,runtime.modelRates,allowed,mode,codexOutputRate);
+  useEffect(()=>{
+    if(compact||!monitoringEnabled||!isTauriRuntimeAvailable())return;
+    let alive=true, timer:ReturnType<typeof setTimeout>;
+    const refresh=async()=>{try{const result=await callCommandStrict<{series:ActivitySeries[]}>("read_activity_speed_history");if(alive){setHistory(result.series);setIssue("");}}catch{if(alive)setIssue("活动速度索引暂不可用");}finally{if(alive)timer=setTimeout(refresh,10000);}};
+    void refresh();return()=>{alive=false;clearTimeout(timer);};
+  },[compact,monitoringEnabled,mode]);
+  const hasCoverage=monitoringEnabled&&allowed.some(client=>client==="codex"&&mode==="bar"?codexAvailable:runtime.sourceAvailable[client]);
+  const rows=history.filter(s=>s.dimensions.displayMode===mode&&allowed.includes(s.dimensions.client)&&s.rolling30m!==null);
+  return <div className="client-activity-speed" style={{fontSize:compact?10:12,paddingBlock:compact?3:8}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><strong>聚合活动速度</strong><strong>{hasCoverage?rates.reduce((n,r)=>n+r.tokensPerSecond,0).toFixed(1)+" t/s":"—"}</strong></div>
+    {!compact&&<ActivitySpeedModePicker/>}
+    {!rates.length&&!rows.length&&<p className="qs-muted">{monitoringEnabled?"等待本地活动记录":"本地读取已关闭"}</p>}
+    {!compact&&rows.length>0&&<><table style={{width:"100%",fontVariantNumeric:"tabular-nums"}}><thead><tr><th>模型 / 客户端</th><th>5分钟</th><th>15分钟</th><th>30分钟</th></tr></thead><tbody>{rows.map(row=><tr key={row.dimensions.client+row.dimensions.model+(row.dimensions.estimatorId??"")}><td style={{color:modelUsageColor(row.dimensions.model),textAlign:"left"}}>{row.dimensions.model} · {row.dimensions.client==="claudeCode"?"Claude":row.dimensions.client}</td><td>{meanText(row.rolling5m)}</td><td>{meanText(row.rolling15m)}</td><td>{meanText(row.rolling30m)}</td></tr>)}</tbody></table><ActivityTrend rows={rows}/></>}
+    {!compact&&<small>{issue||"活动估算 · 每5分钟汇总 · Codex 正文测速另计"}</small>}
   </div>;
+}
+function ActivityTrend({rows}:{rows:ActivitySeries[]}){
+  const start=Date.now()/1000-1800;
+  const maximum=Math.max(1,...rows.flatMap(r=>r.fiveMinuteTrend.filter(p=>p.bucketStart>=start-300).map(p=>p.value.weightedOutput/p.value.coveredSeconds)));
+  return <svg viewBox="0 0 360 110" aria-label="近半小时活动速度，每5分钟加权" role="img" style={{width:"100%",height:110,display:"block"}}><path d="M12 5V94H350" fill="none" stroke="currentColor" opacity=".25"/>{rows.map(row=>{
+    let prior=0;const d=row.fiveMinuteTrend.filter(p=>p.bucketStart>=start-300).map(p=>{const command=p.bucketStart-prior===300?"L":"M";prior=p.bucketStart;return `${command}${12+Math.min(1,Math.max(0,(p.bucketStart-start)/1800))*338},${94-p.value.weightedOutput/p.value.coveredSeconds/maximum*80}`;}).join(" ");
+    return <g key={row.dimensions.client+row.dimensions.model}><path d={d} fill="none" stroke={modelUsageColor(row.dimensions.model)} strokeWidth="1.7"/>{row.fiveMinuteTrend.filter(p=>p.bucketStart>=start-300).map(p=><circle key={p.bucketStart} cx={12+Math.min(1,Math.max(0,(p.bucketStart-start)/1800))*338} cy={94-p.value.weightedOutput/p.value.coveredSeconds/maximum*80} r="2.5" fill={modelUsageColor(row.dimensions.model)}><title>{row.dimensions.model} · {new Date(p.bucketStart*1000).toLocaleTimeString()} · {meanText(p.value)} t/s</title></circle>)}</g>;
+  })}</svg>;
 }
 
 export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {
@@ -116,34 +123,4 @@ export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {
     {runtime.subagents.filter(child => !runtime.mainAgents.some(main => main.id === child.parentId)).map(child => <p key={child.id}>子 Agent · {child.model ?? "未知模型"} · {child.id.slice(-8)}</p>)}
     {!runtime.capturedAt && <p className="qs-muted">等待本地活动记录；不会请求 Claude 接口。</p>}
   </section>;
-}
-
-function ClaudeIntervalTrend({ rows }: { rows: NonNullable<ClaudeRuntimeSnapshot["latestResponse"]>[] }) {
-  const first = Math.floor((Date.now()/1000 - 1800)/300)*300;
-  const groups = new Map<string, Map<number, [number,number]>>();
-  for (const row of rows) {
-    if (qualifiedClaudeInterval(row) === null) continue;
-    const time = Math.floor(Date.parse(row.endedAt)/300000)*300;
-    const model = row.model ?? "unknown", buckets = groups.get(model) ?? new Map<number,[number,number]>();
-    const prior = buckets.get(time) ?? [0,0];
-    buckets.set(time, [prior[0]+row.outputTokens, prior[1]+(row.durationMs ?? 0)/1000]); groups.set(model,buckets);
-  }
-  const series = [...groups].map(([model,buckets]) => ({model,points:[...buckets].sort(([a],[b])=>a-b).map(([time,[tokens,duration]])=>({time,tps:tokens/duration}))}));
-  const maximum = Math.max(1,...series.flatMap(s=>s.points.map(p=>p.tps)));
-  return <div style={{paddingBlock:8}}><small>近半小时 · 每 5 分钟按 Token / 耗时加权</small>
-    <svg viewBox="0 0 360 110" role="img" aria-label="Claude 请求区间速度，每5分钟加权均值" style={{width:"100%",height:110,display:"block"}}>
-      <path d="M12 5V94H350" stroke="currentColor" opacity=".25" fill="none"/>
-      {series.map(series => {
-        let prior = 0;
-        const d = series.points.map(p => {
-          const command = p.time - prior === 300 ? "L" : "M"; prior=p.time;
-          return `${command}${12 + Math.min(1,Math.max(0,(p.time-first)/1800))*338},${94-p.tps/maximum*80}`;
-        }).join(" ");
-        return <g key={series.model} fill={modelUsageColor(series.model)}><path d={d} fill="none" stroke={modelUsageColor(series.model)} strokeWidth="1.7"/>
-          {series.points.map(p=><circle key={p.time} cx={12+Math.min(1,Math.max(0,(p.time-first)/1800))*338} cy={94-p.tps/maximum*80} r="2.5"><title>{series.model} · {new Date(p.time*1000).toLocaleTimeString()} · {p.tps.toFixed(1)} TPS</title></circle>)}
-        </g>;
-      })}
-      <text x="12" y="108" fill="currentColor" fontSize="9">30 分钟前</text><text x="330" y="108" fill="currentColor" fontSize="9">现在</text>
-    </svg>
-  </div>;
 }

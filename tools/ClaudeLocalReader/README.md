@@ -1,6 +1,6 @@
 # ClaudeLocalReader
 
-This local Windows helper reuses AgentSpeed.Core's Claude Code/Desktop transcript monitor. It does not launch Claude, read credentials, edit Claude configuration, or construct HTTP requests. It enables only `ClaudeCode` and `ClaudeDesktop` in `MonitorConfiguration`.
+This local Windows helper reuses AgentSpeed.Core's Codex and Claude Code/Desktop transcript monitors. Codex is opt-in: the app selects it only for `displaySurfaces.speedDisplayMode == "agentSpeed"`; standalone invocation remains Claude-only unless `--source codex` is explicit. The helper does not launch an agent, read credentials, edit agent configuration, or construct HTTP requests. It enables only the explicitly selected local sources in `MonitorConfiguration`.
 
 The project targets .NET 10 because the referenced AgentSpeed.Core project currently targets only `net10.0`.
 
@@ -9,13 +9,14 @@ The project targets .NET 10 because the referenced AgentSpeed.Core project curre
 - `ClaudeLocalReader.exe` or `--once`: write one compact runtime JSON snapshot to stdout.
 - `--watch`: write the latest snapshot at most once per second. When stdin is redirected, EOF requests shutdown; Ctrl+C also stops it.
 - `--root <local-path>`: use a local Claude projects directory. UNC/network paths are rejected.
-- `--source claudeCode` and/or `--source claudeDesktop`: monitor only the selected enabled Claude clients. Omitting both keeps the standalone helper's default of both local Claude sources.
+- `--codex-root <local-path>`: use a local Codex sessions directory. The app passes the selected Codex Home's `sessions` directory; UNC/network paths are rejected.
+- `--source codex`, `--source claudeCode`, and/or `--source claudeDesktop`: monitor only the selected local client(s). Omitting all `--source` options keeps the standalone helper's default of both Claude sources. The app always passes explicit source selections.
 - `--capture-statusline`: read at most 64 KiB of raw Claude JSON from stdin (no app schema/timestamp required), assign the local capture clock, keep only the approved cache fields, atomically write the app-owned LocalApplicationData cache, and write a fixed success line to stdout.
 - `--self-test`: validate cache filtering, normalization, bounds, and runtime redaction without opening Claude files or writing the cache.
 
 ## Runtime snapshot
 
-Schema version 1 uses camelCase and contains `schema`, `capturedAt`, `client`, `sourceAvailable`, aggregate live rates and estimated share, `modelRates`, `mainAgents`, `subagents`, and `latestResponse`. Agent IDs are per-process salted HMACs of internal transcript identifiers; transcript paths, project names, cwd, prompts, and message text are not emitted.
+Schema version 1 uses camelCase and retains the existing top-level `client: "claude"` protocol ID. It contains per-source `sourceAvailable`, live totals scoped to selected sources, per-source `modelRates` (missing models are retained as `unknown`), `mainAgents`, `subagents`, and `latestResponse`. `responseEvents` contains at most 32 response-completion records with numeric usage and timing only. Agent and event IDs are per-process salted HMACs; transcript paths, project names, cwd, prompts, assistant text, and message text are not emitted.
 
 ## Statusline cache
 

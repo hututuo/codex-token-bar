@@ -823,6 +823,8 @@ pub struct DisplaySurfaceSettingsSnapshot {
     pub quota_sidebar_side: String,
     #[serde(default = "default_enabled")]
     pub live_rate_enabled: bool,
+    #[serde(default = "default_activity_speed_display_mode")]
+    pub speed_display_mode: String,
     #[serde(default = "default_disabled")]
     pub status_tray_live_text_enabled: bool,
     #[serde(default = "default_status_metric_order")]
@@ -840,6 +842,7 @@ impl Default for DisplaySurfaceSettingsSnapshot {
             quota_sidebar_enabled: true,
             quota_sidebar_side: default_quota_sidebar_side(),
             live_rate_enabled: default_enabled(),
+            speed_display_mode: default_activity_speed_display_mode(),
             status_tray_live_text_enabled: default_disabled(),
             status_metric_order: default_status_metric_order(),
             status_metric_label_style: default_status_metric_label_style(),
@@ -847,6 +850,8 @@ impl Default for DisplaySurfaceSettingsSnapshot {
         }
     }
 }
+
+pub fn default_activity_speed_display_mode() -> String { "bar".into() }
 
 pub fn default_quota_sidebar_side() -> String { "right".into() }
 

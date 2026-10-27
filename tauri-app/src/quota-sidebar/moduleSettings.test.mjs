@@ -20,8 +20,8 @@ test('unified settings sort on drop, keep visibility, and mount compact preview 
    await React.act(async()=>render());
    assert.equal(dom.document.querySelectorAll('[data-layout-item]').length,10);
    assert.ok(dom.document.querySelector('[aria-label="一级显示运行任务"]'));
-   assert.equal(dom.document.querySelectorAll('input[type=checkbox]').length,18);
-   assert.equal(dom.document.querySelector('[aria-label="一级显示正文 TPS"]'),null);
+   assert.equal(dom.document.querySelectorAll('input[type=checkbox]').length,10*2+catalog.length);
+   assert.ok(dom.document.querySelector('[aria-label="一级显示正文 TPS"]'));
    assert.equal(dom.document.querySelector('[data-preview]'),null);
    assert.doesNotMatch(dom.document.body.textContent,/长条|短条|点箭头/);
    const speed=()=>dom.document.querySelector('[aria-label="拖动排序：实时速度"]');

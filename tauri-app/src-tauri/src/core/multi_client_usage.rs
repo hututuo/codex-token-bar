@@ -465,6 +465,18 @@ pub fn save_multi_client_usage_preferences(
     Ok(normalized)
 }
 
+/// Shared B file for activity tables. Never starts a source scan or opens a third business DB.
+pub(crate) fn open_activity_module_connection() -> Result<Connection,String> {
+    let _guard=usage_gate();
+    let path=app_paths::multi_client_usage_database_path().ok_or("多客户端索引目录不可用")?;
+    if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|e|e.to_string())?;}
+    let db=Connection::open(&path).map_err(|e|e.to_string())?;
+    db.busy_timeout(Duration::from_secs(2)).map_err(|e|e.to_string())?;
+    ensure_schema(&db,&path).map_err(|e|e.to_string())?;
+    super::activity_speed_store::create_schema(&db).map_err(|e|e.to_string())?;
+    Ok(db)
+}
+
 pub fn refresh_multi_client_usage() -> Result<MultiClientUsageSnapshot, String> {
     let _guard = usage_gate();
     let settings_path = app_paths::multi_client_usage_settings_path()

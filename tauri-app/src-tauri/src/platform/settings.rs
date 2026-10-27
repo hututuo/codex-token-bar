@@ -97,7 +97,9 @@ pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
     let _guard = settings_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    read_app_settings_at(&path)
+    let settings=read_app_settings_at(&path)?;
+    crate::core::activity_speed_capture::set_mode(&settings.display_surfaces.speed_display_mode);
+    Ok(settings)
 }
 
 pub fn read_sidebar_module_visibility() -> Result<SidebarModuleVisibilitySnapshot, String> {
@@ -378,12 +380,21 @@ pub fn save_floating_position(
     })
 }
 
+pub fn save_activity_speed_mode(mode: String) -> Result<String, String> {
+    if !matches!(mode.as_str(), "bar" | "agentSpeed") { return Err("invalid_activity_speed_mode".into()); }
+    let saved = mutate_app_settings(|settings| settings.display_surfaces.speed_display_mode = mode)?;
+    crate::core::activity_speed_capture::set_mode(&saved.display_surfaces.speed_display_mode);
+    Ok(saved.display_surfaces.speed_display_mode)
+}
+
 pub fn save_display_surfaces(
     display_surfaces: DisplaySurfaceSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
-    mutate_app_settings(|settings| {
+    let saved=mutate_app_settings(|settings| {
         settings.display_surfaces = sanitize_display_surfaces(display_surfaces);
-    })
+    })?;
+    crate::core::activity_speed_capture::set_mode(&saved.display_surfaces.speed_display_mode);
+    Ok(saved)
 }
 
 pub fn save_quota_refresh_interval_ms(interval_ms: u64) -> Result<AppSettingsSnapshot, String> {
@@ -2667,6 +2678,7 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
 fn sanitize_display_surfaces(
     mut settings: DisplaySurfaceSettingsSnapshot,
 ) -> DisplaySurfaceSettingsSnapshot {
+    if settings.speed_display_mode != "agentSpeed" { settings.speed_display_mode = "bar".into(); }
     if settings.quota_sidebar_side != "left" { settings.quota_sidebar_side = "right".into(); }
     let supported = crate::models::STATUS_METRIC_IDS
         .into_iter()
@@ -3900,6 +3912,7 @@ mod tests {
                         quota_sidebar_enabled: false,
                         quota_sidebar_side: "right".into(),
                         live_rate_enabled: true,
+                        speed_display_mode: "bar".into(),
                         status_tray_live_text_enabled: false,
                         status_metric_order: vec!["unread".into(), "rate".into()],
                         status_metric_label_style: "hidden".into(),

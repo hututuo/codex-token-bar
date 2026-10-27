@@ -332,6 +332,10 @@ fn read_snapshot_result_at(
         c_curve_points,
     ) = c_curve::snapshot(source_scope, now, selected_thread_id);
     rate_history::record(source_scope, now, &model_rates);
+    if super::activity_speed_capture::mode() == "bar" {
+        super::activity_speed_capture::record("codex", &super::activity_speed_capture::root_identity(&codex_home.to_string_lossy()), "bar",
+            model_rates.iter().map(|r|(r.model.clone(),r.tokens_per_second)).collect(),now,true);
+    }
     if let Some(message) = speed_snapshot.storage_warning.clone() {
         warnings.push(live_rate_warning(format!(
             "observed speed history: {message}"

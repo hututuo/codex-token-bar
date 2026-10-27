@@ -53,13 +53,27 @@ internal static class Program
 
     private static async Task RunRuntimeAsync(Options options)
     {
-        var root = Path.GetFullPath(options.Root ?? LiveMonitor.DefaultClaudeRoot);
-        EnsureLocalPath(root);
         var enabled = options.Sources;
-        var configuration = new MonitorConfiguration(enabled, ClaudeRoot: root);
+        var claudeRoot = enabled.Any(IsClaudeSource)
+            ? Path.GetFullPath(options.Root ?? LiveMonitor.DefaultClaudeRoot)
+            : null;
+        var codexRoot = enabled.Contains(SourceKind.Codex)
+            ? Path.GetFullPath(options.CodexRoot ?? LiveMonitor.DefaultCodexRoot)
+            : null;
+        if (claudeRoot is not null)
+        {
+            EnsureLocalPath(claudeRoot, "Claude");
+        }
+        if (codexRoot is not null)
+        {
+            EnsureLocalPath(codexRoot, "Codex");
+        }
+
+        var configuration = new MonitorConfiguration(enabled, CodexRoot: codexRoot, ClaudeRoot: claudeRoot);
         var hub = new SpeedHub(context: null);
         var processSalt = RandomNumberGenerator.GetBytes(32);
         var latest = new SnapshotCell();
+        var responseEvents = new ResponseEventBuffer();
         var firstReady = new TaskCompletionSource<SpeedSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
         hub.LivePublished += (_, snapshot) =>
         {
@@ -67,6 +81,13 @@ internal static class Program
             if (snapshot.State.Kind != MonitorStateKind.Starting)
             {
                 firstReady.TrySetResult(snapshot);
+            }
+        };
+        hub.EventRaised += (_, speedEvent) =>
+        {
+            if (speedEvent is SpeedEvent.ResponseCompleted completed)
+            {
+                responseEvents.Add(completed.Response);
             }
         };
 
@@ -88,7 +109,7 @@ internal static class Program
         {
             monitor.Start();
             var ready = await WaitForReadySnapshotAsync(firstReady.Task, lifetime.Token).ConfigureAwait(false);
-            WriteSnapshot(RuntimeSnapshotMapper.Map(ready, processSalt, enabled));
+            WriteSnapshot(RuntimeSnapshotMapper.Map(ready, processSalt, enabled, responseEvents.Read()));
             if (!options.Watch)
             {
                 return;
@@ -97,7 +118,7 @@ internal static class Program
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
             while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
             {
-                WriteSnapshot(RuntimeSnapshotMapper.Map(latest.Read(), processSalt, enabled));
+                WriteSnapshot(RuntimeSnapshotMapper.Map(latest.Read(), processSalt, enabled, responseEvents.Read()));
             }
         }
         finally
@@ -175,6 +196,7 @@ internal static class Program
         var sourceWasSpecified = false;
         var sources = new HashSet<SourceKind>();
         string? root = null;
+        string? codexRoot = null;
         for (var index = 0; index < args.Length; index++)
         {
             switch (args[index])
@@ -204,13 +226,27 @@ internal static class Program
                     }
 
                     break;
+                case "--codex-root" when index + 1 < args.Length:
+                    if (codexRoot is not null)
+                    {
+                        throw new ArgumentException("--codex-root may be provided only once.");
+                    }
+
+                    codexRoot = args[++index];
+                    if (string.IsNullOrWhiteSpace(codexRoot))
+                    {
+                        throw new ArgumentException("--codex-root requires a local directory path.");
+                    }
+
+                    break;
                 case "--source" when index + 1 < args.Length:
                     sourceWasSpecified = true;
                     var source = args[++index] switch
                     {
+                        "codex" => SourceKind.Codex,
                         "claudeCode" => SourceKind.ClaudeCode,
                         "claudeDesktop" => SourceKind.ClaudeDesktop,
-                        _ => throw new ArgumentException("Only local Claude sources are supported."),
+                        _ => throw new ArgumentException("Only local Codex and Claude sources are supported."),
                     };
                     sources.Add(source);
                     break;
@@ -219,25 +255,37 @@ internal static class Program
             }
         }
 
-        if ((watch && once) || (captureStatusline && (watch || once || root is not null || sourceWasSpecified))
-            || (selfTest && (watch || once || captureStatusline || root is not null || sourceWasSpecified)))
+        if ((watch && once)
+            || (captureStatusline && (watch || once || root is not null || codexRoot is not null || sourceWasSpecified))
+            || (selfTest && (watch || once || captureStatusline || root is not null || codexRoot is not null || sourceWasSpecified)))
         {
             throw new ArgumentException("Helper modes cannot be combined.");
         }
 
         if (sourceWasSpecified && sources.Count == 0)
         {
-            throw new ArgumentException("At least one Claude source is required.");
+            throw new ArgumentException("At least one local source is required.");
         }
         if (!sourceWasSpecified)
         {
             sources = [SourceKind.ClaudeCode, SourceKind.ClaudeDesktop];
         }
+        if (root is not null && !sources.Any(IsClaudeSource))
+        {
+            throw new ArgumentException("--root requires a Claude source.");
+        }
+        if (codexRoot is not null && !sources.Contains(SourceKind.Codex))
+        {
+            throw new ArgumentException("--codex-root requires --source codex.");
+        }
 
-        return new Options(watch, captureStatusline, selfTest, root, sources);
+        return new Options(watch, captureStatusline, selfTest, root, codexRoot, sources);
     }
 
-    private static void EnsureLocalPath(string path)
+    private static bool IsClaudeSource(SourceKind source) =>
+        source is SourceKind.ClaudeCode or SourceKind.ClaudeDesktop;
+
+    private static void EnsureLocalPath(string path, string sourceName)
     {
         if (path.StartsWith("\\\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal))
         {
@@ -248,7 +296,7 @@ internal static class Program
         var current = Path.GetPathRoot(fullPath);
         if (string.IsNullOrEmpty(current))
         {
-            throw new ArgumentException("Claude root must be a local filesystem path.");
+            throw new ArgumentException($"{sourceName} root must be a local filesystem path.");
         }
 
         foreach (var component in fullPath[current.Length..].Split(
@@ -334,6 +382,7 @@ internal static class Program
         Require(mapped.MainAgents[0].Id.StartsWith("agent-", StringComparison.Ordinal), "opaque runtime id");
         Require(mapped.Subagents[0].ParentId == mapped.MainAgents[0].Id, "opaque parent id mapping");
         Require(mapped.Subagents[0].Phase == "generating", "runtime phase mapping");
+        Require(mapped.LatestResponse?.Client == "claudeCode", "legacy Claude latest-response mapping");
 
         var onlyCode = RuntimeSnapshotMapper.Map(
             CreateSampleSnapshot(),
@@ -341,6 +390,51 @@ internal static class Program
             new HashSet<SourceKind> { SourceKind.ClaudeCode });
         Require(onlyCode.SourceAvailable["claudeCode"] && !onlyCode.SourceAvailable["claudeDesktop"], "enabled source filtering");
         Require(onlyCode.MainAgents.Count == 1 && onlyCode.Subagents.Count == 1, "enabled Claude source attribution");
+
+        var codexOnly = RuntimeSnapshotMapper.Map(
+            CreateSampleSnapshot(),
+            RandomNumberGenerator.GetBytes(32),
+            new HashSet<SourceKind> { SourceKind.Codex },
+            [new ResponseEventInput(1, new ResponseSummary(SourceKind.Codex, "private-project", null, 7, 11,
+                TimeSpan.FromSeconds(3), 2.3, DateTimeOffset.UtcNow))]);
+        Require(codexOnly.Client == "claude", "backward-compatible top-level client id");
+        Require(codexOnly.SourceAvailable["codex"] && !codexOnly.SourceAvailable["claudeCode"], "Codex source opt-in mapping");
+        Require(codexOnly.LiveOutputTps == 8 && codexOnly.LiveTotalTps == 10, "selected-source rate totals");
+        Require(codexOnly.ModelRates.Count == 1 && codexOnly.ModelRates[0].Client == "codex"
+            && codexOnly.ModelRates[0].Model == "unknown", "unknown Codex model retention");
+        Require(codexOnly.MainAgents.Single().Client == "codex", "Codex task mapping");
+        Require(codexOnly.LatestResponse is null, "latest-response filtering by selected source");
+        var codexLatest = CreateSampleSnapshot() with
+        {
+            LastResponse = new ResponseSummary(SourceKind.Codex, "private-project", null, 7, 11,
+                TimeSpan.FromSeconds(3), 2.3, DateTimeOffset.UtcNow),
+        };
+        var mappedCodexLatest = RuntimeSnapshotMapper.Map(
+            codexLatest, RandomNumberGenerator.GetBytes(32), new HashSet<SourceKind> { SourceKind.Codex });
+        Require(mappedCodexLatest.LatestResponse?.Client == "codex", "Codex latest-response mapping");
+        Require(codexOnly.ResponseEvents.Count == 1 && codexOnly.ResponseEvents[0].Client == "codex"
+            && codexOnly.ResponseEvents[0].Model is null, "bounded response event projection");
+        Require(!codexOnly.ResponseEvents[0].Id.Contains("private", StringComparison.Ordinal), "response event id redaction");
+        var codexJson = JsonSerializer.Serialize(codexOnly, JsonOptions);
+        Require(!codexJson.Contains("private-project", StringComparison.Ordinal)
+            && !codexJson.Contains("C:\\Users", StringComparison.Ordinal), "runtime path and project redaction");
+        var manyResponses = Enumerable.Range(1, 40).Select(sequence => new ResponseEventInput(sequence,
+            new ResponseSummary(SourceKind.Codex, "private-project", null, sequence, sequence + 1,
+                TimeSpan.FromSeconds(1), 1, DateTimeOffset.UtcNow))).ToArray();
+        var boundedEvents = RuntimeSnapshotMapper.Map(
+            CreateSampleSnapshot(), RandomNumberGenerator.GetBytes(32),
+            new HashSet<SourceKind> { SourceKind.Codex }, manyResponses);
+        Require(boundedEvents.ResponseEvents.Count == 32, "bounded response event history");
+
+        var defaultArguments = ParseArguments([]);
+        Require(defaultArguments.Sources.Count == 2
+            && defaultArguments.Sources.Contains(SourceKind.ClaudeCode)
+            && defaultArguments.Sources.Contains(SourceKind.ClaudeDesktop), "default source set stays Claude-only");
+        var codexArguments = ParseArguments(["--source", "codex", "--codex-root", "C:\\Users\\Test\\.codex\\sessions"]);
+        Require(codexArguments.Sources.Count == 1
+            && codexArguments.Sources.Contains(SourceKind.Codex)
+            && codexArguments.CodexRoot is not null,
+            "explicit Codex root CLI selection");
 
         var sample = CreateSampleSnapshot();
         var staleIdle = new AgentStatus(
@@ -386,13 +480,16 @@ internal static class Program
                 "ignored-project", "claude-haiku-4-5", AgentPhase.Generating, true, new Rate(1, 1), 1, now, main.Id);
             var sources = new[]
             {
-                new SourceStatus(SourceKind.ClaudeCode, true, "private-path", true, 2, new Rate(3, 4), TokenTotals.Zero, 1),
+                new SourceStatus(SourceKind.ClaudeCode, true, "private-path", true, 2, new Rate(3, 4), TokenTotals.Zero, 1, new Rate(1.2, 1.6)),
                 new SourceStatus(SourceKind.ClaudeDesktop, true, "private-path", false, 0, Rate.Zero, TokenTotals.Zero, 0),
+                new SourceStatus(SourceKind.Codex, true, "private-path", true, 2, new Rate(8, 10), TokenTotals.Zero, 1, new Rate(2, 3)),
             };
             var response = new ResponseSummary(SourceKind.ClaudeCode, "ignored-project", "claude-sonnet-4-6", 10, 20,
                 TimeSpan.FromSeconds(2), 5, now);
-            return new SpeedSnapshot(now, MonitorState.Running, new Rate(3, 4), 0.4, Rate.Zero, null, null,
-                TokenTotals.Zero, sources, [main, sub], 1, 1, [], response, []);
+            var codex = new AgentStatus("C:\\Users\\someone\\.codex\\sessions\\codex.jsonl", SourceKind.Codex,
+                "ignored-codex-project", null, AgentPhase.Generating, false, new Rate(8, 10), 2.3, now);
+            return new SpeedSnapshot(now, MonitorState.Running, new Rate(11, 14), 0.4, Rate.Zero, null, null,
+                TokenTotals.Zero, sources, [main, sub, codex], 2, 1, [], response, []);
         }
     }
 
@@ -426,10 +523,39 @@ internal static class Program
         }
     }
 
+    private sealed class ResponseEventBuffer
+    {
+        private const int MaximumEvents = 32;
+        private readonly object _gate = new();
+        private readonly Queue<ResponseEventInput> _events = new();
+        private long _sequence;
+
+        public void Add(ResponseSummary response)
+        {
+            lock (_gate)
+            {
+                _events.Enqueue(new ResponseEventInput(++_sequence, response));
+                while (_events.Count > MaximumEvents)
+                {
+                    _events.Dequeue();
+                }
+            }
+        }
+
+        public IReadOnlyList<ResponseEventInput> Read()
+        {
+            lock (_gate)
+            {
+                return _events.ToArray();
+            }
+        }
+    }
+
     private sealed record Options(
         bool Watch,
         bool CaptureStatusline,
         bool SelfTest,
         string? Root,
+        string? CodexRoot,
         IReadOnlySet<SourceKind> Sources);
 }

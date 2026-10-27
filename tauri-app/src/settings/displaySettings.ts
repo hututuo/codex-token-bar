@@ -46,6 +46,7 @@ export const DEFAULT_DISPLAY_SURFACES: DisplaySurfaceSettings = {
   quotaSidebarSide: "right",
   floatingWindowEnabled: false,
   liveRateEnabled: true,
+  speedDisplayMode: "bar",
   statusTrayLiveTextEnabled: false,
   statusMetricOrder: [...DEFAULT_STATUS_METRIC_ORDER],
   statusMetricLabelStyle: DEFAULT_STATUS_METRIC_LABEL_STYLE,
@@ -57,6 +58,7 @@ export const INACTIVE_DISPLAY_SURFACES: DisplaySurfaceSettings = {
   quotaSidebarSide: "right",
   floatingWindowEnabled: false,
   liveRateEnabled: true,
+  speedDisplayMode: "bar",
   statusTrayLiveTextEnabled: false,
   statusMetricOrder: [...DEFAULT_STATUS_METRIC_ORDER],
   statusMetricLabelStyle: DEFAULT_STATUS_METRIC_LABEL_STYLE,
@@ -78,6 +80,7 @@ export function sanitizeDisplaySurfaces(
       typeof settings.liveRateEnabled === "boolean"
         ? settings.liveRateEnabled
         : DEFAULT_DISPLAY_SURFACES.liveRateEnabled,
+    speedDisplayMode: settings.speedDisplayMode === "agentSpeed" ? "agentSpeed" : "bar",
     statusTrayLiveTextEnabled:
       typeof settings.statusTrayLiveTextEnabled === "boolean"
         ? settings.statusTrayLiveTextEnabled

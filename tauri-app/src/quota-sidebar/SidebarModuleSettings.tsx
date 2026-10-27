@@ -8,11 +8,11 @@ import { quotaWindowsForClient, sidebarItemTitle, sidebarLayoutItems } from "./s
 type Target = { id: string; after: boolean };
 type PointerDrag = { id: string; pointer: number; x: number; y: number; active: boolean; handle: HTMLButtonElement };
 export function SidebarModuleSettings({ layout, catalog, selection, disabled = false, hasCodex = true,
-  onLayout, onSelection, onHighlight, onDragState, compactPreview, colorSettings }: {
+  onLayout, onSelection, onHighlight, onDragState, compactPreview, colorSettings, speedSettings }: {
   layout: SidebarLayoutConfig; catalog: readonly QuotaItem[]; selection: QuotaSelection;
   disabled?: boolean; hasCodex?: boolean;
   onLayout: (next: SidebarLayoutConfig) => void; onSelection: (next: QuotaSelection) => void;
-  onHighlight?: (id: string | null) => void; onDragState?: (active: boolean) => void; compactPreview?: ReactNode; colorSettings?: ReactNode;
+  onHighlight?: (id: string | null) => void; onDragState?: (active: boolean) => void; compactPreview?: ReactNode; colorSettings?: ReactNode; speedSettings?: ReactNode;
 }) {
   const items = sidebarLayoutItems(layout, catalog, hasCodex);
   const [selected, setSelected] = useState(() => items.find(id => id.startsWith("quota:")) ?? items[0] ?? null);
@@ -128,6 +128,7 @@ export function SidebarModuleSettings({ layout, catalog, selection, disabled = f
       </li>;
     })}</ol>
     <p>显示范围跟随主页面；隐藏项目保留顺序，设置入口固定在底部。</p>
+    {speedSettings && <div>{speedSettings}</div>}
     {colorSettings && <details><summary>额度填充颜色</summary>{colorSettings}</details>}
     {ghost && createPortal(<div className="qs-layout-drag-ghost" aria-hidden="true" style={{ left: ghost.x, top: ghost.y }}>{ghost.title}</div>, document.body)}
   </section>;

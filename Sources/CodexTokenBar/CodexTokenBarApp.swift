@@ -21,6 +21,7 @@ struct CodexTokenBarApp: App {
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+        ActivitySpeedHistoryController.shared.start()
         let floatingPanel = FloatingTokenPanelController()
         let statusBarPanel = StatusBarTokenController()
         let threadDeleteBridge = CodexThreadDeleteBridgeController()

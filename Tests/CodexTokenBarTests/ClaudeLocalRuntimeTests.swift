@@ -115,8 +115,10 @@ final class ClaudeLocalRuntimeTests: XCTestCase {
         XCTAssertEqual(projected.today.output, 60)
         XCTAssertEqual(projected.modelRates, [
             .init(model: "claude-haiku-4", tokensPerSecond: 0.5),
-            .init(model: "claude-sonnet-4", tokensPerSecond: 2)
+            .init(model: "claude-sonnet-4", tokensPerSecond: 2),
+            .init(model: "unknown", tokensPerSecond: 57.5)
         ])
+        XCTAssertEqual(projected.modelRates.reduce(0) { $0 + $1.tokensPerSecond }, projected.live.output)
         XCTAssertEqual(projected.running.main, 1)
         XCTAssertEqual(projected.running.subagents, 1)
         XCTAssertEqual(projected.running.groups.count, 1)
@@ -158,7 +160,7 @@ final class ClaudeLocalRuntimeTests: XCTestCase {
         let codeOnly = ClaudeLocalRuntime.project(
             from: coreSnapshot(
                 timestamp: now,
-                sources: [source(.claudeCode, available: true), source(.claudeDesktop, available: true)],
+                sources: [source(.claudeCode, available: true, output: 12), source(.claudeDesktop, available: true, output: 4)],
                 agents: [activeCode, activeDesktop]
             ),
             allowedSources: [.claudeCode],
@@ -167,7 +169,7 @@ final class ClaudeLocalRuntimeTests: XCTestCase {
         let desktopOnly = ClaudeLocalRuntime.project(
             from: coreSnapshot(
                 timestamp: now,
-                sources: [source(.claudeCode, available: true), source(.claudeDesktop, available: true)],
+                sources: [source(.claudeCode, available: true, output: 12), source(.claudeDesktop, available: true, output: 4)],
                 agents: [activeCode, activeDesktop]
             ),
             allowedSources: [.claudeDesktop],

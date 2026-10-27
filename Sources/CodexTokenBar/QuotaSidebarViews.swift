@@ -172,13 +172,15 @@ struct QuotaSidebarRail: View {
     @AppStorage("cacheHitAdviceDismissed") private var dismissedCacheAdviceID = ""
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @ObservedObject private var claudeRuntime = ClaudeLocalRuntime.shared
+    @ObservedObject private var upstreamActivity = AgentSpeedDisplayRuntime.shared
+    @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
     @AppStorage(ClientQuotaSelection.key) private var quotaSelectionRaw = ""
     private var quotaSelection: ClientQuotaSelection { .decode(quotaSelectionRaw) }
     private var supportsCodex: Bool { clientScope == "codex" || clientScope == "all" }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var localLive: ClaudeLocalRuntimeSnapshot { claudeRuntime.projection(allowed: allowedClients) }
-    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: localLive.modelRates, allowed: allowedClients) }
+    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: localLive.modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex)) }
     private var liveRate: Double { liveRates.reduce(0) { $0 + $1.tokensPerSecond } }
     private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: allowedClients) }
     private var selectedModelRows: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
@@ -192,7 +194,7 @@ struct QuotaSidebarRail: View {
     }
     private var sidebarItems: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: availableQuotaItems.map(\.client))
-            .filter { supportsCodex || localLive.enabled || !$0.requiresCodexLiveData }
+            .filter { (supportsCodex || $0 != .tps) && (supportsCodex || localLive.enabled || !$0.requiresCodexLiveData) }
     }
     private var compactItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .compact) } }
     private var expandedItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .expanded) } }
@@ -404,9 +406,7 @@ struct QuotaSidebarRail: View {
             if supportsCodex {
                 QuotaSidebarBodySpeedReadings(monitor: monitor, onOpen: { controller.select(.speeds) })
             }
-            if !allowedClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) {
-                Button { controller.select(.speeds) } label: { ClaudeLocalSpeedCompact(allowed: allowedClients).frame(width: 74, height: 48) }.buttonStyle(.plain)
-            }
+
         case .clientUsage:
             VStack(spacing: 5) {
                 Text("累计 Token").font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
@@ -672,6 +672,8 @@ private struct SidebarModelShareStrip: View {
 struct QuotaSidebarDetailView: View {
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @ObservedObject private var claudeRuntime = ClaudeLocalRuntime.shared
+    @ObservedObject private var upstreamActivity = AgentSpeedDisplayRuntime.shared
+    @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @State private var clientProjectionCache = ClientDashboardProjectionCache()
     @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
 
@@ -721,16 +723,14 @@ struct QuotaSidebarDetailView: View {
                 else if controller.interaction.detail == .speeds {
                     if clientScope == "codex" || clientScope == "all" {
                     if clientScope == "all" { Text("Codex · 正文 TPS").font(.caption).foregroundStyle(.secondary) }
-                    LiveActivityRateDetail(monitor: monitor).id("top")
+                    Text("Codex · 正文 TPS").font(.caption.weight(.semibold)).id("top")
                     Divider().overlay(.white.opacity(0.12))
                     ObservedSpeedSidebarView(monitor: monitor, onOpenDetails: {
                         BodySpeedHistoryWindowController.shared.present(monitor: monitor,
                             screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)
                     })
                     }
-                    if allowedClients.contains("claudeCode") || allowedClients.contains("claudeDesktop") {
-                        ClaudeLocalSpeedView(allowed: allowedClients)
-                    }
+                    ActivitySpeedSummaryView(allowed: allowedClients, codexRates: monitor.totalSnapshot.modelRates, codexAvailable: monitor.monitoringEnabled && monitor.dataSource != nil)
                 }
                 else if controller.interaction.detail == .modeltrace {
                     ModelTraceView(controller: ModelTraceController.shared, compact: true).id("top")

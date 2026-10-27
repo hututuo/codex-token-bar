@@ -1,4 +1,6 @@
 pub mod app_paths;
+pub(crate) mod activity_speed_store;
+pub(crate) mod activity_speed_capture;
 pub mod agent_speed_reporting;
 pub(crate) mod app_operation_lock;
 pub mod auto_resume;

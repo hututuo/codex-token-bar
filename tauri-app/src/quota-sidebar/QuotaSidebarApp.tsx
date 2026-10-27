@@ -1,4 +1,5 @@
-import { ClaudeLocalRuntimePanel, ClaudeLocalTasks, useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
+import { ActivitySpeedModePicker, useActivitySpeedMode, selectedActivityRates } from "../multiClient/activitySpeedMode";
+import { ClientActivitySpeedPanel, ClaudeLocalTasks, useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
 import { useMultiClientUsage } from "../multiClient/MultiClientUsage";
 import { ClientQuotaSettings, ClientQuotaDetailRings, PairedQuotaRing, ScopedSidebarUsage, ClientSidebarUsageRows, clientTitle, useClientQuotaItems, useClientScope, useClientQuotaSelection } from "../multiClient/IntegratedClients";
 import { quotaRingGroups } from "../multiClient/integratedClientModel";
@@ -358,17 +359,18 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const local = useClaudeLocalRuntime(allowedClients, liveRateEnabled);
   const localUsage = useMultiClientUsage();
   const hasClaude = allowedClients.some(c => ["claudeCode", "claudeDesktop"].includes(c));
-  const rates = [...(scopeHasCodex ? data.snapshot.modelRates ?? [] : []), ...local.modelRates.map(r => ({ model: r.model, tokensPerSecond: r.outputTps }))];
-  const localRate = local.modelRates.reduce((n,r) => n + r.outputTps, 0);
-  const totalRate = (scopeHasCodex ? data.snapshot.tokensPerSecond : 0) + localRate;
+  const speedMode = useActivitySpeedMode();
+  const rates = selectedActivityRates(data.snapshot.modelRates??[],local.modelRates,allowedClients,speedMode,data.snapshot.tokensPerSecond);
+  const totalRate = rates.reduce((n,r)=>n+r.tokensPerSecond,0);
   const mainCount = (scopeHasCodex ? data.runningThreads.mainThreads ?? 0 : 0) + local.mainAgents.length;
   const subCount = (scopeHasCodex ? data.runningThreads.subagents ?? 0 : 0) + local.subagents.length;
   const taskTotal = mainCount + subCount;
   const localReady = !!local.capturedAt && allowedClients.some(c => local.sourceAvailable[c]);
   const taskStatus = hasClaude ? localReady ? (scopeHasCodex ? data.runningThreads.status : "ready" as const) : scopeHasCodex ? "stale" as const : "unavailable" as const : data.runningThreads.status;
-  const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude);
-  const compactItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude, "compact");
-  const ratePercent = hasClaude && local.capturedAt ? Math.min(100, Math.max(0, totalRate / sanitizeRateFullScale(rateFullScale) * 100)) : scopeHasCodex ? sidebarRatePercent(data.snapshot, liveRateEnabled, rateFullScale) : null;
+  const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude).filter(id=>scopeHasCodex||id!=="tps");
+  const compactItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude, "compact").filter(id=>scopeHasCodex||id!=="tps");
+  const activityCovered = (scopeHasCodex && (speedMode==="bar" ? data.snapshot.liveRateAvailable === true : local.sourceAvailable.codex)) || allowedClients.some(c=>c!=="codex"&&local.sourceAvailable[c]);
+  const ratePercent = liveRateEnabled && activityCovered ? Math.min(100,Math.max(0,totalRate/sanitizeRateFullScale(rateFullScale)*100)) : null;
   const { warning: cacheWarning, dismiss: dismissCacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice, liveRateEnabled && data.snapshot.liveRateAvailable === true);
   const rateLabel = !liveRateEnabled ? "实时速率已关闭" : ratePercent === null ? "实时速率不可用" : `实时速率 ${formatLiveRateValue(totalRate)} t/s · 量程 ${sanitizeRateFullScale(rateFullScale)} t/s`;
   const scopedQuota = scopeQuota(data);
@@ -419,7 +421,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
       const nearestCredit = prepareResetCreditsForDisplay(data.quota?.quota?.resetCredit?.credits ?? []).find(item => item.isCountdownEligible)?.credit;
       const moduleContent: Record<string, ReactNode> = {
         speed: <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" modelRates={rates}/><Value value={ratePercent === null ? "—" : formatLiveRateValue(totalRate)}/></button>,
-        tps: <>{scopeHasCodex && <SidebarBodySpeeds models={modelSpeeds} data={data.snapshot} onOpen={() => onOpen("quota", "speeds")}/>}{hasClaude && <button onClick={() => onOpen("quota","speeds")} className="qs-quota-trigger"><ClaudeLocalRuntimePanel allowed={allowedClients} compact monitoringEnabled={liveRateEnabled}/></button>}</>,
+        tps: <>{scopeHasCodex && <SidebarBodySpeeds models={modelSpeeds} data={data.snapshot} onOpen={() => onOpen("quota", "speeds")}/>}</>,
         modeltrace: <button className="qs-modeltrace-trigger" onClick={() => onOpen("modeltrace", "top")} title="打开 ModelTrace，手动检测模型"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg>模型检测</button>,
         models: <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}>{modelStrip(false)}<span>模型占比</span></button>,
         tasks: <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><span className="qs-task-ring"><Value value={taskStatus === "ready" ? String(taskTotal) : "—"}/></span><span>{taskStatus === "ready" ? mainCount + " 主 · " + subCount + " 子" : "运行·未知"}</span></button>,
@@ -532,7 +534,7 @@ function DetailSurface() {
           modelRates={value.data.snapshot.modelRates} models={floatingTodayModelUsageItems(value.data.snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false }).filter(item => item.share > 0)}
           taskStatus={value.data.runningThreads.status}
           taskLabel={sidebarTaskStateLabel(value.data.runningThreads.total, value.data.runningThreads.status)} preview/>}
-        colorSettings={<ClientQuotaSettings codex={value.data.quota.quota} colorsOnly/>}/> : value.state.tab === "modeltrace" ? value.state.mode !== "detail" ? null : value.data.sourceToken ? <ModelTraceContent key={JSON.stringify(value.data.sourceToken)} sourceToken={value.data.sourceToken} compact/> : <p className="qs-muted">正在读取数据源…</p> : value.state.tab === "quota" && value.state.section === "speeds" ? <>{clientScope.allowed.includes("codex") && <><LiveActivityRateHistory snapshot={value.data.snapshot} sourceToken={value.data.sourceToken}/><ObservedSpeedDetails data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /></>}<ClaudeLocalRuntimePanel allowed={clientScope.allowed}/></> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <>{clientScope.allowed.includes("codex") && <RunningDetails data={value.data} />}<ClaudeLocalTasks allowed={clientScope.allowed}/></> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
+        speedSettings={<ActivitySpeedModePicker/>} colorSettings={<ClientQuotaSettings codex={value.data.quota.quota} colorsOnly/>}/> : value.state.tab === "modeltrace" ? value.state.mode !== "detail" ? null : value.data.sourceToken ? <ModelTraceContent key={JSON.stringify(value.data.sourceToken)} sourceToken={value.data.sourceToken} compact/> : <p className="qs-muted">正在读取数据源…</p> : value.state.tab === "quota" && value.state.section === "speeds" ? <>{clientScope.allowed.includes("codex") && <><strong>Codex · 正文 TPS</strong><ObservedSpeedDetails data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /></>}<ClientActivitySpeedPanel allowed={clientScope.allowed} codexRates={value.data.snapshot.modelRates??[]} codexOutputRate={value.data.snapshot.tokensPerSecond} codexAvailable={value.data.snapshot.liveRateAvailable===true}/></> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <>{clientScope.allowed.includes("codex") && <RunningDetails data={value.data} />}<ClaudeLocalTasks allowed={clientScope.allowed}/></> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
       <footer><span>额度 · 用量 · 会话</span><span>{value.state.pinned ? "已固定 · 点击 × 收起" : "移出后收起 · 点击固定"}</span></footer>
       {value.error && <details className="qs-diagnostic"><summary>窗口状态说明</summary><p>{value.error}</p></details>}
     </>}

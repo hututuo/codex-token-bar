@@ -16,7 +16,8 @@ internal sealed record RuntimeSnapshot(
     [property: JsonPropertyName("modelRates")] IReadOnlyList<ModelRate> ModelRates,
     [property: JsonPropertyName("mainAgents")] IReadOnlyList<RuntimeAgent> MainAgents,
     [property: JsonPropertyName("subagents")] IReadOnlyList<RuntimeAgent> Subagents,
-    [property: JsonPropertyName("latestResponse")] RuntimeResponse? LatestResponse);
+    [property: JsonPropertyName("latestResponse")] RuntimeResponse? LatestResponse,
+    [property: JsonPropertyName("responseEvents")] IReadOnlyList<RuntimeEvent> ResponseEvents);
 
 internal sealed record ModelRate(
     [property: JsonPropertyName("client")] string Client,
@@ -46,29 +47,54 @@ internal sealed record RuntimeResponse(
     [property: JsonPropertyName("speed")] double? Speed,
     [property: JsonPropertyName("endedAt")] string EndedAt);
 
+internal sealed record RuntimeEvent(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("client")] string Client,
+    [property: JsonPropertyName("model")] string? Model,
+    [property: JsonPropertyName("outputTokens")] long OutputTokens,
+    [property: JsonPropertyName("totalTokens")] long TotalTokens,
+    [property: JsonPropertyName("durationMs")] long? DurationMs,
+    [property: JsonPropertyName("speed")] double? Speed,
+    [property: JsonPropertyName("endedAt")] string EndedAt);
+
+internal sealed record ResponseEventInput(long Sequence, ResponseSummary Response);
+
 internal static class RuntimeSnapshotMapper
 {
     private static readonly SourceKind[] ClaudeSources = [SourceKind.ClaudeCode, SourceKind.ClaudeDesktop];
+    private static readonly SourceKind[] RuntimeSources = [SourceKind.Codex, SourceKind.ClaudeCode, SourceKind.ClaudeDesktop];
+    private const int MaximumResponseEvents = 32;
 
     public static RuntimeSnapshot Map(
         SpeedSnapshot snapshot,
         byte[] processSalt,
-        IReadOnlySet<SourceKind>? enabledSources = null)
+        IReadOnlySet<SourceKind>? enabledSources = null,
+        IReadOnlyList<ResponseEventInput>? responseEvents = null)
     {
         enabledSources ??= ClaudeSources.ToHashSet();
         var now = DateTimeOffset.UtcNow;
         var selected = snapshot.Agents
-            .Where(agent => ClaudeSources.Contains(agent.Source) && enabledSources.Contains(agent.Source))
+            .Where(agent => RuntimeSources.Contains(agent.Source) && enabledSources.Contains(agent.Source))
             // Old idle transcript records are not current task state. Keep recent idle records
             // for context, but do not leak historical sessions into the compact live task list.
             .Where(agent => agent.Phase != AgentPhase.Idle || now - agent.LastActivity <= TimeSpan.FromMinutes(5))
             .ToArray();
         var safeIds = selected.ToDictionary(agent => agent.Id, agent => SafeId(processSalt, agent.Id), StringComparer.Ordinal);
-        var sourceAvailable = ClaudeSources.ToDictionary(
+        var sourceAvailable = RuntimeSources
+            .Where(source => source != SourceKind.Codex || enabledSources.Contains(SourceKind.Codex))
+            .ToDictionary(
             ClientId,
             source => enabledSources.Contains(source)
                 && snapshot.Sources.FirstOrDefault(row => row.Kind == source) is { Enabled: true, Available: true },
             StringComparer.Ordinal);
+        var selectedStatuses = snapshot.Sources
+            .Where(row => RuntimeSources.Contains(row.Kind) && enabledSources.Contains(row.Kind))
+            .ToArray();
+        var liveOutput = FiniteNonnegative(selectedStatuses.Sum(row => row.Live.Output));
+        var liveTotal = FiniteNonnegative(selectedStatuses.Sum(row => row.Live.Total));
+        var estimatedOutput = FiniteNonnegative(selectedStatuses.Sum(row => row.LiveEstimated.Output));
+        var estimatedShare = liveOutput > 0 ? Math.Clamp(estimatedOutput / liveOutput, 0, 1) : 0;
         var modelRates = selected
             .GroupBy(agent => (agent.Source, Model: CleanModel(agent.Model)))
             .OrderBy(group => ClientId(group.Key.Source), StringComparer.Ordinal)
@@ -94,31 +120,48 @@ internal static class RuntimeSnapshotMapper
                 agent.RecentSpeed is { } recent ? FiniteNonnegative(recent) : null))
             .ToArray();
         var latest = snapshot.LastResponse is { } response
-            && ClaudeSources.Contains(response.Source)
+            && RuntimeSources.Contains(response.Source)
             && enabledSources.Contains(response.Source)
-            ? new RuntimeResponse(
-                ClientId(response.Source),
-                CleanModelOrNull(response.Model),
-                Math.Max(0, response.OutputTokens),
-                Math.Max(0, response.TotalTokens),
-                response.Duration is { } duration ? Math.Max(0, (long)duration.TotalMilliseconds) : null,
-                response.Speed is { } speed ? FiniteNonnegative(speed) : null,
-                response.EndedAt.ToUniversalTime().ToString("O"))
+            ? MapResponse(response)
             : null;
+        var boundedEvents = (responseEvents ?? Array.Empty<ResponseEventInput>())
+            .Where(item => RuntimeSources.Contains(item.Response.Source) && enabledSources.Contains(item.Response.Source))
+            .TakeLast(MaximumResponseEvents)
+            .Select(item => new RuntimeEvent(
+                SafeEventId(processSalt, item.Sequence),
+                "responseCompleted",
+                ClientId(item.Response.Source),
+                CleanModelOrNull(item.Response.Model),
+                Math.Max(0, item.Response.OutputTokens),
+                Math.Max(0, item.Response.TotalTokens),
+                item.Response.Duration is { } duration ? Math.Max(0, (long)duration.TotalMilliseconds) : null,
+                item.Response.Speed is { } speed ? FiniteNonnegative(speed) : null,
+                item.Response.EndedAt.ToUniversalTime().ToString("O")))
+            .ToArray();
 
         return new RuntimeSnapshot(
             Schema: 1,
             CapturedAt: snapshot.Timestamp == DateTimeOffset.MinValue ? DateTimeOffset.UtcNow.ToString("O") : snapshot.Timestamp.ToUniversalTime().ToString("O"),
             Client: "claude",
             SourceAvailable: sourceAvailable,
-            LiveOutputTps: FiniteNonnegative(snapshot.Live.Output),
-            LiveTotalTps: FiniteNonnegative(snapshot.Live.Total),
-            EstimatedShare: double.IsFinite(snapshot.EstimatedShare) ? Math.Clamp(snapshot.EstimatedShare, 0, 1) : 0,
+            LiveOutputTps: liveOutput,
+            LiveTotalTps: liveTotal,
+            EstimatedShare: estimatedShare,
             ModelRates: modelRates,
             MainAgents: runtimeAgents.Where((_, index) => !selected[index].IsSubagent).ToArray(),
             Subagents: runtimeAgents.Where((_, index) => selected[index].IsSubagent).ToArray(),
-            LatestResponse: latest);
+            LatestResponse: latest,
+            ResponseEvents: boundedEvents);
     }
+
+    private static RuntimeResponse MapResponse(ResponseSummary response) => new(
+        ClientId(response.Source),
+        CleanModelOrNull(response.Model),
+        Math.Max(0, response.OutputTokens),
+        Math.Max(0, response.TotalTokens),
+        response.Duration is { } duration ? Math.Max(0, (long)duration.TotalMilliseconds) : null,
+        response.Speed is { } speed ? FiniteNonnegative(speed) : null,
+        response.EndedAt.ToUniversalTime().ToString("O"));
 
     private static string SafeId(byte[] salt, string privateId)
     {
@@ -128,10 +171,17 @@ internal static class RuntimeSnapshotMapper
 
     private static string ClientId(SourceKind source) => source switch
     {
+        SourceKind.Codex => "codex",
         SourceKind.ClaudeCode => "claudeCode",
         SourceKind.ClaudeDesktop => "claudeDesktop",
         _ => throw new ArgumentOutOfRangeException(nameof(source)),
     };
+
+    private static string SafeEventId(byte[] salt, long sequence)
+    {
+        var digest = HMACSHA256.HashData(salt, Encoding.UTF8.GetBytes(sequence.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        return "event-" + Convert.ToHexString(digest.AsSpan(0, 12)).ToLowerInvariant();
+    }
 
     private static string PhaseName(AgentPhase phase) => phase switch
     {

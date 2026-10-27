@@ -34,7 +34,8 @@ struct LiveRateView: View {
                         monitor: monitor,
                         fullScale: $tokenRateFullScale,
                         isMonitoringEnabled: $liveRateMonitoringEnabled,
-                        floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar
+                        floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
+                        allowedClients: localClients.union(sourceAvailable ? ["codex"] : [])
                     )
                         .frame(width: columnWidth, height: LiveRatePanelLayout.contentHeight)
 
@@ -52,9 +53,7 @@ struct LiveRateView: View {
             } else {
                 if localClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) { Text("暂无正文测速样本").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
             }
-            if !localClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) {
-                ClaudeLocalSpeedView(allowed: localClients)
-            }
+            ActivitySpeedSummaryView(allowed: localClients.union(sourceAvailable ? ["codex"] : []), codexRates: monitor.totalSnapshot.modelRates, codexAvailable: monitor.monitoringEnabled && monitor.dataSource != nil)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -111,10 +110,21 @@ private struct LiveRateInstrumentReader: View {
     @Binding var fullScale: Double
     @Binding var isMonitoringEnabled: Bool
     @Binding var floatingPanelShowRateAndBar: Bool
-
+    var allowedClients: Set<String> = ["codex"]
+    @ObservedObject private var local = ClaudeLocalRuntime.shared
+    @ObservedObject private var upstream = AgentSpeedDisplayRuntime.shared
+    @AppStorage(ActivitySpeedDisplayMode.key) private var modeRaw = ActivitySpeedDisplayMode.bar.rawValue
+    private var activity: LiveRateSnapshot {
+        var value = monitor.totalSnapshot
+        value.modelRates = ClientLocalRuntimePresentation.rates(codex: value.modelRates,
+            claude: local.projection(allowed: allowedClients).modelRates, allowed: allowedClients,
+            mode: .normalized(modeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex))
+        value.rollingTokensPerSecond = value.modelRates.reduce(0) { $0 + $1.tokensPerSecond }
+        return value
+    }
     var body: some View {
         LiveRateInstrument(
-            snapshot: monitor.totalSnapshot,
+            snapshot: activity,
             fullScale: $fullScale,
             isMonitoringEnabled: $isMonitoringEnabled,
             floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar

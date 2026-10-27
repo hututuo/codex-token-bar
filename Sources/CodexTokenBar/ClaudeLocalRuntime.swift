@@ -80,6 +80,7 @@ final class ClaudeLocalRuntime: ObservableObject {
     private var liveListener: UUID?
     private var eventListener: UUID?
     private var configuredSources: Set<SourceKind> = []
+    private var activitySourceIdentity: String?
     private var monitoringEnabled = false
     private var configurationIssue: String?
     private var latestCoreSnapshot = SpeedSnapshot.empty
@@ -127,6 +128,12 @@ final class ClaudeLocalRuntime: ObservableObject {
         if configurationChanged {
             latestCoreSnapshot = Self.startingSnapshot()
             responseRows.removeAll(keepingCapacity: true)
+        }
+        if configurationChanged || activitySourceIdentity == nil {
+            activitySourceIdentity = ActivitySpeedSourceIdentity.root(plan.configuration.claudeRoot ?? LiveMonitor.defaultClaudeRoot)
+        }
+        for source in plan.enabledSources {
+            ActivitySpeedHistoryController.shared.selectSource(client: source.rawValue, identity: activitySourceIdentity)
         }
         updateMonitorConfigurationIfNeeded(plan.configuration)
         if !monitor.isRunning {
@@ -226,14 +233,10 @@ final class ClaudeLocalRuntime: ObservableObject {
             selectedSources.contains(agent.source)
                 && isFreshActive(agent, at: now)
         }
-        var modelRatesByName: [String: Double] = [:]
-        for agent in currentAgents {
-            guard let model = cleaned(agent.model), agent.live.output.isFinite, agent.live.output > 0 else { continue }
-            modelRatesByName[model, default: 0] += agent.live.output
-        }
-        let modelRates = modelRatesByName.keys.sorted().compactMap { model -> ModelRateContribution? in
-            guard let rate = modelRatesByName[model], rate.isFinite, rate > 0 else { return nil }
-            return ModelRateContribution(model: model, tokensPerSecond: rate)
+        // The upstream live window can still include a completed response.
+        // Keep those contributions and retain unknown-model rate explicitly.
+        let modelRates = selectedSources.sorted { $0.rawValue < $1.rawValue }.flatMap { source in
+            AgentSpeedDisplayRuntime.modelRates(snapshot: core, source: source)
         }
 
         let running = runningSummary(
@@ -304,6 +307,13 @@ final class ClaudeLocalRuntime: ObservableObject {
     private func receive(_ snapshot: SpeedSnapshot) {
         guard monitoringEnabled else { return }
         latestCoreSnapshot = snapshot
+        let mode = ActivitySpeedDisplayMode.normalized(UserDefaults.standard.string(forKey: ActivitySpeedDisplayMode.key))
+        for source in configuredSources {
+            ActivitySpeedHistoryController.shared.record(client: source.rawValue,
+                sourceIdentity: activitySourceIdentity ?? "legacy/unscoped",
+                rates: AgentSpeedDisplayRuntime.modelRates(snapshot: snapshot, source: source), at: snapshot.timestamp.timeIntervalSince1970,
+                available: snapshot.sources.contains { $0.kind == source && $0.available }, mode: mode)
+        }
         pruneRows(at: snapshot.timestamp)
         publishProjection()
     }
@@ -342,6 +352,8 @@ final class ClaudeLocalRuntime: ObservableObject {
     }
 
     private func clearLiveState() {
+        ActivitySpeedHistoryController.shared.reset(client: "claudeCode")
+        ActivitySpeedHistoryController.shared.reset(client: "claudeDesktop")
         latestCoreSnapshot = .empty
         responseRows.removeAll(keepingCapacity: true)
         publishProjection()
